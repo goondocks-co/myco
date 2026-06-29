@@ -36,7 +36,7 @@ Myco daemon processes require careful lifecycle management to ensure reliable op
 
 ### Service-Aware Daemon Control via launchd Integration
 
-**Critical architecture**: Grove's launchd service installer creates a permanent service (co.goondocks.myco-dev) with KeepAlive=true. This fundamentally changes daemon control from direct process management to service-aware coordination:
+**Critical architecture**: Grove's launchd service installer creates a permanent service (co.goondocks.myco-dev) with `KeepAlive: { SuccessfulExit: false }` — the daemon is re-spawned on crash/non-zero exit, but **not** on clean exits (step-aside, cooperative shutdown, `daemon kill`). This fundamentally changes daemon control from direct process management to service-aware coordination:
 
 ```typescript
 // Service-Aware Daemon Control - Three Unified Code Paths
@@ -313,24 +313,29 @@ class McpStdioBridge {
 ```
 
 #### Mode 5: Self-Update Double-Respawn Race (launchd + Manual Spawn Conflict) — **RESOLVED**
-**Resolution pattern**:
+**Resolution pattern**: Service label resolution now uses `findInstalledServiceLabel` (`packages/myco/src/daemon/api/restart.ts`), which detects the installed service by plist existence. `detectServiceManagedLabel` and `isManagedDaemon` (PID-match predicates) are removed. The update flow must not call `launchctl bootout`/`unload` from inside the running daemon — see the "Self-Bootout Hazard" gotcha.
+
 ```typescript
-// Self-update with service-aware coordination
-async function selfUpdateWithServiceCoordination(): Promise<void> {
-  const serviceId = 'co.goondocks.myco-dev';
-  
-  // 1. Disable automatic respawn during update
-  await execAsync(`launchctl unload -w ~/Library/LaunchAgents/${serviceId}.plist`);
-  
-  // 2. Stop daemon manually (no respawn)
-  await stopDaemonDirect();
-  
-  // 3. Apply update
-  await applyBinaryUpdate();
-  
-  // 4. Re-enable service and start
-  await execAsync(`launchctl load -w ~/Library/LaunchAgents/${serviceId}.plist`);
-  await execAsync(`launchctl start ${serviceId}`);
+// Self-update coordination (v1.2.1+) — resolves label by plist existence
+import { findInstalledServiceLabel } from '../daemon/api/restart.js';
+import { stageBinary, applyBinaryUpdate } from '../upgrade/apply-binary.js';
+
+async function selfUpdateWithServiceCoordination(mgr: ServiceManager, mycoHome: string): Promise<void> {
+  // 1. Detect installed service label via plist existence (not PID-match)
+  const label = await findInstalledServiceLabel(mgr, mycoHome);
+  if (!label) {
+    // Not running as a managed service — apply binary directly
+    await applyBinaryUpdate(/* deps */);
+    return;
+  }
+
+  // 2. Stage the new binary (does not replace the running binary)
+  await stageBinary(/* stageBinaryDeps */);
+
+  // 3. Trigger restart from outside the daemon process (CLI or hook subprocess)
+  //    NEVER call launchctl bootout/unload from within the running daemon.
+  //    With KeepAlive.SuccessfulExit=false, clean exits won't be re-spawned by launchd;
+  //    use POST /api/upgrade/apply or `myco service restart` from the caller instead.
 }
 ```
 
@@ -408,3 +413,27 @@ Path helpers (`managedBinDir`, `versionsDir`, `versionDir`, `versionBinaryPath`)
 ### Capture-Only Seed Re-Fires on Daemon Rebuild — Resets Already-Admitted Project Capabilities
 
 **Development-time gotcha**: Rebuilding the daemon on a feature branch and restarting it re-fires the capture-only seed for already-admitted projects. The seed resets all 4 project capabilities back to their initial (disabled) state, even for projects that had been fully enabled. This looks like a UI bug or config loss but the root cause is a missing admission guard in the seed logic: the seed should check whether a project is already admitted before overwriting its capabilities. Without the guard, every daemon rebuild during feature development silently disables project capabilities. Workaround while the guard is absent: manually re-enable capabilities via the UI after each rebuild.
+
+### Self-Bootout Hazard: Daemon Cannot Safely `bootout` Its Own launchd Job
+
+**Critical gotcha**: A running daemon cannot safely call `launchctl bootout` (or `launchctl unload -w`) targeting its own job label. Doing so terminates the process mid-operation, preventing cleanup (buffer flush, port release, session drain) and removing the service from launchd so `KeepAlive` cannot re-spawn it. The process appears to exit cleanly from the caller's perspective but its shutdown sequence never completes.
+
+**Pattern to avoid**: Any code path where the daemon process itself issues `launchctl bootout domain/label` or `launchctl unload -w ~/Library/LaunchAgents/<label>.plist` targeting its own plist. This includes self-update flows that try to disable KeepAlive before staging.
+
+**Fix**: Delegate `bootout`/`unload` to an out-of-process caller (CLI command, hook, or a separately-spawned subprocess). The daemon signals readiness to exit via its shutdown endpoint and then calls `process.exit(0)` — `KeepAlive.SuccessfulExit=false` ensures launchd does not re-spawn on clean exit, allowing the caller to independently reload the plist.
+
+### npm `--allow-scripts` Absent Silently Exits Zero While Blocking Postinstall Binary Convergence
+
+**Gotcha**: `npm install --ignore-scripts` (or omitting `--allow-scripts` on restricted npm configurations) exits 0 silently even though the `postinstall` hook that writes/converges the native binary never ran. The daemon binary is not updated, but no error appears in CI or the terminal. This looks like a successful install.
+
+**Detection**: After `npm install`, check whether the binary was actually updated: compare the file modification timestamp or hash of the managed binary before and after. If unchanged despite a version bump in `package.json`, the postinstall hook was skipped.
+
+**Fix**: Always pass `--allow-scripts` (or set `ignore-scripts=false` in `.npmrc`) when installing packages that require postinstall binary convergence. In CI, add an explicit step that verifies the binary timestamp after install.
+
+### `printf >` in Makefile Overwrites the Binary Target with Text Content
+
+**Gotcha** (launchd integration makefile): Using `printf 'content' > ./path/to/binary` in a Makefile rule silently overwrites the managed binary with the literal printf output — a small text blob — instead of the intended plist or config file. This happens when a service-install Makefile rule mistakenly redirects shell output to the binary path.
+
+**Symptom**: After `make install-service` (or equivalent target), the daemon binary at `~/.myco/bin/myco` is replaced with text; the daemon fails to start with `exec format error`.
+
+**Fix**: Audit all `printf` / `echo` redirections in service-install Makefile targets. Redirections must point to plist or config files (`.plist`, `.xml`, `.toml`), never to binary paths. Binary content must be written via explicit copy commands (`cp`, `install -m 755`), never via shell redirections.

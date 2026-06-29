@@ -316,6 +316,34 @@ function addSemanticContractFindings(
   }
 }
 
+/**
+ * Returns the total character length of HARD contamination spans located
+ * within the frontmatter description ranges of the given skill content.
+ *
+ * Used by the description-shortening guard in `checkFrontmatterPreservation`
+ * to discount mandatory decontamination from the floor basis. Removing HARD
+ * contamination from the description must never trip the shortening gate —
+ * only WARN spans are excluded (they are optional removals, not required).
+ */
+export function descriptionHardContaminationLength(content: string): number {
+  const descRanges = collectFrontmatterDescriptionRanges(content);
+  if (descRanges.length === 0) return 0;
+
+  const { hard } = scanForContamination(content);
+  let total = 0;
+  for (const span of hard) {
+    for (const range of descRanges) {
+      const overlapStart = Math.max(span.start, range.start);
+      const overlapEnd = Math.min(span.end, range.end);
+      if (overlapStart < overlapEnd) {
+        total += overlapEnd - overlapStart;
+        break; // each span is atomic; one description range per span
+      }
+    }
+  }
+  return total;
+}
+
 export function scanForContamination(content: string): SkillContaminationScanResult {
   const frontmatter = frontmatterRange(content);
   const frontmatterDescriptionRanges = collectFrontmatterDescriptionRanges(content);

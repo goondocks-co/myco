@@ -68,8 +68,7 @@ The helper exists because manual smoke runs on `global-symbiont-install` used te
 
 ```bash
 eval "$(scripts/dev/smoke-sandbox-env.sh qa-smoke)"
-MYCO_SERVICE_VARIANT=dev \
-  packages/myco-darwin-arm64/bin/myco doctor
+packages/myco-darwin-arm64/bin/myco doctor
 ```
 
 If the smoke run also needs a temp repo or worktree fixture, create it UNDER `"$MYCO_SANDBOX_ROOT"` or another temp path — but keep `HOME`, `MYCO_HOME`, and `MYCO_LAUNCH_AGENTS_DIR` anchored to the helper's exported root.
@@ -89,112 +88,34 @@ That shape is exactly what created the stale escaped global hook entries the one
 
 **Problem:** When Myco is in production globally, contributors developing Myco itself need to route hook invocations to their local dev daemon rather than the production system daemon.
 
-**Solution:** The global launcher uses a **dev-build detection chain** to determine whether the running binary is a development build or production, then routes to the appropriate daemon instance.
+**Real API:** `looksLikeDevBuildExecutable(execPath: string): boolean` in `packages/myco/src/service/spec-builder.ts` is the authoritative dev-build detection function. It inspects the executable path to determine whether the running binary is a development build.
+
+**Guard behavior:** The `assertSafeServiceMutation` guard in `packages/myco/src/cli/service.ts` calls `looksLikeDevBuildExecutable(execPath)` and, if the binary is a dev build **and** `MYCO_HOME` resolves to the default (`~/.myco`), it **refuses** service mutation commands (install/uninstall/start/stop/restart/reconcile):
+
+```
+Refusing to <action> the default-home (~/.myco) service from a dev-build binary (<path>).
+That service must be managed by the globally installed myco.
+To dogfood, point MYCO_HOME at a separate home (e.g. ~/.myco-dev), or run this command
+from the installed binary (e.g. /opt/homebrew/lib/node_modules/@goondocks/myco/vendor/<arch>/myco).
+```
+
+This prevents dev builds from corrupting the production service's daemon state.
 
 ### The Dogfooding Route Chain
 
-```typescript
-// In ~/.myco/launcher.c (global hook bootstrap)
-// Step 1: Hook fires from inside the myco project (e.g., Claude Code)
-// Step 2: Global launcher dispatches to the appropriate daemon
-// Step 3: Daemon identity is determined by detectDevBuild() check
+To develop Myco while also using the production daemon, choose one approach:
 
-export function selectDaemonForInvocation(): {
-  daemonServicePath: string;
-  runtimeCommandPath: string;
-} {
-  // Pattern: detectDevBuild() checks if current binary is dev or production
-  const isDevBuild = detectDevBuild();
-  
-  if (isDevBuild) {
-    // Development: use machine-scoped dev daemon
-    // ~/.myco/service-dev/ contains daemon.json for development instance
-    return {
-      daemonServicePath: path.join(os.homedir(), '.myco', 'service-dev', 'daemon.json'),
-      runtimeCommandPath: path.join(os.homedir(), '.myco', 'runtime.command')
-    };
-  } else {
-    // Production: use standard service daemon
-    // ~/.myco/service/ contains daemon.json for production instance
-    return {
-      daemonServicePath: path.join(os.homedir(), '.myco', 'service', 'daemon.json'),
-      runtimeCommandPath: path.join(os.homedir(), '.myco', 'runtime.command')
-    };
-  }
-}
+1. **Separate MYCO_HOME (recommended):** Set `MYCO_HOME=~/.myco-dev` before running dev-build service commands. The guard allows mutations on non-default homes, so dev and production daemons co-exist without collision.
 
-// Dev-build detection chain
-export function detectDevBuild(): boolean {
-  // Priority 1: Check if running inside git worktree with compiled binary
-  const gitDir = findNearestGitDir();
-  const worktreeMarker = path.join(gitDir, '.git', 'worktrees');
-  
-  // Priority 2: Check for vendor-src directory (dev artifact not in production binary)
-  const vendorSrcDir = path.join(process.execPath, '..', 'vendor-src');
-  if (fs.existsSync(vendorSrcDir)) {
-    return true;
-  }
-  
-  // Priority 3: Check for uncompiled source markers in execution path
-  const sourceMarkers = ['src/', 'packages/myco/src', 'tsconfig.json'];
-  const execDir = path.dirname(process.execPath);
-  for (const marker of sourceMarkers) {
-    if (execDir.includes(marker)) return true;
-  }
-  
-  // Default: assume production
-  return false;
-}
-```
+   ```bash
+   MYCO_HOME=~/.myco-dev bun run packages/myco/src/daemon/main.ts start
+   ```
 
-### Machine-Scoped Service Selection Pattern
-
-```typescript
-// In packages/myco/src/grove/paths.ts
-export class ServicePaths {
-  /**
-   * Production service daemon lives at ~/.myco/service/daemon.json
-   * Development service daemon lives at ~/.myco/service-dev/daemon.json
-   * 
-   * The selection happens once at process startup (after detectDevBuild())
-   * and is immutable per process instance.
-   */
-  private static selectedServiceDir: string | null = null;
-  
-  static selectServiceDirectory(): string {
-    if (ServicePaths.selectedServiceDir !== null) {
-      return ServicePaths.selectedServiceDir;
-    }
-    
-    // Determine at startup (after detectDevBuild())
-    const isDev = detectDevBuild();
-    const baseDir = path.join(os.homedir(), '.myco');
-    
-    ServicePaths.selectedServiceDir = isDev 
-      ? path.join(baseDir, 'service-dev')
-      : path.join(baseDir, 'service');
-    
-    return ServicePaths.selectedServiceDir;
-  }
-  
-  static getDaemonJsonPath(): string {
-    return path.join(ServicePaths.selectServiceDirectory(), 'daemon.json');
-  }
-}
-
-// Usage in daemon startup
-export async function loadDaemonIdentity(): Promise<DaemonRecord> {
-  const daemonJsonPath = ServicePaths.getDaemonJsonPath();
-  const content = await fs.promises.readFile(daemonJsonPath, 'utf-8');
-  return JSON.parse(content);
-}
-```
+2. **Use installed binary for service mutations:** Run production service management commands from the globally installed binary rather than the dev binary.
 
 ### Gotchas in Dogfood Routing
 
-**Stale hook gotcha:** Hooks installed globally may be outdated if Myco binary is updated. Ensure global hooks are regenerated on production upgrade and again on dev-build downgrades.
-
-**Dev-only service directory:** Contributors running dev builds must ensure `~/.myco/service-dev/` exists and is owned by the development daemon, not the production service.
+**Default-home guard fires unexpectedly:** If you try to restart the daemon from a dev binary while `MYCO_HOME` is unset (defaults to `~/.myco`), the guard in `packages/myco/src/cli/service.ts` will refuse with a descriptive error message. Set `MYCO_HOME` to a separate path before running service mutations from dev binaries.
 
 ---
 
@@ -210,152 +131,41 @@ Under Myco's **global-install architecture**, beta channel switching uses **glob
 - No project-level .myco directory changes; only the global installation is affected
 - Rollback is clean: reinstall the last production release to revert
 
-### Global Beta Channel Workflow
+### Upgrade Module Architecture
 
-#### User Initiates Beta Join
+The upgrade implementation lives in `packages/myco/src/upgrade/`. Key exports from `packages/myco/src/upgrade/spawn.ts`:
+
+- `spawnUpdateScript(params: InstallParams)` — spawns a detached script that downloads and installs the new binary
+- `spawnApplyUpgrade(namePrefix, params)` — spawns a detached apply script for binary replacement
+- `spawnRestartScript(params: RestartParams)` — spawns the restart orchestration after binary swap
+- `resolveOrchestratorBinary()` — resolves the binary used to run the orchestrator script
+
+The orchestrator pattern (`packages/myco/src/upgrade/orchestrator.ts`) separates parameter writing from execution: the daemon writes orchestration params to a temp JSON file, then spawns a detached script that reads those params and performs installation + restart, allowing the parent daemon to exit cleanly before the swap completes.
+
+### Beta Channel Workflow
 
 ```bash
-# User runs command to switch to beta channel
-myco install:beta
+# User initiates beta channel switch
+myco update --channel beta
 
-# Internally, this invokes the global upgrade path:
+# Internally:
 # 1. Download beta-tagged release from artifact store
-# 2. Verify checksum matches expected beta build
-# 3. Stop running service daemon (if any)
-# 4. Replace global Myco binary with beta build
-# 5. Restart daemon to load new binary
-```
-
-#### Implementation Pattern
-
-```typescript
-// In packages/myco/src/cli/install.ts (or daemon API endpoint)
-export async function switchToBetaChannel(): Promise<{ success: boolean; message: string }> {
-  // Step 1: Fetch beta release metadata
-  const betaRelease = await fetchBetaReleaseMetadata();
-  if (!betaRelease) {
-    throw new Error('No beta release available');
-  }
-
-  // Step 2: Download beta artifact
-  const betaPath = await downloadBinaryRelease(betaRelease.downloadUrl, {
-    checksumExpected: betaRelease.sha256,
-    tempDir: path.join(os.homedir(), '.myco', 'tmp')
-  });
-
-  // Step 3: Stop production daemon before binary replacement
-  // Use graceful shutdown with timeout (critical to avoid ETXTBSY on Windows)
-  await stopDaemonWithTimeout({ timeoutMs: 30000 });
-
-  // Step 4: Global replacement - swap binary atomically
-  const globalBinPath = path.join(os.homedir(), '.myco', 'bin', 'myco');
-  const backupPath = path.join(os.homedir(), '.myco', 'bin', 'myco.production');
-  
-  await fsAtomicReplace(globalBinPath, betaPath, {
-    backupPath,  // Save production binary for rollback
-    mode: 0o755
-  });
-
-  // Step 5: Restart daemon with new beta binary
-  // Service daemon will auto-restart via systemd/launchd
-  await startDaemon({
-    waitForHealthy: true,
-    timeoutMs: 30000
-  });
-
-  return {
-    success: true,
-    message: `Switched to beta channel. Running ${betaRelease.version}`
-  };
-}
-
-// Atomic replacement with backup pattern
-async function fsAtomicReplace(
-  targetPath: string,
-  sourcePath: string,
-  opts: { backupPath: string; mode: number }
-): Promise<void> {
-  // Pattern: Backup original, move new to target, verify
-  
-  if (fs.existsSync(targetPath)) {
-    await fs.promises.rename(targetPath, opts.backupPath);
-  }
-  
-  try {
-    await fs.promises.copyFile(sourcePath, targetPath);
-    await fs.promises.chmod(targetPath, opts.mode);
-    
-    // Verify new binary is executable
-    const isExecutable = await isFileExecutable(targetPath);
-    if (!isExecutable) {
-      throw new Error(`New binary not executable: ${targetPath}`);
-    }
-  } catch (err) {
-    // Rollback to backup on failure
-    if (fs.existsSync(opts.backupPath)) {
-      await fs.promises.rename(opts.backupPath, targetPath);
-    }
-    throw err;
-  }
-}
-```
-
-### Beta Channel Rollback Pattern
-
-```typescript
-export async function rollbackBetaToPrevious(): Promise<{ success: boolean; version: string }> {
-  const backupPath = path.join(os.homedir(), '.myco', 'bin', 'myco.production');
-  const globalBinPath = path.join(os.homedir(), '.myco', 'bin', 'myco');
-
-  if (!fs.existsSync(backupPath)) {
-    throw new Error('No production backup available for rollback');
-  }
-
-  // Stop daemon before rollback
-  await stopDaemonWithTimeout({ timeoutMs: 30000 });
-
-  // Restore production binary
-  await fs.promises.rename(backupPath, globalBinPath);
-  await fs.promises.chmod(globalBinPath, 0o755);
-
-  // Restart with production binary
-  await startDaemon({ waitForHealthy: true });
-
-  // Verify version
-  const versionOutput = await execSync('myco --version');
-  return {
-    success: true,
-    version: parseVersionFromOutput(versionOutput)
-  };
-}
+# 2. Verify checksum
+# 3. spawnApplyUpgrade() / spawnUpdateScript() runs detached
+# 4. Daemon exits; detached script performs binary swap + restart
 ```
 
 ### Beta Channel Configuration State
 
-```typescript
-// In ~/.myco/myco.yaml
-export interface BetaChannelState {
-  enabled: boolean;
-  currentRelease: string;       // e.g., "2.15.0-beta.2"
-  productionBackupPath: string; // Path to production binary backup
-  switchedAt: number;           // Unix timestamp
-  canRollback: boolean;
-}
-
-// Query current channel
-export async function getCurrentChannel(): Promise<'production' | 'beta'> {
-  const config = await loadConfig();
-  return config.beta?.enabled ? 'beta' : 'production';
-}
-```
+Beta channel preference is stored in `~/.myco/myco.yaml` as a machine-scoped setting (not project-level). Daemon update_channel is machine-scoped — there is no project-level override for the channel setting.
 
 ### Gotchas in Beta Channel Switching
 
-**Daemon restart timing gotcha:** On macOS/Linux, the service daemon may be lingering from the old binary. Use `launchctl unload` or `systemctl stop` before binary replacement to avoid ETXTBSY ("text file busy") errors.
+**Daemon restart timing gotcha:** On macOS/Linux, the service daemon may be lingering from the old binary. The upgrade scripts handle stopping the daemon before binary replacement to avoid ETXTBSY ("text file busy") errors on Linux.
 
-**Backup path gotcha:** The backup production binary must be saved before replacement and stored outside the executable location to prevent accidental cleanup. Use `~/.myco/bin/myco.production` as the canonical backup location.
+**Backup path gotcha:** The upgrade module saves a backup of the current binary before replacement. Verify a backup exists before performing manual binary operations.
 
-**Checksum verification gotcha:** Always verify the beta release checksum before performing binary replacement. Use SHA-256 hashes published alongside the release.
+**Checksum verification gotcha:** Always verify the beta release checksum before performing binary replacement. Never skip this step even during manual testing.
 
 ---
 
@@ -371,7 +181,7 @@ export async function getCurrentChannel(): Promise<'production' | 'beta'> {
 // In .agents/myco-run.cjs (global hook guard)
 const path = require('path');
 const fs = require('fs');
-const { execFileSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 let bin = 'myco';  // Default for global installs
 try {
@@ -380,13 +190,8 @@ try {
   if (alias) bin = alias;  // Override with machine-scoped development binary
 } catch { /* missing file → use default for global operation */ }
 
-// CRITICAL: Quote the binary path to handle spaces
+// CRITICAL: Use spawnSync with shell: false to avoid splitting on spaces
 try {
-  // WRONG: Binary path with spaces will be split into multiple args
-  execFileSync(bin, process.argv.slice(2), { stdio: 'inherit' });
-  
-  // RIGHT: Use shell quoting for binary paths with spaces
-  const { spawnSync } = require('child_process');
   spawnSync(bin, process.argv.slice(2), {
     stdio: 'inherit',
     shell: false, // Direct execution, not through shell
@@ -398,47 +203,6 @@ try {
 }
 ```
 
-#### Worktree Vendor Assets and Path Resolution
-
-**Issue**: When Myco is run from a git worktree with development assets, the runtime.command binary must correctly locate and load vendor assets (libsqlite3, sqlite-vec, ripgrep) from the development binary's directory.
-
-```typescript
-// In src/runtime/resolve-package.ts (package root discovery for worktree)
-export function resolvePackageRoot(): string {
-  // Pattern: Try import.meta.dirname first (works in dev and compiled),
-  // then fallback to process.execPath (for compiled binaries),
-  // then process.cwd() (last resort)
-  
-  // 1. Development: import.meta.dirname points to source directory
-  if (typeof import.meta.dirname === 'string' && !import.meta.dirname.includes('/$bunfs/')) {
-    return path.resolve(import.meta.dirname, '..', '..');
-  }
-  
-  // 2. Compiled binary: process.execPath points to binary location
-  if (process.execPath && process.execPath !== process.argv0) {
-    return path.dirname(process.execPath);
-  }
-  
-  // 3. Last resort: working directory (may not have vendor assets)
-  return process.cwd();
-}
-
-// In src/daemon/main.ts (vendor asset loading for global operation)
-export async function loadVendorAssets() {
-  const pkgRoot = resolvePackageRoot();
-  const vendorDir = path.join(pkgRoot, 'vendor-src');
-  
-  // Load embedded native dependencies from vendor directory
-  const libsqlitePath = path.join(vendorDir, 'libsqlite3', 'darwin-arm64', 'libsqlite3.dylib');
-  process.env.MYCO_LIBSQLITE_PATH = libsqlitePath;
-  
-  // Verify vendor assets exist (critical for global deployment)
-  if (!fs.existsSync(libsqlitePath)) {
-    throw new Error(`Vendor asset not found: ${libsqlitePath}`);
-  }
-}
-```
-
 #### Virtual Filesystem Handling for Global Binary Distribution
 
 Bun binaries use a /$bunfs/ virtual filesystem for bundled content. This creates path resolution challenges that require careful native dependency handling, especially for machine-wide deployment.
@@ -447,12 +211,12 @@ Bun binaries use a /$bunfs/ virtual filesystem for bundled content. This creates
 
 **Launcher path quoting gotcha**: Hook dispatcher scripts must use proper shell quoting or direct execution (not through shell) when launching binary paths that contain spaces. Use spawnSync() with shell: false or quote paths explicitly in shell scripts to avoid splitting on spaces.
 
-**Worktree vendor asset loading**: When running development binaries from git worktrees, the package resolution must correctly locate vendor assets. Use resolvePackageRoot() with import.meta.dirname detection to find assets; don't rely on process.cwd() which may be in a different project entirely.
+**Worktree vendor asset loading**: When running development binaries from git worktrees, the package resolution must correctly locate vendor assets. Use import.meta.dirname detection to find assets; don't rely on process.cwd() which may be in a different project entirely.
 
-**Service directory isolation**: Dev and production service daemons must use separate directories (~/.myco/service-dev/ and ~/.myco/service/) to prevent state conflicts. The service directory selection happens once at process startup and is immutable for that instance.
+**Dev-build service isolation**: Dev builds are refused from mutating the default `~/.myco` service by the guard in `packages/myco/src/cli/service.ts`. Use `MYCO_HOME=~/.myco-dev` to run a separate dev daemon alongside the production service. Selection happens via `looksLikeDevBuildExecutable()` + `isDefaultMycoHome()` at command time.
 
-**Beta channel backup safeguard**: Always keep a backup of the production binary before beta channel switching. The backup path (~/.myco/bin/myco.production) must be outside normal executable locations to prevent accidental deletion or overwriting.
+**Beta channel backup safeguard**: Always keep a backup of the production binary before beta channel switching. The upgrade module handles this, but verify the backup exists before manual binary operations.
 
-**`~/.myco/logs/launcher.log` is the first hook failure diagnostic:** The global launcher (`packages/myco/src/symbionts/templates/_shared/global-launcher.cjs`) appends a timestamped one-line record to `~/.myco/logs/launcher.log` on every launch failure — signal kills, `ENOENT`, path-resolution errors, binary exec errors. Check this file before inspecting daemon logs when hooks silently fail to fire. The launcher never throws on log-write failure, so absence of the file means zero hook launch failures (not a broken log path).
+**`~/.myco/logs/launcher.log` is the first hook failure diagnostic:** The global launcher appends a timestamped one-line record to `~/.myco/logs/launcher.log` on every launch failure — signal kills, `ENOENT`, path-resolution errors, binary exec errors. Check this file before inspecting daemon logs when hooks silently fail to fire. The launcher never throws on log-write failure, so absence of the file means zero hook launch failures (not a broken log path).
 
-**Detached update installer rewrites hooks synchronously before daemon restart:** `packages/myco/src/daemon/update-installer.ts` generates a shell script that is spawned detached from the daemon (stdio ignored, unreffed so the parent exits immediately). Within the script, npm installation and hook/plugin file rewriting happen synchronously before the daemon respawn — ensuring hooks and daemon always co-ship at the updated version. This is the source of the no-protocol-skew guarantee in capture hooks.
+**Detached upgrade scripts rewrite hooks before daemon restart:** The upgrade module (`packages/myco/src/upgrade/spawn.ts`) generates scripts spawned detached from the daemon (stdio ignored, unreffed so the parent exits immediately). Within the script, npm installation and hook/plugin file rewriting happen before the daemon respawn — ensuring hooks and daemon always co-ship at the updated version. This is the source of the no-protocol-skew guarantee in capture hooks.
