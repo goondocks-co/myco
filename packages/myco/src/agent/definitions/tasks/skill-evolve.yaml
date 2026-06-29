@@ -23,7 +23,7 @@ schedule:
   preCondition: has-active-skills
 params:
   assess_interval_hours: 24
-  max_skills_per_run: 3
+  max_skills_per_run: 6
 phases:
   - name: inventory
     reasoningLevel: low
@@ -195,7 +195,7 @@ phases:
 
       ## Per-run scope cap
 
-      Assess at most 3 unique skills per run total across A/B/C/D.
+      Assess at most 6 unique skills per run total across A/B/C/D.
       Prioritize in this order:
       1) Skills with new knowledge + high-confidence drift
       2) Skills with new knowledge only
@@ -294,7 +294,7 @@ phases:
       - vault_report
       - fs_read
       - code_grep
-    maxTurns: 10
+    maxTurns: 14
     required: true
     dependsOn:
       - inventory
@@ -318,21 +318,28 @@ phases:
 
       1. Read the current skill content from vault_skill_records
          (action: get).
-      2. START from the existing content as-is. Copy it verbatim.
-         Then make ONLY the specific changes needed.
-         The diff between old and new should be MINIMAL.
-         Protected frontmatter rules (enforced by vault_write_skill):
-         - user-invocable: copy EXACT value from existing skill
-         - allowed-tools: copy EXACT value from existing skill
+      2. Express the change as minimal `vault_edit_skill` edits
+         (`old_string`→`new_string`) against the current content —
+         do NOT regenerate the whole file. The tool validates the
+         full reconstructed skill on apply (rejects any hard/warn
+         contamination, fabricated refs, length/floor, protected-
+         frontmatter change) and returns batched issues; fix exactly
+         those and re-edit. Use `vault_write_skill` only for creates
+         and MERGE/NARROW.
+         Anchor-selection: Pick an `old_string` that occurs exactly
+         once (include a surrounding line or two for uniqueness);
+         never empty; use `replace_all` for a token that repeats;
+         insert by anchoring on a nearby heading.
+         Protected frontmatter rules (enforced by vault_edit_skill):
+         - user-invocable: cannot be changed via edit (rejected)
+         - allowed-tools: cannot be changed via edit (rejected)
          - description: do not shorten (>10% reduction is rejected)
-      3. Before writing, call vault_scan_skill_contamination with
-         `name` and `full_gate: true` to validate the proposed content;
-         fix all reported issues before calling vault_write_skill.
-      4. Write via vault_write_skill with a rationale explaining
-         what specifically changed. Preserve the existing skill
-         `source_ids` unless the update is based on new source evidence;
-         when adding new evidence, pass the union of existing source_ids
-         plus the new source IDs.
+      3. vault_edit_skill returns batched issues on any validation
+         failure; fix exactly the reported items and re-edit.
+         Hard limit: at most 2 re-edits per skill.
+      4. Preserve the existing skill `source_ids` — vault_edit_skill
+         does not alter lineage. If the update adds new source evidence,
+         update source_ids via vault_skill_records separately.
 
       ## DEPRECATED — Retire the skill
 
@@ -367,19 +374,19 @@ phases:
       ## Verify before you write — the gate IS the guarantee (critical)
 
       You are EVOLVING existing skills, not authoring from imagination.
-      The `vault_scan_skill_contamination` call with `full_gate: true`
-      (step 3 of STALE above) is the anti-fabrication guarantee. It runs
+      For STALE: `vault_edit_skill` is the validation gate — it runs
       fabrication detection, contamination, length/floor, and frontmatter
-      checks in one batched call. Do NOT also manually grep every claim —
-      that is what made earlier runs cost 32 searches per skill.
+      checks on the full reconstructed content on apply. Do NOT also
+      manually grep every claim — that is what made earlier runs cost
+      32 searches per skill.
 
-      After the gate runs:
+      After vault_edit_skill applies:
       - **Issues reported** → look up the correct value with at most 1
-        targeted `fs_read` or `code_grep` per flagged item, fix it, write.
-      - **Gate is clean** → write immediately. Zero manual lookups needed.
+        targeted `fs_read` or `code_grep` per flagged item, fix it, re-edit.
+      - **No issues** → done immediately. Zero manual lookups needed.
 
       Hard limit: **at most 2 manual lookups per skill** (only to resolve
-      gate-flagged items). An accurate, shorter skill beats a padded one.
+      tool-flagged items). An accurate, shorter skill beats a padded one.
 
       ## Edit surgically — minimal diff
 
@@ -393,12 +400,13 @@ phases:
       ## Budget discipline (hard)
 
       Total budget: {{max_turns}} turns across ALL selected skills. Plan
-      roughly `{{max_turns}} / skills_selected` turns per skill (~7):
-      read skill → full_gate call → fix issues (≤2 manual lookups if
-      needed) → write → done. If you are running past your share for a
-      skill, STOP, make the safe minimal edit with what you have confirmed
-      (omit unverified claims), write it, and move on. NEVER let one skill
-      consume the budget — a clean partial pass beats capping out.
+      roughly `{{max_turns}} / skills_selected` turns per skill (~4–5):
+      read skill → vault_edit_skill edits → fix reported issues (≤2
+      re-edits if needed) → done. If you are running past your share
+      for a skill, STOP, make the safe minimal edit with what you have
+      confirmed (omit unverified claims), re-edit, and move on. NEVER
+      let one skill consume the budget — a clean partial pass beats
+      capping out.
       If you approach the total budget, call `vault_report` with what you
       completed and which skills you deferred, then finish.
 
@@ -406,8 +414,8 @@ phases:
 
       - Process MERGE/NARROW actions AFTER STALE updates, so you're
         merging already-refreshed content.
-      - Cost/quality guardrail: process at most 3 STALE updates per run.
-        If more than 3 are classified STALE, process the top 3 by impact
+      - Cost/quality guardrail: process at most 6 STALE updates per run.
+        If more than 6 are classified STALE, process the top 6 by impact
         (critical drift > major drift > both drift+new knowledge > new knowledge only),
         report deferred skill names via vault_report, and leave their
         classifications in state for a future run.
@@ -428,6 +436,7 @@ phases:
       - One `vault_report` with executed/deferred counts.
       - Final assistant text <= 3 lines.
     tools:
+      - vault_edit_skill
       - vault_write_skill
       - vault_scan_skill_contamination
       - vault_skill_records
@@ -435,16 +444,16 @@ phases:
       - fs_read
       - code_grep
       - vault_report
-    # This is a CEILING, not a target. The workflow is now gate-driven:
-    # read → full_gate → fix (≤2 lookups) → write per skill, ~4–7 turns.
-    # With 3 skills that's ~12–21 turns; 22 gives headroom without reopening
-    # the unbounded-search trap. Earlier ceilings of 24 and 40 were both
-    # overrun because prose limits were ignored by the model — the gate
-    # removes the manual search loop that caused the overruns. The maxTurns
-    # enforcement is SDK-delegated (soft cap; SDK may complete an in-progress
-    # turn before stopping, so effective cap may run a few turns past this
-    # value). If max_skills_per_run changes, scale this ~7–8× per skill.
-    maxTurns: 22
+    # This is a CEILING, not a target. The workflow is now edit-driven:
+    # read → vault_edit_skill edits → fix reported issues (≤2 re-edits)
+    # → done per skill, ~4–5 turns. With 6 skills that's ~24–30 turns;
+    # 36 gives headroom for MERGE/NARROW full-writes and edge cases.
+    # Earlier ceilings of 24 and 40 were overrun because prose limits
+    # were ignored — the edit tool's built-in gate removes the unbounded
+    # search loop that caused the overruns. The maxTurns enforcement is
+    # SDK-delegated (soft cap; effective cap may run a few turns past this
+    # value). If max_skills_per_run changes, scale this ~5–6× per skill.
+    maxTurns: 36
     required: true
     dependsOn:
       - assess
