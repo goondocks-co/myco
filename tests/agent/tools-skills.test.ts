@@ -4259,4 +4259,130 @@ describe('vault skill tools', () => {
       expect(fs.existsSync(liveFile)).toBe(false);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // vault_edit_skill
+  // ---------------------------------------------------------------------------
+
+  describe('vault_edit_skill', () => {
+    /** Build a SKILL.md with custom description and/or body. */
+    function makeSkillContent(
+      name: string,
+      opts: { body?: string; description?: string } = {},
+    ): string {
+      const desc = opts.description ?? 'Test skill description for edit tests';
+      const body = opts.body ?? '# Skill\n\nContent here.';
+      return `---\nname: myco:${name}\ndescription: ${desc}\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, Grep, Glob\n---\n\n${body}`;
+    }
+
+    /** Write both the on-disk SKILL.md and the DB record. */
+    function seedSkill(
+      name: string,
+      opts: { body?: string; description?: string; generation?: number } = {},
+    ): void {
+      const content = makeSkillContent(name, opts);
+      const skillDir = path.join(tmpDir, '.agents', 'skills', name);
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
+      const now = epochNow();
+      insertSkillRecord({
+        id: `skill-edit-${name}`,
+        agent_id: TEST_AGENT_ID,
+        name,
+        display_name: name.replace(/-/g, ' '),
+        description: opts.description ?? 'Test skill description for edit tests',
+        generation: opts.generation ?? 1,
+        path: `.agents/skills/${name}/SKILL.md`,
+        created_at: now,
+        updated_at: now,
+      });
+    }
+
+    /** Read the on-disk SKILL.md for a skill. */
+    function readSkillFile(name: string): string {
+      return fs.readFileSync(
+        path.join(tmpDir, '.agents', 'skills', name, 'SKILL.md'),
+        'utf-8',
+      );
+    }
+
+    /** Invoke vault_edit_skill with a fresh tools instance keyed to runId. */
+    async function runEdit(
+      runId: string,
+      name: string,
+      edits: Array<{ old_string: string; new_string: string; replace_all?: boolean }>,
+    ): Promise<Record<string, unknown>> {
+      const t = findTool(
+        createVaultTools(TEST_AGENT_ID, runId, {
+          requestContext: TEST_REQUEST_CONTEXT,
+          projectRoot: tmpDir,
+          vaultDir,
+        }),
+        'vault_edit_skill',
+      );
+      return parseResult(await t.handler({ name, edits }, undefined)) as Record<string, unknown>;
+    }
+
+    it('applies edits and bumps generation on a clean result', async () => {
+      seedSkill('edit-me', { body: 'old line', generation: 1 });
+      const res = await runEdit('run-edit-1', 'edit-me', [{ old_string: 'old line', new_string: 'new line' }]);
+      expect(res.error).toBeUndefined();
+      expect(res.generation).toBe(2);
+      expect(readSkillFile('edit-me')).toContain('new line');
+    });
+
+    it('rejects a no-match edit without touching disk', async () => {
+      seedSkill('edit-nm', { body: 'body', generation: 1 });
+      const before = readSkillFile('edit-nm');
+      const res = await runEdit('run-edit-2', 'edit-nm', [{ old_string: 'NONEXISTENT', new_string: 'x' }]);
+      expect(res.error).toMatch(/not found/i);
+      expect(readSkillFile('edit-nm')).toBe(before);
+    });
+
+    it('rejects when the reconstructed result introduces hard contamination', async () => {
+      seedSkill('edit-cont', { body: 'clean body line', generation: 1 });
+      const res = await runEdit('run-edit-3', 'edit-cont', [{ old_string: 'clean body line', new_string: 'shipped in v1.2.0' }]);
+      expect(res.error).toMatch(/fix all listed issues/i);
+      expect((res.issues as string[] ?? []).join(' ')).toMatch(/contamination/i);
+    });
+
+    it('rejects when the result introduces a fabricated code reference', async () => {
+      seedSkill('edit-fab', { body: 'see the file', generation: 1 });
+      const res = await runEdit('run-edit-3b', 'edit-fab', [{ old_string: 'see the file', new_string: 'see `packages/myco/src/does/not/exist.ts`' }]);
+      expect(res.error).toBeDefined();
+      expect(JSON.stringify(res)).toMatch(/fabricat|missing_paths/i);
+    });
+
+    it('rejects an edit that shortens the description below the floor', async () => {
+      seedSkill('edit-floor', { description: 'A'.repeat(900), generation: 1 });
+      const res = await runEdit('run-edit-3c', 'edit-floor', [{ old_string: 'A'.repeat(900), new_string: 'A'.repeat(100) }]);
+      expect(res.error).toBeDefined();
+      expect(JSON.stringify(res)).toMatch(/short|description/i);
+    });
+
+    it('rejects an edit that changes a protected frontmatter field', async () => {
+      seedSkill('edit-prot', { generation: 1 });
+      const res = await runEdit('run-edit-4', 'edit-prot', [{ old_string: 'user-invocable: true', new_string: 'user-invocable: false' }]);
+      expect((res.violations as string[] ?? []).join(' ')).toMatch(/user-invocable/i);
+    });
+
+    it('rejects a name with path traversal before any filesystem read', async () => {
+      const res = await runEdit('run-edit-5', '../evil', [{ old_string: 'a', new_string: 'b' }]);
+      expect(res.error).toMatch(/path separators|"\.\."/i);
+    });
+
+    it('errors when the skill does not exist', async () => {
+      const res = await runEdit('run-edit-6', 'does-not-exist', [{ old_string: 'a', new_string: 'b' }]);
+      expect(res.error).toMatch(/does not exist|create it/i);
+    });
+
+    it('returns issues on the 3rd consecutive failure and defers on the 4th (shared breaker ordering)', async () => {
+      seedSkill('edit-brk', { body: 'body', generation: 1 });
+      const bad = [{ old_string: 'ZZZ', new_string: 'x' }];
+      expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBeUndefined(); // 1
+      expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBeUndefined(); // 2
+      expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBeUndefined(); // 3
+      expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBe(true);      // 4
+    });
+  });
 });
