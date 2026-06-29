@@ -414,7 +414,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    * POST /api/team/connect
    *
    * Retired legacy endpoint. Team setup is registry-owned by `myco-team
-   * install` plus the Team selection API; keeping this as a writer would
+   * create` plus the Team selection API; keeping this as a writer would
    * reintroduce split-brain state between grove config and the registry.
    */
   async function handleConnect(_req: RouteRequest): Promise<RouteResponse> {
@@ -422,7 +422,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       status: 410,
       body: {
         error: 'legacy_team_connect_removed',
-        message: 'Team sync is configured through myco-team install and the Team selection tab.',
+        message: 'Team sync is configured through myco-team create and the Team selection tab.',
       },
     };
   }

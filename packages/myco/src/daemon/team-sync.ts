@@ -494,7 +494,7 @@ export class TeamSyncClient {
   }
 
   /**
-   * Seed/overwrite team configuration on the worker. Mirrors the install-path
+   * Seed/overwrite team configuration on the worker. Mirrors the create-path
    * PUT in `packages/myco-team/src/cli.ts`: the worker stores each key/value
    * pair in its `team_config` table (INSERT OR REPLACE), so this is the one
    * setter the daemon uses to provision `team_name` + embedding config on the

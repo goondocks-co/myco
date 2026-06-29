@@ -25,13 +25,11 @@ mock.module('node:child_process', () => ({
 
 describe('teamDestroy', () => {
   let tempDir: string;
-  let vaultDir: string;
   let originalMycoHome: string | undefined;
   let originalTeamHome: string | undefined;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-destroy-'));
-    vaultDir = path.join(tempDir, 'project', '.myco');
     execHandlers.length = 0;
     execCalls.length = 0;
     originalMycoHome = process.env.MYCO_HOME;
@@ -39,12 +37,6 @@ describe('teamDestroy', () => {
     process.env.MYCO_HOME = path.join(tempDir, 'home');
     process.env.MYCO_TEAM_HOME = path.join(tempDir, 'home');
 
-    fs.mkdirSync(vaultDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(vaultDir, 'project.toml'),
-      '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\nname = "destroy-test"\n',
-      'utf-8',
-    );
     teamRegistry.saveDeployment({
       team_id: TEAM_ID,
       worker_name: 'myco-team-test',
@@ -77,44 +69,99 @@ describe('teamDestroy', () => {
   });
 
   it('preserves local retry state when remote teardown fails', async () => {
+    // Sequence: detach sync consumer, detach dlq consumer, worker delete, ...
     execHandlers.push(
-      () => new Error('worker delete exploded'),
-      () => '',
-      () => '[]',
-      () => '[]',
+      () => '',                                    // detach sync-queue consumer
+      () => '',                                    // detach dlq consumer
+      () => new Error('worker delete exploded'),   // worker delete -> hard failure
+      () => '',                                    // vectorize delete
+      () => '[]',                                  // d1 list (none)
+      () => '[]',                                  // kv list (none)
+      () => '',                                    // queue sync delete
+      () => '',                                    // queue dlq delete
     );
 
     const { teamDestroy } = await import('../../packages/myco-team/src/cli.js');
 
-    await expect(teamDestroy(vaultDir, { teamId: TEAM_ID })).rejects.toThrow('Local state preserved for retry');
+    await expect(teamDestroy({ teamId: TEAM_ID })).rejects.toThrow('Local state preserved for retry');
     expect(teamRegistry.readDeployment(TEAM_ID)).not.toBeNull();
   });
 
-  it('uses the current wrangler destroy flags for remote teardown', async () => {
+  it('detaches queue consumers before deleting the worker, then tears everything down', async () => {
     execHandlers.push(
-      () => '',
-      () => '',
-      () => JSON.stringify([{ name: 'myco-team-test', uuid: 'db-uuid-123' }]),
-      () => '',
-      () => JSON.stringify([{ id: 'kv-namespace-456', title: 'myco-team-test-secrets' }]),
-      () => '',
+      () => '',                                    // detach sync-queue consumer
+      () => '',                                    // detach dlq consumer
+      () => '',                                    // worker delete
+      () => '',                                    // vectorize delete
+      () => JSON.stringify([{ name: 'myco-team-test', uuid: 'db-uuid-123' }]), // d1 list
+      () => '',                                    // d1 delete
+      () => JSON.stringify([{ id: 'kv-namespace-456', title: 'myco-team-test-secrets' }]), // kv list
+      () => '',                                    // kv delete
+      () => '',                                    // queue sync delete
+      () => '',                                    // queue dlq delete
     );
 
     const { teamDestroy } = await import('../../packages/myco-team/src/cli.js');
-    await teamDestroy(vaultDir, { teamId: TEAM_ID });
+    await teamDestroy({ teamId: TEAM_ID });
 
-    expect(execCalls.map((call) => call.args)).toContainEqual(['delete', 'myco-team-test']);
-    expect(execCalls.map((call) => call.args)).toContainEqual(['vectorize', 'delete', 'myco-team-test-vectors']);
-    expect(execCalls.map((call) => call.args)).toContainEqual(['d1', 'delete', 'myco-team-test', '--skip-confirmation']);
-    expect(execCalls.map((call) => call.args)).toContainEqual([
-      'kv',
-      'namespace',
-      'delete',
-      '--namespace-id',
-      'kv-namespace-456',
-      '--skip-confirmation',
-    ]);
+    const calls = execCalls.map((call) => call.args);
+    // Regression guard for the CF mutual-reference bug: the worker must be
+    // detached as a queue consumer BEFORE the worker delete is attempted.
+    const detachIdx = calls.findIndex((a) => a[0] === 'queues' && a[1] === 'consumer' && a[2] === 'worker' && a[3] === 'remove');
+    const workerDeleteIdx = calls.findIndex((a) => a[0] === 'delete' && a[1] === 'myco-team-test');
+    expect(detachIdx).toBeGreaterThanOrEqual(0);
+    expect(workerDeleteIdx).toBeGreaterThan(detachIdx);
+
+    expect(calls).toContainEqual(['queues', 'consumer', 'worker', 'remove', 'myco-team-test-sync', 'myco-team-test']);
+    expect(calls).toContainEqual(['queues', 'consumer', 'http', 'remove', 'myco-team-test-sync-dlq']);
+    expect(calls).toContainEqual(['delete', 'myco-team-test']);
+    expect(calls).toContainEqual(['vectorize', 'delete', 'myco-team-test-vectors']);
+    expect(calls).toContainEqual(['d1', 'delete', 'myco-team-test', '--skip-confirmation']);
+    expect(calls).toContainEqual(['kv', 'namespace', 'delete', '--namespace-id', 'kv-namespace-456', '--skip-confirmation']);
+    expect(calls).toContainEqual(['queues', 'delete', 'myco-team-test-sync']);
+    expect(calls).toContainEqual(['queues', 'delete', 'myco-team-test-sync-dlq']);
     expect(teamRegistry.readDeployment(TEAM_ID)).toBeNull();
     expect(teamRegistry.get(TEAM_ID)).toBeNull();
+  });
+
+  it('converges on retry when resources are already absent', async () => {
+    // Every step reports the resource is already gone — destroy treats this as
+    // success and removes local state (idempotent cleanup after a partial run).
+    execHandlers.push(
+      () => new Error('no consumer found for queue'),
+      () => new Error('no consumer found for queue'),
+      () => new Error('workers.api.error: service not found [code: 10007]'),
+      () => new Error('vectorize.index.deleted - Index name "x-vectors" [code: 3005]'),
+      () => '[]',                                  // d1 list (none)
+      () => '[]',                                  // kv list (none)
+      () => new Error('queue not found'),
+      () => new Error('queue not found'),
+    );
+
+    const { teamDestroy } = await import('../../packages/myco-team/src/cli.js');
+    await teamDestroy({ teamId: TEAM_ID });   // must NOT throw
+
+    expect(teamRegistry.readDeployment(TEAM_ID)).toBeNull();
+    expect(teamRegistry.get(TEAM_ID)).toBeNull();
+  });
+
+  it('does NOT mistake a real error containing a hash digit-run for "already absent"', async () => {
+    // The worker name embeds an 8-hex hash; a real failure whose message merely
+    // echoes a name like "...-3005beef" must not be misread as code 3005 and
+    // swallowed (which would wipe local state while the paid worker still lives).
+    execHandlers.push(
+      () => '',                                                                    // detach sync consumer
+      () => '',                                                                    // detach dlq consumer
+      () => new Error('myco-team-test-3005beef: too many requests [code: 10013]'), // worker delete: REAL failure
+      () => '',                                                                    // vectorize delete
+      () => '[]',                                                                  // d1 list (none)
+      () => '[]',                                                                  // kv list (none)
+      () => '',                                                                    // queue sync delete
+      () => '',                                                                    // queue dlq delete
+    );
+
+    const { teamDestroy } = await import('../../packages/myco-team/src/cli.js');
+    await expect(teamDestroy({ teamId: TEAM_ID })).rejects.toThrow('Local state preserved for retry');
+    expect(teamRegistry.readDeployment(TEAM_ID)).not.toBeNull();
   });
 });

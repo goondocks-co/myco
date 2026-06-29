@@ -142,7 +142,7 @@ Share knowledge across machines and teammates. One person provisions the team's 
 
 ```bash
 npm install -g @goondocks/myco-team wrangler && wrangler login
-myco-team install --name "Acme Core"   # deploys the team Worker; prints a Worker URL + Team key
+myco-team create --name "Acme Core"   # deploys the team Worker; prints a Worker URL + Team key
 ```
 
 Share the Worker URL and Team key with teammates. Each teammate opens the **Team** page in their dashboard, joins the team with those two values, and assigns the projects they want to sync — no `myco-team` package needed. From then on, each assigned project's knowledge syncs automatically: new spores, session summaries, plans, and graph edges become available to the team in the background, and search returns both local and team knowledge.

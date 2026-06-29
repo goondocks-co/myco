@@ -23,46 +23,18 @@ mock.module('node:child_process', () => ({
 
 describe('teamRotateTokens', () => {
   let tempDir: string;
-  let vaultDir: string;
   let fetchCalls: number;
-  let originalExistsSync: typeof fs.existsSync;
   let originalMycoHome: string | undefined;
   let originalTeamHome: string | undefined;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-rotate-'));
-    vaultDir = path.join(tempDir, 'project', '.myco');
     fetchCalls = 0;
     execHandlers.length = 0;
-    originalExistsSync = fs.existsSync.bind(fs);
     originalMycoHome = process.env.MYCO_HOME;
     originalTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_HOME = path.join(tempDir, 'home');
     process.env.MYCO_TEAM_HOME = path.join(tempDir, 'home');
-
-    fs.mkdirSync(vaultDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(vaultDir, 'project.toml'),
-      [
-        '[project]',
-        'id = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
-        'name = "test"',
-        '',
-        '[grove]',
-        'binding_id = "gbind_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
-        'slug = "rotate-test"',
-        'mode = "local"',
-      ].join('\n') + '\n',
-      'utf-8',
-    );
-    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), [
-      'version: 3',
-      'config_version: 0',
-      'team:',
-      '  enabled: true',
-      '  worker_url: https://myco-team-test.example.workers.dev',
-    ].join('\n'), 'utf-8');
-    fs.writeFileSync(path.join(vaultDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=old-api-key\n', 'utf-8');
 
     teamRegistry.saveDeployment({
       team_id: TEAM_ID,
@@ -83,11 +55,6 @@ describe('teamRotateTokens', () => {
       projects: [],
     });
     teamRegistry.writeSecret(TEAM_ID, 'MYCO_TEAM_API_KEY', 'old-api-key');
-
-    vi.spyOn(fs, 'existsSync').mockImplementation((target) => {
-      if (String(target) === path.join(vaultDir, 'myco.yaml')) return true;
-      return originalExistsSync(target);
-    });
 
     vi.stubGlobal('fetch', vi.fn(async () => {
       fetchCalls += 1;
@@ -120,15 +87,14 @@ describe('teamRotateTokens', () => {
     execHandlers.push(() => '');
 
     const { teamRotateTokens } = await import('../../packages/myco-team/src/cli.js');
-    await teamRotateTokens(vaultDir, 'all', { teamId: TEAM_ID });
+    await teamRotateTokens('all', { teamId: TEAM_ID });
 
-    const expectedPackageVersion = JSON.parse(
-      fs.readFileSync(path.join(process.cwd(), 'packages', 'myco-team', 'package.json'), 'utf-8'),
-    ) as { version: string };
     const deployment = teamRegistry.readDeployment(TEAM_ID);
     const secrets = teamRegistry.readSecrets(TEAM_ID);
 
-    expect(deployment?.package_version).toBe(expectedPackageVersion.version);
+    // Key rotation is not a redeploy — the recorded worker version stays as
+    // deployed (seeded '0.1.0'), it is not bumped to the running package version.
+    expect(deployment?.package_version).toBe('0.1.0');
     expect(secrets.MYCO_TEAM_API_KEY).toBeDefined();
     expect(secrets.MYCO_TEAM_API_KEY).not.toBe('old-api-key');
     expect(secrets.MYCO_TEAM_MCP_TOKEN).toBe('new-mcp-token');

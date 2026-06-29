@@ -26,7 +26,7 @@ Install Wrangler and the operator CLI, sign in to Cloudflare, then create the te
 ```bash
 npm install -g wrangler @goondocks/myco-team
 wrangler login
-myco-team install --name "Acme Core"
+myco-team create --name "Acme Core"
 ```
 
 This deploys the team's sync Worker and registers the team on your machine. To serve it from your own domain, add `--domain <your-zone>`. When it finishes, it prints the team's **Worker URL** and **Team key** — share both with your teammates through a private channel. The Team key authorizes writes to the team, so keep it secret.
@@ -72,7 +72,7 @@ To stop syncing to a team, open the **Teams** tab and choose **Leave team**. Tha
 
 ## Team config storage
 
-Team configuration (registration details, worker URL, API keys) lives at `~/.myco-team/teams/<team_id>/` — a machine-scoped directory shared by every myco daemon on this machine. Set `MYCO_TEAM_HOME` to override the location (used by the test suite and advanced multi-home setups). You don't need to manage this directory directly; `myco-team install` and the dashboard **Teams** tab handle it.
+Team configuration (registration details, worker URL, API keys) lives at `~/.myco-team/teams/<team_id>/` — a machine-scoped directory shared by every myco daemon on this machine. Set `MYCO_TEAM_HOME` to override the location (used by the test suite and advanced multi-home setups). You don't need to manage this directory directly; `myco-team create` and the dashboard **Teams** tab handle it.
 
 ## Machine identity
 

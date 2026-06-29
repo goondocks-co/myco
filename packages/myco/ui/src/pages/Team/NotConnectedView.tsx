@@ -63,9 +63,9 @@ export function NotConnectedView({ scopeName }: { scopeName: string }) {
               npm install -g @goondocks/myco-team wrangler && wrangler login
             </code>
           </Step>
-          <Step n={2} state="idle" title="Provision the Grove worker">
+          <Step n={2} state="idle" title="Provision the team worker">
             <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
-              myco-team install
+              myco-team create --name "&lt;team name&gt;"
             </code>
             <p className="text-xs text-on-surface-variant m-0 mt-1">
               Creates the worker and registers the team on this machine.
@@ -73,7 +73,7 @@ export function NotConnectedView({ scopeName }: { scopeName: string }) {
           </Step>
           <Step n={3} state="idle" title="Add or join the team">
             <p className="text-xs text-on-surface-variant m-0">
-              On the Teams tab, provision a new team with <code className="font-mono">myco-team install</code> — or, if a teammate shared a Worker URL and Team key, use "Join a team". Then assign this project to it.
+              On the Teams tab, provision a new team with <code className="font-mono">myco-team create</code> — or, if a teammate shared a Worker URL and Team key, use "Join a team". Then assign this project to it.
             </p>
           </Step>
         </ol>
