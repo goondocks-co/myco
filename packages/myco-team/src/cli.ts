@@ -1,14 +1,11 @@
 /**
  * CLI team commands — provision and manage Cloudflare team sync infrastructure.
  *
- * Exposed via the standalone `myco-team` binary (see `main.ts`):
- *   `myco-team install` — Provision D1 database, Vectorize index, deploy worker.
- *   `myco-team upgrade` — Redeploy worker with updated source.
- *
- * The daemon's `POST /api/team/upgrade-worker` handler also imports
- * `upgradeWorker` from this module at build time (via the tsconfig `@myco-team/*`
- * path alias) so the UI's "Update Worker" button works without requiring the
- * user to have `myco-team` on PATH.
+ * Exposed via the standalone `myco-team` binary (see `main.ts`). Team sync is
+ * machine-scoped and registry-owned (`~/.myco-team/teams/<team_id>/`): `create`
+ * provisions a new team's worker + Cloudflare resources, and every other command
+ * addresses an existing team by `--team-id`. No project or Grove context is
+ * required — a team is a global, machine-wide entity.
  */
 
 import crypto from 'node:crypto';
@@ -17,22 +14,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WRANGLER_COMMAND_TIMEOUT_MS, TEAM_API_KEY_SECRET, TEAM_MCP_TOKEN_SECRET } from '@myco/constants.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
-import { loadProjectManifest } from '@myco/config/project-manifest.js';
-import { resolveGroveDbPath, resolveGroveDir, resolveProjectVaultDir, resolveTeamDir } from '@myco/grove/paths.js';
-import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js';
-import { assertGroveProjectId, createTeamId, slugifyGroveName } from '@myco/grove/ids.js';
+import { resolveTeamDir } from '@myco/grove/paths.js';
+import { createTeamId, slugifyGroveName } from '@myco/grove/ids.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { teamRegistry } from '@myco/team/registry.js';
 import type { TeamDeploymentRecord, TeamRecord } from '@myco/team/registry.js';
-import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   extractJsonArray,
-  installDeploymentDeps,
   maskSecret,
   parseD1Id,
   parseKvNamespaceId,
   parseWorkerUrl,
-  readJsonConfig,
-  resolveVaultConfigPath,
   runWrangler,
   stageDeploymentDir,
 } from '@myco-deploy/index.js';
@@ -65,10 +57,8 @@ const RESOURCE_NAME_MAX_LENGTH = 54;
 /** Source directory for worker files (relative to package root). */
 const WORKER_SOURCE_DIR = 'worker';
 
-/** Team sync state directory within the vault. */
-const TEAM_STATE_DIR = 'team';
+/** Subdirectory under a team's machine-scoped home holding its staged worker deploy. */
 const TEAM_DEPLOY_DIR = 'worker';
-const TEAM_CONFIG_FILE = 'config.json';
 const TEAM_CONFIG_VERSION = 1;
 const TEAM_MCP_ROTATION_RETRY_ATTEMPTS = 10;
 const TEAM_MCP_ROTATION_RETRY_DELAY_MS = 1500;
@@ -78,13 +68,6 @@ const TEAM_VECTOR_REINDEX_RETRY_DELAY_MS = 1500;
 // still scans every embeddable table in D1. Keep a generous timeout
 // for the listing phase on large datasets.
 const TEAM_VECTOR_REINDEX_REQUEST_TIMEOUT_MS = WRANGLER_COMMAND_TIMEOUT_MS * 6;
-const REQUEST_CONTEXT_ENV = {
-  projectRoot: 'MYCO_PROJECT_ROOT',
-  projectId: 'MYCO_PROJECT_ID',
-  groveId: 'MYCO_GROVE_ID',
-  machineId: 'MYCO_MACHINE_ID',
-  sessionId: 'MYCO_SESSION_ID',
-} as const;
 
 /** Regex to match wrangler.toml name field. */
 const TOML_NAME_REGEX = /^name\s*=\s*"[^"]*"/m;
@@ -155,9 +138,6 @@ function resetObservabilityBlock(toml: string): string {
   return `${stripped.trimEnd()}\n# <MYCO_OBSERVABILITY_BLOCK>\n`;
 }
 
-/** Regex to extract the bound sync queue name from an existing wrangler.toml producer block. */
-const TOML_SYNC_QUEUE_NAME_REGEX = /\[\[queues\.producers\]\][\s\S]*?queue\s*=\s*"([^"]+)"/;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -217,191 +197,13 @@ export interface TeamCommandOptions {
   teamId?: string | null;
 }
 
-interface TeamCliScope {
-  vaultDir: string;
-  requestContext: MycoRequestContext;
-  stateDir: string;
-  resourceSeed: string;
-  resourceSlug: string | null;
-  label: string;
-}
-
-type GroveTeamCliScope = TeamCliScope & {
-  requestContext: MycoRequestContext & { groveId: string };
-  resourceSlug: string;
-};
-
 interface TeamResourceNameInput {
   resourceSeed: string;
   resourceSlug: string;
 }
 
-function hasGroveTeamScope(scope: TeamCliScope): scope is GroveTeamCliScope {
-  return Boolean(scope.requestContext.groveId && scope.resourceSlug);
-}
-
-/**
- * Gate that asserts the resolved CLI scope is bound to a Grove. Team sync is
- * registry-owned, so provisioning against a project-local legacy vault would
- * create state the daemon no longer reads.
- */
-function requireGroveInstallScope(scope: TeamCliScope): asserts scope is GroveTeamCliScope {
-  if (hasGroveTeamScope(scope)) return;
-
-  console.error('');
-  console.error('myco-team install requires a Grove-bound project.');
-  console.error('');
-  console.error('To activate Grove for this project:');
-  console.error('  1. Open this project in any supported agent so Myco auto-registers it.');
-  console.error('  2. Re-run `myco-team install` to provision team sync.');
-  console.error('');
-  process.exit(2);
-}
-
-function resolveTeamCliScope(
-  vaultDir: string,
-  teamIdentity?: { teamId: string; teamName: string },
-): TeamCliScope {
-  const requestContext = resolveTeamRequestContext(vaultDir);
-  const grove = requestContext.groveId ? loadGroveRecord(requestContext.groveId) : null;
-  const stateDir = grove ? resolveGroveDir(grove.id) : vaultDir;
-  // When a team identity is supplied (install), the deployed asset name
-  // derives from the team's own name + a hash of the team id — not the
-  // installing Grove. Other callers (upgrade/status/destroy) keep the
-  // historical grove-based derivation so they resolve the same assets.
-  return {
-    vaultDir,
-    requestContext,
-    stateDir,
-    resourceSeed: teamIdentity ? teamIdentity.teamId : grove?.id ?? vaultDir,
-    resourceSlug: teamIdentity
-      ? slugifyGroveName(teamIdentity.teamName)
-      : grove ? slugifyGroveName(grove.name) : null,
-    label: grove
-      ? `Grove ${grove?.name ?? requestContext.groveId}`
-      : `project vault ${vaultDir}`,
-  };
-}
-
-function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
-  const machineId = readEnv(REQUEST_CONTEXT_ENV.machineId) ?? 'team-cli';
-  const sessionId = readEnv(REQUEST_CONTEXT_ENV.sessionId) ?? null;
-  const fallbackProjectRoot = path.dirname(vaultDir);
-  const envProjectRoot = readEnv(REQUEST_CONTEXT_ENV.projectRoot);
-  const envProjectId = readEnv(REQUEST_CONTEXT_ENV.projectId);
-  const envGroveId = readEnv(REQUEST_CONTEXT_ENV.groveId);
-
-  if (envGroveId) {
-    const projectRoot = path.resolve(envProjectRoot ?? fallbackProjectRoot);
-    const manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot)) ?? loadProjectManifest(vaultDir);
-    const projectId = envProjectId ?? manifest?.project.id;
-    if (!projectId) throw new Error('Incomplete Myco request context: missing project id');
-    const registered = findRegisteredProject({
-      projectId,
-      groveId: envGroveId,
-      bindingId: manifest?.grove?.binding_id ?? null,
-      projectRoot,
-    });
-    if (!registered) throw new Error(`Project ${projectId} is not registered in Grove ${envGroveId}`);
-    const registeredRoot = path.resolve(registered.project.root);
-    return {
-      projectRoot: registeredRoot,
-      projectId: assertGroveProjectId(projectId),
-      callerRoot: null,
-      groveId: registered.grove.id,
-      machineId,
-      sessionId,
-      projectVaultDir: resolveProjectVaultDir(registeredRoot),
-      databasePath: resolveGroveDbPath(registered.grove.id),
-      source: 'explicit',
-      // Caller supplied MYCO_GROVE_ID (and optionally MYCO_PROJECT_ID).
-      tenancySource: 'caller',
-    };
-  }
-
-  const manifest = loadProjectManifest(vaultDir);
-  if (manifest?.grove?.binding_id) {
-    const registered = findRegisteredProject({
-      projectId: manifest.project.id,
-      bindingId: manifest.grove.binding_id,
-      projectRoot: fallbackProjectRoot,
-    });
-    if (registered) {
-      const registeredRoot = path.resolve(registered.project.root);
-      return {
-        projectRoot: registeredRoot,
-        callerRoot: null,
-        projectId: assertGroveProjectId(registered.project.project_id),
-        groveId: registered.grove.id,
-        machineId,
-        sessionId,
-        projectVaultDir: resolveProjectVaultDir(registeredRoot),
-        databasePath: resolveGroveDbPath(registered.grove.id),
-        source: 'explicit',
-        // Resolved from the local project manifest, not caller-supplied
-        // grove/project env — tenancy is synthesized.
-        tenancySource: 'synthesized',
-      };
-    }
-  }
-
-  // Fall back to a non-Grove context with a branded project id from
-  // env or manifest. `requireGroveInstallScope` (called downstream)
-  // rejects this for ops that need an actual Grove binding; ops that
-  // only need a local project id (e.g. token rotation against a local
-  // worker config) can still proceed.
-  const fallbackProjectId = envProjectId ?? manifest?.project.id;
-  if (!fallbackProjectId) {
-    throw new Error('No Grove project id available. Open this project in any supported agent so Myco auto-registers it, then retry.');
-  }
-  return {
-    projectRoot: fallbackProjectRoot,
-    callerRoot: null,
-    projectId: assertGroveProjectId(fallbackProjectId),
-    groveId: null,
-    machineId,
-    sessionId,
-    projectVaultDir: vaultDir,
-    databasePath: path.join(vaultDir, 'myco.db'),
-    source: 'legacy-vault',
-    // Caller supplied tenancy only when MYCO_PROJECT_ID was set (envGroveId
-    // is already known absent in this branch); otherwise the project id came
-    // from the local manifest and tenancy is synthesized.
-    tenancySource: envProjectId ? 'caller' : 'synthesized',
-  };
-}
-
-function readEnv(key: string): string | undefined {
-  const value = process.env[key]?.trim();
-  return value ? value : undefined;
-}
-
-function resolveLocalConfigPath(scope: TeamCliScope): string {
-  return resolveVaultConfigPath(scope.stateDir, TEAM_STATE_DIR, TEAM_CONFIG_FILE);
-}
-
-function resolveDeployDir(scope: TeamCliScope): string {
-  return path.join(scope.stateDir, TEAM_STATE_DIR, TEAM_DEPLOY_DIR);
-}
-
 function resolveTeamDeployDir(teamId: string): string {
   return path.join(resolveTeamDir(teamId), TEAM_DEPLOY_DIR);
-}
-
-function readLegacyDeploymentCandidate(scope: TeamCliScope, team: TeamRecord): TeamDeploymentRecord | null {
-  const config = readJsonConfig<Partial<TeamDeploymentRecord>>(resolveLocalConfigPath(scope));
-  if (!config?.worker_name || !config.worker_url) return null;
-  if (config.team_id && config.team_id !== team.team_id) return null;
-  if (team.worker_url && config.worker_url !== team.worker_url) return null;
-  return {
-    team_id: team.team_id,
-    worker_name: config.worker_name,
-    worker_url: config.worker_url,
-    package_version: config.package_version ?? getTeamPackageVersion(),
-    created_at: config.created_at ?? team.created_at,
-    last_upgraded: config.last_upgraded ?? new Date().toISOString(),
-    config_version: config.config_version ?? TEAM_CONFIG_VERSION,
-  };
 }
 
 function inferDeploymentFromTeam(team: TeamRecord): TeamDeploymentRecord {
@@ -419,23 +221,12 @@ function inferDeploymentFromTeam(team: TeamRecord): TeamDeploymentRecord {
   };
 }
 
-function maybeResolveTeamCliScope(vaultDir?: string | null): TeamCliScope | null {
-  if (!vaultDir) return null;
-  try {
-    return resolveTeamCliScope(vaultDir);
-  } catch {
-    return null;
-  }
-}
-
 function formatTeamSelectorList(teams: TeamRecord[]): string {
   return teams.map((team) => `${team.name} (${team.team_id})`).join(', ');
 }
 
-function resolveTeamRecordForCommand(vaultDir?: string | null, teamId?: string | null): { team: TeamRecord; scope: TeamCliScope | null } {
+function resolveTeamRecordForCommand(teamId?: string | null): TeamRecord {
   const teams = teamRegistry.list();
-  const scope = maybeResolveTeamCliScope(vaultDir);
-
   const normalizedTeamId = teamId?.trim();
   if (!normalizedTeamId) {
     throw new Error('Team ID is required. Pass --team-id <team_id>.');
@@ -445,7 +236,7 @@ function resolveTeamRecordForCommand(vaultDir?: string | null, teamId?: string |
   if (!team) {
     throw new Error(`Unknown Team ID "${normalizedTeamId}". Available Teams: ${formatTeamSelectorList(teams) || '(none)'}`);
   }
-  return { team, scope };
+  return team;
 }
 
 interface ResolvedTeamDeployment {
@@ -455,25 +246,19 @@ interface ResolvedTeamDeployment {
   existingDeployDir: string | null;
 }
 
-function resolveTeamDeployment(vaultDir?: string | null, options: TeamCommandOptions = {}): ResolvedTeamDeployment {
-  const { team, scope } = resolveTeamRecordForCommand(vaultDir, options.teamId);
+/**
+ * Resolve a registered Team and its deployment metadata by team id. Team sync
+ * is machine-scoped and registry-owned: every admin command addresses a team
+ * via `--team-id` against `~/.myco-team/`, never a project or Grove context.
+ * The deployment falls back to a deterministic derivation from the team
+ * identity when no `deployment.json` is on disk yet.
+ */
+function resolveTeamDeployment(options: TeamCommandOptions = {}): ResolvedTeamDeployment {
+  const team = resolveTeamRecordForCommand(options.teamId);
   const deployDir = resolveTeamDeployDir(team.team_id);
+  const existingDeployDir: string | null = fs.existsSync(path.join(deployDir, 'wrangler.toml')) ? deployDir : null;
 
   let deployment = teamRegistry.readDeployment(team.team_id);
-  let existingDeployDir: string | null = fs.existsSync(path.join(deployDir, 'wrangler.toml')) ? deployDir : null;
-
-  if (!deployment && scope) {
-    const legacyDeployment = readLegacyDeploymentCandidate(scope, team);
-    const legacyDeployDir = resolveDeployDir(scope);
-    if (legacyDeployment) {
-      deployment = legacyDeployment;
-      teamRegistry.saveDeployment(deployment);
-      if (fs.existsSync(path.join(legacyDeployDir, 'wrangler.toml'))) {
-        existingDeployDir = legacyDeployDir;
-      }
-    }
-  }
-
   if (!deployment) {
     deployment = inferDeploymentFromTeam(team);
     teamRegistry.saveDeployment(deployment);
@@ -516,11 +301,10 @@ async function rotateMcpTokenWithRetry(workerUrl: string, apiKey: string): Promi
  * climbing) rather than blocking on this call.
  */
 export async function reindexWorkerVectors(
-  vaultDir: string | null,
-  workerUrlOverride?: string,
+  workerUrlOverride: string | undefined,
   options: TeamCommandOptions = {},
 ): Promise<{ enqueued: number; by_table: Record<string, number> }> {
-  const { team, deployment } = resolveTeamDeployment(vaultDir, options);
+  const { team, deployment } = resolveTeamDeployment(options);
   const secrets = teamRegistry.readSecrets(team.team_id);
   const apiKey = secrets[TEAM_API_KEY_SECRET];
   if (!apiKey) {
@@ -657,7 +441,7 @@ export function withCustomDomainRoute(toml: string, slug: string, domain: string
  * Copy worker source to the vault deployment directory and patch wrangler.toml
  * with actual D1 database ID and resource names.
  */
-function prepareDeployDir(scope: GroveTeamCliScope, teamId: string, d1Id: string, kvId: string, domain?: string | null): string {
+function prepareDeployDir(scope: TeamResourceNameInput, teamId: string, d1Id: string, kvId: string, domain?: string | null): string {
   const srcDir = locateWorkerSource();
   const deployDir = resolveTeamDeployDir(teamId);
   const name = resourceName(scope);
@@ -722,7 +506,7 @@ function isMissingQueueConsumerError(message: string): boolean {
     || normalized.includes('no worker consumer')
     || normalized.includes('no consumer')
     || normalized.includes('not configured')
-    || normalized.includes('10003')
+    || normalized.includes('code: 10003')
   );
 }
 
@@ -808,7 +592,7 @@ async function rotateMcpTokenForWorker(workerUrl: string, apiKey: string): Promi
 // Commands
 // ---------------------------------------------------------------------------
 
-export async function teamInit(vaultDir: string, options: { name?: string; domain?: string } = {}): Promise<void> {
+export async function teamCreate(options: { name?: string; domain?: string } = {}): Promise<void> {
   let teamName = options.name?.trim();
   const domain = options.domain?.trim() || null;
   if (!teamName) {
@@ -821,17 +605,19 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
       rl.close();
     }
     if (!teamName) {
-      console.error('myco-team install requires a team name: pass --name "<team name>"');
+      console.error('myco-team create requires a team name: pass --name "<team name>"');
       process.exit(2);
     }
   }
 
   const teamId = createTeamId();
-  const scope = resolveTeamCliScope(vaultDir, { teamId, teamName });
-  requireGroveInstallScope(scope);
+  // A team is a global, machine-scoped entity — its resource names derive from
+  // the team's own identity (name slug + team-id hash), not any project or
+  // Grove. This determinism lets `adopt` re-derive every resource name later.
+  const scope: TeamResourceNameInput = { resourceSeed: teamId, resourceSlug: slugifyGroveName(teamName) };
 
   console.log('Provisioning team sync infrastructure...\n');
-  console.log(`Scope: ${scope.label}\n`);
+  console.log(`Team: ${teamName}\n`);
 
   // 1. Check for wrangler
   try {
@@ -954,11 +740,12 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
     process.exit(1);
   }
 
-  // The custom domain may take time to propagate, so all immediate
-  // post-deploy calls (config PUT, MCP token rotation) target the
-  // workers.dev URL, which is live the moment `wrangler deploy` returns.
-  // Everything PERSISTED or displayed uses the custom-domain endpoint
-  // when one was requested.
+  // Non-custom-domain deploys expose the *.workers.dev URL immediately, so the
+  // post-deploy /config PUT + MCP rotation below succeed at once. A custom
+  // domain disables the *.workers.dev URL and may not have propagated yet, so
+  // those same calls can fail on a fresh create — they are non-fatal, and the
+  // daemon re-seeds /config + the MCP token on its first successful connect.
+  // Everything persisted/displayed uses the endpoint URL.
   const endpointUrl = resolveWorkerUrl(scope.resourceSlug, domain) ?? deployUrl;
 
   // 9. Configure the DLQ for HTTP pull so the daemon UI can inspect,
@@ -1054,12 +841,11 @@ export interface UpgradeResult {
  * Returns a result instead of calling process.exit — safe for both CLI and daemon.
  */
 export function upgradeWorker(
-  vaultDir: string | null,
   options: { observability?: boolean } & TeamCommandOptions = {},
 ): UpgradeResult {
   let resolved: ResolvedTeamDeployment;
   try {
-    resolved = resolveTeamDeployment(vaultDir, options);
+    resolved = resolveTeamDeployment(options);
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }
@@ -1082,7 +868,7 @@ export function upgradeWorker(
     }
   }
   if (!d1Id) {
-    return { success: false, error: `Cannot determine D1 database ID for Team ${team.name} (${workerName}). Run: myco-team install` };
+    return { success: false, error: `Cannot determine D1 database ID for Team ${team.name} (${workerName}). Run: myco-team create` };
   }
 
   const dbNameMatch = existingToml.match(/database_name\s*=\s*"([^"]*)"/);
@@ -1203,14 +989,13 @@ export function upgradeWorker(
 // ---------------------------------------------------------------------------
 
 export async function teamUpgrade(
-  vaultDir: string | null,
   options: { reindexVectors?: boolean; observability?: boolean } & TeamCommandOptions = {},
 ): Promise<void> {
   console.log('Upgrading team sync worker...\n');
   if (options.observability) {
     console.log('Observability: enabled (Cloudflare logs persist for this deploy)');
   }
-  const result = upgradeWorker(vaultDir, { observability: options.observability, teamId: options.teamId });
+  const result = upgradeWorker({ observability: options.observability, teamId: options.teamId });
   if (!result.success) {
     console.error(result.error);
     process.exit(1);
@@ -1219,15 +1004,15 @@ export async function teamUpgrade(
   console.log(`Version: ${result.version}`);
   if (options.reindexVectors) {
     console.log('Enqueueing remote vector reindex...');
-    const { enqueued, by_table } = await reindexWorkerVectors(vaultDir, result.worker_url, { teamId: options.teamId });
+    const { enqueued, by_table } = await reindexWorkerVectors(result.worker_url, { teamId: options.teamId });
     console.log(`  Queued ${enqueued} vectors (${formatTableCounts(by_table)})`);
     console.log('  Watch progress on the Sync page; the queue consumer drains in the background.');
   }
   console.log('\nUpgrade complete.');
 }
 
-export async function teamReindexVectors(vaultDir: string | null, options: TeamCommandOptions = {}): Promise<void> {
-  const { enqueued, by_table } = await reindexWorkerVectors(vaultDir, undefined, options);
+export async function teamReindexVectors(options: TeamCommandOptions = {}): Promise<void> {
+  const { enqueued, by_table } = await reindexWorkerVectors(undefined, options);
   console.log(`Queued ${enqueued} vectors for reindex (${formatTableCounts(by_table)}).`);
   console.log('Watch progress on the Sync page; the queue consumer drains in the background.');
 }
@@ -1237,8 +1022,8 @@ function formatTableCounts(counts: Record<string, number>): string {
   return parts.length > 0 ? parts.join(', ') : 'no rows';
 }
 
-export async function teamStatus(vaultDir: string | null, options: TeamCommandOptions = {}): Promise<void> {
-  const { team, deployment } = resolveTeamDeployment(vaultDir, options);
+export async function teamStatus(options: TeamCommandOptions = {}): Promise<void> {
+  const { team, deployment } = resolveTeamDeployment(options);
   const secrets = teamRegistry.readSecrets(team.team_id);
 
   console.log(`Team:        ${team.name}`);
@@ -1254,11 +1039,10 @@ export async function teamStatus(vaultDir: string | null, options: TeamCommandOp
 }
 
 export async function teamRotateTokens(
-  vaultDir: string | null,
   which: 'api' | 'mcp' | 'all' = 'all',
   options: TeamCommandOptions = {},
 ): Promise<void> {
-  const { team, deployment, deployDir } = resolveTeamDeployment(vaultDir, options);
+  const { team, deployment, deployDir } = resolveTeamDeployment(options);
   const secrets = teamRegistry.readSecrets(team.team_id);
   let currentApiKey = secrets[TEAM_API_KEY_SECRET] ?? '';
   let currentMcpToken = secrets[TEAM_MCP_TOKEN_SECRET] ?? null;
@@ -1274,9 +1058,10 @@ export async function teamRotateTokens(
     });
     teamRegistry.writeSecret(team.team_id, TEAM_API_KEY_SECRET, apiKey);
     currentApiKey = apiKey;
+    // Key rotation is not a redeploy — leave package_version untouched so
+    // `status` doesn't misreport the deployed worker version.
     nextDeployment = {
       ...nextDeployment,
-      package_version: getTeamPackageVersion(),
       last_upgraded: new Date().toISOString(),
     };
     teamRegistry.saveDeployment(nextDeployment);
@@ -1304,52 +1089,73 @@ export async function teamRotateTokens(
   console.log(`MCP Token: ${maskSecret(currentMcpToken)}`);
 }
 
-export async function teamDestroy(vaultDir: string | null, options: TeamCommandOptions = {}): Promise<void> {
-  const { team, deployment, deployDir } = resolveTeamDeployment(vaultDir, options);
+/** Whether a wrangler teardown error means the resource is already gone (so the step is a no-op). */
+function isAlreadyAbsentError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes('not found')
+    || m.includes('does not exist')
+    || m.includes('already deleted')
+    || m.includes('index.deleted') // vectorize: index already deleted
+    || m.includes('no queue')
+    || m.includes('no consumer')
+    || m.includes('not configured')
+    || m.includes('could not find')
+    // Anchor numeric codes to the `code: NNNN` shape so a resource-name hash
+    // (e.g. myco-team-x-3005beef) or a CF ray/request id can't be misread as a
+    // bare code and cause a real failure to be swallowed (which would wipe
+    // local state while the paid CF resource still exists).
+    || m.includes('code: 10007') // workers: service not found
+    || m.includes('code: 10003') // queues: consumer not found
+    || m.includes('code: 3005')  // vectorize: index already deleted
+  );
+}
+
+export async function teamDestroy(options: TeamCommandOptions = {}): Promise<void> {
+  const { team, deployment, deployDir } = resolveTeamDeployment(options);
+  const workerName = deployment.worker_name;
+  const cwd = fs.existsSync(deployDir) ? deployDir : undefined;
   const errors: string[] = [];
 
-  try {
-    wrangler(['delete', deployment.worker_name], { cwd: fs.existsSync(deployDir) ? deployDir : undefined });
-  } catch (error) {
-    errors.push(`worker delete failed: ${(error as Error).message}`);
-  }
-
-  try {
-    wrangler(['vectorize', 'delete', `${deployment.worker_name}-vectors`]);
-  } catch (error) {
-    errors.push(`vectorize delete failed: ${(error as Error).message}`);
-  }
-
-  try {
-    const databases = JSON.parse(wrangler(['d1', 'list', '--json'])) as Array<{ name: string; uuid: string }>;
-    const database = databases.find((entry) => entry.name === deployment.worker_name);
-    if (database) {
-      wrangler(['d1', 'delete', database.name, '--skip-confirmation']);
-    }
-  } catch (error) {
-    errors.push(`d1 delete failed: ${(error as Error).message}`);
-  }
-
-  try {
-    const namespaces = extractJsonArray(wrangler(['kv', 'namespace', 'list'])) as Array<{ id: string; title: string }>;
-    const namespace = namespaces.find((entry) => entry.title === `${deployment.worker_name}-secrets`);
-    if (namespace) {
-      wrangler(['kv', 'namespace', 'delete', '--namespace-id', namespace.id, '--skip-confirmation']);
-    }
-  } catch (error) {
-    errors.push(`kv delete failed: ${(error as Error).message}`);
-  }
-
-  // Delete sync queues. Missing queues (older deployments) yield a not-found
-  // error from wrangler, which we swallow.
-  for (const queueName of [syncQueueName(deployment.worker_name), syncDlqName(deployment.worker_name)]) {
+  // Every teardown step tolerates an already-absent resource so a retry after a
+  // partial failure converges instead of erroring on the resources it removed
+  // last time.
+  const step = (label: string, run: () => void): void => {
     try {
-      wrangler(['queues', 'delete', queueName]);
+      run();
     } catch (error) {
-      const errMsg = (error as Error).message;
-      if (errMsg.includes('not found') || errMsg.includes('does not exist') || errMsg.includes('no queue')) continue;
-      errors.push(`queue ${queueName} delete failed: ${errMsg}`);
+      const message = (error as Error).message;
+      if (!isAlreadyAbsentError(message)) errors.push(`${label}: ${message}`);
     }
+  };
+
+  // Cloudflare refuses to delete a Worker that is a queue consumer (code 10064)
+  // AND refuses to delete a queue still bound to a Worker (code 11005) — a
+  // mutual reference. Detach the consumer relationships first; deleting the
+  // Worker then removes its producer binding, after which the queues are free.
+  step('detach sync-queue consumer', () =>
+    wrangler(['queues', 'consumer', 'worker', 'remove', syncQueueName(workerName), workerName], { cwd }));
+  step('detach dlq consumer', () =>
+    wrangler(['queues', 'consumer', 'http', 'remove', syncDlqName(workerName)]));
+
+  step('worker delete', () => wrangler(['delete', workerName], { cwd }));
+
+  step('vectorize delete', () => wrangler(['vectorize', 'delete', `${workerName}-vectors`]));
+
+  step('d1 delete', () => {
+    const databases = JSON.parse(wrangler(['d1', 'list', '--json'])) as Array<{ name: string; uuid: string }>;
+    const database = databases.find((entry) => entry.name === workerName);
+    if (database) wrangler(['d1', 'delete', database.name, '--skip-confirmation']);
+  });
+
+  step('kv delete', () => {
+    const namespaces = extractJsonArray(wrangler(['kv', 'namespace', 'list'])) as Array<{ id: string; title: string }>;
+    const namespace = namespaces.find((entry) => entry.title === `${workerName}-secrets`);
+    if (namespace) wrangler(['kv', 'namespace', 'delete', '--namespace-id', namespace.id, '--skip-confirmation']);
+  });
+
+  for (const queueName of [syncQueueName(workerName), syncDlqName(workerName)]) {
+    step(`queue ${queueName} delete`, () => wrangler(['queues', 'delete', queueName]));
   }
 
   if (errors.length > 0) {
@@ -1359,5 +1165,275 @@ export async function teamDestroy(vaultDir: string | null, options: TeamCommandO
   fs.rmSync(deployDir, { recursive: true, force: true });
   teamRegistry.removeDeployment(team.team_id);
   teamRegistry.remove(team.team_id);
-  console.log(`Destroyed local myco-team state for ${deployment.worker_name}.`);
+  console.log(`Destroyed all Cloudflare resources and local state for ${workerName}.`);
+}
+
+// ---------------------------------------------------------------------------
+// Backup / import / adopt
+// ---------------------------------------------------------------------------
+
+/** Current version of the portable team bundle written by `export`. */
+const TEAM_BUNDLE_VERSION = 1;
+
+/**
+ * Portable backup of a team's machine-scoped local state — the three files
+ * under `~/.myco-team/teams/<team_id>/`. Carries the Team API key and MCP
+ * token, so the artifact must be handled like a credential.
+ */
+interface TeamBundle {
+  bundle_version: number;
+  exported_at: string;
+  team: TeamRecord;
+  deployment: TeamDeploymentRecord | null;
+  secrets: Record<string, string>;
+}
+
+/** Resolve the destination path for `export`. `out` may be a directory (auto-named) or an explicit file. */
+function resolveExportPath(out: string | null | undefined, team: TeamRecord): string {
+  const fileName = `${slugifyGroveName(team.name)}-${team.team_id}.myco-team.json`;
+  // Default into the team's machine-scoped home (0700, never a git repo) rather
+  // than cwd, so a routine `git add .` can't accidentally commit the credential
+  // bundle.
+  if (!out) return path.join(resolveTeamDir(team.team_id), fileName);
+  const resolved = path.resolve(out);
+  const treatAsDir = out.endsWith('/') || out.endsWith(path.sep)
+    || (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory());
+  return treatAsDir ? path.join(resolved, fileName) : resolved;
+}
+
+/**
+ * Export a registered team's local state to a single portable JSON bundle —
+ * the inverse of `import`. Written 0600 because it carries the Team API key
+ * and MCP token.
+ */
+export async function teamExport(options: TeamCommandOptions & { out?: string | null } = {}): Promise<void> {
+  const team = resolveTeamRecordForCommand(options.teamId);
+  const bundle: TeamBundle = {
+    bundle_version: TEAM_BUNDLE_VERSION,
+    exported_at: new Date().toISOString(),
+    team,
+    deployment: teamRegistry.readDeployment(team.team_id),
+    secrets: teamRegistry.readSecrets(team.team_id),
+  };
+  const outPath = resolveExportPath(options.out, team);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  // Atomic temp-write + rename at 0o600 — the bundle carries the Team key + MCP
+  // token, so it must never exist on disk at looser perms (writeFileSync ignores
+  // `mode` when the target already exists; a swallowed post-hoc chmod could
+  // silently leave it readable).
+  atomicWriteFileSync(outPath, JSON.stringify(bundle, null, 2), { encoding: 'utf-8', mode: 0o600 });
+
+  console.log(`Exported Team "${team.name}" (${team.team_id}) to:`);
+  console.log(`  ${outPath}`);
+  console.log('\nThis file contains the Team API key and MCP token — treat it like a credential (written 0600).');
+  console.log(`Restore on another machine with:  myco-team import ${outPath}`);
+}
+
+function parseTeamBundle(raw: string): TeamBundle {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new Error('Bundle is not valid JSON'); }
+  const bundle = parsed as Partial<TeamBundle> | null;
+  if (!bundle || typeof bundle !== 'object' || !bundle.team || !bundle.team.team_id) {
+    throw new Error('Bundle is missing a valid team record');
+  }
+  return bundle as TeamBundle;
+}
+
+/**
+ * Restore a team's local state from a bundle produced by `export`. Pure local
+ * operation — no Cloudflare calls, preserves the original Team key. Idempotent:
+ * re-importing overwrites the local registry entry.
+ */
+export async function teamImport(bundlePath: string): Promise<void> {
+  if (!bundlePath) throw new Error('Usage: myco-team import <bundle-file>');
+  const resolved = path.resolve(bundlePath);
+  if (!fs.existsSync(resolved)) throw new Error(`Bundle not found: ${resolved}`);
+
+  const bundle = parseTeamBundle(fs.readFileSync(resolved, 'utf-8'));
+  const { team } = bundle;
+  const existing = teamRegistry.get(team.team_id);
+  if (existing) {
+    console.log(`Team ${team.team_id} ("${existing.name}") already registered on this machine — overwriting from bundle.`);
+  }
+
+  teamRegistry.save(team);
+  if (bundle.deployment) teamRegistry.saveDeployment(bundle.deployment);
+  // Only restore known secret keys, and never a value with an embedded newline
+  // (secrets.env would parse it back as extra injected secrets) — a hand-crafted
+  // bundle must not be able to write arbitrary keys into the team's store.
+  const allowedSecretKeys = new Set([TEAM_API_KEY_SECRET, TEAM_MCP_TOKEN_SECRET]);
+  for (const [key, value] of Object.entries(bundle.secrets ?? {})) {
+    if (!allowedSecretKeys.has(key)) continue;
+    if (typeof value !== 'string' || value === '' || value.includes('\n')) continue;
+    teamRegistry.writeSecret(team.team_id, key, value);
+  }
+
+  console.log(`Imported Team "${team.name}" (${team.team_id}).`);
+  console.log(`  URL: ${team.worker_url}`);
+  console.log('\nAssign projects to this Team from the dashboard Teams tab.');
+}
+
+/** Derive the worker name from a *.workers.dev URL (first host label). Returns null for custom domains. */
+function deriveWorkerNameFromUrl(baseUrl: string): string | null {
+  try {
+    const host = new URL(baseUrl).host;
+    if (!host.endsWith('.workers.dev')) return null;
+    return host.split('.')[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Assert wrangler is installed and authenticated. Throws (caller surfaces the message). */
+function ensureWranglerReady(): void {
+  try { wrangler(['--version']); } catch {
+    throw new Error('wrangler CLI not found. Install it with: npm install -g wrangler');
+  }
+  try { wrangler(['whoami']); } catch {
+    throw new Error('Not authenticated with Cloudflare. Run: wrangler login');
+  }
+}
+
+/** Register this machine with the worker and return its team_config (team_id, team_name, ...) plus the current MCP token. */
+async function fetchTeamConfigViaConnect(
+  baseUrl: string,
+  apiKey: string,
+  machineId: string,
+): Promise<{ config: Record<string, string>; mcpToken: string | null }> {
+  const response = await fetch(`${baseUrl}/connect`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ machine_id: machineId }),
+  });
+  if (!response.ok) {
+    const errBody = await response.text();
+    if (response.status === 401) {
+      throw new Error('Worker rejected the Team key (401). Pass the correct --api-key, or omit it to regenerate the key via your Cloudflare account.');
+    }
+    throw new Error(`Worker /connect failed: ${response.status} ${errBody}`);
+  }
+  const body = await response.json() as { config?: Record<string, string>; mcp_token?: string };
+  return { config: body.config ?? {}, mcpToken: body.mcp_token ?? null };
+}
+
+/**
+ * Reconstruct a team's local state from a live worker — recovery when the
+ * machine-scoped config was lost. With `--api-key`, reads identity from the
+ * worker's /connect with no key change. Without it, regenerates the Team key by
+ * overwriting the worker secret as the Cloudflare account owner (the secret is
+ * write-only, so a lost key is only recoverable this way — teammates must then
+ * be re-shared the new key).
+ */
+export async function teamAdopt(options: {
+  workerUrl?: string;
+  apiKey?: string;
+  workerName?: string;
+}): Promise<void> {
+  const workerUrl = options.workerUrl?.trim();
+  if (!workerUrl) {
+    throw new Error('Usage: myco-team adopt --worker-url <url> [--api-key <key>] [--worker-name <name>]');
+  }
+  const baseUrl = workerUrl.replace(/\/+$/, '');
+
+  // Refuse to send the Team key anywhere but https — a mistyped or attacker host
+  // over http would leak it in cleartext.
+  let parsedUrl: URL;
+  try { parsedUrl = new URL(baseUrl); } catch { throw new Error(`Invalid --worker-url: ${workerUrl}`); }
+  if (parsedUrl.protocol !== 'https:') {
+    throw new Error(`--worker-url must be https (refusing to send the Team key over ${parsedUrl.protocol}//).`);
+  }
+
+  let apiKey = options.apiKey?.trim();
+  let regenerated = false;
+
+  // No key supplied: prefer a key already stored locally for this worker before
+  // resorting to regeneration, which invalidates every teammate's key.
+  if (!apiKey) {
+    const known = teamRegistry.list().find((t) => t.worker_url?.replace(/\/+$/, '') === baseUrl);
+    const storedKey = known ? teamRegistry.readSecrets(known.team_id)[TEAM_API_KEY_SECRET] : undefined;
+    if (storedKey) {
+      apiKey = storedKey;
+      console.log(`Reusing the Team key already stored locally for "${known!.name}" (${known!.team_id}).`);
+    }
+  }
+
+  if (!apiKey) {
+    const targetWorker = options.workerName?.trim() || deriveWorkerNameFromUrl(baseUrl);
+    if (!targetWorker) {
+      throw new Error('Cannot derive the worker name from a custom-domain URL. Pass --worker-name <name>, or --api-key <key> if you still have the key.');
+    }
+    console.log(`No --api-key supplied — regenerating the Team key on worker "${targetWorker}" via your Cloudflare account...`);
+    ensureWranglerReady();
+    apiKey = crypto.randomBytes(API_KEY_BYTES).toString('hex');
+    runWrangler(['secret', 'put', TEAM_API_KEY_SECRET, '--name', targetWorker], {
+      input: apiKey,
+      timeoutMs: WRANGLER_COMMAND_TIMEOUT_MS,
+    });
+    regenerated = true;
+  }
+
+  const { getMachineId } = await import('@myco/machine-id.js');
+  const { config, mcpToken: connectMcpToken } = await fetchTeamConfigViaConnect(baseUrl, apiKey, getMachineId());
+  const teamId = config.team_id;
+  if (!teamId) {
+    throw new Error('Worker /connect did not return a team_id — is this a Myco team worker?');
+  }
+  const teamName = config.team_name || 'Imported Team';
+
+  // Persist the (possibly just-regenerated) key first, so a later failure can't
+  // strand a rotated key that is live on the worker but unsaved locally.
+  teamRegistry.writeSecret(teamId, TEAM_API_KEY_SECRET, apiKey);
+
+  const existing = teamRegistry.get(teamId);
+  if (existing) {
+    console.log(`Team ${teamId} ("${existing.name}") already registered on this machine — refreshing from the worker.`);
+  }
+
+  const host = parsedUrl.host;
+  const domain = host.endsWith('.workers.dev') ? null : host.split('.').slice(1).join('.') || null;
+  const workerName = options.workerName?.trim()
+    || deriveWorkerNameFromUrl(baseUrl)
+    || resourceName({ resourceSeed: teamId, resourceSlug: slugifyGroveName(teamName) });
+  const recordedAt = new Date().toISOString();
+  // team_config.created_at is epoch seconds; guard against a non-numeric value
+  // so a bad worker response can't throw after the key was already rotated.
+  const createdAtSeconds = Number(config.created_at);
+  const createdAt = Number.isFinite(createdAtSeconds) && createdAtSeconds > 0
+    ? new Date(createdAtSeconds * 1000).toISOString()
+    : recordedAt;
+
+  teamRegistry.save({
+    team_id: teamId,
+    name: teamName,
+    worker_url: baseUrl,
+    domain,
+    mcp_endpoint: `${baseUrl}/mcp`,
+    created_at: createdAt,
+    projects: existing?.projects ?? [],
+  });
+  teamRegistry.saveDeployment({
+    team_id: teamId,
+    worker_name: workerName,
+    worker_url: baseUrl,
+    package_version: getTeamPackageVersion(),
+    created_at: createdAt,
+    last_upgraded: recordedAt,
+    config_version: TEAM_CONFIG_VERSION,
+  });
+
+  // Prefer the MCP token /connect already returned (non-destructive). Only
+  // rotate — which invalidates the previous token for everyone — if the worker
+  // didn't surface one.
+  let mcpToken = connectMcpToken;
+  if (!mcpToken) {
+    try { mcpToken = await rotateMcpTokenForWorker(baseUrl, apiKey); } catch { mcpToken = null; }
+  }
+  if (mcpToken) teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, mcpToken);
+
+  console.log(`Adopted Team "${teamName}" (${teamId}).`);
+  console.log(`  URL: ${baseUrl}`);
+  if (regenerated) {
+    console.log('  Team key: regenerated — re-share it with teammates (the previous key is now invalid).');
+  }
+  console.log('\nAssign projects to this Team from the dashboard Teams tab.');
 }

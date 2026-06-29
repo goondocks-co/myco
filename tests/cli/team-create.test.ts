@@ -3,9 +3,7 @@ import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { saveProjectManifest } from '@myco/config/project-manifest';
-import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
-import { resolveProjectVaultDir, resolveTeamDir } from '@myco/grove/paths';
+import { resolveTeamDir } from '@myco/grove/paths';
 import { teamRegistry } from '@myco/team/registry';
 
 const execCalls: Array<{ command: string; args: string[]; cwd?: string }> = [];
@@ -57,9 +55,6 @@ queue = "<YOUR_SYNC_QUEUE_NAME>"
 [[queues.consumers]]
 queue = "<YOUR_SYNC_QUEUE_NAME>"
 dead_letter_queue = "<YOUR_SYNC_DLQ_NAME>"
-
-[[queues.consumers]]
-queue = "<YOUR_SYNC_DLQ_NAME>"
 `;
 
 function createFakeWorkerSource(sourceDir: string): void {
@@ -72,11 +67,9 @@ function createFakeWorkerSource(sourceDir: string): void {
   fs.writeFileSync(path.join(sourceDir, 'src', 'index.ts'), '// worker\n', 'utf-8');
 }
 
-describe('teamInit', () => {
+describe('teamCreate', () => {
   let tmpDir: string;
   let homeDir: string;
-  let projectRoot: string;
-  let vaultDir: string;
   let sourceDir: string;
   let previousHome: string | undefined;
   let previousMycoHome: string | undefined;
@@ -88,12 +81,10 @@ describe('teamInit', () => {
   beforeEach(() => {
     execCalls.length = 0;
     execHandlers.length = 0;
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-install-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-create-'));
     homeDir = path.join(tmpDir, 'home');
-    projectRoot = path.join(tmpDir, 'project');
-    vaultDir = resolveProjectVaultDir(projectRoot);
     sourceDir = path.join(tmpDir, 'package-root', 'worker');
-    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.mkdirSync(homeDir, { recursive: true });
     createFakeWorkerSource(sourceDir);
 
     previousHome = process.env.HOME;
@@ -139,24 +130,12 @@ describe('teamInit', () => {
     console.error = previousConsoleError;
   });
 
-  it('derives consistent team-name resource names across newly provisioned Cloudflare assets', async () => {
-    const grove = createGrove('Myco Dogfood', homeDir);
-    saveProjectManifest(vaultDir, {
-      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'myco' },
-      grove: { binding_id: 'gbind_test', slug: grove.slug, mode: 'local' },
-    });
-    registerProjectInGrove(grove.id, {
-      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      projectName: 'myco',
-      projectRoot,
-      bindingId: 'gbind_test',
-    }, homeDir);
-
-    // The resource name is now derived from the TEAM name + a hash of the
-    // (non-deterministic) team id, so we can't predict it up front. The
-    // wrangler handlers return canned outputs by POSITION in teamInit's call
-    // sequence; the actual resource name is recovered from `execCalls` after
-    // the run and used to drive every consistency assertion below.
+  it('provisions a team from anywhere — no project or Grove context — with consistent resource names', async () => {
+    // No Grove is created and no project manifest is written: a team is a
+    // global, machine-scoped entity, so `create` proceeds straight to
+    // provisioning. The resource name derives from the TEAM name + a hash of
+    // the (non-deterministic) team id, so we recover it from `execCalls` and
+    // assert every asset reuses the same base.
     //
     // Call order (no custom domain):
     //   1. wrangler --version
@@ -171,9 +150,7 @@ describe('teamInit', () => {
     //  10. wrangler deploy                       -> workers.dev URL
     //  11. wrangler queues consumer worker remove <dlq> <name>
     //  12. wrangler queues consumer http add <dlq>
-    const deployHandler = (args: string[]): string => {
-      // teamInit captures the worker_url from `wrangler deploy` output, which
-      // must echo the *actual* resource name so worker_name === worker_url host.
+    const deployHandler = (): string => {
       const created = execCalls.find((call) => call.args[0] === 'd1' && call.args[1] === 'create');
       const name = created?.args[2] ?? 'myco-team-unknown';
       return `https://${name}.test.workers.dev\n`;
@@ -193,8 +170,8 @@ describe('teamInit', () => {
       () => '',                                                         // 12 dlq consumer http add
     );
 
-    const { teamInit } = await import('../../packages/myco-team/src/cli.js');
-    await teamInit(vaultDir, { name: 'Acme OSS' });
+    const { teamCreate } = await import('../../packages/myco-team/src/cli.js');
+    await teamCreate({ name: 'Acme OSS' });
 
     // Recover the actual resource name from the recorded `d1 create` call.
     const d1Create = execCalls.find((call) => call.args[0] === 'd1' && call.args[1] === 'create');
@@ -213,6 +190,8 @@ describe('teamInit', () => {
 
     const teams = teamRegistry.list();
     expect(teams).toHaveLength(1);
+    // Registered with NO projects — membership is an explicit later step in the UI.
+    expect(teams[0].projects).toEqual([]);
     const teamId = teams[0].team_id;
     const deployDir = path.join(resolveTeamDir(teamId), 'worker');
     const patchedToml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
@@ -223,7 +202,6 @@ describe('teamInit', () => {
     expect(patchedToml).toContain(`SYNC_DLQ_NAME = "${resourceName}-sync-dlq"`);
     expect(patchedToml).toContain(`queue = "${resourceName}-sync"`);
     expect(patchedToml).toContain(`dead_letter_queue = "${resourceName}-sync-dlq"`);
-    expect(patchedToml).toContain(`queue = "${resourceName}-sync-dlq"`);
 
     const deployment = JSON.parse(
       fs.readFileSync(path.join(resolveTeamDir(teamId), 'deployment.json'), 'utf-8'),
@@ -233,34 +211,19 @@ describe('teamInit', () => {
     expect(deployment.worker_url).toBe(`https://${resourceName}.test.workers.dev`);
   });
 
-  it('rejects fresh installs before provisioning when the project is not Grove-bound', async () => {
-    const errors: string[] = [];
+  it('rejects create with no team name (and never touches Cloudflare)', async () => {
     process.exit = ((code?: number) => {
       throw new Error(`process.exit(${code})`);
     }) as typeof process.exit;
+    const errors: string[] = [];
     console.error = ((...args: unknown[]) => {
       errors.push(args.map(String).join(' '));
     }) as typeof console.error;
 
-    // Provision a project manifest without Grove binding so the request
-    // context resolver succeeds, leaving the legacy
-    // `requireGroveInstallScope` check to reject the install.
-    saveProjectManifest(vaultDir, {
-      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'fresh' },
-    });
-
-    const { teamInit } = await import('../../packages/myco-team/src/cli.js');
-    // A team name is supplied so the install clears the up-front name gate
-    // and reaches the Grove-bound check this test actually exercises.
-    // Pre-Grove vaults exit with code 2 (configuration error) and a
-    // friendly Grove prompt rather than the historical generic exit(1).
-    await expect(teamInit(vaultDir, { name: 'Some Team' })).rejects.toThrow('process.exit(2)');
-
-    const stderr = errors.join('\n');
-    expect(stderr).toContain('myco-team install requires a Grove-bound project');
-    expect(stderr).toContain('auto-registers');
-    expect(stderr).not.toContain('--legacy');
+    const { teamCreate } = await import('../../packages/myco-team/src/cli.js');
+    // No --name and no TTY -> up-front name gate exits before any wrangler call.
+    await expect(teamCreate({})).rejects.toThrow('process.exit(2)');
+    expect(errors.join('\n')).toContain('myco-team create requires a team name');
     expect(execCalls).toHaveLength(0);
   });
-
 });

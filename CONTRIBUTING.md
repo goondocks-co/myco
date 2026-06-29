@@ -124,7 +124,7 @@ See [docs/lifecycle.md](docs/lifecycle.md) for the full lifecycle with diagrams.
 Three packages are published to [npmjs.org](https://www.npmjs.com/) under the `@goondocks` scope:
 
 - [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco) — main CLI, daemon, hooks, and dashboard
-- [`@goondocks/myco-team`](https://www.npmjs.com/package/@goondocks/myco-team) — team-sync operator CLI (`myco-team install` / `upgrade` / `status` / etc.)
+- [`@goondocks/myco-team`](https://www.npmjs.com/package/@goondocks/myco-team) — team-sync operator CLI (`myco-team create` / `upgrade` / `status` / etc.)
 - [`@goondocks/myco-collective`](https://www.npmjs.com/package/@goondocks/myco-collective) — standalone Collective operator CLI (`myco-collective`)
 
 `@goondocks/myco-deploy` under `packages/` is private — it holds the shared Cloudflare deploy helpers the two operator CLIs depend on.
