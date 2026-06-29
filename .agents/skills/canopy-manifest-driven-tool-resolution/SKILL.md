@@ -163,6 +163,16 @@ export async function postToolUse(activity: ActivityRecord): Promise<void> {
 
 Convert hardcoded drilldown queries to use manifest-driven patterns for identifying Canopy reads.
 
+### Canonical Canopy DB Functions
+
+All Canopy-related database access must go through the canonical functions in `packages/myco/src/db/queries/canopy.ts`. Do not write raw SQL for canopy operations inline in agent tools or hooks — the CI meta-test gate (`tests/meta/no-raw-db-in-agent-tools.test.ts`) will reject it. The canonical exports include:
+
+- `chargeDescribeAttempts(db, projectId, paths)` — increment attempt counters for describe jobs
+- `selectPendingCanopyDescribe(db, projectId, ...)` — fetch paths awaiting description
+- `getCanopyEntryByPath(db, projectId, path)` — look up a single canopy entry
+- `listCanopyEntries(db, projectId, ...)` — enumerate canopy entries with filters
+- `canopyDescribeMaxAttempts(config)` — read the de-duplicated attempt limit from config
+
 ### Query Pattern Transformation
 
 Before (hardcoded):
@@ -183,9 +193,11 @@ END IS NOT NULL
 
 ### Implementation in Aggregators
 
+Canopy-aware query builders live in `packages/myco/src/db/queries/canopy.ts`. Keep all canopy SQL in the canonical query module so the CI meta-test gate can enforce the no-raw-db invariant for agent tools.
+
 ```typescript
-// packages/myco/src/db/schema.ts
-export function buildCanopyReadQuery(symbionts: SymbiontManifest[]): string {
+// Manifest-driven query builder pattern (lives in packages/myco/src/db/queries/canopy.ts)
+function buildCanopyReadQuery(symbionts: SymbiontManifest[]): string {
   const patterns: Array<{toolName: string, argPath: string}> = [];
   
   for (const symbiont of symbionts) {
@@ -305,3 +317,13 @@ ln -sf ../../.agents/skills/my-skill .cursor/skills/my-skill
 **Fix**: The `service-dev` daemon must scope its `symbiont-config` subsystem claim to dogfood projects only, or defer the claim to the prod daemon when the prod daemon is active. Do not run a `service-dev` daemon with an unrestricted `symbiont-config` claim alongside a prod daemon — it will silently break capture for every non-dogfood project on the machine.
 
 **Detection**: If Claude capture is dead across all projects but Pi and other agents are healthy, check whether a `service-dev` daemon is running and holding the `symbiont-config` claim.
+
+### CI Meta-Test Gate: No Raw DB Access in Agent Tools
+
+**Build gate**: `tests/meta/no-raw-db-in-agent-tools.test.ts` enforces that files under `packages/myco/src/agent/tools/` must not contain raw database access patterns. The gate bans `.prepare(`, `.transaction(`, and `getDatabase().exec(` appearing inline in agent tool files.
+
+**Why it exists**: Agent tools that call the database directly bypass the canonical query layer in `packages/myco/src/db/queries/canopy.ts`, making it easy to introduce SQL that diverges from established canopy query patterns. The meta-test catches these at CI time before they reach review.
+
+**Compliant pattern**: Call a named export from the canonical query module (e.g., `chargeDescribeAttempts(getDatabase(), projectId, paths)`) — passing `getDatabase()` as an argument to a canonical function is explicitly allowed. Writing `getDatabase().prepare(...)` inline in a tool handler is not.
+
+**When you hit this gate**: Move the raw SQL into a named export in `packages/myco/src/db/queries/canopy.ts`, then call it from the tool handler via the canonical import.

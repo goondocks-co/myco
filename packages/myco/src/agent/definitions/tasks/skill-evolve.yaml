@@ -364,27 +364,22 @@ phases:
       skill, delete the narrow one. The narrow skill becomes a section
       within the broader skill.
 
-      ## Verify before you write — NEVER fabricate (critical)
+      ## Verify before you write — the gate IS the guarantee (critical)
 
       You are EVOLVING existing skills, not authoring from imagination.
-      Verify only the NEW or CHANGED concrete claims your edit introduces
-      — agents load these as authoritative procedure, so a confident-but-
-      wrong detail is worse than no detail. Do NOT re-verify claims that
-      were already in the skill and you are not touching.
+      The `vault_scan_skill_contamination` call with `full_gate: true`
+      (step 3 of STALE above) is the anti-fabrication guarantee. It runs
+      fabrication detection, contamination, length/floor, and frontmatter
+      checks in one batched call. Do NOT also manually grep every claim —
+      that is what made earlier runs cost 32 searches per skill.
 
-      For each NEW/CHANGED claim, verify with AT MOST 1 tool call:
-      - **File path claim** → one `fs_read` (narrow window). Missing → don't write it.
-      - **Identifier claim** (function, symbol, env var, type) → one
-        `code_grep` with a path/glob filter. No match → the symbol does
-        not exist; do NOT write it. Never invent a function, env var, or
-        API to make an example look complete.
-      - **Behavior claim** → one `code_grep` for the signature/pattern.
+      After the gate runs:
+      - **Issues reported** → look up the correct value with at most 1
+        targeted `fs_read` or `code_grep` per flagged item, fix it, write.
+      - **Gate is clean** → write immediately. Zero manual lookups needed.
 
-      Hard limit: **at most 6 verification tool calls per skill.** If an
-      edit would need more than that to verify, it is too broad for evolve
-      — trim the edit to the few highest-value verified changes and note
-      the rest in the rationale. If you cannot verify a claim within the
-      budget, omit it. An accurate, shorter skill beats a padded one.
+      Hard limit: **at most 2 manual lookups per skill** (only to resolve
+      gate-flagged items). An accurate, shorter skill beats a padded one.
 
       ## Edit surgically — minimal diff
 
@@ -398,12 +393,12 @@ phases:
       ## Budget discipline (hard)
 
       Total budget: {{max_turns}} turns across ALL selected skills. Plan
-      roughly `{{max_turns}} / skills_selected` turns per skill (about a
-      dozen): a few verification calls (≤6), one write, done. If you are
-      running past your share for a skill, STOP verifying, make the
-      safe minimal edit with what you have confirmed (omit unverified
-      claims), write it, and move on. NEVER let one skill consume the
-      budget — a clean partial pass over the others beats capping out.
+      roughly `{{max_turns}} / skills_selected` turns per skill (~7):
+      read skill → full_gate call → fix issues (≤2 manual lookups if
+      needed) → write → done. If you are running past your share for a
+      skill, STOP, make the safe minimal edit with what you have confirmed
+      (omit unverified claims), write it, and move on. NEVER let one skill
+      consume the budget — a clean partial pass beats capping out.
       If you approach the total budget, call `vault_report` with what you
       completed and which skills you deferred, then finish.
 
@@ -440,14 +435,16 @@ phases:
       - fs_read
       - code_grep
       - vault_report
-    # This is a CEILING, not a target. The per-skill budget discipline in
-    # the prompt (≤6 verification calls + one write per skill, then STOP)
-    # is what keeps act under budget — unbounded per-claim verification was
-    # the real failure (runs 11a2adda/5edcf678 capped at 24 AND 40 because
-    # one skill's verification ran away with no per-skill cap; more turns
-    # just moved the wall). With the cap, ~12 turns/skill × 3 skills fits
-    # comfortably under 40. If max_skills_per_run changes, scale this ~13×.
-    maxTurns: 40
+    # This is a CEILING, not a target. The workflow is now gate-driven:
+    # read → full_gate → fix (≤2 lookups) → write per skill, ~4–7 turns.
+    # With 3 skills that's ~12–21 turns; 22 gives headroom without reopening
+    # the unbounded-search trap. Earlier ceilings of 24 and 40 were both
+    # overrun because prose limits were ignored by the model — the gate
+    # removes the manual search loop that caused the overruns. The maxTurns
+    # enforcement is SDK-delegated (soft cap; SDK may complete an in-progress
+    # turn before stopping, so effective cap may run a few turns past this
+    # value). If max_skills_per_run changes, scale this ~7–8× per skill.
+    maxTurns: 22
     required: true
     dependsOn:
       - assess
