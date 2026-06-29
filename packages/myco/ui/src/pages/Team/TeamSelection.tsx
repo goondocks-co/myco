@@ -190,7 +190,7 @@ export function TeamSelection() {
           <p className="text-sm text-on-surface-variant m-0">Loading teams…</p>
         ) : teams.length === 0 ? (
           <p className="text-sm text-on-surface-variant m-0">
-            No teams yet. An operator provisions one with <code className="font-mono">myco-team install</code>, or join one a teammate shared with you using the form above.
+            No teams yet. An operator provisions one with <code className="font-mono">myco-team create</code>, or join one a teammate shared with you using the form above.
           </p>
         ) : (
           <div className="flex flex-col gap-2">

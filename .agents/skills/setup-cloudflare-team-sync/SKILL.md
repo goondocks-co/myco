@@ -2,7 +2,7 @@
 name: myco:setup-cloudflare-team-sync
 description: >-
   Use this skill when setting up or debugging Myco team sync on Cloudflare.
-  It applies to `myco-team install`, the Team page in the daemon UI, Worker
+  It applies to `myco-team create`, the Team page in the daemon UI, Worker
   deployment, Wrangler setup, machine identity, cross-machine vault sync, and
   failure modes like pending outbox drains, missing remote records, or
   embeddings not appearing on another machine. It also covers the outbox
@@ -38,10 +38,14 @@ The local `.myco/` vault is always the source of truth. The Cloudflare layer is 
 
 ### 1. Initialize team sync infrastructure
 
-One team member runs this once from the project directory. It provisions the D1 database, Vectorize index, KV namespace, generates an API key, and deploys the Cloudflare Worker — all in one command.
+Any operator with Cloudflare access runs this once — from anywhere, no project
+or Grove context required (a team is a global, machine-scoped entity). It
+provisions the D1 database, Vectorize index, KV namespace, generates an API key,
+and deploys the Cloudflare Worker — all in one command. Pass the team name (it
+prompts if you omit `--name`):
 
 ```bash
-myco-team install
+myco-team create --name "<team name>"
 ```
 
 The command is **idempotent** — if D1 or Vectorize already exist, it detects and reuses them.
@@ -50,22 +54,20 @@ On completion, the command outputs a **Worker URL** and **API key**. Share these
 
 ### 2. Verify secrets
 
-After `myco-team install`, two secrets are stored in `.myco/secrets.env`:
+A team's registration is **machine-scoped**: its config, secrets, and deploy
+metadata live under `~/.myco-team/teams/<team_id>/`, shared by every myco daemon
+on this machine — never in a project's `.myco/`. After `myco-team create`:
 
 ```
-MYCO_TEAM_API_KEY=<hex-api-key>
-MYCO_TEAM_MCP_TOKEN=<mcp-bearer-token>
+~/.myco-team/teams/<team_id>/
+  secrets.env       # MYCO_TEAM_API_KEY, MYCO_TEAM_MCP_TOKEN (0600)
+  team.json         # Worker URL, team name, project assignments
+  deployment.json   # worker name, package version
 ```
 
-The Worker URL and enabled flag are stored in `myco.yaml` under `team:`:
-
-```yaml
-team:
-  enabled: true
-  worker_url: https://myco-team-xxxxxxxx.workers.dev
-```
-
-Do **not** move secrets into `myco.yaml` — they stay in `secrets.env` only.
+Set `MYCO_TEAM_HOME` to override the team-home location (used by the test suite
+and advanced multi-home setups). Back the directory up with `myco-team export`
+and restore or recover it with `myco-team import` / `myco-team adopt`.
 
 ### 3. Verify machine identity
 
@@ -90,7 +92,7 @@ Open the Team page in the Myco daemon UI. You should see your machine listed, th
 The outbox flushes on a timed interval across `active`, `idle`, and `sleep` daemon states. If the count stays elevated:
 
 1. Check the Worker is deployed and accessible (test its URL directly)
-2. Check `.myco/secrets.env` has valid, non-expired credentials
+2. Check `~/.myco-team/teams/<team_id>/secrets.env` has valid, non-expired credentials
 3. Check daemon logs for outbox drain errors (filter by `component=team-sync`)
 4. Note: the outbox drains during `sleep` (every 5 minutes). It does **not** drain during `deep_sleep` — but the `preventsDeepSleep` predicate keeps the daemon at `sleep` while records are pending, so items should drain before deep sleep is entered
 
@@ -125,19 +127,21 @@ If fewer records appear on Machine B than were pushed from Machine A, D1 batch w
 
 ### wrangler ≥4.77: `d1 create` output format changed
 
-**Symptom:** `myco-team install` fails with `Could not parse D1 database ID from wrangler output`.
+**Symptom:** `myco-team create` fails with `Could not parse D1 database ID from wrangler output`.
 
 **Fix:** `myco update`. The updated parser handles both the legacy plain-string and new JSON binding block formats, and falls back to `wrangler d1 list --json`.
 
-**Manual workaround:** Run `wrangler d1 list --json`, find your database entry, manually set `D1_DATABASE_ID=<uuid>` in `.myco/secrets.env`.
+**Manual workaround:** Run `wrangler d1 list --json` to find the database UUID, then re-run `myco-team create` — it is idempotent and reuses the existing D1, Vectorize, and KV resources.
 
 ### D1 schema migration runs lazily, not at deploy
 
 `initD1Schema()` in the Worker is guarded by a per-instance flag and runs on the **first request** after deploy, not at deploy time. To force initialization: make one manual sync push right after deploying the Worker.
 
-### Secrets in myco.yaml instead of secrets.env
+### Team credentials live in the machine-scoped team home
 
-Cloudflare credentials must live in `.myco/secrets.env`, never in `myco.yaml`.
+Cloudflare credentials (`MYCO_TEAM_API_KEY`, `MYCO_TEAM_MCP_TOKEN`) live in
+`~/.myco-team/teams/<team_id>/secrets.env`, written 0600 — never in a project's
+`.myco/` or `myco.yaml`.
 
 ### Machine identity collision
 

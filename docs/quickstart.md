@@ -207,7 +207,7 @@ npm install -g @goondocks/myco-team
 
 Operators only — teammates join a team from the dashboard's **Team** page without this CLI. Use it for:
 
-- `myco-team install --name "<team name>"` — provision a team (deploys its Worker, prints a Worker URL + Team key)
+- `myco-team create --name "<team name>"` — provision a team (deploys its Worker, prints a Worker URL + Team key)
 - `myco-team update --team-id <id>` — redeploy the team's Worker
 - `myco-team status --team-id <id>` — show Worker info and credentials
 - `myco-team rotate-tokens --team-id <id>` — rotate the Team key and/or MCP token

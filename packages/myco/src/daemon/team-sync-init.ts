@@ -426,7 +426,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
    * short-circuits subsequent calls so a large backfill doesn't re-GET /config
    * on every flush tick. Both halves are non-fatal — a briefly unreachable
    * worker leaves the team un-guarded so the next flush retries. Mirrors the
-   * install-path PUT in myco-team/src/cli.ts.
+   * create-path PUT in myco-team/src/cli.ts.
    */
   async function ensureTeamProvisioned(teamId: string): Promise<void> {
     if (provisionedTeams.has(teamId)) return;

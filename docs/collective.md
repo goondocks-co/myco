@@ -53,7 +53,7 @@ Each project must belong to a team first.
 Provision the team's Worker (after installing `@goondocks/myco-team`):
 
 ```bash
-myco-team install --name "<team name>"
+myco-team create --name "<team name>"
 ```
 
 Then add that team Worker to the Collective:
@@ -84,7 +84,7 @@ npm install -g @goondocks/myco-team
 
 That adds:
 
-- `myco-team install --name "<team name>"` — provision a team (deploys its Worker)
+- `myco-team create --name "<team name>"` — provision a team (deploys its Worker)
 - `myco-team update --team-id <id>` — redeploy the team's Worker
 - `myco-team status --team-id <id>` — show Worker info and credentials
 - `myco-team rotate-tokens --team-id <id>` — rotate the Team key and/or MCP token
