@@ -1088,7 +1088,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpTarget": ".cursor/mcp.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
-      "skillsTarget": ".cursor/skills",
+      "skillsTarget": ".agents/skills",
+      "retiredSkillsTargets": [
+        ".cursor/skills"
+      ],
       "settingsTarget": ".cursor/settings.json",
       "settingsFormat": "json"
     },

@@ -30,6 +30,7 @@ import {
   LEGACY_BUILTIN_SKILL_NAMES,
   LEGACY_HOOK_GUARD_PATH,
   ensureLocalSkillsGitignore,
+  reconcileProjectSkillSymlinks,
   removeProjectLaunchers,
 } from './installer/project-files.js';
 export {
@@ -296,6 +297,12 @@ export interface ManagedProjectFilesResult {
    * Repository .gitignore entries for Myco-managed local artifacts.
    */
   gitignore: boolean;
+  /**
+   * Count of agent skill symlinks created + pruned this pass (e.g.
+   * `.claude/skills/<name>` → `.agents/skills/<name>`). Non-zero whenever the
+   * reconcile healed missing links or cleaned stale/retired ones.
+   */
+  skillSymlinks: number;
 }
 
 export type InstallScope = 'project' | 'global';
@@ -1428,10 +1435,28 @@ export class SymbiontInstaller {
    * single durable surface to call instead of growing one-off reconciler hooks.
    */
   reconcileManagedProjectFiles(): ManagedProjectFilesResult {
-    return {
-      agentsMd: this.reconcileAgentsMd(),
-      gitignore: this.updateGitignore(),
-    };
+    const agentsMd = this.reconcileAgentsMd();
+    const gitignore = this.updateGitignore();
+    // Reconcile this project's generated-skill symlinks: create missing links
+    // into machine-detected, non-opted-out agents and prune stale/retired ones.
+    // Symbiont-agnostic free function — it must NOT read `this.manifest`, which
+    // is an arbitrary `manifests[0]` for this project-files reconcile. Isolated
+    // in try/catch so a symlink-FS failure can't abort the AGENTS.md/.gitignore
+    // reconcile above.
+    let skillSymlinks = 0;
+    try {
+      const { created, pruned } = reconcileProjectSkillSymlinks(this.projectRoot, {
+        vaultDir: this.vaultDir,
+        groveId: this.groveId,
+      });
+      skillSymlinks = created + pruned;
+    } catch (err) {
+      console.warn(
+        `[reconcileManagedProjectFiles] skill symlink reconcile failed for ${this.projectRoot}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    return { agentsMd, gitignore, skillSymlinks };
   }
 
   /**
