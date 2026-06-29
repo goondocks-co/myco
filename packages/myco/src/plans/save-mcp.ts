@@ -18,6 +18,7 @@ import {
   rowProjectIdFromRequestContext,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
+import { InvalidPlanStatusError } from '../vault/types.js';
 
 export interface SaveMcpPlanInput {
   id?: string;
@@ -40,6 +41,13 @@ export type SaveMcpPlanResult =
   | { ok: false; code: 'plan-not-found'; message: string }
   | { ok: false; code: 'invalid-arguments'; message: string };
 
+function invalidStatusResult(err: unknown): SaveMcpPlanResult | null {
+  if (err instanceof InvalidPlanStatusError) {
+    return { ok: false, code: 'invalid-arguments', message: err.message };
+  }
+  return null;
+}
+
 export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
   const projectId = rowProjectIdFromRequestContext(input.requestContext);
   const scope = projectScopeFromRequestContext(input.requestContext);
@@ -61,26 +69,34 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
       return { ok: false, code: 'session-not-found', message: 'Session not found' };
     }
     const openBatch = input.session_id ? getLatestOpenBatch(input.session_id) : null;
-    const plan = persistPlan({
-      id: existingPlan.id,
-      // The creating session is set once, then immutable. A real creator is
-      // never re-homed onto a later caller — that cross-session update is
-      // recorded as lineage (PLAN_ADVANCED) instead. A legacy plan with no
-      // creator adopts the first updating session.
-      sessionId: existingPlan.session_id ?? input.session_id,
-      projectId,
-      // Omitting content on update preserves the existing body — the common
-      // case for status-only transitions (active → in_progress → completed).
-      // PlanRow.content is nullable at the DB layer; empty string is the safe
-      // fallback for that edge case (plans historically always have content).
-      content: input.content ?? existingPlan.content ?? '',
-      logicalKey: existingPlan.logical_key,
-      sourcePath: existingPlan.source_path,
-      promptBatchId: openBatch?.id ?? existingPlan.prompt_batch_id,
-      title: input.title ?? (input.content === undefined ? existingPlan.title : undefined),
-      status: input.status,
-      tags: input.tags,
-    });
+    let plan: PlanRow;
+    try {
+      plan = persistPlan({
+        id: existingPlan.id,
+        // The creating session is set once, then immutable. A real creator is
+        // never re-homed onto a later caller — that cross-session update is
+        // recorded as lineage (PLAN_ADVANCED) instead. A legacy plan with no
+        // creator adopts the first updating session.
+        sessionId: existingPlan.session_id ?? input.session_id,
+        projectId,
+        // Omitting content on update preserves the existing body — the common
+        // case for status-only transitions (active → in_progress → completed).
+        // Preserve nullable legacy content on status-only updates. Supplying
+        // new content still rewrites and re-derives title normally.
+        content: input.content ?? existingPlan.content,
+        logicalKey: existingPlan.logical_key,
+        sourcePath: existingPlan.source_path,
+        promptBatchId: openBatch?.id ?? existingPlan.prompt_batch_id,
+        title: input.title ?? (input.content === undefined ? existingPlan.title : undefined),
+        status: input.status,
+        tags: input.tags,
+        preserveTitle: input.content === undefined && input.title === undefined,
+      });
+    } catch (err) {
+      const invalid = invalidStatusResult(err);
+      if (invalid) return invalid;
+      throw err;
+    }
     return { ok: true, plan };
   }
 
@@ -115,18 +131,25 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
     normalizedSourcePath,
   });
 
-  const plan = persistPlan({
-    sessionId,
-    projectId,
-    content: input.content,
-    logicalKey,
-    sourcePath: normalizedSourcePath,
-    promptBatchId: openBatch?.id,
-    title: input.title,
-    status: input.status,
-    tags: input.tags,
-    planKey: input.plan_key ?? null,
-  });
+  let plan: PlanRow;
+  try {
+    plan = persistPlan({
+      sessionId,
+      projectId,
+      content: input.content,
+      logicalKey,
+      sourcePath: normalizedSourcePath,
+      promptBatchId: openBatch?.id,
+      title: input.title,
+      status: input.status,
+      tags: input.tags,
+      planKey: input.plan_key ?? null,
+    });
+  } catch (err) {
+    const invalid = invalidStatusResult(err);
+    if (invalid) return invalid;
+    throw err;
+  }
 
   return { ok: true, plan };
 }

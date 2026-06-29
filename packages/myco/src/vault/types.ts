@@ -19,6 +19,27 @@ export const SessionFrontmatterSchema = z.object({
 });
 
 export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned'] as const;
+export type PlanStatus = (typeof PLAN_STATUSES)[number];
+
+const WRITABLE_PLAN_STATUS_SET = new Set<string>(PLAN_STATUSES);
+
+export class InvalidPlanStatusError extends Error {
+  constructor(public readonly value: unknown) {
+    super(
+      `Invalid plan status '${String(value)}'. Expected one of: ${PLAN_STATUSES.join(', ')}.`,
+    );
+    this.name = 'InvalidPlanStatusError';
+  }
+}
+
+export function isWritablePlanStatus(value: unknown): value is PlanStatus {
+  return typeof value === 'string' && WRITABLE_PLAN_STATUS_SET.has(value);
+}
+
+export function parseWritablePlanStatus(value: unknown): PlanStatus {
+  if (isWritablePlanStatus(value)) return value;
+  throw new InvalidPlanStatusError(value);
+}
 
 export const PlanFrontmatterSchema = z.object({
   type: z.literal('plan'),

@@ -9,10 +9,13 @@
  *   - high   → solid fill
  *   - medium → 50% fill + ring
  *   - low    → ring only
- * Hover surfaces the full evidence via `title` on either component.
+ * Hover surfaces the compact summary via `title`; session list/detail callers
+ * can also pass a namespace + recordId to open structured provenance details.
  */
 
+import { useState, type ReactNode } from 'react';
 import { cn } from '../../lib/cn';
+import { ReleaseProvenanceDialog } from './ReleaseProvenanceDialog';
 
 export interface ReleaseStateAnnotation {
   state: string;
@@ -72,32 +75,49 @@ function buildTitle(annotation: ReleaseStateAnnotation): string {
 export interface ReleaseStateBadgeProps {
   annotation: ReleaseStateAnnotation | null | undefined;
   className?: string;
+  namespace?: string;
+  recordId?: string;
 }
 
-export function ReleaseStateBadge({ annotation, className }: ReleaseStateBadgeProps): JSX.Element | null {
+export function ReleaseStateBadge({
+  annotation,
+  className,
+  namespace,
+  recordId,
+}: ReleaseStateBadgeProps): JSX.Element | null {
   if (!annotation) return null;
   const label = STATE_LABEL[annotation.state] ?? annotation.state;
   const stateClass = STATE_BADGE_CLASS[annotation.state] ?? STATE_BADGE_CLASS.unknown;
+  const title = buildTitle(annotation);
+  const canOpenDetail = Boolean(namespace && recordId);
+
   return (
-    <span
+    <ReleaseStateTrigger
+      annotation={annotation}
+      namespace={namespace}
+      recordId={recordId}
+      title={title}
+      canOpenDetail={canOpenDetail}
       className={cn(
         'inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 font-sans text-[10px] font-medium uppercase tracking-wider',
+        canOpenDetail && 'cursor-pointer hover:ring-1 hover:ring-current/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-current/40',
         stateClass,
         className,
       )}
-      title={buildTitle(annotation)}
     >
       <span>{label}</span>
       {annotation.confidence ? (
         <span className="font-mono normal-case opacity-70">{annotation.confidence}</span>
       ) : null}
-    </span>
+    </ReleaseStateTrigger>
   );
 }
 
 export interface ReleaseStateDotProps {
   annotation: ReleaseStateAnnotation | null | undefined;
   className?: string;
+  namespace?: string;
+  recordId?: string;
 }
 
 /**
@@ -106,7 +126,12 @@ export interface ReleaseStateDotProps {
  * confidence is set (unknown/unreconciled rows), renders the faded state
  * fill without a ring so the dot still reads as "no signal yet."
  */
-export function ReleaseStateDot({ annotation, className }: ReleaseStateDotProps): JSX.Element | null {
+export function ReleaseStateDot({
+  annotation,
+  className,
+  namespace,
+  recordId,
+}: ReleaseStateDotProps): JSX.Element | null {
   if (!annotation) return null;
   const fill = STATE_DOT_FILL[annotation.state] ?? STATE_DOT_FILL.unknown;
   const ring = STATE_DOT_RING[annotation.state] ?? STATE_DOT_RING.unknown;
@@ -123,12 +148,85 @@ export function ReleaseStateDot({ annotation, className }: ReleaseStateDotProps)
     visual = cn(fill, 'opacity-50');
   }
 
+  const title = buildTitle(annotation);
+  const canOpenDetail = Boolean(namespace && recordId);
+
   return (
-    <span
-      className={cn('inline-block h-2.5 w-2.5 rounded-full shrink-0', visual, className)}
-      title={buildTitle(annotation)}
-      aria-label={`Release: ${buildTitle(annotation)}`}
-      role="img"
-    />
+    <ReleaseStateTrigger
+      annotation={annotation}
+      namespace={namespace}
+      recordId={recordId}
+      title={title}
+      canOpenDetail={canOpenDetail}
+      className={cn(
+        'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full',
+        canOpenDetail && 'cursor-pointer hover:bg-surface-container focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-sage/40',
+        className,
+      )}
+    >
+      <span className={cn('inline-block h-2.5 w-2.5 rounded-full', visual)} aria-hidden />
+    </ReleaseStateTrigger>
+  );
+}
+
+interface ReleaseStateTriggerProps {
+  annotation: ReleaseStateAnnotation;
+  namespace?: string;
+  recordId?: string;
+  title: string;
+  canOpenDetail: boolean;
+  className?: string;
+  children: ReactNode;
+}
+
+function ReleaseStateTrigger({
+  annotation,
+  namespace,
+  recordId,
+  title,
+  canOpenDetail,
+  className,
+  children,
+}: ReleaseStateTriggerProps): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ariaLabel = `Release provenance: ${buildTitle(annotation)}`;
+
+  if (!canOpenDetail || !namespace || !recordId) {
+    return (
+      <span className={className} title={title} aria-label={`Release: ${title}`} role="img">
+        {children}
+      </span>
+    );
+  }
+
+  return (
+    <>
+      <span
+        className={className}
+        title={title}
+        aria-label={ariaLabel}
+        role="button"
+        tabIndex={0}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        {children}
+      </span>
+      <ReleaseProvenanceDialog
+        open={open}
+        onOpenChange={setOpen}
+        namespace={namespace}
+        recordId={recordId}
+      />
+    </>
   );
 }
