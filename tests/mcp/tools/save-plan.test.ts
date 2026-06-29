@@ -170,6 +170,94 @@ describe('myco_plans op: save (in-process)', () => {
     expect(row?.title).toBe('Handoff: myco-handoff skill');
   });
 
+  it('preserves nullable legacy content and title on status-only updates by id', async () => {
+    seedSession('sess-legacy-null');
+    const existing = upsertPlan({
+      id: 'legacy-null-plan',
+      logical_key: 'session:sess-legacy-null:file:docs/plans/legacy.md',
+      title: null,
+      content: null,
+      source_path: 'docs/plans/legacy.md',
+      tags: 'legacy',
+      status: 'active',
+      session_id: 'sess-legacy-null',
+      created_at: 1700000000,
+      machine_id: 'local',
+    });
+
+    const result = await handleMycoPlans({
+      op: 'save',
+      id: existing.id,
+      status: 'completed',
+    }, mockClient(), vaultDir) as PlanSaveSuccess;
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('completed');
+    expect(result.title).toBeNull();
+
+    const row = getPlan(existing.id, ALL_PROJECTS_SCOPE);
+    expect(row?.status).toBe('completed');
+    expect(row?.content).toBeNull();
+    expect(row?.title).toBeNull();
+    expect(row?.source_path).toBe('docs/plans/legacy.md');
+    expect(row?.content_hash).toBeNull();
+  });
+
+  it('rejects invalid writable statuses through op:save, including list-only all', async () => {
+    seedSession('sess-status');
+
+    const bad = await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-status',
+      content: '# Plan',
+      plan_key: 'status-bad',
+      status: 'paused',
+    }, mockClient(), vaultDir);
+
+    expect(bad).toEqual({
+      ok: false,
+      error: "Invalid plan status 'paused'. Expected one of: active, in_progress, completed, abandoned.",
+    });
+
+    const listOnly = await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-status',
+      content: '# Plan',
+      plan_key: 'status-all',
+      status: 'all',
+    }, mockClient(), vaultDir);
+
+    expect(listOnly).toEqual({
+      ok: false,
+      error: "Invalid plan status 'all'. Expected one of: active, in_progress, completed, abandoned.",
+    });
+  });
+
+  it('still allows all as a list-only status filter', async () => {
+    seedSession('sess-list-status');
+    await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-list-status',
+      content: '# Active Plan',
+      plan_key: 'active',
+      status: 'active',
+    }, mockClient(), vaultDir);
+    await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-list-status',
+      content: '# Completed Plan',
+      plan_key: 'completed',
+      status: 'completed',
+    }, mockClient(), vaultDir);
+
+    const all = await handleMycoPlans({
+      op: 'list',
+      status: 'all',
+    }, mockClient(), vaultDir) as Array<{ status: string }>;
+
+    expect(all.map((plan) => plan.status).sort()).toEqual(['active', 'completed']);
+  });
+
   it('returns Plan not found when updating an unknown id', async () => {
     const result = await handleMycoPlans({
       op: 'save',
@@ -310,15 +398,21 @@ describe('myco_plans op: save (in-process)', () => {
     expect(result).toEqual({ ok: false, error: 'content is required when creating a new plan' });
   });
 
-  it('allows status-only update on an existing plan (content omitted preserves body)', async () => {
+  it('allows status-only update on an existing plan and preserves body plus metadata', async () => {
     seedSession('sess-1');
     const created = await handleMycoPlans({
       op: 'save',
       session_id: 'sess-1',
       content: '# Original body\n\n- [ ] step 1',
       plan_key: 'lifecycle',
+      source_path: 'docs/plans/lifecycle.md',
+      title: 'Lifecycle Plan',
+      tags: ['phase-one', 'status'],
     }, mockClient(), vaultDir) as PlanSaveSuccess;
     expect(created.status).toBe('active');
+
+    const before = getPlan(created.id, ALL_PROJECTS_SCOPE);
+    expect(before).not.toBeNull();
 
     const advanced = await handleMycoPlans({
       op: 'save',
@@ -329,9 +423,13 @@ describe('myco_plans op: save (in-process)', () => {
     expect(advanced.id).toBe(created.id);
     expect(advanced.status).toBe('in_progress');
 
-    // Body is preserved unchanged.
     const row = getPlan(created.id, ALL_PROJECTS_SCOPE);
     expect(row?.content).toBe('# Original body\n\n- [ ] step 1');
+    expect(row?.title).toBe('Lifecycle Plan');
+    expect(row?.session_id).toBe('sess-1');
+    expect(row?.source_path).toBe('docs/plans/lifecycle.md');
+    expect(row?.logical_key).toBe(before?.logical_key);
+    expect(row?.tags).toBe(before?.tags);
 
     const completed = await handleMycoPlans({
       op: 'save',

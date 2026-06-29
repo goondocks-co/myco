@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { sectionRows } from '../../packages/myco/ui/src/lib/section-rows';
+import { sectionRows, sectionRowsWithOrder } from '../../packages/myco/ui/src/lib/section-rows';
 
 // Fixed local-time anchor: 2026-05-14T15:00:00 in whichever timezone the
 // tests run. The helper buckets by local calendar day, so we derive the
@@ -91,5 +91,19 @@ describe('sectionRows', () => {
     expect(byLabel.get('TODAY')).toBeUndefined();
     expect(byLabel.get('YESTERDAY')).toEqual(['today']);
     expect(byLabel.get('EARLIER')).toEqual(['yesterday', 'earlier']);
+  });
+
+  it('returns a flattened orderedRows array matching rendered section order', () => {
+    const rows: Row[] = [
+      { id: 'today1', status: 'completed', started_at: TODAY_SEC },
+      { id: 'active1', status: 'active', started_at: EARLIER_SEC },
+      { id: 'earlier1', status: 'completed', started_at: EARLIER_SEC },
+      { id: 'today2', status: 'completed', started_at: TODAY_SEC + 10 },
+    ];
+
+    const result = sectionRowsWithOrder(rows, { isActive, startedAtEpochSec, nowEpochSec: NOW_SEC });
+
+    expect(result.sections.map((s) => s.label)).toEqual(['ACTIVE', 'TODAY', 'EARLIER']);
+    expect(result.orderedRows.map((r) => r.id)).toEqual(['active1', 'today1', 'today2', 'earlier1']);
   });
 });

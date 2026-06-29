@@ -19,9 +19,9 @@ const ACTIVE_STRIPE: Record<RowAccent, string> = {
 };
 
 const CURSOR_RING: Record<RowAccent, string> = {
-  sage: 'bg-surface-container/60 ring-1 ring-inset ring-sage/30',
-  ochre: 'bg-surface-container/60 ring-1 ring-inset ring-ochre/30',
-  terra: 'bg-surface-container/60 ring-1 ring-inset ring-terracotta/30',
+  sage: 'ring-1 ring-inset ring-sage/40',
+  ochre: 'ring-1 ring-inset ring-ochre/40',
+  terra: 'ring-1 ring-inset ring-terracotta/40',
 };
 
 export const Row = forwardRef<HTMLDivElement, RowProps>(

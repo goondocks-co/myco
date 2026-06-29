@@ -103,6 +103,14 @@ function assertInvariants(label: string): void {
   ).toBe(false);
 }
 
+describe('VAULT_GITIGNORE runtime pins', () => {
+  it('covers every project-scope runtime pin artifact', () => {
+    expect(VAULT_GITIGNORE).toContain('runtime.command\n');
+    expect(VAULT_GITIGNORE).toContain('runtime.home\n');
+    expect(VAULT_GITIGNORE).toContain('runtime-exec\n');
+  });
+});
+
 /* ---------- Property test: every successful method maintains every invariant ---------- */
 
 describe('ProjectVault invariants — held after every public method', () => {

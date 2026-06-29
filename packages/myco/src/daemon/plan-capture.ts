@@ -25,6 +25,7 @@ import {
   TRANSCRIPT_SOURCE_PREFIX,
 } from '@myco/plans/identity.js';
 import { planTagEnvelopeRegex } from '@myco/plans/tag-envelopes.js';
+import { parseWritablePlanStatus } from '../vault/types.js';
 
 // ---------------------------------------------------------------------------
 // Transcript-based plan extraction
@@ -232,7 +233,7 @@ function fileTitleFromSourcePath(sourcePath?: string | null): string | null {
 }
 
 export interface ResolvePlanTitleInput {
-  content: string;
+  content: string | null;
   title?: string | null;
   sourcePath?: string | null;
   planKey?: string | null;
@@ -242,7 +243,7 @@ export function resolvePlanTitle(input: ResolvePlanTitleInput): string | null {
   const explicitTitle = input.title?.trim();
   if (explicitTitle) return explicitTitle;
 
-  const headingTitle = parsePlanTitle(input.content);
+  const headingTitle = input.content ? parsePlanTitle(input.content) : null;
   if (headingTitle) return headingTitle;
 
   const sourcePathTitle = fileTitleFromSourcePath(input.sourcePath);
@@ -255,7 +256,7 @@ export interface PersistPlanInput {
   id?: string;
   sessionId?: string | null;
   projectId?: string | null;
-  content: string;
+  content: string | null;
   logicalKey: string;
   sourcePath?: string | null;
   promptBatchId?: number | null;
@@ -265,6 +266,7 @@ export interface PersistPlanInput {
   planKey?: string | null;
   createdAt?: number;
   updatedAt?: number | null;
+  preserveTitle?: boolean;
   /** Optional logger for warn-level cross-channel overwrite detection. */
   logger?: Logger;
 }
@@ -286,25 +288,31 @@ export interface PersistPlanInput {
 export function persistPlan(input: PersistPlanInput): PlanRow {
   const createdAt = input.createdAt ?? Math.floor(Date.now() / 1000);
   const updatedAt = input.updatedAt ?? createdAt;
-  const contentHash = createHash(CONTENT_HASH_ALGORITHM).update(input.content).digest('hex');
+  const contentHash = input.content === null
+    ? null
+    : createHash(CONTENT_HASH_ALGORITHM).update(input.content).digest('hex');
   const projectId = input.projectId ?? null;
   const lookupScope: import('@myco/grove/ids.js').ProjectScope = projectId
     ? { kind: 'project', id: projectId as import('@myco/grove/ids.js').GroveProjectId }
     : { kind: 'global' };
   const existingPlan = getPlanByLogicalKey(input.logicalKey, lookupScope);
-  const status = input.status ?? existingPlan?.status ?? 'active';
+  const status = input.status === undefined
+    ? (existingPlan?.status ?? 'active')
+    : parseWritablePlanStatus(input.status);
   const promptBatchId = input.promptBatchId === undefined
     ? (existingPlan?.prompt_batch_id ?? null)
     : input.promptBatchId;
   const tags = input.tags === undefined
     ? (existingPlan?.tags ?? null)
     : normalizePlanTags(input.tags);
-  const resolvedTitle = resolvePlanTitle({
-    content: input.content,
-    title: input.title,
-    sourcePath: input.sourcePath,
-    planKey: input.planKey,
-  });
+  const resolvedTitle = input.preserveTitle && existingPlan
+    ? existingPlan.title
+    : resolvePlanTitle({
+      content: input.content,
+      title: input.title,
+      sourcePath: input.sourcePath,
+      planKey: input.planKey,
+    });
 
   if (
     existingPlan

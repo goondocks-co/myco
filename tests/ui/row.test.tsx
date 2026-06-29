@@ -52,4 +52,18 @@ describe('Row', () => {
     expect(node.getAttribute('data-active')).toBe('true');
     expect(node.getAttribute('aria-selected')).toBe('true');
   });
+
+  it('keeps selected styling dominant when the keyboard cursor is also on the row', () => {
+    const { container } = render(<Row isActive isCursor accent="sage">selected cursor</Row>);
+    const className = (container.firstChild as HTMLElement).className;
+    expect(className).toContain('bg-sage');
+    expect(className).not.toContain('ring-1');
+  });
+
+  it('renders cursor styling as focus chrome when the row is not selected', () => {
+    const { container } = render(<Row isCursor accent="sage">cursor only</Row>);
+    const className = (container.firstChild as HTMLElement).className;
+    expect(className).toContain('ring-1');
+    expect(className).toContain('ring-sage');
+  });
 });

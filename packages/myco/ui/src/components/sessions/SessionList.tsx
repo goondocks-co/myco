@@ -12,9 +12,10 @@ import { useSymbionts } from '../../hooks/use-symbionts';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { shortSession, formatEpochAgo } from '../../lib/format';
 import { ReleaseStateDot } from '../release-state/ReleaseStateBadge';
-import { sectionRows } from '../../lib/section-rows';
+import { sectionRowsWithOrder } from '../../lib/section-rows';
 import { forwardRef, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
+import { buildSymbiontDisplayNameResolver } from '../../lib/symbiont-labels';
 
 /* ---------- Constants ---------- */
 
@@ -72,7 +73,7 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
           </h3>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <ReleaseStateDot annotation={session.release_state} />
+          <ReleaseStateDot annotation={session.release_state} namespace="sessions" recordId={session.id} />
           <span className="font-mono text-[10px] text-on-surface-variant whitespace-nowrap">
             {formatEpochAgo(session.started_at)}
           </span>
@@ -95,10 +96,10 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
         </div>
       </div>
 
-      {/* Meta line: agent · symbiont · prompts · tools */}
+      {/* Meta line: symbiont · prompts · tools */}
       <div className="mt-1.5 ml-5 flex items-center justify-between gap-3">
         <div className="min-w-0 truncate font-mono text-[11px] text-on-surface-variant">
-          {session.agent} · {symbiontDisplayName} · {session.prompt_count}p · {session.tool_count}t
+          {symbiontDisplayName} · {session.prompt_count}p · {session.tool_count}t
         </div>
         <ActivitySparkline
           data={session.activity_buckets}
@@ -179,18 +180,8 @@ export function SessionList({
   const { data: impact } = useSessionImpact(deleteTarget?.id ?? null);
   const { data: symbiontsData } = useSymbionts();
 
-  // Lookup from the DB-stored agent name (e.g. 'claude-code') to the
-  // manifest display name. Falls back to the raw name for sessions whose
-  // symbiont is no longer present — better than showing "unknown".
   const symbiontDisplayName = useMemo(() => {
-    const lookup = new Map<string, string>();
-    for (const s of symbiontsData?.symbionts ?? []) {
-      lookup.set(s.name, s.displayName);
-    }
-    return (agent: string | null | undefined): string => {
-      if (!agent) return 'unknown';
-      return lookup.get(agent) ?? agent;
-    };
+    return buildSymbiontDisplayNameResolver(symbiontsData?.symbionts ?? []);
   }, [symbiontsData]);
 
   const { data, isLoading, isError, error } = useSessions({
@@ -223,6 +214,10 @@ export function SessionList({
 
   const sessions = data?.sessions ?? [];
   const total = data?.total ?? 0;
+  const { sections, orderedRows } = useMemo(() => sectionRowsWithOrder(sessions, {
+    isActive: (s) => s.status === 'active',
+    startedAtEpochSec: (s) => s.started_at,
+  }), [sessions]);
 
   // Master-detail default: on first arrival at /sessions with no row
   // selected, jump to the topmost entry. The `didAutoSelect` ref makes
@@ -244,14 +239,14 @@ export function SessionList({
     const hasDeepLinkFilter =
       params.has('status') || params.has('agent') || params.has('has_plan');
     if (hasDeepLinkFilter) return;
-    if (!selectedId && !isLoading && sessions.length > 0) {
+    if (!selectedId && !isLoading && orderedRows.length > 0) {
       didAutoSelect.current = true;
-      onSelectSession(sessions[0].id, { replace: true });
+      onSelectSession(orderedRows[0].id, { replace: true });
     }
-  }, [selectedId, isLoading, sessions, onSelectSession, location.search]);
+  }, [selectedId, isLoading, orderedRows, onSelectSession, location.search]);
 
   const nav = useListKeyboardNav({
-    items: sessions,
+    items: orderedRows,
     getId: (s) => s.id,
     selectedId,
     onActivate: (id) => onSelectSession(id),
@@ -329,14 +324,6 @@ export function SessionList({
             className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sage/40"
           >
             {(() => {
-              const sections = sectionRows(sessions, {
-                isActive: (s) => s.status === 'active',
-                startedAtEpochSec: (s) => s.started_at,
-              });
-              // Keyboard nav was wired with items=sessions (flat array). The
-              // setRowRef/cursorIndex indices must match positions in that
-              // flat array, NOT positions within their section — so j/k
-              // crosses section boundaries seamlessly.
               let flatIdx = 0;
               return sections.map((section) => (
                 <div key={section.label}>

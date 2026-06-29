@@ -7,8 +7,10 @@ import { MCP_SEARCH_DEFAULT_LIMIT, MCP_SESSIONS_DEFAULT_LIMIT, MCP_SKILLS_DEFAUL
 import { OBSERVATION_TYPES, PLAN_STATUSES, SPORE_STATUSES } from '../vault/types.js';
 import { RELEASE_CONFIDENCE, RELEASE_STATES } from '../db/queries/release-provenance.js';
 
-/** Plan statuses plus 'all' for filtering. */
-const PLAN_STATUS_FILTER = [...PLAN_STATUSES, 'all'] as const;
+/** Writable plan statuses. */
+const WRITABLE_PLAN_STATUS = PLAN_STATUSES;
+/** Plan list-filter statuses plus 'all'. */
+const PLAN_STATUS_FILTER = [...WRITABLE_PLAN_STATUS, 'all'] as const;
 const DEFAULT_CORTEX_PRIORITY = 100;
 
 interface ToolInputSchema {
@@ -162,7 +164,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         source_path: { type: 'string', description: 'Path to the plan file when the plan is also written to disk. Pass this OR plan_key, never both.' },
         plan_key: { type: 'string', description: 'Stable key for non-file-backed plans. Pass this OR source_path, never both.' },
         title: { type: 'string', description: 'Optional explicit title for op: "save"' },
-        status: { type: 'string', enum: PLAN_STATUS_FILTER, description: 'Filter by status for op: "list" or set plan status for op: "save"' },
+        status: { type: 'string', enum: PLAN_STATUS_FILTER, description: 'Filter by status for op: "list" ("all" means unfiltered) or set writable plan status for op: "save" (active, in_progress, completed, abandoned only)' },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
         limit: { type: 'number', description: 'Max results for op: "list"' },
         force_remote: { type: 'boolean', description: 'Allow op: "delete" to remove a plan belonging to another machine. Enqueues a tombstone for team sync.' },

@@ -16,8 +16,13 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { projectScopeFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
+import {
+  filesystemRootFromRequestContext,
+  projectScopeFromRequestContext,
+  type MycoRequestContext,
+} from '@myco/grove/request-context.js';
 import { isGroveEraId } from '@myco/grove/ids.js';
+import { saveMcpPlan } from '@myco/plans/save-mcp.js';
 import {
   releaseStateAnnotation,
   releaseStateAnnotationMap,
@@ -423,5 +428,67 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     };
   }
 
-  return { handleDeleteSession, handleCompleteSession, handleGetSessionImpact, handleDeletePlan };
+  /** PATCH /api/plans/:id — status-only update through the shared plan write path. */
+  async function handlePatchPlan(req: RouteRequest): Promise<RouteResponse> {
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const existing = getPlan(req.params.id, scope);
+    if (!existing) return { status: 404, body: errorBody('plan-not-found', 'Plan not found') };
+
+    const body = req.body as { status?: unknown } | undefined;
+    if (typeof body?.status !== 'string') {
+      return {
+        status: 400,
+        body: errorBody(
+          'invalid-plan-status',
+          'status must be one of: active, in_progress, completed, abandoned.',
+        ),
+      };
+    }
+
+    const localMachineId = getTeamMachineId();
+    if (existing.machine_id !== localMachineId) {
+      logger.warn(LOG_KINDS.API_SESSION_DELETE, 'Cross-machine plan status update rejected', {
+        plan_id: existing.id,
+        plan_machine_id: existing.machine_id,
+        local_machine_id: localMachineId,
+      });
+      return {
+        status: 403,
+        body: errorBody(
+          'cross-machine-plan-status',
+          'Plan belongs to another machine; status edits are read-only from this machine.',
+        ),
+      };
+    }
+
+    const result = saveMcpPlan({
+      id: existing.id,
+      status: body.status,
+      projectRoot: req.requestContext ? filesystemRootFromRequestContext(req.requestContext) : vaultDir,
+      requestContext: req.requestContext,
+    });
+
+    if (!result.ok) {
+      if (result.code === 'invalid-arguments') {
+        return { status: 400, body: errorBody('invalid-plan-status', result.message) };
+      }
+      if (result.code === 'plan-not-found') {
+        return { status: 404, body: errorBody('plan-not-found', result.message) };
+      }
+      return { status: 400, body: errorBody(result.code, result.message) };
+    }
+
+    const plan = result.plan;
+    return {
+      body: {
+        ok: true,
+        id: plan.id,
+        status: plan.status,
+        session_id: plan.session_id,
+        updated_at: plan.updated_at,
+      },
+    };
+  }
+
+  return { handleDeleteSession, handleCompleteSession, handleGetSessionImpact, handleDeletePlan, handlePatchPlan };
 }

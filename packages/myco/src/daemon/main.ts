@@ -85,6 +85,7 @@ import {
   handleGetSessionPlans,
   createSessionMutationHandlers,
 } from './api/sessions.js';
+import { createReleaseProvenanceHandlers } from './api/release-provenance.js';
 import {
   handleListSpores,
   createGetSporeHandler,
@@ -1666,10 +1667,17 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
   server.registerRoute('DELETE', '/api/plans/:id', sessionMutations.handleDeletePlan);
+  server.registerRoute('PATCH', '/api/plans/:id', sessionMutations.handlePatchPlan);
   server.registerRoute('GET', '/api/sessions/:id/batches', handleGetSessionBatches);
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
   server.registerRoute('GET', '/api/sessions/:id/plans', handleGetSessionPlans);
+  const releaseProvenanceHandlers = createReleaseProvenanceHandlers({ liveConfig, logger });
+  server.registerRoute(
+    'GET',
+    '/api/release-provenance/:namespace/:recordId',
+    tenantRoute({ machineId, logger }, releaseProvenanceHandlers.handleGetReleaseProvenanceDetail),
+  );
 
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {

@@ -7,11 +7,45 @@ import { SessionPlans } from '../../packages/myco/ui/src/components/sessions/Ses
 
 const useSessionPlansMock = vi.fn();
 const mutateAsyncMock = vi.fn();
+const updateStatusMock = vi.fn();
 const useDeletePlanMock = vi.fn();
+const useUpdatePlanStatusMock = vi.fn();
 
 mock.module('../../packages/myco/ui/src/hooks/use-sessions', () => ({
   useSessionPlans: (...args: unknown[]) => useSessionPlansMock(...args),
   useDeletePlan: (...args: unknown[]) => useDeletePlanMock(...args),
+  useUpdatePlanStatus: (...args: unknown[]) => useUpdatePlanStatusMock(...args),
+}));
+
+mock.module('../../packages/myco/ui/src/components/ui/select', () => ({
+  Select: ({
+    value,
+    onValueChange,
+    disabled,
+    children,
+  }: {
+    value: string;
+    onValueChange: (value: string) => void;
+    disabled?: boolean;
+    children: React.ReactNode;
+  }) => (
+    <select
+      aria-label="Plan status"
+      value={value}
+      disabled={disabled}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+      onChange={(event) => onValueChange(event.currentTarget.value)}
+    >
+      {children}
+    </select>
+  ),
+  SelectTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SelectValue: () => null,
+  SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SelectItem: ({ value, children }: { value: string; children: React.ReactNode }) => (
+    <option value={value}>{children}</option>
+  ),
 }));
 
 // Radix Dialog pulls React from the UI package's nested node_modules, which
@@ -44,11 +78,13 @@ mock.module('../../packages/myco/ui/src/components/ui/confirm-dialog', () => ({
 describe('SessionPlans', () => {
   beforeEach(() => {
     mutateAsyncMock.mockReset();
+    updateStatusMock.mockReset();
     useSessionPlansMock.mockReset();
     useDeletePlanMock.mockReset();
+    useUpdatePlanStatusMock.mockReset();
     useSessionPlansMock.mockReturnValue({
       data: [{
-        id: 'plan-1',
+        id: 'plan-1234567890abcdef',
         status: 'active',
         title: 'Primary Plan',
         content: '# Primary Plan\n\nDetails',
@@ -66,7 +102,13 @@ describe('SessionPlans', () => {
       isError: false,
       isPending: false,
     });
+    useUpdatePlanStatusMock.mockReturnValue({
+      mutateAsync: updateStatusMock,
+      isError: false,
+      isPending: false,
+    });
     mutateAsyncMock.mockResolvedValue({ ok: true });
+    updateStatusMock.mockResolvedValue({ ok: true });
   });
 
   it('renders captured plans', () => {
@@ -92,7 +134,7 @@ describe('SessionPlans', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete Plan' }));
 
     await waitFor(() => {
-      expect(mutateAsyncMock).toHaveBeenCalledWith('plan-1');
+      expect(mutateAsyncMock).toHaveBeenCalledWith('plan-1234567890abcdef');
     });
   });
 
@@ -127,6 +169,141 @@ describe('SessionPlans', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete plan' }));
     expect(header).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('shows the full plan ID and copy button does not toggle expansion', async () => {
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn(() => Promise.resolve()) },
+    });
+    render(<SessionPlans sessionId="sess-1" />);
+
+    const header = screen.getByRole('button', { name: /Primary Plan/ });
+    expect(screen.getByText('plan-1234567890abcdef')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Copy plan ID/ }));
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plan-1234567890abcdef');
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Copy plan ID/ })).toHaveTextContent('Copied');
+    });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('status select updates status without toggling expansion', async () => {
+    render(<SessionPlans sessionId="sess-1" />);
+
+    const header = screen.getByRole('button', { name: /Primary Plan/ });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Plan status' }), {
+      target: { value: 'in_progress' },
+    });
+
+    await waitFor(() => {
+      expect(updateStatusMock).toHaveBeenCalledWith({
+        planId: 'plan-1234567890abcdef',
+        status: 'in_progress',
+      });
+    });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('disables status select while update is pending', async () => {
+    updateStatusMock.mockReturnValue(new Promise(() => {}));
+
+    render(<SessionPlans sessionId="sess-1" />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Plan status' }), {
+      target: { value: 'completed' },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: 'Plan status' })).toBeDisabled();
+    });
+  });
+
+  it('renders status update errors, including remote-owned failures', async () => {
+    updateStatusMock.mockRejectedValue({
+      status: 403,
+      body: {
+        error: {
+          code: 'cross-machine-plan-status',
+          message: 'Plan belongs to another machine.',
+        },
+      },
+    });
+
+    render(<SessionPlans sessionId="sess-1" />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Plan status' }), {
+      target: { value: 'completed' },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Plan belongs to another machine/)).toBeInTheDocument();
+    });
+  });
+
+  it('scopes remote-owned read-only state to the failed plan', async () => {
+    useSessionPlansMock.mockReturnValue({
+      data: [
+        {
+          id: 'remote-plan',
+          status: 'active',
+          title: 'Remote Plan',
+          content: '# Remote Plan body',
+          source_path: null,
+          content_hash: 'hash-remote',
+          session_id: 'sess-1',
+          created_at: 1700000000,
+          updated_at: 1700000000,
+        },
+        {
+          id: 'local-plan',
+          status: 'active',
+          title: 'Local Plan',
+          content: '# Local Plan body',
+          source_path: null,
+          content_hash: 'hash-local',
+          session_id: 'sess-1',
+          created_at: 1700000001,
+          updated_at: 1700000001,
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    });
+    updateStatusMock
+      .mockRejectedValueOnce({
+        status: 403,
+        body: {
+          error: {
+            code: 'cross-machine-plan-status',
+            message: 'Plan belongs to another machine.',
+          },
+        },
+      })
+      .mockResolvedValueOnce({ ok: true });
+
+    render(<SessionPlans sessionId="sess-1" />);
+    const statusSelects = screen.getAllByRole('combobox', { name: 'Plan status' });
+
+    fireEvent.change(statusSelects[0], { target: { value: 'completed' } });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Plan belongs to another machine/)).toBeInTheDocument();
+      expect(statusSelects[0]).toBeDisabled();
+    });
+    expect(statusSelects[1]).not.toBeDisabled();
+
+    fireEvent.change(statusSelects[1], { target: { value: 'in_progress' } });
+
+    await waitFor(() => {
+      expect(updateStatusMock).toHaveBeenLastCalledWith({
+        planId: 'local-plan',
+        status: 'in_progress',
+      });
+    });
   });
 
   it('renders in-progress plan expanded by default and others collapsed', () => {

@@ -11,6 +11,11 @@ export interface SectionedRows<T> {
   rows: T[];
 }
 
+export interface SectionRowsWithOrder<T> {
+  sections: Array<SectionedRows<T>>;
+  orderedRows: T[];
+}
+
 export interface SectionRowsOptions<T> {
   /** Returns true when the row counts as active (status === 'active' / 'running'). */
   isActive: (row: T) => boolean;
@@ -34,6 +39,18 @@ export function sectionRows<T>(
   rows: readonly T[],
   options: SectionRowsOptions<T>,
 ): Array<SectionedRows<T>> {
+  return sectionRowsWithOrder(rows, options).sections;
+}
+
+/**
+ * Bucket rows into time-window sections and return the flattened rendered
+ * order alongside the sections. Use this when row identity, keyboard nav, or
+ * default selection must match the visual order exactly.
+ */
+export function sectionRowsWithOrder<T>(
+  rows: readonly T[],
+  options: SectionRowsOptions<T>,
+): SectionRowsWithOrder<T> {
   const { isActive, startedAtEpochSec, nowEpochSec } = options;
 
   const nowSec = nowEpochSec ?? Math.floor(Date.now() / 1000);
@@ -68,10 +85,13 @@ export function sectionRows<T>(
   }
 
   const sections: Array<SectionedRows<T>> = [];
+  const orderedRows: T[] = [];
   for (const label of SECTION_ORDER) {
     if (buckets[label].length > 0) {
-      sections.push({ label, rows: buckets[label] });
+      const section = { label, rows: buckets[label] };
+      sections.push(section);
+      orderedRows.push(...section.rows);
     }
   }
-  return sections;
+  return { sections, orderedRows };
 }
