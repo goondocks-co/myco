@@ -43,6 +43,7 @@ import { getState, setState } from '@myco/db/queries/agent-state.js';
 import {
   insertSkillRecord, getSkillRecord, getSkillRecordByName,
   listSkillRecords, updateSkillRecord, deleteSkillRecordCascade,
+  type SkillRecordRow,
 } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { notify } from '@myco/notifications/notify.js';
@@ -62,7 +63,9 @@ import {
 import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
+  extractFrontmatterField,
 } from './skill-validator.js';
+import { applySkillEdits, type SkillEdit } from './skill-edit.js';
 import { collectSkillWriteIssues } from './skill-write-validator.js';
 import { scanForContamination } from './skill-contamination.js';
 import {
@@ -1238,6 +1241,113 @@ export function createSkillTools(deps: VaultToolDeps) {
     };
   }
 
+  /**
+   * Shared evolve-path promotion: write updated SKILL.md, sync symlinks,
+   * commit the DB update + lineage entry in one transaction (rolling back
+   * the file on failure), emit the evolved notification, and reset the
+   * circuit-breaker counter on success.
+   *
+   * Used by vault_write_skill's evolve branch and vault_edit_skill.
+   * The conditional spread `...(source_ids !== undefined ? ...)` is
+   * intentional — a naive `source_ids: params.source_ids` would clobber
+   * stored IDs with undefined when the caller omits the field.
+   */
+  async function writeEvolvedSkill(params: {
+    existing: SkillRecordRow;
+    name: string;
+    content: string;
+    priorContent: string;
+    display_name: string;
+    description: string;
+    source_ids?: string;
+    rationale?: string;
+  }): Promise<
+    | { ok: true; recordId: string; generation: number; relativePath: string }
+    | { ok: false; error: string }
+  > {
+    const root = projectRoot ?? process.cwd();
+
+    try {
+      const writeResult = writePublishedSkillFile(root, params.name, params.content);
+      if (!writeResult.ok) {
+        return { ok: false, error: 'Invalid skill name: resolved path escapes .agents/skills' };
+      }
+    } catch (err) {
+      return { ok: false, error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}` };
+    }
+
+    try {
+      syncPublishedSkillSymlinks(root, params.name);
+    } catch (err) {
+      console.warn('[writeEvolvedSkill] syncSkillSymlinks failed:', err instanceof Error ? err.message : err);
+    }
+
+    const now = epochSeconds();
+    const relativePath = publishedSkillRelativePath(params.name);
+    const generation = params.existing.generation + 1;
+    const recordId = params.existing.id;
+
+    const txDb = getDatabase();
+    try {
+      txDb.transaction(() => {
+        updateSkillRecord(params.existing.id, {
+          display_name: params.display_name,
+          description: params.description,
+          generation,
+          ...(params.source_ids !== undefined ? { source_ids: params.source_ids } : {}),
+          path: relativePath,
+          updated_at: now,
+        }, scope);
+
+        insertLineage({
+          id: crypto.randomUUID(),
+          project_id: projectId,
+          skill_id: params.existing.id,
+          generation,
+          action: 'updated',
+          rationale: params.rationale ?? 'Skill content updated',
+          source_ids_added: params.source_ids,
+          content_snapshot: params.content,
+          created_at: now,
+        });
+      })();
+    } catch (err) {
+      try {
+        const rollback = writePublishedSkillFile(root, params.name, params.priorContent);
+        if (!rollback.ok) {
+          console.warn('[writeEvolvedSkill] file rollback refused:', rollback.reason);
+        }
+      } catch (rollbackErr) {
+        console.warn(
+          '[writeEvolvedSkill] file rollback after DB failure also failed:',
+          rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
+        );
+      }
+      return {
+        ok: false,
+        error: `Skill write aborted: database transaction failed and on-disk state was rolled back. ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    emitSkillNotification(vaultDir, 'evolved', {
+      name: params.name,
+      display_name: params.display_name,
+      description: params.description,
+      recordId,
+      generation,
+    });
+    embeddingManager?.onContentWritten('skill_records', recordId, params.description, {
+      status: 'active',
+      name: params.name,
+      ...(scope.kind === 'project' ? { project_id: scope.id } : {}),
+    }).catch(() => {});
+
+    // Reset consecutive-failure counter on successful evolve.
+    skillWriteFailureCounts.get(deps.runId)?.delete(params.name);
+
+    return { ok: true, recordId, generation, relativePath };
+  }
+
   const vaultSkillCandidates = tool(
     'vault_skill_candidates',
     'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
@@ -1748,100 +1858,29 @@ export function createSkillTools(deps: VaultToolDeps) {
         return textResult(result);
       }
 
-      // Evolve path: update existing record, bump generation, preserve
-      // prior SKILL.md content on rollback. This branch stays inline
-      // because its rollback semantics (restore prior content) differ
-      // from the create helper.
+      // Evolve path: delegate to the shared writeEvolvedSkill helper.
       // priorContent was already read above; reuse it to avoid a second
       // disk read. If the file was absent despite a DB record existing
       // (orphan), fall back to re-reading — this will throw if still
       // missing, preserving the same behavior as before.
       const priorSkillContent = priorContent ?? readFileSync(resolvedPaths.paths.skillPath, 'utf-8');
 
-      try {
-        const writeResult = writePublishedSkillFile(root, args.name, args.content);
-        if (!writeResult.ok) {
-          return textResult({ error: 'Invalid skill name: resolved path escapes .agents/skills' });
-        }
-      } catch (err) {
-        return textResult({ error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}` });
-      }
-
-      try {
-        syncPublishedSkillSymlinks(root, args.name);
-      } catch (err) {
-        console.warn('[vault_write_skill] syncSkillSymlinks failed:', err instanceof Error ? err.message : err);
-      }
-
-      const now = epochSeconds();
-      const relativePath = publishedSkillRelativePath(args.name);
-      const generation = existing.generation + 1;
-      const recordId = existing.id;
-
-      const txDb = getDatabase();
-      try {
-        txDb.transaction(() => {
-          updateSkillRecord(existing.id, {
-            display_name: args.display_name,
-            description: args.description,
-            generation,
-            ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
-            path: relativePath,
-            updated_at: now,
-          }, scope);
-
-          insertLineage({
-            id: crypto.randomUUID(),
-            project_id: projectId,
-            skill_id: existing.id,
-            generation,
-            action: 'updated',
-            rationale: args.rationale ?? 'Skill content updated',
-            source_ids_added: args.source_ids,
-            content_snapshot: args.content,
-            created_at: now,
-          });
-        })();
-      } catch (err) {
-        // Route the rollback through the single skill-artifact writer too, so
-        // path/guard semantics can never diverge between write and rollback.
-        try {
-          const rollback = writePublishedSkillFile(root, args.name, priorSkillContent);
-          if (!rollback.ok) {
-            console.warn('[vault_write_skill] file rollback refused:', rollback.reason);
-          }
-        } catch (rollbackErr) {
-          console.warn(
-            '[vault_write_skill] file rollback after DB failure also failed:',
-            rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
-          );
-        }
-        return textResult({
-          error: `Skill write aborted: database transaction failed and on-disk state was rolled back. ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
-
-      emitSkillNotification(vaultDir, 'evolved', {
+      const evolveResult = await writeEvolvedSkill({
+        existing,
         name: args.name,
+        content: args.content,
+        priorContent: priorSkillContent,
         display_name: args.display_name,
         description: args.description,
-        recordId,
-        generation,
+        source_ids: args.source_ids,
+        rationale: args.rationale,
       });
-      embeddingManager?.onContentWritten('skill_records', recordId, args.description, {
-        status: 'active',
-        name: args.name,
-        ...(scope.kind === 'project' ? { project_id: scope.id } : {}),
-      }).catch(() => {});
-
-      // Reset consecutive-failure counter on successful evolve.
-      skillWriteFailureCounts.get(deps.runId)?.delete(args.name);
-
+      if (!evolveResult.ok) return textResult({ error: evolveResult.error });
       return textResult({
-        id: recordId,
+        id: evolveResult.recordId,
         name: args.name,
-        path: relativePath,
-        generation,
+        path: evolveResult.relativePath,
+        generation: evolveResult.generation,
       });
     },
     { annotations: { openWorldHint: true } },
@@ -2069,6 +2108,104 @@ export function createSkillTools(deps: VaultToolDeps) {
     { annotations: { openWorldHint: true } },
   );
 
+  const vaultEditSkill = tool(
+    'vault_edit_skill',
+    'Update an EXISTING skill with minimal str_replace edits (old_string→new_string). Emit only changed regions — do not resend the whole file. The reconstructed skill is validated by the same gates as vault_write_skill (it rejects ANY hard OR warn contamination, fabricated refs, length/floor violations, or protected-frontmatter changes). Use vault_write_skill for creates and MERGE/NARROW.',
+    {
+      name: z.string().describe('Existing skill directory name (kebab-case, no colon).'),
+      edits: z.array(z.object({
+        old_string: z.string(),
+        new_string: z.string(),
+        replace_all: z.boolean().optional(),
+      })).describe('Ordered str_replace edits; each old_string matches exactly once unless replace_all.'),
+      source_ids: z.string().optional(),
+      rationale: z.string().optional(),
+    },
+    async (args: { name: string; edits: SkillEdit[]; source_ids?: string; rationale?: string }) => {
+      if (!args.name || /[/\\]|\.\./.test(args.name)) {
+        return textResult({
+          error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
+        });
+      }
+
+      const existing = getSkillRecordByName(args.name, scope);
+      if (!existing) {
+        return textResult({
+          error: `Skill "${args.name}" does not exist — use vault_write_skill to create it.`,
+        });
+      }
+
+      const root = projectRoot ?? process.cwd();
+      const resolvedPaths = resolvePublishedSkillPaths(root, args.name);
+      if (!resolvedPaths.ok || !existsSync(resolvedPaths.paths.skillPath)) {
+        return textResult({ error: `Skill "${args.name}" has no on-disk SKILL.md to edit.` });
+      }
+      const priorContent = readFileSync(resolvedPaths.paths.skillPath, 'utf-8');
+
+      // Shared per-skill circuit breaker — mirror vault_write_skill's check-before-increment
+      // ordering: check the count first, then increment on failure. Defers on the 4th failure.
+      const noteFailure = (): { deferred: boolean } => {
+        const runCounts = skillWriteFailureCounts.get(deps.runId) ?? new Map<string, number>();
+        const currentCount = runCounts.get(args.name) ?? 0;
+        if (currentCount >= SKILL_WRITE_FAILURE_CAP) return { deferred: true };
+        runCounts.set(args.name, currentCount + 1);
+        skillWriteFailureCounts.set(deps.runId, runCounts);
+        return { deferred: false };
+      };
+      const deferredResult = () => textResult({
+        deferred: true,
+        name: args.name,
+        error:
+          `Skill ${args.name} deferred after ${SKILL_WRITE_FAILURE_CAP} failed validation attempts this run — ` +
+          'stop retrying it; continue with other skills and record it via vault_report.',
+      });
+
+      const applied = applySkillEdits(priorContent, args.edits);
+      if (!applied.ok) {
+        if (noteFailure().deferred) return deferredResult();
+        return textResult({ error: applied.error });
+      }
+      const newContent = applied.content;
+
+      const { issues, violations, claim, descWindow } = collectSkillWriteIssues({
+        content: newContent,
+        name: args.name,
+        priorContent,
+        root,
+      });
+      if (issues.length > 0 || violations.length > 0 || claim !== null) {
+        if (noteFailure().deferred) return deferredResult();
+        return textResult({
+          error: 'Skill edit rejected — fix all listed issues and retry.',
+          ...(issues.length > 0 ? { issues } : {}),
+          ...(violations.length > 0 ? { violations } : {}),
+          ...(claim !== null ? { fabrication: claim } : {}),
+          ...(descWindow ? { description_window: descWindow } : {}),
+        });
+      }
+
+      const description = extractFrontmatterField(newContent, 'description') ?? existing.description;
+      const result = await writeEvolvedSkill({
+        existing,
+        name: args.name,
+        content: newContent,
+        priorContent,
+        display_name: existing.display_name,
+        description,
+        source_ids: args.source_ids,
+        rationale: args.rationale ?? 'Skill edited',
+      });
+      if (!result.ok) return textResult({ error: result.error });
+      return textResult({
+        id: result.recordId,
+        name: args.name,
+        path: result.relativePath,
+        generation: result.generation,
+      });
+    },
+    { annotations: { openWorldHint: true } },
+  );
+
   return [
     vaultSkillSurveyPrepare,
     vaultSkillSurveyBundleDecisions,
@@ -2080,5 +2217,6 @@ export function createSkillTools(deps: VaultToolDeps) {
     vaultWriteSkill,
     vaultStageSkill,
     vaultFinalizeSkill,
+    vaultEditSkill,
   ];
 }

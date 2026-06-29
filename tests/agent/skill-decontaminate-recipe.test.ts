@@ -54,10 +54,15 @@ describe('skill decontaminate custom task recipe', () => {
     expect(phase.tools).toEqual([
       'vault_skill_records',
       'vault_scan_skill_contamination',
-      'vault_write_skill',
+      'vault_edit_skill',
       'vault_report',
     ]);
-    expect(phase.prompt).toContain('strict: true');
+    // vault_edit_skill's write gate rejects on hard AND warn contamination, so a
+    // successful apply is itself the strict-clean guarantee — no separate re-scan needed.
+    // Verify the prompt uses vault_edit_skill as the write path and requires ALL
+    // flagged spans to be removed in a single atomic batch per skill.
+    expect(phase.prompt).toContain('vault_edit_skill');
+    expect(phase.prompt).toContain('removes ALL flagged spans');
     expect(phase.prompt).toContain('Process every active skill');
     expect(phase.prompt).not.toContain('at most 3');
 

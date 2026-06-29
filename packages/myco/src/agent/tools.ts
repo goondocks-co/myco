@@ -201,6 +201,7 @@ const SKILL_TOOL_NAMES = new Set([
   'vault_skill_survey_apply_reconciliation',
   'vault_skill_candidates', 'vault_skill_records', 'vault_scan_skill_contamination',
   'vault_write_skill', 'vault_stage_skill', 'vault_finalize_skill',
+  'vault_edit_skill',
 ]);
 
 const EXPLORATION_TOOL_NAMES = new Set([
