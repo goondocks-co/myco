@@ -45,7 +45,6 @@ import {
   listSkillRecords, updateSkillRecord, deleteSkillRecordCascade,
 } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
-import { verifySkillContentClaims } from '@myco/agent/skill-drift.js';
 import { notify } from '@myco/notifications/notify.js';
 import {
   CANDIDATE_STATUS,
@@ -61,11 +60,10 @@ import {
   unknownCandidateQualityFailureCodes,
 } from '@myco/agent/skill-candidate-quality.js';
 import {
-  validateSkillContent,
-  checkFrontmatterPreservation,
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
 } from './skill-validator.js';
+import { collectSkillWriteIssues } from './skill-write-validator.js';
 import { scanForContamination } from './skill-contamination.js';
 import {
   writeStagedSkill,
@@ -125,40 +123,23 @@ import {
 const BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE', 'DEFER', 'DISMISS', 'SKIP']);
 const IDENTIFIED_BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE']);
 
-interface SkillClaimGatePayload {
-  error: string;
-  missing_paths: string[];
-  missing_symbols: string[];
-  unverified_example_symbols?: string[];
-}
+// ---------------------------------------------------------------------------
+// Per-run failed-write circuit breaker
+// ---------------------------------------------------------------------------
 
-function verifySkillContentClaimGate(args: {
-  content: string;
-  root: string;
-  priorContent?: string;
-  label: string;
-  name: string;
-}): SkillClaimGatePayload | null {
-  const claimCheck = verifySkillContentClaims(args.content, args.root, args.priorContent);
-  if (claimCheck.missingPaths.length > 0 || claimCheck.missingInlineSymbols.length > 0) {
-    return {
-      error: 'Skill write rejected: the content references code that does not exist in this repository. '
-        + 'Verify every path and identifier with fs_read/code_grep and remove or correct the fabricated references before writing. '
-        + 'Never invent a function, file, env var, or API to make an example look complete.',
-      missing_paths: claimCheck.missingPaths,
-      missing_symbols: claimCheck.missingInlineSymbols,
-      ...(claimCheck.suspectFencedSymbols.length > 0 ? { unverified_example_symbols: claimCheck.suspectFencedSymbols } : {}),
-    };
-  }
-  if (claimCheck.suspectFencedSymbols.length > 0) {
-    console.warn(
-      `[${args.label}] '${args.name}': code-fence examples reference symbols not found in the codebase: `
-      + `${claimCheck.suspectFencedSymbols.join(', ')}. If these are real APIs, confirm they exist; `
-      + 'if illustrative, prefer names that cannot be mistaken for real references.',
-    );
-  }
-  return null;
-}
+/**
+ * Per-run, per-skill consecutive validation-rejection counters.
+ * Outer key: runId. Inner key: skill directory name. Value: consecutive
+ * content-validation failure count for that skill in that run.
+ * A successful vault_write_skill resets the counter to zero; a validation
+ * rejection increments it. When the count reaches the cap, the next rejected
+ * write returns a terminal deferred result instead of another validation error
+ * so one unsatisfiable skill cannot exhaust the run budget.
+ */
+const skillWriteFailureCounts = new Map<string, Map<string, number>>();
+
+/** Consecutive-failure cap per skill per run before deferral triggers. */
+const SKILL_WRITE_FAILURE_CAP = 3;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -1564,12 +1545,48 @@ export function createSkillTools(deps: VaultToolDeps) {
 
   const vaultScanSkillContamination = tool(
     'vault_scan_skill_contamination',
-    'Read-only lint for proposed SKILL.md content. Returns hard and warn spans; live skill write gates reject either kind.',
+    'Read-only lint for proposed SKILL.md content. Returns hard and warn spans; live skill write gates reject either kind. When full_gate is true, runs all write-time gates (structure, contamination, fabrication, and preservation if a prior skill exists on disk) and returns the batched result — identical logic to vault_write_skill, without writing anything.',
     {
       content: z.string().describe('Full SKILL.md content to scan, including frontmatter. The scanner ignores non-description frontmatter, code blocks, benign inline code, and explicit history sections; semantic contract checks still inspect inline command/field/status facts.'),
+      name: z.string().optional().describe('Skill directory name (kebab-case). Required when full_gate is true — used to look up the existing on-disk SKILL.md for the preservation check and traversal-guard validation.'),
       strict: z.boolean().optional().describe('Retained for callers that label strict scans. ok=false whenever either hard or warn spans are present, matching live write gates.'),
+      full_gate: z.boolean().optional().describe('When true, runs all write-time content gates (validateSkillContent, fabrication claim check, and frontmatter preservation if a prior skill exists) in one pass and returns the batched result. Requires name. Default false — preserves the existing contamination-only {hard, warn} response shape.'),
     },
     async (args) => {
+      if (args.full_gate === true) {
+        // Traversal guard — must run before ANY filesystem access.
+        if (!args.name || /[/\\]|\.\./.test(args.name)) {
+          return textResult({
+            error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
+          });
+        }
+
+        const root = projectRoot ?? process.cwd();
+
+        // Look up the on-disk prior content the same way vault_write_skill does.
+        const resolvedPaths = resolvePublishedSkillPaths(root, args.name);
+        const priorContent = resolvedPaths.ok && existsSync(resolvedPaths.paths.skillPath)
+          ? readFileSync(resolvedPaths.paths.skillPath, 'utf-8')
+          : undefined;
+
+        const { issues, violations, claim, descWindow } = collectSkillWriteIssues({
+          content: args.content,
+          name: args.name,
+          priorContent,
+          root,
+        });
+
+        const ok = issues.length === 0 && violations.length === 0 && claim === null;
+        return textResult({
+          ok,
+          issues,
+          violations,
+          ...(claim !== null ? { fabrication: claim } : {}),
+          ...(descWindow !== undefined ? { description_window: descWindow } : {}),
+        });
+      }
+
+      // Default: contamination-only scan — byte-for-byte unchanged behavior.
       const scan = scanForContamination(args.content);
       const strict = args.strict === true;
       const ok = scan.hard.length === 0 && scan.warn.length === 0;
@@ -1598,24 +1615,17 @@ export function createSkillTools(deps: VaultToolDeps) {
       rationale: z.string().optional().describe('Why this skill was created or updated'),
     },
     async (args) => {
-      // Validate skill content before writing -- reject malformed skills
-      const validationErrors = validateSkillContent(args.content, args.name);
-      if (validationErrors.length > 0) {
-        return textResult({
-          error: 'Skill validation failed. Fix these issues and try again.',
-          issues: validationErrors,
-        });
-      }
-
-      // Path traversal guard -- reject names containing path separators or dot-dot sequences
+      // Traversal guard — must run before ANY filesystem access.
+      // publishedSkillRelativePath() is unsanitized string interpolation;
+      // a name with '..' must never reach resolvePublishedSkillPaths or readFileSync.
       if (!args.name || /[/\\]|\.\./.test(args.name)) {
         return textResult({
           error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
         });
       }
 
-      // Dedup gate is self-gating: returns null when same-name exists
-      // (the evolve path) so the caller falls through.
+      // Dedup gate: returns null when same-name exists (evolve path), so the
+      // caller falls through to the existing-record check below.
       const dedupError = checkDedupGates({
         candidate_id: args.candidate_id,
         name: args.name,
@@ -1624,42 +1634,60 @@ export function createSkillTools(deps: VaultToolDeps) {
       if (dedupError) {
         return textResult(dedupError);
       }
+
       const existing = getSkillRecordByName(args.name, scope);
-
       const root = projectRoot ?? process.cwd();
-      // Path shape is owned by the publication module — don't hand-build it.
-      const skillPath = resolve(root, publishedSkillRelativePath(args.name));
 
-      // Frontmatter preservation guard — when updating an existing skill,
-      // reject writes that change protected fields (user-invocable, allowed-tools).
-      const priorContent = existsSync(skillPath) ? readFileSync(skillPath, 'utf-8') : undefined;
-      if (priorContent !== undefined) {
-        const violations = checkFrontmatterPreservation(priorContent, args.content);
-        if (violations.length > 0) {
-          return textResult({
-            error: 'Skill update rejected: protected frontmatter fields were changed. Read the existing skill and preserve these values exactly.',
-            violations,
-          });
-        }
+      // Resolve the skill path — safe because the traversal guard already ran.
+      // resolvePublishedSkillPaths also performs its own path-escape check as
+      // a secondary defence.
+      const resolvedPaths = resolvePublishedSkillPaths(root, args.name);
+      if (!resolvedPaths.ok) {
+        return textResult({ error: 'Invalid skill name: resolved path escapes .agents/skills' });
       }
 
-      // Fabrication gate — skills are authoritative content that agents load
-      // and follow, so a confidently-wrong code reference is worse than none.
-      // Deterministically verify the concrete code claims in the proposed
-      // content against the codebase. This is the one check a cheap model or a
-      // skipped prompt-level verification cannot bypass. Inline path/symbol
-      // claims that do not exist are rejected (asserted as real → clear
-      // fabrication); symbols that appear only inside ```code``` examples are
-      // surfaced as warnings, since illustrative pseudo-code may legitimately
-      // use invented names. On evolve, only NEWLY introduced claims are gated.
-      const claimGateError = verifySkillContentClaimGate({
+      // Read prior content once — used by the preservation gate, the description
+      // window, the fabrication gate, and the evolve-path rollback.
+      const priorContent = existsSync(resolvedPaths.paths.skillPath)
+        ? readFileSync(resolvedPaths.paths.skillPath, 'utf-8')
+        : undefined;
+
+      // Run all content-validation gates in one pass and batch every failure.
+      // The agent previously saw at most one class of error per attempt; now it
+      // sees the full picture so it can fix everything before the next write.
+      const { issues, violations, claim, descWindow } = collectSkillWriteIssues({
         content: args.content,
-        root,
-        priorContent,
-        label: 'vault_write_skill',
         name: args.name,
+        priorContent,
+        root,
       });
-      if (claimGateError) return textResult(claimGateError);
+
+      if (issues.length > 0 || violations.length > 0 || claim !== null) {
+        // Circuit breaker: cap consecutive validation rejections per run+skill
+        // so one unsatisfiable skill cannot exhaust the run budget.
+        const runCounts = skillWriteFailureCounts.get(deps.runId) ?? new Map<string, number>();
+        const currentCount = runCounts.get(args.name) ?? 0;
+        if (currentCount >= SKILL_WRITE_FAILURE_CAP) {
+          return textResult({
+            error:
+              `Skill ${args.name} deferred after ${SKILL_WRITE_FAILURE_CAP} failed validation attempts this run — ` +
+              'stop retrying it; continue with other skills and record it via vault_report.',
+            deferred: true,
+            name: args.name,
+          });
+        }
+        runCounts.set(args.name, currentCount + 1);
+        skillWriteFailureCounts.set(deps.runId, runCounts);
+
+        const response: Record<string, unknown> = {
+          error: 'Skill write rejected — fix all listed issues and retry.',
+        };
+        if (issues.length > 0) response.issues = issues;
+        if (violations.length > 0) response.violations = violations;
+        if (claim !== null) response.fabrication = claim;
+        if (descWindow !== undefined) response.description_window = descWindow;
+        return textResult(response);
+      }
 
       // Create path: delegate to the shared promoteNewSkill helper.
       // Candidate linking uses exact-then-prefix matching since the
@@ -1703,6 +1731,8 @@ export function createSkillTools(deps: VaultToolDeps) {
           label: 'vault_write_skill',
         });
         if ('error' in result) return textResult(result);
+        // Reset consecutive-failure counter on successful create.
+        skillWriteFailureCounts.get(deps.runId)?.delete(args.name);
         emitSkillNotification(vaultDir, 'created', {
           name: result.name,
           display_name: args.display_name,
@@ -1722,7 +1752,11 @@ export function createSkillTools(deps: VaultToolDeps) {
       // prior SKILL.md content on rollback. This branch stays inline
       // because its rollback semantics (restore prior content) differ
       // from the create helper.
-      const priorSkillContent = readFileSync(skillPath, 'utf-8');
+      // priorContent was already read above; reuse it to avoid a second
+      // disk read. If the file was absent despite a DB record existing
+      // (orphan), fall back to re-reading — this will throw if still
+      // missing, preserving the same behavior as before.
+      const priorSkillContent = priorContent ?? readFileSync(resolvedPaths.paths.skillPath, 'utf-8');
 
       try {
         const writeResult = writePublishedSkillFile(root, args.name, args.content);
@@ -1800,6 +1834,9 @@ export function createSkillTools(deps: VaultToolDeps) {
         ...(scope.kind === 'project' ? { project_id: scope.id } : {}),
       }).catch(() => {});
 
+      // Reset consecutive-failure counter on successful evolve.
+      skillWriteFailureCounts.get(deps.runId)?.delete(args.name);
+
       return textResult({
         id: recordId,
         name: args.name,
@@ -1831,16 +1868,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         });
       }
 
-      // Static validation — same rules as vault_write_skill
-      const validationErrors = validateSkillContent(args.content, args.name);
-      if (validationErrors.length > 0) {
-        return textResult({
-          error: 'Skill validation failed. Fix these issues and re-stage.',
-          issues: validationErrors,
-        });
-      }
-
-      // Path traversal guard for the skill name (which becomes a directory)
+      // Traversal guard — must run before ANY filesystem access.
       if (!args.name || /[/\\]|\.\./.test(args.name)) {
         return textResult({
           error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
@@ -1864,13 +1892,24 @@ export function createSkillTools(deps: VaultToolDeps) {
       if (dedupError) return textResult(dedupError);
 
       const root = projectRoot ?? process.cwd();
-      const claimGateError = verifySkillContentClaimGate({
+
+      // Run all content-validation gates in one pass and batch every failure
+      // so the agent sees the full picture in one response. Stage is always
+      // a create (no prior on disk), so priorContent is omitted.
+      const { issues, claim } = collectSkillWriteIssues({
         content: args.content,
-        root,
-        label: 'vault_stage_skill',
         name: args.name,
+        root,
       });
-      if (claimGateError) return textResult(claimGateError);
+
+      if (issues.length > 0 || claim !== null) {
+        const response: Record<string, unknown> = {
+          error: 'Skill write rejected — fix all listed issues and re-stage.',
+        };
+        if (issues.length > 0) response.issues = issues;
+        if (claim !== null) response.fabrication = claim;
+        return textResult(response);
+      }
 
       // Write staging content + manifest
       let stagingFilePath: string;
@@ -1951,26 +1990,28 @@ export function createSkillTools(deps: VaultToolDeps) {
       const candidateError = requireGenerationReadyCandidate(args.candidate_id, scope);
       if (candidateError) return textResult(candidateError);
 
-      // Defense-in-depth: re-run validation against the staged content.
-      // The staging write already validated once, but the file on disk
-      // could have been mutated (tests do this explicitly to check the
-      // guard; a crash between stage and finalize could too).
-      const validationErrors = validateSkillContent(stagedContent, manifest.name);
-      if (validationErrors.length > 0) {
-        return textResult({
-          error: 'Staged skill failed validation on finalize. Re-stage with valid content.',
-          issues: validationErrors,
-        });
-      }
-
       const root = projectRoot ?? process.cwd();
-      const claimGateError = verifySkillContentClaimGate({
+
+      // Defense-in-depth: re-run all content gates against the staged
+      // content in one batched pass. The staging write already validated
+      // once, but the file on disk could have been mutated (tests do this
+      // explicitly to check the guard; a crash between stage and finalize
+      // could too). Finalize is always a create (no live prior), so
+      // priorContent is omitted.
+      const { issues, claim } = collectSkillWriteIssues({
         content: stagedContent,
-        root,
-        label: 'vault_finalize_skill',
         name: manifest.name,
+        root,
       });
-      if (claimGateError) return textResult(claimGateError);
+
+      if (issues.length > 0 || claim !== null) {
+        const response: Record<string, unknown> = {
+          error: 'Skill write rejected — fix all listed issues and re-stage.',
+        };
+        if (issues.length > 0) response.issues = issues;
+        if (claim !== null) response.fabrication = claim;
+        return textResult(response);
+      }
 
       // Defense-in-depth: re-run dedup against the manifest-declared
       // description. Catches the "agent staged a fresh description,
