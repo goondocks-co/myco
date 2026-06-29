@@ -63,7 +63,9 @@ import {
 import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
+  extractFrontmatterField,
 } from './skill-validator.js';
+import { applySkillEdits, type SkillEdit } from './skill-edit.js';
 import { collectSkillWriteIssues } from './skill-write-validator.js';
 import { scanForContamination } from './skill-contamination.js';
 import {
@@ -2106,6 +2108,104 @@ export function createSkillTools(deps: VaultToolDeps) {
     { annotations: { openWorldHint: true } },
   );
 
+  const vaultEditSkill = tool(
+    'vault_edit_skill',
+    'Update an EXISTING skill with minimal str_replace edits (old_string→new_string). Emit only changed regions — do not resend the whole file. The reconstructed skill is validated by the same gates as vault_write_skill (it rejects ANY hard OR warn contamination, fabricated refs, length/floor violations, or protected-frontmatter changes). Use vault_write_skill for creates and MERGE/NARROW.',
+    {
+      name: z.string().describe('Existing skill directory name (kebab-case, no colon).'),
+      edits: z.array(z.object({
+        old_string: z.string(),
+        new_string: z.string(),
+        replace_all: z.boolean().optional(),
+      })).describe('Ordered str_replace edits; each old_string matches exactly once unless replace_all.'),
+      source_ids: z.string().optional(),
+      rationale: z.string().optional(),
+    },
+    async (args: { name: string; edits: SkillEdit[]; source_ids?: string; rationale?: string }) => {
+      if (!args.name || /[/\\]|\.\./.test(args.name)) {
+        return textResult({
+          error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
+        });
+      }
+
+      const existing = getSkillRecordByName(args.name, scope);
+      if (!existing) {
+        return textResult({
+          error: `Skill "${args.name}" does not exist — use vault_write_skill to create it.`,
+        });
+      }
+
+      const root = projectRoot ?? process.cwd();
+      const resolvedPaths = resolvePublishedSkillPaths(root, args.name);
+      if (!resolvedPaths.ok || !existsSync(resolvedPaths.paths.skillPath)) {
+        return textResult({ error: `Skill "${args.name}" has no on-disk SKILL.md to edit.` });
+      }
+      const priorContent = readFileSync(resolvedPaths.paths.skillPath, 'utf-8');
+
+      // Shared per-skill circuit breaker — mirror vault_write_skill's check-before-increment
+      // ordering: check the count first, then increment on failure. Defers on the 4th failure.
+      const noteFailure = (): { deferred: boolean } => {
+        const runCounts = skillWriteFailureCounts.get(deps.runId) ?? new Map<string, number>();
+        const currentCount = runCounts.get(args.name) ?? 0;
+        if (currentCount >= SKILL_WRITE_FAILURE_CAP) return { deferred: true };
+        runCounts.set(args.name, currentCount + 1);
+        skillWriteFailureCounts.set(deps.runId, runCounts);
+        return { deferred: false };
+      };
+      const deferredResult = () => textResult({
+        deferred: true,
+        name: args.name,
+        error:
+          `Skill ${args.name} deferred after ${SKILL_WRITE_FAILURE_CAP} failed validation attempts this run — ` +
+          'stop retrying it; continue with other skills and record it via vault_report.',
+      });
+
+      const applied = applySkillEdits(priorContent, args.edits);
+      if (!applied.ok) {
+        if (noteFailure().deferred) return deferredResult();
+        return textResult({ error: applied.error });
+      }
+      const newContent = applied.content;
+
+      const { issues, violations, claim, descWindow } = collectSkillWriteIssues({
+        content: newContent,
+        name: args.name,
+        priorContent,
+        root,
+      });
+      if (issues.length > 0 || violations.length > 0 || claim !== null) {
+        if (noteFailure().deferred) return deferredResult();
+        return textResult({
+          error: 'Skill edit rejected — fix all listed issues and retry.',
+          ...(issues.length > 0 ? { issues } : {}),
+          ...(violations.length > 0 ? { violations } : {}),
+          ...(claim !== null ? { fabrication: claim } : {}),
+          ...(descWindow ? { description_window: descWindow } : {}),
+        });
+      }
+
+      const description = extractFrontmatterField(newContent, 'description') ?? existing.description;
+      const result = await writeEvolvedSkill({
+        existing,
+        name: args.name,
+        content: newContent,
+        priorContent,
+        display_name: existing.display_name,
+        description,
+        source_ids: args.source_ids,
+        rationale: args.rationale ?? 'Skill edited',
+      });
+      if (!result.ok) return textResult({ error: result.error });
+      return textResult({
+        id: result.recordId,
+        name: args.name,
+        path: result.relativePath,
+        generation: result.generation,
+      });
+    },
+    { annotations: { openWorldHint: true } },
+  );
+
   return [
     vaultSkillSurveyPrepare,
     vaultSkillSurveyBundleDecisions,
@@ -2117,5 +2217,6 @@ export function createSkillTools(deps: VaultToolDeps) {
     vaultWriteSkill,
     vaultStageSkill,
     vaultFinalizeSkill,
+    vaultEditSkill,
   ];
 }
