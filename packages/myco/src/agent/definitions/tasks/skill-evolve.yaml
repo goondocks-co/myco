@@ -337,9 +337,15 @@ phases:
       3. vault_edit_skill returns batched issues on any validation
          failure; fix exactly the reported items and re-edit.
          Hard limit: at most 2 re-edits per skill.
-      4. Preserve the existing skill `source_ids` — vault_edit_skill
-         does not alter lineage. If the update adds new source evidence,
-         update source_ids via vault_skill_records separately.
+      4. Preserve the existing skill `source_ids`. `vault_edit_skill`
+         records a lineage row (generation bump, content snapshot) on
+         every successful edit. If (and only if) the update is based on
+         NEW source evidence, pass `source_ids` to `vault_edit_skill` as
+         the UNION of the skill's existing source_ids plus the new source
+         IDs — the tool persists them and records `source_ids_added` in
+         lineage. Otherwise omit `source_ids` to keep the stored set
+         unchanged. Do NOT do a separate vault_skill_records update for
+         source_ids — it bumps no generation and writes no lineage row.
 
       ## DEPRECATED — Retire the skill
 
@@ -400,7 +406,7 @@ phases:
       ## Budget discipline (hard)
 
       Total budget: {{max_turns}} turns across ALL selected skills. Plan
-      roughly `{{max_turns}} / skills_selected` turns per skill (~4–5):
+      roughly `{{max_turns}} / skills_selected` turns per skill (~4–5 typical for an edit; the formula gives the per-skill ceiling):
       read skill → vault_edit_skill edits → fix reported issues (≤2
       re-edits if needed) → done. If you are running past your share
       for a skill, STOP, make the safe minimal edit with what you have

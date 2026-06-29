@@ -4341,9 +4341,11 @@ describe('vault skill tools', () => {
 
     it('rejects when the reconstructed result introduces hard contamination', async () => {
       seedSkill('edit-cont', { body: 'clean body line', generation: 1 });
+      const before = readSkillFile('edit-cont');
       const res = await runEdit('run-edit-3', 'edit-cont', [{ old_string: 'clean body line', new_string: 'shipped in v1.2.0' }]);
       expect(res.error).toMatch(/fix all listed issues/i);
       expect((res.issues as string[] ?? []).join(' ')).toMatch(/contamination/i);
+      expect(readSkillFile('edit-cont')).toBe(before);
     });
 
     it('rejects when the result introduces a fabricated code reference', async () => {
@@ -4379,10 +4381,16 @@ describe('vault skill tools', () => {
     it('returns issues on the 3rd consecutive failure and defers on the 4th (shared breaker ordering)', async () => {
       seedSkill('edit-brk', { body: 'body', generation: 1 });
       const bad = [{ old_string: 'ZZZ', new_string: 'x' }];
-      expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBeUndefined(); // 1
-      expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBeUndefined(); // 2
-      expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBeUndefined(); // 3
-      expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBe(true);      // 4
+      const r1 = await runEdit('run-brk', 'edit-brk', bad); // 1
+      expect(r1.deferred).toBeUndefined();
+      expect(r1.error).toBeDefined();
+      const r2 = await runEdit('run-brk', 'edit-brk', bad); // 2
+      expect(r2.deferred).toBeUndefined();
+      expect(r2.error).toBeDefined();
+      const r3 = await runEdit('run-brk', 'edit-brk', bad); // 3
+      expect(r3.deferred).toBeUndefined();
+      expect(r3.error).toBeDefined();
+      expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBe(true); // 4
     });
   });
 });

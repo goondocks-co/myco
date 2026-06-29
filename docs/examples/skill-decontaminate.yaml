@@ -15,7 +15,7 @@
 name: skill-decontaminate
 displayName: Skill Decontamination Sweep
 description: >-
-  One-shot custom task that rewrites existing Myco-managed skills so live
+  One-shot custom task that updates existing Myco-managed skills so live
   procedural prose contains durable procedure instead of release, PR, date,
   branch, session, or decision-state artifacts.
 agent: myco-agent
