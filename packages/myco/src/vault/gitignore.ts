@@ -26,6 +26,7 @@ local.yaml
 # never committed.
 runtime.command
 runtime.home
+runtime-exec
 
 # Per-machine ephemera; canonical copies live in ~/.myco/
 buffer/

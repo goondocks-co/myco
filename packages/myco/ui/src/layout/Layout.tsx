@@ -170,7 +170,7 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
 /* ---------- Sidebar content (shared between mobile and desktop) ---------- */
 
 /**
- * Sidebar badge showing the active release channel and version when the
+ * Sidebar badge showing the active release channel when the
  * daemon is on a non-stable channel (`beta` or `manual`). Nothing rendered
  * for `stable` — no signal needed for the default path.
  *
@@ -178,13 +178,19 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
  * good reason to hunt for it on a settings tab when the question is
  * "am I on the dogfood / beta daemon right now?"
  */
-function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
+export function runtimeBadgeLabelForSource(source: string | undefined): string | null {
+  if (!source || source === 'stable') return null;
+  if (source === 'beta') return 'BETA';
+  if (source === 'manual') return 'DEV';
+  return source.toUpperCase();
+}
+
+export function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
   const { data } = useDaemon();
   const runtime = data?.daemon.runtime;
-  if (!runtime || runtime.source === 'stable') return null;
+  const channelLabel = runtimeBadgeLabelForSource(runtime?.source);
+  if (!runtime || !channelLabel) return null;
 
-  const channelLabel = runtime.source.toUpperCase();
-  const version = data?.daemon.version_label ?? data?.daemon.version ?? '';
   const tooltip = `Daemon channel: ${runtime.source}`;
   const colorClasses = 'bg-tertiary/20 text-tertiary border-tertiary/40';
 
@@ -210,7 +216,7 @@ function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
       )}
       title={tooltip}
     >
-      {channelLabel} {version}
+      {channelLabel}
     </div>
   );
 }

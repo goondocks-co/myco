@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlertCircle, Loader2, Sparkles, Check, Trash2, CheckCircle2 } from 'lucide-react';
 import { Badge } from '../ui/badge';
@@ -19,6 +19,7 @@ import { StatusBadge } from './status-helpers';
 import { formatTimeAgo, formatDuration as formatDurationSec, shortSession } from '../../lib/format';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
+import { buildSymbiontDisplayNameResolver } from '../../lib/symbiont-labels';
 
 /* ---------- Helpers ---------- */
 
@@ -106,6 +107,9 @@ export function SessionDetail({ id }: SessionDetailProps) {
   const navigate = useNavigate();
   const { data: session, isLoading, isError, error } = useSession(id);
   const { data: symbiontsData } = useSymbionts();
+  const symbiontDisplayName = useMemo(() => {
+    return buildSymbiontDisplayNameResolver(symbiontsData?.symbionts ?? []);
+  }, [symbiontsData]);
   const triggerRun = useTriggerRun();
   const completeSession = useCompleteSession();
   const [summaryStatus, setSummaryStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
@@ -188,10 +192,10 @@ export function SessionDetail({ id }: SessionDetailProps) {
             {session.title ?? shortSession(session.id)}
           </h1>
           <StatusBadge status={session.status} />
-          <ReleaseStateBadge annotation={session.release_state} />
+          <ReleaseStateBadge annotation={session.release_state} namespace="sessions" recordId={session.id} />
           {session.agent && (
             <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
-              {session.agent}
+              {symbiontDisplayName(session.agent)}
             </Badge>
           )}
           <Button

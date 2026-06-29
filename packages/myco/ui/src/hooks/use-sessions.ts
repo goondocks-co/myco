@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchJson, deleteJson, postJson } from '../lib/api';
+import { fetchJson, deleteJson, patchJson, postJson } from '../lib/api';
 import { usePowerQuery } from './use-power-query';
 import { POLL_INTERVALS } from '../lib/constants';
 import { useProjectScopedQueryKey } from './use-project-selection';
@@ -161,6 +161,14 @@ export interface SessionPlanRow {
   updated_at: number | null;
 }
 
+export interface PlanStatusUpdateResult {
+  ok: boolean;
+  id: string;
+  status: string;
+  session_id: string | null;
+  updated_at: number | null;
+}
+
 /** Cascade impact counts for a session delete. */
 export interface SessionImpact {
   promptCount: number;
@@ -314,6 +322,17 @@ export function useDeletePlan(sessionId: string | undefined) {
   return useMutation({
     mutationFn: (planId: string) =>
       deleteJson<{ ok: boolean; id: string; session_id: string | null }>(`/plans/${planId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['session-plans', sessionId] });
+    },
+  });
+}
+
+export function useUpdatePlanStatus(sessionId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ planId, status }: { planId: string; status: string }) =>
+      patchJson<PlanStatusUpdateResult>(`/plans/${planId}`, { status }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['session-plans', sessionId] });
     },

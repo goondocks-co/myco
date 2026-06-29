@@ -674,6 +674,181 @@ describe('handleDeletePlan — machine_id ownership', () => {
   });
 });
 
+describe('handlePatchPlan — status updates', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plans-patch-'));
+    const dbPath = path.join(tmpDir, 'myco.db');
+    const db = initDatabase(dbPath);
+    createSchema(db);
+    initTeamContext('local-machine-a');
+  });
+
+  afterEach(() => {
+    closeDatabase();
+    resetTeamContext();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeHandlers() {
+    return createSessionMutationHandlers({
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
+      vaultDir: tmpDir,
+      logger: makeLogger() as never,
+      liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      reconciler: { clearSession: vi.fn() },
+      registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
+    });
+  }
+
+  function seedPatchPlan(machineId = 'local-machine-a') {
+    const now = epochNow();
+    upsertSession({
+      id: 'sess-patch',
+      agent: 'test-agent',
+      started_at: now,
+      created_at: now,
+      machine_id: 'local-machine-a',
+    });
+    return upsertPlan({
+      id: 'plan-patch',
+      logical_key: 'session:sess-patch:key:primary',
+      session_id: 'sess-patch',
+      title: 'Patch Plan',
+      content: '# Patch Plan\n\nKeep this body.',
+      source_path: 'docs/plans/patch.md',
+      tags: 'ui,status',
+      status: 'active',
+      created_at: now,
+      updated_at: now,
+      machine_id: machineId,
+    });
+  }
+
+  it('PATCH transitions status through the shared write path and returns plan metadata', async () => {
+    seedPatchPlan();
+    const { handlePatchPlan } = makeHandlers();
+
+    const res = await handlePatchPlan(makeRequest({
+      params: { id: 'plan-patch' },
+      body: { status: 'in_progress' },
+    }));
+
+    expect(res.status === undefined || res.status < 400).toBe(true);
+    expect(res.body).toMatchObject({
+      ok: true,
+      id: 'plan-patch',
+      status: 'in_progress',
+      session_id: 'sess-patch',
+    });
+    expect((res.body as { updated_at?: number | null }).updated_at).not.toBeNull();
+  });
+
+  it('PATCH rejects invalid status with a canonical envelope', async () => {
+    seedPatchPlan();
+    const { handlePatchPlan } = makeHandlers();
+
+    const res = await handlePatchPlan(makeRequest({
+      params: { id: 'plan-patch' },
+      body: { status: 'all' },
+    }));
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      error: {
+        code: 'invalid-plan-status',
+        message: "Invalid plan status 'all'. Expected one of: active, in_progress, completed, abandoned.",
+      },
+    });
+  });
+
+  it('PATCH returns plan-not-found for a missing plan', async () => {
+    const { handlePatchPlan } = makeHandlers();
+
+    const res = await handlePatchPlan(makeRequest({
+      params: { id: 'missing-plan' },
+      body: { status: 'completed' },
+    }));
+
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ error: { code: 'plan-not-found' } });
+  });
+
+  it('PATCH rejects remote-owned plans without a force path', async () => {
+    seedPatchPlan('remote-machine-b');
+    const { handlePatchPlan } = makeHandlers();
+
+    const res = await handlePatchPlan(makeRequest({
+      params: { id: 'plan-patch' },
+      body: { status: 'completed' },
+    }));
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ error: { code: 'cross-machine-plan-status' } });
+    expect(getPlan('plan-patch', ALL_PROJECTS_SCOPE)?.status).toBe('active');
+  });
+
+  it('PATCH status-only update preserves content, title, session, source, logical key, and tags', async () => {
+    const before = seedPatchPlan();
+    const { handlePatchPlan } = makeHandlers();
+
+    const res = await handlePatchPlan(makeRequest({
+      params: { id: 'plan-patch' },
+      body: { status: 'completed' },
+    }));
+
+    expect(res.status === undefined || res.status < 400).toBe(true);
+    const after = getPlan('plan-patch', ALL_PROJECTS_SCOPE);
+    expect(after?.status).toBe('completed');
+    expect(after?.content).toBe(before.content);
+    expect(after?.title).toBe(before.title);
+    expect(after?.session_id).toBe(before.session_id);
+    expect(after?.source_path).toBe(before.source_path);
+    expect(after?.logical_key).toBe(before.logical_key);
+    expect(after?.tags).toBe(before.tags);
+  });
+
+  it('PATCH status-only update preserves nullable legacy content and title', async () => {
+    const now = epochNow();
+    upsertSession({
+      id: 'sess-null-plan',
+      agent: 'test-agent',
+      started_at: now,
+      created_at: now,
+      machine_id: 'local-machine-a',
+    });
+    upsertPlan({
+      id: 'plan-null-content',
+      logical_key: 'session:sess-null-plan:file:docs/plans/null-content.md',
+      session_id: 'sess-null-plan',
+      title: null,
+      content: null,
+      source_path: 'docs/plans/null-content.md',
+      tags: 'legacy',
+      status: 'active',
+      created_at: now,
+      updated_at: now,
+      machine_id: 'local-machine-a',
+    });
+    const { handlePatchPlan } = makeHandlers();
+
+    const res = await handlePatchPlan(makeRequest({
+      params: { id: 'plan-null-content' },
+      body: { status: 'abandoned' },
+    }));
+
+    expect(res.status === undefined || res.status < 400).toBe(true);
+    const after = getPlan('plan-null-content', ALL_PROJECTS_SCOPE);
+    expect(after?.status).toBe('abandoned');
+    expect(after?.content).toBeNull();
+    expect(after?.title).toBeNull();
+    expect(after?.source_path).toBe('docs/plans/null-content.md');
+    expect(after?.content_hash).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // handleGetSession — team-fanout fallback (recall parity with search)
 // ---------------------------------------------------------------------------
