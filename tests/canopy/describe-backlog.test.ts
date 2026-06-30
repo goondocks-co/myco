@@ -39,19 +39,38 @@ function insertUndescribedEntry(projectId: string, filePath: string): void {
   ).run(projectId, filePath, `hash-${filePath}`, 10, 5, 1, 200, null, null);
 }
 
+/**
+ * Materialize a project's `.myco` config on disk. A registered project always
+ * has a myco.yaml (loadMergedConfig requires it), so the capability resolver
+ * can read it; the capture-only off-gate lives in local.yaml, mirroring how
+ * the daemon resolves a Canopy-disabled project.
+ */
+function writeProjectConfig(root: string, opts: { canopyEnabled: boolean }): string {
+  const vaultDir = path.join(root, '.myco');
+  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n');
+  if (!opts.canopyEnabled) {
+    fs.writeFileSync(
+      path.join(vaultDir, 'local.yaml'),
+      'cortex:\n  enabled: false\n  canopy:\n    enabled: false\n',
+    );
+  }
+  return root;
+}
+
 describe('canopy describe backlog reader', () => {
   it('grove-wide reads count only active registered projects', () => {
     const grove = createGrove('Test Grove', home);
     registerProjectInGrove(grove.id, {
       projectId: 'proj_active',
       projectName: 'active',
-      projectRoot: '/tmp/active',
+      projectRoot: writeProjectConfig(path.join(home, 'active-project'), { canopyEnabled: true }),
       bindingId: 'gbind_active',
     }, home);
     registerProjectInGrove(grove.id, {
       projectId: 'proj_archived',
       projectName: 'archived',
-      projectRoot: '/tmp/archived',
+      projectRoot: path.join(home, 'archived-project'),
       bindingId: 'gbind_archived',
     }, home);
     archiveProjectInGrove(grove.id, 'proj_archived', home);
@@ -67,6 +86,53 @@ describe('canopy describe backlog reader', () => {
     );
 
     expect(backlog).toEqual({ pending: 2, undescribed: 2, stale: 0, stuck: 0 });
+  });
+
+  it('grove-wide reads exclude registered projects with Canopy disabled', () => {
+    const grove = createGrove('Test Grove', home);
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_enabled',
+      projectName: 'enabled',
+      projectRoot: writeProjectConfig(path.join(home, 'enabled-project'), { canopyEnabled: true }),
+      bindingId: 'gbind_enabled',
+    }, home);
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_disabled',
+      projectName: 'disabled',
+      projectRoot: writeProjectConfig(path.join(home, 'disabled-project'), { canopyEnabled: false }),
+      bindingId: 'gbind_disabled',
+    }, home);
+
+    insertUndescribedEntry('proj_enabled', 'a.ts');
+    insertUndescribedEntry('proj_disabled', 'b.ts');
+    insertUndescribedEntry('proj_disabled', 'c.ts');
+
+    const reader = createCanopyDescribeBacklogReader({ mycoHome: home });
+    const backlog = withDatabase(db, () =>
+      reader.read(ALL_PROJECTS_SCOPE, { groveId: grove.id }),
+    );
+
+    // proj_disabled's two rows are dropped; only proj_enabled's one counts.
+    expect(backlog).toEqual({ pending: 1, undescribed: 1, stale: 0, stuck: 0 });
+  });
+
+  it('project-scoped reads report an empty backlog when Canopy is disabled', () => {
+    const grove = createGrove('Test Grove', home);
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_disabled',
+      projectName: 'disabled',
+      projectRoot: writeProjectConfig(path.join(home, 'disabled-project'), { canopyEnabled: false }),
+      bindingId: 'gbind_disabled',
+    }, home);
+
+    insertUndescribedEntry('proj_disabled', 'a.ts');
+
+    const reader = createCanopyDescribeBacklogReader({ mycoHome: home });
+    const backlog = withDatabase(db, () =>
+      reader.read(projectScope('proj_disabled'), { groveId: grove.id }),
+    );
+
+    expect(backlog).toEqual({ pending: 0, undescribed: 0, stale: 0, stuck: 0 });
   });
 
   it('falls back to the unrestricted count when the grove record is unknown', () => {

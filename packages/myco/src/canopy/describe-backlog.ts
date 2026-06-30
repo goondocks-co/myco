@@ -29,6 +29,7 @@ import {
   loadGroveRecord,
 } from '@myco/grove/registry.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { capabilityEnabled } from '@myco/config/capabilities.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 
 export interface CanopyDescribeBacklogContext {
@@ -50,6 +51,14 @@ export function createCanopyDescribeBacklogReader(
   return {
     read(scope, context) {
       const groveId = context?.groveId ?? null;
+      // Empty backlog for a Canopy-disabled project; unresolvable → don't filter.
+      if (scope.kind === 'project' && groveId) {
+        const home = options.mycoHome ?? resolveMycoHome();
+        const found = findRegisteredProject({ projectId: scope.id, groveId }, home);
+        if (found && !projectCanopyEnabled(found.project.root, groveId, home)) {
+          return { pending: 0, undescribed: 0, stale: 0, stuck: 0 };
+        }
+      }
       const projectIds = scope.kind === 'all'
         ? serviceableProjectIds(groveId, options.mycoHome)
         : null;
@@ -62,12 +71,8 @@ export function createCanopyDescribeBacklogReader(
   };
 }
 
-// Grove-wide backlog counts must reflect work the scribe can actually
-// service: active registered projects only. Rows left behind by deleted
-// projects (pre-cascade orphans) or held by archived projects would
-// otherwise inflate the dashboard with work no scheduled run will drain.
-// When the grove record can't be loaded the registry is unavailable, so
-// fall back to the unrestricted count rather than report a false zero.
+// Registered, active projects with the Canopy capability enabled.
+// Returns null (unrestricted count) when the grove record can't be loaded.
 export function serviceableProjectIds(
   groveId: string | null,
   mycoHome?: string,
@@ -75,7 +80,24 @@ export function serviceableProjectIds(
   if (!groveId) return null;
   const home = mycoHome ?? resolveMycoHome();
   if (!loadGroveRecord(groveId, home)) return null;
-  return listRegisteredProjects(groveId, home).map((project) => project.project_id);
+  return listRegisteredProjects(groveId, home)
+    .filter((project) => projectCanopyEnabled(project.root, groveId, home))
+    .map((project) => project.project_id);
+}
+
+// Canopy capability state from the project's merged config; unloadable → false.
+function projectCanopyEnabled(
+  projectRoot: string,
+  groveId: string,
+  mycoHome: string,
+): boolean {
+  let config: MycoConfig | null = null;
+  try {
+    config = loadMergedConfig(resolveProjectVaultDir(projectRoot), { groveId, mycoHome });
+  } catch {
+    // unloadable config → capabilityEnabled(null) === false
+  }
+  return capabilityEnabled(config, 'canopy');
 }
 
 /**
