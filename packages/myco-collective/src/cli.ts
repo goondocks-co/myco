@@ -15,6 +15,7 @@ import {
   parseKvNamespaceId,
   parseWorkerUrl,
   readJsonConfig,
+  resolveCloudflareAccount,
   resolveHomeDir,
   resolveNamedHomeConfigPath,
   resolveHomeConfigPath,
@@ -423,6 +424,16 @@ export async function collectiveInstall(name = 'myco-collective'): Promise<void>
   if (migrateLegacyConfig(name)) {
     throw new Error(`Collective "${name}" already exists. Use \`myco-collective upgrade ${name}\`.`);
   }
+
+  // Verify auth and resolve the Cloudflare account up front — before any
+  // resource is created — so a multi-account login doesn't fail mid-provision.
+  let whoamiOutput: string;
+  try {
+    whoamiOutput = wrangler(['whoami']);
+  } catch {
+    throw new Error('Not authenticated with Cloudflare. Run: wrangler login');
+  }
+  await resolveCloudflareAccount({ whoamiOutput, isTTY: Boolean(process.stdin.isTTY) });
 
   const d1Id = ensureD1Database(name);
   const kvId = ensureKvNamespace(name);

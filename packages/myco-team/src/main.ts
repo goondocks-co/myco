@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { teamAdopt, teamCreate, teamDestroy, teamExport, teamImport, teamReindexVectors, teamRotateTokens, teamStatus, teamUpgrade, upgradeWorker, reindexWorkerVectors } from './cli.js';
 import { migrateTeamsHomeIfNeeded } from '@myco/team/migrate-home.js';
+import { applyCloudflareAccountId, extractAccountIdFlag, isValidCloudflareAccountId } from '@myco-deploy/index.js';
 
 const [command, ...rawArgs] = process.argv.slice(2);
 type CommandHandler = (args: string[]) => Promise<void>;
@@ -9,7 +10,7 @@ function showHelp(): void {
   console.log(`Usage: myco-team <command>
 
 Commands:
-  create [--name "<team name>"] [--domain <zone>]
+  create [--name "<team name>"] [--domain <zone>] [--observability]
   upgrade|update --team-id <team_id> [--reindex-vectors] [--observability] [--json]
   status --team-id <team_id>
   rotate-tokens [api|mcp|all] --team-id <team_id>
@@ -18,6 +19,11 @@ Commands:
   export --team-id <team_id> [--out <dir-or-file>]
   import <bundle-file>
   adopt --worker-url <url> [--api-key <key>] [--worker-name <name>]
+
+--account-id <id> (any command) selects which Cloudflare account to operate on
+when your wrangler login has access to more than one. Without it, create prompts
+you to pick interactively on a terminal, or errors listing the available
+accounts when non-interactive. Equivalent to exporting CLOUDFLARE_ACCOUNT_ID.
 
 export writes a portable backup bundle (the team's local config + secrets)
 that import restores on another machine — no Cloudflare calls. adopt instead
@@ -88,15 +94,17 @@ function parseTeamSelector(commandArgs: string[]): { teamId?: string; rest: stri
   return { teamId, rest };
 }
 
-function parseCreateArgs(commandArgs: string[]): { name?: string; domain?: string } {
+function parseCreateArgs(commandArgs: string[]): { name?: string; domain?: string; observability?: boolean } {
   let name: string | undefined;
   let domain: string | undefined;
+  let observability = false;
   for (let i = 0; i < commandArgs.length; i += 1) {
     const arg = commandArgs[i];
     if (arg === '--name') { name = requireFlagValue(commandArgs, i, arg); i += 1; continue; }
     if (arg === '--domain') { domain = requireFlagValue(commandArgs, i, arg); i += 1; continue; }
+    if (arg === '--observability') { observability = true; continue; }
   }
-  return { name, domain };
+  return { name, domain, observability };
 }
 
 function parseExportArgs(commandArgs: string[]): { teamId?: string; out?: string } {
@@ -161,8 +169,8 @@ async function runUpgradeJson(
 
 const COMMAND_HANDLERS: Record<string, CommandHandler> = {
   create: async (commandArgs) => {
-    const { name, domain } = parseCreateArgs(commandArgs);
-    return teamCreate({ name, domain });
+    const { name, domain, observability } = parseCreateArgs(commandArgs);
+    return teamCreate({ name, domain, observability });
   },
   upgrade: async (commandArgs) => {
     const parsed = parseUpgradeArgs(commandArgs);
@@ -219,8 +227,19 @@ if (!handler) {
   process.exit(1);
 }
 
+// A global flag, valid on every command — set CLOUDFLARE_ACCOUNT_ID before any
+// wrangler call so a multi-account login resolves deterministically.
+const { accountId, rest: commandArgs } = extractAccountIdFlag(normalizeFlags(rawArgs));
+if (accountId !== undefined) {
+  if (!isValidCloudflareAccountId(accountId)) {
+    console.error(`Invalid --account-id "${accountId}": expected a 32-character hex Cloudflare account ID.`);
+    process.exit(2);
+  }
+  applyCloudflareAccountId(accountId);
+}
+
 try {
-  await handler(normalizeFlags(rawArgs));
+  await handler(commandArgs);
 } catch (err) {
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
