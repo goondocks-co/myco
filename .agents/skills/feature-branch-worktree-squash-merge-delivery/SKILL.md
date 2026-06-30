@@ -3,9 +3,10 @@ name: myco:feature-branch-worktree-squash-merge-delivery
 description: >-
   Use this skill when delivering a non-trivial Myco feature that spans
   multiple files and needs clean PR history. It applies whenever you need
-  git worktrees for isolated implementation, the `/simplify` quality pass,
-  `make build` as the full quality gate, or a single clean squash-merge
-  commit for the final PR.
+  git worktrees for isolated implementation, the `code-review high` quality
+  pass (multi-agent fan-out; `/simplify` is deprecated), `make build` as
+  the full quality gate, or a single clean squash-merge commit for the
+  final PR.
 managed_by: myco
 version: 1
 user-invocable: true
@@ -73,11 +74,11 @@ unset MYCO_HOME
 
 Commit regularly in the worktree. Don't worry about commit message quality — these will be squashed. Keep `.myco/` and `VAULT_GITIGNORE`-tracked files out of commits.
 
-### Step 4: Run the `/simplify` Quality Pass
+### Step 4: Run the `code-review high` Quality Pass
 
-After implementation, run a structured quality review targeting four classes of technical debt that accumulate during fast feature work. This pass must complete **before** the squash — simplification changes belong in the final commit, not a follow-up PR.
+After implementation, run `code-review high` (the current quality pass — `/simplify` is deprecated) to trigger a multi-agent fan-out review targeting four classes of technical debt that accumulate during fast feature work. This pass must complete **before** the squash — review changes belong in the final commit, not a follow-up PR.
 
-**Sequence constraint**: make a simplify commit in the worktree — it will be squashed into the single feature commit at delivery.
+**Sequence constraint**: commit review changes in the worktree — they will be squashed into the single feature commit at delivery.
 
 #### 4a. Identify and Extract Duplication
 
@@ -158,11 +159,11 @@ npm test
 
 Both must be clean before committing.
 
-#### 4f. Commit the simplify pass
+#### 4f. Commit the review pass
 
 ```bash
 git add -A
-git commit -m "refactor: /simplify pass — <feature-name>"
+git commit -m "refactor: code-review pass — <feature-name>"
 ```
 
 This commit will be squashed into the feature commit in Step 6.
@@ -240,10 +241,10 @@ The single squashed commit becomes the PR commit.
 
 - **`npm run build` silently ships broken packages** — only `make build` runs lint + fast unit tests + `tsc` + `tsup` + `vite`; for the full test sweep including integration/smoke, use `make build-all`
 - **Sibling directory, not subdirectory** — always use `../myco-branch-name`; nested worktrees cause CWD detection misattribution
-- **`/simplify` before squash, not after** — simplification belongs in the final squashed commit, not a follow-up cleanup PR
+- **`code-review high` before squash, not after** — review changes belong in the final squashed commit, not a follow-up cleanup PR (`/simplify` is deprecated)
 - **Delete the worktree before pushing** — `git worktree remove` must precede `git push`; lingering worktrees confuse subsequent Claude Code sessions
 - **Design spec on `main` first** — commit the spec in `docs/superpowers/specs/` before switching to the worktree
 - **Run `npm rebuild` after branch switches involving native modules** — if the dependency tree includes native Node addons (e.g., `better-sqlite3`), switching between branches requires `npm rebuild` before running tests or the daemon; failures manifest as cryptic runtime errors, not build errors
-- **Stage untracked files before `/simplify` or code review** — Claude Code's review tools only see git-tracked files; new files that haven't been `git add`-ed are invisible; run `git add -N .` (intent-to-add) before any review pass
+- **Stage untracked files before `code-review high`** — Claude Code's review tools only see git-tracked files; new files that haven't been `git add`-ed are invisible; run `git add -N .` (intent-to-add) before any review pass
 - **Check existing utility modules before extracting helpers** — re-extracting an existing helper creates a naming conflict during the simplify pass
 - **`gh pr merge --squash` exit code is unreliable inside worktrees** — the command can exit non-zero (local checkout fails) even when the remote merge succeeded; do not treat a non-zero exit as a failed merge. Always verify with `gh pr view --json state,mergeCommit` to confirm the actual PR state before retrying or force-pushing.
