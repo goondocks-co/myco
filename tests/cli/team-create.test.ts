@@ -67,6 +67,16 @@ function createFakeWorkerSource(sourceDir: string): void {
   fs.writeFileSync(path.join(sourceDir, 'src', 'index.ts'), '// worker\n', 'utf-8');
 }
 
+const TWO_ACCOUNT_WHOAMI = [
+  '┌──────────────────┬──────────────────────────────────┐',
+  '│ Account Name     │ Account ID                       │',
+  '├──────────────────┼──────────────────────────────────┤',
+  '│ Personal Account │ 0123456789abcdef0123456789abcdef │',
+  '├──────────────────┼──────────────────────────────────┤',
+  '│ Team Account     │ fedcba9876543210fedcba9876543210 │',
+  '└──────────────────┴──────────────────────────────────┘',
+].join('\n') + '\n';
+
 describe('teamCreate', () => {
   let tmpDir: string;
   let homeDir: string;
@@ -75,6 +85,7 @@ describe('teamCreate', () => {
   let previousMycoHome: string | undefined;
   let previousTeamHome: string | undefined;
   let previousPackageRoot: string | undefined;
+  let previousAccountId: string | undefined;
   let previousExit: typeof process.exit;
   let previousConsoleError: typeof console.error;
 
@@ -91,12 +102,14 @@ describe('teamCreate', () => {
     previousMycoHome = process.env.MYCO_HOME;
     previousTeamHome = process.env.MYCO_TEAM_HOME;
     previousPackageRoot = process.env.MYCO_TEAM_PACKAGE_ROOT;
+    previousAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
     previousExit = process.exit;
     previousConsoleError = console.error;
     process.env.HOME = tmpDir;
     process.env.MYCO_HOME = homeDir;
     process.env.MYCO_TEAM_HOME = homeDir;
     process.env.MYCO_TEAM_PACKAGE_ROOT = path.join(tmpDir, 'package-root');
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
 
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
       const target = String(url);
@@ -126,6 +139,8 @@ describe('teamCreate', () => {
     else process.env.MYCO_TEAM_HOME = previousTeamHome;
     if (previousPackageRoot === undefined) delete process.env.MYCO_TEAM_PACKAGE_ROOT;
     else process.env.MYCO_TEAM_PACKAGE_ROOT = previousPackageRoot;
+    if (previousAccountId === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    else process.env.CLOUDFLARE_ACCOUNT_ID = previousAccountId;
     process.exit = previousExit;
     console.error = previousConsoleError;
   });
@@ -202,6 +217,9 @@ describe('teamCreate', () => {
     expect(patchedToml).toContain(`SYNC_DLQ_NAME = "${resourceName}-sync-dlq"`);
     expect(patchedToml).toContain(`queue = "${resourceName}-sync"`);
     expect(patchedToml).toContain(`dead_letter_queue = "${resourceName}-sync-dlq"`);
+    // Observability stays off unless --observability is passed.
+    expect(patchedToml).not.toContain('[observability.logs]');
+    expect(patchedToml).toContain('# Observability disabled');
 
     const deployment = JSON.parse(
       fs.readFileSync(path.join(resolveTeamDir(teamId), 'deployment.json'), 'utf-8'),
@@ -225,5 +243,95 @@ describe('teamCreate', () => {
     await expect(teamCreate({})).rejects.toThrow('process.exit(2)');
     expect(errors.join('\n')).toContain('myco-team create requires a team name');
     expect(execCalls).toHaveLength(0);
+  });
+
+  it('refuses to provision when multiple Cloudflare accounts and none is selected (non-interactive)', async () => {
+    process.exit = ((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit;
+    const errors: string[] = [];
+    console.error = ((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    }) as typeof console.error;
+
+    execHandlers.push(
+      () => 'wrangler 4.105.0\n',  // 1 --version
+      () => TWO_ACCOUNT_WHOAMI,    // 2 whoami -> two accounts, no selection
+    );
+
+    const { teamCreate } = await import('../../packages/myco-team/src/cli.js');
+    await expect(teamCreate({ name: 'Acme OSS' })).rejects.toThrow('process.exit(2)');
+
+    expect(errors.join('\n')).toContain('More than one Cloudflare account');
+    expect(errors.join('\n')).toContain('fedcba9876543210fedcba9876543210');
+    // Resolution happens BEFORE any resource is created — only --version and
+    // whoami ran, so nothing leaked into an arbitrary account.
+    expect(execCalls.map((call) => call.args.slice(0, 2).join(' '))).toEqual(['--version', 'whoami']);
+  });
+
+  it('skips the account picker when CLOUDFLARE_ACCOUNT_ID is set (the --account-id flag path), even with multiple accounts', async () => {
+    process.env.CLOUDFLARE_ACCOUNT_ID = '0123456789abcdef0123456789abcdef';
+    const deployHandler = (): string => {
+      const created = execCalls.find((call) => call.args[0] === 'd1' && call.args[1] === 'create');
+      const name = created?.args[2] ?? 'myco-team-unknown';
+      return `https://${name}.test.workers.dev\n`;
+    };
+    execHandlers.push(
+      () => 'wrangler 4.105.0\n',                                          // 1 --version
+      () => TWO_ACCOUNT_WHOAMI,                                            // 2 whoami -> two accounts
+      () => '{ "database_id": "11111111-1111-1111-1111-111111111111" }\n', // 3 d1 create
+      () => '',                                                           // 4 vectorize create
+      () => '{ "kv_namespaces": [ { "id": "abcdef1234567890" } ] }\n',    // 5 kv namespace create
+      () => '',                                                           // 6 queues create sync
+      () => '',                                                           // 7 queues create sync-dlq
+      () => '',                                                           // 8 npm install
+      () => '',                                                           // 9 secret put
+      deployHandler,                                                      // 10 deploy
+      () => '',                                                           // 11 dlq consumer remove
+      () => '',                                                           // 12 dlq consumer http add
+    );
+
+    const { teamCreate } = await import('../../packages/myco-team/src/cli.js');
+    await teamCreate({ name: 'Acme OSS' });
+
+    // Provisioned end-to-end despite two accounts — the pre-set env short-circuits the picker.
+    const d1Create = execCalls.find((call) => call.args[0] === 'd1' && call.args[1] === 'create');
+    expect(d1Create).toBeDefined();
+    expect(teamRegistry.list()).toHaveLength(1);
+  });
+
+  it('renders the observability block into the worker toml when --observability is passed', async () => {
+    const deployHandler = (): string => {
+      const created = execCalls.find((call) => call.args[0] === 'd1' && call.args[1] === 'create');
+      const name = created?.args[2] ?? 'myco-team-unknown';
+      return `https://${name}.test.workers.dev\n`;
+    };
+    execHandlers.push(
+      () => 'wrangler 4.105.0\n',                                          // 1 --version
+      () => 'logged in\n',                                                 // 2 whoami (single account)
+      () => '{ "database_id": "11111111-1111-1111-1111-111111111111" }\n', // 3 d1 create
+      () => '',                                                           // 4 vectorize create
+      () => '{ "kv_namespaces": [ { "id": "abcdef1234567890" } ] }\n',    // 5 kv namespace create
+      () => '',                                                           // 6 queues create sync
+      () => '',                                                           // 7 queues create sync-dlq
+      () => '',                                                           // 8 npm install
+      () => '',                                                           // 9 secret put
+      deployHandler,                                                      // 10 deploy
+      () => '',                                                           // 11 dlq consumer remove
+      () => '',                                                           // 12 dlq consumer http add
+    );
+
+    const { teamCreate } = await import('../../packages/myco-team/src/cli.js');
+    await teamCreate({ name: 'Acme OSS', observability: true });
+
+    const teamId = teamRegistry.list()[0].team_id;
+    const toml = fs.readFileSync(
+      path.join(resolveTeamDir(teamId), 'worker', 'wrangler.toml'),
+      'utf-8',
+    );
+    expect(toml).toContain('[observability]');
+    expect(toml).toContain('[observability.logs]');
+    expect(toml).toContain('enabled = true');
+    expect(toml).not.toContain('# Observability disabled');
   });
 });
