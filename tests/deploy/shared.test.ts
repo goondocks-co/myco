@@ -5,12 +5,16 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   createHexToken,
+  extractAccountIdFlag,
   extractJsonArray,
+  isValidCloudflareAccountId,
   maskSecret,
   parseD1Id,
   parseKvNamespaceId,
   parseWorkerUrl,
+  parseWranglerAccounts,
   readJsonConfig,
+  resolveCloudflareAccount,
   resolveHomeConfigPath,
   resolveVaultConfigPath,
   runWrangler,
@@ -141,5 +145,138 @@ describe('cloudflare deployment helpers', () => {
     expect(parseKvNamespaceId('{ "kv_namespaces": [ { "id": "7cc069cb32b4438b29079cca4714056" } ] }')).toBe('7cc069cb32b4438b29079cca4714056');
     expect(parseWorkerUrl('Deployed to https://myco-team.example.workers.dev')).toBe('https://myco-team.example.workers.dev');
     expect(extractJsonArray('banner\n[{"id":"one"}]\n')).toEqual([{ id: 'one' }]);
+  });
+});
+
+const TWO_ACCOUNT_WHOAMI = [
+  ' ⛅️ wrangler 4.105.0 (update available 4.106.0)',
+  '───────────────────────────────────────────────',
+  'Getting User settings...',
+  '👋 You are logged in with an OAuth Token, associated with the email cf@example.net.',
+  '┌──────────────────┬──────────────────────────────────┐',
+  '│ Account Name     │ Account ID                       │',
+  '├──────────────────┼──────────────────────────────────┤',
+  '│ Personal Account │ 0123456789abcdef0123456789abcdef │',
+  '├──────────────────┼──────────────────────────────────┤',
+  '│ Team Account     │ fedcba9876543210fedcba9876543210 │',
+  '└──────────────────┴──────────────────────────────────┘',
+].join('\n') + '\n';
+
+const ONE_ACCOUNT_WHOAMI = [
+  '┌──────────────────┬──────────────────────────────────┐',
+  '│ Account Name     │ Account ID                       │',
+  '├──────────────────┼──────────────────────────────────┤',
+  '│ Personal Account │ 0123456789abcdef0123456789abcdef │',
+  '└──────────────────┴──────────────────────────────────┘',
+].join('\n') + '\n';
+
+describe('cloudflare account selection', () => {
+  let previousAccountId: string | undefined;
+
+  beforeEach(() => {
+    previousAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+  });
+
+  afterEach(() => {
+    if (previousAccountId === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    else process.env.CLOUDFLARE_ACCOUNT_ID = previousAccountId;
+  });
+
+  it('parses the wrangler whoami account table', () => {
+    expect(parseWranglerAccounts(TWO_ACCOUNT_WHOAMI)).toEqual([
+      { name: 'Personal Account', id: '0123456789abcdef0123456789abcdef' },
+      { name: 'Team Account', id: 'fedcba9876543210fedcba9876543210' },
+    ]);
+    expect(parseWranglerAccounts(ONE_ACCOUNT_WHOAMI)).toHaveLength(1);
+  });
+
+  it('returns [] for non-table whoami output (older wrangler / stubs)', () => {
+    expect(parseWranglerAccounts('logged in\n')).toEqual([]);
+    expect(parseWranglerAccounts('')).toEqual([]);
+  });
+
+  it('still counts an account whose Name cell is blank (no undercount)', () => {
+    const blankName = [
+      '┌──┬──────────────────────────────────┐',
+      '│  │ 0123456789abcdef0123456789abcdef │',
+      '├──┼──────────────────────────────────┤',
+      '│  │ fedcba9876543210fedcba9876543210 │',
+      '└──┴──────────────────────────────────┘',
+    ].join('\n') + '\n';
+    expect(parseWranglerAccounts(blankName)).toEqual([
+      { name: '', id: '0123456789abcdef0123456789abcdef' },
+      { name: '', id: 'fedcba9876543210fedcba9876543210' },
+    ]);
+  });
+
+  it('extracts a --account-id flag in both spaced and = forms', () => {
+    expect(extractAccountIdFlag(['create', '--account-id', 'abc', '--name', 'x'])).toEqual({
+      accountId: 'abc',
+      rest: ['create', '--name', 'x'],
+    });
+    expect(extractAccountIdFlag(['create', '--account-id=abc'])).toEqual({
+      accountId: 'abc',
+      rest: ['create'],
+    });
+    expect(extractAccountIdFlag(['create', '--name', 'x'])).toEqual({
+      accountId: undefined,
+      rest: ['create', '--name', 'x'],
+    });
+  });
+
+  it('validates the 32-hex account id shape', () => {
+    expect(isValidCloudflareAccountId('0123456789abcdef0123456789abcdef')).toBe(true);
+    expect(isValidCloudflareAccountId('0123456789ABCDEF0123456789ABCDEF')).toBe(true);
+    expect(isValidCloudflareAccountId('too-short')).toBe(false);
+    expect(isValidCloudflareAccountId('z123456789abcdef0123456789abcdef')).toBe(false);
+  });
+
+  it('respects an already-set CLOUDFLARE_ACCOUNT_ID without prompting', async () => {
+    process.env.CLOUDFLARE_ACCOUNT_ID = '0123456789abcdef0123456789abcdef';
+    const prompt = vi.fn(async () => '1');
+    await resolveCloudflareAccount({ whoamiOutput: TWO_ACCOUNT_WHOAMI, isTTY: true, prompt, log: () => {} });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(process.env.CLOUDFLARE_ACCOUNT_ID).toBe('0123456789abcdef0123456789abcdef');
+  });
+
+  it('is a no-op with a single account', async () => {
+    const prompt = vi.fn(async () => '1');
+    await resolveCloudflareAccount({ whoamiOutput: ONE_ACCOUNT_WHOAMI, isTTY: true, prompt, log: () => {} });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(process.env.CLOUDFLARE_ACCOUNT_ID).toBeUndefined();
+  });
+
+  it('throws with the account list when multiple accounts and non-interactive', async () => {
+    await expect(
+      resolveCloudflareAccount({ whoamiOutput: TWO_ACCOUNT_WHOAMI, isTTY: false, log: () => {} }),
+    ).rejects.toThrow(/more than one cloudflare account/i);
+    await expect(
+      resolveCloudflareAccount({ whoamiOutput: TWO_ACCOUNT_WHOAMI, isTTY: false, log: () => {} }),
+    ).rejects.toThrow(/fedcba9876543210fedcba9876543210/);
+    expect(process.env.CLOUDFLARE_ACCOUNT_ID).toBeUndefined();
+  });
+
+  it('prompts and applies the chosen account on a TTY', async () => {
+    const prompt = vi.fn(async () => '2');
+    await resolveCloudflareAccount({ whoamiOutput: TWO_ACCOUNT_WHOAMI, isTTY: true, prompt, log: () => {} });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(process.env.CLOUDFLARE_ACCOUNT_ID).toBe('fedcba9876543210fedcba9876543210');
+  });
+
+  it('re-prompts on invalid input, then applies a valid choice', async () => {
+    const answers = ['9', 'nope', '1'];
+    const prompt = vi.fn(async () => answers.shift() ?? '');
+    await resolveCloudflareAccount({ whoamiOutput: TWO_ACCOUNT_WHOAMI, isTTY: true, prompt, log: () => {} });
+    expect(prompt).toHaveBeenCalledTimes(3);
+    expect(process.env.CLOUDFLARE_ACCOUNT_ID).toBe('0123456789abcdef0123456789abcdef');
+  });
+
+  it('throws after exhausting prompt attempts without a valid choice', async () => {
+    const prompt = vi.fn(async () => 'x');
+    await expect(
+      resolveCloudflareAccount({ whoamiOutput: TWO_ACCOUNT_WHOAMI, isTTY: true, prompt, log: () => {} }),
+    ).rejects.toThrow(/no valid cloudflare account/i);
+    expect(process.env.CLOUDFLARE_ACCOUNT_ID).toBeUndefined();
   });
 });

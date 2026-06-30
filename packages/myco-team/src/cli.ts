@@ -25,6 +25,7 @@ import {
   parseD1Id,
   parseKvNamespaceId,
   parseWorkerUrl,
+  resolveCloudflareAccount,
   runWrangler,
   stageDeploymentDir,
 } from '@myco-deploy/index.js';
@@ -441,7 +442,7 @@ export function withCustomDomainRoute(toml: string, slug: string, domain: string
  * Copy worker source to the vault deployment directory and patch wrangler.toml
  * with actual D1 database ID and resource names.
  */
-function prepareDeployDir(scope: TeamResourceNameInput, teamId: string, d1Id: string, kvId: string, domain?: string | null): string {
+function prepareDeployDir(scope: TeamResourceNameInput, teamId: string, d1Id: string, kvId: string, domain?: string | null, observability = false): string {
   const srcDir = locateWorkerSource();
   const deployDir = resolveTeamDeployDir(teamId);
   const name = resourceName(scope);
@@ -455,6 +456,13 @@ function prepareDeployDir(scope: TeamResourceNameInput, teamId: string, d1Id: st
     (toml) => toml.replace(TOML_SYNC_DLQ_PLACEHOLDER_REGEX, syncDlqName(name)),
     (toml) => toml.replace(TOML_TEAM_PACKAGE_VERSION_REGEX, `MYCO_TEAM_PACKAGE_VERSION = "${getTeamPackageVersion()}"`),
     (toml) => toml.replace(TOML_MYCO_SCHEMA_VERSION_REGEX, `MYCO_SCHEMA_VERSION = "${getMycoSchemaVersion()}"`),
+    // Render the observability block up front so a freshly created worker can
+    // opt in at deploy time (matches the upgrade path), instead of always
+    // deploying with logs off until a follow-up `upgrade --observability`.
+    (toml) => resetObservabilityBlock(toml).replace(
+      TOML_OBSERVABILITY_PLACEHOLDER_REGEX,
+      renderObservabilitySection(observability),
+    ),
   ];
   if (domain) {
     transforms.push((toml) => withCustomDomainRoute(toml, scope.resourceSlug, domain));
@@ -592,7 +600,7 @@ async function rotateMcpTokenForWorker(workerUrl: string, apiKey: string): Promi
 // Commands
 // ---------------------------------------------------------------------------
 
-export async function teamCreate(options: { name?: string; domain?: string } = {}): Promise<void> {
+export async function teamCreate(options: { name?: string; domain?: string; observability?: boolean } = {}): Promise<void> {
   let teamName = options.name?.trim();
   const domain = options.domain?.trim() || null;
   if (!teamName) {
@@ -629,12 +637,23 @@ export async function teamCreate(options: { name?: string; domain?: string } = {
   }
 
   // 2. Check auth
+  let whoamiOutput: string;
   try {
-    wrangler(['whoami']);
+    whoamiOutput = wrangler(['whoami']);
     console.log('Cloudflare auth: OK\n');
   } catch {
     console.error('Error: Not authenticated with Cloudflare. Run: wrangler login');
     process.exit(1);
+  }
+
+  // 2b. Resolve the Cloudflare account up front — before any resource is
+  // created — so a multi-account login doesn't fail mid-provision (leaking a
+  // D1 db / Vectorize index / KV namespace into an arbitrary account).
+  try {
+    await resolveCloudflareAccount({ whoamiOutput, isTTY: Boolean(process.stdin.isTTY) });
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(2);
   }
 
   const name = resourceName(scope);
@@ -708,7 +727,10 @@ export async function teamCreate(options: { name?: string; domain?: string } = {
 
   // 8. Prepare deployment directory
   console.log('Preparing worker deployment...');
-  const deployDir = prepareDeployDir(scope, teamId, d1Id, kvId, domain);
+  if (options.observability) {
+    console.log('Observability: enabled (Cloudflare logs persist for this deploy)');
+  }
+  const deployDir = prepareDeployDir(scope, teamId, d1Id, kvId, domain, options.observability ?? false);
 
   // 7. Set team key secret via wrangler
   console.log('Setting Team key secret...');

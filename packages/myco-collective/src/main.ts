@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { collectiveAddProject, collectiveDestroy, collectiveInstall, collectiveRotateTokens, collectiveStatus, collectiveUpgrade } from './cli.js';
+import { applyCloudflareAccountId, extractAccountIdFlag, isValidCloudflareAccountId } from '@myco-deploy/index.js';
 
-const [command, ...args] = process.argv.slice(2);
+const [command, ...rawArgs] = process.argv.slice(2);
 type CommandHandler = (args: string[]) => Promise<void>;
 
 function showHelp(): void {
@@ -14,6 +15,11 @@ Commands:
   rotate-tokens [admin|mcp|all] [name]
   add-project <name> <worker_url> <api_key> [collective_name]
   destroy [name]
+
+--account-id <id> (any command) selects which Cloudflare account to operate on
+when your wrangler login has access to more than one. Without it, install
+prompts you to pick interactively on a terminal, or errors listing the
+available accounts when non-interactive. Equivalent to CLOUDFLARE_ACCOUNT_ID.
 `);
 }
 
@@ -51,4 +57,20 @@ if (!handler) {
   process.exit(1);
 }
 
-await handler(args);
+// A global flag, valid on every command — set CLOUDFLARE_ACCOUNT_ID before any
+// wrangler call so a multi-account login resolves deterministically.
+const { accountId, rest: commandArgs } = extractAccountIdFlag(rawArgs);
+if (accountId !== undefined) {
+  if (!isValidCloudflareAccountId(accountId)) {
+    console.error(`Invalid --account-id "${accountId}": expected a 32-character hex Cloudflare account ID.`);
+    process.exit(2);
+  }
+  applyCloudflareAccountId(accountId);
+}
+
+try {
+  await handler(commandArgs);
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
