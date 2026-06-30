@@ -47,7 +47,9 @@ registration:
       systemMessage: system_message
   mcpTarget: .cursor/mcp.json
   globalMcpTarget: ~/.cursor/mcp.json
-  skillsTarget: .cursor/skills
+  skillsTarget: .agents/skills
+  retiredSkillsTargets:
+    - .cursor/skills
   globalSkillsTarget: ~/.agents/skills
   retiredGlobalSkillsTargets:
     - ~/.cursor/skills

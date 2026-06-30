@@ -12,7 +12,9 @@ description: |
   (5) enforcing walker grove-ownership filtering to prevent cross-grove
   mutations, and (6) running a dry-run validation before committing global
   installs. Also covers the invariant that the global model is canonical —
-  fallbacks are traps, per-project config is the escape hatch.
+  fallbacks are traps, per-project config is the escape hatch. Includes the
+  managed skills architecture (binary-embedded, agent-standard install) and
+  three known failure modes for global skill symlinks.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -140,6 +142,32 @@ synchronized with `PowerManager` state (active/sleep).
 more frequent than update check, less aggressive than per-daemon-tick, always
 gated on `PowerManager` active state. Do not schedule a fixed wall-clock
 interval without consulting the power manager.
+
+## Design Decision 4: Managed Skills Architecture — Binary-Embedded, Agent-Standard Install
+
+Global skills (SKILL.md files surfaced to agents) are now bundled inside the
+Myco binary at build time rather than sourced from the repository source tree
+at runtime. This eliminates a silent failure where `resolvePackageRoot()`
+returned `/` for native/curl-installed binaries — the managed daemon at
+`~/.myco/bin/myco` has no adjacent source tree containing a skills directory.
+
+**Architecture:**
+- Build-time: a codegen script embeds skill content into the binary.
+- Runtime: `packages/myco/src/symbionts/managed-skills.ts`
+  (`ensureManagedSkills()`) reads embedded skill content and installs symlinks
+  at agent-specific paths. `skillsSourceDir()` returns `managedSkillsDir()`
+  (in-binary source), not the source-tree skills directory.
+- **Cross-agent install standard:** The canonical target is
+  `~/.agents/skills/<skill-name>`. Agent-specific symlink overrides: Claude
+  reads from `~/.claude/skills/`, Cline from `~/.cline/skills/`. The installer
+  creates the correct per-agent symlinks automatically.
+- **Declarative migration cleanup:** `retiredGlobalSkillsTargets` declares
+  retired skill targets from prior installs; `sweepRetiredGlobalSkills()`
+  removes stale symlinks from old paths during upgrade migrations.
+
+**Why binary-embedding:** Removes the runtime dependency on the source tree so
+skills install correctly regardless of whether the binary arrived via curl, npm,
+or the update pipeline.
 
 ## Hazard Discipline 1: Blast-Radius Preview Before Any Global Write
 
@@ -339,11 +367,39 @@ machine, both variants may run the same power jobs that call
 `runSymbiontDetection()` (in `packages/myco/src/cli/bootstrap.ts`) against the
 same machine-global targets (global agent config files, shared hook registrations).
 This creates a thrash where each variant overwrites the other's changes on every
-power-job cycle. The fix is variant-scoped claim transfer or skip logic: the dev
-daemon must not overwrite machine-global artifacts owned by the prod daemon
-variant, or must transfer the subsystem claim before writing. Never assume a
-global write by the dev daemon is safe when prod is also active.
+power-job cycle. The fix is variant-scoped claim transfer or skip logic (see
+`packages/myco/src/grove/subsystem-claim.ts`): the dev daemon must not overwrite
+machine-global artifacts owned by the prod daemon variant, or must transfer the
+subsystem claim before writing. Never assume a global write by the dev daemon is
+safe when prod is also active.
 
 ### Daemon Rebuild Re-Fires Capture-Only Seed — Clobbers Already-Admitted Project Capabilities
 
 **Development-time gotcha**: When rebuilding the daemon on a feature branch and restarting it, the daemon can re-fire the capture-only seed for already-admitted projects. The seed overwrites all 4 project capabilities (capture, analysis, etc.) with their initial disabled/default values — even for projects that had been fully enabled via the UI. This looks like a config loss or UI bug but the root cause is a missing admission guard in the seed logic: the seed must check whether a project is already admitted before overwriting its capabilities. Without the guard, every daemon rebuild during development silently disables all capabilities for all registered projects. Workaround while the guard is pending: manually re-enable capabilities via the UI after each rebuild on the feature branch.
+
+### Global Skill Symlinks: Three Independent Failure Modes
+
+All three failure modes affect the same surface: global skill symlinks at
+`~/.claude/skills/{myco,myco-handoff,myco-rules}` (and analogous paths for
+other agents). Each has a distinct root cause.
+
+**1. resolvePackageRoot() returns / for native/curl installs.**
+The managed daemon binary (`~/.myco/bin/myco`) has no adjacent source tree.
+Any call site that still uses `resolvePackageRoot()` to locate skills gets `/`
+and installs nothing silently. All skill sourcing must go through
+`managedSkillsDir()` / `ensureManagedSkills()` in
+`packages/myco/src/symbionts/managed-skills.ts`. If global skills are missing
+after a native install, check for lingering source-tree-based path construction.
+
+**2. Skill symlinks dangle silently when the source worktree is deleted.**
+Global skill symlinks pointing into a dev worktree path become broken with no
+daemon error or user warning when that worktree is removed (`git worktree remove`
+or `git worktree prune`). Workaround: run `myco update` after removing any
+worktree to re-point symlinks to the canonical managed binary path.
+
+**3. make dev-link-worktree bypasses the subsystem claim gate.**
+The dev shortcut for linking a worktree skips the normal grove-ownership claim
+check. A dev build can therefore overwrite machine-global skill artifacts
+without going through the claim transfer protocol in
+`packages/myco/src/grove/subsystem-claim.ts`. Only use `make dev-link-worktree`
+when prod is not actively serving the same machine-global artifacts.

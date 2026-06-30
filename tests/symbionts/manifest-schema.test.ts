@@ -40,7 +40,10 @@ describe('symbiont manifests', () => {
     expect(manifest.registration).toBeDefined();
     expect(manifest.registration?.hooksTarget).toBe('.cursor/hooks.json');
     expect(manifest.registration?.mcpTarget).toBe('.cursor/mcp.json');
-    expect(manifest.registration?.skillsTarget).toBe('.cursor/skills');
+    // Cursor reads the canonical cross-agent .agents/skills directly; its
+    // former .cursor/skills dir is retired (swept by the skill-symlink reconcile).
+    expect(manifest.registration?.skillsTarget).toBe('.agents/skills');
+    expect(manifest.registration?.retiredSkillsTargets).toEqual(['.cursor/skills']);
   });
 
   it('accepts manifest with registration section', () => {

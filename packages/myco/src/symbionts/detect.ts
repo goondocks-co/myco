@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import { expandHome } from '../grove/paths.js';
 
 export interface DetectedSymbiont {
   manifest: SymbiontManifest;
@@ -67,6 +68,27 @@ export function loadManifests(): SymbiontManifest[] {
 export function getManifestByName(name: string | undefined): SymbiontManifest | undefined {
   if (!name) return undefined;
   return loadManifests().find((m) => m.name === name);
+}
+
+/**
+ * Manifests for agents installed on THIS MACHINE — i.e. whose declared
+ * `detectionDir` (a user-level dir like `~/.claude`) exists. This is the same
+ * machine-global basis the installer's `isAvailableForScope()` and the
+ * Symbionts UI use for "detected", and the basis for deciding which agents a
+ * project's skills should be symlinked into: agents are machine-global, so a
+ * detected agent applies to every project (minus per-project opt-out). Cheap —
+ * a `statSync` per manifest, no subprocess spawns. `expandHome` honors
+ * `MYCO_SANDBOX_ROOT`, so hermetic tests resolve against the sandboxed home.
+ */
+export function detectMachineInstalledSymbionts(): SymbiontManifest[] {
+  return loadManifests().filter((m) => {
+    if (!m.detectionDir) return false;
+    try {
+      return fs.statSync(expandHome(m.detectionDir)).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**

@@ -772,11 +772,16 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           if (now - lastRun < RECONCILE_INTERVAL_MS) return;
           lastManagedReconcileAt.set(key, now);
           const result = reconcileManagedProjectFiles(projectRoot, projectVaultDir, grove.id);
-          if (result && (result.gitignore || result.agentsMd)) {
+          if (result && (result.gitignore || result.agentsMd || result.skillSymlinks)) {
             logger.info(
               LOG_KINDS.MANAGED_FILES_RECONCILE,
               'Reconciled managed project files',
-              { project_id: projectId, gitignore: result.gitignore, agents_md: result.agentsMd },
+              {
+                project_id: projectId,
+                gitignore: result.gitignore,
+                agents_md: result.agentsMd,
+                skill_symlinks: result.skillSymlinks,
+              },
             );
           }
         },
