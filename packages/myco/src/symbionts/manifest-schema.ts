@@ -307,6 +307,16 @@ const RegistrationSchema = z.object({
    */
   mcpServersKey: z.string().default('mcpServers'),
   skillsTarget: z.string().optional(),
+  /**
+   * Project-local skill dirs this agent USED to be symlinked into, before its
+   * `skillsTarget` moved (e.g. consolidating on the `.agents/skills` cross-agent
+   * standard). Project-scope analog of `retiredGlobalSkillsTargets`: the
+   * per-project skill-symlink reconcile sweeps Myco's own skill symlinks out of
+   * each retired dir so stale links don't linger after a target migration. Only
+   * Myco-owned symlinks (resolving under the canonical `.agents/skills/`) are
+   * removed; real user content and user-added skills are untouched.
+   */
+  retiredSkillsTargets: z.array(z.string()).optional(),
   settingsTarget: z.string().optional(),
   /** Format of the settings file. TOML-format agents (e.g., Codex) emit top-level template keys as TOML sections. */
   settingsFormat: z.enum(['json', 'toml']).default('json'),
