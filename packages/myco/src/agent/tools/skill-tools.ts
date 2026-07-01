@@ -1522,7 +1522,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           return textResult({ error: `Unknown action: ${args.action}` });
       }
     },
-    { annotations: {} },
+    { annotations: { destructiveHint: true, idempotentHint: false } },
   );
 
   const vaultSkillRecords = tool(
@@ -1650,7 +1650,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           return textResult({ error: `Unknown action: ${args.action}` });
       }
     },
-    { annotations: {} },
+    { annotations: { destructiveHint: true, idempotentHint: false } },
   );
 
   const vaultScanSkillContamination = tool(
