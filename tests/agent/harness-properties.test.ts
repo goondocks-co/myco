@@ -224,6 +224,9 @@ describe('harness properties', () => {
     const destructiveToolNames = new Set(
       tools.filter(t => t.annotations?.destructiveHint).map(t => t.name),
     );
+    const nonReadOnlyToolNames = new Set(
+      tools.filter(t => t.annotations?.readOnlyHint !== true).map(t => t.name),
+    );
 
     for (const file of yamlFiles) {
       const parsed = parsedTasks.get(file)!;
@@ -241,9 +244,22 @@ describe('harness properties', () => {
               `Read-only phase "${phase.name}" in ${taskName} has destructive tools: ${badTools.join(', ')}`,
             ).toHaveLength(0);
           });
+
+          it(`${taskName}/${phase.name} only lists read-only tools`, () => {
+            const badTools = phase.tools.filter(t => nonReadOnlyToolNames.has(t));
+            expect(
+              badTools,
+              `Read-only phase "${phase.name}" in ${taskName} lists tools without readOnlyHint: true: ${badTools.join(', ')}`,
+            ).toHaveLength(0);
+          });
         }
       }
     }
+
+    it('treats vault_report as read-only observability', () => {
+      const reportTool = tools.find(t => t.name === 'vault_report');
+      expect(reportTool?.annotations?.readOnlyHint).toBe(true);
+    });
 
     it('at least one phase across all tasks is marked readOnly', () => {
       let readOnlyCount = 0;
