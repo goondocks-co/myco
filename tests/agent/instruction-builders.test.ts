@@ -113,6 +113,17 @@ function createSpore(createdAt: number, content: string = 'Test spore content'):
   return id;
 }
 
+function selectedSkillNames(instruction: string): string[] {
+  return [...instruction.matchAll(/^## Skill: ([^(]+)/gm)].map(match => match[1].trim());
+}
+
+function section(instruction: string, heading: string): string {
+  const start = instruction.indexOf(heading);
+  if (start < 0) return '';
+  const next = instruction.indexOf('\n## ', start + heading.length);
+  return instruction.slice(start, next < 0 ? undefined : next);
+}
+
 function requestContext(projectId: string) {
   return resolveLegacyRequestContext('/tmp/myco-instruction-builders-test/.myco', {
     projectRoot: `/workspace/${projectId}`,
@@ -465,6 +476,180 @@ describe('buildSkillEvolveInstruction', () => {
     const result = await buildSkillEvolveInstruction({}, root, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toContain('Pre-computed Drift Report');
     expect(result).toContain('growth=');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('does not expose more assessable skills than max_skills_per_run across new knowledge and drift', async () => {
+    const now = epochSeconds();
+    const root = mkdtempSync(join(tmpdir(), 'myco-evolve-'));
+    mkdirSync(join(root, 'packages', 'myco', 'src'), { recursive: true });
+    writeFileSync(join(root, 'packages', 'myco', 'src', 'helpers.ts'), 'export const ExistingSymbol = 1;\nexport const AddedOne = 2;\n');
+
+    for (const name of ['selected-alpha', 'selected-beta', 'drift-one', 'drift-two', 'drift-three']) {
+      const id = createSkillWithWatermark(
+        name,
+        name.startsWith('selected') ? now - 10000 : now + 1000,
+        0,
+        `Skill ${name}`,
+      );
+      getDatabase().prepare('UPDATE skill_records SET properties = ? WHERE id = ?').run(JSON.stringify({
+        knowledge_watermark: name.startsWith('selected') ? now - 10000 : now + 1000,
+        last_assessed_at: 0,
+        last_verified_at: 0,
+        file_fingerprints: {
+          'packages/myco/src/helpers.ts': { exports: ['ExistingSymbol'] },
+        },
+      }), id);
+      mkdirSync(join(root, '.agents', 'skills', name), { recursive: true });
+      writeFileSync(
+        join(root, '.agents', 'skills', name, 'SKILL.md'),
+        `# ${name}\n## Scope\nUse \`packages/myco/src/helpers.ts\`.\n## Procedure\nKeep updated.\n`,
+      );
+    }
+
+    createSpore(now - 100, 'New knowledge relevant to selected skills.');
+
+    const result = await buildSkillEvolveInstruction(
+      { max_skills_per_run: 2, assess_interval_hours: 1 },
+      root,
+      undefined,
+      TEST_REQUEST_CONTEXT,
+    );
+
+    expect(selectedSkillNames(result)).toEqual(['selected-alpha', 'selected-beta']);
+    const driftReport = section(result, '## Pre-computed Drift Report');
+    expect(driftReport).not.toContain('- **drift-one**: severity=');
+    expect(driftReport).not.toContain('- **drift-two**: severity=');
+    expect(driftReport).not.toContain('- **drift-three**: severity=');
+    expect(result).toContain('## Deferred Assessment Signals (do not assess this run)');
+    expect(result).toContain('drift-one');
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('fills remaining assessment slots with deterministic drift-only reports and defers the rest', async () => {
+    const now = epochSeconds();
+    const root = mkdtempSync(join(tmpdir(), 'myco-evolve-'));
+    mkdirSync(join(root, 'packages', 'myco', 'src'), { recursive: true });
+    writeFileSync(join(root, 'packages', 'myco', 'src', 'helpers.ts'), 'export const ExistingSymbol = 1;\nexport const AddedOne = 2;\n');
+
+    for (const name of ['new-knowledge', 'drift-alpha', 'drift-beta', 'drift-gamma']) {
+      const id = createSkillWithWatermark(
+        name,
+        name === 'new-knowledge' ? now - 10000 : now + 1000,
+        0,
+        `Skill ${name}`,
+      );
+      getDatabase().prepare('UPDATE skill_records SET properties = ? WHERE id = ?').run(JSON.stringify({
+        knowledge_watermark: name === 'new-knowledge' ? now - 10000 : now + 1000,
+        last_assessed_at: 0,
+        last_verified_at: 0,
+        file_fingerprints: {
+          'packages/myco/src/helpers.ts': { exports: ['ExistingSymbol'] },
+        },
+      }), id);
+      mkdirSync(join(root, '.agents', 'skills', name), { recursive: true });
+      writeFileSync(
+        join(root, '.agents', 'skills', name, 'SKILL.md'),
+        `# ${name}\n## Scope\nUse \`packages/myco/src/helpers.ts\`.\n## Procedure\nKeep updated.\n`,
+      );
+    }
+
+    createSpore(now - 100, 'New knowledge relevant to new-knowledge.');
+
+    const result = await buildSkillEvolveInstruction(
+      { max_skills_per_run: 2, assess_interval_hours: 1 },
+      root,
+      undefined,
+      TEST_REQUEST_CONTEXT,
+    );
+
+    expect(selectedSkillNames(result)).toEqual(['new-knowledge', 'drift-alpha']);
+    const driftReport = section(result, '## Pre-computed Drift Report');
+    expect(driftReport).toContain('- **drift-alpha**: severity=');
+    expect(driftReport).not.toContain('- **drift-beta**: severity=');
+    expect(driftReport).not.toContain('- **drift-gamma**: severity=');
+    const deferred = section(result, '## Deferred Assessment Signals (do not assess this run)');
+    expect(deferred).toContain('drift-beta');
+    expect(deferred).toContain('drift-gamma');
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('caps inventory-only narrow and overlap signals instead of expanding assess scope', async () => {
+    const now = epochSeconds();
+    const root = mkdtempSync(join(tmpdir(), 'myco-evolve-'));
+
+    for (const name of ['inventory-alpha', 'inventory-beta', 'inventory-gamma', 'inventory-delta']) {
+      createSkillWithWatermark(
+        name,
+        now + 1000,
+        0,
+        'Operate shared daemon restart routing and runtime verification workflows.',
+      );
+      mkdirSync(join(root, '.agents', 'skills', name), { recursive: true });
+      writeFileSync(
+        join(root, '.agents', 'skills', name, 'SKILL.md'),
+        `# ${name}\n## Scope\nRuntime routing.\n`,
+      );
+    }
+
+    const result = await buildSkillEvolveInstruction(
+      { max_skills_per_run: 2, assess_interval_hours: 1 },
+      root,
+      undefined,
+      TEST_REQUEST_CONTEXT,
+    );
+
+    expect(selectedSkillNames(result)).toHaveLength(2);
+    const narrow = section(result, '## Mechanically Narrow Skills (<2 H2 sections)');
+    expect(narrow).toContain('inventory-alpha');
+    expect(narrow).toContain('inventory-beta');
+    expect(narrow).not.toContain('inventory-gamma');
+    expect(narrow).not.toContain('inventory-delta');
+    const deferred = section(result, '## Deferred Assessment Signals (do not assess this run)');
+    expect(deferred).toContain('inventory-gamma');
+    expect(deferred).toContain('inventory-delta');
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('does not advance file fingerprints for deferred drift reports', async () => {
+    const now = epochSeconds();
+    const root = mkdtempSync(join(tmpdir(), 'myco-evolve-'));
+    mkdirSync(join(root, 'packages', 'myco', 'src'), { recursive: true });
+    writeFileSync(join(root, 'packages', 'myco', 'src', 'helpers.ts'), 'export const ExistingSymbol = 1;\nexport const AddedOne = 2;\n');
+
+    for (const name of ['drift-alpha', 'drift-beta']) {
+      const id = createSkillWithWatermark(name, now + 1000, 0, `Skill ${name}`);
+      getDatabase().prepare('UPDATE skill_records SET properties = ? WHERE id = ?').run(JSON.stringify({
+        knowledge_watermark: now + 1000,
+        last_assessed_at: 0,
+        last_verified_at: 123,
+        file_fingerprints: {
+          'packages/myco/src/helpers.ts': { exports: ['ExistingSymbol'] },
+        },
+      }), id);
+      mkdirSync(join(root, '.agents', 'skills', name), { recursive: true });
+      writeFileSync(
+        join(root, '.agents', 'skills', name, 'SKILL.md'),
+        `# ${name}\n## Scope\nUse \`packages/myco/src/helpers.ts\`.\n## Procedure\nKeep updated.\n`,
+      );
+    }
+
+    const result = await buildSkillEvolveInstruction(
+      { max_skills_per_run: 1, assess_interval_hours: 1 },
+      root,
+      undefined,
+      TEST_REQUEST_CONTEXT,
+    );
+
+    expect(selectedSkillNames(result)).toEqual(['drift-alpha']);
+    const row = getDatabase().prepare('SELECT properties FROM skill_records WHERE id = ?').get('skill-drift-beta') as { properties: string };
+    const props = JSON.parse(row.properties);
+    expect(props.last_verified_at).toBe(123);
+    expect(props.file_fingerprints['packages/myco/src/helpers.ts']).toEqual({ exports: ['ExistingSymbol'] });
+
     rmSync(root, { recursive: true, force: true });
   });
 

@@ -21,6 +21,7 @@ import {
   resolveEffectiveConfig,
   registerBuiltInAgentsAndTasks,
 } from '@myco/agent/loader.js';
+import { SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN } from '@myco/agent/instruction-builders.js';
 import type { AgentRow } from '@myco/db/queries/agents.js';
 import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 
@@ -263,6 +264,44 @@ describe('agent loader', () => {
       expect(assess?.tools).toContain('vault_skill_candidates');
       expect(assess?.prompt).toContain('Candidate metadata is triage input');
       expect(assess?.prompt).toContain('deferred or dismissed candidates');
+    });
+
+    it('loads skill-evolve run cap from the same default used by the instruction builder', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const se = tasks.find((t) => t.name === 'skill-evolve');
+      const assess = se?.phases?.find((phase) => phase.name === 'assess');
+      const act = se?.phases?.find((phase) => phase.name === 'act');
+
+      expect(se?.params?.max_skills_per_run).toBe(SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN);
+      expect(assess?.prompt).toContain('Assess at most {{max_skills_per_run}} unique skills per run total across A/B/C/D.');
+      expect(assess?.prompt).not.toContain('Assess at most 6 unique skills per run total across A/B/C/D.');
+      expect(act?.prompt).toContain('process at most {{max_skills_per_run}} STALE updates per run');
+      expect(act?.prompt).not.toContain('process at most 6 STALE updates per run');
+    });
+
+    it('loads skill-evolve inventory as a writable state/report phase', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const se = tasks.find((t) => t.name === 'skill-evolve');
+      const inventory = se?.phases?.find((phase) => phase.name === 'inventory');
+
+      expect(inventory?.readOnly).not.toBe(true);
+      expect(inventory?.tools).toContain('vault_set_state');
+      expect(inventory?.tools).toContain('vault_report');
+      expect(inventory?.tools).not.toContain('vault_skill_records');
+      expect(inventory?.prompt).toContain('action: "skill-evolve-inventory"');
+      expect(inventory?.prompt).toContain('key: skill-evolve-inventory');
+      expect(inventory?.prompt).toContain('"run_id": "{{run_id}}"');
+    });
+
+    it('loads skill-evolve assess with an exact report contract', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const se = tasks.find((t) => t.name === 'skill-evolve');
+      const assess = se?.phases?.find((phase) => phase.name === 'assess');
+
+      expect(assess?.prompt).toContain('action: "assess"');
+      expect(assess?.prompt).toContain('"run_id": "{{run_id}}"');
+      expect(assess?.prompt).toContain('"classifications"');
+      expect(assess?.prompt).toContain('"deferred_skills"');
     });
 
     it('loads skill-survey durable decision handoff phases', () => {

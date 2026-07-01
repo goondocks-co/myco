@@ -23,7 +23,7 @@ schedule:
   preCondition: has-active-skills
 params:
   assess_interval_hours: 24
-  max_skills_per_run: 6
+  max_skills_per_run: 3
 phases:
   - name: inventory
     reasoningLevel: low
@@ -56,15 +56,16 @@ phases:
 
       ## Store results
 
-      Store via vault_set_state (key: skill-evolve-inventory) as:
+      Store via vault_set_state with key: skill-evolve-inventory as:
       {
+        "run_id": "{{run_id}}",
         "merge_candidates": [
-          { "source": "skill-name-a", "target": "skill-name-b",
-            "reason": "..." }
+          { "source": "source-skill", "target": "target-skill",
+            "reason": "overlapping setup workflow" }
         ],
         "narrow_candidates": [
-          { "skill": "skill-name", "absorb_into": "broader-skill",
-            "reason": "..." }
+          { "skill": "narrow-skill", "absorb_into": "broader-skill",
+            "reason": "single narrow procedure" }
         ]
       }
 
@@ -83,15 +84,13 @@ phases:
       Final phase summary must be <= 2 lines.
       Required output shape:
       - One `vault_set_state` call with merge/narrow arrays.
-      - One `vault_report` call with counts.
+      - One `vault_report` call with action: "skill-evolve-inventory" and counts.
       - Final assistant text <= 2 lines, no explanatory prose.
     tools:
-      - vault_skill_records
       - vault_set_state
       - vault_report
     maxTurns: 8
     required: true
-    readOnly: true
 
   - name: assess
     reasoningLevel: default
@@ -195,7 +194,7 @@ phases:
 
       ## Per-run scope cap
 
-      Assess at most 6 unique skills per run total across A/B/C/D.
+      Assess at most {{max_skills_per_run}} unique skills per run total across A/B/C/D.
       Prioritize in this order:
       1) Skills with new knowledge + high-confidence drift
       2) Skills with new knowledge only
@@ -242,13 +241,27 @@ phases:
          this value is re-surfaced on a later run until the write lands.
 
       6. Store classifications via vault_set_state
-         (key: skill-evolve-classifications) as JSON:
-         [{ "skill_id": "...", "name": "...",
-            "classification": "...",
-            "target_skill": "..." (for MERGE/NARROW),
-            "details": "..." }]
+         with key: skill-evolve-classifications as JSON:
+         {
+           "run_id": "{{run_id}}",
+           "classifications": [
+             { "skill_id": "skill-a", "name": "skill-a",
+               "classification": "CURRENT", "target_skill": null,
+               "details": "still accurate" }
+           ]
+         }
 
-      Report via vault_report.
+      Report via vault_report with action: "assess" and details:
+      {
+        "run_id": "{{run_id}}",
+        "classifications": [
+          { "skill_id": "skill-a", "name": "skill-a", "classification": "CURRENT",
+            "target_skill": null, "details": "still accurate" }
+        ],
+        "deferred_skills": ["skill-b"]
+      }
+      The `classifications` array must contain the same assessed skills and
+      classifications written to skill-evolve-classifications.
 
       ## Budget discipline
 
@@ -420,8 +433,8 @@ phases:
 
       - Process MERGE/NARROW actions AFTER STALE updates, so you're
         merging already-refreshed content.
-      - Cost/quality guardrail: process at most 6 STALE updates per run.
-        If more than 6 are classified STALE, process the top 6 by impact
+      - Cost/quality guardrail: process at most {{max_skills_per_run}} STALE updates per run.
+        If more than {{max_skills_per_run}} are classified STALE, process the top {{max_skills_per_run}} by impact
         (critical drift > major drift > both drift+new knowledge > new knowledge only),
         report deferred skill names via vault_report, and leave their
         classifications in state for a future run.

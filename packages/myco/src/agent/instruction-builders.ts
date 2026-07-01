@@ -41,7 +41,7 @@ import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { listRecentSupersessions, listSupersedingSporeIds } from '@myco/db/queries/spore-supersession.js';
 import { epochSeconds } from '@myco/constants.js';
 import { shortlistSemanticIds, type SemanticShortlistProvider } from '@myco/agent/semantic-shortlist.js';
-import { detectDrift, type SkillFileFingerprint } from '@myco/agent/skill-drift.js';
+import { detectDrift, type SkillDriftReport, type SkillFileFingerprint } from '@myco/agent/skill-drift.js';
 import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
@@ -279,6 +279,50 @@ interface SemanticPair {
   idA: string;
   idB: string;
   similarity: number;
+}
+
+interface AssessmentSignal {
+  skillId: string;
+  name: string;
+  reasons: Set<string>;
+  priority: number;
+  rank: number;
+  order: number;
+}
+
+function hasDriftSignal(report: SkillDriftReport): boolean {
+  return report.severity !== 'none'
+    || report.loadBearingMisses.length > 0
+    || report.inconclusive.length > 0
+    || report.growth.length > 0
+    || report.fabricationSuspects.length > 0;
+}
+
+function driftPriority(report: SkillDriftReport): number {
+  if (report.fabricationSuspects.length > 0 || report.severity === 'critical') return 3;
+  if (report.severity === 'major') return 4;
+  if (report.growth.length > 0 || report.severity === 'minor') return 6;
+  return 7;
+}
+
+function driftRank(report: SkillDriftReport): number {
+  const severity = { critical: 400, major: 300, minor: 200, none: 0 }[report.severity];
+  const confidence = { high: 30, medium: 20, low: 10 }[report.confidence];
+  return severity
+    + confidence
+    + (report.loadBearingMisses.length * 6)
+    + (report.fabricationSuspects.length * 6)
+    + (report.growth.length * 3)
+    + report.inconclusive.length;
+}
+
+function driftTotals(reports: SkillDriftReport[]) {
+  return {
+    missing: reports.reduce((sum, report) => sum + report.loadBearingMisses.length, 0),
+    inconclusive: reports.reduce((sum, report) => sum + report.inconclusive.length, 0),
+    growth: reports.reduce((sum, report) => sum + report.growth.length, 0),
+    fabricationSuspects: reports.reduce((sum, report) => sum + report.fabricationSuspects.length, 0),
+  };
 }
 
 function normalizeSkillName(name: string): string {
@@ -536,10 +580,10 @@ export async function buildSkillEvolveInstruction(
   // builder (not the prompt) so it does not depend on the agent self-reporting
   // completion. Fail-safe: a needs-work classification with no recorded
   // assessment generation re-surfaces rather than hides.
-  const selectedIds = new Set(needsAssessment.map((entry) => entry.id));
+  const needsAssessmentIds = new Set(needsAssessment.map((entry) => entry.id));
   const unresolved: SkillAssessmentEntry[] = [];
   for (const skill of allSkills) {
-    if (selectedIds.has(skill.id)) continue;
+    if (needsAssessmentIds.has(skill.id)) continue;
     const props = parseSkillProperties(skill.properties);
     const classification = typeof props.last_classification === 'string' ? props.last_classification : '';
     if (!NEEDS_WORK_CLASSIFICATIONS.has(classification)) continue;
@@ -558,11 +602,6 @@ export async function buildSkillEvolveInstruction(
       resurfaced: true,
     });
   }
-
-  // Known-broken (unresolved) skills take priority over new-knowledge skills,
-  // then new-knowledge fills the remaining slots. Total stays bounded by
-  // maxSkillsPerRun so per-run scope and cost are fixed regardless of backlog.
-  const selectedSkills = [...unresolved, ...needsAssessment].slice(0, maxSkillsPerRun);
 
   // ----- Structural analysis: section counts + heading extraction -----
   // Read each skill's content from disk and extract H2 headings.
@@ -644,7 +683,136 @@ export async function buildSkillEvolveInstruction(
         totalFabricationSuspects: 0,
       };
 
+  let semanticPairs: Array<{ idA: string; idB: string; similarity: number }> = [];
+  if (retrievalProvider && projectRoot) {
+    try {
+      const skillIds = new Set(allSkills.map((skill) => skill.id));
+      const allPairs = retrievalProvider.pairwiseSimilarity('skill_records', 0);
+      semanticPairs = selectOutlierPairs(
+        allPairs.filter((pair) => skillIds.has(pair.idA) && skillIds.has(pair.idB)),
+        { kSigma: 2, minSamples: 10 },
+      );
+    } catch {
+      semanticPairs = [];
+    }
+  }
+
+  const skillById = new Map(allSkills.map((skill, index) => [skill.id, { skill, index }]));
+  const skillByName = new Map(allSkills.map((skill, index) => [skill.name, { skill, index }]));
+  const needsAssessmentById = new Map(needsAssessment.map((entry) => [entry.id, entry]));
+  const unresolvedById = new Map(unresolved.map((entry) => [entry.id, entry]));
+  const driftById = new Map(drift.reports.map((report) => [report.skillId, report]));
+  const signals = new Map<string, AssessmentSignal>();
+
+  const addSignal = (
+    skillId: string,
+    name: string,
+    reason: string,
+    priority: number,
+    rank = 0,
+  ) => {
+    const order = skillById.get(skillId)?.index ?? Number.MAX_SAFE_INTEGER;
+    const existing = signals.get(skillId);
+    if (existing) {
+      existing.reasons.add(reason);
+      if (priority < existing.priority || (priority === existing.priority && rank > existing.rank)) {
+        existing.priority = priority;
+        existing.rank = rank;
+      }
+      return;
+    }
+    signals.set(skillId, {
+      skillId,
+      name,
+      reasons: new Set([reason]),
+      priority,
+      rank,
+      order,
+    });
+  };
+
+  for (const skill of unresolved) {
+    addSignal(skill.id, skill.name, 'unresolved prior needs-work classification', 0, 1000);
+  }
+  for (const skill of needsAssessment) {
+    const report = driftById.get(skill.id);
+    const hasStrongDrift = report && hasDriftSignal(report) && driftPriority(report) <= 4;
+    addSignal(
+      skill.id,
+      skill.name,
+      hasStrongDrift ? 'new knowledge plus high-confidence drift' : 'new knowledge',
+      hasStrongDrift ? 1 : 2,
+      hasStrongDrift ? driftRank(report) : 0,
+    );
+  }
+  for (const report of drift.reports) {
+    if (!hasDriftSignal(report)) continue;
+    addSignal(report.skillId, report.name, 'mechanical drift/growth signal', driftPriority(report), driftRank(report));
+  }
+  for (const narrow of narrowSkills) {
+    const skill = skillByName.get(narrow.name)?.skill;
+    if (skill) addSignal(skill.id, skill.name, 'mechanically narrow inventory signal', 5, 0);
+  }
+  for (const overlap of overlaps) {
+    for (const name of [overlap.skillA, overlap.skillB]) {
+      const skill = skillByName.get(name)?.skill;
+      if (skill) addSignal(skill.id, skill.name, `token overlap ${overlap.verdict}`, 5, Math.max(overlap.descriptionJaccard, overlap.headingOverlap) * 100);
+    }
+  }
+  for (const pair of semanticPairs) {
+    for (const skillId of [pair.idA, pair.idB]) {
+      const skill = skillById.get(skillId)?.skill;
+      if (skill) addSignal(skill.id, skill.name, 'semantic similarity outlier', 5, pair.similarity * 100);
+    }
+  }
+
+  const orderedSignals = [...signals.values()].sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    if (b.rank !== a.rank) return b.rank - a.rank;
+    if (a.order !== b.order) return a.order - b.order;
+    return a.name.localeCompare(b.name);
+  });
+  const selectedSignals = orderedSignals.slice(0, maxSkillsPerRun);
+  const deferredSignals = orderedSignals.slice(maxSkillsPerRun);
+  const selectedTargetIds = new Set(selectedSignals.map((signal) => signal.skillId));
+
+  const selectedSkills: SkillAssessmentEntry[] = selectedSignals.flatMap((signal) => {
+    const existing = unresolvedById.get(signal.skillId) ?? needsAssessmentById.get(signal.skillId);
+    if (existing) return [existing];
+    const row = skillById.get(signal.skillId)?.skill;
+    if (!row) return [];
+    const props = parseSkillProperties(row.properties);
+    return [{
+      id: row.id,
+      name: row.name,
+      generation: row.generation,
+      description: row.description,
+      newSporeIds: [],
+      lastAssessedAt: typeof props.last_assessed_at === 'number' ? props.last_assessed_at : 0,
+    }];
+  });
+
+  const selectedStructures = structures.filter((structure) => {
+    const skill = skillByName.get(structure.name)?.skill;
+    return skill ? selectedTargetIds.has(skill.id) : false;
+  });
+  const selectedNarrowSkills = narrowSkills.filter((structure) => {
+    const skill = skillByName.get(structure.name)?.skill;
+    return skill ? selectedTargetIds.has(skill.id) : false;
+  });
+  const selectedOverlaps = overlaps.filter((overlap) => {
+    const a = skillByName.get(overlap.skillA)?.skill.id;
+    const b = skillByName.get(overlap.skillB)?.skill.id;
+    return Boolean(a && b && selectedTargetIds.has(a) && selectedTargetIds.has(b));
+  });
+  const selectedSemanticPairs = semanticPairs.filter((pair) => (
+    selectedTargetIds.has(pair.idA) && selectedTargetIds.has(pair.idB)
+  ));
+  const selectedDriftReports = drift.reports.filter((report) => selectedTargetIds.has(report.skillId));
+  const selectedDriftTotals = driftTotals(selectedDriftReports);
+
   for (const skill of oldestForVerify) {
+    if (!selectedTargetIds.has(skill.id)) continue;
     const report = drift.reports.find(r => r.skillId === skill.id);
     const props = parseSkillProperties(skill.properties);
     const mergedFingerprints: Record<string, SkillFileFingerprint> = {
@@ -669,28 +837,7 @@ export async function buildSkillEvolveInstruction(
     }, scope);
   }
 
-  let semanticPairs: Array<{ idA: string; idB: string; similarity: number }> = [];
-  if (retrievalProvider && projectRoot) {
-    try {
-      const skillIds = new Set(allSkills.map((skill) => skill.id));
-      const allPairs = retrievalProvider.pairwiseSimilarity('skill_records', 0);
-      semanticPairs = selectOutlierPairs(
-        allPairs.filter((pair) => skillIds.has(pair.idA) && skillIds.has(pair.idB)),
-        { kSigma: 2, minSamples: 10 },
-      );
-    } catch {
-      semanticPairs = [];
-    }
-  }
-
-  const anyWork = selectedSkills.length > 0
-    || overlaps.length > 0
-    || narrowSkills.length > 0
-    || semanticPairs.length > 0
-    || drift.totalMissing > 0
-    || drift.totalInconclusive > 0
-    || drift.totalGrowth > 0
-    || drift.totalFabricationSuspects > 0;
+  const anyWork = selectedSkills.length > 0;
   if (!anyWork) return undefined;
 
   const parts: string[] = [
@@ -714,10 +861,20 @@ export async function buildSkillEvolveInstruction(
     // the full SKILL.md content when you need to verify code references.
   }
 
-  // Inventory section — all active skills with structural signals
+  if (deferredSignals.length > 0) {
+    parts.push('');
+    parts.push('## Deferred Assessment Signals (do not assess this run)');
+    parts.push('These signals exceeded max_skills_per_run. Report them as deferred; do not classify or write them in this run.');
+    for (const signal of deferredSignals) {
+      parts.push(`- ${signal.name}: ${[...signal.reasons].join('; ')}`);
+    }
+  }
+
+  // Inventory section — selected skills only. Deferred inventory signals are
+  // listed above so inventory/assess cannot expand the run beyond the cap.
   parts.push('');
-  parts.push('## All Active Skills (for inventory analysis)');
-  for (const s of structures) {
+  parts.push('## Selected Active Skills (for inventory analysis)');
+  for (const s of selectedStructures) {
     const skill = allSkills.find(sk => sk.name === s.name)!;
     const narrowTag = s.narrow ? ' **[NARROW — <2 sections]**' : '';
     parts.push(`- **${skill.name}** (gen ${skill.generation}, ${s.sectionCount} sections${narrowTag}): ${skill.description.slice(0, 200)}`);
@@ -727,22 +884,22 @@ export async function buildSkillEvolveInstruction(
   }
 
   // Mechanically narrow skills — explicit flags for the inventory phase
-  if (narrowSkills.length > 0) {
+  if (selectedNarrowSkills.length > 0) {
     parts.push('');
     parts.push('## Mechanically Narrow Skills (<2 H2 sections)');
     parts.push('These skills have insufficient section breadth for domain-level standalone status.');
     parts.push('Determine which broader skill each should be absorbed into.');
-    for (const s of narrowSkills) {
+    for (const s of selectedNarrowSkills) {
       parts.push(`- **${s.name}**: ${s.sectionCount} section(s). Headings: ${s.headings.length > 0 ? s.headings.join(' | ') : '(none)'}`);
     }
   }
 
   // Pairwise overlap analysis (description tokens + heading overlap)
-  if (overlaps.length > 0) {
+  if (selectedOverlaps.length > 0) {
     parts.push('');
     parts.push('## Pre-computed Token Overlap');
     parts.push('Pairs flagged by description token similarity AND/OR heading overlap:');
-    for (const o of overlaps) {
+    for (const o of selectedOverlaps) {
       parts.push(`- **${o.skillA}** <-> **${o.skillB}**: desc=${o.descriptionJaccard}, headings=${o.headingOverlap} (${o.verdict})`);
       if (o.sharedHeadings.length > 0) {
         parts.push(`  Shared headings: ${o.sharedHeadings.join('; ')}`);
@@ -757,11 +914,11 @@ export async function buildSkillEvolveInstruction(
     // Build a name→id lookup for resolving embedding results
     const idToName = new Map(allSkills.map(s => [s.id, s.name]));
 
-    if (semanticPairs.length > 0) {
+    if (selectedSemanticPairs.length > 0) {
       parts.push('');
       parts.push('## Semantic Similarity (distribution outliers)');
       parts.push('Pairs selected by outlier filtering (mu + 2sigma) over this run\'s pairwise distribution.');
-      for (const p of semanticPairs) {
+      for (const p of selectedSemanticPairs) {
         const nameA = idToName.get(p.idA) ?? p.idA;
         const nameB = idToName.get(p.idB) ?? p.idB;
         parts.push(`- **${nameA}** <-> **${nameB}**: cosine=${p.similarity}`);
@@ -772,8 +929,8 @@ export async function buildSkillEvolveInstruction(
   parts.push('');
   parts.push('## Pre-computed Drift Report');
   parts.push(`verified_at: ${drift.verifiedAt}`);
-  parts.push(`totals: missing=${drift.totalMissing}, inconclusive=${drift.totalInconclusive}, growth=${drift.totalGrowth}, fabrication_suspects=${drift.totalFabricationSuspects}`);
-  for (const report of drift.reports) {
+  parts.push(`totals: missing=${selectedDriftTotals.missing}, inconclusive=${selectedDriftTotals.inconclusive}, growth=${selectedDriftTotals.growth}, fabrication_suspects=${selectedDriftTotals.fabricationSuspects}`);
+  for (const report of selectedDriftReports) {
     parts.push(`- **${report.name}**: severity=${report.severity}, confidence=${report.confidence}`);
     if (report.loadBearingMisses.length > 0) {
       parts.push(`  load_bearing_misses: ${JSON.stringify(report.loadBearingMisses)}`);
