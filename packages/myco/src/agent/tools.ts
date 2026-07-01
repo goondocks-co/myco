@@ -231,9 +231,12 @@ const REPEATED_READ_FAILURE_THRESHOLD = 4;
 
 /**
  * Total number of vault tools defined. Derived from the union of the
- * four tool-group sets above so this constant can never drift from the
+ * seven tool-group sets above so this constant can never drift from the
  * actual factory output — adding a tool to a group bumps the count
  * automatically. Each set is disjoint so the straight sum is correct.
+ * Do not hardcode this number in specs/docs — read VAULT_TOOL_COUNT or
+ * re-derive it; the source of truth drifts every time a tool file gains
+ * an entry.
  */
 export const VAULT_TOOL_COUNT =
   READ_TOOL_NAMES.size +
@@ -673,6 +676,10 @@ export function createVaultToolServer(
     name: 'myco-vault',
     version: getPluginVersion(),
     tools: toSdkMcpToolDefinitions(tools),
+    // Every phase needs its vault tools present starting at turn 1 (phase
+    // prompts reference tool names directly) — don't let the SDK defer
+    // tool schemas behind its tool-search default.
+    alwaysLoad: true,
   });
 }
 
@@ -706,6 +713,7 @@ export function createScopedVaultToolServer(
     name: 'myco-vault',
     version: getPluginVersion(),
     tools: toSdkMcpToolDefinitions(scopedTools),
+    alwaysLoad: true,
   });
 }
 
@@ -724,5 +732,6 @@ export function createMaterializedVaultToolServer(tools: MycoToolDefinition<any>
     name: 'myco-vault',
     version: getPluginVersion(),
     tools: toSdkMcpToolDefinitions(tools),
+    alwaysLoad: true,
   });
 }
