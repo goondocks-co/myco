@@ -113,7 +113,7 @@ jobs:
           - target: windows-x64
             os: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install cross toolchain (linux-arm64)
         if: matrix.target == 'linux-arm64'
@@ -152,7 +152,7 @@ jobs:
       matrix:
         target: [darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
@@ -244,7 +244,7 @@ jobs:
       needs.validate-tag.result == 'success' &&
       (needs.cross-compile.result == 'success' || needs.cross-compile.result == 'skipped')
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -506,7 +506,7 @@ jobs:
       needs.build.result == 'success' &&
       needs.validate-tag.outputs.tag_prefix != 'myco-shared'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
