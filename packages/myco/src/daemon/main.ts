@@ -1978,6 +1978,7 @@ export async function main(): Promise<void> {
     vaultDir: bootstrapVaultDir,
     machineId,
     logger,
+    runtimeCache,
     getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
     getTeamClientForId: (teamId) => teamSync.getTeamClientById(teamId),
     globalPrefix,
