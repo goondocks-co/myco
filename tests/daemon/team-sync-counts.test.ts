@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
-import { aggregateTeamSyncRows } from '@myco/daemon/team-sync-counts.js';
+import { aggregateTeamSyncRows, aggregateTeamPending } from '@myco/daemon/team-sync-counts.js';
+import { computeProjectScopedDrift } from '@myco/daemon/api/team-connect.js';
 import { openDatabase } from '@myco/db/client.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
@@ -65,6 +66,20 @@ describe('aggregateTeamSyncRows', () => {
     }
   }
 
+  /** Seed `count` unsent outbox rows into a grove's DB for a project. */
+  function seedOutbox(groveId: string, projectId: string, count: number): void {
+    const db = openDatabase(resolveGroveDbPath(groveId, mycoHome));
+    try {
+      const insert = db.prepare(
+        `INSERT INTO team_outbox (table_name, row_id, payload, machine_id, project_id, created_at)
+         VALUES ('spores', ?, '{}', ?, ?, 0)`,
+      );
+      for (let i = 0; i < count; i += 1) insert.run(`${groveId}:${projectId}:${i}`, MACHINE_ID, projectId);
+    } finally {
+      db.close();
+    }
+  }
+
   it('sums a team\'s rows across every owning grove, ignoring other groves/projects/machines', async () => {
     const groveA = createGroveWithDb('Default');
     const groveB = createGroveWithDb('OSS');
@@ -104,6 +119,69 @@ describe('aggregateTeamSyncRows', () => {
       expect(result.grovesServed).toBe(0);
       expect(result.tables.knowledge_release_state).toBe(0);
       expect(result.pending).toBe(0);
+    } finally {
+      cache.closeAll();
+    }
+  });
+
+  it('counts only served groves when a team project lives in a grove absent from this home', async () => {
+    const groveA = createGroveWithDb('Default');
+    seedRows(groveA.id, 'proj-a', MACHINE_ID, 5);
+    const cache = new GroveRuntimeCache();
+    try {
+      const result = await aggregateTeamSyncRows(cache, logger, MACHINE_ID, [
+        { grove_id: groveA.id, project_id: 'proj-a' },
+        { grove_id: 'grove_ffffffffffffffffffffffffffffffff', project_id: 'proj-absent' },
+      ]);
+      expect(result.grovesServed).toBe(1);
+      expect(result.tables.knowledge_release_state).toBe(5);
+    } finally {
+      cache.closeAll();
+    }
+  });
+
+  it('yields zero drift for a two-grove team whose cloud received all its rows', async () => {
+    // The regression this fix guards: with grove-scoped local counting, a team
+    // spanning two groves read a phantom positive delta from any single grove.
+    const groveA = createGroveWithDb('Default');
+    const groveB = createGroveWithDb('OSS');
+    seedRows(groveA.id, 'proj-a', MACHINE_ID, 4);
+    seedRows(groveB.id, 'proj-b', MACHINE_ID, 3);
+
+    const cache = new GroveRuntimeCache();
+    try {
+      const local = await aggregateTeamSyncRows(cache, logger, MACHINE_ID, [
+        { grove_id: groveA.id, project_id: 'proj-a' },
+        { grove_id: groveB.id, project_id: 'proj-b' },
+      ]);
+      expect(local.grovesServed).toBe(2);
+      expect(local.tables.knowledge_release_state).toBe(7);
+
+      // Cloud (machine_tables) holds exactly this machine's rows across both
+      // groves. The cross-grove local total must match it → zero drift.
+      const cloud = { ...local.tables };
+      const drift = computeProjectScopedDrift(local.tables, cloud);
+      const totalDelta = drift.reduce((sum, d) => sum + Math.abs(d.delta), 0);
+      expect(totalDelta).toBe(0);
+    } finally {
+      cache.closeAll();
+    }
+  });
+
+  it('sums pending outbox rows across owning groves (pending-only fan-out)', async () => {
+    const groveA = createGroveWithDb('Default');
+    const groveB = createGroveWithDb('OSS');
+    seedOutbox(groveA.id, 'proj-a', 2);
+    seedOutbox(groveB.id, 'proj-b', 3);
+    seedOutbox(groveB.id, 'proj-other', 9); // non-team project — excluded
+
+    const cache = new GroveRuntimeCache();
+    try {
+      const pending = await aggregateTeamPending(cache, logger, [
+        { grove_id: groveA.id, project_id: 'proj-a' },
+        { grove_id: groveB.id, project_id: 'proj-b' },
+      ]);
+      expect(pending).toBe(5);
     } finally {
       cache.closeAll();
     }

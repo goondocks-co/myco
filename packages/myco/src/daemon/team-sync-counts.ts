@@ -49,16 +49,20 @@ function emptyCounts(): Record<TeamSyncObservedTable, number> {
 }
 
 /**
- * Sum a team's local row + pending counts across every grove on this machine
- * that owns one of the team's projects. The ambient request grove is
+ * Visit every grove on this machine that owns one of the team's projects,
+ * running `body` with that grove's project ids inside the grove's pinned DB.
+ * Returns how many such groves were served. The ambient request grove is
  * irrelevant — the team is the scope.
+ *
+ * Sequential (no `parallel`) so a caller's shared accumulators never interleave;
+ * teams span a handful of groves, so the extra wall-clock is negligible.
  */
-export async function aggregateTeamSyncRows(
+async function forEachServedTeamGrove(
   cache: GroveRuntimeCache,
   logger: Logger,
-  machineId: string,
   projects: readonly TeamProjectRef[],
-): Promise<TeamSyncRowAggregate> {
+  body: (groveProjectIds: string[]) => void,
+): Promise<number> {
   const projectsByGrove = new Map<string, string[]>();
   for (const project of projects) {
     const list = projectsByGrove.get(project.grove_id) ?? [];
@@ -66,12 +70,7 @@ export async function aggregateTeamSyncRows(
     projectsByGrove.set(project.grove_id, list);
   }
 
-  const tables = emptyCounts();
-  let pending = 0;
   let grovesServed = 0;
-
-  // Sequential (no `parallel`) so the shared accumulators never interleave.
-  // Teams span a handful of groves; the extra wall-clock is negligible.
   await forEachGrove(
     cache,
     logger,
@@ -80,16 +79,51 @@ export async function aggregateTeamSyncRows(
       if (!projectIds || projectIds.length === 0) return;
       grovesServed += 1;
       // forEachGrove has already pinned this grove's DB via withDatabase, so
-      // the getDatabase()-based helpers below read this grove's file.
-      const groveCounts = countTeamSyncRows(machineId, projectIds);
-      for (const table of TEAM_SYNC_OBSERVED_TABLES) tables[table] += groveCounts[table];
-      pending += countPendingForProjects(projectIds);
+      // the getDatabase()-based helpers in `body` read this grove's file.
+      body(projectIds);
     },
     {
       jobName: 'team-sync-summary-counts',
       shouldVisitGrove: (grove) => projectsByGrove.has(grove.id),
     },
   );
+  return grovesServed;
+}
 
+/**
+ * Sum a team's local row + pending counts across every grove on this machine
+ * that owns one of the team's projects. Used by the Sync tab, which needs the
+ * full per-table breakdown to diff against the cloud.
+ */
+export async function aggregateTeamSyncRows(
+  cache: GroveRuntimeCache,
+  logger: Logger,
+  machineId: string,
+  projects: readonly TeamProjectRef[],
+): Promise<TeamSyncRowAggregate> {
+  const tables = emptyCounts();
+  let pending = 0;
+  const grovesServed = await forEachServedTeamGrove(cache, logger, projects, (projectIds) => {
+    const groveCounts = countTeamSyncRows(machineId, projectIds);
+    for (const table of TEAM_SYNC_OBSERVED_TABLES) tables[table] += groveCounts[table];
+    pending += countPendingForProjects(projectIds);
+  });
   return { tables, pending, grovesServed };
+}
+
+/**
+ * Sum a team's pending outbox rows across every owning grove. Used by the
+ * Status tab, which surfaces only the pending count — this avoids the
+ * per-table COUNT fan-out `aggregateTeamSyncRows` runs for the Sync diff.
+ */
+export async function aggregateTeamPending(
+  cache: GroveRuntimeCache,
+  logger: Logger,
+  projects: readonly TeamProjectRef[],
+): Promise<number> {
+  let pending = 0;
+  await forEachServedTeamGrove(cache, logger, projects, (projectIds) => {
+    pending += countPendingForProjects(projectIds);
+  });
+  return pending;
 }

@@ -35,7 +35,7 @@ import { getPluginVersion } from '@myco/version.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import { loadGroveRecord } from '@myco/grove/registry.js';
 import { teamRegistry, withProjectRemoved } from '@myco/team/registry.js';
-import { aggregateTeamSyncRows } from '../team-sync-counts.js';
+import { aggregateTeamSyncRows, aggregateTeamPending } from '../team-sync-counts.js';
 import { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
@@ -588,9 +588,10 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     let pendingCount = 0;
     try {
       // Machine-wide: a team's pending rows live in each owning grove's outbox,
-      // so aggregate across groves rather than the ambient grove DB.
+      // so aggregate across groves rather than the ambient grove DB. Status only
+      // surfaces pending, so use the pending-only fan-out (no per-table counts).
       pendingCount = resolvedTeam
-        ? (await aggregateTeamSyncRows(runtimeCache, logger, machineId, resolvedTeam.projects)).pending
+        ? await aggregateTeamPending(runtimeCache, logger, resolvedTeam.projects)
         : countPending();
     } catch (err) {
       // Log rather than swallow: a thrown count must not be reported as "0 pending"
