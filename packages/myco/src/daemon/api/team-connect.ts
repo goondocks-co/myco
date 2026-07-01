@@ -13,7 +13,6 @@ import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { resolveGroveDir } from '@myco/grove/paths.js';
 import {
   countPending,
-  countPendingForProjects,
   dropPendingForProjects,
   countTeamSyncRows,
   backfillAll,
@@ -36,6 +35,8 @@ import { getPluginVersion } from '@myco/version.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import { loadGroveRecord } from '@myco/grove/registry.js';
 import { teamRegistry, withProjectRemoved } from '@myco/team/registry.js';
+import { aggregateTeamSyncRows, aggregateTeamPending } from '../team-sync-counts.js';
+import { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
 import { isGroveScoped, type MycoRequestContext } from '@myco/grove/request-context.js';
@@ -324,6 +325,18 @@ export interface TeamHandlerDeps {
   vaultDir: string;
   machineId: string;
   logger: DaemonLogger;
+  /**
+   * Grove DB cache used to fan out team-scoped local counts across every grove
+   * that owns one of the selected team's projects. Team membership is
+   * machine-wide but each grove keeps its own DB, so a single grove-scoped
+   * handle would undercount projects in other groves.
+   *
+   * Optional: the daemon injects its shared cache so grove DB handles are
+   * reused; when omitted (tests) the factory constructs a private one. The
+   * aggregation is identical either way — sharing is only a handle-reuse
+   * optimization, not a behavior switch.
+   */
+  runtimeCache?: GroveRuntimeCache;
   getTeamClient: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
   /**
    * npm global prefix — used to locate the installed `@goondocks/myco-team`
@@ -371,6 +384,9 @@ const DEPRECATED_STATUS_FIELDS: Record<string, { since: string; reason: string; 
 
 export function createTeamHandlers(deps: TeamHandlerDeps) {
   const { vaultDir, machineId, logger } = deps;
+  // Shared cache when the daemon injects one (handle reuse); a private cache
+  // otherwise. Either way the cross-grove aggregation reads the same rows.
+  const runtimeCache = deps.runtimeCache ?? new GroveRuntimeCache();
 
   const makeJoinClient = deps.makeJoinClient ?? ((opts: { workerUrl: string; apiKey: string }) =>
     new TeamSyncClient({
@@ -571,8 +587,11 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
     let pendingCount = 0;
     try {
+      // Machine-wide: a team's pending rows live in each owning grove's outbox,
+      // so aggregate across groves rather than the ambient grove DB. Status only
+      // surfaces pending, so use the pending-only fan-out (no per-table counts).
       pendingCount = resolvedTeam
-        ? countPendingForProjects(resolvedTeam.projects.map((p) => p.project_id))
+        ? await aggregateTeamPending(runtimeCache, logger, resolvedTeam.projects)
         : countPending();
     } catch (err) {
       // Log rather than swallow: a thrown count must not be reported as "0 pending"
@@ -727,22 +746,19 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     if (!guard.ok) return guard.response;
 
     const resolvedTeam = guard.teamId ? teamRegistry.get(guard.teamId) : null;
-    const requestGroveId = req.requestContext?.groveId ?? null;
-    const servedProjectIds = resolvedTeam
-      ? resolvedTeam.projects
-          .filter((p) => requestGroveId == null || p.grove_id === requestGroveId)
-          .map((p) => p.project_id)
-      : undefined;
-    const homeServesTeam = resolvedTeam ? (servedProjectIds?.length ?? 0) > 0 : true;
-    const localTables = resolvedTeam
-      ? countTeamSyncRows(machineId, servedProjectIds ?? [])
-      : countTeamSyncRows(machineId);
+    // A team is machine-wide: count across every grove that owns one of its
+    // projects, not the ambient request grove. The request may still carry a
+    // grove header, but it must not scope a team-scoped read — otherwise a team
+    // spanning two groves reads a phantom delta for the grove not being viewed.
+    const teamAggregate = resolvedTeam
+      ? await aggregateTeamSyncRows(runtimeCache, logger, machineId, resolvedTeam.projects)
+      : null;
+    const homeServesTeam = resolvedTeam ? (teamAggregate?.grovesServed ?? 0) > 0 : true;
+    const localTables = teamAggregate ? teamAggregate.tables : countTeamSyncRows(machineId);
     const localTotal = Object.values(localTables).reduce((sum, count) => sum + count, 0);
     let pendingCount = 0;
     try {
-      pendingCount = resolvedTeam
-        ? countPendingForProjects(servedProjectIds ?? [])
-        : countPending();
+      pendingCount = teamAggregate ? teamAggregate.pending : countPending();
     } catch {
       pendingCount = 0;
     }
