@@ -1,4 +1,3 @@
-import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getState } from '@myco/db/queries/agent-state.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { getRun } from '@myco/db/queries/runs.js';
@@ -99,7 +98,7 @@ function validateSkillEvolveRun({ runId }: PostconditionInput): string | null {
     return 'skill-evolve completed without a project scope for state validation';
   }
 
-  const inventoryState = getState(DEFAULT_AGENT_ID, run.project_id, SKILL_EVOLVE_INVENTORY_STATE_KEY);
+  const inventoryState = getState(run.agent_id, run.project_id, SKILL_EVOLVE_INVENTORY_STATE_KEY);
   const inventoryPayload = parseSkillEvolveInventoryPayload(inventoryState?.value);
   if (!inventoryPayload) {
     return 'skill-evolve completed without valid skill-evolve-inventory state';
@@ -108,7 +107,7 @@ function validateSkillEvolveRun({ runId }: PostconditionInput): string | null {
     return 'skill-evolve inventory state run_id does not match the run';
   }
 
-  const classificationState = getState(DEFAULT_AGENT_ID, run.project_id, SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY);
+  const classificationState = getState(run.agent_id, run.project_id, SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY);
   const classificationPayload = parseSkillEvolveClassificationPayload(classificationState?.value);
   if (!classificationPayload) {
     return 'skill-evolve completed without valid skill-evolve-classifications state';

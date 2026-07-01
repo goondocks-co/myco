@@ -10,6 +10,7 @@ import { DEFAULT_AGENT_ID, epochSeconds } from '@myco/constants.js';
 
 const TEST_PROJECT_ID = 'proj_skill_evolve_postconditions';
 const TEST_RUN_ID = 'run-skill-evolve';
+const CUSTOM_AGENT_ID = 'custom-skill-evolve-agent';
 
 function inventoryPayload(runId = TEST_RUN_ID) {
   return {
@@ -42,11 +43,11 @@ function classificationPayload(
   };
 }
 
-function seedRun(options: { dryRun?: boolean } = {}) {
+function seedRun(options: { dryRun?: boolean; agentId?: string } = {}) {
   insertRun({
     id: TEST_RUN_ID,
     project_id: TEST_PROJECT_ID,
-    agent_id: DEFAULT_AGENT_ID,
+    agent_id: options.agentId ?? DEFAULT_AGENT_ID,
     task: 'skill-evolve',
     status: 'running',
     started_at: epochSeconds(),
@@ -54,10 +55,14 @@ function seedRun(options: { dryRun?: boolean } = {}) {
   });
 }
 
-function insertSkillEvolveReports(runId = TEST_RUN_ID, assessPayload = classificationPayload(runId)) {
+function insertSkillEvolveReports(
+  runId = TEST_RUN_ID,
+  assessPayload = classificationPayload(runId),
+  agentId = DEFAULT_AGENT_ID,
+) {
   insertReport({
     run_id: runId,
-    agent_id: DEFAULT_AGENT_ID,
+    agent_id: agentId,
     action: 'skill-evolve-inventory',
     summary: 'Inventory complete',
     details: JSON.stringify({ merge_count: 1, narrow_count: 1 }),
@@ -65,7 +70,7 @@ function insertSkillEvolveReports(runId = TEST_RUN_ID, assessPayload = classific
   });
   insertReport({
     run_id: runId,
-    agent_id: DEFAULT_AGENT_ID,
+    agent_id: agentId,
     action: 'assess',
     summary: 'Assess complete',
     details: JSON.stringify(assessPayload),
@@ -86,6 +91,42 @@ describe('task postconditions', () => {
     insertSkillEvolveReports();
     setState(DEFAULT_AGENT_ID, TEST_PROJECT_ID, 'skill-evolve-inventory', JSON.stringify(inventoryPayload()), epochSeconds());
     setState(DEFAULT_AGENT_ID, TEST_PROJECT_ID, 'skill-evolve-classifications', JSON.stringify(classificationPayload()), epochSeconds());
+
+    expect(validateTaskPostconditions({ runId: TEST_RUN_ID, taskName: 'skill-evolve' })).toBeNull();
+  });
+
+  it('validates persisted skill-evolve state under the run agent', () => {
+    registerAgent({ id: CUSTOM_AGENT_ID, name: 'Custom Agent', created_at: epochSeconds() });
+    seedRun({ agentId: CUSTOM_AGENT_ID });
+    insertSkillEvolveReports(TEST_RUN_ID, classificationPayload(TEST_RUN_ID, 'STALE'), CUSTOM_AGENT_ID);
+    setState(
+      DEFAULT_AGENT_ID,
+      TEST_PROJECT_ID,
+      'skill-evolve-inventory',
+      JSON.stringify(inventoryPayload(TEST_RUN_ID)),
+      epochSeconds(),
+    );
+    setState(
+      DEFAULT_AGENT_ID,
+      TEST_PROJECT_ID,
+      'skill-evolve-classifications',
+      JSON.stringify(classificationPayload(TEST_RUN_ID, 'CURRENT')),
+      epochSeconds(),
+    );
+    setState(
+      CUSTOM_AGENT_ID,
+      TEST_PROJECT_ID,
+      'skill-evolve-inventory',
+      JSON.stringify(inventoryPayload(TEST_RUN_ID)),
+      epochSeconds(),
+    );
+    setState(
+      CUSTOM_AGENT_ID,
+      TEST_PROJECT_ID,
+      'skill-evolve-classifications',
+      JSON.stringify(classificationPayload(TEST_RUN_ID, 'STALE')),
+      epochSeconds(),
+    );
 
     expect(validateTaskPostconditions({ runId: TEST_RUN_ID, taskName: 'skill-evolve' })).toBeNull();
   });
