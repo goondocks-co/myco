@@ -42,7 +42,7 @@ export function createObservabilityTools(deps: VaultToolDeps) {
 
       return textResult(report);
     },
-    { annotations: {} },
+    { annotations: { readOnlyHint: true } },
   );
 
   return [vaultReport];

@@ -210,6 +210,12 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => {
 /** YAML phases to return from the loader mock. Set per-test. */
 let mockYamlPhases: PhaseDefinition[] | undefined;
 
+/** Task name to return from the loader/registry mocks. Set per-test. */
+let mockTaskName = TEST_TASK_NAME;
+
+/** YAML task params to return from the loader/registry mocks. Set per-test. */
+let mockTaskParams: Record<string, string | number | boolean> | undefined;
+
 /** Execution config to return from the registry mock. Set per-test. */
 let mockExecution: ExecutionConfig | undefined;
 
@@ -238,20 +244,22 @@ mock.module('@myco/agent/loader.js', () => {
       tools: ['vault_unprocessed', 'vault_create_spore'],
     }),
     loadAgentTasks: () => {
+      const taskName = mockTaskName;
       // Return a task with phases if mockYamlPhases is set
       if (mockYamlPhases) {
         return [{
-          name: TEST_TASK_NAME,
+          name: taskName,
           displayName: 'Vault Evolve',
           description: 'Run full intelligence pipeline',
           agent: 'myco-agent',
           prompt: 'Phased pipeline overview.',
           isDefault: true,
+          ...(mockTaskParams ? { params: mockTaskParams } : {}),
           phases: mockYamlPhases,
         }];
       }
       return [{
-        name: TEST_TASK_NAME,
+        name: taskName,
         displayName: 'Vault Evolve',
         description: 'Run full intelligence pipeline',
         agent: 'myco-agent',
@@ -274,19 +282,21 @@ mock.module('@myco/agent/loader.js', () => {
 mock.module('@myco/agent/registry.js', () => ({
   loadAllTasks: (_definitionsDir: string, _vaultDir?: string) => {
     const tasks = new Map();
+    const taskName = mockTaskName;
       const task = {
-        name: TEST_TASK_NAME,
+        name: taskName,
         displayName: 'Vault Evolve',
         description: 'Run full intelligence pipeline',
         agent: 'myco-agent',
         prompt: mockYamlPhases ? 'Phased pipeline overview.' : TEST_TASK_PROMPT,
         isDefault: true,
         ...(mockTaskReasoningLevel ? { reasoningLevel: mockTaskReasoningLevel } : {}),
+        ...(mockTaskParams ? { params: mockTaskParams } : {}),
         ...(mockYamlPhases ? { phases: mockYamlPhases } : {}),
         ...(mockExecution ? { execution: mockExecution } : {}),
         ...(mockOrchestratorConfig ? { orchestrator: mockOrchestratorConfig } : {}),
     };
-    tasks.set(TEST_TASK_NAME, task);
+    tasks.set(taskName, task);
     return tasks;
   },
 }));
@@ -446,7 +456,9 @@ function resetMockState(): void {
   mockQueryBehaviors = [];
   mockResultTexts = [];
   mockErrorMessage = 'SDK exploded';
+  mockTaskName = TEST_TASK_NAME;
   mockYamlPhases = undefined;
+  mockTaskParams = undefined;
   mockExecution = undefined;
   mockOrchestratorConfig = undefined;
   mockTaskReasoningLevel = undefined;
@@ -505,6 +517,7 @@ describe('composePhasePrompt', () => {
   const vaultContext = '## Vault State\nspores: 10';
   const taskName = 'Vault Evolve';
   const taskOverview = 'Complete intelligence pipeline.';
+  const runId = 'run-compose-phase';
 
   it('composes vault context + task overview + phase prompt', () => {
     const result = composePhasePrompt({
@@ -513,6 +526,7 @@ describe('composePhasePrompt', () => {
       taskOverview,
       phase: { name: 'extract', prompt: 'Extract spores from batches.', tools: [], maxTurns: 5, required: true },
       priorPhaseResults: [],
+      runId,
     });
 
     expect(result).toContain('## Vault State');
@@ -533,6 +547,7 @@ describe('composePhasePrompt', () => {
         { name: 'extract', status: 'completed', turnsUsed: 3, tokensUsed: 500, costUsd: 0.001, summary: 'Created 5 spores.' },
         { name: 'summarize', status: 'completed', turnsUsed: 2, tokensUsed: 300, costUsd: 0.0005, summary: 'Updated 2 sessions.' },
       ],
+      runId,
     });
 
     expect(result).toContain('## Prior Phase Results');
@@ -550,6 +565,7 @@ describe('composePhasePrompt', () => {
       taskOverview,
       phase: { name: 'graph', prompt: 'Build graph.', tools: [], maxTurns: 5, required: true },
       priorPhaseResults: [{ name: 'extract', status: 'completed', turnsUsed: 3, tokensUsed: 500, costUsd: 0.001, summary: longSummary }],
+      runId,
     });
 
     expect(result).toContain('...');
@@ -564,10 +580,37 @@ describe('composePhasePrompt', () => {
       phase: { name: 'extract', prompt: 'Extract spores.', tools: [], maxTurns: 5, required: true },
       priorPhaseResults: [],
       instruction: 'Focus on security issues.',
+      runId,
     });
 
     expect(result).toContain('## User Instruction');
     expect(result).toContain('Focus on security issues.');
+  });
+
+  it('interpolates resolved task params and run id in phase prompts', () => {
+    const result = composePhasePrompt({
+      vaultContext,
+      taskDisplayName: taskName,
+      taskOverview,
+      phase: {
+        name: 'assess',
+        prompt: 'Run {{run_id}} assess {{max_skills_per_run}} skills every {{assess_interval_hours}} hours; phase={{phase_name}} budget={{max_turns}} tools={{phase_tools}}.',
+        tools: ['vault_report'],
+        maxTurns: 14,
+        required: true,
+      },
+      priorPhaseResults: [],
+      runId: 'run-phase-vars',
+      taskParams: {
+        max_skills_per_run: 3,
+        assess_interval_hours: 24,
+      },
+    });
+
+    expect(result).toContain('Run run-phase-vars assess 3 skills every 24 hours; phase=assess budget=14 tools=vault_report.');
+    expect(result).not.toContain('{{run_id}}');
+    expect(result).not.toContain('{{max_skills_per_run}}');
+    expect(result).not.toContain('{{assess_interval_hours}}');
   });
 });
 
@@ -1344,6 +1387,52 @@ describe('runAgent — phased execution', () => {
     expect((allQueryCalls[2].options as Record<string, unknown>).maxTurns).toBe(2);
   });
 
+  it('passes resolved task params into executed phase prompts', async () => {
+    mockYamlPhases = [
+      {
+        name: 'assess',
+        prompt: 'Run {{run_id}} assess cap is {{max_skills_per_run}} and turn budget is {{max_turns}}.',
+        tools: [],
+        maxTurns: 5,
+        required: true,
+      },
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      taskParams: { max_skills_per_run: 3 },
+    });
+
+    expect(allQueryCalls.length).toBe(1);
+    expect(allQueryCalls[0].prompt).toContain('assess cap is 3 and turn budget is 5.');
+    expect(allQueryCalls[0].prompt).not.toContain('{{run_id}}');
+    expect(allQueryCalls[0].prompt).not.toContain('{{max_skills_per_run}}');
+  });
+
+  it('passes YAML default task params into executed phase prompts without run overrides', async () => {
+    mockYamlPhases = [
+      {
+        name: 'assess',
+        prompt: 'Run {{run_id}} default assess cap is {{max_skills_per_run}}.',
+        tools: [],
+        maxTurns: 5,
+        required: true,
+      },
+    ];
+    mockTaskParams = { max_skills_per_run: 3 };
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+    });
+
+    expect(allQueryCalls.length).toBe(1);
+    expect(allQueryCalls[0].prompt).toContain('default assess cap is 3.');
+    expect(allQueryCalls[0].prompt).not.toContain('{{run_id}}');
+    expect(allQueryCalls[0].prompt).not.toContain('{{max_skills_per_run}}');
+  });
+
   it('includes prior phase summaries in later phase prompts', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
@@ -1397,6 +1486,41 @@ describe('runAgent — phased execution', () => {
     const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run!.status).toBe('failed');
     expect(run!.error).toContain('extract');
+  });
+
+  it('runs task postconditions after phased task success', async () => {
+    mockTaskName = 'skill-evolve';
+    mockYamlPhases = [
+      {
+        name: 'inventory',
+        prompt: 'Write inventory.',
+        tools: ['vault_report'],
+        maxTurns: 2,
+        required: true,
+      },
+      {
+        name: 'assess',
+        prompt: 'Write assessment.',
+        tools: ['vault_report'],
+        maxTurns: 2,
+        required: true,
+        dependsOn: ['inventory'],
+      },
+    ];
+    await createTask('skill-evolve', 'Run skill evolution.');
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      task: 'skill-evolve',
+    });
+
+    expect(allQueryCalls.length).toBe(2);
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('skill-evolve completed without a skill-evolve-inventory report');
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
+    expect(run?.status).toBe('failed');
+    expect(run?.error).toContain('skill-evolve completed without a skill-evolve-inventory report');
   });
 
   it('surfaces timeout abort reasons instead of generic user-abort text', async () => {

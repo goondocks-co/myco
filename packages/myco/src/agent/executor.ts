@@ -525,6 +525,14 @@ export async function runAgent(
           `Required phase "${failedRequired.name}" failed: ${failedRequired.summary}`,
         );
       }
+      const postconditionError = validateTaskPostconditions({
+        runId,
+        taskName: config.taskName,
+        dryRun: options?.dryRun ?? false,
+      });
+      if (postconditionError) {
+        throw new Error(postconditionError);
+      }
     } else {
       // Single-query execution (backward compatible)
       const taskPrompt = composeTaskPrompt({
@@ -557,15 +565,13 @@ export async function runAgent(
       };
       await persistHarnessState(checkpointState, undefined, usage, costData);
 
-      // dry-run: postconditions verify real writes landed; no writes happened, so nothing to validate.
-      if (!options?.dryRun) {
-        const postconditionError = validateTaskPostconditions({
-          runId,
-          taskName: config.taskName,
-        });
-        if (postconditionError) {
-          throw new Error(postconditionError);
-        }
+      const postconditionError = validateTaskPostconditions({
+        runId,
+        taskName: config.taskName,
+        dryRun: options?.dryRun ?? false,
+      });
+      if (postconditionError) {
+        throw new Error(postconditionError);
       }
     }
 

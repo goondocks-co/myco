@@ -70,6 +70,10 @@ export interface PhasePromptInput {
   instruction?: string;
   /** Resolved `maxTurns` after applying myco.yaml + run overrides. */
   effectiveMaxTurns?: number;
+  /** Resolved task params after YAML defaults, myco.yaml, and run overrides merge. */
+  taskParams?: Record<string, string | number | boolean>;
+  /** Current agent run id, for durable state/report payload provenance. */
+  runId: string;
 }
 
 /**
@@ -90,7 +94,7 @@ export interface PhasePromptInput {
 export function composePhasePrompt(input: PhasePromptInput): string {
   const {
     vaultContext, taskDisplayName, taskOverview, phase,
-    priorPhaseResults, instruction, effectiveMaxTurns,
+    priorPhaseResults, instruction, effectiveMaxTurns, taskParams, runId,
   } = input;
 
   const parts = [
@@ -110,7 +114,7 @@ export function composePhasePrompt(input: PhasePromptInput): string {
     parts.push(`${PROMPT_SECTION_PRIOR_PHASES}\n${summaries.join('\n\n')}`);
   }
 
-  const resolvedPhasePrompt = substitutePhaseVariables(phase, effectiveMaxTurns);
+  const resolvedPhasePrompt = substitutePhaseVariables(phase, effectiveMaxTurns, taskParams, runId);
   parts.push(`${PROMPT_SECTION_CURRENT_PHASE}${phase.name}\n${resolvedPhasePrompt}`);
 
   return parts.join(PROMPT_SECTION_SEPARATOR);
@@ -119,11 +123,18 @@ export function composePhasePrompt(input: PhasePromptInput): string {
 function substitutePhaseVariables(
   phase: PhaseDefinition,
   effectiveMaxTurns: number | undefined,
+  taskParams: Record<string, string | number | boolean> | undefined,
+  runId: string,
 ): string {
   const maxTurns = effectiveMaxTurns ?? phase.maxTurns;
+  const taskParamVariables = Object.fromEntries(
+    Object.entries(taskParams ?? {}).map(([key, value]) => [key, String(value)]),
+  );
   return interpolate(phase.prompt, {
+    ...taskParamVariables,
     max_turns: maxTurns !== undefined ? String(maxTurns) : 'the configured budget',
     phase_name: phase.name,
     phase_tools: (phase.tools ?? []).join(', '),
+    run_id: runId,
   });
 }

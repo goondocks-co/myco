@@ -35,6 +35,7 @@ import {
 import { getAgentHarness } from './harness/index.js';
 import { HarnessExecutionError, type HarnessToolSurface } from './harness/types.js';
 import { composePhasePrompt } from './prompt-composition.js';
+import { buildPhaseRecoveryContext } from './phase-recovery.js';
 import { resolvePhaseExecution, type MycoYamlPhaseOverrides } from './phase-resolver.js';
 import type { CostResolution } from './cost/types.js';
 import type { ContextQueryResult } from './context-queries.js';
@@ -605,6 +606,7 @@ export async function executePhasedQuery(
   const phases = config.phases!;
   const state = ctx.checkpointState;
   const phaseResults: PhaseResult[] = checkpointResultsForResume(config, state);
+  const restoredPhaseNames = new Set(phaseResults.map((phase) => phase.name));
   // Allocation-based audit offsets: the running base advances by each wave's
   // total ALLOCATED turns (sum of resolved maxTurns), never by actual turns
   // used, so every phase owns the same disjoint [offset, offset + maxTurns)
@@ -710,7 +712,7 @@ export async function executePhasedQuery(
       const effectiveMaxTurns = resolved.maxTurns;
       const phaseModel = resolved.model;
 
-      const phasePrompt = composePhasePrompt({
+      const basePhasePrompt = composePhasePrompt({
         vaultContext,
         taskDisplayName: config.taskDisplayName,
         taskOverview: config.taskPrompt,
@@ -718,7 +720,21 @@ export async function executePhasedQuery(
         priorPhaseResults: phaseResults,
         instruction: ctx.instruction,
         effectiveMaxTurns,
+        taskParams: config.taskParams,
+        runId,
       });
+      const recoveryContext = buildPhaseRecoveryContext({
+        taskName: config.taskName,
+        phaseName: phase.name,
+        runId,
+        agentId,
+        requestContext: ctx.requestContext,
+        dryRun: config.dryRun ?? false,
+        restoredPhaseNames,
+      });
+      const phasePrompt = recoveryContext
+        ? `${basePhasePrompt}\n\n${recoveryContext}`
+        : basePhasePrompt;
       const existingCheckpoint = state.phases[phase.name];
       // If the prior attempt failed without producing any turns, its sessionRef
       // points at a poisoned/never-initialized SDK session. Re-attaching to it
