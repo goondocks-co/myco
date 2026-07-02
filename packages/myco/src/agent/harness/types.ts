@@ -1,6 +1,6 @@
 import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
-import type { ProviderConfig, RunLogger, HarnessId, RuntimeUsage } from '@myco/agent/types.js';
+import type { ProviderConfig, RunLogger, HarnessId, RuntimeUsage, ReasoningLevel } from '@myco/agent/types.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 export type HarnessCapability =
@@ -68,6 +68,21 @@ export interface HarnessExecuteInput {
     name: string;
     schema: Record<string, unknown>;
   };
+  /**
+   * The reasoning tier resolved for this call. Harness adapters translate
+   * this into their own provider-native thinking/reasoning-effort control
+   * (Claude: `ThinkingConfig`; OpenAI: `ModelSettings.reasoning`/`text`).
+   * Optional — an omitted value still resolves through each harness's
+   * `default`-tier mapping for non-local providers (Claude: adaptive
+   * thinking; OpenAI: the `default` tier's effort/verbosity), it does NOT
+   * mean "no override sent." Only LOCAL providers (ollama/lmstudio/
+   * openai-compatible) get no thinking/reasoning fields at all regardless
+   * of tier, and — for OpenAI specifically — only a resolved model name the
+   * SDK recognizes as GPT-5-family gets `reasoning`/`text` attached; a
+   * non-reasoning-capable model name (e.g. gpt-4.1-mini, a non-GPT-5
+   * openrouter route) also gets no override sent, same as a local provider.
+   */
+  reasoningLevel?: ReasoningLevel;
 }
 
 export interface HarnessExecuteResult {
@@ -113,6 +128,8 @@ export interface HarnessScopeSetup {
   provider?: ProviderConfig;
   toolSurface: HarnessToolSurface;
   logger?: RunLogger;
+  /** See `HarnessExecuteInput.reasoningLevel`. */
+  reasoningLevel?: ReasoningLevel;
 }
 
 /** A long-lived harness scope that runs N items against shared SDK machinery. */

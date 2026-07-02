@@ -7,6 +7,7 @@
 
 import { z } from 'zod/v4';
 import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
+import { ThinkingBudgetValueSchema, EffortValueSchema } from './reasoning-tier-schemas.js';
 
 // ---------------------------------------------------------------------------
 // Schema version
@@ -29,10 +30,28 @@ export const ProviderConfigSchema = z.object({
   baseUrl: z.string().optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),
+  /**
+   * Per-tier model-name override, independently keyed from
+   * `thinkingBudgetMap`/`effortMap`. If an operator pins `reasoningMap.<tier>`
+   * to a swapped model, they must verify that model supports the same
+   * tier's `thinkingBudgetMap`/`effortMap` setting — the maps are resolved
+   * independently, so a mismatch isn't caught here; the API rejects the run
+   * with a 400 at call time instead.
+   */
   reasoningMap: z.object({
     low: z.string().optional(),
     default: z.string().optional(),
     high: z.string().optional(),
+  }).optional(),
+  thinkingBudgetMap: z.object({
+    low: ThinkingBudgetValueSchema.optional(),
+    default: ThinkingBudgetValueSchema.optional(),
+    high: ThinkingBudgetValueSchema.optional(),
+  }).optional(),
+  effortMap: z.object({
+    low: EffortValueSchema.optional(),
+    default: EffortValueSchema.optional(),
+    high: EffortValueSchema.optional(),
   }).optional(),
   contextLength: z.number().optional(),
 });

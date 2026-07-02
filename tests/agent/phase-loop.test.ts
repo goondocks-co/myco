@@ -529,6 +529,31 @@ describe('executeSingleQuery', () => {
     expect(capturedExecuteInputs).toHaveLength(1);
   });
 
+  it('forwards the resolved reasoningLevel from config into the harness execute() input', async () => {
+    // Regression for the reasoningLevel plumbing gap: executeSingleQuery
+    // resolves `effectiveReasoningLevel` from config.execution.reasoningLevel
+    // ?? config.reasoningLevel and must forward it on baseInput, not just
+    // use it to pick a model.
+    const ctx = baseContext({
+      config: { ...baseConfig(), reasoningLevel: 'high' },
+    });
+    await executeSingleQuery(ctx, 'PROMPT');
+    expect(capturedExecuteInputs).toHaveLength(1);
+    expect(capturedExecuteInputs[0].reasoningLevel).toBe('high');
+  });
+
+  it('prefers config.execution.reasoningLevel over the top-level config.reasoningLevel', async () => {
+    const ctx = baseContext({
+      config: {
+        ...baseConfig(),
+        reasoningLevel: 'low',
+        execution: { reasoningLevel: 'high' },
+      },
+    });
+    await executeSingleQuery(ctx, 'PROMPT');
+    expect(capturedExecuteInputs[0].reasoningLevel).toBe('high');
+  });
+
   it('forwards sessionRef/sessionData into the runtime call', async () => {
     const ctx = baseContext();
     await executeSingleQuery(ctx, 'PROMPT', undefined, 'prev-session', { key: 1 });
@@ -673,6 +698,27 @@ describe('executePhasedQuery', () => {
     expect(checkpointState.phases.b.status).toBe('skipped');
     expect(checkpointState.phases.b.summary).toContain('did not match');
     expect(checkpointState.phases.b.summary).toContain('missing');
+  });
+
+  it('forwards each phase\'s resolved reasoningLevel into the harness execute() input on the wave-loop path', async () => {
+    // Regression for the reasoningLevel plumbing gap: resolvePhaseExecution
+    // has always resolved reasoningLevel per-phase, but the wave loop's
+    // executePhase call must actually forward waveInput.reasoningLevel —
+    // proven droppable by mutation before this assertion existed.
+    const phases = [
+      phase('a', { reasoningLevel: 'high' }),
+      phase('b', { reasoningLevel: 'low' }),
+    ];
+    const ctx = baseContext({ config: baseConfig(phases) });
+    await executePhasedQuery(ctx);
+
+    const byPhase = new Map<string, string | undefined>();
+    for (const input of capturedExecuteInputs) {
+      const match = input.prompt.match(/## Current Phase: (\S+)/);
+      if (match) byPhase.set(match[1], input.reasoningLevel);
+    }
+    expect(byPhase.get('a')).toBe('high');
+    expect(byPhase.get('b')).toBe('low');
   });
 
   it('invokes persistCheckpoints between waves', async () => {
@@ -842,6 +888,47 @@ describe('executePhasedQuery turnOffset allocation', () => {
 // ---------------------------------------------------------------------------
 
 describe('executePhasedQuery orchestrator structured output', () => {
+  it('forwards the orchestrator-resolved reasoningLevel into the orchestrator\'s execute() input', async () => {
+    // Regression for the reasoningLevel plumbing gap on the orchestrator
+    // block: orchestratorReasoningLevel is resolved as
+    // config.orchestrator.reasoningLevel ?? config.execution?.reasoningLevel
+    // ?? config.reasoningLevel, and that resolved value must reach the
+    // orchestrator's own harness.execute() call (identified here by its
+    // empty toolNames, which only the orchestrator call sets).
+    runtimeBehaviors = [
+      { kind: 'success', result: { finalText: '{"phases":[],"reasoning":"unused"}' } },
+    ];
+    const phases = [phase('extract')];
+    const ctx = baseContext({
+      config: {
+        ...baseConfig(phases),
+        reasoningLevel: 'low',
+        orchestrator: { enabled: true, reasoningLevel: 'high' },
+      } as EffectiveConfig,
+    });
+    await executePhasedQuery(ctx);
+    const orchestratorCall = capturedExecuteInputs.find((input) => input.toolSurface.toolNames?.length === 0);
+    expect(orchestratorCall?.reasoningLevel).toBe('high');
+  });
+
+  it('falls back through config.execution.reasoningLevel then config.reasoningLevel when orchestrator.reasoningLevel is unset', async () => {
+    runtimeBehaviors = [
+      { kind: 'success', result: { finalText: '{"phases":[],"reasoning":"unused"}' } },
+    ];
+    const phases = [phase('extract')];
+    const ctx = baseContext({
+      config: {
+        ...baseConfig(phases),
+        reasoningLevel: 'low',
+        execution: { reasoningLevel: 'high' },
+        orchestrator: { enabled: true },
+      },
+    });
+    await executePhasedQuery(ctx);
+    const orchestratorCall = capturedExecuteInputs.find((input) => input.toolSurface.toolNames?.length === 0);
+    expect(orchestratorCall?.reasoningLevel).toBe('high');
+  });
+
   it('requests outputSchema on the orchestrator call when the harness supports structuredOutput', async () => {
     runtimeSupportsStructuredOutput = true;
     runtimeBehaviors = [

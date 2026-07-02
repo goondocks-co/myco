@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 import { AcceleratorConfigSchema, ReasoningLevelSchema, HarnessIdSchema } from '@myco/agent/schemas.js';
+import { ThinkingBudgetValueSchema, EffortValueSchema } from '@myco/agent/reasoning-tier-schemas.js';
 
 function rejectLegacyRuntimeKey<T extends z.ZodTypeAny>(schema: T) {
   return z.unknown().superRefine((value, ctx) => {
@@ -119,10 +120,30 @@ const ProviderOverrideSchema = rejectLegacyRuntimeKey(z.object({
   local_backend: z.enum(['ollama', 'lmstudio']).optional(),
   base_url: z.string().optional(),
   model: z.string().optional(),
+  /**
+   * Per-tier model-name override, independently keyed from
+   * `thinking_budget_map`/`effort_map`. If an operator pins
+   * `reasoning_map.<tier>` to a swapped model, they must verify that model
+   * supports the same tier's `thinking_budget_map`/`effort_map` setting —
+   * the maps are resolved independently, so a mismatch isn't caught here;
+   * the API rejects the run with a 400 at call time instead.
+   */
   reasoning_map: z.object({
     low: z.string().optional(),
     default: z.string().optional(),
     high: z.string().optional(),
+  }).optional(),
+  /** Claude-only per-tier ThinkingConfig override; unset tiers fall back to DEFAULT_THINKING_MAP. */
+  thinking_budget_map: z.object({
+    low: ThinkingBudgetValueSchema.optional(),
+    default: ThinkingBudgetValueSchema.optional(),
+    high: ThinkingBudgetValueSchema.optional(),
+  }).optional(),
+  /** OpenAI-only per-tier reasoning effort + verbosity override; unset tiers fall back to DEFAULT_EFFORT_MAP. */
+  effort_map: z.object({
+    low: EffortValueSchema.optional(),
+    default: EffortValueSchema.optional(),
+    high: EffortValueSchema.optional(),
   }).optional(),
   /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
   context_length: z.number().int().positive().optional(),

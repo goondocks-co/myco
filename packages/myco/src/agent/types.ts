@@ -300,6 +300,25 @@ export interface ProviderConfig {
   apiKey?: string;
   model?: string;
   reasoningMap?: Partial<Record<ReasoningLevel, string>>;
+  /**
+   * Claude-only per-tier override of the default thinking-budget map
+   * (`DEFAULT_THINKING_MAP` in `reasoning-levels.ts`). Unset tiers fall
+   * back to the default. Ignored entirely for local providers — the
+   * harness always forces `{ type: 'disabled' }` there regardless of
+   * this map (see `resolveThinkingConfig`).
+   */
+  thinkingBudgetMap?: Partial<Record<ReasoningLevel, { budgetTokens: number } | { adaptive: true }>>;
+  /**
+   * OpenAI-only per-tier override of the default reasoning-effort /
+   * verbosity map (`DEFAULT_EFFORT_MAP` in `reasoning-levels.ts`). Unset
+   * tiers fall back to the default. Ignored entirely for local providers
+   * — `resolveModelSettings` returns `undefined` there so no
+   * `reasoning`/`text` fields are ever sent to a local backend.
+   */
+  effortMap?: Partial<Record<ReasoningLevel, {
+    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+    verbosity?: 'low' | 'medium' | 'high';
+  }>>;
   /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
   contextLength?: number;
 }

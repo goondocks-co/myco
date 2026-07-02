@@ -74,6 +74,7 @@ describe('executeMapPhase — happy path', () => {
       systemPrompt: 'sys',
       runId: 'r1',
       agentId: 'a',
+      reasoningLevel: 'high',
     });
 
     expect(result.itemCount).toBe(3);
@@ -84,6 +85,12 @@ describe('executeMapPhase — happy path', () => {
     expect(calls).toHaveLength(3);
     // The harness pins `path` from argMap; the model only supplies `description`.
     expect(calls[0]).toMatchObject({ path: 'a.ts', description: 'summary of a.ts' });
+    // Regression for the reasoningLevel plumbing gap: the no-openScope
+    // execute-fallback path (this stub has no `openScope`) must forward
+    // reasoningLevel on every per-item harness.execute() call.
+    for (const call of (stubRuntime.execute as any).mock.calls) {
+      expect(call[0].reasoningLevel).toBe('high');
+    }
   });
 });
 
@@ -369,6 +376,7 @@ describe('executeMapPhase — scoped fast path', () => {
       systemPrompt: 'sys',
       runId: 'r',
       agentId: 'a',
+      reasoningLevel: 'high',
     });
     expect(scopeOpens).toBe(1);
     expect(scopeRuns).toBe(3);
@@ -381,6 +389,11 @@ describe('executeMapPhase — scoped fast path', () => {
     // pinned `path` from argMap each time.
     expect(calls).toHaveLength(3);
     expect(calls[0]).toMatchObject({ path: 'a.ts', description: 'summary of a.ts' });
+    // Regression for the reasoningLevel plumbing gap: executeMapPhase's
+    // openScope call must forward the phase's resolved reasoningLevel on
+    // the setup object, not just phaseModel/provider.
+    const openScopeSetup = (stubRuntime.openScope as any).mock.calls[0][0];
+    expect(openScopeSetup.reasoningLevel).toBe('high');
   });
 
   it('closes scope even when an item throws under onItemError: abort', async () => {
