@@ -25,7 +25,7 @@ import {
   type HarnessExecuteResult,
   type HarnessScope,
 } from './harness/types.js';
-import type { MapPhaseResult, PhaseDefinition, ProviderConfig, RunLogger, RuntimeUsage } from './types.js';
+import type { MapPhaseResult, PhaseDefinition, ProviderConfig, ReasoningLevel, RunLogger, RuntimeUsage } from './types.js';
 import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 
 export interface ExecuteMapPhaseInput {
@@ -38,6 +38,8 @@ export interface ExecuteMapPhaseInput {
   agentId: string;
   /** Resolved phase model (from outer phase resolution). Required for the harness adapter to pick the right model. Optional for stub-harness tests. */
   phaseModel?: string;
+  /** Reasoning tier resolved for this phase by `resolvePhaseExecution`, sibling of `phaseModel`. Forwarded to the harness so it can set a provider-native thinking/reasoning-effort control. */
+  reasoningLevel?: ReasoningLevel;
   /** Resolved provider config (task/phase override aware). Required for the harness adapter to pick the right backend. */
   provider?: ProviderConfig;
   /** Vault dir threaded into per-item toolSurface so freshly-built tools resolve project_id correctly. */
@@ -62,7 +64,7 @@ export interface ExecuteMapPhaseInput {
 export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapPhaseResult> {
   const {
     phase, allTools, harness, params, systemPrompt, runId, agentId,
-    phaseModel, provider, vaultDir, projectRoot, embeddingManager, logger,
+    phaseModel, reasoningLevel, provider, vaultDir, projectRoot, embeddingManager, logger,
     runAbortController,
   } = input;
   if (phase.mode !== 'map' || !phase.source || !phase.item || !phase.sink) {
@@ -154,6 +156,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     scope = await harness.openScope({
       systemPrompt,
       model: phaseModel ?? '',
+      reasoningLevel,
       provider,
       toolSurface: sharedToolSurface,
       logger,
@@ -195,6 +198,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
             prompt: itemPrompt,
             systemPrompt,
             model: phaseModel ?? '',
+            reasoningLevel,
             maxTurns: phase.perItemMaxTurns ?? 1,
             provider,
             toolSurface: sharedToolSurface,

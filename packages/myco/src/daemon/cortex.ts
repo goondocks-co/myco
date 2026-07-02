@@ -32,7 +32,7 @@ import {
 } from '@myco/context/cortex-brief.js';
 import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports, type ReportRow } from '@myco/db/queries/reports.js';
-import { getLatestRunId, getRun } from '@myco/db/queries/runs.js';
+import { getRun } from '@myco/db/queries/runs.js';
 import { tryParseJson } from '@myco/utils/json.js';
 import { requireProjectId, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { listSymbiontInfos, type SymbiontInfo } from './api/symbionts.js';
@@ -274,15 +274,19 @@ export async function buildCortexPrompt(
       : '## Current Cortex session-start instructions\nOmit them from the prompt because this symbiont receives session-start injection.\n',
   ].join('\n');
 
+  // Pre-generated and passed through RunOptions — reading the latest row
+  // back after dispatch races the executor's insert (which happens after
+  // awaits) and can name a stale run. Same pattern as handleRun.
+  const runId = crypto.randomUUID();
   const resultPromise = dispatchAgentRun(vaultDir, {
     task: CORTEX_PROMPT_BUILDER_TASK,
     agentId: DEFAULT_AGENT_ID,
     instruction: builderInstruction,
+    runId,
     embeddingManager: deps.resolveEmbeddingManager?.(requestContext),
     logger: deps.logger,
     requestContext,
   });
-  const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_PROMPT_BUILDER_TASK, scope);
   const tracked = resultPromise.catch((err) => {
     deps.logger.warn(LOG_KINDS.AGENT_ERROR, 'cortex-prompt-builder task failed', {
       run_id: runId ?? undefined,
@@ -373,15 +377,19 @@ export async function triggerCortexInstructions(
 
   try {
     const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
+    // Pre-generated and passed through RunOptions — reading the latest row
+    // back after dispatch races the executor's insert. Same pattern as
+    // handleRun.
+    const runId = crypto.randomUUID();
     const resultPromise = dispatchFn(vaultDir, {
       task: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       instruction: built.instruction,
+      runId,
       runContext: { cortex_instruction_input_hash: built.inputHash },
       embeddingManager,
       requestContext,
     });
-    const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_INSTRUCTIONS_TASK, { kind: 'project', id: requireProjectId(requestContext, 'cortex instructions') });
 
     const tracked = resultPromise.catch((err) => {
       logger.warn(LOG_KINDS.AGENT_ERROR, 'Cortex instructions task failed', {

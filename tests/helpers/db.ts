@@ -17,6 +17,7 @@ const DELETE_TABLES = [
   'skill_records',
   'skill_candidates',
   'migration_import_journal',
+  'agent_run_events',
   'agent_run_write_intents',
   'digest_extract_revisions',
   'agent_turns',

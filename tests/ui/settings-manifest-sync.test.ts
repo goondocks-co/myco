@@ -24,8 +24,18 @@ const ALLOWLIST: readonly string[] = [
   'agent.tasks',
   'agent.summary_batch_interval',
   'agent.cold_project_threshold_days',
+  // semantic_write_check_enabled lives in AgentBaseSchema only (merged
+  // config; yaml-settable under agent:). Promoting it to a per-Grove
+  // setting needs a GroveAgentSchema field + SCOPE_REGISTRY leaf row +
+  // manifest entry, mirroring scheduled_tasks_enabled — until then this
+  // allowlist entry is a forward guard, not a UI-surfacing decision.
+  'agent.semantic_write_check_enabled',
   'agent.provider.local_backend',
   'agent.provider.reasoning_map',
+  // Per-tier reasoning-budget maps (PR #609) are yaml-only advanced config,
+  // same as reasoning_map; a Settings editor is an explicit fast-follow.
+  'agent.provider.thinking_budget_map',
+  'agent.provider.effort_map',
   'notifications.domains',
   // release_provenance.reconcile_interval_minutes appears in BOTH the project
   // tier (ReleaseProvenanceSchema) and the grove tier (GroveReleaseProvenanceSchema).

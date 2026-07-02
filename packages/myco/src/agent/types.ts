@@ -8,6 +8,7 @@
 
 import type { CostResolution, CostSource } from '@myco/agent/cost/types.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
+import type { HarnessHooks } from './harness/hooks.js';
 
 // ---------------------------------------------------------------------------
 // YAML-sourced definitions (read from src/agent/definitions/)
@@ -53,11 +54,22 @@ export interface AgentDefinition {
  */
 import type { PhasePreConditionKind } from './phase-precondition-kinds.js';
 export type { PhasePreConditionKind };
+import type { PhasePostConditionKind } from './phase-postcondition-kinds.js';
+export type { PhasePostConditionKind };
 
 export interface PhaseDefinition {
   name: string;
   prompt: string;
   tools: string[];
+  /**
+   * Subset of `tools` whose full schema is withheld from the initial
+   * surface (see createVaultTools's `deferredNames`). Must be a subset of
+   * `tools` — enforced at YAML-load time by PhaseDefinitionSchema's
+   * refine (schemas.ts), so a typo'd or stale entry fails fast instead of
+   * silently narrowing to nothing. This only narrows within the phase's
+   * declared tool set, never widens it.
+   */
+  deferredTools?: string[];
   maxTurns: number;
   model?: string;
   reasoningLevel?: ReasoningLevel;
@@ -77,6 +89,15 @@ export interface PhaseDefinition {
    * prevent paying for LLM turns that would only discover "no work."
    */
   preCondition?: PhasePreConditionKind;
+  /**
+   * Optional mechanical postcondition. When set, the phase loop runs the
+   * registered deterministic check after harness execution on an
+   * otherwise-completed phase; on failure the result is converted to
+   * `failed` (same contract as the semantic-check flagged-writes
+   * conversion). Use for phases whose downstream consumers require a
+   * specific report/state contract the model can silently skip.
+   */
+  postCondition?: PhasePostConditionKind;
   /**
    * Optional cross-phase skip gate. When set, the phase loop reads the
    * named upstream phase's emitted `metadata[key]` and skips THIS phase
@@ -152,6 +173,26 @@ export interface PhaseResult {
    * so resumed runs preserve the gate decision.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * True when this phase's `status: 'failed'` came from
+   * `snapshotFlaggedWrites` converting an otherwise-"completed" result
+   * because a destructive write was blocked by the semantic check — not
+   * from a hard runtime error. Persisted onto `PhaseCheckpoint` so a
+   * resumed run's `reuseSession` exclusion can refuse to reattach to a
+   * session whose history contains the model's own blocked tool call. See
+   * `PhaseCheckpoint.semanticCheckBlocked` in executor-state.ts.
+   */
+  semanticCheckBlocked?: boolean;
+  /**
+   * True when this phase's `status: 'failed'` came from an unsatisfied
+   * `PhaseDefinition.postCondition` converting an otherwise-"completed"
+   * result — not from a hard runtime error. Persisted onto
+   * `PhaseCheckpoint` so a resumed run's `reuseSession` exclusion can
+   * refuse to reattach to a session whose history is the model's own
+   * non-compliant completion (a reused session invites "as established,
+   * no action needed" repeat failures).
+   */
+  postConditionFailed?: boolean;
 }
 
 /**
@@ -300,6 +341,25 @@ export interface ProviderConfig {
   apiKey?: string;
   model?: string;
   reasoningMap?: Partial<Record<ReasoningLevel, string>>;
+  /**
+   * Claude-only per-tier override of the default thinking-budget map
+   * (`DEFAULT_THINKING_MAP` in `reasoning-levels.ts`). Unset tiers fall
+   * back to the default. Ignored entirely for local providers — the
+   * harness always forces `{ type: 'disabled' }` there regardless of
+   * this map (see `resolveThinkingConfig`).
+   */
+  thinkingBudgetMap?: Partial<Record<ReasoningLevel, { budgetTokens: number } | { adaptive: true }>>;
+  /**
+   * OpenAI-only per-tier override of the default reasoning-effort /
+   * verbosity map (`DEFAULT_EFFORT_MAP` in `reasoning-levels.ts`). Unset
+   * tiers fall back to the default. Ignored entirely for local providers
+   * — `resolveModelSettings` returns `undefined` there so no
+   * `reasoning`/`text` fields are ever sent to a local backend.
+   */
+  effortMap?: Partial<Record<ReasoningLevel, {
+    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+    verbosity?: 'low' | 'medium' | 'high';
+  }>>;
   /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
   contextLength?: number;
 }
@@ -465,6 +525,23 @@ export interface EffectiveConfig {
    * effective config for this run. Passed through to the tool surface.
    */
   dryRun?: boolean;
+  /**
+   * Snapshotted per-run semantic-check gate, resolved once by the executor
+   * from RunOptions.executionOverrides.semanticWriteCheckEnabled (Task 2b)
+   * — same propagation contract as dryRun above. Passed through to the
+   * tool surface so wrapToolWithSemanticCheck (tools.ts) can read it.
+   */
+  semanticWriteCheckEnabled?: boolean;
+  /**
+   * Snapshotted per-run reasoning tier for the semantic-check classifier,
+   * resolved once by the executor from
+   * RunOptions.executionOverrides.classifierReasoningLevel (Task 2b) —
+   * same propagation contract as semanticWriteCheckEnabled above.
+   * Undefined simply means "use the classifier's low default" (see
+   * write-classifier.ts / tools.ts's `classifierReasoningLevel ?? 'low'`
+   * ladder) — this field carries no fallback of its own.
+   */
+  classifierReasoningLevel?: ReasoningLevel;
 }
 
 /**
@@ -487,6 +564,15 @@ export interface RunOptions {
   instruction?: string;
   /** Per-run task params layered over YAML/myco.yaml task params. */
   taskParams?: Record<string, string | number | boolean>;
+  /**
+   * Caller-supplied ID for the run row this dispatch will create. The API
+   * handler generates it so the HTTP response can name the run
+   * deterministically — the executor's row insert happens after awaits
+   * (e.g. the Ollama variant resolver), so reading the latest row back
+   * after dispatch races concurrent dispatches and returns a stale run.
+   * Ignored when `resumeRunId` is set (a resume reuses the existing row).
+   */
+  runId?: string;
   /** Resume a previous run by its ID (re-uses existing session state). */
   resumeRunId?: string;
   /** Embedding runtime for immediate vector operations during agent tool calls. */
@@ -499,6 +585,12 @@ export interface RunOptions {
    * `daemon.log_level` is set to `debug`, otherwise filtered out.
    */
   logger?: RunLogger;
+  /**
+   * Caller-supplied lifecycle hooks. Merged additively with the default
+   * audit-event hooks runAgent() always constructs — both fire, this
+   * does not replace the default recorder. See agent/harness/audit-hooks.ts.
+   */
+  hooks?: HarnessHooks;
   /**
    * Structured metadata about the run. Populated by the dispatcher (e.g.
    * instruction-builders.ts) alongside the free-form `instruction` string
@@ -540,6 +632,23 @@ export interface RunOptions {
      * persisting to config.
      */
     provider?: ProviderConfig;
+    /**
+     * Per-run override/snapshot for the destructive-write semantic
+     * classifier (agent.semantic_write_check_enabled). Resolved once at
+     * dispatch time — either from a caller-supplied override or from
+     * ResolvedRunConfig.semanticWriteCheckEnabledDefault — and persisted
+     * onto agent_runs.execution_overrides so a resumed run keeps the
+     * ORIGINAL dispatch's setting even if myco.yaml changes in between.
+     * Same contract as dryRun (executor.ts:196).
+     */
+    semanticWriteCheckEnabled?: boolean;
+    /**
+     * Per-run override for the classifier's reasoning tier. Defaults to
+     * 'low' if omitted. Follows the same resolveReasoningModel() ladder as
+     * every other reasoning-level override in the harness — never a bare
+     * literal in write-classifier.ts.
+     */
+    classifierReasoningLevel?: ReasoningLevel;
     /**
      * Per-phase overrides. Key is the phase name from the task definition.
      * When a phase name matches, its fields take precedence over the task's

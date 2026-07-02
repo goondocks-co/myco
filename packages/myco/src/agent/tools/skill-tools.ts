@@ -1348,7 +1348,8 @@ export function createSkillTools(deps: VaultToolDeps) {
     return { ok: true, recordId, generation, relativePath };
   }
 
-  const vaultSkillCandidates = tool(
+  const vaultSkillCandidates = {
+    ...tool(
     'vault_skill_candidates',
     'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
     {
@@ -1522,10 +1523,17 @@ export function createSkillTools(deps: VaultToolDeps) {
           return textResult({ error: `Unknown action: ${args.action}` });
       }
     },
-    { annotations: {} },
-  );
+    { annotations: { destructiveHint: true, idempotentHint: false } },
+    ),
+    // Primary actions (list/get) are pure reads — only create/update/delete
+    // are actually destructive. Narrows semantic-check applicability so a
+    // read call on this multi-action tool is never classified. See
+    // MycoToolDefinition.destructiveActions in tools/types.ts.
+    destructiveActions: ['create', 'update', 'delete'],
+  };
 
-  const vaultSkillRecords = tool(
+  const vaultSkillRecords = {
+    ...tool(
     'vault_skill_records',
     'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions. The get action includes the full SKILL.md file content. For update, at least one mutating field (status, generation, source_ids, description, or properties) is required — calls with only {action, id} are rejected to prevent silent no-op updates.',
     {
@@ -1650,8 +1658,14 @@ export function createSkillTools(deps: VaultToolDeps) {
           return textResult({ error: `Unknown action: ${args.action}` });
       }
     },
-    { annotations: {} },
-  );
+    { annotations: { destructiveHint: true, idempotentHint: false } },
+    ),
+    // Primary actions (list/get) are pure reads — only update/delete are
+    // actually destructive. Narrows semantic-check applicability so a read
+    // call on this multi-action tool is never classified. See
+    // MycoToolDefinition.destructiveActions in tools/types.ts.
+    destructiveActions: ['update', 'delete'],
+  };
 
   const vaultScanSkillContamination = tool(
     'vault_scan_skill_contamination',

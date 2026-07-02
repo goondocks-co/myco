@@ -642,15 +642,44 @@ export const NOTIFICATIONS_TABLE = `
  */
 export const AGENT_RUN_WRITE_INTENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_run_write_intents (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id        TEXT,
-    run_id            TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-    phase_id          TEXT,
-    tool_name         TEXT NOT NULL,
-    tool_input        TEXT NOT NULL,
-    synthetic_output  TEXT NOT NULL,
-    stub_id           TEXT,
-    recorded_at       INTEGER NOT NULL
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id         TEXT,
+    run_id             TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    phase_id           TEXT,
+    tool_name          TEXT NOT NULL,
+    tool_input         TEXT NOT NULL,
+    synthetic_output   TEXT NOT NULL,
+    stub_id            TEXT,
+    classifier_verdict TEXT,
+    classifier_reason  TEXT,
+    recorded_at        INTEGER NOT NULL
+  )`;
+
+/**
+ * Append-only lifecycle-event log for agent runs. Populated by
+ * HarnessHooks (preToolUse/postToolUse/phaseStart/phaseEnd) via
+ * buildAuditEventHooks() in agent/harness/audit-hooks.ts — this is the
+ * durable event trail the daemon UI polls via GET
+ * /api/agent/runs/:id/events for near-real-time activity feedback.
+ * Closes Gap 4 from the April 2026 harness maturity audit
+ * (spore_11b6645a205e0a455f247a122cddbb0d).
+ *
+ * No UPDATE/DELETE query helper is exposed at the query layer — same
+ * append-only convention as agent_run_write_intents. ON DELETE CASCADE
+ * on run_id lets a future agent_runs retention purge cascade.
+ */
+export const AGENT_RUN_EVENTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS agent_run_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    TEXT,
+    run_id        TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    phase_name    TEXT,
+    event_type    TEXT NOT NULL,
+    tool_name     TEXT,
+    outcome       TEXT,
+    duration_ms   INTEGER,
+    payload       TEXT,
+    recorded_at   INTEGER NOT NULL
   )`;
 
 /**
@@ -818,6 +847,7 @@ export const GROVE_PROJECT_SCOPED_TABLES = [
   'agent_reports',
   'agent_turns',
   'agent_run_write_intents',
+  'agent_run_events',
   'digest_extract_revisions',
   'skill_candidates',
   'skill_records',
@@ -1172,6 +1202,7 @@ export const SECONDARY_INDEXES = [
   // Eval harness
   'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id ON agent_run_write_intents (run_id)',
   'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id_tool ON agent_run_write_intents (run_id, tool_name)',
+  'CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_id ON agent_run_events (run_id, id)',
   'CREATE INDEX IF NOT EXISTS idx_digest_revisions_agent_tier ON digest_extract_revisions (agent_id, tier, created_at DESC)',
 
   // Grove migration import journal
@@ -1232,6 +1263,7 @@ export const TABLE_DDLS = [
   NOTIFICATIONS_TABLE,
   // Eval harness layer
   AGENT_RUN_WRITE_INTENTS_TABLE,
+  AGENT_RUN_EVENTS_TABLE,
   DIGEST_EXTRACT_REVISIONS_TABLE,
   MIGRATION_IMPORT_JOURNAL_TABLE,
   MIGRATION_LOG_TABLE,

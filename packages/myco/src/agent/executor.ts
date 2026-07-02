@@ -59,6 +59,8 @@ import {
 } from './executor-state.js';
 import { getAgentHarness } from './harness/index.js';
 import { HarnessExecutionError } from './harness/types.js';
+import { buildAuditEventHooks } from './harness/audit-hooks.js';
+import type { HarnessHooks } from './harness/hooks.js';
 import {
   analyzeRuntimeTokenBudget,
   buildRunAccountingUpdate,
@@ -127,6 +129,31 @@ function logTokenBudgetPressure(
   });
 }
 
+/**
+ * Merge the default audit-event hooks (always on) with any caller-supplied
+ * hooks (RunOptions.hooks). Both fire for every event — the caller's hooks
+ * are additive, not a replacement for the audit recorder. Each merged
+ * callback is best-effort: a failure in either side must not stop the
+ * other from running or bubble into the tool/phase call it's observing.
+ */
+function mergeHooks(defaultHooks: HarnessHooks, callerHooks: HarnessHooks | undefined): HarnessHooks {
+  if (!callerHooks) return defaultHooks;
+  return {
+    preToolUse: async (event) => {
+      await Promise.allSettled([defaultHooks.preToolUse?.(event), callerHooks.preToolUse?.(event)]);
+    },
+    postToolUse: async (event) => {
+      await Promise.allSettled([defaultHooks.postToolUse?.(event), callerHooks.postToolUse?.(event)]);
+    },
+    phaseStart: async (event) => {
+      await Promise.allSettled([defaultHooks.phaseStart?.(event), callerHooks.phaseStart?.(event)]);
+    },
+    phaseEnd: async (event) => {
+      await Promise.allSettled([defaultHooks.phaseEnd?.(event), callerHooks.phaseEnd?.(event)]);
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -188,7 +215,21 @@ export async function runAgent(
     taskProviderOverride: resolvedTaskProvider,
     phaseProviderOverrides: resolvedPhaseOverrides,
     taskParams: resolvedTaskParams,
+    semanticWriteCheckEnabledDefault,
   } = resolveRunConfig(agentId, requestedTask, vaultDir, options?.requestContext?.groveId ?? null);
+
+  // Resolved once here; a resumed run already has this baked into
+  // options.executionOverrides.semanticWriteCheckEnabled via the restore
+  // block above, so semanticWriteCheckEnabledDefault only matters for a
+  // run's FIRST dispatch. Runs dispatched before the snapshot existed (execution_overrides null/keyless)
+  // fall back to the CURRENT config value — safe while the default is false.
+  const semanticWriteCheckEnabled =
+    options?.executionOverrides?.semanticWriteCheckEnabled
+    ?? semanticWriteCheckEnabledDefault
+    ?? false;
+  const classifierReasoningLevel =
+    options?.executionOverrides?.classifierReasoningLevel
+    ?? 'low';
 
   // Block duplicate runs of the SAME task — different tasks may run
   // concurrently. A 'running' row older than the task timeout (+ margin)
@@ -240,6 +281,8 @@ export async function runAgent(
     ...resolvedConfig,
     harness: runHarness,
     dryRun: options?.dryRun ?? false,
+    semanticWriteCheckEnabled,
+    classifierReasoningLevel,
     ...(taskParams ? { taskParams } : {}),
     ...(overrideReasoning ? { reasoningLevel: overrideReasoning } : {}),
     ...(overrideModel ? { model: overrideModel } : {}),
@@ -281,7 +324,8 @@ export async function runAgent(
     overrideProvider
     ?? taskProviderOverride
     ?? config.execution?.provider;
-  const runId = options?.resumeRunId ?? crypto.randomUUID();
+  const runId = options?.resumeRunId ?? options?.runId ?? crypto.randomUUID();
+  const runHooks = mergeHooks(buildAuditEventHooks(runId, projectId ?? null), options?.hooks);
   let harnessId = runHarness;
   let effectiveModel = resolveReasoningModel(
     config.execution?.reasoningLevel ?? config.reasoningLevel,
@@ -421,6 +465,23 @@ export async function runAgent(
     started_at: now,
   } as const;
   if (!resumedRun) {
+    // Resolved once here, same as the reasoningLevel column below. Folding it
+    // into the executionOverrides snapshot too keeps the resume-restore
+    // ladder's rung 2 (`resumedRun.execution_overrides`) complete on its own:
+    // since this blob is now ALWAYS non-null (it always carries
+    // semanticWriteCheckEnabled/classifierReasoningLevel), rung 3
+    // (`resumedRun.reasoning_level ? {reasoningLevel} : undefined`) would
+    // otherwise never run, and a resumed run would re-resolve reasoningLevel
+    // from live config instead of the original dispatch's tier.
+    // Precedence matches every live execution path (executeSingleQuery,
+    // the phase resolver, the orchestrator tier ladder): the scoped
+    // execution block wins over the task-level default. Snapshotting the
+    // inverse order would persist a tier the run never actually used.
+    const resolvedReasoningLevel =
+      options?.executionOverrides?.reasoningLevel
+      ?? config.execution?.reasoningLevel
+      ?? config.reasoningLevel
+      ?? null;
     insertRun({
       id: runId,
       project_id: projectId,
@@ -432,12 +493,13 @@ export async function runAgent(
       usage_data: buildUsageData({}),
       run_context: options?.runContext ? JSON.stringify(options.runContext) : null,
       dryRun: options?.dryRun ?? false,
-      reasoningLevel:
-        options?.executionOverrides?.reasoningLevel
-        ?? config.reasoningLevel
-        ?? config.execution?.reasoningLevel
-        ?? null,
-      executionOverrides: options?.executionOverrides ?? null,
+      reasoningLevel: resolvedReasoningLevel,
+      executionOverrides: {
+        ...(options?.executionOverrides ?? {}),
+        ...(resolvedReasoningLevel ? { reasoningLevel: resolvedReasoningLevel } : {}),
+        semanticWriteCheckEnabled,
+        classifierReasoningLevel,
+      },
     });
   } else {
     applyRunUpdate(runId, {
@@ -505,6 +567,7 @@ export async function runAgent(
       options,
       checkpointState,
       persistCheckpoints: persistHarnessState,
+      hooks: runHooks,
     };
 
     if (config.phases && config.phases.length > 0) {

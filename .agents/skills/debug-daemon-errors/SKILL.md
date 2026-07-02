@@ -1,6 +1,6 @@
 ---
 name: myco:debug-daemon-errors
-description: "Use this skill whenever the Myco daemon is misbehaving — even if the user doesn't explicitly ask for a debugging procedure. Activates for: daemon process crashes, uncaught exceptions, FK constraint violations, PowerManager jobs not firing, scheduler starvation, outbox drain loops, duplicate or phantom sessions, executor tasks that silently succeed or stall, and any log output from the daemon's core subsystems (PowerManager, SQLite, outbox, session lifecycle, phased executor). This is the cross-cutting playbook for investigating, tracing, and surgically fixing daemon-layer bugs — distinct from debugging agent task YAML, schema migrations, or outbox architecture design."
+description: "Use this skill whenever the Myco daemon is misbehaving — even if the user doesn't explicitly ask for a debugging procedure. Activates for: daemon process crashes, uncaught exceptions, FK constraint violations, PowerManager jobs not firing, scheduler starvation, outbox drain loops, duplicate or phantom sessions, executor tasks that silently succeed or stall, and any log output from the daemon's core subsystems (PowerManager, SQLite, outbox, session lifecycle, phased executor). This is the cross-cutting playbook for investigating, tracing, and surgically solutioning daemon-layer bugs — distinct from debugging agent task YAML, schema migrations, or outbox architecture design."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -8,13 +8,13 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Debug Production Daemon Errors
 
-The Myco daemon is a long-running process that hosts multiple subsystems: a JobRunner-based scheduler, SQLite-backed state, an outbox drain loop, session lifecycle tracking, and a phased task executor. Bugs in each subsystem have distinct failure signatures and require different surgical fixes. This skill teaches you how to identify which subsystem is implicated, trace to the root cause, apply a minimal fix, and prevent regression.
+The Myco daemon is a long-running process that hosts multiple subsystems: a JobRunner-based scheduler, SQLite-backed state, an outbox drain loop, session lifecycle tracking, and a phased task executor. Bugs in each subsystem have distinct failure signatures and require different surgical solutiones. This skill teaches you how to identify which subsystem is implicated, trace to the root cause, apply a minimal solution, and prevent regression.
 
 ## Prerequisites
 
 - Daemon is running (or you have daemon logs from a failed run)
 - You have access to the SQLite vault at `.myco/myco.db`
-- You can restart the daemon process to confirm a fix
+- You can restart the daemon process to confirm a solution
 
 ---
 
@@ -35,10 +35,10 @@ cat ~/.myco/logs/launcher.log | tail -100
 
 Look for the **first anomalous line**, not just the error message. Record:
 - The timestamp of the first unexpected event
-- The subsystem prefix in the log line (e.g., `[JobRunner]`, `[Outbox]`, `[Session]`, `[Executor]`)
+- The subsystem presolution in the log line (e.g., `[JobRunner]`, `[Outbox]`, `[Session]`, `[Executor]`)
 - Whether the error is a hard crash, a silent return, or a loop
 
-**Pitfall:** Don't jump to fixing based on the exception message alone. `FOREIGN KEY constraint failed` looks like a schema bug but is almost always a deletion order problem.
+**Caution:** Be wary of misleading exception messages, like `FOREIGN KEY constraint failed`. Often, these indicate deletion order problems rather than a schema issue.
 
 ---
 
@@ -157,11 +157,11 @@ for (const phase of task.phases) {
 
 **Fix pattern:** Never record `complete` in a `catch` block — always propagate failures to the error path.
 
-### Daemon Startup Ordering — FTS Rebuild Before Port-Claim Bug
+### Daemon Initialization Sequence — Port-Claim Before FTS
 
-**Problem:** The daemon's "step-aside if a healthy sibling is alive" check fires after schema migration (including FTS rebuild). This allows an orphan daemon to perform expensive FTS rebuild operations while another instance is starting, leading to "database is locked" errors.
+**Issue:** Performing schema tasks such as FTS rebuilds before securing the port-claim can lead to "database is locked" errors, especially with concurrent daemon startups.
 
-**Fix pattern:** Move the port-claim check before expensive database operations.
+**Solution:** Ensure port claim checks precede resource-intensive database tasks to prevent unintentional process interference.
 
 ---
 
@@ -238,12 +238,12 @@ Tests for daemon subsystems live in:
 
 ## Step 6 — Apply the Fix and Verify
 
-1. Apply the minimal surgical fix
+1. Apply the minimal surgical solution
 2. Run the targeted test first: confirm it goes green
 3. Run full test suite: `npm test`
 4. Restart daemon and smoke-test: `myco daemon:restart`
 
-**Pitfall:** Resist refactoring while fixing. Make minimal changes that address the root cause.
+**Pitfall:** Resist refactoring while solutioning. Make minimal changes that address the root cause.
 
 ---
 
@@ -362,7 +362,7 @@ When daemon.json exists but daemon won't start, check these four sources in orde
 
 ## Cross-Cutting Gotchas
 
-**Use named constants and shared utilities, not magic literals or local latches.** When fixing daemon handlers, resist the urge to add a local variable or inline numeric constant. Extract the value to `packages/myco/src/constants.ts` or a shared utility module. Magic literals in daemon code spread quickly and create silent inconsistencies between subsystems.
+**Use named constants and shared utilities, not magic literals or local latches.** When solutioning daemon handlers, resist the urge to add a local variable or inline numeric constant. Extract the value to `packages/myco/src/constants.ts` or a shared utility module. Magic literals in daemon code spread quickly and create silent inconsistencies between subsystems.
 
 **Audit existing config before adding new policy machinery.** Before building a new guard, threshold, or gate, check whether the behavior is already configurable via existing config keys (e.g., thresholds in `packages/myco/src/constants.ts`, scoped flags in myco.yaml). Adding redundant policy machinery creates conflicting sources of truth and makes future debugging harder.
 

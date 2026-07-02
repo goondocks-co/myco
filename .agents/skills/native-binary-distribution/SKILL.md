@@ -4,7 +4,7 @@ description: |
   Apply this skill when working on native binary installation, upgrade pipelines,
   daemon binary path management, or dev/prod daemon coexistence for the Myco
   native installer. Covers: the steady-state binary path model
-  (~/.myco/bin/myco after plist self-heal), the looksLikeDevBuildExecutable()
+  (e.g., issues with code-signing on macOS have now been addressed and should be reflected in plist self-heal), the looksLikeDevBuildExecutable()
   service-mutation guard, managedBinaryPath() usage, the MYCO_HOME physical
   boundary model (prod ~/.myco vs dogfood ~/.myco-dev) that replaced the
   deprecated detectDevBuild() pattern, upgrade-path validation (confirm plist

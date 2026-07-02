@@ -25,6 +25,7 @@ import type {
 import type { AgentHarness, HarnessExecuteInput, HarnessExecuteResult } from '@myco/agent/harness/types.js';
 import { HarnessExecutionError } from '@myco/agent/harness/types.js';
 import type { RunCheckpointState } from '@myco/agent/executor-state.js';
+import { ORCHESTRATOR_PLAN_JSON_SCHEMA } from '@myco/agent/orchestrator.js';
 
 // ---------------------------------------------------------------------------
 // Harness mock — controls execute() behavior per test.
@@ -39,6 +40,7 @@ let runtimeBehaviors: RuntimeBehavior[] = [];
 let defaultRuntimeBehavior: RuntimeBehavior = { kind: 'success' };
 let capturedExecuteInputs: HarnessExecuteInput[] = [];
 let runtimeSupportsSessionResume = false;
+let runtimeSupportsStructuredOutput = false;
 
 const DEFAULT_USAGE: RuntimeUsage = {
   requests: 1,
@@ -95,6 +97,7 @@ const fakeRuntime: AgentHarness = {
   },
   supports(capability) {
     if (capability === 'supportsSessionResume') return runtimeSupportsSessionResume;
+    if (capability === 'structuredOutput') return runtimeSupportsStructuredOutput;
     return false;
   },
 	  classifyError(error) {
@@ -129,10 +132,25 @@ mock.module('@myco/agent/phase-preconditions.js', () => ({
   checkPhasePreCondition: () => phasePreConditionResult,
 }));
 
+// Per-phase postCondition resolver — programmable per test; an impl
+// function (not a value) so the check-throws fail-open path can be
+// exercised. The last call's arguments are captured for threading
+// assertions (projectId/dryRun parity with the run row).
+let phasePostConditionImpl: () => { passed: boolean; reason: string } = () => ({ passed: true, reason: 'default-pass' });
+let lastPostConditionCall: { kind: string; input: Record<string, unknown> } | null = null;
+mock.module('@myco/agent/phase-postconditions.js', () => ({
+  checkPhasePostCondition: (kind: string, input: Record<string, unknown>) => {
+    lastPostConditionCall = { kind, input };
+    return phasePostConditionImpl();
+  },
+}));
+
 // projectScopeFromRequestContext is called only when a requestContext is
-// present; tests that supply one need a non-throwing stub.
+// present; tests that supply one need a non-throwing stub. Same for the
+// row-parity projectId resolver the postCondition gate uses.
 mock.module('@myco/grove/request-context.js', () => ({
   projectScopeFromRequestContext: () => ({ kind: 'all' as const }),
+  rowProjectIdFromRequestContext: () => 'proj_test',
 }));
 
 // Cost resolution is async but doesn't need real numbers here.
@@ -222,6 +240,16 @@ function phase(name: string, extra: Partial<PhaseDefinition> = {}): PhaseDefinit
   } as PhaseDefinition;
 }
 
+function buildPhaseLoopContextWithOrchestratorEnabled(phaseNames: string[] = ['extract']): PhaseLoopContext {
+  const phases = phaseNames.map((name) => phase(name));
+  return baseContext({
+    config: {
+      ...baseConfig(phases),
+      orchestrator: { enabled: true },
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Reset per test
 // ---------------------------------------------------------------------------
@@ -231,7 +259,10 @@ beforeEach(() => {
   defaultRuntimeBehavior = { kind: 'success' };
   capturedExecuteInputs = [];
   runtimeSupportsSessionResume = false;
+  runtimeSupportsStructuredOutput = false;
   phasePreConditionResult = { passed: true, reason: 'default-pass' };
+  phasePostConditionImpl = () => ({ passed: true, reason: 'default-pass' });
+  lastPostConditionCall = null;
   mapPhaseResultOverride = null;
 });
 
@@ -465,6 +496,91 @@ describe('executePhase', () => {
     expect(capturedExecuteInputs).toHaveLength(1);
   });
 
+  it('converts a completed phase to failed when its postCondition is unsatisfied', async () => {
+    // The live failure mode this gate closes: the model completes the
+    // phase with prose only (zero required tool calls), the phase would
+    // otherwise report completed, and the missing report/state is only
+    // discovered by the run-end task postcondition after every later
+    // phase ran at full cost.
+    phasePostConditionImpl = () => ({
+      passed: false,
+      reason: 'skill-evolve completed without a skill-evolve-inventory report',
+    });
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('inventory', { postCondition: 'skill-evolve-inventory', required: true }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.postConditionFailed).toBe(true);
+    expect(result.summary).toContain('postcondition "skill-evolve-inventory" not satisfied');
+    expect(result.summary).toContain('without a skill-evolve-inventory report');
+    // The harness DID run — this is a post-execution conversion, not a skip.
+    expect(capturedExecuteInputs).toHaveLength(1);
+  });
+
+  it('threads row-parity projectId and config dryRun into the postCondition check', async () => {
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+      config: { ...baseConfig(), dryRun: true },
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('inventory', { postCondition: 'skill-evolve-inventory' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(lastPostConditionCall).not.toBeNull();
+    expect(lastPostConditionCall!.kind).toBe('skill-evolve-inventory');
+    expect(lastPostConditionCall!.input).toMatchObject({
+      runId: ctx.runId,
+      agentId: ctx.agentId,
+      projectId: 'proj_test',
+      dryRun: true,
+    });
+  });
+
+  it('keeps the completed result when the postCondition check throws (fail-open)', async () => {
+    // Same philosophy as preConditions: a transient SQL error must never
+    // fail otherwise-completed work.
+    phasePostConditionImpl = () => {
+      throw new Error('SQLITE_BUSY');
+    };
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('inventory', { postCondition: 'skill-evolve-inventory' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(result.postConditionFailed).toBeUndefined();
+  });
+
+  it('bypasses the postCondition gate when no requestContext is available', async () => {
+    phasePostConditionImpl = () => ({ passed: false, reason: 'should not be consulted' });
+    const ctx = baseContext({ requestContext: undefined });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('inventory', { postCondition: 'skill-evolve-inventory' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(lastPostConditionCall).toBeNull();
+  });
+
   it('reports abort reason when the run is aborted mid-execution', async () => {
     defaultRuntimeBehavior = { kind: 'abort' };
     const ctx = baseContext();
@@ -513,6 +629,31 @@ describe('executeSingleQuery', () => {
     expect(result.costUsd).toBe(0.01);
     expect(result.usage.totalTokens).toBe(300);
     expect(capturedExecuteInputs).toHaveLength(1);
+  });
+
+  it('forwards the resolved reasoningLevel from config into the harness execute() input', async () => {
+    // Regression for the reasoningLevel plumbing gap: executeSingleQuery
+    // resolves `effectiveReasoningLevel` from config.execution.reasoningLevel
+    // ?? config.reasoningLevel and must forward it on baseInput, not just
+    // use it to pick a model.
+    const ctx = baseContext({
+      config: { ...baseConfig(), reasoningLevel: 'high' },
+    });
+    await executeSingleQuery(ctx, 'PROMPT');
+    expect(capturedExecuteInputs).toHaveLength(1);
+    expect(capturedExecuteInputs[0].reasoningLevel).toBe('high');
+  });
+
+  it('prefers config.execution.reasoningLevel over the top-level config.reasoningLevel', async () => {
+    const ctx = baseContext({
+      config: {
+        ...baseConfig(),
+        reasoningLevel: 'low',
+        execution: { reasoningLevel: 'high' },
+      },
+    });
+    await executeSingleQuery(ctx, 'PROMPT');
+    expect(capturedExecuteInputs[0].reasoningLevel).toBe('high');
   });
 
   it('forwards sessionRef/sessionData into the runtime call', async () => {
@@ -659,6 +800,27 @@ describe('executePhasedQuery', () => {
     expect(checkpointState.phases.b.status).toBe('skipped');
     expect(checkpointState.phases.b.summary).toContain('did not match');
     expect(checkpointState.phases.b.summary).toContain('missing');
+  });
+
+  it('forwards each phase\'s resolved reasoningLevel into the harness execute() input on the wave-loop path', async () => {
+    // Regression for the reasoningLevel plumbing gap: resolvePhaseExecution
+    // has always resolved reasoningLevel per-phase, but the wave loop's
+    // executePhase call must actually forward waveInput.reasoningLevel —
+    // proven droppable by mutation before this assertion existed.
+    const phases = [
+      phase('a', { reasoningLevel: 'high' }),
+      phase('b', { reasoningLevel: 'low' }),
+    ];
+    const ctx = baseContext({ config: baseConfig(phases) });
+    await executePhasedQuery(ctx);
+
+    const byPhase = new Map<string, string | undefined>();
+    for (const input of capturedExecuteInputs) {
+      const match = input.prompt.match(/## Current Phase: (\S+)/);
+      if (match) byPhase.set(match[1], input.reasoningLevel);
+    }
+    expect(byPhase.get('a')).toBe('high');
+    expect(byPhase.get('b')).toBe('low');
   });
 
   it('invokes persistCheckpoints between waves', async () => {
@@ -820,5 +982,187 @@ describe('executePhasedQuery turnOffset allocation', () => {
     const offsets = offsetsByPrompt();
     expect(capturedExecuteInputs).toHaveLength(1);
     expect(offsets.get('c')).toBe(13);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executePhasedQuery — orchestrator structured output
+// ---------------------------------------------------------------------------
+
+describe('executePhasedQuery orchestrator structured output', () => {
+  it('forwards the orchestrator-resolved reasoningLevel into the orchestrator\'s execute() input', async () => {
+    // Regression for the reasoningLevel plumbing gap on the orchestrator
+    // block: orchestratorReasoningLevel is resolved as
+    // config.orchestrator.reasoningLevel ?? config.execution?.reasoningLevel
+    // ?? config.reasoningLevel, and that resolved value must reach the
+    // orchestrator's own harness.execute() call (identified here by its
+    // empty toolNames, which only the orchestrator call sets).
+    runtimeBehaviors = [
+      { kind: 'success', result: { finalText: '{"phases":[],"reasoning":"unused"}' } },
+    ];
+    const phases = [phase('extract')];
+    const ctx = baseContext({
+      config: {
+        ...baseConfig(phases),
+        reasoningLevel: 'low',
+        orchestrator: { enabled: true, reasoningLevel: 'high' },
+      } as EffectiveConfig,
+    });
+    await executePhasedQuery(ctx);
+    const orchestratorCall = capturedExecuteInputs.find((input) => input.toolSurface.toolNames?.length === 0);
+    expect(orchestratorCall?.reasoningLevel).toBe('high');
+  });
+
+  it('falls back through config.execution.reasoningLevel then config.reasoningLevel when orchestrator.reasoningLevel is unset', async () => {
+    runtimeBehaviors = [
+      { kind: 'success', result: { finalText: '{"phases":[],"reasoning":"unused"}' } },
+    ];
+    const phases = [phase('extract')];
+    const ctx = baseContext({
+      config: {
+        ...baseConfig(phases),
+        reasoningLevel: 'low',
+        execution: { reasoningLevel: 'high' },
+        orchestrator: { enabled: true },
+      },
+    });
+    await executePhasedQuery(ctx);
+    const orchestratorCall = capturedExecuteInputs.find((input) => input.toolSurface.toolNames?.length === 0);
+    expect(orchestratorCall?.reasoningLevel).toBe('high');
+  });
+
+  it('requests outputSchema on the orchestrator call when the harness supports structuredOutput', async () => {
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      { kind: 'success', result: { finalText: '{"phases":[],"reasoning":"structured path unused for this assertion"}' } },
+    ];
+    await executePhasedQuery(buildPhaseLoopContextWithOrchestratorEnabled());
+    const orchestratorCall = capturedExecuteInputs.find((input) => input.toolSurface.toolNames?.length === 0);
+    expect(orchestratorCall?.outputSchema).toEqual({
+      name: 'orchestrator_plan',
+      schema: ORCHESTRATOR_PLAN_JSON_SCHEMA,
+    });
+  });
+
+  it('does not request outputSchema when the harness does not support structuredOutput', async () => {
+    runtimeSupportsStructuredOutput = false;
+    runtimeBehaviors = [
+      { kind: 'success', result: { finalText: '{"phases":[],"reasoning":"text path"}' } },
+    ];
+    await executePhasedQuery(buildPhaseLoopContextWithOrchestratorEnabled());
+    const orchestratorCall = capturedExecuteInputs.find((input) => input.toolSurface.toolNames?.length === 0);
+    expect(orchestratorCall?.outputSchema).toBeUndefined();
+  });
+
+  it('applies directives from structuredOutput when the harness returns it', async () => {
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      {
+        kind: 'success',
+        result: {
+          finalText: '{"phases":[],"reasoning":"should not be used"}',
+          structuredOutput: {
+            phases: [{ name: 'extract', skip: true, skipReason: 'nothing pending' }],
+            reasoning: 'structured plan used directly',
+          },
+        },
+      },
+    ];
+    const ctx = buildPhaseLoopContextWithOrchestratorEnabled(['extract', 'graph']);
+    const result = await executePhasedQuery(ctx);
+    const executedPhaseNames = result.phases.map((p) => p.name);
+    expect(executedPhaseNames).not.toContain('extract');
+    expect(executedPhaseNames).toContain('graph');
+  });
+
+  it('falls back to text parsing when structuredOutput is undefined despite harness support', async () => {
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      {
+        kind: 'success',
+        result: {
+          finalText: '{"phases":[{"name":"extract","skip":true,"skipReason":"nothing pending"}],"reasoning":"fallback text plan"}',
+          structuredOutput: undefined,
+        },
+      },
+    ];
+    const ctx = buildPhaseLoopContextWithOrchestratorEnabled(['extract', 'graph']);
+    const result = await executePhasedQuery(ctx);
+    const executedPhaseNames = result.phases.map((p) => p.name);
+    expect(executedPhaseNames).not.toContain('extract');
+    expect(executedPhaseNames).toContain('graph');
+  });
+
+  it('warns "structured-output-missing" once when the schema\'d call succeeds but returns no structuredOutput, then falls back to text parsing', async () => {
+    // Soft-failure path: outputSchema WAS attached, the call did NOT throw,
+    // but the provider's structured-output validation failed after its own
+    // retries (e.g. Claude's error_max_structured_output_retries subtype —
+    // empty finalText, no structured_output on the result message). This is
+    // distinct from the throw-and-retry path above, which never has
+    // outputSchema attached on its retry and therefore never double-warns
+    // here.
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      {
+        kind: 'success',
+        result: {
+          finalText: '{"phases":[{"name":"extract","skip":true,"skipReason":"nothing pending"}],"reasoning":"fallback text plan"}',
+          structuredOutput: undefined,
+        },
+      },
+    ];
+    const warn = vi.fn();
+    const logger = { info: vi.fn(), debug: vi.fn(), warn, error: vi.fn() };
+    const ctx = buildPhaseLoopContextWithOrchestratorEnabled(['extract', 'graph']);
+    ctx.options = { logger };
+
+    const result = await executePhasedQuery(ctx);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [kind, , meta] = warn.mock.calls[0];
+    expect(kind).toBe('agent.orchestrator.structured-output-missing');
+    expect(meta).toMatchObject({ runId: 'run-123' });
+
+    const executedPhaseNames = result.phases.map((p) => p.name);
+    expect(executedPhaseNames).not.toContain('extract');
+    expect(executedPhaseNames).toContain('graph');
+  });
+
+  it('retries without outputSchema exactly once when the harness throws on the structured-output call, and uses the retry result', async () => {
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      { kind: 'error', message: 'malformed structured output JSON' },
+      {
+        kind: 'success',
+        result: {
+          finalText: '{"phases":[{"name":"extract","skip":true,"skipReason":"nothing pending"}],"reasoning":"retry text plan"}',
+        },
+      },
+    ];
+    const warn = vi.fn();
+    const logger = { info: vi.fn(), debug: vi.fn(), warn, error: vi.fn() };
+    const ctx = buildPhaseLoopContextWithOrchestratorEnabled(['extract', 'graph']);
+    ctx.options = { logger };
+
+    const result = await executePhasedQuery(ctx);
+
+    // The orchestrator planning calls always happen before any phase
+    // executes, so the first two captured inputs are the initial
+    // structured-output attempt and its no-outputSchema retry.
+    const orchestratorCalls = capturedExecuteInputs.slice(0, 2);
+    expect(orchestratorCalls[0].outputSchema).toEqual({
+      name: 'orchestrator_plan',
+      schema: ORCHESTRATOR_PLAN_JSON_SCHEMA,
+    });
+    expect(orchestratorCalls[1].outputSchema).toBeUndefined();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [kind, , meta] = warn.mock.calls[0];
+    expect(kind).toBe('agent.orchestrator.structured-output-failed');
+    expect(meta?.error).toContain('malformed structured output JSON');
+
+    const executedPhaseNames = result.phases.map((p) => p.name);
+    expect(executedPhaseNames).not.toContain('extract');
+    expect(executedPhaseNames).toContain('graph');
   });
 });

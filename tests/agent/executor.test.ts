@@ -956,6 +956,57 @@ describe('runAgent', () => {
     expect(run!.completed_at).toBeGreaterThan(0);
   });
 
+  it('uses the caller-supplied runId for the run row', async () => {
+    // Dispatchers (API handler, cortex triggers, canopy regenerate)
+    // pre-generate the run id so their responses can name the run without
+    // reading the latest row back — that read-back raced the executor's
+    // insert (which happens after awaits) and returned stale runs.
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const callerRunId = crypto.randomUUID();
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      runId: callerRunId,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.runId).toBe(callerRunId);
+    const run = getRun(callerRunId, ALL_PROJECTS_SCOPE);
+    expect(run).not.toBeNull();
+    expect(run!.status).toBe('completed');
+  });
+
+  it('resumeRunId wins over a caller-supplied runId', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const existingRunId = crypto.randomUUID();
+    insertRun({
+      id: existingRunId,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'failed',
+      harness: 'claude-sdk',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      resumable: 1,
+      resume_status: 'ready',
+      started_at: epochSeconds() - 600,
+      completed_at: epochSeconds() - 300,
+      error: 'transient failure',
+    });
+
+    const strayRunId = crypto.randomUUID();
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      task: TEST_TASK_NAME,
+      resumeRunId: existingRunId,
+      runId: strayRunId,
+    });
+
+    expect(result.runId).toBe(existingRunId);
+    expect(getRun(strayRunId, ALL_PROJECTS_SCOPE)).toBeNull();
+  });
+
   it('passes system prompt and composed task prompt to the SDK', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
@@ -2251,6 +2302,52 @@ describe('runAgent — run lifecycle', () => {
 
     expect(result.status).toBe('completed');
     expect((capturedQueryArgs!.options as Record<string, unknown>).model).toBe('claude-high-tier');
+  });
+
+  it('pins a CONFIG-resolved reasoningLevel (no caller override) across resume after config changes', async () => {
+    // C1 regression: reasoningLevel resolved from task config at dispatch
+    // (not from a caller-supplied executionOverrides.reasoningLevel) must
+    // still be snapshotted onto agent_runs.execution_overrides, so a resumed
+    // run uses the ORIGINAL tier even if the live task config's reasoning
+    // level changes in between. Exercises rung 3 of the restore ladder
+    // (`resumedRun.reasoning_level` with no pre-existing executionOverrides
+    // entry for reasoningLevel) via a real dispatch→flip→resume cycle,
+    // mirroring executor-semantic-check-resume.test.ts's machinery.
+    mockTaskReasoningLevel = 'low';
+    mockExecution = {
+      provider: {
+        type: 'anthropic',
+        reasoningMap: { low: 'claude-low-tier', high: 'claude-high-tier' },
+      },
+    } as ExecutionConfig;
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const dispatched = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
+    expect(dispatched.status).toBe('completed');
+    expect((capturedQueryArgs!.options as Record<string, unknown>).model).toBe('claude-low-tier');
+
+    const dispatchedRow = getRun(dispatched.runId, ALL_PROJECTS_SCOPE)!;
+    expect(dispatchedRow.reasoning_level).toBe('low');
+    expect(dispatchedRow.execution_overrides).toBeTruthy();
+    expect(dispatchedRow.execution_overrides!.reasoningLevel).toBe('low');
+
+    // Flip the live task config's reasoning level — simulating an operator
+    // editing myco.yaml between dispatch and resume.
+    mockTaskReasoningLevel = 'high';
+
+    const { applyRunUpdate } = await import('@myco/db/queries/runs.js');
+    applyRunUpdate(dispatched.runId, { status: 'failed', resumable: 1, resume_status: 'ready' }, ALL_PROJECTS_SCOPE);
+
+    const resumed = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      resumeRunId: dispatched.runId,
+      resumeMode: 'scheduled',
+    });
+
+    expect(resumed.status).toBe('completed');
+    // Must still resolve to the ORIGINAL 'low' tier, not the flipped 'high'.
+    expect((capturedQueryArgs!.options as Record<string, unknown>).model).toBe('claude-low-tier');
   });
 
   it('tolerates unparseable run_context on resume', async () => {

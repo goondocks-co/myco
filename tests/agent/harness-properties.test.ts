@@ -56,6 +56,23 @@ describe('harness properties', () => {
       }
     });
 
+    it('every tool sets at least one annotation hint', () => {
+      // {} annotations are indistinguishable from "never audited". Every
+      // tool must declare at least one hint: read-only tools set
+      // readOnlyHint, write tools set destructive/idempotent/openWorld.
+      for (const t of tools) {
+        const a = t.annotations ?? {};
+        const hasSignal = a.readOnlyHint !== undefined
+          || a.destructiveHint !== undefined
+          || a.idempotentHint !== undefined
+          || a.openWorldHint !== undefined;
+        expect(
+          hasSignal,
+          `Tool "${t.name}" has an empty annotations object — set at least one hint`,
+        ).toBe(true);
+      }
+    });
+
     it('read tools are annotated readOnlyHint: true', () => {
       const readToolNames = [
         'vault_unprocessed', 'vault_batches', 'vault_session_summary_material', 'vault_spores', 'vault_sessions',
@@ -73,7 +90,10 @@ describe('harness properties', () => {
     });
 
     it('destructive tools are annotated destructiveHint: true', () => {
-      const destructiveToolNames = ['vault_resolve_spore', 'vault_mark_processed'];
+      const destructiveToolNames = [
+        'vault_resolve_spore', 'vault_mark_processed',
+        'vault_skill_candidates', 'vault_skill_records',
+      ];
       for (const name of destructiveToolNames) {
         const t = tools.find(tool => tool.name === name);
         expect(t, `Destructive tool "${name}" not found`).toBeDefined();
@@ -101,6 +121,42 @@ describe('harness properties', () => {
           t!.annotations?.idempotentHint,
           `Skill-survey write tool "${name}" must have idempotentHint: false — repeat calls mutate state`,
         ).toBe(false);
+      }
+    });
+
+    it('write tools never carry a fully empty annotations object', () => {
+      // A write tool with {} annotations gives MCP clients zero signal —
+      // it's indistinguishable from an unannotated tool that was simply
+      // never audited. Every write tool must set at least one of
+      // destructiveHint/idempotentHint/openWorldHint. (Myco's runtime
+      // itself currently branches only on readOnlyHint.)
+      const writeToolNames = [
+        'canopy_describe_write', 'canopy_describe_charge',
+        'vault_skill_candidates', 'vault_skill_records',
+      ];
+      for (const name of writeToolNames) {
+        const t = tools.find(tool => tool.name === name);
+        expect(t, `Write tool "${name}" not found`).toBeDefined();
+        const a = t!.annotations ?? {};
+        const hasSignal = a.destructiveHint !== undefined
+          || a.idempotentHint !== undefined
+          || a.openWorldHint !== undefined;
+        expect(
+          hasSignal,
+          `Write tool "${name}" has an empty annotations object — set destructiveHint/idempotentHint/openWorldHint`,
+        ).toBe(true);
+      }
+    });
+
+    it('multi-action tools with a delete action are annotated destructiveHint: true', () => {
+      const deleteCapableToolNames = ['vault_skill_candidates', 'vault_skill_records'];
+      for (const name of deleteCapableToolNames) {
+        const t = tools.find(tool => tool.name === name);
+        expect(t, `Tool "${name}" not found`).toBeDefined();
+        expect(
+          t!.annotations?.destructiveHint,
+          `Tool "${name}" supports a delete action and must have destructiveHint: true`,
+        ).toBe(true);
       }
     });
   });
@@ -269,6 +325,43 @@ describe('harness properties', () => {
         }
       }
       expect(readOnlyCount, 'No readOnly phases found — was the flag removed?').toBeGreaterThan(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Area 5: Vault MCP Server Config
+  // ---------------------------------------------------------------------------
+
+  describe('vault MCP server config', () => {
+    it('every createSdkMcpServer(...) call site sets alwaysLoad: true', () => {
+      // The Claude SDK now connects MCP servers in the background by
+      // default and defers tool schemas behind tool search unless a
+      // server opts out via alwaysLoad. Myco's vault tools must be
+      // present on turn 1 of every phase (phase prompts reference tool
+      // names directly), so every construction site must opt in.
+      const source = readFileSync(
+        resolve(import.meta.dirname, '../../packages/myco/src/agent/tools.ts'),
+        'utf-8',
+      );
+      const callSites = [...source.matchAll(/createSdkMcpServer\s*\(\s*\{[^}]*\}\s*\)/g)];
+      // Cross-check against the raw opening count so a call site whose
+      // options object the regex can't fully parse (e.g. a nested brace)
+      // fails the test instead of silently escaping the alwaysLoad check.
+      // Requiring `(` immediately followed by `{` (whitespace-tolerant)
+      // excludes prose mentions of createSdkMcpServer() in doc comments,
+      // which use empty parens.
+      const callSiteOpenings = (source.match(/createSdkMcpServer\s*\(\s*\{/g) ?? []).length;
+      expect(callSites.length).toBeGreaterThan(0);
+      expect(
+        callSites.length,
+        'a createSdkMcpServer({...}) call site did not fully match the static-shape regex (nested braces in the options object?) — fix the regex so every call site is verified',
+      ).toBe(callSiteOpenings);
+      for (const [callSite] of callSites) {
+        expect(
+          callSite,
+          `createSdkMcpServer(...) call site missing alwaysLoad: true:\n${callSite}`,
+        ).toMatch(/alwaysLoad:\s*true/);
+      }
     });
   });
 });

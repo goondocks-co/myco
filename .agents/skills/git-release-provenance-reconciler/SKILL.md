@@ -113,11 +113,10 @@ Implement reconciliation that handles both direct ancestry and squash-merge scen
 
 Materialize derived release state and propagate to dependent systems.
 
-1. **Implement batch-preferred lineage** (`packages/myco/src/release-provenance/record-lineage.ts`):
+1. **Find derived records** (`packages/myco/src/release-provenance/record-lineage.ts`):
    ```typescript
-   // Prefer batch lineage over session lineage for precision
-   function getBatchLineage(sporeId: string): BatchLineage | null
-   function getSessionLineage(sporeId: string): SessionLineage | null
+   // Walk lineage edges to find spores/sessions/plans derived from a source record
+   function findDerivedRecords(input: FindDerivedRecordsInput): DerivedRecord[]
    ```
 
 2. **Materialize derived records**:
@@ -206,10 +205,12 @@ Implement GitHub token configuration and machine-scoped auth for release provena
    - Location: `packages/myco/src/daemon/api/provider-secrets.ts`
    - Config location: `~/.myco/providers.toml` (machine-level)
 
-2. **Token lifecycle**:
+2. **Token lifecycle** (`packages/myco/src/daemon/api/provider-secrets.ts`):
    ```typescript
-   // Load from machine-level config
-   const ghToken = getProviderSecret('github', 'machine');
+   // Machine-scoped handlers manage the token lifecycle
+   handleGetProviderSecrets(req, res);
+   handlePutProviderSecret(req, res);
+   handleDeleteProviderSecret(req, res);
    // Never attempt to load per-grove or per-project tokens
    ```
 

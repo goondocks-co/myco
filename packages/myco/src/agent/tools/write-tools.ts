@@ -20,7 +20,7 @@ import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
 import { requireProjectId } from '@myco/grove/request-context.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
-import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
+import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, stampRunIdInPayload, type VaultToolDeps } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -167,21 +167,40 @@ export function createWriteTools(deps: VaultToolDeps) {
     { annotations: { idempotentHint: true } },
   );
 
-  const vaultSetState = tool(
-    'vault_set_state',
-    'Set a key-value state pair for the current agent. Used for bookmarks, cursors, and preferences.',
-    {
-      key: z.string().describe('State key (e.g., last_processed_batch_id, cursor)'),
-      value: z.string().describe('State value (stored as text)'),
-    },
-    async (args) => {
-      const now = epochSeconds();
-      const state = setState(agentId, requireProjectId(requestContext!, 'agent state write'), args.key, args.value, now);
+  const vaultSetState = {
+    ...tool(
+      'vault_set_state',
+      'Set a key-value state pair for the current agent. Used for bookmarks, cursors, and preferences. When the value is a JSON object containing a run_id field, the daemon stamps it to the current run\'s id server-side — you do not need to reproduce the run id exactly.',
+      {
+        key: z.string().describe('State key (e.g., last_processed_batch_id, cursor)'),
+        value: z.string().describe('State value (stored as text)'),
+      },
+      async (args) => {
+        const now = epochSeconds();
+        const state = setState(agentId, requireProjectId(requestContext!, 'agent state write'), args.key, args.value, now);
 
-      return textResult(state);
+        return textResult(state);
+      },
+      { annotations: { idempotentHint: true } },
+    ),
+    // Models fabricate run ids instead of transcribing UUIDs, and the
+    // skill-evolve postconditions validate the payload's run_id. The
+    // value is a JSON string on the wire — parse, stamp, re-serialize;
+    // non-JSON values and object payloads without a run_id key pass
+    // through untouched.
+    normalizeArgs: (args: Record<string, unknown>, ctx: { runId: string }) => {
+      if (typeof args.value !== 'string') return args;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(args.value);
+      } catch {
+        return args;
+      }
+      const stamped = stampRunIdInPayload(parsed, ctx.runId);
+      if (stamped === parsed) return args;
+      return { ...args, value: JSON.stringify(stamped) };
     },
-    { annotations: { idempotentHint: true } },
-  );
+  };
 
   const vaultReadDigest = tool(
     'vault_read_digest',

@@ -16,7 +16,7 @@ mock.module('@myco/machine-id.js', () => ({
 }));
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
-import { insertRun, getRunningRunForTask, getLatestRunId, STATUS_RUNNING, STATUS_COMPLETED } from '@myco/db/queries/runs.js';
+import { insertRun, getRunningRunForTask, STATUS_RUNNING } from '@myco/db/queries/runs.js';
 import { insertCandidate, deleteCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { insertSkillRecord, deleteSkillRecordCascade, getSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage, listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
@@ -76,19 +76,6 @@ describe('P1 #2: Concurrency guard query helpers', () => {
     expect(getRunningRunForTask(AGENT_ID, 'skill-generate', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
-  it('getLatestRunId returns most recent run', () => {
-    insertRun({
-      id: 'run-old', agent_id: AGENT_ID, task: 'skill-generate',
-      status: STATUS_COMPLETED, started_at: now - 100, created_at: now - 100,
-    });
-    insertRun({
-      id: 'run-new', agent_id: AGENT_ID, task: 'skill-generate',
-      status: STATUS_RUNNING, started_at: now, created_at: now,
-    });
-
-    expect(getLatestRunId(AGENT_ID, 'skill-generate', ALL_PROJECTS_SCOPE)).toBe('run-new');
-    expect(getLatestRunId(AGENT_ID, undefined, ALL_PROJECTS_SCOPE)).toBe('run-new');
-  });
 });
 
 // ---------------------------------------------------------------------------

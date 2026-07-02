@@ -641,29 +641,6 @@ export function refundRunResumeAttempt(id: string, scope: ProjectScope): number 
   return info.changes;
 }
 
-export function getLatestRunId(
-  agentId: string,
-  taskName: string | undefined,
-  scope: ProjectScope,
-): string | null {
-  const db = getDatabase();
-  const conditions = ['agent_id = ?'];
-  const params: unknown[] = [agentId];
-  if (taskName) {
-    conditions.push('task = ?');
-    params.push(taskName);
-  }
-  appendProjectCondition(conditions, params, scope);
-
-  const row = db.prepare(
-    `SELECT id FROM agent_runs
-     WHERE ${conditions.join(' AND ')}
-     ORDER BY started_at DESC
-     LIMIT 1`,
-  ).get(...params) as { id: string } | undefined;
-  return row?.id ?? null;
-}
-
 export function getLatestResumableRunForTask(
   agentId: string,
   taskName: string,

@@ -39,6 +39,21 @@ export interface WriteIntentInsert {
   syntheticOutput: string;
   /** Synthetic id minted for this call, if applicable. */
   stubId?: string | null;
+  /**
+   * Semantic-check verdict, when the check ran for this write. `'flag'`
+   * means the check ran and the write was blocked (fail-closed — see the
+   * design spec). `undefined`/omitted means the check never ran (feature
+   * disabled, or the tool isn't destructiveHint) — stored as SQL NULL.
+   *
+   * `'ok'` is type-accepted for forward compatibility but is never
+   * persisted today: wrapToolWithSemanticCheck (agent/tools.ts) only
+   * records an intent row on a flag; ok verdicts live solely in its
+   * in-memory per-phase verdict cache. Don't write queries that expect
+   * `classifier_verdict = 'ok'` rows to exist.
+   */
+  classifierVerdict?: 'ok' | 'flag' | null;
+  /** One-line reason from the classifier, present only when classifierVerdict is set. */
+  classifierReason?: string | null;
   /** Override for the timestamp (defaults to `epochSeconds()`). */
   recordedAt?: number;
 }
@@ -60,6 +75,8 @@ export interface WriteIntentRow {
   tool_input: unknown;
   synthetic_output: unknown;
   stub_id: string | null;
+  classifier_verdict: 'ok' | 'flag' | null;
+  classifier_reason: string | null;
   recorded_at: number;
 }
 
@@ -76,6 +93,8 @@ const INTENT_COLUMNS = [
   'tool_input',
   'synthetic_output',
   'stub_id',
+  'classifier_verdict',
+  'classifier_reason',
   'recorded_at',
 ] as const;
 
@@ -95,6 +114,8 @@ function toWriteIntentRow(row: Record<string, unknown>): WriteIntentRow {
     tool_input: tryParseJson(row.tool_input),
     synthetic_output: tryParseJson(row.synthetic_output),
     stub_id: (row.stub_id as string) ?? null,
+    classifier_verdict: (row.classifier_verdict as 'ok' | 'flag' | null) ?? null,
+    classifier_reason: (row.classifier_reason as string) ?? null,
     recorded_at: row.recorded_at as number,
   };
 }
@@ -117,8 +138,8 @@ export function insertWriteIntent(data: WriteIntentInsert): number {
   const recordedAt = data.recordedAt ?? epochSeconds();
   const info = db.prepare(
     `INSERT INTO agent_run_write_intents
-       (project_id, run_id, phase_id, tool_name, tool_input, synthetic_output, stub_id, recorded_at)
-     VALUES (COALESCE(?, (SELECT project_id FROM agent_runs WHERE id = ?)), ?, ?, ?, ?, ?, ?, ?)`,
+       (project_id, run_id, phase_id, tool_name, tool_input, synthetic_output, stub_id, classifier_verdict, classifier_reason, recorded_at)
+     VALUES (COALESCE(?, (SELECT project_id FROM agent_runs WHERE id = ?)), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     data.projectId ?? null,
     data.runId,
@@ -128,6 +149,8 @@ export function insertWriteIntent(data: WriteIntentInsert): number {
     data.toolInput,
     data.syntheticOutput,
     data.stubId ?? null,
+    data.classifierVerdict ?? null,
+    data.classifierReason ?? null,
     recordedAt,
   );
   return Number(info.lastInsertRowid);

@@ -20,6 +20,7 @@ import {
   createVaultToolServer,
 } from '@myco/agent/tools.js';
 import { buildPhaseEnv, isLocalProvider } from '@myco/agent/provider.js';
+import { resolveThinkingConfig } from '@myco/agent/reasoning-levels.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { resolveClaudeCodeExecutable } from './claude-code-executable.js';
 
@@ -74,15 +75,11 @@ function getIsolatedPluginCacheDir(): string {
   return dir;
 }
 
-/** Disable thinking on local providers whose endpoints don't accept the SDK's reasoning enum. */
-function suppressEffortLeakForLocalProvider(
-  provider?: HarnessExecuteInput['provider'],
-): { thinking?: { type: 'disabled' } } {
-  return isLocalProvider(provider) ? { thinking: { type: 'disabled' as const } } : {};
-}
-
 /**
- * Drain a Claude SDK message stream into a final text + usage tally.
+ * Drain a Claude SDK message stream into a final text + usage tally,
+ * capturing the provider-validated `structured_output` (when the caller
+ * requested one via `outputFormat` and the terminal `result` message
+ * carries it) alongside the plain-text result.
  *
  * Both `execute` and `openScope.run` produce identical message-stream
  * shapes — only their `query()` options differ (resume + persistSession in
@@ -95,13 +92,14 @@ function suppressEffortLeakForLocalProvider(
 async function consumeClaudeMessageStream(
   messageStream: AsyncIterable<SDKMessage>,
   options: { localProvider: boolean; sessionRef?: string },
-): Promise<{ finalText: string; turnsUsed: number; usage: HarnessExecuteResult['usage'] }> {
+): Promise<{ finalText: string; turnsUsed: number; usage: HarnessExecuteResult['usage']; structuredOutput?: unknown }> {
   let finalText = '';
   let turnsUsed = 0;
   let inputTokens = 0;
   let outputTokens = 0;
   let costUsd = 0;
   let assistantMessages = 0;
+  let structuredOutput: unknown;
 
   const buildUsage = () => ({
     requests: turnsUsed,
@@ -132,6 +130,7 @@ async function consumeClaudeMessageStream(
         costUsd = options.localProvider ? 0 : (message.total_cost_usd ?? 0);
         if (message.subtype === 'success') {
           finalText = message.result;
+          structuredOutput = message.structured_output;
         }
       }
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -160,7 +159,7 @@ async function consumeClaudeMessageStream(
     throw err;
   }
 
-  return { finalText, turnsUsed, usage: buildUsage() };
+  return { finalText, turnsUsed, usage: buildUsage(), structuredOutput };
 }
 
 function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'] }) {
@@ -191,6 +190,16 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
         readOnly: toolSurface.readOnly,
         dryRun: toolSurface.dryRun,
         metadataAccumulator: toolSurface.metadataAccumulator,
+        phasePurpose: toolSurface.phasePurpose,
+        semanticCheckEnabled: toolSurface.semanticCheckEnabled,
+        harnessId: toolSurface.harnessId,
+        model: toolSurface.model,
+        classifierReasoningLevel: toolSurface.classifierReasoningLevel,
+        provider: toolSurface.provider,
+        flaggedWritesAccumulator: toolSurface.flaggedWritesAccumulator,
+        hooks: toolSurface.hooks,
+        hookContext: toolSurface.hookContext,
+        deferredNames: toolSurface.deferredNames ? new Set(toolSurface.deferredNames) : undefined,
       },
     );
   }
@@ -202,6 +211,15 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
     requestContext: toolSurface.requestContext,
     dryRun: toolSurface.dryRun,
     metadataAccumulator: toolSurface.metadataAccumulator,
+    phasePurpose: toolSurface.phasePurpose,
+    semanticCheckEnabled: toolSurface.semanticCheckEnabled,
+    harnessId: toolSurface.harnessId,
+    model: toolSurface.model,
+    classifierReasoningLevel: toolSurface.classifierReasoningLevel,
+    provider: toolSurface.provider,
+    flaggedWritesAccumulator: toolSurface.flaggedWritesAccumulator,
+    hooks: toolSurface.hooks,
+    hookContext: toolSurface.hookContext,
   });
 }
 
@@ -209,7 +227,9 @@ export class ClaudeSdkHarness implements AgentHarness {
   readonly id = HARNESS_CLAUDE_SDK;
 
   supports(capability: HarnessCapability): boolean {
-    return capability === 'supportsSessionResume' || capability === 'supportsMcp';
+    return capability === 'supportsSessionResume'
+      || capability === 'supportsMcp'
+      || capability === 'structuredOutput';
   }
 
   classifyError(error: unknown, context?: { attemptedResume?: boolean }) {
@@ -238,6 +258,7 @@ export class ClaudeSdkHarness implements AgentHarness {
       sessionRef: input.sessionRef,
       persistSession: true,
       abortController: input.abortController,
+      outputSchema: input.outputSchema,
     });
     return { ...drained, sessionRef: input.sessionRef };
   }
@@ -285,6 +306,7 @@ interface ClaudeRunOptions {
   sessionRef?: string;
   persistSession: boolean;
   abortController?: AbortController;
+  outputSchema?: HarnessExecuteInput['outputSchema'];
 }
 
 /** Narrow an ExecuteInput down to the setup-only fields shared with HarnessScopeSetup. */
@@ -295,6 +317,7 @@ function pickClaudeSetup(input: HarnessExecuteInput): HarnessScopeSetup {
     provider: input.provider,
     toolSurface: input.toolSurface,
     logger: input.logger,
+    reasoningLevel: input.reasoningLevel,
   };
 }
 
@@ -390,10 +413,11 @@ async function runClaudeQuery(
       allowDangerouslySkipPermissions: true,
       persistSession: options.persistSession,
       env: prepared.env,
-      ...suppressEffortLeakForLocalProvider(setup.provider),
+      thinking: resolveThinkingConfig(setup.reasoningLevel, setup.provider),
       ...(prepared.claudeCodeExecutable ? { pathToClaudeCodeExecutable: prepared.claudeCodeExecutable } : {}),
       ...(options.sessionRef ? { sessionId: options.sessionRef } : {}),
       ...(options.abortController ? { abortController: options.abortController } : {}),
+      ...(options.outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: options.outputSchema.schema } } : {}),
     },
   });
 

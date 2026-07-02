@@ -298,4 +298,21 @@ describe('POST /api/agent/run — executionOverrides security', () => {
     expect(opts.agentId).toBe(DEFAULT_AGENT_ID);
     expect(opts.instruction).toContain('ignore_watermark: true');
   });
+
+  it('responds with the same runId it hands to the executor', async () => {
+    // The handler pre-generates the run id and threads it through
+    // RunOptions — reading the latest row back after dispatch raced the
+    // executor's insert (it happens after awaits, e.g. Ollama variant
+    // resolution) and returned a stale run's id to the UI.
+    const { handleRun } = makeHandlers();
+    const response = await handleRun(makeRequest({
+      body: { task: 'title-summary', instruction: 'do the thing' },
+    }));
+
+    expect(response.body).toMatchObject({ ok: true, message: 'Agent started' });
+    expect(runAgentSpy).toHaveBeenCalledTimes(1);
+    const [, opts] = runAgentSpy.mock.calls[0] as [string, { runId?: string }];
+    expect(typeof opts.runId).toBe('string');
+    expect((response.body as { runId?: string }).runId).toBe(opts.runId);
+  });
 });

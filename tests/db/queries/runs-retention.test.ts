@@ -90,6 +90,11 @@ describe('agent run retention queries', () => {
        VALUES (?, ?, NULL, 'write', '{}', '{}', NULL, ?)`,
     ).run(PROJECT_A, 'old-run', NOW);
     getDatabase().prepare(
+      `INSERT INTO agent_run_events
+       (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
+       VALUES (?, ?, 'gather', 'post_tool_use', 'read', 'success', 5, NULL, ?)`,
+    ).run(PROJECT_A, 'old-run', NOW);
+    getDatabase().prepare(
       `INSERT INTO digest_extract_revisions
        (project_id, agent_id, tier, content, metadata, run_id, parent_revision_id, created_at)
        VALUES (?, ?, 1, 'content', NULL, ?, NULL, ?)`,
@@ -111,6 +116,7 @@ describe('agent run retention queries', () => {
     expect(count('agent_reports', 'run_id = ?', 'old-run')).toBe(0);
     expect(count('agent_turns', 'run_id = ?', 'old-run')).toBe(0);
     expect(count('agent_run_write_intents', 'run_id = ?', 'old-run')).toBe(0);
+    expect(count('agent_run_events', 'run_id = ?', 'old-run')).toBe(0);
     expect(count('digest_extract_revisions', 'run_id IS NULL')).toBe(1);
     expect(count('cortex_instructions', 'source_run_id IS NULL')).toBe(1);
     expect(count('canopy_maps', 'generated_by_run_id IS NULL')).toBe(1);

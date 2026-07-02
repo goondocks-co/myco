@@ -317,7 +317,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     "phases": [
       {
         "name": "inventory",
-        "prompt": "The instruction contains pre-computed structural analysis of\nall active skills. Two mechanical signals are provided:\n\n1. **Narrow skills** — skills with <2 H2 sections are flagged\n   as mechanically narrow. These are NOT broad enough for\n   standalone domain status.\n\n2. **Overlap pairs** — skill pairs with similar descriptions\n   OR overlapping H2 headings are flagged with scores.\n\n## Your job: validate and assign targets\n\nFor each **mechanically narrow** skill:\n- Confirm it is genuinely narrow (not a false positive, e.g.,\n  a debugging playbook with one long section is not narrow).\n- Identify which broader skill it should be absorbed into.\n  Look at the heading lists to find the best domain match.\n\nFor each **overlap pair**:\n- Confirm the overlap is real (not just shared vocabulary).\n- If real, decide merge direction: which skill is the target\n  (broader, higher generation) and which is the source.\n\nIf no skills are flagged as narrow and no overlap pairs exist,\nskip to storing an empty analysis.\n\n## Store results\n\nStore via vault_set_state with key: skill-evolve-inventory as:\n{\n  \"run_id\": \"{{run_id}}\",\n  \"merge_candidates\": [\n    { \"source\": \"source-skill\", \"target\": \"target-skill\",\n      \"reason\": \"overlapping setup workflow\" }\n  ],\n  \"narrow_candidates\": [\n    { \"skill\": \"narrow-skill\", \"absorb_into\": \"broader-skill\",\n      \"reason\": \"single narrow procedure\" }\n  ]\n}\n\nOnly override the mechanical signals when you have clear\nevidence that the flag is wrong. The default is to act on\nthe mechanical flags, not to find reasons to keep everything.\n\nIf the instruction says \"No skills need assessment\", report\nskip via vault_report and finish.\n\n## Output discipline\n\nKeep responses terse. No narrative explanations.\nDo not provide analytical prose, rationale paragraphs, or\nwalkthrough text outside tool payloads.\nFinal phase summary must be <= 2 lines.\nRequired output shape:\n- One `vault_set_state` call with merge/narrow arrays.\n- One `vault_report` call with action: \"skill-evolve-inventory\" and counts.\n- Final assistant text <= 2 lines, no explanatory prose.\n",
+        "prompt": "The instruction contains pre-computed structural analysis of\nall active skills. Two mechanical signals are provided:\n\n1. **Narrow skills** — skills with <2 H2 sections are flagged\n   as mechanically narrow. These are NOT broad enough for\n   standalone domain status.\n\n2. **Overlap pairs** — skill pairs with similar descriptions\n   OR overlapping H2 headings are flagged with scores.\n\n## Your job: validate and assign targets\n\nFor each **mechanically narrow** skill:\n- Confirm it is genuinely narrow (not a false positive, e.g.,\n  a debugging playbook with one long section is not narrow).\n- Identify which broader skill it should be absorbed into.\n  Look at the heading lists to find the best domain match.\n\nFor each **overlap pair**:\n- Confirm the overlap is real (not just shared vocabulary).\n- If real, decide merge direction: which skill is the target\n  (broader, higher generation) and which is the source.\n\nIf no skills are flagged as narrow and no overlap pairs exist,\nyou must STILL make both calls below — vault_set_state with\nempty arrays AND vault_report with action\n\"skill-evolve-inventory\". A prose-only answer fails this phase.\n\n## Store results\n\nStore via vault_set_state with key: skill-evolve-inventory as:\n{\n  \"run_id\": \"{{run_id}}\",\n  \"merge_candidates\": [\n    { \"source\": \"source-skill\", \"target\": \"target-skill\",\n      \"reason\": \"overlapping setup workflow\" }\n  ],\n  \"narrow_candidates\": [\n    { \"skill\": \"narrow-skill\", \"absorb_into\": \"broader-skill\",\n      \"reason\": \"single narrow procedure\" }\n  ]\n}\n\nOnly override the mechanical signals when you have clear\nevidence that the flag is wrong. The default is to act on\nthe mechanical flags, not to find reasons to keep everything.\n\n## Output discipline\n\nKeep responses terse. No narrative explanations.\nDo not provide analytical prose, rationale paragraphs, or\nwalkthrough text outside tool payloads.\nFinal phase summary must be <= 2 lines.\nRequired output shape:\n- One `vault_set_state` call with merge/narrow arrays.\n- One `vault_report` call with action: \"skill-evolve-inventory\" and counts.\n- Final assistant text <= 2 lines, no explanatory prose.\n",
         "tools": [
           "vault_set_state",
           "vault_report"
@@ -325,6 +325,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "maxTurns": 8,
         "reasoningLevel": "low",
         "required": true,
+        "postCondition": "skill-evolve-inventory",
         "onItemError": "skip"
       },
       {
@@ -346,6 +347,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "inventory"
         ],
+        "postCondition": "skill-evolve-assess",
         "onItemError": "skip"
       },
       {
@@ -360,6 +362,9 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "fs_read",
           "code_grep",
           "vault_report"
+        ],
+        "deferredTools": [
+          "vault_scan_skill_contamination"
         ],
         "maxTurns": 36,
         "reasoningLevel": "default",

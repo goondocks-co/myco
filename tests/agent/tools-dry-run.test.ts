@@ -435,6 +435,103 @@ describe('vault tools regression (dryRun: false)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test suite — run_id stamping (normalizeArgs, live + dry-run)
+// ---------------------------------------------------------------------------
+
+describe('run_id stamping in tool payloads', () => {
+  let tools: ReturnType<typeof createVaultTools>;
+
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+
+  beforeEach(() => {
+    cleanTestDb();
+    createAgent(TEST_AGENT_ID);
+    createRun(TEST_RUN_ID, TEST_AGENT_ID);
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT });
+  });
+
+  it('vault_set_state stamps a fabricated run_id in a JSON object value', async () => {
+    // The failure class this guards: a model writes a placeholder
+    // instead of transcribing the run UUID, and the skill-evolve
+    // postcondition rejects the run.
+    const t = findTool(tools, 'vault_set_state');
+    await t.handler({
+      key: 'skill-evolve-inventory',
+      value: JSON.stringify({ run_id: 'skill-evolve-2026-07-02', merge_candidates: [], narrow_candidates: [] }),
+    }, undefined);
+
+    const db = getDatabase();
+    const row = db.prepare(`SELECT value FROM agent_state WHERE key = ?`).get('skill-evolve-inventory') as { value: string };
+    const stored = JSON.parse(row.value);
+    expect(stored.run_id).toBe(TEST_RUN_ID);
+    expect(stored.merge_candidates).toEqual([]);
+  });
+
+  it('vault_set_state leaves payloads without a run_id key untouched', async () => {
+    const t = findTool(tools, 'vault_set_state');
+    await t.handler({
+      key: 'cursor',
+      value: JSON.stringify({ last_processed_batch_id: 42 }),
+    }, undefined);
+
+    const db = getDatabase();
+    const row = db.prepare(`SELECT value FROM agent_state WHERE key = ?`).get('cursor') as { value: string };
+    const stored = JSON.parse(row.value);
+    expect(stored).toEqual({ last_processed_batch_id: 42 });
+    expect('run_id' in stored).toBe(false);
+  });
+
+  it('vault_set_state leaves non-JSON values untouched', async () => {
+    const t = findTool(tools, 'vault_set_state');
+    await t.handler({ key: 'plain', value: 'not json at all' }, undefined);
+
+    const db = getDatabase();
+    const row = db.prepare(`SELECT value FROM agent_state WHERE key = ?`).get('plain') as { value: string };
+    expect(row.value).toBe('not json at all');
+  });
+
+  it('vault_report stamps a fabricated run_id in details', async () => {
+    const t = findTool(tools, 'vault_report');
+    await t.handler({
+      action: 'assess',
+      summary: 'classified skills',
+      details: { run_id: 'made-up-id', classifications: [] },
+    }, undefined);
+
+    const db = getDatabase();
+    const row = db.prepare(`SELECT details FROM agent_reports WHERE action = 'assess'`).get() as { details: string };
+    const details = JSON.parse(row.details);
+    expect(details.run_id).toBe(TEST_RUN_ID);
+  });
+
+  it('dry-run: the recorded write intent carries the STAMPED value, not the fabricated one', async () => {
+    // The postconditions validate dry runs against the intent rows —
+    // stamping must be applied OUTSIDE the dry-run interceptor so the
+    // intent records the corrected payload.
+    const dryTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      dryRun: true,
+    });
+    const t = findTool(dryTools, 'vault_set_state');
+    await t.handler({
+      key: 'skill-evolve-inventory',
+      value: JSON.stringify({ run_id: 'fabricated', merge_candidates: [], narrow_candidates: [] }),
+    }, undefined);
+
+    const intents = listIntents();
+    expect(intents).toHaveLength(1);
+    const toolInput = JSON.parse(intents[0].tool_input);
+    const value = JSON.parse(toolInput.value);
+    expect(value.run_id).toBe(TEST_RUN_ID);
+    // No live-table write in dry-run.
+    const db = getDatabase();
+    const row = db.prepare(`SELECT value FROM agent_state WHERE key = ?`).get('skill-evolve-inventory');
+    expect(row ?? null).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test suite — JSON.stringify dedupe in the wrapper hot path
 // ---------------------------------------------------------------------------
 

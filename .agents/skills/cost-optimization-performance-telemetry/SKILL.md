@@ -45,20 +45,17 @@ Identify cost leak patterns and calibrate budgets for sustainable operation acro
        groveMultiplier: 1.1  # Lighter coordination overhead
        cadence: 360  # 6h standard reduces cost 72× vs 5-min default
    ```
-   - **Cadence cost trap**: 5-minute task intervals cost 72× more than 6-hour intervals over a day
-   - **Default guidance**: Start at 360m (6h) unless rapid feedback is explicitly required
-   - **No-op detection**: Mechanical checks (drift detection, fingerprinting) beat expensive verification at 5m intervals
-
-3. **Model grove cost-per-operation baselines**:
-   - Document typical token consumption per grove and project type
-   - Calculate cost-per-spore extraction with grove context overhead
-   - Establish performance vs cost trade-off curves by model class and grove size
-   - **Grove attribution**: Model cross-project cost sharing through global daemon
-   - Track grove coordination overhead vs direct project costs
+   - **Cadence cost trap**: Short interval tasks drastically increase costs. A 5-minute interval is costlier than 6-hour intervals.
+   - **Budget guidance**: Use 360m (6h), unless rapid feedback is necessary.
+   - **Verification avoidance**: Prefer mechanical checks over frequent expensive verifications when possible.
+3. **Grove overhead cost modeling**:
+   - Measure token use per project and expected costs
+   - Create models for efficient grove coordination.
+   - Measure grove coordination overhead and cross-project sharing
 
 4. **Implement grove-aware cost kill switches**:
    - Add `settingSources: []` in `packages/myco/src/agent/harness/claude.ts` where appropriate
-   - Use early termination conditions in expensive loops
+   - Implement loop termination to reduce unnecessary expenses
    - Gate expensive operations behind session-terminal checks
    - **Grove-specific**: Implement per-grove and cross-grove cost budgets and throttling
    - Add grove-scoped circuit breakers for runaway costs
