@@ -504,6 +504,19 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
   let distinctFlagCount = 0;
 
   /**
+   * Cache keys already recorded into `flaggedWritesAccumulator`. Every
+   * retry of a blocked call still throws (the model must see the block
+   * every time), but a CACHED retry (same cacheKey) must not push a
+   * second entry onto the accumulator — otherwise the phase-failure
+   * summary's write count inflates with retry attempts instead of
+   * reflecting distinct blocked writes. The write-intent row and
+   * notification are already deduped independently (only the FIRST
+   * classification of a given cacheKey inserts/notifies); this set
+   * mirrors that same "first occurrence only" rule for the accumulator.
+   */
+  const flaggedAccumulatorKeys = new Set<string>();
+
+  /**
    * Record a turn in the audit trail.
    * Called for ALL tool invocations (read and write) for full visibility.
    * Fire-and-forget — does not block the tool response.
@@ -770,14 +783,24 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
    * the `flaggedWritesAccumulator` record pushed here — all set before this
    * function is called. Only the text returned to the model itself is
    * scrubbed.
+   *
+   * `cacheKey` dedups the accumulator push: every call to this function
+   * still throws (the model must see the block on every retry), but a
+   * CACHED retry of an already-flagged call must not push a second entry
+   * — otherwise the phase-failure summary's write count inflates with
+   * retry attempts instead of reflecting distinct blocked writes.
    */
   function recordFlagAndThrow(
     toolName: string,
     reason: string | null,
     classifierTokens: number | undefined,
     phaseName: string,
+    cacheKey: string,
   ): never {
-    flaggedWritesAccumulator?.push({ toolName, reason, classifierTokens });
+    if (!flaggedAccumulatorKeys.has(cacheKey)) {
+      flaggedAccumulatorKeys.add(cacheKey);
+      flaggedWritesAccumulator?.push({ toolName, reason, classifierTokens });
+    }
     throw new Error(
       `Blocked by a semantic safety check: "${toolName}" in phase "${phaseName}". This call will not succeed on retry.`,
     );
@@ -818,11 +841,24 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     return {
       ...toolDef,
       handler: async (args, extra) => {
+        // Action-aware narrowing: a multi-action tool (e.g.
+        // vault_skill_candidates, vault_skill_records) can declare
+        // destructiveActions to restrict which args.action values are
+        // classified. A call whose action is a string NOT on that list
+        // skips the check entirely and runs the real handler directly.
+        const declaredActions = toolDef.destructiveActions;
+        const callAction = args && typeof args === 'object'
+          ? (args as Record<string, unknown>).action
+          : undefined;
+        if (declaredActions && typeof callAction === 'string' && !declaredActions.includes(callAction)) {
+          return originalHandler(args, extra);
+        }
+
         if (!phasePurpose || !harnessId || !model) {
           return originalHandler(args, extra);
         }
 
-        const cacheKey = `${toolDef.name} ${stableSerialize(args)}`;
+        const cacheKey = `${toolDef.name}\u0000${stableSerialize(args)}`;
         const cached = semanticCheckVerdictCache.get(cacheKey);
         if (cached) {
           if (cached.verdict === 'ok') {
@@ -831,7 +867,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
           // Identical retry of an already-flagged call: reuse the verdict,
           // skip the classifier call, and skip the write-intent/notify
           // side effects (both already happened on the first attempt).
-          recordFlagAndThrow(toolDef.name, cached.reason, undefined, phasePurpose.name);
+          recordFlagAndThrow(toolDef.name, cached.reason, undefined, phasePurpose.name, cacheKey);
         }
 
         if (distinctFlagCount >= SEMANTIC_CHECK_DISTINCT_FLAG_CAP) {
@@ -854,7 +890,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
           } catch {
             /* write-intent log is best-effort, same as the dry-run interceptor */
           }
-          recordFlagAndThrow(toolDef.name, reason, undefined, phasePurpose.name);
+          recordFlagAndThrow(toolDef.name, reason, undefined, phasePurpose.name, cacheKey);
         }
 
         const verdict = await classifyWriteIntent({
@@ -902,7 +938,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
           /* notification is best-effort */
         }
 
-        recordFlagAndThrow(toolDef.name, verdict.reason, verdict.usage?.totalTokens, phasePurpose.name);
+        recordFlagAndThrow(toolDef.name, verdict.reason, verdict.usage?.totalTokens, phasePurpose.name, cacheKey);
       },
     };
   }
@@ -966,6 +1002,16 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
                   /* audit trail is best-effort */
                 }
               }
+              if (hookContext) {
+                try {
+                  await hooks?.postToolUse?.({
+                    ...hookContext, toolName: toolDef.name, toolInput: args,
+                    outcome: 'success', durationMs: Date.now() - hookStartedAt,
+                  });
+                } catch {
+                  /* hook callbacks are best-effort observability */
+                }
+              }
               return result;
             }
           }
@@ -990,6 +1036,16 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
                 });
               } catch {
                 /* audit trail is best-effort */
+              }
+            }
+            if (hookContext) {
+              try {
+                await hooks?.postToolUse?.({
+                  ...hookContext, toolName: toolDef.name, toolInput: args,
+                  outcome: 'success', durationMs: Date.now() - hookStartedAt,
+                });
+              } catch {
+                /* hook callbacks are best-effort observability */
               }
             }
             return result;

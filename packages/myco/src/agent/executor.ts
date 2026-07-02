@@ -473,10 +473,14 @@ export async function runAgent(
     // (`resumedRun.reasoning_level ? {reasoningLevel} : undefined`) would
     // otherwise never run, and a resumed run would re-resolve reasoningLevel
     // from live config instead of the original dispatch's tier.
+    // Precedence matches every live execution path (executeSingleQuery,
+    // the phase resolver, the orchestrator tier ladder): the scoped
+    // execution block wins over the task-level default. Snapshotting the
+    // inverse order would persist a tier the run never actually used.
     const resolvedReasoningLevel =
       options?.executionOverrides?.reasoningLevel
-      ?? config.reasoningLevel
       ?? config.execution?.reasoningLevel
+      ?? config.reasoningLevel
       ?? null;
     insertRun({
       id: runId,

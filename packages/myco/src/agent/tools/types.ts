@@ -36,6 +36,17 @@ export interface MycoToolDefinition<TInput = any> {
    * `deferrable` is set.
    */
   searchSummary?: string;
+  /**
+   * Narrows semantic-check applicability for a multi-action
+   * `destructiveHint: true` tool whose primary actions are list/get (e.g.
+   * `vault_skill_candidates`, `vault_skill_records`). When present,
+   * `wrapToolWithSemanticCheck` (tools.ts) only runs the classifier when
+   * `args.action` matches one of these values — a call whose `action` is a
+   * string NOT in this list skips the check and runs the real handler
+   * directly. When absent, every call to a `destructiveHint` tool is
+   * checked (existing behavior, unchanged for single-action write tools).
+   */
+  destructiveActions?: string[];
 }
 
 export function toSdkMcpToolDefinition<TInput>(

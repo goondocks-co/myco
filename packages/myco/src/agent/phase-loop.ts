@@ -35,7 +35,7 @@ import {
   type RunCheckpointState,
 } from './executor-state.js';
 import { getAgentHarness } from './harness/index.js';
-import { HarnessExecutionError, type HarnessToolSurface } from './harness/types.js';
+import { HarnessExecutionError, type HarnessToolSurface, type FlaggedWriteAccumulator } from './harness/types.js';
 import type { HarnessHooks, HarnessHookContext } from './harness/hooks.js';
 import { composePhasePrompt } from './prompt-composition.js';
 import { buildPhaseRecoveryContext } from './phase-recovery.js';
@@ -364,7 +364,7 @@ export async function executePhase(
     // convert an otherwise-"completed" result to "failed" when it recorded
     // anything — same shape as the try/catch's own failure path below, so
     // downstream consumers (resume, cost audit) see one failure contract.
-    const flagged = snapshotFlaggedWrites(toolSurface);
+    const flagged = snapshotFlaggedWrites(toolSurface.flaggedWritesAccumulator);
     if (flagged) {
       const errorText = `Semantic check blocked ${flagged.count} destructive write${flagged.count === 1 ? '' : 's'} in phase "${phase.name}": ${flagged.summary}`;
       logger?.warn('agent.phase.semantic-check-blocked', errorText, {
@@ -392,15 +392,26 @@ export async function executePhase(
         }
       }
 
+      // PhaseResult.summary is NOT the operator log line above — it flows
+      // into prompt-composition.ts's priorPhaseResults splice, which means
+      // a LATER phase's prompt sees this text verbatim. Embedding
+      // verdict.reason here would re-introduce the exact oracle the
+      // scrubbed error message (recordFlagAndThrow, tools.ts) was built to
+      // prevent, just one layer up. Generic message + tool names only —
+      // the verbatim reason still lives in the write-intent DB row, the
+      // agent.write.flagged notification, and the log line above.
+      const genericErrorText = `Semantic check blocked ${flagged.count} destructive write${flagged.count === 1 ? '' : 's'} in phase "${phase.name}": ${flagged.genericSummary}`;
+
       return buildPhaseResult({
         name: phase.name,
         status: 'failed',
-        summary: `Error: ${errorText}`,
+        summary: `Error: ${genericErrorText}`,
         usage: result.usage,
         costData,
         sessionRef: result.sessionRef,
         sessionData: result.sessionData,
         metadata: snapshotMetadata(toolSurface),
+        semanticCheckBlocked: true,
       });
     }
 
@@ -508,7 +519,24 @@ function snapshotMetadata(toolSurface: HarnessToolSurface): Record<string, unkno
 interface FlaggedWritesSummary {
   count: number;
   toolNames: string[];
+  /**
+   * Verbatim per-tool detail INCLUDING each record's classifier reason.
+   * Operator-facing only (the block log line) — never let this reach
+   * PhaseResult.summary, which downstream phases see verbatim via
+   * prompt-composition.ts's priorPhaseResults splice. The write-intent DB
+   * row and the agent.write.flagged notification carry the same verbatim
+   * reason independently (see tools.ts wrapToolWithSemanticCheck) — this
+   * field does not feed those, it's a separate log-line convenience.
+   */
   summary: string;
+  /**
+   * Generic, reason-free detail: tool names only. Safe to use anywhere the
+   * text can reach the model again (PhaseResult.summary), since it never
+   * discloses *why* the classifier flagged a write — see the "oracle"
+   * hardening note on recordFlagAndThrow in tools.ts, which this mirrors
+   * one layer up (the summary, instead of the direct tool error).
+   */
+  genericSummary: string;
   classifierTokens: number;
 }
 
@@ -519,15 +547,15 @@ interface FlaggedWritesSummary {
  * `executePhase` can cheaply check "did anything get blocked" without
  * building the summary object on every phase.
  */
-function snapshotFlaggedWrites(toolSurface: HarnessToolSurface): FlaggedWritesSummary | undefined {
-  const accumulator = toolSurface.flaggedWritesAccumulator;
+function snapshotFlaggedWrites(accumulator: FlaggedWriteAccumulator | undefined): FlaggedWritesSummary | undefined {
   if (!accumulator || accumulator.length === 0) return undefined;
   const toolNames = accumulator.map((record) => record.toolName);
   const summary = accumulator
     .map((record) => `${record.toolName} (${record.reason ?? 'no reason given'})`)
     .join('; ');
+  const genericSummary = toolNames.join(', ');
   const classifierTokens = accumulator.reduce((sum, record) => sum + (record.classifierTokens ?? 0), 0);
-  return { count: accumulator.length, toolNames, summary, classifierTokens };
+  return { count: accumulator.length, toolNames, summary, genericSummary, classifierTokens };
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +566,11 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
   const { ctx, phase, phaseModel, reasoningLevel, provider } = input;
   const logger = ctx.options?.logger;
   const harness = getAgentHarness(ctx.config.harness);
+  // Same allocate-only-when-needed pattern as the regular phase path
+  // (executePhasedQuery's wave-input builder) — only allocated when the
+  // semantic check is actually enabled for this run, so a normal map phase
+  // pays zero overhead.
+  const flaggedWritesAccumulator = ctx.config.semanticWriteCheckEnabled ? [] : undefined;
   const allTools = createVaultTools(ctx.agentId, ctx.runId, {
     embeddingManager: ctx.embeddingManager,
     projectRoot: ctx.projectRoot,
@@ -548,6 +581,22 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     hookContext: ctx.hooks
       ? { runId: ctx.runId, agentId: ctx.agentId, harnessId: ctx.config.harness, phaseName: phase.name }
       : undefined,
+    // Threads the same semantic-check option set that the regular
+    // (non-map) phase path passes to createVaultTools — without this, the
+    // check is silently inert for map-phase sinks (see phase-loop.ts Fix 5
+    // comment history / cumulative-review report). phasePurpose is derived
+    // from the map phase's own name/prompt the same way executePhase does
+    // for the regular path.
+    phasePurpose: {
+      name: phase.name,
+      promptExcerpt: phase.prompt.length > 500 ? `${phase.prompt.slice(0, 500)}…` : phase.prompt,
+    },
+    semanticCheckEnabled: ctx.config.semanticWriteCheckEnabled ?? false,
+    harnessId: ctx.config.harness,
+    model: phaseModel,
+    classifierReasoningLevel: ctx.config.classifierReasoningLevel,
+    provider,
+    flaggedWritesAccumulator,
   });
 
   logger?.debug('agent.map.start', `Map phase "${phase.name}" starting`, {
@@ -606,7 +655,36 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     const writeAfterThrowPart = mapResult.writeAfterThrow > 0
       ? ` writeAfterThrow=${mapResult.writeAfterThrow}`
       : '';
-    const phaseStatus = mapResultToPhaseStatus(mapResult);
+
+    // Same deterministic failure conversion as executePhase's regular
+    // path: a blocked sink call throws inside the tool handler, the SDK
+    // converts that into an isError result, and the per-item loop counts
+    // it as a failed ITEM — but a mixed batch (some items written, one
+    // blocked) would still classify as 'completed' from the counts alone.
+    // Any flagged destructive write converts the WHOLE phase to failed —
+    // one failure contract with the regular phase path, so downstream
+    // consumers (resume, cost audit) never see a "completed" phase that
+    // had a semantically blocked write. Computed BEFORE the single
+    // phaseEnd emission below, so the hook reports the converted status
+    // and never double-fires.
+    const flagged = snapshotFlaggedWrites(flaggedWritesAccumulator);
+    const phaseStatus = flagged ? 'failed' : mapResultToPhaseStatus(mapResult);
+    const flaggedPart = flagged
+      ? ` semanticCheckBlocked=${flagged.count} (${flagged.genericSummary})`
+      : '';
+    if (flagged) {
+      // Log line may carry the verbatim reasons (operator-facing);
+      // the PhaseResult summary below stays reason-free — same oracle
+      // hardening as the regular path (Fix 6a).
+      logger?.warn('agent.map.semantic-check-blocked',
+        `Semantic check blocked ${flagged.count} destructive write${flagged.count === 1 ? '' : 's'} in map phase "${phase.name}": ${flagged.summary}`,
+        {
+          runId: ctx.runId,
+          phase: phase.name,
+          flaggedTools: flagged.toolNames,
+          classifierTokens: flagged.classifierTokens,
+        });
+    }
 
     if (ctx.hooks?.phaseEnd) {
       try {
@@ -631,9 +709,10 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       status: phaseStatus,
       summary: phaseStatus === 'skipped'
         ? 'provider unavailable'
-        : `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}${writeAfterThrowPart}`,
+        : `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}${writeAfterThrowPart}${flaggedPart}`,
       usage: mapResult.usage,
       costData,
+      ...(flagged ? { semanticCheckBlocked: true } : {}),
     });
   } catch (err) {
     const reason = toErrorMessage(err);
@@ -984,8 +1063,17 @@ export async function executePhasedQuery(
       // points at a poisoned/never-initialized SDK session. Re-attaching to it
       // makes the Claude Code subprocess exit 1 immediately, looping forever
       // under scheduled resumes. Generate a fresh session id instead.
+      //
+      // Also exclude a session the semantic check blocked (turnsUsed > 0,
+      // so the zero-turns exclusion above doesn't catch it): its
+      // conversation history contains the model's own blocked tool call,
+      // and reattaching would let the model retry that exact call against
+      // a fresh flaggedWritesAccumulator and fresh verdict cache — quietly
+      // defeating the semantic check on resume. See
+      // PhaseCheckpoint.semanticCheckBlocked.
       const reuseSession = existingCheckpoint?.sessionRef
-        && !(existingCheckpoint.status === 'failed' && (existingCheckpoint.turnsUsed ?? 0) === 0);
+        && !(existingCheckpoint.status === 'failed' && (existingCheckpoint.turnsUsed ?? 0) === 0)
+        && existingCheckpoint.semanticCheckBlocked !== true;
       const sessionId = reuseSession
         ? existingCheckpoint!.sessionRef!
         : phaseSessionId(runId, phase.name);
@@ -1145,6 +1233,12 @@ export async function executePhasedQuery(
         ...(result.metadata && Object.keys(result.metadata).length > 0
           ? { metadata: result.metadata }
           : {}),
+        // Persist the semantic-check-blocked marker so a resumed run's
+        // reuseSession exclusion (below) can refuse to reattach to this
+        // phase's session — its history contains the model's own blocked
+        // tool call, and reusing it would let the model retry against a
+        // fresh accumulator and fresh verdict cache.
+        ...(result.semanticCheckBlocked === true ? { semanticCheckBlocked: true } : {}),
         updatedAt: epochSeconds(),
       };
       // Skipped phases count as satisfied for downstream wave gating —
