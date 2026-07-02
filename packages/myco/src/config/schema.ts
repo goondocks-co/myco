@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 import { AcceleratorConfigSchema, ReasoningLevelSchema, HarnessIdSchema } from '@myco/agent/schemas.js';
+import { ThinkingBudgetValueSchema, EffortValueSchema } from '@myco/agent/reasoning-tier-schemas.js';
 
 function rejectLegacyRuntimeKey<T extends z.ZodTypeAny>(schema: T) {
   return z.unknown().superRefine((value, ctx) => {
@@ -119,10 +120,30 @@ const ProviderOverrideSchema = rejectLegacyRuntimeKey(z.object({
   local_backend: z.enum(['ollama', 'lmstudio']).optional(),
   base_url: z.string().optional(),
   model: z.string().optional(),
+  /**
+   * Per-tier model-name override, independently keyed from
+   * `thinking_budget_map`/`effort_map`. If an operator pins
+   * `reasoning_map.<tier>` to a swapped model, they must verify that model
+   * supports the same tier's `thinking_budget_map`/`effort_map` setting —
+   * the maps are resolved independently, so a mismatch isn't caught here;
+   * the API rejects the run with a 400 at call time instead.
+   */
   reasoning_map: z.object({
     low: z.string().optional(),
     default: z.string().optional(),
     high: z.string().optional(),
+  }).optional(),
+  /** Claude-only per-tier ThinkingConfig override; unset tiers fall back to DEFAULT_THINKING_MAP. */
+  thinking_budget_map: z.object({
+    low: ThinkingBudgetValueSchema.optional(),
+    default: ThinkingBudgetValueSchema.optional(),
+    high: ThinkingBudgetValueSchema.optional(),
+  }).optional(),
+  /** OpenAI-only per-tier reasoning effort + verbosity override; unset tiers fall back to DEFAULT_EFFORT_MAP. */
+  effort_map: z.object({
+    low: EffortValueSchema.optional(),
+    default: EffortValueSchema.optional(),
+    high: EffortValueSchema.optional(),
   }).optional(),
   /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
   context_length: z.number().int().positive().optional(),
@@ -181,6 +202,19 @@ const AgentBaseSchema = z.object({
   scheduled_tasks_enabled: z.boolean().default(true),
   /** Global toggle for event-driven agent tasks (title-summary, Cortex refresh). */
   event_tasks_enabled: z.boolean().default(true),
+  /**
+   * Enable the lightweight semantic classifier pass on destructive vault
+   * writes (destructiveHint === true tools only). When true, each such
+   * write is checked against the calling phase's stated purpose via a
+   * cheap isolated harness call before the write executes; a "flag"
+   * verdict blocks the write and fails the phase. Off by default —
+   * additive safety feature, not a default-on behavior change. Verdict
+   * quality depends entirely on the classifier model: small local models
+   * (e.g. via Ollama) may produce unreliable verdicts, and the check fails
+   * open — letting the write through unchecked — on any classifier error
+   * or timeout.
+   */
+  semantic_write_check_enabled: z.boolean().default(false),
   /**
    * Skip scheduled agent tasks when the project has had no session or
    * prompt-batch activity within this window. Token-spending tasks

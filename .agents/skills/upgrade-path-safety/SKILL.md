@@ -1,8 +1,7 @@
 ---
 name: myco:upgrade-path-safety
 description: |
-  Apply this skill when validating, testing, or releasing any version-to-version
-  upgrade — even if the user doesn't explicitly ask about upgrade safety. Covers
+  Apply this skill when validating, testing, or releasing any version-to-version upgrade, addressing critical missing paths and suspected fabrications. Covers
   five orthogonal procedures: (1) clean-state revert methodology before upgrade
   testing to simulate real-world conditions; (2) CI-as-primary-gate discipline
   when local tests are flaky or environment-contaminated; (3) merge→publish→test

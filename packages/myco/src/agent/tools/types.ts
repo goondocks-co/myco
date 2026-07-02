@@ -18,6 +18,75 @@ export interface MycoToolDefinition<TInput = any> {
   inputSchema?: unknown;
   annotations?: SdkMcpToolDefinition<any>['annotations'];
   handler: (args: TInput, extra: unknown) => Promise<any>;
+  /**
+   * When true, this tool's full schema is withheld from the initial phase
+   * tool surface. The tool remains callable (its handler is never modified
+   * or gated by this flag) but its `description`/`inputSchema` are replaced
+   * with a lightweight stub in the surface handed to the harness/model.
+   * The full schema becomes visible via `vault_search_tools`, a meta-tool
+   * synthesized by `createVaultTools()` whenever at least one tool in the
+   * current phase's scope is deferrable. See
+   * docs/superpowers/specs/2026-07-01-tool-discovery-at-scale-design.md.
+   */
+  deferrable?: boolean;
+  /**
+   * One-line (<=80 char) summary shown in `vault_search_tools` results in
+   * place of this tool's full description when `deferrable` is true.
+   * Required (enforced at the factory level, not the type level) whenever
+   * `deferrable` is set.
+   */
+  searchSummary?: string;
+  /**
+   * Narrows semantic-check applicability for a multi-action
+   * `destructiveHint: true` tool whose primary actions are list/get (e.g.
+   * `vault_skill_candidates`, `vault_skill_records`). When present,
+   * `wrapToolWithSemanticCheck` (tools.ts) only runs the classifier when
+   * `args.action` matches one of these values — a call whose `action` is a
+   * string NOT in this list skips the check and runs the real handler
+   * directly. When absent, every call to a `destructiveHint` tool is
+   * checked (existing behavior, unchanged for single-action write tools).
+   */
+  destructiveActions?: string[];
+  /**
+   * Deterministic argument normalization applied by `createVaultTools()`
+   * as the OUTERMOST wrapper — before audit-event recording, dry-run
+   * write-intent capture, the semantic-check classifier, and the real
+   * handler, so every consumer sees the same normalized arguments.
+   *
+   * Motivating case: payloads whose shape asks the model to transcribe a
+   * load-bearing identifier (e.g. `run_id` in skill-evolve state/report
+   * payloads). Models fabricate placeholders instead of copying UUIDs,
+   * which the task postconditions then reject. Stamping the true value
+   * here makes that failure class structurally impossible.
+   *
+   * Must be pure and total: return the (possibly new) args object, never
+   * throw — `wrapToolWithArgNormalization` fails open to the original
+   * args if it does.
+   */
+  normalizeArgs?: (args: Record<string, unknown>, ctx: { runId: string }) => Record<string, unknown>;
+}
+
+/**
+ * Stamp `run_id` in a plain-object payload to the actual run id. Returns
+ * a new object when the payload carries a `run_id` key with a different
+ * value; returns the input unchanged otherwise (no key added — payloads
+ * without run-attribution semantics are never touched, so cursor-style
+ * state values and strict downstream parsers are unaffected).
+ */
+export function stampRunIdInPayload(
+  payload: unknown,
+  runId: string,
+): unknown {
+  if (
+    payload !== null
+    && typeof payload === 'object'
+    && !Array.isArray(payload)
+    && 'run_id' in payload
+    && (payload as Record<string, unknown>).run_id !== runId
+  ) {
+    return { ...(payload as Record<string, unknown>), run_id: runId };
+  }
+  return payload;
 }
 
 export function toSdkMcpToolDefinition<TInput>(
@@ -89,6 +158,12 @@ export interface VaultToolDeps {
    * expensive multi-step work that the interceptor can't express.
    */
   dryRun?: boolean;
+  /**
+   * The calling phase's declared name and a bounded excerpt of its
+   * prompt. Populated by createVaultTools from VaultToolOptions.
+   * See HarnessToolSurface.phasePurpose for the full rationale.
+   */
+  phasePurpose?: { name: string; promptExcerpt: string };
   /** Record a turn in the audit trail. Returns the inserted row id when available. */
   recordTurn: (toolName: string, toolInput: unknown) => number | null;
   /**

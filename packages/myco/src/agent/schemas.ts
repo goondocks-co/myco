@@ -7,6 +7,7 @@
 
 import { z } from 'zod/v4';
 import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
+import { ThinkingBudgetValueSchema, EffortValueSchema } from './reasoning-tier-schemas.js';
 
 // ---------------------------------------------------------------------------
 // Schema version
@@ -29,10 +30,28 @@ export const ProviderConfigSchema = z.object({
   baseUrl: z.string().optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),
+  /**
+   * Per-tier model-name override, independently keyed from
+   * `thinkingBudgetMap`/`effortMap`. If an operator pins `reasoningMap.<tier>`
+   * to a swapped model, they must verify that model supports the same
+   * tier's `thinkingBudgetMap`/`effortMap` setting — the maps are resolved
+   * independently, so a mismatch isn't caught here; the API rejects the run
+   * with a 400 at call time instead.
+   */
   reasoningMap: z.object({
     low: z.string().optional(),
     default: z.string().optional(),
     high: z.string().optional(),
+  }).optional(),
+  thinkingBudgetMap: z.object({
+    low: ThinkingBudgetValueSchema.optional(),
+    default: ThinkingBudgetValueSchema.optional(),
+    high: ThinkingBudgetValueSchema.optional(),
+  }).optional(),
+  effortMap: z.object({
+    low: EffortValueSchema.optional(),
+    default: EffortValueSchema.optional(),
+    high: EffortValueSchema.optional(),
   }).optional(),
   contextLength: z.number().optional(),
 });
@@ -179,11 +198,21 @@ const MapPhaseSinkSchema = z.object({
 import { PHASE_PRECONDITION_KINDS } from './phase-precondition-kinds.js';
 const PhasePreConditionSchema = z.enum(PHASE_PRECONDITION_KINDS);
 
+/**
+ * Phase-level postCondition kinds. Same zero-dep tuple-module pattern as
+ * preConditions above — codegen loads this file in plain Node, so the
+ * kinds tuple must not pull in the DB layer that phase-postconditions.ts
+ * (the runtime dispatch) uses.
+ */
+import { PHASE_POSTCONDITION_KINDS } from './phase-postcondition-kinds.js';
+const PhasePostConditionSchema = z.enum(PHASE_POSTCONDITION_KINDS);
+
 /** Schema for a single phase within a phased task pipeline. */
 export const PhaseDefinitionSchema = z.object({
   name: z.string(),
   prompt: z.string(),
   tools: z.array(z.string()),
+  deferredTools: z.array(z.string()).optional(),
   maxTurns: z.number(),
   model: z.string().optional(),
   reasoningLevel: ReasoningLevelSchema.optional(),
@@ -193,6 +222,7 @@ export const PhaseDefinitionSchema = z.object({
   skipPriorContext: z.boolean().optional(),
   readOnly: z.boolean().optional(),
   preCondition: PhasePreConditionSchema.optional(),
+  postCondition: PhasePostConditionSchema.optional(),
   gateOnPriorMetadata: z.object({
     phase: z.string().min(1),
     key: z.string().min(1),
@@ -212,6 +242,24 @@ export const PhaseDefinitionSchema = z.object({
 }).refine(
   (p) => p.mode !== 'map' || (p.source && p.item && p.sink),
   { message: 'mode: map requires source, item, and sink blocks' },
+).refine(
+  (p) => !p.deferredTools || p.deferredTools.every((name) => p.tools.includes(name)),
+  { message: 'deferredTools must be a subset of tools' },
+).refine(
+  // Map-phase execution bypasses createVaultTools/createScopedVaultToolServer
+  // entirely (see executeMapPhase in agent/map-phase.ts) — nothing on that
+  // path reads PhaseDefinition.deferredTools, so it would silently no-op
+  // rather than defer anything. Reject at load time instead of shipping a
+  // task-YAML field that quietly does nothing on a map-mode phase.
+  (p) => p.mode !== 'map' || !p.deferredTools || p.deferredTools.length === 0,
+  { message: 'deferredTools is not supported on mode: map phases (map-phase execution does not read it)' },
+).refine(
+  // Map-phase execution exits executePhase before the gate logic runs
+  // (see the mode === 'map' branch in phase-loop.ts), so a postCondition
+  // on a map phase would silently never be checked. Reject at load time
+  // instead of shipping a task-YAML field that quietly does nothing.
+  (p) => p.mode !== 'map' || !p.postCondition,
+  { message: 'postCondition is not supported on mode: map phases (map-phase execution does not read it)' },
 );
 
 /** Schema for task YAML files in tasks/. */

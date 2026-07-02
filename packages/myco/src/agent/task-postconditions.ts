@@ -1,20 +1,9 @@
-import { getState } from '@myco/db/queries/agent-state.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { getRun } from '@myco/db/queries/runs.js';
 import { countToolCallsByRun } from '@myco/db/queries/turns.js';
-import { listWriteIntents } from '@myco/db/queries/write-intents.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
-import {
-  findLatestVaultSetStateValue,
-  parseSkillEvolveClassificationPayload,
-  parseSkillEvolveInventoryPayload,
-  skillEvolveClassificationPayloadsEqual,
-  SKILL_EVOLVE_ASSESS_REPORT_ACTION,
-  SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY,
-  SKILL_EVOLVE_INVENTORY_REPORT_ACTION,
-  SKILL_EVOLVE_INVENTORY_STATE_KEY,
-  SKILL_EVOLVE_TASK_NAME,
-} from './skill-evolve-output.js';
+import { checkPhasePostCondition } from './phase-postconditions.js';
+import { SKILL_EVOLVE_TASK_NAME } from './skill-evolve-output.js';
 
 interface PostconditionInput {
   runId: string;
@@ -48,77 +37,31 @@ function validateSkillEvolveRun({ runId }: PostconditionInput): string | null {
     return `skill-evolve run not found: ${runId}`;
   }
 
-  const reports = listReports(runId, { scope: ALL_PROJECTS_SCOPE });
-  const inventoryReport = reports.find((report) => report.action === SKILL_EVOLVE_INVENTORY_REPORT_ACTION);
-  if (!inventoryReport) {
-    return 'skill-evolve completed without a skill-evolve-inventory report';
+  // Delegates to the same checks the phase-boundary gates run
+  // (phase-postconditions.ts) — one source of truth for the skill-evolve
+  // output contract, evaluated here a second time at run end as the belt
+  // to the gates' suspenders (a later phase can clobber state a gate
+  // already validated, and resumed runs re-validate from checkpoints).
+  //
+  // Precedence: inventory is validated fully (report AND state/intent),
+  // then assess. When multiple things are wrong this surfaces an
+  // inventory-state error where the pre-refactor code surfaced the
+  // assess-report error first — an accepted reorder; every string is
+  // unchanged and single-failure runs report identically.
+  const input = {
+    runId,
+    agentId: run.agent_id,
+    projectId: run.project_id ?? null,
+    dryRun: !!run.dry_run,
+  };
+  const inventory = checkPhasePostCondition('skill-evolve-inventory', input);
+  if (!inventory.passed) {
+    return inventory.reason;
   }
-
-  const assessReport = reports.find((report) => report.action === SKILL_EVOLVE_ASSESS_REPORT_ACTION);
-  if (!assessReport) {
-    return 'skill-evolve completed without an assess report';
+  const assess = checkPhasePostCondition('skill-evolve-assess', input);
+  if (!assess.passed) {
+    return assess.reason;
   }
-
-  const assessPayload = parseSkillEvolveClassificationPayload(assessReport.details);
-  if (!assessPayload) {
-    return 'skill-evolve assess report details are invalid';
-  }
-  if (assessPayload.run_id !== runId) {
-    return 'skill-evolve assess report run_id does not match the run';
-  }
-
-  if (run.dry_run) {
-    const intents = listWriteIntents(runId, { scope: ALL_PROJECTS_SCOPE });
-    const inventoryIntentValue = findLatestVaultSetStateValue(intents, SKILL_EVOLVE_INVENTORY_STATE_KEY);
-    const classificationIntentValue = findLatestVaultSetStateValue(intents, SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY);
-
-    const inventoryPayload = parseSkillEvolveInventoryPayload(inventoryIntentValue);
-    if (!inventoryPayload) {
-      return 'skill-evolve dry-run completed without a valid skill-evolve-inventory write intent';
-    }
-    if (inventoryPayload.run_id !== runId) {
-      return 'skill-evolve inventory write intent run_id does not match the run';
-    }
-
-    const classificationPayload = parseSkillEvolveClassificationPayload(classificationIntentValue);
-    if (!classificationPayload) {
-      return 'skill-evolve dry-run completed without a valid skill-evolve-classifications write intent';
-    }
-    if (classificationPayload.run_id !== runId) {
-      return 'skill-evolve classifications write intent run_id does not match the run';
-    }
-    if (!skillEvolveClassificationPayloadsEqual(classificationPayload, assessPayload)) {
-      return 'skill-evolve classifications write intent does not match assess report';
-    }
-
-    return null;
-  }
-
-  if (!run.project_id) {
-    return 'skill-evolve completed without a project scope for state validation';
-  }
-
-  const inventoryState = getState(run.agent_id, run.project_id, SKILL_EVOLVE_INVENTORY_STATE_KEY);
-  const inventoryPayload = parseSkillEvolveInventoryPayload(inventoryState?.value);
-  if (!inventoryPayload) {
-    return 'skill-evolve completed without valid skill-evolve-inventory state';
-  }
-  if (inventoryPayload.run_id !== runId) {
-    return 'skill-evolve inventory state run_id does not match the run';
-  }
-
-  const classificationState = getState(run.agent_id, run.project_id, SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY);
-  const classificationPayload = parseSkillEvolveClassificationPayload(classificationState?.value);
-  if (!classificationPayload) {
-    return 'skill-evolve completed without valid skill-evolve-classifications state';
-  }
-  if (classificationPayload.run_id !== runId) {
-    return 'skill-evolve classifications state run_id does not match the run';
-  }
-  if (!skillEvolveClassificationPayloadsEqual(classificationPayload, assessPayload)) {
-    return 'skill-evolve classifications state does not match assess report';
-  }
-
   return null;
 }
 

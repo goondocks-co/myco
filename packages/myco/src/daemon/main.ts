@@ -1689,11 +1689,11 @@ export async function main(): Promise<void> {
     resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
-      // createAgentRunHandlers.handleRun): build the instruction, fire
-      // runAgent, then look up the run id that runAgent inserted
-      // synchronously before its first await. This matches how the
-      // scheduler enqueues canopy-map and keeps a single source of truth
-      // for instruction assembly.
+      // createAgentRunHandlers.handleRun): build the instruction,
+      // pre-generate the run id, and fire runAgent with it via
+      // RunOptions.runId. This matches how the scheduler enqueues
+      // canopy-map and keeps a single source of truth for instruction
+      // assembly.
       //
       // Use the *detailed* builder so we keep the skip reason: the
       // /api/agent/run dispatcher path collapses skips to undefined and
@@ -1704,7 +1704,6 @@ export async function main(): Promise<void> {
       // runContext.canopy_map_inputs_hash is unset.
       const { buildCanopyMapInstructionDetailed } = await import('../agent/instruction-builders.js');
       const { dispatchAgentRun } = await import('../agent/runner-host.js');
-      const { getLatestRunId } = await import('../db/queries/runs.js');
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
@@ -1720,20 +1719,21 @@ export async function main(): Promise<void> {
         return { skipped: true, reason: built.reason };
       }
 
+      // Pre-generated and passed through RunOptions — reading the latest
+      // row back after dispatch races the executor's insert (it happens
+      // after awaits). Same pattern as handleRun.
+      const runId = crypto.randomUUID();
       const resultPromise = dispatchAgentRun(bootstrapVaultDir, {
         task,
         instruction: built.instruction,
         runContext: built.context,
         taskParams: params,
         agentId: DEFAULT_AGENT_ID,
+        runId,
         embeddingManager,
         requestContext,
         logger,
       });
-
-      // runAgent inserts the agent_runs row synchronously before its first
-      // await. Capture the id before letting the promise run unsupervised.
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: projectId });
 
       // Fire-and-forget — caller already has the run id; we don't block
       // the HTTP response on the LLM round-trip. Errors are logged so
@@ -1744,7 +1744,7 @@ export async function main(): Promise<void> {
         });
       });
 
-      return { run_id: runId ?? '' };
+      return { run_id: runId };
     },
     runCanopyDescribeTask: async ({ task, params }) => {
       // Single-row canopy-describe dispatch — same shape as
@@ -1752,7 +1752,6 @@ export async function main(): Promise<void> {
       // params.canopy_entry_path to filter to that one entry.
       const { buildTaskInstruction } = await import('../agent/instruction-builders.js');
       const { dispatchAgentRun } = await import('../agent/runner-host.js');
-      const { getLatestRunId } = await import('../db/queries/runs.js');
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
@@ -1773,18 +1772,21 @@ export async function main(): Promise<void> {
         requestContext,
       );
 
+      // Pre-generated and passed through RunOptions — reading the latest
+      // row back after dispatch races the executor's insert (it happens
+      // after awaits). Same pattern as handleRun.
+      const runId = crypto.randomUUID();
       const resultPromise = dispatchAgentRun(bootstrapVaultDir, {
         task,
         instruction: built?.instruction,
         runContext: built?.context,
         taskParams: params,
         agentId: DEFAULT_AGENT_ID,
+        runId,
         embeddingManager,
         requestContext,
         logger,
       });
-
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: projectId });
 
       resultPromise.catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-describe redescribe threw', {
@@ -1792,7 +1794,7 @@ export async function main(): Promise<void> {
         });
       });
 
-      return { run_id: runId ?? '' };
+      return { run_id: runId };
     },
     // Drain bypass for /describe/retry-stuck. Captures the `scheduledTaskKicker`
     // let-binding by reference (reassigned in syncScheduledTasks before any
@@ -1849,6 +1851,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/runs/:id/turns', agentRunHandlers.handleGetRunTurns);
   server.registerRoute('GET', '/api/agent/runs/:id/write-intents', agentRunHandlers.handleGetRunWriteIntents);
   server.registerRoute('GET', '/api/agent/runs/:id/audit', agentRunHandlers.handleGetRunAudit);
+  server.registerRoute('GET', '/api/agent/runs/:id/events', agentRunHandlers.handleGetRunEvents);
 
   const digestRevisionHandlers = createDigestRevisionHandlers({ vaultDir: bootstrapVaultDir, logger });
   server.registerRoute('GET', '/api/digest/revisions', digestRevisionHandlers.handleList);

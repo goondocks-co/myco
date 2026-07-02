@@ -158,16 +158,9 @@ tracker.recordActivity(groveId, bindingId);
 Power state tracking now uses stable `binding_id` from `.myco/project.toml` rather than transient project identifiers:
 
 ```typescript
-// Read binding_id from project.toml for stable project identity
-import { readProjectConfig } from '../grove/project-config.js';
-
-async function resolveProjectIdentity(projectPath: string): Promise<string> {
-  const projectConfig = await readProjectConfig(projectPath);
-  return projectConfig.binding_id; // Stable across machines and clones
-}
-
-// Use binding_id in power state operations
-const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
+// binding_id is already resolved on ProjectScope.project (sourced from
+// manifest.grove.binding_id in project.toml) — no separate lookup needed
+const bindingId = projectScope.project.binding_id;
 tracker.recordActivity(groveScope.grove.id, bindingId);
 ```
 
@@ -193,7 +186,7 @@ Wire activity recording at daemon event dispatch points:
 2. **User prompt dispatch** in `packages/myco/src/daemon/event-dispatch.ts`:
 ```typescript
 if (event.type === 'user_prompt') {
-  const bindingId = await resolveProjectIdentity(event.projectPath);
+  const bindingId = event.project.binding_id;
   tracker.recordActivity(groveId, bindingId);
 }
 ```
@@ -224,10 +217,10 @@ await forEachGrove(cache, logger, async (groveScope) => {
   await forEachRegisteredProject(cache, logger, async (projectScope) => {
     
     // Level 3: Check if project is active via binding_id
-    const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
+    const bindingId = projectScope.project.binding_id;
     if (isProjectActive(projectScope.project)) {
       // Dispatch task for this (grove, binding_id) combination
-      await dispatchTask(groveScope.grove.id, bindingId, projectScope);
+      await runAgent(task.name, { projectId: bindingId, databasePath: projectScope.grove.databasePath });
     }
   });
 });
@@ -241,7 +234,7 @@ Critical pattern for fire-and-forget dispatch safety:
 await forEachRegisteredProject(cache, logger, async (projectScope) => {
   return cache.withPinned(projectScope.grove.databasePath, async () => {
     // Task starts with pinned handle
-    const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
+    const bindingId = projectScope.project.binding_id;
     await runAgent(task.name, { 
       projectId: bindingId,  // Use binding_id for portable identity
       databasePath: projectScope.grove.databasePath 
@@ -274,8 +267,8 @@ Use the `decideColdProjectGate()` function from `packages/myco/src/daemon/task-s
 import type { ColdProjectGateDecision, ColdProjectGateInput } from './task-scheduling.js';
 import { decideColdProjectGate } from './task-scheduling.js';
 
-// Resolve binding_id for stable project identity
-const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
+// binding_id is already available on projectScope.project
+const bindingId = projectScope.project.binding_id;
 
 const gateResult: ColdProjectGateDecision = decideColdProjectGate({
   db: projectScope.db,
@@ -325,7 +318,7 @@ Tasks execute in isolated processes via the agent harness system:
 
 ```typescript
 // Fire-and-forget - returns immediately
-const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
+const bindingId = projectScope.project.binding_id;
 await runAgent(taskName, {
   projectId: bindingId,  // Use binding_id for portable project identity
   databasePath: projectScope.grove.databasePath,
@@ -344,7 +337,7 @@ const grovePromises: Promise<void>[] = [];
 await forEachGrove(cache, logger, async (groveScope) => {
   const grovePromise = forEachRegisteredProject(cache, logger, async (projectScope) => {
     // Per-project dispatch in parallel within each Grove
-    await dispatchTaskForProject(projectScope);
+    await runAgent(task.name, { projectId: projectScope.project.binding_id, databasePath: projectScope.grove.databasePath });
   });
   
   grovePromises.push(grovePromise);
@@ -399,39 +392,13 @@ These are separate systems with different lifecycle patterns and configuration m
 
 ### Scope Iteration Safety
 
-Grove context automatically propagates through `forEachGrove` and `forEachRegisteredProject`. Manually passing Grove metadata breaks the context chain and causes dispatch failures:
+Grove context automatically propagates through `forEachGrove` and `forEachRegisteredProject`. Manually reconstructing Grove/project context outside these primitives breaks the context chain and causes dispatch failures:
 
 ```typescript
-// Wrong - manual Grove metadata passing
-await manualGroveIteration(groveId, projectId);
-
-// Right - use scope iteration primitives
+// Right - use scope iteration primitives; projectScope carries binding_id, db, and paths
 await forEachRegisteredProject(cache, logger, async (projectScope) => {
-  // projectScope contains all necessary context
+  const bindingId = projectScope.project.binding_id;
 });
-```
-
-### Project Identity Migration from Legacy IDs
-
-When migrating from legacy project identifiers to `binding_id`:
-
-```typescript
-// Migration pattern for existing power state data
-async function migrateProjectPowerState(
-  tracker: ProjectPowerStateTracker,
-  legacyProjectId: string,
-  bindingId: string
-): Promise<void> {
-  const legacyState = tracker.getState(groveId, legacyProjectId);
-  
-  if (legacyState !== 'deep_sleep') {
-    // Preserve active/idle/sleep state for binding_id
-    tracker.recordActivity(groveId, bindingId);
-    
-    // Clean up legacy entry
-    tracker.clearState(groveId, legacyProjectId);
-  }
-}
 ```
 
 ### Portable Project Identity Consistency
@@ -442,9 +409,8 @@ Always use `binding_id` from `.myco/project.toml` for project identification rat
 // WRONG - derived project identifier
 const projectId = path.basename(projectPath);
 
-// RIGHT - stable binding_id from project.toml
-const projectConfig = await readProjectConfig(projectPath);
-const projectId = projectConfig.binding_id;
+// RIGHT - stable binding_id sourced from project scope (manifest.grove.binding_id)
+const projectId = projectScope.project.binding_id;
 ```
 
 ### Scheduler Config Changes Take Effect on the Next Tick — No Restart Required

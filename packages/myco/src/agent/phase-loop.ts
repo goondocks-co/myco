@@ -19,7 +19,9 @@ import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import {
   composeOrchestratorPrompt,
   parseOrchestratorPlan,
+  planFromStructuredOutput,
   applyDirectives,
+  ORCHESTRATOR_PLAN_JSON_SCHEMA,
   DEFAULT_ORCHESTRATOR_MAX_TURNS,
 } from './orchestrator.js';
 import { executeContextQueries } from './context-queries.js';
@@ -33,7 +35,8 @@ import {
   type RunCheckpointState,
 } from './executor-state.js';
 import { getAgentHarness } from './harness/index.js';
-import { HarnessExecutionError, type HarnessToolSurface } from './harness/types.js';
+import { HarnessExecutionError, type HarnessToolSurface, type FlaggedWriteAccumulator } from './harness/types.js';
+import type { HarnessHooks, HarnessHookContext } from './harness/hooks.js';
 import { composePhasePrompt } from './prompt-composition.js';
 import { buildPhaseRecoveryContext } from './phase-recovery.js';
 import { resolvePhaseExecution, type MycoYamlPhaseOverrides } from './phase-resolver.js';
@@ -46,6 +49,7 @@ import type {
   PhaseDefinition,
   PhaseResult,
   ProviderConfig,
+  ReasoningLevel,
   RuntimeUsage,
 } from './types.js';
 import { aggregateUsage } from './executor-state.js';
@@ -53,7 +57,8 @@ import { summarizePhaseCosts } from './run-accounting.js';
 import { executeMapPhase } from './map-phase.js';
 import { createVaultTools } from './tools.js';
 import { checkPhasePreCondition } from './phase-preconditions.js';
-import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
+import { checkPhasePostCondition, type PhasePostConditionResult } from './phase-postconditions.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 
 /**
  * Pull the cap-hit classification off a caught error. Returns true when
@@ -122,6 +127,8 @@ export interface PhaseLoopContext {
   readonly requestContext?: RunOptions['requestContext'];
   /** Raw RunOptions — exposed to honor executionOverrides.phases per-phase. */
   readonly options?: RunOptions;
+  /** Harness-neutral lifecycle hooks for this run — see agent/harness/hooks.ts. */
+  readonly hooks?: HarnessHooks;
 
   // --- mutable, passed by reference ----------------------------------------
 
@@ -149,6 +156,8 @@ export interface ExecutePhaseInput {
   ctx: PhaseLoopContext;
   phasePrompt: string;
   phaseModel: string;
+  /** Reasoning tier resolved for this phase by `resolvePhaseExecution`. Forwarded to the harness so it can set a provider-native thinking/reasoning-effort control. */
+  reasoningLevel?: ReasoningLevel;
   phase: PhaseDefinition;
   toolSurface: HarnessToolSurface;
   provider?: ProviderConfig;
@@ -167,7 +176,7 @@ export interface ExecutePhaseInput {
 export async function executePhase(
   input: ExecutePhaseInput,
 ): Promise<PhaseResult & { sessionData?: unknown }> {
-  const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData, priorPhaseResults } = input;
+  const { ctx, phasePrompt, phaseModel, reasoningLevel, phase, toolSurface, provider, sessionId, sessionData, priorPhaseResults } = input;
 
   if (phase.mode === 'map') {
     return runMapPhaseAdapter(input);
@@ -263,12 +272,29 @@ export async function executePhase(
     toolNames: toolSurface.toolNames ?? null,
     sessionRef: sessionId ?? null,
   });
+  const phaseHookStartedAt = Date.now();
+  if (ctx.hooks?.phaseStart) {
+    try {
+      await ctx.hooks.phaseStart({
+        runId: ctx.runId,
+        agentId: ctx.agentId,
+        harnessId: ctx.config.harness,
+        phaseName: phase.name,
+        model: phaseModel,
+        maxTurns: phase.maxTurns,
+        required: phase.required ?? false,
+      });
+    } catch {
+      /* hook callbacks are best-effort observability, never fail the phase */
+    }
+  }
   try {
     let result;
     try {
       result = await harness.execute({
         prompt: phasePrompt,
         model: phaseModel,
+        reasoningLevel,
         maxTurns: phase.maxTurns,
         systemPrompt: ctx.systemPrompt,
         provider,
@@ -295,6 +321,7 @@ export async function executePhase(
       result = await harness.execute({
         prompt: phasePrompt,
         model: phaseModel,
+        reasoningLevel,
         maxTurns: phase.maxTurns,
         systemPrompt: ctx.systemPrompt,
         provider,
@@ -327,6 +354,176 @@ export async function executePhase(
       model: phaseModel,
       usage: result.usage,
     });
+
+    // Deterministic failure conversion: the Claude SDK converts a tool
+    // handler's throw into an `isError` MCP tool result returned to the
+    // MODEL, not a JS exception — wrapToolWithSemanticCheck's block-throw
+    // (tools.ts) never reaches this function's try/catch on its own. A
+    // retrying model can otherwise talk its way to a "successful" phase
+    // completion immediately after a blocked destructive write. Check the
+    // accumulator the toolSurface carried through the whole call and
+    // convert an otherwise-"completed" result to "failed" when it recorded
+    // anything — same shape as the try/catch's own failure path below, so
+    // downstream consumers (resume, cost audit) see one failure contract.
+    const flagged = snapshotFlaggedWrites(toolSurface.flaggedWritesAccumulator);
+    if (flagged) {
+      const errorText = `Semantic check blocked ${flagged.count} destructive write${flagged.count === 1 ? '' : 's'} in phase "${phase.name}": ${flagged.summary}`;
+      logger?.warn('agent.phase.semantic-check-blocked', errorText, {
+        runId: ctx.runId,
+        phase: phase.name,
+        flaggedTools: flagged.toolNames,
+        classifierTokens: flagged.classifierTokens,
+      });
+
+      if (ctx.hooks?.phaseEnd) {
+        try {
+          await ctx.hooks.phaseEnd({
+            runId: ctx.runId,
+            agentId: ctx.agentId,
+            harnessId: ctx.config.harness,
+            phaseName: phase.name,
+            status: 'failed',
+            turnsUsed: result.turnsUsed,
+            tokensUsed: result.usage.totalTokens ?? 0,
+            costUsd: costData.costUsd,
+            durationMs: Date.now() - phaseHookStartedAt,
+          });
+        } catch {
+          /* hook callbacks are best-effort observability */
+        }
+      }
+
+      // PhaseResult.summary is NOT the operator log line above — it flows
+      // into prompt-composition.ts's priorPhaseResults splice, which means
+      // a LATER phase's prompt sees this text verbatim. Embedding
+      // verdict.reason here would re-introduce the exact oracle the
+      // scrubbed error message (recordFlagAndThrow, tools.ts) was built to
+      // prevent, just one layer up. Generic message + tool names only —
+      // the verbatim reason still lives in the write-intent DB row, the
+      // agent.write.flagged notification, and the log line above.
+      const genericErrorText = `Semantic check blocked ${flagged.count} destructive write${flagged.count === 1 ? '' : 's'} in phase "${phase.name}": ${flagged.genericSummary}`;
+
+      return buildPhaseResult({
+        name: phase.name,
+        status: 'failed',
+        summary: `Error: ${genericErrorText}`,
+        usage: result.usage,
+        costData,
+        sessionRef: result.sessionRef,
+        sessionData: result.sessionData,
+        metadata: snapshotMetadata(toolSurface),
+        semanticCheckBlocked: true,
+      });
+    }
+
+    // Same deterministic-conversion contract as the flagged-writes block
+    // above, for phases that declare a mechanical postCondition: an
+    // otherwise-"completed" phase that did not produce its required
+    // report/state contract is converted to "failed" HERE, so a
+    // `required: true` phase stops the run before the remaining phases
+    // spend LLM turns consuming outputs that don't exist (live failure
+    // mode: a model answers with prose only, zero tool calls, and the
+    // run dies at the run-end task postcondition after full cost). A
+    // THROWN check fails OPEN — same philosophy as preConditions: a
+    // transient SQL error never fails otherwise-completed work. Note the
+    // `agent.phase.end` debug line above already logged status
+    // "completed" for a phase this block converts — same pre-conversion
+    // quirk as the flagged-writes path.
+    if (phase.postCondition) {
+      if (!ctx.requestContext) {
+        // Mirror agent.phase.precondition-no-context: a caller without a
+        // request context (CLI re-run, embedded test harness) bypasses
+        // the gate by necessity, but the bypass must be loud — the
+        // phase's output contract goes unverified until run end.
+        logger?.warn(
+          'agent.phase.postcondition-no-context',
+          `Phase ${phase.name} declares postCondition "${phase.postCondition}" but no requestContext is available — gate bypassed; contract unverified until run end.`,
+          {
+            runId: ctx.runId,
+            phase: phase.name,
+            postCondition: phase.postCondition,
+          },
+        );
+      } else {
+        let postCheck: PhasePostConditionResult | null = null;
+        try {
+          postCheck = checkPhasePostCondition(phase.postCondition, {
+            runId: ctx.runId,
+            agentId: ctx.agentId,
+            projectId: rowProjectIdFromRequestContext(ctx.requestContext),
+            dryRun: ctx.config.dryRun === true,
+          });
+        } catch (err) {
+          logger?.warn('agent.phase.postcondition-error', `Phase ${phase.name} postCondition check threw — keeping completed result`, {
+            runId: ctx.runId,
+            phase: phase.name,
+            postCondition: phase.postCondition,
+            error: toErrorMessage(err),
+          });
+        }
+        if (postCheck && !postCheck.passed) {
+          const errorText = `Phase "${phase.name}" postcondition "${phase.postCondition}" not satisfied: ${postCheck.reason}`;
+          logger?.warn('agent.phase.postcondition-failed', errorText, {
+            runId: ctx.runId,
+            phase: phase.name,
+            postCondition: phase.postCondition,
+            turnsUsed: result.turnsUsed,
+          });
+
+          if (ctx.hooks?.phaseEnd) {
+            try {
+              await ctx.hooks.phaseEnd({
+                runId: ctx.runId,
+                agentId: ctx.agentId,
+                harnessId: ctx.config.harness,
+                phaseName: phase.name,
+                status: 'failed',
+                turnsUsed: result.turnsUsed,
+                tokensUsed: result.usage.totalTokens ?? 0,
+                costUsd: costData.costUsd,
+                durationMs: Date.now() - phaseHookStartedAt,
+              });
+            } catch {
+              /* hook callbacks are best-effort observability */
+            }
+          }
+
+          // Unlike the semantic-check summary above, the postcondition
+          // reason is safe to splice into later prompts — it names
+          // missing reports/state, no classifier oracle — and a failed
+          // required phase stops the pipeline anyway.
+          return buildPhaseResult({
+            name: phase.name,
+            status: 'failed',
+            summary: `Error: ${errorText}`,
+            usage: result.usage,
+            costData,
+            sessionRef: result.sessionRef,
+            sessionData: result.sessionData,
+            metadata: snapshotMetadata(toolSurface),
+            postConditionFailed: true,
+          });
+        }
+      }
+    }
+
+    if (ctx.hooks?.phaseEnd) {
+      try {
+        await ctx.hooks.phaseEnd({
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          harnessId: ctx.config.harness,
+          phaseName: phase.name,
+          status: 'completed',
+          turnsUsed: result.turnsUsed,
+          tokensUsed: result.usage.totalTokens ?? 0,
+          costUsd: costData.costUsd,
+          durationMs: Date.now() - phaseHookStartedAt,
+        });
+      } catch {
+        /* hook callbacks are best-effort observability */
+      }
+    }
 
     return buildPhaseResult({
       name: phase.name,
@@ -362,6 +559,25 @@ export async function executePhase(
       allowedMaxTurns: phase.maxTurns ?? null,
       error: abortReason ?? errorText,
     });
+
+    if (ctx.hooks?.phaseEnd) {
+      try {
+        await ctx.hooks.phaseEnd({
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          harnessId: ctx.config.harness,
+          phaseName: phase.name,
+          status: 'failed',
+          turnsUsed: telemetry?.usage.requests ?? 0,
+          tokensUsed: telemetry?.usage.totalTokens ?? 0,
+          costUsd: costData?.costUsd ?? null,
+          durationMs: Date.now() - phaseHookStartedAt,
+        });
+      } catch {
+        /* hook callbacks are best-effort observability */
+      }
+    }
+
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
@@ -391,25 +607,109 @@ function snapshotMetadata(toolSurface: HarnessToolSurface): Record<string, unkno
   return Object.fromEntries(accumulator);
 }
 
+/** Summary of a phase's flagged-writes accumulator, built once for logging + the failure message. */
+interface FlaggedWritesSummary {
+  count: number;
+  toolNames: string[];
+  /**
+   * Verbatim per-tool detail INCLUDING each record's classifier reason.
+   * Operator-facing only (the block log line) — never let this reach
+   * PhaseResult.summary, which downstream phases see verbatim via
+   * prompt-composition.ts's priorPhaseResults splice. The write-intent DB
+   * row and the agent.write.flagged notification carry the same verbatim
+   * reason independently (see tools.ts wrapToolWithSemanticCheck) — this
+   * field does not feed those, it's a separate log-line convenience.
+   */
+  summary: string;
+  /**
+   * Generic, reason-free detail: tool names only. Safe to use anywhere the
+   * text can reach the model again (PhaseResult.summary), since it never
+   * discloses *why* the classifier flagged a write — see the "oracle"
+   * hardening note on recordFlagAndThrow in tools.ts, which this mirrors
+   * one layer up (the summary, instead of the direct tool error).
+   */
+  genericSummary: string;
+  classifierTokens: number;
+}
+
+/**
+ * Snapshot the per-phase flagged-writes accumulator on the tool surface.
+ * Returns undefined when no accumulator was set up (semantic check
+ * disabled for this phase) or nothing was flagged — the common case, so
+ * `executePhase` can cheaply check "did anything get blocked" without
+ * building the summary object on every phase.
+ */
+function snapshotFlaggedWrites(accumulator: FlaggedWriteAccumulator | undefined): FlaggedWritesSummary | undefined {
+  if (!accumulator || accumulator.length === 0) return undefined;
+  const toolNames = accumulator.map((record) => record.toolName);
+  const summary = accumulator
+    .map((record) => `${record.toolName} (${record.reason ?? 'no reason given'})`)
+    .join('; ');
+  const genericSummary = toolNames.join(', ');
+  const classifierTokens = accumulator.reduce((sum, record) => sum + (record.classifierTokens ?? 0), 0);
+  return { count: accumulator.length, toolNames, summary, genericSummary, classifierTokens };
+}
+
 // ---------------------------------------------------------------------------
 // Map-phase adapter
 // ---------------------------------------------------------------------------
 
 async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult & { sessionData?: unknown }> {
-  const { ctx, phase, phaseModel, provider } = input;
+  const { ctx, phase, phaseModel, reasoningLevel, provider } = input;
   const logger = ctx.options?.logger;
   const harness = getAgentHarness(ctx.config.harness);
+  // Same allocate-only-when-needed pattern as the regular phase path
+  // (executePhasedQuery's wave-input builder) — only allocated when the
+  // semantic check is actually enabled for this run, so a normal map phase
+  // pays zero overhead.
+  const flaggedWritesAccumulator = ctx.config.semanticWriteCheckEnabled ? [] : undefined;
   const allTools = createVaultTools(ctx.agentId, ctx.runId, {
     embeddingManager: ctx.embeddingManager,
     projectRoot: ctx.projectRoot,
     vaultDir: ctx.vaultDir,
     requestContext: ctx.requestContext,
     dryRun: ctx.options?.dryRun ?? false,
+    hooks: ctx.hooks,
+    hookContext: ctx.hooks
+      ? { runId: ctx.runId, agentId: ctx.agentId, harnessId: ctx.config.harness, phaseName: phase.name }
+      : undefined,
+    // Threads the same semantic-check option set that the regular
+    // (non-map) phase path passes to createVaultTools — without this, the
+    // check is silently inert for map-phase sinks (see phase-loop.ts Fix 5
+    // comment history / cumulative-review report). phasePurpose is derived
+    // from the map phase's own name/prompt the same way executePhase does
+    // for the regular path.
+    phasePurpose: {
+      name: phase.name,
+      promptExcerpt: phase.prompt.length > 500 ? `${phase.prompt.slice(0, 500)}…` : phase.prompt,
+    },
+    semanticCheckEnabled: ctx.config.semanticWriteCheckEnabled ?? false,
+    harnessId: ctx.config.harness,
+    model: phaseModel,
+    classifierReasoningLevel: ctx.config.classifierReasoningLevel,
+    provider,
+    flaggedWritesAccumulator,
   });
 
   logger?.debug('agent.map.start', `Map phase "${phase.name}" starting`, {
     runId: ctx.runId, phase: phase.name, model: phaseModel, providerType: provider?.type ?? null,
   });
+  const mapHookStartedAt = Date.now();
+  if (ctx.hooks?.phaseStart) {
+    try {
+      await ctx.hooks.phaseStart({
+        runId: ctx.runId,
+        agentId: ctx.agentId,
+        harnessId: ctx.config.harness,
+        phaseName: phase.name,
+        model: phaseModel ?? '',
+        maxTurns: phase.maxTurns,
+        required: phase.required ?? false,
+      });
+    } catch {
+      /* hook callbacks are best-effort observability */
+    }
+  }
 
   try {
     const mapResult = await executeMapPhase({
@@ -421,6 +721,7 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       runId: ctx.runId,
       agentId: ctx.agentId,
       phaseModel,
+      reasoningLevel,
       provider,
       vaultDir: ctx.vaultDir,
       projectRoot: ctx.projectRoot,
@@ -446,15 +747,64 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     const writeAfterThrowPart = mapResult.writeAfterThrow > 0
       ? ` writeAfterThrow=${mapResult.writeAfterThrow}`
       : '';
-    const phaseStatus = mapResultToPhaseStatus(mapResult);
+
+    // Same deterministic failure conversion as executePhase's regular
+    // path: a blocked sink call throws inside the tool handler, the SDK
+    // converts that into an isError result, and the per-item loop counts
+    // it as a failed ITEM — but a mixed batch (some items written, one
+    // blocked) would still classify as 'completed' from the counts alone.
+    // Any flagged destructive write converts the WHOLE phase to failed —
+    // one failure contract with the regular phase path, so downstream
+    // consumers (resume, cost audit) never see a "completed" phase that
+    // had a semantically blocked write. Computed BEFORE the single
+    // phaseEnd emission below, so the hook reports the converted status
+    // and never double-fires.
+    const flagged = snapshotFlaggedWrites(flaggedWritesAccumulator);
+    const phaseStatus = flagged ? 'failed' : mapResultToPhaseStatus(mapResult);
+    const flaggedPart = flagged
+      ? ` semanticCheckBlocked=${flagged.count} (${flagged.genericSummary})`
+      : '';
+    if (flagged) {
+      // Log line may carry the verbatim reasons (operator-facing);
+      // the PhaseResult summary below stays reason-free — same oracle
+      // hardening as the regular path (Fix 6a).
+      logger?.warn('agent.map.semantic-check-blocked',
+        `Semantic check blocked ${flagged.count} destructive write${flagged.count === 1 ? '' : 's'} in map phase "${phase.name}": ${flagged.summary}`,
+        {
+          runId: ctx.runId,
+          phase: phase.name,
+          flaggedTools: flagged.toolNames,
+          classifierTokens: flagged.classifierTokens,
+        });
+    }
+
+    if (ctx.hooks?.phaseEnd) {
+      try {
+        await ctx.hooks.phaseEnd({
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          harnessId: ctx.config.harness,
+          phaseName: phase.name,
+          status: phaseStatus,
+          turnsUsed: mapResult.usage.requests ?? 0,
+          tokensUsed: mapResult.usage.totalTokens ?? 0,
+          costUsd: costData.costUsd,
+          durationMs: Date.now() - mapHookStartedAt,
+        });
+      } catch {
+        /* hook callbacks are best-effort observability */
+      }
+    }
+
     return buildPhaseResult({
       name: phase.name,
       status: phaseStatus,
       summary: phaseStatus === 'skipped'
         ? 'provider unavailable'
-        : `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}${writeAfterThrowPart}`,
+        : `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}${writeAfterThrowPart}${flaggedPart}`,
       usage: mapResult.usage,
       costData,
+      ...(flagged ? { semanticCheckBlocked: true } : {}),
     });
   } catch (err) {
     const reason = toErrorMessage(err);
@@ -468,6 +818,25 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       runId: ctx.runId, phase: phase.name, error: reason, capHit,
       allowedMaxTurns: phase.maxTurns ?? null,
     });
+
+    if (ctx.hooks?.phaseEnd) {
+      try {
+        await ctx.hooks.phaseEnd({
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          harnessId: ctx.config.harness,
+          phaseName: phase.name,
+          status: 'failed',
+          turnsUsed: telemetry?.usage.requests ?? 0,
+          tokensUsed: telemetry?.usage.totalTokens ?? 0,
+          costUsd: null,
+          durationMs: Date.now() - mapHookStartedAt,
+        });
+      } catch {
+        /* hook callbacks are best-effort observability */
+      }
+    }
+
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
@@ -503,8 +872,9 @@ export async function executeSingleQuery(
   sessionData?: unknown;
 }> {
   const harness = getAgentHarness(ctx.config.harness);
+  const effectiveReasoningLevel = ctx.config.execution?.reasoningLevel ?? ctx.config.reasoningLevel;
   const effectiveModel = resolveReasoningModel(
-    ctx.config.execution?.reasoningLevel ?? ctx.config.reasoningLevel,
+    effectiveReasoningLevel,
     provider,
     ctx.config.model,
   );
@@ -516,16 +886,20 @@ export async function executeSingleQuery(
     requestContext: ctx.requestContext,
     embeddingManager: ctx.embeddingManager,
     dryRun: ctx.config.dryRun ?? false,
+    hooks: ctx.hooks,
+    hookContext: ctx.hooks ? { runId: ctx.runId, agentId: ctx.agentId, harnessId: ctx.config.harness } : undefined,
   };
   const baseInput = {
     prompt: taskPrompt,
     model: effectiveModel,
+    reasoningLevel: effectiveReasoningLevel,
     maxTurns: ctx.config.maxTurns,
     systemPrompt: ctx.systemPrompt,
     provider,
     abortController: ctx.abortController,
     toolSurface,
     logger: ctx.options?.logger,
+    hooks: ctx.hooks,
   };
   let result;
   try {
@@ -630,16 +1004,19 @@ export async function executePhasedQuery(
       : [];
 
     const orchestratorPrompt = composeOrchestratorPrompt(vaultContext, phases, contextResults);
+    const orchestratorReasoningLevel = config.orchestrator.reasoningLevel ?? config.execution?.reasoningLevel ?? config.reasoningLevel;
     const orchestratorModel = config.orchestrator.model ?? resolveReasoningModel(
-      config.orchestrator.reasoningLevel ?? config.execution?.reasoningLevel ?? config.reasoningLevel,
+      orchestratorReasoningLevel,
       ctx.taskProviderOverride ?? config.execution?.provider,
       config.model,
     );
     const orchestratorMaxTurns = config.orchestrator.maxTurns ?? DEFAULT_ORCHESTRATOR_MAX_TURNS;
     const harness = getAgentHarness(config.harness);
-    const planResponse = await harness.execute({
+    const supportsStructuredOutput = harness.supports('structuredOutput');
+    const orchestratorExecuteInput = {
       prompt: orchestratorPrompt,
       model: orchestratorModel,
+      reasoningLevel: orchestratorReasoningLevel,
       maxTurns: orchestratorMaxTurns,
       systemPrompt,
       provider: ctx.taskProviderOverride ?? config.execution?.provider,
@@ -653,9 +1030,46 @@ export async function executePhasedQuery(
       },
       abortController: ctx.abortController,
       logger: ctx.options?.logger,
-    });
+    };
 
-    const plan = parseOrchestratorPlan(planResponse.finalText, phases, ctx.options?.logger);
+    let planResponse;
+    if (supportsStructuredOutput) {
+      try {
+        planResponse = await harness.execute({
+          ...orchestratorExecuteInput,
+          outputSchema: { name: 'orchestrator_plan', schema: ORCHESTRATOR_PLAN_JSON_SCHEMA },
+        });
+        if (planResponse.structuredOutput === undefined) {
+          // The call succeeded (no throw) but the provider's structured-output
+          // validation failed after its own internal retries — e.g. Claude's
+          // error_max_structured_output_retries subtype, which yields an empty
+          // finalText and no structured_output on the result message. This is
+          // NOT the same path as the catch below (which never had outputSchema
+          // attached on its retry, so it can't double-warn here) — surface it
+          // so operators can see the schema'd call quietly degraded to the
+          // text-parse fallback.
+          ctx.options?.logger?.warn(
+            'agent.orchestrator.structured-output-missing',
+            'Orchestrator structured-output call succeeded but returned no structuredOutput — falling back to text parsing',
+            { runId },
+          );
+        }
+      } catch (err) {
+        if (ctx.abortController?.signal.aborted) throw err;
+        ctx.options?.logger?.warn(
+          'agent.orchestrator.structured-output-failed',
+          'Orchestrator structured-output request failed — retrying without outputSchema',
+          { runId, error: toErrorMessage(err) },
+        );
+        planResponse = await harness.execute(orchestratorExecuteInput);
+      }
+    } else {
+      planResponse = await harness.execute(orchestratorExecuteInput);
+    }
+
+    const plan = planResponse.structuredOutput !== undefined
+      ? planFromStructuredOutput(planResponse.structuredOutput, phases, ctx.options?.logger)
+      : parseOrchestratorPlan(planResponse.finalText, phases, ctx.options?.logger);
     effectivePhases = applyDirectives(phases, plan.phases, ctx.options?.logger);
     ctx.options?.logger?.debug('agent.orchestrator.plan', 'Orchestrator plan applied', {
       runId,
@@ -711,6 +1125,7 @@ export async function executePhasedQuery(
       const phaseProvider = resolved.provider;
       const effectiveMaxTurns = resolved.maxTurns;
       const phaseModel = resolved.model;
+      const phaseReasoningLevel = resolved.reasoningLevel;
 
       const basePhasePrompt = composePhasePrompt({
         vaultContext,
@@ -740,8 +1155,24 @@ export async function executePhasedQuery(
       // points at a poisoned/never-initialized SDK session. Re-attaching to it
       // makes the Claude Code subprocess exit 1 immediately, looping forever
       // under scheduled resumes. Generate a fresh session id instead.
+      //
+      // Also exclude a session the semantic check blocked (turnsUsed > 0,
+      // so the zero-turns exclusion above doesn't catch it): its
+      // conversation history contains the model's own blocked tool call,
+      // and reattaching would let the model retry that exact call against
+      // a fresh flaggedWritesAccumulator and fresh verdict cache — quietly
+      // defeating the semantic check on resume. See
+      // PhaseCheckpoint.semanticCheckBlocked.
+      //
+      // Same exclusion for a postcondition-failed phase: its history is
+      // the model's own non-compliant completion (e.g. prose instead of
+      // the required report call), and reattaching invites "as
+      // established, no action needed" repeat failures until resume
+      // attempts exhaust. See PhaseCheckpoint.postConditionFailed.
       const reuseSession = existingCheckpoint?.sessionRef
-        && !(existingCheckpoint.status === 'failed' && (existingCheckpoint.turnsUsed ?? 0) === 0);
+        && !(existingCheckpoint.status === 'failed' && (existingCheckpoint.turnsUsed ?? 0) === 0)
+        && existingCheckpoint.semanticCheckBlocked !== true
+        && existingCheckpoint.postConditionFailed !== true;
       const sessionId = reuseSession
         ? existingCheckpoint!.sessionRef!
         : phaseSessionId(runId, phase.name);
@@ -773,10 +1204,21 @@ export async function executePhasedQuery(
         ? new Map<string, unknown>()
         : undefined;
 
+      // Same allocate-only-when-needed pattern as metadataAccumulator
+      // above, gated on the semantic-check flag instead of a tools-list
+      // opt-in: only phases that can actually trigger
+      // wrapToolWithSemanticCheck need somewhere to record a flagged
+      // write, and executePhase below only inspects this array when it
+      // was allocated.
+      const flaggedWritesAccumulator = config.semanticWriteCheckEnabled
+        ? []
+        : undefined;
+
       return {
         phase,
         phasePrompt,
         phaseModel,
+        reasoningLevel: phaseReasoningLevel,
         phaseProvider,
         effectivePhase,
         sessionId,
@@ -785,6 +1227,7 @@ export async function executePhasedQuery(
           agentId,
           runId,
           toolNames: phase.tools,
+          deferredNames: phase.deferredTools,
           turnOffset: offsetByName.get(phase.name)!,
           projectRoot: ctx.projectRoot,
           vaultDir: ctx.vaultDir,
@@ -793,6 +1236,20 @@ export async function executePhasedQuery(
           embeddingManager: ctx.embeddingManager,
           dryRun: config.dryRun ?? false,
           metadataAccumulator,
+          hooks: ctx.hooks,
+          hookContext: ctx.hooks
+            ? { runId, agentId, harnessId: config.harness, phaseName: phase.name }
+            : undefined,
+          phasePurpose: {
+            name: phase.name,
+            promptExcerpt: phase.prompt.length > 500 ? `${phase.prompt.slice(0, 500)}…` : phase.prompt,
+          },
+          semanticCheckEnabled: config.semanticWriteCheckEnabled ?? false,
+          harnessId: config.harness,
+          model: phaseModel,
+          classifierReasoningLevel: config.classifierReasoningLevel,
+          provider: phaseProvider,
+          flaggedWritesAccumulator,
         },
       };
     });
@@ -807,6 +1264,7 @@ export async function executePhasedQuery(
           ctx,
           phasePrompt: waveInput.phasePrompt,
           phaseModel: waveInput.phaseModel,
+          reasoningLevel: waveInput.reasoningLevel,
           phase: waveInput.effectivePhase,
           toolSurface: waveInput.toolSurface,
           provider: waveInput.phaseProvider,
@@ -874,6 +1332,16 @@ export async function executePhasedQuery(
         ...(result.metadata && Object.keys(result.metadata).length > 0
           ? { metadata: result.metadata }
           : {}),
+        // Persist the semantic-check-blocked marker so a resumed run's
+        // reuseSession exclusion (below) can refuse to reattach to this
+        // phase's session — its history contains the model's own blocked
+        // tool call, and reusing it would let the model retry against a
+        // fresh accumulator and fresh verdict cache.
+        ...(result.semanticCheckBlocked === true ? { semanticCheckBlocked: true } : {}),
+        // Same persistence for the postcondition-failed marker: the
+        // session's history is the model's own non-compliant completion,
+        // so the reuseSession exclusion must see the marker on resume.
+        ...(result.postConditionFailed === true ? { postConditionFailed: true } : {}),
         updatedAt: epochSeconds(),
       };
       // Skipped phases count as satisfied for downstream wave gating —

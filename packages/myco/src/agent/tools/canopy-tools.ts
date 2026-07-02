@@ -192,7 +192,7 @@ export function createCanopyTools(deps: VaultToolDeps) {
 
       return textResult({ ok: true, description: cleaned });
     },
-    { annotations: {} },
+    { annotations: { idempotentHint: true } },
   );
 
   const canopyListTool = tool(
@@ -245,7 +245,7 @@ export function createCanopyTools(deps: VaultToolDeps) {
       );
       return textResult({ charged });
     },
-    { annotations: {} },
+    { annotations: { idempotentHint: false } },
   );
 
   return [canopyDescribeNext, canopyDescribeWrite, canopyListTool, canopyDescribeCharge];

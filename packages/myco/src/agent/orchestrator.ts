@@ -46,6 +46,19 @@ const FALLBACK_REASONING_MISSING_PHASES = 'Orchestrator plan missing phases arra
 /** Max chars of the underlying parser error we surface into the fallback reasoning. */
 const ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS = 200;
 
+/**
+ * Max chars of `directive.contextNotes` spliced into a phase's prompt.
+ * contextNotes is LLM-authored free text (the orchestrator's own plan
+ * response) with no upstream size or content bound — without a cap it's an
+ * unbounded-size / unbounded-content injection surface once spliced into
+ * `phase.prompt`, which then feeds `phasePurpose.promptExcerpt` (the
+ * semantic-check classifier's own untrusted-data input). Mirrors the
+ * existing phase.prompt truncation idiom (see phase-loop.ts's
+ * phasePurpose.promptExcerpt construction).
+ */
+const CONTEXT_NOTES_MAX_CHARS = 500;
+const CONTEXT_NOTES_TRUNCATION_MARKER = '...[truncated]';
+
 // ---------------------------------------------------------------------------
 // Template placeholder names
 // ---------------------------------------------------------------------------
@@ -192,6 +205,109 @@ export function parseOrchestratorPlan(
 }
 
 /**
+ * JSON Schema for OrchestratorPlan, fed to whichever harness supports
+ * native structured output (see HarnessCapability 'structuredOutput' in
+ * harness/types.ts). Mirrors OrchestratorPlan/OrchestratorPhaseDirective
+ * in types.ts exactly — if those interfaces change, this schema must
+ * change with them (see the schema-shape regression test in
+ * tests/agent/orchestrator.test.ts).
+ */
+export const ORCHESTRATOR_PLAN_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    phases: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          skip: { type: 'boolean' },
+          skipReason: { type: 'string' },
+          maxTurns: { type: 'integer' },
+          contextNotes: { type: 'string' },
+        },
+        required: ['name', 'skip'],
+        additionalProperties: false,
+      },
+    },
+    reasoning: { type: 'string' },
+  },
+  required: ['phases', 'reasoning'],
+  additionalProperties: false,
+} as const satisfies Record<string, unknown>;
+
+/**
+ * Build an OrchestratorPlan from a harness's already-schema-validated
+ * structured output. Skips extractJson()/parse-and-hope entirely — the
+ * provider already validated the shape against ORCHESTRATOR_PLAN_JSON_SCHEMA.
+ * Still defends against a provider returning a technically-valid-but-
+ * wrong-shape value (defensive, not expected in practice given
+ * additionalProperties: false) by falling back to buildRunAllPlan() via
+ * the same isOrchestratorPlanShape() guard the text path uses.
+ *
+ * Never throws.
+ *
+ * @param structuredOutput - Already-parsed value from HarnessExecuteResult.structuredOutput.
+ * @param phases            - Phase definitions; used to construct the fallback plan.
+ * @param logger             - Optional logger; receives a warning on shape mismatch.
+ * @returns A valid OrchestratorPlan.
+ */
+export function planFromStructuredOutput(
+  structuredOutput: unknown,
+  phases: PhaseDefinition[],
+  logger?: RunLogger,
+): OrchestratorPlan {
+  if (!isOrchestratorPlanShape(structuredOutput)) {
+    logger?.warn(
+      'agent.orchestrator.structured-output-shape-mismatch',
+      'Structured output did not match OrchestratorPlan shape',
+      { received: typeof structuredOutput },
+    );
+    return buildRunAllPlan(phases, FALLBACK_REASONING_MISSING_PHASES);
+  }
+  return dropNullDirectiveFields(structuredOutput);
+}
+
+/**
+ * Defense-in-depth against a harness that forgot to strip OpenAI strict-
+ * mode's widened-optional-field nulls (see `stripStrictNulls` in
+ * harness/openai.ts, the primary fix). This function is the one place in
+ * this dialect-agnostic module allowed to be null-robust — `applyDirectives`
+ * itself stays untouched and keeps its `!== undefined` guard, since a
+ * conforming harness never emits `null` here in the first place.
+ *
+ * Drops a `null` value for `skipReason`/`maxTurns`/`contextNotes` (and,
+ * defensively, `skip` per directive and the plan's own `reasoning`, though
+ * the shape guard already requires those to be present) so a stray `null`
+ * can never reach `applyDirectives`'s `!== undefined` check and coerce a
+ * turn budget to 0. Operates on the raw (possibly null-bearing) value —
+ * the `OrchestratorPlan` type describes the intended shape, not what a
+ * misbehaving harness might actually hand back.
+ */
+function dropNullDirectiveFields(plan: OrchestratorPlan): OrchestratorPlan {
+  const raw = plan as unknown as {
+    phases: Array<Record<string, unknown>>;
+    reasoning: unknown;
+  };
+  const cleanedPhases = raw.phases.map((directive) => {
+    const cleaned: Record<string, unknown> = { ...directive };
+    for (const key of ['skip', 'skipReason', 'maxTurns', 'contextNotes']) {
+      if (cleaned[key] === null) {
+        delete cleaned[key];
+      }
+    }
+    return cleaned as unknown as OrchestratorPhaseDirective;
+  });
+  const cleanedReasoning = raw.reasoning === null ? undefined : raw.reasoning;
+
+  return {
+    ...plan,
+    phases: cleanedPhases,
+    ...(cleanedReasoning !== undefined ? { reasoning: cleanedReasoning as string } : {}),
+  };
+}
+
+/**
  * Apply orchestrator directives to a set of phase definitions.
  *
  * For each phase:
@@ -294,9 +410,12 @@ function applyNonSkipDirective(
   }
 
   if (directive.contextNotes) {
+    const cappedContextNotes = directive.contextNotes.length > CONTEXT_NOTES_MAX_CHARS
+      ? `${directive.contextNotes.slice(0, CONTEXT_NOTES_MAX_CHARS)}${CONTEXT_NOTES_TRUNCATION_MARKER}`
+      : directive.contextNotes;
     updated = {
       ...updated,
-      prompt: `${updated.prompt}\n\n${ORCHESTRATOR_GUIDANCE_HEADER}\n\n${directive.contextNotes}`,
+      prompt: `${updated.prompt}\n\n${ORCHESTRATOR_GUIDANCE_HEADER}\n\n${cappedContextNotes}`,
     };
   }
 

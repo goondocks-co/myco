@@ -28,6 +28,28 @@ export interface PhaseCheckpoint {
   /** The maxTurns budget the SDK enforced for this phase (post-overrides). */
   allowedMaxTurns?: number;
   /**
+   * Set when the phase failed because `snapshotFlaggedWrites` converted an
+   * otherwise-"completed" result to "failed" (a semantic-check block —
+   * see phase-loop.ts). Distinct from a hard runtime failure: the phase DID
+   * produce turns (so the zero-turns "poisoned session" exclusion below
+   * doesn't catch it), but the session's conversation history contains the
+   * model's own blocked tool call. Reusing that session on resume would let
+   * the model retry the identical call against a fresh accumulator and
+   * fresh verdict cache, defeating the semantic check. See the
+   * `reuseSession` exclusion in phase-loop.ts.
+   */
+  semanticCheckBlocked?: boolean;
+  /**
+   * Set when the phase failed because an unsatisfied
+   * `PhaseDefinition.postCondition` converted an otherwise-"completed"
+   * result to "failed" (see phase-loop.ts). Same session-reuse hazard as
+   * `semanticCheckBlocked` above: the phase produced turns, but the
+   * session history is the model's own non-compliant completion —
+   * reattaching on resume invites the model to reaffirm it. See the
+   * `reuseSession` exclusion in phase-loop.ts.
+   */
+  postConditionFailed?: boolean;
+  /**
    * Metadata emitted by the phase via `phase_emit_metadata`. Persisted
    * so a resumed run preserves the same gate decisions for downstream
    * phases — gates evaluate against this checkpoint, not against a
@@ -141,11 +163,14 @@ export function buildPhaseResult(input: {
   capHit?: boolean;
   allowedMaxTurns?: number;
   metadata?: Record<string, unknown>;
+  semanticCheckBlocked?: boolean;
+  postConditionFailed?: boolean;
 }): PhaseResult & { sessionData?: unknown } {
   const {
     name, status, summary, usage, costData,
     turnsUsed, tokensUsed, costUsd, costSource,
-    sessionRef, sessionData, capHit, allowedMaxTurns, metadata,
+    sessionRef, sessionData, capHit, allowedMaxTurns, metadata, semanticCheckBlocked,
+    postConditionFailed,
   } = input;
   return {
     name,
@@ -158,6 +183,8 @@ export function buildPhaseResult(input: {
     ...(sessionRef ? { sessionRef } : {}),
     ...(sessionData !== undefined ? { sessionData } : {}),
     ...(capHit === true ? { capHit: true } : {}),
+    ...(semanticCheckBlocked === true ? { semanticCheckBlocked: true } : {}),
+    ...(postConditionFailed === true ? { postConditionFailed: true } : {}),
     ...(allowedMaxTurns !== undefined ? { allowedMaxTurns } : {}),
     ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
     summary,
@@ -252,9 +279,16 @@ export function resolveProviderForResume(
   if (!persistedType && !persistedProvider) return currentProvider;
   const matchingCurrentProvider = currentProvider?.type === persistedType ? currentProvider : undefined;
 
+  // Snapshot invariant: for a same-type resume, the PERSISTED provider
+  // snapshot wins over live config for every overlapping field. Live config
+  // (matchingCurrentProvider) is only a fallback base for fields the
+  // snapshot never captured. Spreading live config last would let an
+  // operator's myco.yaml edit between dispatch and resume silently rewrite
+  // audit-bearing fields (actions_taken.baseUrl, the token-budget
+  // contextLength) to values the original run never used.
   return {
-    ...(persistedProvider ?? {}),
     ...(matchingCurrentProvider ?? {}),
+    ...(persistedProvider ?? {}),
     type: persistedType ?? persistedProvider?.type ?? currentProvider?.type ?? 'anthropic',
     model,
   };

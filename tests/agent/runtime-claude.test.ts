@@ -15,6 +15,7 @@ import { vi } from '../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 
 const queryCalls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
+let structuredOutputOverride: unknown = undefined;
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
@@ -42,6 +43,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
           permission_denials: [],
           uuid: 'r-1',
           session_id: 'test-session',
+          ...(structuredOutputOverride !== undefined ? { structured_output: structuredOutputOverride } : {}),
         };
       },
     };
@@ -125,6 +127,7 @@ describe('ClaudeSdkHarness.execute', () => {
     queryCalls.length = 0;
     scopedServerCalls.length = 0;
     fullServerCalls.length = 0;
+    structuredOutputOverride = undefined;
   });
 
   it('forwards sessionRef as sessionId to the SDK when provided', async () => {
@@ -207,6 +210,205 @@ describe('ClaudeSdkHarness.execute', () => {
     expect(scopedServerCalls).toHaveLength(0);
   });
 
+  it('threads hooks/hookContext through to createScopedVaultToolServer when toolNames is provided', async () => {
+    // Regression: buildToolServer used to omit hooks/hookContext on the
+    // createScopedVaultToolServer call, so wrapToolWithAudit inside
+    // tools.ts always received undefined for agent-mode phases — no
+    // pre_tool_use/post_tool_use events were ever recorded in production
+    // even when a run had real hooks configured.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const hooks = { preToolUse: async () => {} };
+    const hookContext = { runId: 'r1', agentId: 'a1', harnessId: 'claude-sdk' as const, phaseName: 'gather' };
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        toolNames: ['vault_report'],
+        hooks,
+        hookContext,
+      },
+    }));
+
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.hooks).toBe(hooks);
+    expect(scopedServerCalls[0].options.hookContext).toEqual(hookContext);
+  });
+
+  it('threads hooks/hookContext through to createVaultToolServer when toolNames is omitted', async () => {
+    // Same regression as above, for the single-query / orchestrator path
+    // that hits the full (unscoped) vault tool server.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const hooks = { phaseStart: async () => {} };
+    const hookContext = { runId: 'r1', agentId: 'a1', harnessId: 'claude-sdk' as const };
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', hooks, hookContext },
+    }));
+
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.hooks).toBe(hooks);
+    expect(fullServerCalls[0].options.hookContext).toEqual(hookContext);
+  });
+
+  it('threads phasePurpose through to createScopedVaultToolServer when toolNames is provided', async () => {
+    // Regression: buildToolServer used to omit phasePurpose on the
+    // createScopedVaultToolServer call, so the semantic-check wrapper inside
+    // tools.ts would never see the phase's declared name/prompt excerpt
+    // for agent-mode phases — the classifier would fail to validate
+    // destructive writes against the actual phase intent in production.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const phasePurpose = { name: 'gather', promptExcerpt: 'collect all available facts' };
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        toolNames: ['vault_report'],
+        phasePurpose,
+      },
+    }));
+
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.phasePurpose).toEqual(phasePurpose);
+  });
+
+  it('threads phasePurpose through to createVaultToolServer when toolNames is omitted', async () => {
+    // Regression: buildToolServer used to omit phasePurpose on the
+    // createVaultToolServer call for the single-query/orchestrator path.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const phasePurpose = { name: 'plan', promptExcerpt: 'decompose into phases' };
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', phasePurpose },
+    }));
+
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.phasePurpose).toEqual(phasePurpose);
+  });
+
+  it('threads semanticCheckEnabled/harnessId/model/classifierReasoningLevel through to createScopedVaultToolServer when toolNames is provided', async () => {
+    // Regression: buildToolServer used to omit the semantic-check gate
+    // fields on the createScopedVaultToolServer call, so
+    // wrapToolWithSemanticCheck inside tools.ts would never see them for
+    // agent-mode phases even when config.semanticWriteCheckEnabled is on.
+    // classifierReasoningLevel is the same class of regression: snapshotted
+    // onto the run row by Task 2b but never threaded past EffectiveConfig,
+    // so every classifier call silently used 'low' regardless of override.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        toolNames: ['vault_report'],
+        semanticCheckEnabled: true,
+        harnessId: 'claude-sdk',
+        model: 'claude-sonnet-4-6',
+        classifierReasoningLevel: 'high',
+      },
+    }));
+
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.semanticCheckEnabled).toBe(true);
+    expect(scopedServerCalls[0].options.harnessId).toBe('claude-sdk');
+    expect(scopedServerCalls[0].options.model).toBe('claude-sonnet-4-6');
+    expect(scopedServerCalls[0].options.classifierReasoningLevel).toBe('high');
+  });
+
+  it('threads semanticCheckEnabled/harnessId/model/classifierReasoningLevel through to createVaultToolServer when toolNames is omitted', async () => {
+    // Same regression as above, for the single-query / orchestrator path
+    // that hits the full (unscoped) vault tool server.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        semanticCheckEnabled: true,
+        harnessId: 'claude-sdk',
+        model: 'claude-sonnet-4-6',
+        classifierReasoningLevel: 'high',
+      },
+    }));
+
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.semanticCheckEnabled).toBe(true);
+    expect(fullServerCalls[0].options.harnessId).toBe('claude-sdk');
+    expect(fullServerCalls[0].options.model).toBe('claude-sonnet-4-6');
+    expect(fullServerCalls[0].options.classifierReasoningLevel).toBe('high');
+  });
+
+  it('leaves semanticCheckEnabled/harnessId/model/classifierReasoningLevel undefined on both server paths when absent from toolSurface', async () => {
+    // Regression proof: disabled/absent gate fields must be byte-identical
+    // to pre-Task-8 behavior — no accidental default flips the gate on.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', toolNames: ['vault_report'] },
+    }));
+
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.semanticCheckEnabled).toBeUndefined();
+    expect(scopedServerCalls[0].options.harnessId).toBeUndefined();
+    expect(scopedServerCalls[0].options.model).toBeUndefined();
+    expect(scopedServerCalls[0].options.classifierReasoningLevel).toBeUndefined();
+  });
+
+  it('threads provider through to createScopedVaultToolServer and createVaultToolServer', async () => {
+    // I1 regression: buildToolServer omitted toolSurface.provider on both
+    // tool-server construction branches, so wrapToolWithSemanticCheck
+    // (tools.ts) never had the phase's actual provider to pass to
+    // classifyWriteIntent — on a provider-override setup (Ollama/custom
+    // baseURL) the classifier silently built its harness call against the
+    // DEFAULT provider env instead, which errors and permanently fails
+    // open for the whole run.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const provider = { type: 'ollama' as const, baseUrl: 'http://localhost:11434', model: 'llama3' };
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', toolNames: ['vault_report'], provider },
+    }));
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.provider).toEqual(provider);
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', provider },
+    }));
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.provider).toEqual(provider);
+  });
+
+  it('threads flaggedWritesAccumulator through to createScopedVaultToolServer and createVaultToolServer', async () => {
+    // C2 regression: buildToolServer omitted toolSurface.flaggedWritesAccumulator
+    // on both branches, so wrapToolWithSemanticCheck had nowhere to record
+    // a flagged write for executePhase to read back — the phase could
+    // complete "successfully" after a blocked destructive write.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const flaggedWritesAccumulator: Array<{ toolName: string; reason: string | null }> = [];
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', toolNames: ['vault_report'], flaggedWritesAccumulator },
+    }));
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.flaggedWritesAccumulator).toBe(flaggedWritesAccumulator);
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', flaggedWritesAccumulator },
+    }));
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.flaggedWritesAccumulator).toBe(flaggedWritesAccumulator);
+  });
+
   it('isolates the agent from user settings via settingSources: []', async () => {
     // Regression: the SDK's plugin-sync path reads `enabledPlugins` from
     // ~/.claude/settings.json / project .claude/settings.json when
@@ -275,5 +477,165 @@ describe('ClaudeSdkHarness.execute', () => {
     expect(result.usage.totalTokens).toBe(49);
     expect(result.usage.costUsd).toBeCloseTo(0.0123);
     expect(result.usage.requestUsageEntries).toHaveLength(1);
+  });
+
+  it('attaches outputFormat to the SDK call when outputSchema is provided', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    await runtime.execute({
+      prompt: 'plan the phases',
+      model: 'claude-sonnet-4-6',
+      toolSurface: { agentId: 'a', runId: 'r', toolNames: [] },
+      outputSchema: { name: 'orchestrator_plan', schema: { type: 'object', properties: {} } },
+    });
+    const lastCall = queryCalls[queryCalls.length - 1];
+    expect(lastCall.options.outputFormat).toEqual({
+      type: 'json_schema',
+      schema: { type: 'object', properties: {} },
+    });
+  });
+
+  it('omits outputFormat when outputSchema is not provided', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    await runtime.execute({
+      prompt: 'do something',
+      model: 'claude-sonnet-4-6',
+      toolSurface: { agentId: 'a', runId: 'r', toolNames: [] },
+    });
+    const lastCall = queryCalls[queryCalls.length - 1];
+    expect(lastCall.options.outputFormat).toBeUndefined();
+  });
+
+  it('returns structuredOutput from the result message when present', async () => {
+    structuredOutputOverride = { phases: [{ name: 'extract', skip: false }], reasoning: 'ok' };
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const result = await runtime.execute({
+      prompt: 'plan the phases',
+      model: 'claude-sonnet-4-6',
+      toolSurface: { agentId: 'a', runId: 'r', toolNames: [] },
+      outputSchema: { name: 'orchestrator_plan', schema: { type: 'object', properties: {} } },
+    });
+    expect(result.structuredOutput).toEqual({ phases: [{ name: 'extract', skip: false }], reasoning: 'ok' });
+  });
+
+  it('leaves structuredOutput undefined when the SDK never emits structured_output', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const result = await runtime.execute({
+      prompt: 'do something',
+      model: 'claude-sonnet-4-6',
+      toolSurface: { agentId: 'a', runId: 'r', toolNames: [] },
+    });
+    expect(result.structuredOutput).toBeUndefined();
+  });
+});
+
+describe('ClaudeSdkHarness.supports', () => {
+  it('reports structuredOutput support', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    expect(runtime.supports('structuredOutput')).toBe(true);
+  });
+});
+
+describe('ClaudeSdkHarness.execute — thinking-config wiring', () => {
+  beforeEach(() => {
+    queryCalls.length = 0;
+    scopedServerCalls.length = 0;
+    fullServerCalls.length = 0;
+    structuredOutputOverride = undefined;
+  });
+
+  it('resolves reasoningLevel "high" to an enabled thinking budget for an anthropic provider', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'high',
+      provider: { type: 'anthropic' },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'enabled', budgetTokens: 32000 });
+  });
+
+  it('defaults to adaptive thinking when reasoningLevel is omitted for a non-local provider', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({ provider: { type: 'anthropic' } }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'adaptive' });
+  });
+
+  it('defaults to adaptive thinking when no provider is supplied at all', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput());
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'adaptive' });
+  });
+
+  it('honors a provider thinkingBudgetMap override for a non-local provider', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'low',
+      provider: {
+        type: 'anthropic',
+        thinkingBudgetMap: { low: { budgetTokens: 2048 } },
+      },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'enabled', budgetTokens: 2048 });
+  });
+
+  it('forces disabled thinking for a local (ollama) provider even with a thinkingBudgetMap configured and reasoningLevel "high"', async () => {
+    // Regression: suppressEffortLeakForLocalProvider used to force
+    // `{ type: 'disabled' }` unconditionally for local providers, before
+    // any tier-based thinking logic ran. resolveThinkingConfig must
+    // preserve that ordering — a local provider's thinkingBudgetMap
+    // override (if one is even configured) must never leak a non-disabled
+    // thinking config to an endpoint that can't parse the SDK's reasoning
+    // fields.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'high',
+      provider: {
+        type: 'ollama',
+        thinkingBudgetMap: { high: { budgetTokens: 32000 } },
+      },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('forces disabled thinking for a local (lmstudio) provider regardless of reasoningLevel', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'low',
+      provider: { type: 'lmstudio' },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('forces disabled thinking for a local (openai-compatible) provider regardless of reasoningLevel', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'default',
+      provider: { type: 'openai-compatible' },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'disabled' });
   });
 });

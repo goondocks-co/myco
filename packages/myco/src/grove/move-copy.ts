@@ -40,6 +40,7 @@ export const MOVE_REKEYED_TABLES = [
   'agent_reports',
   'agent_turns',
   'agent_run_write_intents',
+  'agent_run_events',
   'digest_extract_revisions',
   'log_entries',
 ] as const;

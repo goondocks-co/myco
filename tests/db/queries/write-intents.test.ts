@@ -149,6 +149,53 @@ describe('write intents query helpers', () => {
     });
   });
 
+  describe('classifier fields', () => {
+    it('persists and reads back classifierVerdict + classifierReason', () => {
+      seedRun('run-classifier-1');
+      insertWriteIntent({
+        runId: 'run-classifier-1',
+        toolName: 'vault_mark_processed',
+        toolInput: '{"batch_id":1}',
+        syntheticOutput: '{"blocked":true}',
+        classifierVerdict: 'flag',
+        classifierReason: 'batch_id does not appear in this phase\'s declared scope',
+      });
+
+      const [intent] = listWriteIntents('run-classifier-1', { scope: ALL_PROJECTS_SCOPE });
+      expect(intent.classifier_verdict).toBe('flag');
+      expect(intent.classifier_reason).toBe('batch_id does not appear in this phase\'s declared scope');
+    });
+
+    it('defaults classifier fields to null when omitted (existing call sites keep working)', () => {
+      seedRun('run-classifier-2');
+      insertWriteIntent({
+        runId: 'run-classifier-2',
+        toolName: 'vault_create_spore',
+        toolInput: '{}',
+        syntheticOutput: '{}',
+      });
+
+      const [intent] = listWriteIntents('run-classifier-2', { scope: ALL_PROJECTS_SCOPE });
+      expect(intent.classifier_verdict).toBeNull();
+      expect(intent.classifier_reason).toBeNull();
+    });
+
+    it('accepts classifierVerdict "ok" without classifierReason', () => {
+      seedRun('run-classifier-3');
+      insertWriteIntent({
+        runId: 'run-classifier-3',
+        toolName: 'vault_create_spore',
+        toolInput: '{}',
+        syntheticOutput: '{}',
+        classifierVerdict: 'ok',
+      });
+
+      const [intent] = listWriteIntents('run-classifier-3', { scope: ALL_PROJECTS_SCOPE });
+      expect(intent.classifier_verdict).toBe('ok');
+      expect(intent.classifier_reason).toBeNull();
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // FK pinning (I5): agent_run_write_intents.run_id is ON DELETE CASCADE.
   // Pinned so the contract doesn't silently drift to SET NULL / NO ACTION.

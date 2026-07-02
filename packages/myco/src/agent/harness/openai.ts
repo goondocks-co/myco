@@ -4,7 +4,9 @@ import {
   Agent,
   Runner,
   OpenAIProvider,
+  gpt5ReasoningSettingsRequired,
   type AgentInputItem,
+  type JsonSchemaDefinition,
   type ModelProvider,
   type Session,
 } from '@openai/agents';
@@ -34,6 +36,7 @@ import {
   type LocalOpenAIBackendKind,
 } from '@myco/intelligence/local-openai-backends.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
+import { resolveModelSettings } from '@myco/agent/reasoning-levels.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { createInstrumentedFetch } from '@myco/utils/instrumented-fetch.js';
 
@@ -302,6 +305,39 @@ function createProvider(provider: ProviderConfig | undefined): OpenAIProvider {
 }
 
 /**
+ * Strip `null`-valued object entries produced by OpenAI strict-mode's
+ * widened-optional-field dialect.
+ *
+ * `toStrictJsonObjectSchema()` widens every optional property's type to
+ * `[type, 'null']` so strict mode's "every key required" rule doesn't
+ * change Myco's own optionality semantics — the model emits `null` for a
+ * field Myco's schema author intended as absent. The `@openai/agents` SDK
+ * does not strip these nulls from `finalOutput` (its own
+ * `stripStrictNullsForJsonSchema` applies only to tool inputs), so without
+ * this helper a caller like `applyDirectives()` in orchestrator.ts sees
+ * `maxTurns: null` instead of `maxTurns: undefined` — and
+ * `directive.maxTurns !== undefined` passes, letting `Math.min(null, ceiling)`
+ * coerce to 0 and zero out the phase's turn budget.
+ *
+ * Recurses into nested objects and arrays; leaves non-object, non-null
+ * values untouched.
+ */
+export function stripStrictNulls(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripStrictNulls(item));
+  }
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
+      if (entryValue === null) continue;
+      result[key] = stripStrictNulls(entryValue);
+    }
+    return result;
+  }
+  return value;
+}
+
+/**
  * Drive a single SDK turn-loop with a configured runner+agent. Used by
  * both `OpenAIAgentsHarness.execute` (which feeds in any prior session
  * data + sessionRef) and `scope.run` (always a fresh session). Centralized
@@ -311,13 +347,14 @@ function createProvider(provider: ProviderConfig | undefined): OpenAIProvider {
  */
 async function runOpenAIAgent(
   runner: Runner,
-  agent: Agent,
+  agent: Agent<unknown, any>,
   prompt: string,
   options: {
     maxTurns?: number;
     sessionRef: string;
     sessionData: AgentInputItem[];
     abortController?: AbortController;
+    hasOutputSchema?: boolean;
   },
 ): Promise<HarnessExecuteResult> {
   let persistedItems: AgentInputItem[] = [...options.sessionData];
@@ -325,16 +362,31 @@ async function runOpenAIAgent(
     persistedItems = [...items];
   });
 
-  let result;
+  let usage: RuntimeUsage;
+  let finalText: string;
+  let turnsUsed: number;
+  let lastResponseId: string | undefined;
+  let structuredOutput: unknown;
   try {
-    result = await runner.run(agent, prompt, {
+    const result = await runner.run(agent, prompt, {
       maxTurns: options.maxTurns,
       session,
       ...(options.abortController ? { signal: options.abortController.signal } : {}),
     });
+    // `result.finalOutput` is a getter that re-runs JSON.parse on every
+    // access — capture it once here, inside the try, so a parse failure
+    // (SyntaxError) gets wrapped as a HarnessExecutionError like any other
+    // run failure instead of escaping raw from the return statement below.
+    const finalOutput = result.finalOutput;
+    usage = toOpenAIUsage(result.rawResponses);
+    usage.providerData = { lastResponseId: result.lastResponseId };
+    finalText = typeof finalOutput === 'string' ? finalOutput : JSON.stringify(finalOutput ?? '');
+    turnsUsed = result.rawResponses.length;
+    lastResponseId = result.lastResponseId;
+    structuredOutput = options.hasOutputSchema ? stripStrictNulls(finalOutput) : undefined;
   } catch (err) {
     const partialRaw = extractPartialRawResponses(err);
-    const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
+    const partialUsage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
     const message = err instanceof Error ? err.message : String(err);
     // The OpenAI Agents SDK throws MaxTurnsExceededError when maxTurns is
     // binding; the constructor name is the most reliable signal. Fall back
@@ -343,23 +395,19 @@ async function runOpenAIAgent(
     const kind = classifyHarnessErrorKind(message, errName);
     throw new HarnessExecutionError(
       message,
-      { usage, sessionRef: options.sessionRef, sessionData: persistedItems, kind },
+      { usage: partialUsage, sessionRef: options.sessionRef, sessionData: persistedItems, kind },
       { cause: err instanceof Error ? err : undefined },
     );
   }
 
-  const usage = toOpenAIUsage(result.rawResponses);
-  usage.providerData = { lastResponseId: result.lastResponseId };
-
   return {
-    finalText: typeof result.finalOutput === 'string'
-      ? result.finalOutput
-      : JSON.stringify(result.finalOutput ?? ''),
-    turnsUsed: result.rawResponses.length,
+    finalText,
+    turnsUsed,
     usage,
     sessionRef: options.sessionRef,
     sessionData: persistedItems,
-    rawRuntimeMetadata: { lastResponseId: result.lastResponseId },
+    rawRuntimeMetadata: { lastResponseId },
+    structuredOutput,
   };
 }
 
@@ -380,7 +428,9 @@ export class OpenAIAgentsHarness implements AgentHarness {
   constructor(private readonly testOverrides: OpenAIAgentsHarnessTestOverrides = {}) {}
 
   supports(capability: HarnessCapability): boolean {
-    return capability === 'supportsSessionResume' || capability === 'supportsMcp';
+    return capability === 'supportsSessionResume'
+      || capability === 'supportsMcp'
+      || capability === 'structuredOutput';
   }
 
   classifyError(error: unknown) {
@@ -397,14 +447,16 @@ export class OpenAIAgentsHarness implements AgentHarness {
       provider: input.provider,
       toolSurface: input.toolSurface,
       logger: input.logger,
+      reasoningLevel: input.reasoningLevel,
     };
-    const prepared = await prepareOpenAIRun(setup, this.testOverrides);
+    const prepared = await prepareOpenAIRun(setup, this.testOverrides, input.outputSchema);
     try {
       return await runOpenAIAgent(prepared.runner, prepared.agent, input.prompt, {
         maxTurns: input.maxTurns,
         sessionRef: input.sessionRef ?? crypto.randomUUID(),
         sessionData: Array.isArray(input.sessionData) ? (input.sessionData as AgentInputItem[]) : [],
         abortController: input.abortController,
+        hasOutputSchema: Boolean(input.outputSchema),
       });
     } finally {
       await prepared.mcpServer.close();
@@ -434,6 +486,56 @@ export class OpenAIAgentsHarness implements AgentHarness {
 }
 
 /**
+ * Convert a Myco-authored JSON Schema (optional properties allowed) into
+ * OpenAI's strict JsonObjectSchema dialect: every property listed in
+ * `required`, with previously-optional properties widened to a nullable
+ * union type (`[type, 'null']`) so the strict-mode contract (every key
+ * required) doesn't change the schema's actual optionality semantics —
+ * the model can still emit `null` for a field Myco's own code treats as
+ * optional. `additionalProperties: false` is preserved at every object
+ * level (already present on Myco's own schemas; asserted here rather than
+ * injected, since a schema without it is a bug in the caller).
+ *
+ * Recurses into nested object schemas (e.g., `phases.items`) so multi-
+ * level schemas like ORCHESTRATOR_PLAN_JSON_SCHEMA convert correctly.
+ */
+export function toStrictJsonObjectSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  if (schema['type'] !== 'object' || typeof schema['properties'] !== 'object' || schema['properties'] === null) {
+    return schema;
+  }
+  const properties = schema['properties'] as Record<string, Record<string, unknown>>;
+  const originalRequired = new Set(Array.isArray(schema['required']) ? (schema['required'] as string[]) : []);
+  const strictProperties: Record<string, unknown> = {};
+
+  for (const [key, propSchema] of Object.entries(properties)) {
+    let converted = propSchema;
+    if (propSchema['type'] === 'object') {
+      converted = toStrictJsonObjectSchema(propSchema);
+    } else if (propSchema['type'] === 'array' && typeof propSchema['items'] === 'object' && propSchema['items'] !== null) {
+      converted = { ...propSchema, items: toStrictJsonObjectSchema(propSchema['items'] as Record<string, unknown>) };
+    }
+    if (!originalRequired.has(key)) {
+      const baseType = converted['type'];
+      if (baseType === undefined) {
+        throw new Error(
+          `toStrictJsonObjectSchema: optional property "${key}" has no "type" key — ` +
+            'enum/anyOf/$ref-shaped schemas are not supported for strict-mode widening.',
+        );
+      }
+      converted = { ...converted, type: [baseType, 'null'] };
+    }
+    strictProperties[key] = converted;
+  }
+
+  return {
+    ...schema,
+    properties: strictProperties,
+    required: Object.keys(properties),
+    additionalProperties: false,
+  };
+}
+
+/**
  * Build the per-setup SDK machinery: connect the MCP server, construct
  * the Agent + Runner pair. Both `execute` (single-shot, runs once and
  * closes) and `openScope` (long-lived, scope.run() called N times) share
@@ -442,19 +544,42 @@ export class OpenAIAgentsHarness implements AgentHarness {
 async function prepareOpenAIRun(
   setup: HarnessScopeSetup,
   testOverrides: OpenAIAgentsHarnessTestOverrides = {},
+  outputSchema?: HarnessExecuteInput['outputSchema'],
 ): Promise<{
-  agent: Agent;
+  agent: Agent<unknown, any>;
   runner: Runner;
   mcpServer: ReturnType<typeof createLocalVaultMcpServer>;
 }> {
   const preparedExecution = await prepareLocalProviderExecution(setup.provider, setup.model);
   const mcpServer = createLocalVaultMcpServer(setup.toolSurface);
   await mcpServer.connect();
+  // Only attach `modelSettings` for models the SDK itself recognizes as
+  // GPT-5-family reasoning models (`gpt5ReasoningSettingsRequired`, exported
+  // by @openai/agents-core's defaultModel.js and re-exported from
+  // '@openai/agents'). The Agent constructor (agents-core/dist/agent.js
+  // ~96-116) already resets `modelSettings` to `{}` for a non-GPT-5 model
+  // UNLESS the caller explicitly passed `modelSettings` — so explicitly
+  // attaching `reasoning.effort`/`text.verbosity` here for e.g. gpt-4.1* or
+  // an arbitrary openrouter route would bypass that guard and send fields
+  // the model's API rejects with a 400. Omitting the key entirely for a
+  // non-reasoning-capable model preserves the SDK's own pre-branch default.
+  const modelSettings = gpt5ReasoningSettingsRequired(preparedExecution.model)
+    ? resolveModelSettings(setup.reasoningLevel, setup.provider)
+    : undefined;
   const agent = new Agent({
     name: 'myco-agent',
     instructions: setup.systemPrompt ?? 'You are the Myco agent harness.',
     model: preparedExecution.model,
     mcpServers: [mcpServer],
+    ...(modelSettings ? { modelSettings } : {}),
+    ...(outputSchema ? {
+      outputType: {
+        type: 'json_schema',
+        name: outputSchema.name,
+        strict: true,
+        schema: toStrictJsonObjectSchema(outputSchema.schema),
+      } as JsonSchemaDefinition,
+    } : {}),
   });
   const runner = new Runner({
     modelProvider: testOverrides.modelProvider ?? createProvider(preparedExecution.provider),

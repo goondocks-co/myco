@@ -26,6 +26,7 @@ import {
   SESSION_MYCO_TOOL_CALLS_TABLE,
   NOTIFICATIONS_TABLE,
   AGENT_RUN_WRITE_INTENTS_TABLE,
+  AGENT_RUN_EVENTS_TABLE,
   DIGEST_EXTRACT_REVISIONS_TABLE,
   CORTEX_INSTRUCTIONS_TABLE,
   MIGRATION_TASKS_TABLE,
@@ -124,6 +125,8 @@ export const MIGRATIONS: Migration[] = [
   { version: 62, migrate: (db) => migrateV61ToV62(db) },
   { version: 63, migrate: (db) => migrateV62ToV63(db) },
   { version: 64, migrate: (db) => migrateV63ToV64(db) },
+  { version: 65, migrate: (db) => migrateV64ToV65(db) },
+  { version: 66, migrate: (db) => migrateV65ToV66(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4030,6 +4033,57 @@ function migrateV63ToV64(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(64, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v64 -> v65: add agent_run_events, the append-only lifecycle-event log
+ * for the harness-neutral hook system (preToolUse/postToolUse/phaseStart/
+ * phaseEnd). See docs/superpowers/specs/2026-07-01-harness-hook-system-design.md.
+ */
+function migrateV64ToV65(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(AGENT_RUN_EVENTS_TABLE);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_id ON agent_run_events (run_id, id)');
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(65, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v65 -> v66: add classifier_verdict/classifier_reason to
+ * agent_run_write_intents for the destructive-write semantic check.
+ *
+ * Both columns are nullable with no default — NULL means "the semantic
+ * check either didn't run (feature disabled) or wasn't applicable to this
+ * tool", which is the correct backward-compatible reading for every row
+ * written before this feature existed.
+ */
+function migrateV65ToV66(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'agent_run_write_intents');
+    if (!cols.has('classifier_verdict')) {
+      db.prepare('ALTER TABLE agent_run_write_intents ADD COLUMN classifier_verdict TEXT').run();
+    }
+    if (!cols.has('classifier_reason')) {
+      db.prepare('ALTER TABLE agent_run_write_intents ADD COLUMN classifier_reason TEXT').run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(66, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
