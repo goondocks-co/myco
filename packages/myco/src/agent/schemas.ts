@@ -221,6 +221,7 @@ export const PhaseDefinitionSchema = z.object({
   provider: ProviderConfigSchema.optional(),
   skipPriorContext: z.boolean().optional(),
   readOnly: z.boolean().optional(),
+  purpose: z.string().min(1).max(2000).optional(),
   preCondition: PhasePreConditionSchema.optional(),
   postCondition: PhasePostConditionSchema.optional(),
   gateOnPriorMetadata: z.object({

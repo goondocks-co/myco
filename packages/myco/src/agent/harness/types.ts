@@ -94,6 +94,16 @@ export interface HarnessToolSurface {
    * write on its own. See VaultToolOptions.flaggedWritesAccumulator.
    */
   flaggedWritesAccumulator?: FlaggedWriteAccumulator;
+  /**
+   * Run logger for tool-level diagnostics, threaded through from
+   * `HarnessExecuteInput.logger`. `buildToolServer` (claude.ts) and
+   * `createLocalVaultMcpServer` (openai-local-mcp.ts) only ever see the
+   * `toolSurface`, not the sibling top-level `logger` field on
+   * `HarnessExecuteInput` — this field is what lets `createVaultTools`
+   * (via `wrapToolWithSemanticCheck`) emit `agent.write.classified` log
+   * lines. Optional everywhere — absence must not throw.
+   */
+  logger?: RunLogger;
 }
 
 /** One recorded semantic-check block, appended to a FlaggedWriteAccumulator. */

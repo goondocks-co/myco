@@ -384,6 +384,25 @@ describe('Grove-tier promotion — merge verification', () => {
     expect(rawOnDisk.agent).toBeUndefined();
   });
 
+  it('legacy project semantic_write_check_enabled is lifted to Grove config and stripped from myco.yaml', () => {
+    // Task 5.3 residue-lift: GROVE_PROMOTED_FIELDS now includes
+    // agent.semantic_write_check_enabled, so migrateLegacyProjectFields (run
+    // by loadMergedConfig with migrateTiers: true on every cache-miss load)
+    // lifts an explicit project-tier value into grove config.yaml the first
+    // time this project loads post-upgrade, exactly like the other promoted
+    // agent.* fields above.
+    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
+    writeProject(tmpDir, 'version: 3\nagent:\n  semantic_write_check_enabled: true\n');
+
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(config.agent.semantic_write_check_enabled).toBe(true);
+    const groveRaw = YAML.parse(fs.readFileSync(path.join(mycoHomeDir, 'groves', groveId, 'grove.yaml'), 'utf-8')) as Record<string, unknown>;
+    expect((groveRaw.agent as Record<string, unknown>).semantic_write_check_enabled).toBe(true);
+    const projectRaw = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
+    expect(projectRaw.agent).toBeUndefined();
+  });
+
   it('a grove-scoped field placed in the project tier is not honored in merged config (pruned)', () => {
     // Every myco-enabled project is Grove-bound; agent/skills are grove-scoped
     // and stripped from project myco.yaml. The old "no-Grove deferral" (keep a

@@ -156,6 +156,11 @@ phases:
 
       Final summary MUST be ≤ 6 lines: batches processed, spores created (by
       type), and supersedes applied. No per-spore retelling.
+    purpose: >-
+      Resolves spore lifecycle via vault_resolve_spore action "supersede" when
+      a new spore replaces an existing one with meaningful new detail, and
+      marks source prompt batches processed via vault_mark_processed as
+      extraction consumes them.
     tools:
       - vault_unprocessed
       - vault_spores
@@ -343,6 +348,11 @@ phases:
 
       Final summary MUST be ≤ 5 lines: how many wisdom spores created, how
       many supersedes applied, anything skipped. No retelling of the shortlist.
+    purpose: >-
+      Resolves source spores via vault_resolve_spore — action "consolidate"
+      for spores folded into a new wisdom spore, action "supersede" for
+      spores replaced by a richer one — superseding or consolidating them
+      out of active search and context injection.
     tools:
       - vault_spores
       - vault_release_state

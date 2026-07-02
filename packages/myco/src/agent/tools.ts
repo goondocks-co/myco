@@ -49,7 +49,7 @@ import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { AgentEmbeddingPort, AgentTeamSearchPort } from '@myco/agent/runtime/ports.js';
 import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import type { HarnessHooks, HarnessHookContext } from './harness/hooks.js';
-import type { HarnessId, ProviderConfig, ReasoningLevel } from '@myco/agent/types.js';
+import type { HarnessId, ProviderConfig, ReasoningLevel, RunLogger } from '@myco/agent/types.js';
 import type { FlaggedWriteAccumulator } from './harness/types.js';
 
 // Re-exports for backward compatibility
@@ -160,6 +160,15 @@ export interface VaultToolOptions {
    * alone (without `hookContext`) never fires.
    */
   hookContext?: HarnessHookContext;
+  /**
+   * Run logger for tool-level diagnostics. Threaded through so
+   * `wrapToolWithSemanticCheck` can emit one `agent.write.classified`
+   * line per rendered verdict (see HarnessToolSurface.logger for the
+   * full threading path from `HarnessExecuteInput.logger`). Optional —
+   * absent for any caller that doesn't pass one; every call site uses
+   * `logger?.info(...)` so absence never throws.
+   */
+  logger?: RunLogger;
 }
 
 /**
@@ -455,6 +464,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     deferredNames,
     hooks,
     hookContext,
+    logger,
   } = options ?? {};
   const projectId = rowProjectIdFromRequestContext(requestContext);
 
@@ -930,6 +940,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
           recordFlagAndThrow(toolDef.name, reason, undefined, phasePurpose.name, cacheKey);
         }
 
+        const classifyStartedAt = Date.now();
         const verdict = await classifyWriteIntent({
           harnessId,
           model,
@@ -938,6 +949,17 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
           phasePurpose,
           toolName: toolDef.name,
           toolArgs: args,
+        });
+        const latencyMs = Date.now() - classifyStartedAt;
+
+        logger?.info('agent.write.classified', `Semantic check verdict for ${toolDef.name}`, {
+          runId,
+          phase: phasePurpose.name,
+          toolName: toolDef.name,
+          verdict: verdict.verdict,
+          outcome: verdict.outcome,
+          latencyMs,
+          classifierTokens: verdict.usage?.totalTokens,
         });
 
         if (verdict.verdict === 'ok') {
@@ -1161,7 +1183,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 export function createVaultToolServer(
   agentId: string,
   runId: string,
-  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'phasePurpose' | 'semanticCheckEnabled' | 'harnessId' | 'model' | 'classifierReasoningLevel' | 'provider' | 'flaggedWritesAccumulator' | 'hooks' | 'hookContext'>,
+  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'phasePurpose' | 'semanticCheckEnabled' | 'harnessId' | 'model' | 'classifierReasoningLevel' | 'provider' | 'flaggedWritesAccumulator' | 'hooks' | 'hookContext' | 'logger'>,
 ) {
   const tools = createVaultTools(agentId, runId, options);
 
@@ -1191,7 +1213,7 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
-  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'phasePurpose' | 'semanticCheckEnabled' | 'harnessId' | 'model' | 'classifierReasoningLevel' | 'provider' | 'flaggedWritesAccumulator' | 'hooks' | 'hookContext' | 'deferredNames'> & { readOnly?: boolean },
+  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'phasePurpose' | 'semanticCheckEnabled' | 'harnessId' | 'model' | 'classifierReasoningLevel' | 'provider' | 'flaggedWritesAccumulator' | 'hooks' | 'hookContext' | 'deferredNames' | 'logger'> & { readOnly?: boolean },
 ) {
   const nameSet = new Set(toolNames);
   const allTools = createVaultTools(agentId, runId, { ...options, onlyNames: nameSet });
