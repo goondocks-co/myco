@@ -4,6 +4,7 @@ import {
   Agent,
   Runner,
   OpenAIProvider,
+  gpt5ReasoningSettingsRequired,
   type AgentInputItem,
   type JsonSchemaDefinition,
   type ModelProvider,
@@ -35,6 +36,7 @@ import {
   type LocalOpenAIBackendKind,
 } from '@myco/intelligence/local-openai-backends.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
+import { resolveModelSettings } from '@myco/agent/reasoning-levels.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { createInstrumentedFetch } from '@myco/utils/instrumented-fetch.js';
 
@@ -445,6 +447,7 @@ export class OpenAIAgentsHarness implements AgentHarness {
       provider: input.provider,
       toolSurface: input.toolSurface,
       logger: input.logger,
+      reasoningLevel: input.reasoningLevel,
     };
     const prepared = await prepareOpenAIRun(setup, this.testOverrides, input.outputSchema);
     try {
@@ -550,11 +553,25 @@ async function prepareOpenAIRun(
   const preparedExecution = await prepareLocalProviderExecution(setup.provider, setup.model);
   const mcpServer = createLocalVaultMcpServer(setup.toolSurface);
   await mcpServer.connect();
+  // Only attach `modelSettings` for models the SDK itself recognizes as
+  // GPT-5-family reasoning models (`gpt5ReasoningSettingsRequired`, exported
+  // by @openai/agents-core's defaultModel.js and re-exported from
+  // '@openai/agents'). The Agent constructor (agents-core/dist/agent.js
+  // ~96-116) already resets `modelSettings` to `{}` for a non-GPT-5 model
+  // UNLESS the caller explicitly passed `modelSettings` — so explicitly
+  // attaching `reasoning.effort`/`text.verbosity` here for e.g. gpt-4.1* or
+  // an arbitrary openrouter route would bypass that guard and send fields
+  // the model's API rejects with a 400. Omitting the key entirely for a
+  // non-reasoning-capable model preserves the SDK's own pre-branch default.
+  const modelSettings = gpt5ReasoningSettingsRequired(preparedExecution.model)
+    ? resolveModelSettings(setup.reasoningLevel, setup.provider)
+    : undefined;
   const agent = new Agent({
     name: 'myco-agent',
     instructions: setup.systemPrompt ?? 'You are the Myco agent harness.',
     model: preparedExecution.model,
     mcpServers: [mcpServer],
+    ...(modelSettings ? { modelSettings } : {}),
     ...(outputSchema ? {
       outputType: {
         type: 'json_schema',

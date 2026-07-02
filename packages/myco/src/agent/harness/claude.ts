@@ -20,6 +20,7 @@ import {
   createVaultToolServer,
 } from '@myco/agent/tools.js';
 import { buildPhaseEnv, isLocalProvider } from '@myco/agent/provider.js';
+import { resolveThinkingConfig } from '@myco/agent/reasoning-levels.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { resolveClaudeCodeExecutable } from './claude-code-executable.js';
 
@@ -72,13 +73,6 @@ function getIsolatedPluginCacheDir(): string {
   }
   isolatedPluginCacheDir = dir;
   return dir;
-}
-
-/** Disable thinking on local providers whose endpoints don't accept the SDK's reasoning enum. */
-function suppressEffortLeakForLocalProvider(
-  provider?: HarnessExecuteInput['provider'],
-): { thinking?: { type: 'disabled' } } {
-  return isLocalProvider(provider) ? { thinking: { type: 'disabled' as const } } : {};
 }
 
 /**
@@ -304,6 +298,7 @@ function pickClaudeSetup(input: HarnessExecuteInput): HarnessScopeSetup {
     provider: input.provider,
     toolSurface: input.toolSurface,
     logger: input.logger,
+    reasoningLevel: input.reasoningLevel,
   };
 }
 
@@ -399,7 +394,7 @@ async function runClaudeQuery(
       allowDangerouslySkipPermissions: true,
       persistSession: options.persistSession,
       env: prepared.env,
-      ...suppressEffortLeakForLocalProvider(setup.provider),
+      thinking: resolveThinkingConfig(setup.reasoningLevel, setup.provider),
       ...(prepared.claudeCodeExecutable ? { pathToClaudeCodeExecutable: prepared.claudeCodeExecutable } : {}),
       ...(options.sessionRef ? { sessionId: options.sessionRef } : {}),
       ...(options.abortController ? { abortController: options.abortController } : {}),

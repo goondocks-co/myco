@@ -48,6 +48,7 @@ import type {
   PhaseDefinition,
   PhaseResult,
   ProviderConfig,
+  ReasoningLevel,
   RuntimeUsage,
 } from './types.js';
 import { aggregateUsage } from './executor-state.js';
@@ -151,6 +152,8 @@ export interface ExecutePhaseInput {
   ctx: PhaseLoopContext;
   phasePrompt: string;
   phaseModel: string;
+  /** Reasoning tier resolved for this phase by `resolvePhaseExecution`. Forwarded to the harness so it can set a provider-native thinking/reasoning-effort control. */
+  reasoningLevel?: ReasoningLevel;
   phase: PhaseDefinition;
   toolSurface: HarnessToolSurface;
   provider?: ProviderConfig;
@@ -169,7 +172,7 @@ export interface ExecutePhaseInput {
 export async function executePhase(
   input: ExecutePhaseInput,
 ): Promise<PhaseResult & { sessionData?: unknown }> {
-  const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData, priorPhaseResults } = input;
+  const { ctx, phasePrompt, phaseModel, reasoningLevel, phase, toolSurface, provider, sessionId, sessionData, priorPhaseResults } = input;
 
   if (phase.mode === 'map') {
     return runMapPhaseAdapter(input);
@@ -271,6 +274,7 @@ export async function executePhase(
       result = await harness.execute({
         prompt: phasePrompt,
         model: phaseModel,
+        reasoningLevel,
         maxTurns: phase.maxTurns,
         systemPrompt: ctx.systemPrompt,
         provider,
@@ -297,6 +301,7 @@ export async function executePhase(
       result = await harness.execute({
         prompt: phasePrompt,
         model: phaseModel,
+        reasoningLevel,
         maxTurns: phase.maxTurns,
         systemPrompt: ctx.systemPrompt,
         provider,
@@ -398,7 +403,7 @@ function snapshotMetadata(toolSurface: HarnessToolSurface): Record<string, unkno
 // ---------------------------------------------------------------------------
 
 async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult & { sessionData?: unknown }> {
-  const { ctx, phase, phaseModel, provider } = input;
+  const { ctx, phase, phaseModel, reasoningLevel, provider } = input;
   const logger = ctx.options?.logger;
   const harness = getAgentHarness(ctx.config.harness);
   const allTools = createVaultTools(ctx.agentId, ctx.runId, {
@@ -423,6 +428,7 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       runId: ctx.runId,
       agentId: ctx.agentId,
       phaseModel,
+      reasoningLevel,
       provider,
       vaultDir: ctx.vaultDir,
       projectRoot: ctx.projectRoot,
@@ -505,8 +511,9 @@ export async function executeSingleQuery(
   sessionData?: unknown;
 }> {
   const harness = getAgentHarness(ctx.config.harness);
+  const effectiveReasoningLevel = ctx.config.execution?.reasoningLevel ?? ctx.config.reasoningLevel;
   const effectiveModel = resolveReasoningModel(
-    ctx.config.execution?.reasoningLevel ?? ctx.config.reasoningLevel,
+    effectiveReasoningLevel,
     provider,
     ctx.config.model,
   );
@@ -522,6 +529,7 @@ export async function executeSingleQuery(
   const baseInput = {
     prompt: taskPrompt,
     model: effectiveModel,
+    reasoningLevel: effectiveReasoningLevel,
     maxTurns: ctx.config.maxTurns,
     systemPrompt: ctx.systemPrompt,
     provider,
@@ -632,8 +640,9 @@ export async function executePhasedQuery(
       : [];
 
     const orchestratorPrompt = composeOrchestratorPrompt(vaultContext, phases, contextResults);
+    const orchestratorReasoningLevel = config.orchestrator.reasoningLevel ?? config.execution?.reasoningLevel ?? config.reasoningLevel;
     const orchestratorModel = config.orchestrator.model ?? resolveReasoningModel(
-      config.orchestrator.reasoningLevel ?? config.execution?.reasoningLevel ?? config.reasoningLevel,
+      orchestratorReasoningLevel,
       ctx.taskProviderOverride ?? config.execution?.provider,
       config.model,
     );
@@ -643,6 +652,7 @@ export async function executePhasedQuery(
     const orchestratorExecuteInput = {
       prompt: orchestratorPrompt,
       model: orchestratorModel,
+      reasoningLevel: orchestratorReasoningLevel,
       maxTurns: orchestratorMaxTurns,
       systemPrompt,
       provider: ctx.taskProviderOverride ?? config.execution?.provider,
@@ -751,6 +761,7 @@ export async function executePhasedQuery(
       const phaseProvider = resolved.provider;
       const effectiveMaxTurns = resolved.maxTurns;
       const phaseModel = resolved.model;
+      const phaseReasoningLevel = resolved.reasoningLevel;
 
       const basePhasePrompt = composePhasePrompt({
         vaultContext,
@@ -817,6 +828,7 @@ export async function executePhasedQuery(
         phase,
         phasePrompt,
         phaseModel,
+        reasoningLevel: phaseReasoningLevel,
         phaseProvider,
         effectivePhase,
         sessionId,
@@ -847,6 +859,7 @@ export async function executePhasedQuery(
           ctx,
           phasePrompt: waveInput.phasePrompt,
           phaseModel: waveInput.phaseModel,
+          reasoningLevel: waveInput.reasoningLevel,
           phase: waveInput.effectivePhase,
           toolSurface: waveInput.toolSurface,
           provider: waveInput.phaseProvider,

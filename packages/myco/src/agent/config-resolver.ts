@@ -148,6 +148,8 @@ function toProviderConfig(p: {
   base_url?: string;
   model?: string;
   reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
+  thinking_budget_map?: Partial<Record<'low' | 'default' | 'high', { budgetTokens: number } | { adaptive: true }>>;
+  effort_map?: Partial<Record<'low' | 'default' | 'high', { effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; verbosity?: 'low' | 'medium' | 'high' }>>;
   context_length?: number;
 }): ProviderConfig {
   return {
@@ -156,6 +158,8 @@ function toProviderConfig(p: {
     baseUrl: p.base_url,
     model: p.model,
     reasoningMap: p.reasoning_map,
+    thinkingBudgetMap: p.thinking_budget_map,
+    effortMap: p.effort_map,
     contextLength: p.context_length,
   };
 }

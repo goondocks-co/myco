@@ -340,3 +340,103 @@ describe('ClaudeSdkHarness.supports', () => {
     expect(runtime.supports('structuredOutput')).toBe(true);
   });
 });
+
+describe('ClaudeSdkHarness.execute — thinking-config wiring', () => {
+  beforeEach(() => {
+    queryCalls.length = 0;
+    scopedServerCalls.length = 0;
+    fullServerCalls.length = 0;
+    structuredOutputOverride = undefined;
+  });
+
+  it('resolves reasoningLevel "high" to an enabled thinking budget for an anthropic provider', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'high',
+      provider: { type: 'anthropic' },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'enabled', budgetTokens: 32000 });
+  });
+
+  it('defaults to adaptive thinking when reasoningLevel is omitted for a non-local provider', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({ provider: { type: 'anthropic' } }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'adaptive' });
+  });
+
+  it('defaults to adaptive thinking when no provider is supplied at all', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput());
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'adaptive' });
+  });
+
+  it('honors a provider thinkingBudgetMap override for a non-local provider', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'low',
+      provider: {
+        type: 'anthropic',
+        thinkingBudgetMap: { low: { budgetTokens: 2048 } },
+      },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'enabled', budgetTokens: 2048 });
+  });
+
+  it('forces disabled thinking for a local (ollama) provider even with a thinkingBudgetMap configured and reasoningLevel "high"', async () => {
+    // Regression: suppressEffortLeakForLocalProvider used to force
+    // `{ type: 'disabled' }` unconditionally for local providers, before
+    // any tier-based thinking logic ran. resolveThinkingConfig must
+    // preserve that ordering — a local provider's thinkingBudgetMap
+    // override (if one is even configured) must never leak a non-disabled
+    // thinking config to an endpoint that can't parse the SDK's reasoning
+    // fields.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'high',
+      provider: {
+        type: 'ollama',
+        thinkingBudgetMap: { high: { budgetTokens: 32000 } },
+      },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('forces disabled thinking for a local (lmstudio) provider regardless of reasoningLevel', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'low',
+      provider: { type: 'lmstudio' },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('forces disabled thinking for a local (openai-compatible) provider regardless of reasoningLevel', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      reasoningLevel: 'default',
+      provider: { type: 'openai-compatible' },
+    }));
+
+    expect(queryCalls[0].options.thinking).toEqual({ type: 'disabled' });
+  });
+});
