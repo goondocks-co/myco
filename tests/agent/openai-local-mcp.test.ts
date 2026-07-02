@@ -48,6 +48,35 @@ describe('createLocalVaultMcpServer', () => {
     await server.close();
   });
 
+  // Regression: a deferred tool's stub schema is a full Zod object schema
+  // (`z.object({}).passthrough()`, see agent/tools/deferred-tools.ts), not
+  // a raw `{ key: ZodType }` shape. normalizeInputSchema() previously only
+  // handled a raw shape and would crash (or silently mis-advertise) on a
+  // full schema — assert the advertised JSON Schema is genuinely
+  // permissive (additionalProperties: true), matching the Claude-harness
+  // MCP dispatch path's own permissive stub behavior.
+  it('advertises a permissive JSON Schema for a deferred tool stub', async () => {
+    const server = createLocalVaultMcpServer({
+      agentId: 'agent-test',
+      runId: 'run-test',
+      toolNames: ['vault_spores'],
+      deferredNames: ['vault_spores'],
+      requestContext: TEST_REQUEST_CONTEXT,
+    });
+
+    const tools = await server.listTools();
+    const stubbed = tools.find((tool) => tool.name === 'vault_spores');
+
+    expect(stubbed).toBeDefined();
+    expect(stubbed?.inputSchema).toMatchObject({
+      type: 'object',
+      properties: {},
+      additionalProperties: true,
+    });
+
+    await server.close();
+  });
+
   describe('hook threading', () => {
     // Regression: LocalVaultMcpServer's createVaultTools() call used to omit
     // toolSurface.hooks/hookContext, so wrapToolWithAudit inside tools.ts

@@ -361,6 +361,9 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "code_grep",
           "vault_report"
         ],
+        "deferredTools": [
+          "vault_scan_skill_contamination"
+        ],
         "maxTurns": 36,
         "reasoningLevel": "default",
         "required": true,

@@ -7,8 +7,19 @@ import type { HarnessToolSurface } from './types.js';
 interface LocalMcpTool {
   name: string;
   description?: string;
-  inputSchema?: ZodRawShape;
+  /**
+   * Either a raw `{ key: ZodType }` shape (every hand-authored `tool(...)`
+   * call in this codebase) or a full Zod object schema — the deferred-tool
+   * stub in `agent/tools/deferred-tools.ts` uses `z.object({}).passthrough()`
+   * so arbitrary args reach the real handler. See `normalizeInputSchema`.
+   */
+  inputSchema?: ZodRawShape | z.ZodTypeAny;
   handler: (args: Record<string, unknown>, extra?: unknown) => Promise<{ content: Array<{ type: 'text'; text: string }> }>;
+}
+
+/** True when `value` is itself a Zod schema instance, not a raw shape. */
+function isZodSchema(value: unknown): value is z.ZodTypeAny {
+  return typeof value === 'object' && value !== null && '_zod' in value;
 }
 
 class LocalVaultMcpServer implements MCPServer {
@@ -41,9 +52,14 @@ class LocalVaultMcpServer implements MCPServer {
       metadataAccumulator: toolSurface.metadataAccumulator,
       hooks: toolSurface.hooks,
       hookContext: toolSurface.hookContext,
+      deferredNames: toolSurface.deferredNames ? new Set(toolSurface.deferredNames) : undefined,
     }).filter((tool) => !toolSurface.readOnly || tool.annotations?.readOnlyHint === true);
+    // vault_search_tools is synthesized by createVaultTools when any tool
+    // in scope is deferrable and is never itself in `toolNames` — let it
+    // through the name-scoping filter explicitly, same as
+    // createScopedVaultToolServer's Claude-harness counterpart.
     this.tools = (nameSet
-      ? allTools.filter((tool) => nameSet.has(tool.name))
+      ? allTools.filter((tool) => nameSet.has(tool.name) || tool.name === 'vault_search_tools')
       : allTools) as LocalMcpTool[];
   }
 
@@ -88,7 +104,7 @@ class LocalVaultMcpServer implements MCPServer {
   }
 }
 
-function normalizeInputSchema(schema: ZodRawShape | undefined) {
+function normalizeInputSchema(schema: ZodRawShape | z.ZodTypeAny | undefined) {
   if (!schema) {
     return {
       type: 'object' as const,
@@ -98,12 +114,20 @@ function normalizeInputSchema(schema: ZodRawShape | undefined) {
     };
   }
 
-  const jsonSchema = z.toJSONSchema(z.object(schema as Record<string, z.ZodTypeAny>));
+  // A full Zod schema (e.g. the deferred-tool stub's `z.object({}).passthrough()`)
+  // is passed straight to z.toJSONSchema — do NOT re-wrap it in z.object(),
+  // which would fail on a non-shape input. `additionalProperties` on a
+  // passthrough schema serializes as `{}` (an empty permissive schema, not
+  // the literal `true`) — normalize any non-`false` value to `true` so a
+  // deliberately permissive stub schema doesn't get read back as closed.
+  const jsonSchema = isZodSchema(schema)
+    ? z.toJSONSchema(schema)
+    : z.toJSONSchema(z.object(schema as Record<string, z.ZodTypeAny>));
   return {
     type: 'object' as const,
     properties: (jsonSchema.properties as Record<string, unknown> | undefined) ?? {},
     required: Array.isArray(jsonSchema.required) ? jsonSchema.required : [],
-    additionalProperties: jsonSchema.additionalProperties === true,
+    additionalProperties: jsonSchema.additionalProperties !== undefined && jsonSchema.additionalProperties !== false,
   };
 }
 

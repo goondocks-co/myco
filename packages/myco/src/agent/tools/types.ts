@@ -18,6 +18,24 @@ export interface MycoToolDefinition<TInput = any> {
   inputSchema?: unknown;
   annotations?: SdkMcpToolDefinition<any>['annotations'];
   handler: (args: TInput, extra: unknown) => Promise<any>;
+  /**
+   * When true, this tool's full schema is withheld from the initial phase
+   * tool surface. The tool remains callable (its handler is never modified
+   * or gated by this flag) but its `description`/`inputSchema` are replaced
+   * with a lightweight stub in the surface handed to the harness/model.
+   * The full schema becomes visible via `vault_search_tools`, a meta-tool
+   * synthesized by `createVaultTools()` whenever at least one tool in the
+   * current phase's scope is deferrable. See
+   * docs/superpowers/specs/2026-07-01-tool-discovery-at-scale-design.md.
+   */
+  deferrable?: boolean;
+  /**
+   * One-line (<=80 char) summary shown in `vault_search_tools` results in
+   * place of this tool's full description when `deferrable` is true.
+   * Required (enforced at the factory level, not the type level) whenever
+   * `deferrable` is set.
+   */
+  searchSummary?: string;
 }
 
 export function toSdkMcpToolDefinition<TInput>(

@@ -249,6 +249,52 @@ describe('PhaseDefinitionSchema — map mode', () => {
     const parsed = PhaseDefinitionSchema.parse(phase);
     expect(parsed.onItemError).toBe('skip');
   });
+
+  it('accepts deferredTools that is a subset of tools', () => {
+    const phase = { ...baseFreeForm, tools: ['vault_recall', 'vault_report'], deferredTools: ['vault_report'] };
+    expect(PhaseDefinitionSchema.safeParse(phase).success).toBe(true);
+  });
+
+  it('rejects deferredTools containing a name not in tools', () => {
+    const phase = { ...baseFreeForm, tools: ['vault_recall'], deferredTools: ['vault_report'] };
+    const result = PhaseDefinitionSchema.safeParse(phase);
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects deferredTools on a mode: map phase — map-phase execution never reads it', () => {
+    const phase = {
+      name: 'describe',
+      prompt: 'unused',
+      tools: ['vault_report'],
+      deferredTools: ['vault_report'],
+      maxTurns: 60,
+      required: true,
+      mode: 'map',
+      perItemMaxTurns: 1,
+      source: { tool: 'canopy_describe_next', args: { limit: 10 }, itemsPath: 'entries' },
+      item: { prompt: 'describe {{ item.path }}' },
+      sink: { tool: 'canopy_describe_write', argMap: { path: '{{ item.path }}' } },
+    };
+    const result = PhaseDefinitionSchema.safeParse(phase);
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts an empty deferredTools array on a mode: map phase', () => {
+    const phase = {
+      name: 'describe',
+      prompt: 'unused',
+      tools: ['vault_report'],
+      deferredTools: [],
+      maxTurns: 60,
+      required: true,
+      mode: 'map',
+      perItemMaxTurns: 1,
+      source: { tool: 'canopy_describe_next', args: { limit: 10 }, itemsPath: 'entries' },
+      item: { prompt: 'describe {{ item.path }}' },
+      sink: { tool: 'canopy_describe_write', argMap: { path: '{{ item.path }}' } },
+    };
+    expect(PhaseDefinitionSchema.safeParse(phase).success).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

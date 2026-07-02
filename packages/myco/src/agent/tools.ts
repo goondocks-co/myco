@@ -11,14 +11,16 @@
  *                    vault_set_state, vault_read_digest, vault_write_digest,
  *                    vault_mark_processed
  * - Observability (1): vault_report
- * - Skill tools (10): vault_skill_survey_prepare,
+ * - Skill tools (11): vault_skill_survey_prepare,
  *                    vault_skill_survey_bundle_decisions,
  *                    vault_skill_survey_reconciliation_plan,
  *                    vault_skill_survey_apply_reconciliation,
  *                    vault_skill_candidates, vault_skill_records,
  *                    vault_scan_skill_contamination, vault_write_skill,
- *                    vault_stage_skill, vault_finalize_skill
- * - Canopy tools (2): canopy_describe_next, canopy_describe_write
+ *                    vault_stage_skill, vault_finalize_skill,
+ *                    vault_edit_skill
+ * - Canopy tools (4): canopy_describe_next, canopy_describe_write,
+ *                    canopy_list, canopy_describe_charge
  *
  * `agentId` and `runId` are captured in closures — tools inject them
  * automatically so the agent cannot impersonate another agent.
@@ -37,6 +39,7 @@ import { createPhaseMetadataTools, PHASE_METADATA_TOOL_NAMES } from './tools/pha
 import { createSkillTools } from './tools/skill-tools.js';
 import { createExplorationTools } from './tools/exploration-tools.js';
 import { createCanopyTools } from './tools/canopy-tools.js';
+import { applyDeferredStubs, buildSearchToolsTool } from './tools/deferred-tools.js';
 import { textResult, toSdkMcpToolDefinitions } from './tools/types.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
@@ -85,6 +88,14 @@ export interface VaultToolOptions {
    * phase loop — the tool then no-ops gracefully.
    */
   metadataAccumulator?: Map<string, unknown>;
+  /**
+   * Tool names to mark `deferrable: true` before the deferred-loading pass
+   * runs. Names outside the tool set this call actually builds (e.g. a
+   * name not in `onlyNames`) are silently ignored — deferral only ever
+   * narrows within the already-scoped set, never widens it. See
+   * docs/superpowers/specs/2026-07-01-tool-discovery-at-scale-design.md §3.3.
+   */
+  deferredNames?: Set<string>;
   /**
    * Harness-neutral lifecycle hooks. When both `hooks` and `hookContext`
    * are supplied, `wrapToolWithAudit` emits `preToolUse` before every tool
@@ -352,6 +363,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     dryRun,
     metadataAccumulator,
     onlyNames,
+    deferredNames,
     hooks,
     hookContext,
   } = options ?? {};
@@ -432,7 +444,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     ...(needsAll || setsOverlap(onlyNames!, PHASE_METADATA_TOOL_NAMES_SET) ? createPhaseMetadataTools(deps) : []),
   ];
 
-  return tools.map((toolDef) => {
+  const wrapped: MycoToolDefinition<any>[] = tools.map((toolDef) => {
     const typed = toolDef as MycoToolDefinition<any>;
     // Dry-run interceptor is applied FIRST (replacing the handler),
     // THEN the audit wrapper wraps on top. This way the audit trail
@@ -448,7 +460,62 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
       && !DRY_RUN_EXEMPT_TOOLS.has(typed.name);
     const inner = shouldIntercept ? wrapToolWithDryRun(typed) : typed;
     return wrapToolWithAudit(inner, hooks, hookContext);
-  }) as typeof tools;
+  });
+
+  // Deferred-loading pass: built from the FULLY WRAPPED tool list so
+  // vault_search_tools returns each deferred tool's real (post-wrap)
+  // description/schema, and so the meta-tool sees the exact set the
+  // harness/model will receive. Runs after audit/dry-run wrapping — the
+  // wrappers only replace `handler`, never `description`/`inputSchema`,
+  // so ordering here does not affect wrapper behavior in either direction.
+  //
+  // The synthesized vault_search_tools meta-tool is itself wrapped with
+  // wrapToolWithAudit (passing the same hooks/hookContext as every other
+  // tool, so it participates in preToolUse/postToolUse emission exactly
+  // like a real tool) before being appended — every tool call, including
+  // calls to this meta-tool, must produce an agent_turns audit row. It is
+  // intentionally NOT passed through wrapToolWithDryRun: it is a pure read
+  // (readOnlyHint: true, see Task 2) and is exempt from dry-run interception
+  // the same way all other read tools are.
+  // deferredNames marks additional tools deferrable on top of whatever a
+  // tool factory already set via its own `deferrable` field — task-YAML
+  // opt-in (Task 4) layers on top of code-level opt-in (Task 2/3) rather
+  // than replacing it. Set.has() against the already-scoped `wrapped`
+  // list means a stale/typo'd name silently matches nothing here; the
+  // YAML-load-time refine on PhaseDefinitionSchema is what catches that.
+  //
+  // Scope-leak guard: `onlyNames` only narrows which tool-GROUP factories
+  // run (see setsOverlap above) — a group that overlaps `onlyNames` still
+  // produces every tool in that group, including ones outside the
+  // caller's declared surface. Without intersecting against `onlyNames`
+  // here, a factory-level `deferrable: true` tool (or a `deferredNames`
+  // entry) that ships in the same group as a requested tool but is itself
+  // NOT in `onlyNames` would still feed `buildSearchToolsTool`'s closure —
+  // so `vault_search_tools` would disclose its name/description/schema
+  // via search results even though the tool itself is correctly excluded
+  // from the returned array by the caller's own name-scoping filter
+  // (createScopedVaultToolServer / LocalVaultMcpServer). Intersecting
+  // here means the closure never captures an out-of-surface tool in the
+  // first place — no separate fix needed at either call site.
+  const withDeferredFlags = wrapped.map((t) => {
+    const requestedDeferral = t.deferrable === true || (deferredNames?.has(t.name) ?? false);
+    const inScope = !onlyNames || onlyNames.has(t.name);
+    const deferrable = requestedDeferral && inScope;
+    if (deferrable) {
+      return { ...t, deferrable: true, searchSummary: t.searchSummary ?? t.description };
+    }
+    // A tool a factory marked `deferrable: true` that falls outside
+    // `onlyNames` must have that flag cleared, not just left alone —
+    // applyDeferredStubs only checks `t.deferrable === true` (it has no
+    // scope awareness of its own), so an unscoped out-of-surface tool
+    // would still get stubbed into an unreachable dead stub otherwise.
+    return t.deferrable === true ? { ...t, deferrable: false } : t;
+  });
+  const searchTool = buildSearchToolsTool(withDeferredFlags);
+  const withStubs = applyDeferredStubs(withDeferredFlags);
+  return (searchTool
+    ? [...withStubs, wrapToolWithAudit(searchTool, hooks, hookContext)]
+    : withStubs) as typeof tools;
 
   /**
    * Outer wrapper applied only when `dryRun === true` and the tool is a
@@ -747,7 +814,7 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
-  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'hooks' | 'hookContext'> & { readOnly?: boolean },
+  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'hooks' | 'hookContext' | 'deferredNames'> & { readOnly?: boolean },
 ) {
   const nameSet = new Set(toolNames);
   const allTools = createVaultTools(agentId, runId, { ...options, onlyNames: nameSet });
@@ -756,7 +823,12 @@ export function createScopedVaultToolServer(
   const eligible = options?.readOnly
     ? allTools.filter((t) => t.annotations?.readOnlyHint === true)
     : allTools;
-  const scopedTools = eligible.filter((t) => nameSet.has(t.name));
+  // vault_search_tools is synthesized by createVaultTools when any tool in
+  // this scope is deferrable — it is never itself in `toolNames` (the
+  // phase's declared tools list), so the name-scoping filter below must
+  // let it through explicitly or deferred tools would have no discovery
+  // path once scoped down to a phase's tool subset.
+  const scopedTools = eligible.filter((t) => nameSet.has(t.name) || t.name === 'vault_search_tools');
 
   return createSdkMcpServer({
     name: 'myco-vault',
