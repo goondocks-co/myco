@@ -54,6 +54,8 @@ export interface AgentDefinition {
  */
 import type { PhasePreConditionKind } from './phase-precondition-kinds.js';
 export type { PhasePreConditionKind };
+import type { PhasePostConditionKind } from './phase-postcondition-kinds.js';
+export type { PhasePostConditionKind };
 
 export interface PhaseDefinition {
   name: string;
@@ -87,6 +89,15 @@ export interface PhaseDefinition {
    * prevent paying for LLM turns that would only discover "no work."
    */
   preCondition?: PhasePreConditionKind;
+  /**
+   * Optional mechanical postcondition. When set, the phase loop runs the
+   * registered deterministic check after harness execution on an
+   * otherwise-completed phase; on failure the result is converted to
+   * `failed` (same contract as the semantic-check flagged-writes
+   * conversion). Use for phases whose downstream consumers require a
+   * specific report/state contract the model can silently skip.
+   */
+  postCondition?: PhasePostConditionKind;
   /**
    * Optional cross-phase skip gate. When set, the phase loop reads the
    * named upstream phase's emitted `metadata[key]` and skips THIS phase
@@ -172,6 +183,16 @@ export interface PhaseResult {
    * `PhaseCheckpoint.semanticCheckBlocked` in executor-state.ts.
    */
   semanticCheckBlocked?: boolean;
+  /**
+   * True when this phase's `status: 'failed'` came from an unsatisfied
+   * `PhaseDefinition.postCondition` converting an otherwise-"completed"
+   * result — not from a hard runtime error. Persisted onto
+   * `PhaseCheckpoint` so a resumed run's `reuseSession` exclusion can
+   * refuse to reattach to a session whose history is the model's own
+   * non-compliant completion (a reused session invites "as established,
+   * no action needed" repeat failures).
+   */
+  postConditionFailed?: boolean;
 }
 
 /**
