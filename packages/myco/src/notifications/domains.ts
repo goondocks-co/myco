@@ -15,6 +15,7 @@ export function registerBuiltinDomains(): void {
     types: [
       { id: 'agent.task.success', label: 'Task completed', defaultMode: 'summary', defaultLevel: 'success' },
       { id: 'agent.task.failure', label: 'Task failed', defaultMode: 'summary', defaultLevel: 'error' },
+      { id: 'agent.write.flagged', label: 'Destructive write flagged', defaultMode: 'banner', defaultLevel: 'error' },
     ],
   });
 

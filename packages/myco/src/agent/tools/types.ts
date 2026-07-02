@@ -107,6 +107,12 @@ export interface VaultToolDeps {
    * expensive multi-step work that the interceptor can't express.
    */
   dryRun?: boolean;
+  /**
+   * The calling phase's declared name and a bounded excerpt of its
+   * prompt. Populated by createVaultTools from VaultToolOptions.
+   * See HarnessToolSurface.phasePurpose for the full rationale.
+   */
+  phasePurpose?: { name: string; promptExcerpt: string };
   /** Record a turn in the audit trail. Returns the inserted row id when available. */
   recordTurn: (toolName: string, toolInput: unknown) => number | null;
   /**

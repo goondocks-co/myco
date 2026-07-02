@@ -213,6 +213,18 @@ describe('vault tools', () => {
     });
   });
 
+  describe('phasePurpose plumbing', () => {
+    it('passes phasePurpose through to tool deps without altering tool behavior', () => {
+      const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: TEST_REQUEST_CONTEXT,
+        phasePurpose: { name: 'consolidate-write', promptExcerpt: 'Merge related spores into a wisdom note.' },
+      });
+      // Behavior-neutral: passing phasePurpose must not change tool count or names.
+      expect(tools.length).toBeGreaterThan(0);
+      expect(tools.some((t) => t.name === 'vault_create_spore')).toBe(true);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Read tools
   // -------------------------------------------------------------------------

@@ -55,7 +55,63 @@ export interface HarnessToolSurface {
    * PreToolUseEvent/PostToolUseEvent.
    */
   hookContext?: HarnessHookContext;
+  /**
+   * The calling phase's declared name and a bounded excerpt of its prompt.
+   * Threaded down so the semantic-check wrapper (createVaultTools) can
+   * compare a destructive write's arguments against what the phase says
+   * it's there to do. Absent for map-phase per-item surfaces, single-query
+   * paths (executeSingleQuery), and any caller outside the phase loop — the
+   * semantic check simply can't run without it (see tools.ts
+   * wrapToolWithSemanticCheck).
+   */
+  phasePurpose?: { name: string; promptExcerpt: string };
+  /** See VaultToolOptions.semanticCheckEnabled in tools.ts. */
+  semanticCheckEnabled?: boolean;
+  /** See VaultToolOptions.harnessId in tools.ts. */
+  harnessId?: HarnessId;
+  /** See VaultToolOptions.model in tools.ts. */
+  model?: string;
+  /** See VaultToolOptions.classifierReasoningLevel in tools.ts. */
+  classifierReasoningLevel?: ReasoningLevel;
+  /**
+   * The calling phase's resolved provider config. Threaded through so the
+   * semantic-check wrapper's classifyWriteIntent() call can build the
+   * classifier's provider env from the SAME provider the phase itself
+   * runs against — without this, a provider-override setup (Ollama/custom
+   * baseURL) makes the classifier fall back to the default provider env,
+   * which errors and permanently fails open. See VaultToolOptions.provider
+   * in tools.ts.
+   */
+  provider?: ProviderConfig;
+  /**
+   * Per-phase accumulator for tool calls the semantic-check wrapper
+   * flagged and blocked. wrapToolWithSemanticCheck (tools.ts) records one
+   * entry per flagged call; executePhase (phase-loop.ts) reads it back
+   * after harness.execute() returns and converts an otherwise-"completed"
+   * phase result to "failed" when non-empty — the SDK swallows a tool
+   * handler's throw into an isError tool result to the MODEL, so the
+   * phase-level try/catch around harness.execute() never sees a flagged
+   * write on its own. See VaultToolOptions.flaggedWritesAccumulator.
+   */
+  flaggedWritesAccumulator?: FlaggedWriteAccumulator;
 }
+
+/** One recorded semantic-check block, appended to a FlaggedWriteAccumulator. */
+export interface FlaggedWriteRecord {
+  toolName: string;
+  reason: string | null;
+  /** Token usage from the classifier call that produced this verdict, when available. */
+  classifierTokens?: number;
+}
+
+/**
+ * Per-phase accumulator for flagged destructive writes. A plain mutable
+ * array (not a Map, unlike metadataAccumulator) — order matters for the
+ * failure message and the retry-cap check counts distinct (toolName+args)
+ * keys, not accumulator length. See FlaggedWriteRecord and
+ * wrapToolWithSemanticCheck in tools.ts.
+ */
+export type FlaggedWriteAccumulator = FlaggedWriteRecord[];
 
 export interface HarnessExecuteInput {
   prompt: string;

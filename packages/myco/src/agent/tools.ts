@@ -32,6 +32,9 @@ import { epochSeconds } from '@myco/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { insertTurn, updateTurn } from '@myco/db/queries/turns.js';
 import { insertWriteIntent } from '@myco/db/queries/write-intents.js';
+import { notify } from '@myco/notifications/notify.js';
+import { classifyWriteIntent } from './write-classifier.js';
+import type { ClassifyWriteIntentResult } from './write-classifier.js';
 import { createReadTools } from './tools/read-tools.js';
 import { createWriteTools } from './tools/write-tools.js';
 import { createObservabilityTools } from './tools/observability-tools.js';
@@ -46,6 +49,8 @@ import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { AgentEmbeddingPort, AgentTeamSearchPort } from '@myco/agent/runtime/ports.js';
 import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import type { HarnessHooks, HarnessHookContext } from './harness/hooks.js';
+import type { HarnessId, ProviderConfig, ReasoningLevel } from '@myco/agent/types.js';
+import type { FlaggedWriteAccumulator } from './harness/types.js';
 
 // Re-exports for backward compatibility
 export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } from './tools/skill-validator.js';
@@ -88,6 +93,51 @@ export interface VaultToolOptions {
    * phase loop — the tool then no-ops gracefully.
    */
   metadataAccumulator?: Map<string, unknown>;
+  /**
+   * The calling phase's declared name and prompt excerpt. See
+   * HarnessToolSurface.phasePurpose. Threaded straight through to
+   * VaultToolDeps for the semantic-check wrapper.
+   */
+  phasePurpose?: { name: string; promptExcerpt: string };
+  /**
+   * Enables the semantic-check wrapper for destructiveHint tools. This is
+   * the SNAPSHOTTED per-run value from
+   * RunOptions.executionOverrides.semanticWriteCheckEnabled (Task 2b) —
+   * never re-read from live myco.yaml on a resumed run.
+   */
+  semanticCheckEnabled?: boolean;
+  /** Harness id to run the classifier call against — same harness the phase itself uses. */
+  harnessId?: HarnessId;
+  /** Fallback model for the classifier call if the provider has no matching reasoningMap entry. */
+  model?: string;
+  /**
+   * Reasoning tier for the classifier call. Snapshotted per-run from
+   * RunOptions.executionOverrides.classifierReasoningLevel (Task 2b),
+   * defaulting to 'low' — never a hardcoded literal inside the wrapper
+   * or inside write-classifier.ts.
+   */
+  classifierReasoningLevel?: ReasoningLevel;
+  /**
+   * The calling phase's resolved provider config, passed straight through
+   * to `classifyWriteIntent()`. Without this the classifier always builds
+   * its harness call against the DEFAULT provider env — on a
+   * provider-override setup (Ollama/custom baseURL) that errors and the
+   * classifier permanently fails open for the run, and any provider
+   * `reasoningMap` entry (a cheaper model for the classifier tier) is
+   * silently unreachable. See HarnessToolSurface.provider.
+   */
+  provider?: ProviderConfig;
+  /**
+   * Per-phase accumulator for flagged (blocked) destructive writes. When
+   * present, `wrapToolWithSemanticCheck` appends one record per flag
+   * verdict instead of relying solely on the thrown error to signal
+   * failure — the SDK converts a tool handler's throw into an `isError`
+   * tool result returned to the MODEL, so `executePhase`'s try/catch
+   * around `harness.execute()` never observes it on its own. Absent for
+   * any caller outside the phase loop (single-query, map-phase items) —
+   * the wrapper still throws in that case, it just can't also record.
+   */
+  flaggedWritesAccumulator?: FlaggedWriteAccumulator;
   /**
    * Tool names to mark `deferrable: true` before the deferred-loading pass
    * runs. Names outside the tool set this call actually builds (e.g. a
@@ -256,6 +306,18 @@ const REPEATED_READ_SUPPRESSION_THRESHOLD = 2;
 const REPEATED_READ_FAILURE_THRESHOLD = 4;
 
 /**
+ * Cap on DISTINCT (toolName + args) semantic-check flags per phase. Counts
+ * unique blocked calls, not total attempts — a retry of the SAME blocked
+ * call is served from FLAGGED_VERDICT_CACHE and never counts against this
+ * cap. Once a phase has accumulated this many distinct flagged attempts,
+ * every subsequent destructiveHint call short-circuits straight to
+ * 'blocked' with no classifier round-trip — a probing model that keeps
+ * varying its arguments to find one the classifier lets through must not
+ * be able to burn the phase's entire turn budget on classifier calls.
+ */
+const SEMANTIC_CHECK_DISTINCT_FLAG_CAP = 3;
+
+/**
  * Total number of vault tools defined. Derived from the union of the
  * seven tool-group sets above so this constant can never drift from the
  * actual factory output — adding a tool to a group bumps the count
@@ -276,6 +338,26 @@ export const VAULT_TOOL_COUNT =
 function setsOverlap(a: Set<string>, b: Set<string>): boolean {
   for (const item of a) { if (b.has(item)) return true; }
   return false;
+}
+
+/**
+ * Deterministic JSON serialization with object keys sorted recursively, so
+ * two structurally-identical tool-call args objects always produce the same
+ * string regardless of key insertion order. Used to key the semantic-check
+ * verdict cache — a retry of an identical blocked call must be recognized
+ * as identical even if the model re-emits the same args with different key
+ * ordering (some SDKs / models don't guarantee stable JSON key order).
+ */
+function stableSerialize(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerialize(item)).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    const entries = keys.map((key) => `${JSON.stringify(key)}:${stableSerialize((value as Record<string, unknown>)[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function truncateSummary(text: string | null): string | null {
@@ -362,6 +444,13 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     requestContext,
     dryRun,
     metadataAccumulator,
+    phasePurpose,
+    semanticCheckEnabled,
+    harnessId,
+    model,
+    classifierReasoningLevel,
+    provider,
+    flaggedWritesAccumulator,
     onlyNames,
     deferredNames,
     hooks,
@@ -393,6 +482,26 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
    * are rarely referenced by phase B reads/writes in practice.
    */
   const dryRunStubs = new Map<string, { tool: string; args: unknown; syntheticRow: unknown }>();
+
+  /**
+   * Semantic-check verdict cache, keyed by `${toolName} ${stableSerialize(args)}`.
+   * Scoped to this `createVaultTools` call — same per-phase lifetime as
+   * `dryRunStubs` above. A retry of an identical blocked call (a model
+   * re-attempting the same destructive write after the classifier flagged
+   * it) is served from here instead of paying a fresh classifier round
+   * trip, and does not record a second write-intent row or fire a second
+   * notification — see `wrapToolWithSemanticCheck`.
+   */
+  const semanticCheckVerdictCache = new Map<string, ClassifyWriteIntentResult>();
+
+  /**
+   * Count of DISTINCT flagged (toolName, args) pairs this phase has
+   * accumulated — a strict subset of `semanticCheckVerdictCache`'s entries
+   * (which also caches 'ok' verdicts). Tracked separately so an 'ok'-heavy
+   * phase doesn't spuriously eat into the distinct-flag cap; only actual
+   * flags count against `SEMANTIC_CHECK_DISTINCT_FLAG_CAP`.
+   */
+  let distinctFlagCount = 0;
 
   /**
    * Record a turn in the audit trail.
@@ -430,6 +539,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     dryRun,
     recordTurn,
     metadataAccumulator,
+    phasePurpose,
   };
 
   // When onlyNames is provided, skip factory calls for groups with no overlap
@@ -446,19 +556,37 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 
   const wrapped: MycoToolDefinition<any>[] = tools.map((toolDef) => {
     const typed = toolDef as MycoToolDefinition<any>;
-    // Dry-run interceptor is applied FIRST (replacing the handler),
-    // THEN the audit wrapper wraps on top. This way the audit trail
-    // still records a turn for every intercepted call — the audit
-    // wrapper calls our dry-run handler as its "original" and captures
-    // the synthetic payload just like any other response.
+    // Wrapper order: dry-run interceptor first (it fully replaces the
+    // handler and never calls the real one), then the semantic check
+    // (only reached for real, non-dry-run writes), then the audit
+    // wrapper outermost so every call — intercepted, flagged, or real —
+    // gets a turn recorded and participates in preToolUse/postToolUse
+    // hook emission exactly like any other tool call.
     //
-    // A tool qualifies for interception when dryRun is on, it is not
-    // a read (readOnlyHint !== true), and it is not on the exception
+    // A tool qualifies for dry-run interception when dryRun is on, it is
+    // not a read (readOnlyHint !== true), and it is not on the exception
     // list (DRY_RUN_EXEMPT_TOOLS).
-    const shouldIntercept = Boolean(dryRun)
+    const shouldDryRunIntercept = Boolean(dryRun)
       && typed.annotations?.readOnlyHint !== true
       && !DRY_RUN_EXEMPT_TOOLS.has(typed.name);
-    const inner = shouldIntercept ? wrapToolWithDryRun(typed) : typed;
+    // No tool-specific exemption set here — every destructiveHint tool is
+    // in scope for the classifier once the feature is enabled (design
+    // spec §2.1). That currently includes vault_resolve_spore,
+    // vault_mark_processed, vault_skill_survey_apply_reconciliation, and
+    // (since the harness-hygiene annotation sweep) the delete-capable
+    // vault_skill_candidates and vault_skill_records — the wrapper reads
+    // the live annotation rather than a hardcoded name list, so it never
+    // drifts from whichever tools actually carry destructiveHint: true.
+    const shouldSemanticCheck = Boolean(semanticCheckEnabled)
+      && !shouldDryRunIntercept
+      && typed.annotations?.destructiveHint === true;
+
+    let inner = typed;
+    if (shouldDryRunIntercept) {
+      inner = wrapToolWithDryRun(typed);
+    } else if (shouldSemanticCheck) {
+      inner = wrapToolWithSemanticCheck(typed);
+    }
     return wrapToolWithAudit(inner, hooks, hookContext);
   });
 
@@ -619,6 +747,162 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
         }
 
         return response;
+      },
+    };
+  }
+
+  /**
+   * Record one flagged/blocked write into the per-phase accumulator (when
+   * present) and throw the block error. Shared by both the classifier
+   * verdict path and the cap-exceeded short-circuit path below, so both
+   * routes into "blocked" leave `executePhase` an identical trail to
+   * convert the phase result to failed.
+   *
+   * The thrown message is deliberately GENERIC — it names the tool and
+   * phase but never the classifier's reason. The SDK returns a tool
+   * handler's throw to the calling MODEL as the tool result (see the
+   * deterministic-failure comment on `wrapToolWithSemanticCheck` above), so
+   * the verbatim reason would hand a probing model exactly what it needs to
+   * rephrase its next attempt against — and the verdict cache above only
+   * catches an EXACT retry, not a varied one. The real reason still reaches
+   * every operator-facing surface: the write-intent row's
+   * `classifierReason` column, the `agent.write.flagged` notification, and
+   * the `flaggedWritesAccumulator` record pushed here — all set before this
+   * function is called. Only the text returned to the model itself is
+   * scrubbed.
+   */
+  function recordFlagAndThrow(
+    toolName: string,
+    reason: string | null,
+    classifierTokens: number | undefined,
+    phaseName: string,
+  ): never {
+    flaggedWritesAccumulator?.push({ toolName, reason, classifierTokens });
+    throw new Error(
+      `Blocked by a semantic safety check: "${toolName}" in phase "${phaseName}". This call will not succeed on retry.`,
+    );
+  }
+
+  /**
+   * Outer wrapper applied only when `semanticCheckEnabled === true`, the
+   * tool is not already dry-run-intercepted, and the tool carries
+   * `destructiveHint: true`. Runs `classifyWriteIntent()` before the real
+   * handler; an 'ok' verdict lets the real write through unmodified, a
+   * 'flag' verdict blocks the write, records the flagged intent, emits an
+   * `agent.write.flagged` notification, and throws — the semantic check
+   * fails CLOSED once it has actually rendered a verdict (the classifier
+   * itself fails open at the uncertainty level, inside
+   * classifyWriteIntent()).
+   *
+   * No phase purpose / harness id / model means the check cannot run
+   * meaningfully (e.g. single-query tasks with no phase loop) — fail open
+   * at the applicability level in that case, same spirit as the
+   * classifier's own uncertainty fail-open.
+   *
+   * Two containment mechanisms guard against a retrying/probing model:
+   *   - Verdict cache: a retry of the EXACT SAME (toolName, args) pair
+   *     that was already classified is served from
+   *     `semanticCheckVerdictCache` — no second classifier call, no second
+   *     write-intent row, no second notification. The block error still
+   *     throws every time (and still records into the phase accumulator)
+   *     so the model can't loop past it by retrying identically.
+   *   - Distinct-flag cap: once this phase has accumulated
+   *     `SEMANTIC_CHECK_DISTINCT_FLAG_CAP` distinct flagged (toolName,
+   *     args) pairs, any FURTHER distinct destructiveHint call
+   *     short-circuits straight to blocked without running the classifier
+   *     at all — bounds the classifier-call budget a single phase can burn
+   *     probing for an args shape the classifier will let through.
+   */
+  function wrapToolWithSemanticCheck(toolDef: MycoToolDefinition<any>): MycoToolDefinition<any> {
+    const originalHandler = toolDef.handler;
+    return {
+      ...toolDef,
+      handler: async (args, extra) => {
+        if (!phasePurpose || !harnessId || !model) {
+          return originalHandler(args, extra);
+        }
+
+        const cacheKey = `${toolDef.name} ${stableSerialize(args)}`;
+        const cached = semanticCheckVerdictCache.get(cacheKey);
+        if (cached) {
+          if (cached.verdict === 'ok') {
+            return originalHandler(args, extra);
+          }
+          // Identical retry of an already-flagged call: reuse the verdict,
+          // skip the classifier call, and skip the write-intent/notify
+          // side effects (both already happened on the first attempt).
+          recordFlagAndThrow(toolDef.name, cached.reason, undefined, phasePurpose.name);
+        }
+
+        if (distinctFlagCount >= SEMANTIC_CHECK_DISTINCT_FLAG_CAP) {
+          // Cap reached on distinct flagged attempts this phase — refuse
+          // to spend another classifier call on a NEW args shape. Still
+          // recorded as a flag (best-effort) so the audit trail shows the
+          // short-circuit, but with no classifier round-trip.
+          const reason = `Semantic check distinct-flag cap (${SEMANTIC_CHECK_DISTINCT_FLAG_CAP}) reached for this phase — further destructive calls on "${toolDef.name}" are blocked without a classifier call.`;
+          try {
+            insertWriteIntent({
+              runId,
+              projectId,
+              phaseId: phasePurpose.name,
+              toolName: toolDef.name,
+              toolInput: JSON.stringify(args ?? {}),
+              syntheticOutput: JSON.stringify({ blocked: true, reason, capped: true }),
+              classifierVerdict: 'flag',
+              classifierReason: reason,
+            });
+          } catch {
+            /* write-intent log is best-effort, same as the dry-run interceptor */
+          }
+          recordFlagAndThrow(toolDef.name, reason, undefined, phasePurpose.name);
+        }
+
+        const verdict = await classifyWriteIntent({
+          harnessId,
+          model,
+          provider,
+          reasoningLevel: classifierReasoningLevel ?? 'low',
+          phasePurpose,
+          toolName: toolDef.name,
+          toolArgs: args,
+        });
+
+        if (verdict.verdict === 'ok') {
+          semanticCheckVerdictCache.set(cacheKey, verdict);
+          return originalHandler(args, extra);
+        }
+
+        semanticCheckVerdictCache.set(cacheKey, verdict);
+        distinctFlagCount++;
+
+        try {
+          insertWriteIntent({
+            runId,
+            projectId,
+            phaseId: phasePurpose.name,
+            toolName: toolDef.name,
+            toolInput: JSON.stringify(args ?? {}),
+            syntheticOutput: JSON.stringify({ blocked: true, reason: verdict.reason }),
+            classifierVerdict: 'flag',
+            classifierReason: verdict.reason,
+          });
+        } catch {
+          /* write-intent log is best-effort, same as the dry-run interceptor */
+        }
+
+        try {
+          notify(vaultDir, {
+            domain: 'agents',
+            type: 'agent.write.flagged',
+            title: `Blocked ${toolDef.name} in phase "${phasePurpose.name}"`,
+            message: verdict.reason ?? 'Semantic check flagged this write with no reason given.',
+            metadata: { runId, phase: phasePurpose.name, tool: toolDef.name },
+          });
+        } catch {
+          /* notification is best-effort */
+        }
+
+        recordFlagAndThrow(toolDef.name, verdict.reason, verdict.usage?.totalTokens, phasePurpose.name);
       },
     };
   }
@@ -784,7 +1068,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 export function createVaultToolServer(
   agentId: string,
   runId: string,
-  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'hooks' | 'hookContext'>,
+  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'phasePurpose' | 'semanticCheckEnabled' | 'harnessId' | 'model' | 'classifierReasoningLevel' | 'provider' | 'flaggedWritesAccumulator' | 'hooks' | 'hookContext'>,
 ) {
   const tools = createVaultTools(agentId, runId, options);
 
@@ -814,7 +1098,7 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
-  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'hooks' | 'hookContext' | 'deferredNames'> & { readOnly?: boolean },
+  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'phasePurpose' | 'semanticCheckEnabled' | 'harnessId' | 'model' | 'classifierReasoningLevel' | 'provider' | 'flaggedWritesAccumulator' | 'hooks' | 'hookContext' | 'deferredNames'> & { readOnly?: boolean },
 ) {
   const nameSet = new Set(toolNames);
   const allTools = createVaultTools(agentId, runId, { ...options, onlyNames: nameSet });

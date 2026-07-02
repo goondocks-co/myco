@@ -642,15 +642,17 @@ export const NOTIFICATIONS_TABLE = `
  */
 export const AGENT_RUN_WRITE_INTENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_run_write_intents (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id        TEXT,
-    run_id            TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-    phase_id          TEXT,
-    tool_name         TEXT NOT NULL,
-    tool_input        TEXT NOT NULL,
-    synthetic_output  TEXT NOT NULL,
-    stub_id           TEXT,
-    recorded_at       INTEGER NOT NULL
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id         TEXT,
+    run_id             TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    phase_id           TEXT,
+    tool_name          TEXT NOT NULL,
+    tool_input         TEXT NOT NULL,
+    synthetic_output   TEXT NOT NULL,
+    stub_id            TEXT,
+    classifier_verdict TEXT,
+    classifier_reason  TEXT,
+    recorded_at        INTEGER NOT NULL
   )`;
 
 /**

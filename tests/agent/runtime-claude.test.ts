@@ -253,6 +253,162 @@ describe('ClaudeSdkHarness.execute', () => {
     expect(fullServerCalls[0].options.hookContext).toEqual(hookContext);
   });
 
+  it('threads phasePurpose through to createScopedVaultToolServer when toolNames is provided', async () => {
+    // Regression: buildToolServer used to omit phasePurpose on the
+    // createScopedVaultToolServer call, so the semantic-check wrapper inside
+    // tools.ts would never see the phase's declared name/prompt excerpt
+    // for agent-mode phases — the classifier would fail to validate
+    // destructive writes against the actual phase intent in production.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const phasePurpose = { name: 'gather', promptExcerpt: 'collect all available facts' };
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        toolNames: ['vault_report'],
+        phasePurpose,
+      },
+    }));
+
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.phasePurpose).toEqual(phasePurpose);
+  });
+
+  it('threads phasePurpose through to createVaultToolServer when toolNames is omitted', async () => {
+    // Regression: buildToolServer used to omit phasePurpose on the
+    // createVaultToolServer call for the single-query/orchestrator path.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const phasePurpose = { name: 'plan', promptExcerpt: 'decompose into phases' };
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', phasePurpose },
+    }));
+
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.phasePurpose).toEqual(phasePurpose);
+  });
+
+  it('threads semanticCheckEnabled/harnessId/model/classifierReasoningLevel through to createScopedVaultToolServer when toolNames is provided', async () => {
+    // Regression: buildToolServer used to omit the semantic-check gate
+    // fields on the createScopedVaultToolServer call, so
+    // wrapToolWithSemanticCheck inside tools.ts would never see them for
+    // agent-mode phases even when config.semanticWriteCheckEnabled is on.
+    // classifierReasoningLevel is the same class of regression: snapshotted
+    // onto the run row by Task 2b but never threaded past EffectiveConfig,
+    // so every classifier call silently used 'low' regardless of override.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        toolNames: ['vault_report'],
+        semanticCheckEnabled: true,
+        harnessId: 'claude-sdk',
+        model: 'claude-sonnet-4-6',
+        classifierReasoningLevel: 'high',
+      },
+    }));
+
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.semanticCheckEnabled).toBe(true);
+    expect(scopedServerCalls[0].options.harnessId).toBe('claude-sdk');
+    expect(scopedServerCalls[0].options.model).toBe('claude-sonnet-4-6');
+    expect(scopedServerCalls[0].options.classifierReasoningLevel).toBe('high');
+  });
+
+  it('threads semanticCheckEnabled/harnessId/model/classifierReasoningLevel through to createVaultToolServer when toolNames is omitted', async () => {
+    // Same regression as above, for the single-query / orchestrator path
+    // that hits the full (unscoped) vault tool server.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        semanticCheckEnabled: true,
+        harnessId: 'claude-sdk',
+        model: 'claude-sonnet-4-6',
+        classifierReasoningLevel: 'high',
+      },
+    }));
+
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.semanticCheckEnabled).toBe(true);
+    expect(fullServerCalls[0].options.harnessId).toBe('claude-sdk');
+    expect(fullServerCalls[0].options.model).toBe('claude-sonnet-4-6');
+    expect(fullServerCalls[0].options.classifierReasoningLevel).toBe('high');
+  });
+
+  it('leaves semanticCheckEnabled/harnessId/model/classifierReasoningLevel undefined on both server paths when absent from toolSurface', async () => {
+    // Regression proof: disabled/absent gate fields must be byte-identical
+    // to pre-Task-8 behavior — no accidental default flips the gate on.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', toolNames: ['vault_report'] },
+    }));
+
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.semanticCheckEnabled).toBeUndefined();
+    expect(scopedServerCalls[0].options.harnessId).toBeUndefined();
+    expect(scopedServerCalls[0].options.model).toBeUndefined();
+    expect(scopedServerCalls[0].options.classifierReasoningLevel).toBeUndefined();
+  });
+
+  it('threads provider through to createScopedVaultToolServer and createVaultToolServer', async () => {
+    // I1 regression: buildToolServer omitted toolSurface.provider on both
+    // tool-server construction branches, so wrapToolWithSemanticCheck
+    // (tools.ts) never had the phase's actual provider to pass to
+    // classifyWriteIntent — on a provider-override setup (Ollama/custom
+    // baseURL) the classifier silently built its harness call against the
+    // DEFAULT provider env instead, which errors and permanently fails
+    // open for the whole run.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const provider = { type: 'ollama' as const, baseUrl: 'http://localhost:11434', model: 'llama3' };
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', toolNames: ['vault_report'], provider },
+    }));
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.provider).toEqual(provider);
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', provider },
+    }));
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.provider).toEqual(provider);
+  });
+
+  it('threads flaggedWritesAccumulator through to createScopedVaultToolServer and createVaultToolServer', async () => {
+    // C2 regression: buildToolServer omitted toolSurface.flaggedWritesAccumulator
+    // on both branches, so wrapToolWithSemanticCheck had nowhere to record
+    // a flagged write for executePhase to read back — the phase could
+    // complete "successfully" after a blocked destructive write.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const flaggedWritesAccumulator: Array<{ toolName: string; reason: string | null }> = [];
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', toolNames: ['vault_report'], flaggedWritesAccumulator },
+    }));
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.flaggedWritesAccumulator).toBe(flaggedWritesAccumulator);
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', flaggedWritesAccumulator },
+    }));
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.flaggedWritesAccumulator).toBe(flaggedWritesAccumulator);
+  });
+
   it('isolates the agent from user settings via settingSources: []', async () => {
     // Regression: the SDK's plugin-sync path reads `enabledPlugins` from
     // ~/.claude/settings.json / project .claude/settings.json when
