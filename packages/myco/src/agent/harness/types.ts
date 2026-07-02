@@ -2,6 +2,7 @@ import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 import type { ProviderConfig, RunLogger, HarnessId, RuntimeUsage, ReasoningLevel } from '@myco/agent/types.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
+import type { HarnessHooks, HarnessHookContext } from './hooks.js';
 
 export type HarnessCapability =
   | 'supportsSessionResume'
@@ -39,6 +40,19 @@ export interface HarnessToolSurface {
    * outcome-capture wrapper) that would be lost if the adapter rebuilt.
    */
   tools?: MycoToolDefinition<any>[];
+  /**
+   * Harness-neutral lifecycle hooks (preToolUse/postToolUse). Optional —
+   * absent for any caller that hasn't opted into hook emission. See
+   * agent/harness/hooks.ts.
+   */
+  hooks?: HarnessHooks;
+  /**
+   * Run/phase identity bound into every hook event emitted for this tool
+   * surface. Required alongside `hooks` for hook emission to actually
+   * fire — `tools.ts`'s wrapToolWithAudit needs both to construct a
+   * PreToolUseEvent/PostToolUseEvent.
+   */
+  hookContext?: HarnessHookContext;
 }
 
 export interface HarnessExecuteInput {
@@ -53,6 +67,14 @@ export interface HarnessExecuteInput {
   abortController?: AbortController;
   /** Optional logger for harness-level debug diagnostics. */
   logger?: RunLogger;
+  /**
+   * Harness-neutral lifecycle hooks for this run. Not read by claude.ts
+   * or openai.ts directly (see agent/harness/hooks.ts and the design
+   * spec §4.4) — phase-loop.ts passes this through so the type carries
+   * it, but hook emission itself happens inside tools.ts and phase-loop.ts,
+   * not inside the harness adapters.
+   */
+  hooks?: HarnessHooks;
   /**
    * Optional structured-output request. When present AND the resolved
    * harness's supports('structuredOutput') is true, the harness must
@@ -128,6 +150,8 @@ export interface HarnessScopeSetup {
   provider?: ProviderConfig;
   toolSurface: HarnessToolSurface;
   logger?: RunLogger;
+  /** Harness-neutral lifecycle hooks — see HarnessExecuteInput.hooks doc. */
+  hooks?: HarnessHooks;
   /** See `HarnessExecuteInput.reasoningLevel`. */
   reasoningLevel?: ReasoningLevel;
 }

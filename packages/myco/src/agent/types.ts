@@ -8,6 +8,7 @@
 
 import type { CostResolution, CostSource } from '@myco/agent/cost/types.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
+import type { HarnessHooks } from './harness/hooks.js';
 
 // ---------------------------------------------------------------------------
 // YAML-sourced definitions (read from src/agent/definitions/)
@@ -518,6 +519,12 @@ export interface RunOptions {
    * `daemon.log_level` is set to `debug`, otherwise filtered out.
    */
   logger?: RunLogger;
+  /**
+   * Caller-supplied lifecycle hooks. Merged additively with the default
+   * audit-event hooks runAgent() always constructs — both fire, this
+   * does not replace the default recorder. See agent/harness/audit-hooks.ts.
+   */
+  hooks?: HarnessHooks;
   /**
    * Structured metadata about the run. Populated by the dispatcher (e.g.
    * instruction-builders.ts) alongside the free-form `instruction` string

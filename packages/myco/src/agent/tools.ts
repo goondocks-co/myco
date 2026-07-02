@@ -42,6 +42,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { AgentEmbeddingPort, AgentTeamSearchPort } from '@myco/agent/runtime/ports.js';
 import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
+import type { HarnessHooks, HarnessHookContext } from './harness/hooks.js';
 
 // Re-exports for backward compatibility
 export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } from './tools/skill-validator.js';
@@ -84,6 +85,20 @@ export interface VaultToolOptions {
    * phase loop — the tool then no-ops gracefully.
    */
   metadataAccumulator?: Map<string, unknown>;
+  /**
+   * Harness-neutral lifecycle hooks. When both `hooks` and `hookContext`
+   * are supplied, `wrapToolWithAudit` emits `preToolUse` before every tool
+   * handler call and `postToolUse` (with outcome) after. Absent by
+   * default — existing callers that don't pass these get byte-identical
+   * behavior to before hook support was added.
+   */
+  hooks?: HarnessHooks;
+  /**
+   * Static per-run/per-phase identity attached to every emitted hook
+   * event. Hook emission is a no-op unless this is present — `hooks`
+   * alone (without `hookContext`) never fires.
+   */
+  hookContext?: HarnessHookContext;
 }
 
 /**
@@ -337,6 +352,8 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     dryRun,
     metadataAccumulator,
     onlyNames,
+    hooks,
+    hookContext,
   } = options ?? {};
   const projectId = rowProjectIdFromRequestContext(requestContext);
 
@@ -430,7 +447,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
       && typed.annotations?.readOnlyHint !== true
       && !DRY_RUN_EXEMPT_TOOLS.has(typed.name);
     const inner = shouldIntercept ? wrapToolWithDryRun(typed) : typed;
-    return wrapToolWithAudit(inner);
+    return wrapToolWithAudit(inner, hooks, hookContext);
   }) as typeof tools;
 
   /**
@@ -539,7 +556,11 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     };
   }
 
-  function wrapToolWithAudit(toolDef: MycoToolDefinition<any>): MycoToolDefinition<any> {
+  function wrapToolWithAudit(
+    toolDef: MycoToolDefinition<any>,
+    hooks?: HarnessHooks,
+    hookContext?: HarnessHookContext,
+  ): MycoToolDefinition<any> {
     const originalHandler = toolDef.handler;
     // Reject args keys not in the tool's declared schema. Without this,
     // Zod silently strips unknown keys, which lets a prompt reference a
@@ -562,6 +583,14 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
           ? (repeatedReadCounts.get(repeatedReadKey) ?? 0)
           : 0;
         const turnId = recordTurn(toolDef.name, args);
+        const hookStartedAt = Date.now();
+        if (hookContext) {
+          try {
+            await hooks?.preToolUse?.({ ...hookContext, toolName: toolDef.name, toolInput: args });
+          } catch {
+            /* hook callbacks are best-effort observability, never fail the tool call */
+          }
+        }
         try {
           // Unknown-key guard: fail loud if the caller passed a parameter
           // the tool doesn't declare. This catches prompt-tool contract
@@ -632,6 +661,16 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
               /* audit trail is best-effort */
             }
           }
+          if (hookContext) {
+            try {
+              await hooks?.postToolUse?.({
+                ...hookContext, toolName: toolDef.name, toolInput: args,
+                outcome: 'success', durationMs: Date.now() - hookStartedAt,
+              });
+            } catch {
+              /* hook callbacks are best-effort observability */
+            }
+          }
           return result;
         } catch (error) {
           if (turnId !== null) {
@@ -642,6 +681,16 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
               });
             } catch {
               /* audit trail is best-effort */
+            }
+          }
+          if (hookContext) {
+            try {
+              await hooks?.postToolUse?.({
+                ...hookContext, toolName: toolDef.name, toolInput: args,
+                outcome: 'error', errorMessage: errorMessage(error), durationMs: Date.now() - hookStartedAt,
+              });
+            } catch {
+              /* hook callbacks are best-effort observability */
             }
           }
           throw error;
@@ -668,7 +717,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 export function createVaultToolServer(
   agentId: string,
   runId: string,
-  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator'>,
+  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'hooks' | 'hookContext'>,
 ) {
   const tools = createVaultTools(agentId, runId, options);
 
@@ -698,7 +747,7 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
-  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator'> & { readOnly?: boolean },
+  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'hooks' | 'hookContext'> & { readOnly?: boolean },
 ) {
   const nameSet = new Set(toolNames);
   const allTools = createVaultTools(agentId, runId, { ...options, onlyNames: nameSet });

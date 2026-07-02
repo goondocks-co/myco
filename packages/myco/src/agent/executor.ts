@@ -59,6 +59,8 @@ import {
 } from './executor-state.js';
 import { getAgentHarness } from './harness/index.js';
 import { HarnessExecutionError } from './harness/types.js';
+import { buildAuditEventHooks } from './harness/audit-hooks.js';
+import type { HarnessHooks } from './harness/hooks.js';
 import {
   analyzeRuntimeTokenBudget,
   buildRunAccountingUpdate,
@@ -125,6 +127,31 @@ function logTokenBudgetPressure(
     contextWindowTokens: budget.contextWindowTokens,
     peakRequestTotalTokens: budget.peakRequestTotalTokens,
   });
+}
+
+/**
+ * Merge the default audit-event hooks (always on) with any caller-supplied
+ * hooks (RunOptions.hooks). Both fire for every event — the caller's hooks
+ * are additive, not a replacement for the audit recorder. Each merged
+ * callback is best-effort: a failure in either side must not stop the
+ * other from running or bubble into the tool/phase call it's observing.
+ */
+function mergeHooks(defaultHooks: HarnessHooks, callerHooks: HarnessHooks | undefined): HarnessHooks {
+  if (!callerHooks) return defaultHooks;
+  return {
+    preToolUse: async (event) => {
+      await Promise.allSettled([defaultHooks.preToolUse?.(event), callerHooks.preToolUse?.(event)]);
+    },
+    postToolUse: async (event) => {
+      await Promise.allSettled([defaultHooks.postToolUse?.(event), callerHooks.postToolUse?.(event)]);
+    },
+    phaseStart: async (event) => {
+      await Promise.allSettled([defaultHooks.phaseStart?.(event), callerHooks.phaseStart?.(event)]);
+    },
+    phaseEnd: async (event) => {
+      await Promise.allSettled([defaultHooks.phaseEnd?.(event), callerHooks.phaseEnd?.(event)]);
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +309,7 @@ export async function runAgent(
     ?? taskProviderOverride
     ?? config.execution?.provider;
   const runId = options?.resumeRunId ?? crypto.randomUUID();
+  const runHooks = mergeHooks(buildAuditEventHooks(runId, projectId ?? null), options?.hooks);
   let harnessId = runHarness;
   let effectiveModel = resolveReasoningModel(
     config.execution?.reasoningLevel ?? config.reasoningLevel,
@@ -505,6 +533,7 @@ export async function runAgent(
       options,
       checkpointState,
       persistCheckpoints: persistHarnessState,
+      hooks: runHooks,
     };
 
     if (config.phases && config.phases.length > 0) {

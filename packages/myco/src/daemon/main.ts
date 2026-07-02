@@ -1849,6 +1849,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/runs/:id/turns', agentRunHandlers.handleGetRunTurns);
   server.registerRoute('GET', '/api/agent/runs/:id/write-intents', agentRunHandlers.handleGetRunWriteIntents);
   server.registerRoute('GET', '/api/agent/runs/:id/audit', agentRunHandlers.handleGetRunAudit);
+  server.registerRoute('GET', '/api/agent/runs/:id/events', agentRunHandlers.handleGetRunEvents);
 
   const digestRevisionHandlers = createDigestRevisionHandlers({ vaultDir: bootstrapVaultDir, logger });
   server.registerRoute('GET', '/api/digest/revisions', digestRevisionHandlers.handleList);
