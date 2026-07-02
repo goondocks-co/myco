@@ -543,6 +543,15 @@ export interface RunOptions {
   instruction?: string;
   /** Per-run task params layered over YAML/myco.yaml task params. */
   taskParams?: Record<string, string | number | boolean>;
+  /**
+   * Caller-supplied ID for the run row this dispatch will create. The API
+   * handler generates it so the HTTP response can name the run
+   * deterministically — the executor's row insert happens after awaits
+   * (e.g. the Ollama variant resolver), so reading the latest row back
+   * after dispatch races concurrent dispatches and returns a stale run.
+   * Ignored when `resumeRunId` is set (a resume reuses the existing row).
+   */
+  runId?: string;
   /** Resume a previous run by its ID (re-uses existing session state). */
   resumeRunId?: string;
   /** Embedding runtime for immediate vector operations during agent tool calls. */
