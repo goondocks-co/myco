@@ -46,6 +46,19 @@ const FALLBACK_REASONING_MISSING_PHASES = 'Orchestrator plan missing phases arra
 /** Max chars of the underlying parser error we surface into the fallback reasoning. */
 const ORCHESTRATOR_PARSE_ERROR_PREVIEW_CHARS = 200;
 
+/**
+ * Max chars of `directive.contextNotes` spliced into a phase's prompt.
+ * contextNotes is LLM-authored free text (the orchestrator's own plan
+ * response) with no upstream size or content bound — without a cap it's an
+ * unbounded-size / unbounded-content injection surface once spliced into
+ * `phase.prompt`, which then feeds `phasePurpose.promptExcerpt` (the
+ * semantic-check classifier's own untrusted-data input). Mirrors the
+ * existing phase.prompt truncation idiom (see phase-loop.ts's
+ * phasePurpose.promptExcerpt construction).
+ */
+const CONTEXT_NOTES_MAX_CHARS = 500;
+const CONTEXT_NOTES_TRUNCATION_MARKER = '...[truncated]';
+
 // ---------------------------------------------------------------------------
 // Template placeholder names
 // ---------------------------------------------------------------------------
@@ -397,9 +410,12 @@ function applyNonSkipDirective(
   }
 
   if (directive.contextNotes) {
+    const cappedContextNotes = directive.contextNotes.length > CONTEXT_NOTES_MAX_CHARS
+      ? `${directive.contextNotes.slice(0, CONTEXT_NOTES_MAX_CHARS)}${CONTEXT_NOTES_TRUNCATION_MARKER}`
+      : directive.contextNotes;
     updated = {
       ...updated,
-      prompt: `${updated.prompt}\n\n${ORCHESTRATOR_GUIDANCE_HEADER}\n\n${directive.contextNotes}`,
+      prompt: `${updated.prompt}\n\n${ORCHESTRATOR_GUIDANCE_HEADER}\n\n${cappedContextNotes}`,
     };
   }
 

@@ -431,6 +431,37 @@ describe('applyDirectives', () => {
     expect(result[0].prompt).toContain('14 unprocessed batches.');
   });
 
+  it('caps an oversized contextNotes at 500 chars with a truncation marker (Fix 6b regression)', () => {
+    // Fix 6(b): contextNotes is LLM-authored free text with no size bound
+    // from the orchestrator's own plan response, spliced into phase.prompt
+    // uncapped and then feeding phasePurpose.promptExcerpt — an unbounded
+    // injection surface. Must be capped the same way phase.prompt itself is
+    // truncated for promptExcerpt (see phase-loop.ts).
+    const phases = [makePhase({ name: 'extract', prompt: 'Original prompt.' })];
+    const oversizedNotes = 'x'.repeat(600);
+    const directives = [
+      makeDirective({ name: 'extract', skip: false, contextNotes: oversizedNotes }),
+    ];
+    const result = applyDirectives(phases, directives);
+    expect(result[0].prompt).toContain('Original prompt.');
+    expect(result[0].prompt).toContain('## Orchestrator Guidance');
+    expect(result[0].prompt).toContain('...[truncated]');
+    // Exactly 500 chars of the original notes survive, followed by the marker.
+    expect(result[0].prompt).toContain(`${'x'.repeat(500)}...[truncated]`);
+    expect(result[0].prompt).not.toContain('x'.repeat(501));
+  });
+
+  it('does not truncate contextNotes at or under the 500-char cap', () => {
+    const phases = [makePhase({ name: 'extract', prompt: 'Original prompt.' })];
+    const exactNotes = 'y'.repeat(500);
+    const directives = [
+      makeDirective({ name: 'extract', skip: false, contextNotes: exactNotes }),
+    ];
+    const result = applyDirectives(phases, directives);
+    expect(result[0].prompt).toContain(exactNotes);
+    expect(result[0].prompt).not.toContain('...[truncated]');
+  });
+
   it('does not append guidance section when contextNotes is absent', () => {
     const phases = [makePhase({ name: 'extract', prompt: 'Original prompt.' })];
     const directives = [makeDirective({ name: 'extract', skip: false })];

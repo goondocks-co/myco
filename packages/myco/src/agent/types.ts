@@ -162,6 +162,16 @@ export interface PhaseResult {
    * so resumed runs preserve the gate decision.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * True when this phase's `status: 'failed'` came from
+   * `snapshotFlaggedWrites` converting an otherwise-"completed" result
+   * because a destructive write was blocked by the semantic check — not
+   * from a hard runtime error. Persisted onto `PhaseCheckpoint` so a
+   * resumed run's `reuseSession` exclusion can refuse to reattach to a
+   * session whose history contains the model's own blocked tool call. See
+   * `PhaseCheckpoint.semanticCheckBlocked` in executor-state.ts.
+   */
+  semanticCheckBlocked?: boolean;
 }
 
 /**

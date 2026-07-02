@@ -40,11 +40,16 @@ export interface WriteIntentInsert {
   /** Synthetic id minted for this call, if applicable. */
   stubId?: string | null;
   /**
-   * Semantic-check verdict, when the check ran for this write. `'ok'`
-   * means the check ran and passed; `'flag'` means it ran and the write
-   * was blocked (fail-closed — see the design spec). `undefined`/omitted
-   * means the check never ran (feature disabled, or the tool isn't
-   * destructiveHint) — stored as SQL NULL.
+   * Semantic-check verdict, when the check ran for this write. `'flag'`
+   * means the check ran and the write was blocked (fail-closed — see the
+   * design spec). `undefined`/omitted means the check never ran (feature
+   * disabled, or the tool isn't destructiveHint) — stored as SQL NULL.
+   *
+   * `'ok'` is type-accepted for forward compatibility but is never
+   * persisted today: wrapToolWithSemanticCheck (agent/tools.ts) only
+   * records an intent row on a flag; ok verdicts live solely in its
+   * in-memory per-phase verdict cache. Don't write queries that expect
+   * `classifier_verdict = 'ok'` rows to exist.
    */
   classifierVerdict?: 'ok' | 'flag' | null;
   /** One-line reason from the classifier, present only when classifierVerdict is set. */

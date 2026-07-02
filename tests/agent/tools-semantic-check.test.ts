@@ -293,6 +293,94 @@ describe('semantic write check', () => {
     expect(flaggedWritesAccumulator[0].classifierTokens).toBe(160);
   });
 
+  it('does not classify list/get calls on vault_skill_candidates (action-aware destructiveActions narrowing)', async () => {
+    // Fix 2 regression: vault_skill_candidates carries destructiveHint: true
+    // (it supports create/update/delete), but its primary actions are
+    // list/get — pure reads. Without destructiveActions narrowing, every
+    // call (including a plain list) would go through the classifier.
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      projectRoot: tmpDir,
+      vaultDir,
+      semanticCheckEnabled: true,
+      harnessId: 'claude-sdk',
+      model: 'claude-haiku-4-5-20251001',
+      classifierReasoningLevel: 'low',
+      phasePurpose: { name: 'survey', promptExcerpt: 'Review skill candidates.' },
+    });
+
+    const candidates = findTool(tools, 'vault_skill_candidates');
+    await candidates.handler({ action: 'list' }, undefined);
+    await candidates.handler({ action: 'get', id: 'nonexistent' }, undefined);
+
+    expect(mockClassify).not.toHaveBeenCalled();
+  });
+
+  it('classifies create/update/delete calls on vault_skill_candidates', async () => {
+    mockClassify.mockImplementation(async () => ({ verdict: 'ok' as const, reason: null }));
+
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      projectRoot: tmpDir,
+      vaultDir,
+      semanticCheckEnabled: true,
+      harnessId: 'claude-sdk',
+      model: 'claude-haiku-4-5-20251001',
+      classifierReasoningLevel: 'low',
+      phasePurpose: { name: 'survey', promptExcerpt: 'Review skill candidates.' },
+    });
+
+    const candidates = findTool(tools, 'vault_skill_candidates');
+    // 'update' with no id is a graceful error payload, not a throw — the
+    // classifier still runs beforehand regardless of what the handler does.
+    await candidates.handler({ action: 'update', id: 'nonexistent', status: 'dismissed' }, undefined);
+
+    expect(mockClassify).toHaveBeenCalledTimes(1);
+    const classifyArgs = mockClassify.mock.calls[0][0] as { toolArgs?: { action?: string } };
+    expect(classifyArgs.toolArgs).toMatchObject({ action: 'update' });
+  });
+
+  it('does not classify list/get calls on vault_skill_records (action-aware destructiveActions narrowing)', async () => {
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      projectRoot: tmpDir,
+      vaultDir,
+      semanticCheckEnabled: true,
+      harnessId: 'claude-sdk',
+      model: 'claude-haiku-4-5-20251001',
+      classifierReasoningLevel: 'low',
+      phasePurpose: { name: 'survey', promptExcerpt: 'Review skill records.' },
+    });
+
+    const records = findTool(tools, 'vault_skill_records');
+    await records.handler({ action: 'list' }, undefined);
+    await records.handler({ action: 'get', id: 'nonexistent' }, undefined);
+
+    expect(mockClassify).not.toHaveBeenCalled();
+  });
+
+  it('classifies update/delete calls on vault_skill_records', async () => {
+    mockClassify.mockImplementation(async () => ({ verdict: 'ok' as const, reason: null }));
+
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      projectRoot: tmpDir,
+      vaultDir,
+      semanticCheckEnabled: true,
+      harnessId: 'claude-sdk',
+      model: 'claude-haiku-4-5-20251001',
+      classifierReasoningLevel: 'low',
+      phasePurpose: { name: 'survey', promptExcerpt: 'Review skill records.' },
+    });
+
+    const records = findTool(tools, 'vault_skill_records');
+    await records.handler({ action: 'delete', id: 'nonexistent' }, undefined);
+
+    expect(mockClassify).toHaveBeenCalledTimes(1);
+    const classifyArgs = mockClassify.mock.calls[0][0] as { toolArgs?: { action?: string } };
+    expect(classifyArgs.toolArgs).toMatchObject({ action: 'delete' });
+  });
+
   it('never invokes the classifier when the feature is disabled (default)', async () => {
     const batch = seedBatch();
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
@@ -437,6 +525,7 @@ describe('semantic write check', () => {
     }));
 
     const batch = seedBatch();
+    const flaggedWritesAccumulator: Array<{ toolName: string; reason: string | null; classifierTokens?: number }> = [];
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
       requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
@@ -446,6 +535,7 @@ describe('semantic write check', () => {
       model: 'claude-haiku-4-5-20251001',
       classifierReasoningLevel: 'low',
       phasePurpose: { name: 'cleanup', promptExcerpt: 'Mark stale prompt batches as processed.' },
+      flaggedWritesAccumulator,
     });
 
     const markProcessed = findTool(tools, 'vault_mark_processed');
@@ -461,6 +551,13 @@ describe('semantic write check', () => {
     expect(intents).toHaveLength(1);
     expect(intents[0].tool_name).toBe('vault_mark_processed');
     expect(intents[0].classifier_verdict).toBe('flag');
+
+    // Fix 9(a) regression: without dedup, the accumulator would grow by one
+    // entry per retry (3 pushes for 3 identical retries) even though the
+    // intent-row/notification counts are correctly deduped to 1 above —
+    // inflating the phase-failure summary's write count with retry
+    // attempts instead of reflecting distinct blocked writes.
+    expect(flaggedWritesAccumulator).toHaveLength(1);
   });
 
   it('retrying an identical call that was classified "ok" keeps letting the real write through from the cache', async () => {
@@ -581,5 +678,62 @@ describe('semantic write check', () => {
     const sixthBatch = seedBatch();
     await expect(markProcessed.handler({ batch_id: sixthBatch.id }, undefined)).rejects.toThrow(/blocked by a semantic safety check/i);
     expect(mockClassify).toHaveBeenCalledTimes(5);
+  });
+
+  it('a deferrable + destructiveHint tool (vault_mark_processed via deferredNames) still gets a stub surface AND the semantic check AND hook error emission (Fix 9e combination guard)', async () => {
+    // Fix 9(e): deferred loading (createVaultTools's deferredNames option)
+    // replaces a tool's description/inputSchema with a lightweight stub in
+    // the surface handed to the harness/model — but never touches the
+    // handler reference (see deferred-tools.ts). A deferred + destructiveHint
+    // tool must therefore still: (1) present as a stub in the returned tool
+    // list, (2) run the semantic check and block a flagged call exactly like
+    // a non-deferred tool would, and (3) emit a postToolUse error hook event
+    // for that blocked call — none of these three concerns should silently
+    // disable another.
+    mockClassify.mockImplementation(async () => ({
+      verdict: 'flag',
+      reason: 'batch_id does not appear in this phase\'s declared scope',
+    }));
+
+    const batch = seedBatch();
+    const postEvents: Array<{ outcome: string; errorMessage?: string }> = [];
+
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      projectRoot: tmpDir,
+      vaultDir,
+      semanticCheckEnabled: true,
+      harnessId: 'claude-sdk',
+      model: 'claude-haiku-4-5-20251001',
+      classifierReasoningLevel: 'low',
+      phasePurpose: { name: 'cleanup', promptExcerpt: 'Mark stale prompt batches as processed.' },
+      deferredNames: new Set(['vault_mark_processed']),
+      hooks: {
+        postToolUse: (e) => { postEvents.push(e as { outcome: string; errorMessage?: string }); },
+      },
+      hookContext: { runId: TEST_RUN_ID, agentId: TEST_AGENT_ID, harnessId: 'claude-sdk' },
+    } as any);
+
+    // (1) Stub tool result is present: the returned vault_mark_processed
+    // definition carries the deferred stub description/schema, not its
+    // real ones — deferred loading is applied regardless of destructiveHint.
+    const markProcessed = findTool(tools, 'vault_mark_processed');
+    expect((markProcessed as any).deferrable).toBe(true);
+    expect(markProcessed.description).toContain('deferred');
+    expect(markProcessed.description).toContain('vault_search_tools');
+
+    // (2) The block still fires: calling the deferred tool's handler
+    // directly (as the SDK does when a model calls it without first
+    // consulting vault_search_tools — the stub schema is permissive) still
+    // runs the semantic check and throws on a flagged verdict.
+    await expect(markProcessed.handler({ batch_id: batch.id }, undefined))
+      .rejects.toThrow(/blocked by a semantic safety check/i);
+    expect(mockClassify).toHaveBeenCalledTimes(1);
+
+    // (3) The hook error event is emitted for the blocked call.
+    expect(postEvents.length).toBeGreaterThanOrEqual(1);
+    const errorEvent = postEvents.find((e) => e.outcome === 'error');
+    expect(errorEvent).toBeDefined();
+    expect(errorEvent!.errorMessage).toMatch(/blocked by a semantic safety check/i);
   });
 });

@@ -89,6 +89,40 @@ describe('createVaultTools hook emission', () => {
     expect(postEvents[0].errorMessage).toBeDefined();
   });
 
+  it('emits paired pre/post hook events on a suppressed repeated read (Fix 3 regression)', async () => {
+    // Regression: the repeated-read-suppression early return exited before
+    // emitting postToolUse, leaving a lone preToolUse for that call — a
+    // hook consumer (e.g. a run-events UI) would see an unpaired pre event
+    // with no matching post. REPEATED_READ_SUPPRESSION_THRESHOLD is 2, so
+    // the 3rd identical call is the first one suppressed.
+    const preEvents: PreToolUseEvent[] = [];
+    const postEvents: PostToolUseEvent[] = [];
+
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      hooks: {
+        preToolUse: (e) => { preEvents.push(e); },
+        postToolUse: (e) => { postEvents.push(e); },
+      },
+      hookContext: { runId: TEST_RUN_ID, agentId: TEST_AGENT_ID, harnessId: 'claude-sdk' },
+    } as any);
+
+    // vault_spores is in LOOP_GUARDED_READ_TOOL_NAMES.
+    const tool = findTool(tools, 'vault_spores');
+    await (tool as any).handler({ limit: 5 }, {});
+    await (tool as any).handler({ limit: 5 }, {});
+    const suppressedResult = await (tool as any).handler({ limit: 5 }, {});
+
+    expect(preEvents).toHaveLength(3);
+    expect(postEvents).toHaveLength(3);
+    expect(postEvents[2].outcome).toBe('success');
+
+    // The suppressed call's own result is the "repeated read suppressed"
+    // stub payload, not a real vault_spores list.
+    const suppressedPayload = JSON.parse(suppressedResult.content[0].text);
+    expect(suppressedPayload.reuse_prior_result).toBe(true);
+  });
+
   it('does not throw or emit hooks when hooks/hookContext are both absent (backward compat)', async () => {
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT });
     const tool = findTool(tools, 'vault_spores');

@@ -215,4 +215,93 @@ describe('phase-loop semantic-check config threading', () => {
     expect(result.phases[0].summary).toContain('vault_mark_processed');
     expect(result.phases[0].summary).toContain('Semantic check blocked');
   });
+
+  it('never leaks the classifier\'s verbatim reason into PhaseResult.summary — Fix 6a regression', async () => {
+    // Fix 6(a): PhaseResult.summary flows into LATER phases' prompts via
+    // prompt-composition.ts's priorPhaseResults splice (failed phases are
+    // included, not just completed ones). Embedding verdict.reason here
+    // would re-introduce the exact oracle signal the scrubbed tool-error
+    // message (recordFlagAndThrow, tools.ts) was built to prevent — just
+    // one layer up, in the summary instead of the direct error.
+    const secretReason = 'batch_id 999999 targets a different project than this phase is scoped to';
+    const flaggingRuntime: AgentHarness = {
+      id: 'claude-sdk' as HarnessId,
+      async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
+        capturedExecuteInputs.push(input);
+        input.toolSurface.flaggedWritesAccumulator?.push({
+          toolName: 'vault_mark_processed',
+          reason: secretReason,
+        });
+        return { finalText: 'looks done', turnsUsed: 1, usage: DEFAULT_USAGE, sessionRef: 'session-1' };
+      },
+      supports: () => false,
+    };
+    getAgentHarnessOverride = flaggingRuntime;
+
+    const ctx = baseContext({
+      config: baseConfig([phase('only-phase')], { semanticWriteCheckEnabled: true }),
+    });
+
+    const result = await executePhasedQuery(ctx);
+
+    expect(result.phases[0].status).toBe('failed');
+    expect(result.phases[0].summary).not.toContain(secretReason);
+    // Generic message + tool name are still present.
+    expect(result.phases[0].summary).toContain('vault_mark_processed');
+    expect(result.phases[0].summary).toContain('Semantic check blocked');
+  });
+
+  it('does not reuse the blocked phase\'s session on resume — Fix 1 regression', async () => {
+    // Critical regression: a semantic-check-blocked phase (converted to
+    // "failed" by snapshotFlaggedWrites, but with turnsUsed > 0) must NOT
+    // have its session reused on resume. Reusing it would hand the model
+    // its own blocked tool call in conversation history, letting it retry
+    // that call against a fresh accumulator + fresh verdict cache — quietly
+    // defeating the semantic check the run originally enforced.
+    const flaggingRuntime: AgentHarness = {
+      id: 'claude-sdk' as HarnessId,
+      async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
+        capturedExecuteInputs.push(input);
+        input.toolSurface.flaggedWritesAccumulator?.push({
+          toolName: 'vault_mark_processed',
+          reason: 'batch_id does not appear in this phase\'s declared scope',
+        });
+        return { finalText: 'looks done', turnsUsed: 3, usage: DEFAULT_USAGE, sessionRef: 'blocked-session' };
+      },
+      supports: () => false,
+    };
+    getAgentHarnessOverride = flaggingRuntime;
+
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({
+      config: baseConfig([phase('only-phase')], { semanticWriteCheckEnabled: true }),
+      checkpointState,
+    });
+
+    const dispatchResult = await executePhasedQuery(ctx);
+    expect(dispatchResult.phases[0].status).toBe('failed');
+    expect(dispatchResult.phases[0].semanticCheckBlocked).toBe(true);
+
+    // The checkpoint written by the dispatch attempt carries the marker and
+    // the blocked session's ref, and (unlike the zero-turns exclusion) has
+    // turnsUsed > 0 — so only the new semanticCheckBlocked exclusion can
+    // prevent reuse here.
+    const persistedCheckpoint = checkpointState.phases['only-phase'];
+    expect(persistedCheckpoint.semanticCheckBlocked).toBe(true);
+    expect(persistedCheckpoint.turnsUsed).toBeGreaterThan(0);
+    expect(persistedCheckpoint.sessionRef).toBe('blocked-session');
+
+    // Simulate a resume: same checkpointState (as a fresh run would restore
+    // from the persisted run row), fresh capturedExecuteInputs.
+    capturedExecuteInputs = [];
+    const resumeCtx = baseContext({
+      config: baseConfig([phase('only-phase')], { semanticWriteCheckEnabled: true }),
+      checkpointState,
+    });
+    await executePhasedQuery(resumeCtx);
+
+    expect(capturedExecuteInputs).toHaveLength(1);
+    expect(capturedExecuteInputs[0].sessionRef).toBeDefined();
+    expect(capturedExecuteInputs[0].sessionRef).not.toBe('blocked-session');
+  });
 });
