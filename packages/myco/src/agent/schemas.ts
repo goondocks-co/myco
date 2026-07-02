@@ -203,6 +203,7 @@ export const PhaseDefinitionSchema = z.object({
   name: z.string(),
   prompt: z.string(),
   tools: z.array(z.string()),
+  deferredTools: z.array(z.string()).optional(),
   maxTurns: z.number(),
   model: z.string().optional(),
   reasoningLevel: ReasoningLevelSchema.optional(),
@@ -231,6 +232,17 @@ export const PhaseDefinitionSchema = z.object({
 }).refine(
   (p) => p.mode !== 'map' || (p.source && p.item && p.sink),
   { message: 'mode: map requires source, item, and sink blocks' },
+).refine(
+  (p) => !p.deferredTools || p.deferredTools.every((name) => p.tools.includes(name)),
+  { message: 'deferredTools must be a subset of tools' },
+).refine(
+  // Map-phase execution bypasses createVaultTools/createScopedVaultToolServer
+  // entirely (see executeMapPhase in agent/map-phase.ts) — nothing on that
+  // path reads PhaseDefinition.deferredTools, so it would silently no-op
+  // rather than defer anything. Reject at load time instead of shipping a
+  // task-YAML field that quietly does nothing on a map-mode phase.
+  (p) => p.mode !== 'map' || !p.deferredTools || p.deferredTools.length === 0,
+  { message: 'deferredTools is not supported on mode: map phases (map-phase execution does not read it)' },
 );
 
 /** Schema for task YAML files in tasks/. */

@@ -463,6 +463,8 @@ phases:
       - fs_read
       - code_grep
       - vault_report
+    deferredTools:
+      - vault_scan_skill_contamination
     # This is a CEILING, not a target. The workflow is now edit-driven:
     # read → vault_edit_skill edits → fix reported issues (≤2 re-edits)
     # → done per skill, ~4–5 turns. With 6 skills that's ~24–30 turns;

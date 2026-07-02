@@ -954,6 +954,7 @@ export async function executePhasedQuery(
           agentId,
           runId,
           toolNames: phase.tools,
+          deferredNames: phase.deferredTools,
           turnOffset: offsetByName.get(phase.name)!,
           projectRoot: ctx.projectRoot,
           vaultDir: ctx.vaultDir,

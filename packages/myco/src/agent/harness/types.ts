@@ -13,6 +13,8 @@ export interface HarnessToolSurface {
   agentId: string;
   runId: string;
   toolNames?: string[];
+  /** Subset of toolNames to mark deferrable. See PhaseDefinition.deferredTools. */
+  deferredNames?: string[];
   turnOffset?: number;
   projectRoot?: string;
   vaultDir?: string;

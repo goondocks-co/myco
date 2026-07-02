@@ -59,6 +59,15 @@ export interface PhaseDefinition {
   name: string;
   prompt: string;
   tools: string[];
+  /**
+   * Subset of `tools` whose full schema is withheld from the initial
+   * surface (see createVaultTools's `deferredNames`). Must be a subset of
+   * `tools` — enforced at YAML-load time by PhaseDefinitionSchema's
+   * refine (schemas.ts), so a typo'd or stale entry fails fast instead of
+   * silently narrowing to nothing. This only narrows within the phase's
+   * declared tool set, never widens it.
+   */
+  deferredTools?: string[];
   maxTurns: number;
   model?: string;
   reasoningLevel?: ReasoningLevel;
