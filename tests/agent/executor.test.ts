@@ -956,6 +956,57 @@ describe('runAgent', () => {
     expect(run!.completed_at).toBeGreaterThan(0);
   });
 
+  it('uses the caller-supplied runId for the run row', async () => {
+    // Dispatchers (API handler, cortex triggers, canopy regenerate)
+    // pre-generate the run id so their responses can name the run without
+    // reading the latest row back — that read-back raced the executor's
+    // insert (which happens after awaits) and returned stale runs.
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const callerRunId = crypto.randomUUID();
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      runId: callerRunId,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.runId).toBe(callerRunId);
+    const run = getRun(callerRunId, ALL_PROJECTS_SCOPE);
+    expect(run).not.toBeNull();
+    expect(run!.status).toBe('completed');
+  });
+
+  it('resumeRunId wins over a caller-supplied runId', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const existingRunId = crypto.randomUUID();
+    insertRun({
+      id: existingRunId,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'failed',
+      harness: 'claude-sdk',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      resumable: 1,
+      resume_status: 'ready',
+      started_at: epochSeconds() - 600,
+      completed_at: epochSeconds() - 300,
+      error: 'transient failure',
+    });
+
+    const strayRunId = crypto.randomUUID();
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      task: TEST_TASK_NAME,
+      resumeRunId: existingRunId,
+      runId: strayRunId,
+    });
+
+    expect(result.runId).toBe(existingRunId);
+    expect(getRun(strayRunId, ALL_PROJECTS_SCOPE)).toBeNull();
+  });
+
   it('passes system prompt and composed task prompt to the SDK', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 

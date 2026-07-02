@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/runs.js';
+import { listRuns, countRuns, getRun } from '@myco/db/queries/runs.js';
 import { getRunActivityBuckets, getRunBranches } from '@myco/db/queries/activity-buckets.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
@@ -173,7 +173,6 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       force,
       executionOverrides: rawExecutionOverrides,
     } = parsedBody.data;
-    const scope = projectScopeFromRequestContext(req.requestContext);
     const effectiveAgentId = agentId ?? DEFAULT_AGENT_ID;
     const runVaultDir = vaultDirForRequest(req);
 
@@ -261,11 +260,21 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       }
     }
 
+    // Pre-generate the run ID and hand it to the executor rather than
+    // reading the latest row back after dispatch. The executor's row
+    // insert happens after awaits (Ollama variant resolution, resume
+    // restore), so a read-back races concurrent dispatches and returns a
+    // stale run — the UI then watches the wrong run. If the executor
+    // skips this dispatch (same task already running), no row with this
+    // ID is ever created; GET /api/agent/runs/:id returns 404, which is
+    // the caller's signal that the dispatch did not start a new run.
+    const runId = crypto.randomUUID();
     const { dispatchAgentRun } = await import('@myco/agent/runner-host.js');
     const resultPromise = dispatchAgentRun(runVaultDir, {
       task,
       instruction,
       agentId: effectiveAgentId,
+      runId,
       embeddingManager,
       requestContext: req.requestContext,
       runContext,
@@ -273,11 +282,6 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       executionOverrides,
       logger,
     });
-
-    // runAgent inserts the run row synchronously before the first await.
-    // Query for the most recently created run matching this task to get
-    // the correct ID — not getRunningRun which may return a different task.
-    const runId = getLatestRunId(effectiveAgentId, task, scope);
 
     resultPromise
       .then((result) => {
