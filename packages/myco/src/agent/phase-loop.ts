@@ -36,6 +36,7 @@ import {
 } from './executor-state.js';
 import { getAgentHarness } from './harness/index.js';
 import { HarnessExecutionError, type HarnessToolSurface } from './harness/types.js';
+import type { HarnessHooks, HarnessHookContext } from './harness/hooks.js';
 import { composePhasePrompt } from './prompt-composition.js';
 import { buildPhaseRecoveryContext } from './phase-recovery.js';
 import { resolvePhaseExecution, type MycoYamlPhaseOverrides } from './phase-resolver.js';
@@ -125,6 +126,8 @@ export interface PhaseLoopContext {
   readonly requestContext?: RunOptions['requestContext'];
   /** Raw RunOptions — exposed to honor executionOverrides.phases per-phase. */
   readonly options?: RunOptions;
+  /** Harness-neutral lifecycle hooks for this run — see agent/harness/hooks.ts. */
+  readonly hooks?: HarnessHooks;
 
   // --- mutable, passed by reference ----------------------------------------
 
@@ -268,6 +271,22 @@ export async function executePhase(
     toolNames: toolSurface.toolNames ?? null,
     sessionRef: sessionId ?? null,
   });
+  const phaseHookStartedAt = Date.now();
+  if (ctx.hooks?.phaseStart) {
+    try {
+      await ctx.hooks.phaseStart({
+        runId: ctx.runId,
+        agentId: ctx.agentId,
+        harnessId: ctx.config.harness,
+        phaseName: phase.name,
+        model: phaseModel,
+        maxTurns: phase.maxTurns,
+        required: phase.required ?? false,
+      });
+    } catch {
+      /* hook callbacks are best-effort observability, never fail the phase */
+    }
+  }
   try {
     let result;
     try {
@@ -335,6 +354,24 @@ export async function executePhase(
       usage: result.usage,
     });
 
+    if (ctx.hooks?.phaseEnd) {
+      try {
+        await ctx.hooks.phaseEnd({
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          harnessId: ctx.config.harness,
+          phaseName: phase.name,
+          status: 'completed',
+          turnsUsed: result.turnsUsed,
+          tokensUsed: result.usage.totalTokens ?? 0,
+          costUsd: costData.costUsd,
+          durationMs: Date.now() - phaseHookStartedAt,
+        });
+      } catch {
+        /* hook callbacks are best-effort observability */
+      }
+    }
+
     return buildPhaseResult({
       name: phase.name,
       status: 'completed',
@@ -369,6 +406,25 @@ export async function executePhase(
       allowedMaxTurns: phase.maxTurns ?? null,
       error: abortReason ?? errorText,
     });
+
+    if (ctx.hooks?.phaseEnd) {
+      try {
+        await ctx.hooks.phaseEnd({
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          harnessId: ctx.config.harness,
+          phaseName: phase.name,
+          status: 'failed',
+          turnsUsed: telemetry?.usage.requests ?? 0,
+          tokensUsed: telemetry?.usage.totalTokens ?? 0,
+          costUsd: costData?.costUsd ?? null,
+          durationMs: Date.now() - phaseHookStartedAt,
+        });
+      } catch {
+        /* hook callbacks are best-effort observability */
+      }
+    }
+
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
@@ -412,11 +468,31 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     vaultDir: ctx.vaultDir,
     requestContext: ctx.requestContext,
     dryRun: ctx.options?.dryRun ?? false,
+    hooks: ctx.hooks,
+    hookContext: ctx.hooks
+      ? { runId: ctx.runId, agentId: ctx.agentId, harnessId: ctx.config.harness, phaseName: phase.name }
+      : undefined,
   });
 
   logger?.debug('agent.map.start', `Map phase "${phase.name}" starting`, {
     runId: ctx.runId, phase: phase.name, model: phaseModel, providerType: provider?.type ?? null,
   });
+  const mapHookStartedAt = Date.now();
+  if (ctx.hooks?.phaseStart) {
+    try {
+      await ctx.hooks.phaseStart({
+        runId: ctx.runId,
+        agentId: ctx.agentId,
+        harnessId: ctx.config.harness,
+        phaseName: phase.name,
+        model: phaseModel ?? '',
+        maxTurns: phase.maxTurns,
+        required: phase.required ?? false,
+      });
+    } catch {
+      /* hook callbacks are best-effort observability */
+    }
+  }
 
   try {
     const mapResult = await executeMapPhase({
@@ -455,6 +531,25 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       ? ` writeAfterThrow=${mapResult.writeAfterThrow}`
       : '';
     const phaseStatus = mapResultToPhaseStatus(mapResult);
+
+    if (ctx.hooks?.phaseEnd) {
+      try {
+        await ctx.hooks.phaseEnd({
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          harnessId: ctx.config.harness,
+          phaseName: phase.name,
+          status: phaseStatus,
+          turnsUsed: mapResult.usage.requests ?? 0,
+          tokensUsed: mapResult.usage.totalTokens ?? 0,
+          costUsd: costData.costUsd,
+          durationMs: Date.now() - mapHookStartedAt,
+        });
+      } catch {
+        /* hook callbacks are best-effort observability */
+      }
+    }
+
     return buildPhaseResult({
       name: phase.name,
       status: phaseStatus,
@@ -476,6 +571,25 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       runId: ctx.runId, phase: phase.name, error: reason, capHit,
       allowedMaxTurns: phase.maxTurns ?? null,
     });
+
+    if (ctx.hooks?.phaseEnd) {
+      try {
+        await ctx.hooks.phaseEnd({
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          harnessId: ctx.config.harness,
+          phaseName: phase.name,
+          status: 'failed',
+          turnsUsed: telemetry?.usage.requests ?? 0,
+          tokensUsed: telemetry?.usage.totalTokens ?? 0,
+          costUsd: null,
+          durationMs: Date.now() - mapHookStartedAt,
+        });
+      } catch {
+        /* hook callbacks are best-effort observability */
+      }
+    }
+
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
@@ -525,6 +639,8 @@ export async function executeSingleQuery(
     requestContext: ctx.requestContext,
     embeddingManager: ctx.embeddingManager,
     dryRun: ctx.config.dryRun ?? false,
+    hooks: ctx.hooks,
+    hookContext: ctx.hooks ? { runId: ctx.runId, agentId: ctx.agentId, harnessId: ctx.config.harness } : undefined,
   };
   const baseInput = {
     prompt: taskPrompt,
@@ -536,6 +652,7 @@ export async function executeSingleQuery(
     abortController: ctx.abortController,
     toolSurface,
     logger: ctx.options?.logger,
+    hooks: ctx.hooks,
   };
   let result;
   try {
@@ -845,6 +962,10 @@ export async function executePhasedQuery(
           embeddingManager: ctx.embeddingManager,
           dryRun: config.dryRun ?? false,
           metadataAccumulator,
+          hooks: ctx.hooks,
+          hookContext: ctx.hooks
+            ? { runId, agentId, harnessId: config.harness, phaseName: phase.name }
+            : undefined,
         },
       };
     });

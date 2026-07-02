@@ -190,6 +190,8 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
         readOnly: toolSurface.readOnly,
         dryRun: toolSurface.dryRun,
         metadataAccumulator: toolSurface.metadataAccumulator,
+        hooks: toolSurface.hooks,
+        hookContext: toolSurface.hookContext,
       },
     );
   }
@@ -201,6 +203,8 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
     requestContext: toolSurface.requestContext,
     dryRun: toolSurface.dryRun,
     metadataAccumulator: toolSurface.metadataAccumulator,
+    hooks: toolSurface.hooks,
+    hookContext: toolSurface.hookContext,
   });
 }
 

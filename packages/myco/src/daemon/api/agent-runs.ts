@@ -12,6 +12,7 @@ import { getRunActivityBuckets, getRunBranches } from '@myco/db/queries/activity
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
 import { listWriteIntents, countWriteIntents, countWriteIntentsByTool } from '@myco/db/queries/write-intents.js';
+import { listRunEvents } from '@myco/db/queries/agent-run-events.js';
 import { runDurationMs } from '@myco/agent/run-accounting.js';
 import { buildTaskInstruction, isInstructionRequiredTask, SKILL_SURVEY_TASK } from '@myco/agent/instruction-builders.js';
 import { hasConfiguredProvider, resolveTaskDefinitionExecution } from '@myco/agent/config-resolver.js';
@@ -36,6 +37,16 @@ import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 /** Default limit for listing agent runs in the API. */
 export const AGENT_RUNS_DEFAULT_LIMIT = 50;
+
+/**
+ * Max rows returned by GET /api/agent/runs/:id/events per request. A
+ * pathological run (a tight tool-call loop, or a long-running map phase
+ * over hundreds of items) can emit thousands of lifecycle events; without
+ * a cap a single poll could pull the whole table into one response.
+ * Clients page forward with `?since=<id>` — a truncated response just
+ * means the next poll picks up where this one left off.
+ */
+export const AGENT_RUN_EVENTS_LIMIT = 1000;
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -487,6 +498,22 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     return { body: { audit } };
   }
 
+  /**
+   * GET /api/agent/runs/:id/events?since=<id> — list harness hook events
+   * (preToolUse/postToolUse/phaseStart/phaseEnd) for a run, incrementally.
+   * Cursor-based: pass the highest `id` seen so far as `since` to get only
+   * new rows. Closes Gap 4 from the April 2026 harness maturity audit —
+   * see docs/superpowers/specs/2026-07-01-harness-hook-system-design.md.
+   */
+  async function handleGetRunEvents(req: RouteRequest): Promise<RouteResponse> {
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    if (!getRun(req.params.id, scope)) return { status: 404, body: { error: 'Run not found' } };
+    const rawSinceId = req.query.since ? Number(req.query.since) : undefined;
+    const sinceId = Number.isFinite(rawSinceId) ? rawSinceId : undefined;
+    const events = listRunEvents(req.params.id, { sinceId, scope, limit: AGENT_RUN_EVENTS_LIMIT });
+    return { body: { events, count: events.length } };
+  }
+
   return {
     handleRun,
     handleListRuns,
@@ -496,5 +523,6 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     handleGetRunTurns,
     handleGetRunWriteIntents,
     handleGetRunAudit,
+    handleGetRunEvents,
   };
 }

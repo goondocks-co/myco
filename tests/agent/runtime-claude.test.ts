@@ -210,6 +210,49 @@ describe('ClaudeSdkHarness.execute', () => {
     expect(scopedServerCalls).toHaveLength(0);
   });
 
+  it('threads hooks/hookContext through to createScopedVaultToolServer when toolNames is provided', async () => {
+    // Regression: buildToolServer used to omit hooks/hookContext on the
+    // createScopedVaultToolServer call, so wrapToolWithAudit inside
+    // tools.ts always received undefined for agent-mode phases — no
+    // pre_tool_use/post_tool_use events were ever recorded in production
+    // even when a run had real hooks configured.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const hooks = { preToolUse: async () => {} };
+    const hookContext = { runId: 'r1', agentId: 'a1', harnessId: 'claude-sdk' as const, phaseName: 'gather' };
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        toolNames: ['vault_report'],
+        hooks,
+        hookContext,
+      },
+    }));
+
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.hooks).toBe(hooks);
+    expect(scopedServerCalls[0].options.hookContext).toEqual(hookContext);
+  });
+
+  it('threads hooks/hookContext through to createVaultToolServer when toolNames is omitted', async () => {
+    // Same regression as above, for the single-query / orchestrator path
+    // that hits the full (unscoped) vault tool server.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const hooks = { phaseStart: async () => {} };
+    const hookContext = { runId: 'r1', agentId: 'a1', harnessId: 'claude-sdk' as const };
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', hooks, hookContext },
+    }));
+
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.hooks).toBe(hooks);
+    expect(fullServerCalls[0].options.hookContext).toEqual(hookContext);
+  });
+
   it('isolates the agent from user settings via settingSources: []', async () => {
     // Regression: the SDK's plugin-sync path reads `enabledPlugins` from
     // ~/.claude/settings.json / project .claude/settings.json when
