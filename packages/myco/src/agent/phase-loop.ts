@@ -57,7 +57,8 @@ import { summarizePhaseCosts } from './run-accounting.js';
 import { executeMapPhase } from './map-phase.js';
 import { createVaultTools } from './tools.js';
 import { checkPhasePreCondition } from './phase-preconditions.js';
-import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
+import { checkPhasePostCondition, type PhasePostConditionResult } from './phase-postconditions.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 
 /**
  * Pull the cap-hit classification off a caught error. Returns true when
@@ -413,6 +414,97 @@ export async function executePhase(
         metadata: snapshotMetadata(toolSurface),
         semanticCheckBlocked: true,
       });
+    }
+
+    // Same deterministic-conversion contract as the flagged-writes block
+    // above, for phases that declare a mechanical postCondition: an
+    // otherwise-"completed" phase that did not produce its required
+    // report/state contract is converted to "failed" HERE, so a
+    // `required: true` phase stops the run before the remaining phases
+    // spend LLM turns consuming outputs that don't exist (live failure
+    // mode: a model answers with prose only, zero tool calls, and the
+    // run dies at the run-end task postcondition after full cost). A
+    // THROWN check fails OPEN — same philosophy as preConditions: a
+    // transient SQL error never fails otherwise-completed work. Note the
+    // `agent.phase.end` debug line above already logged status
+    // "completed" for a phase this block converts — same pre-conversion
+    // quirk as the flagged-writes path.
+    if (phase.postCondition) {
+      if (!ctx.requestContext) {
+        // Mirror agent.phase.precondition-no-context: a caller without a
+        // request context (CLI re-run, embedded test harness) bypasses
+        // the gate by necessity, but the bypass must be loud — the
+        // phase's output contract goes unverified until run end.
+        logger?.warn(
+          'agent.phase.postcondition-no-context',
+          `Phase ${phase.name} declares postCondition "${phase.postCondition}" but no requestContext is available — gate bypassed; contract unverified until run end.`,
+          {
+            runId: ctx.runId,
+            phase: phase.name,
+            postCondition: phase.postCondition,
+          },
+        );
+      } else {
+        let postCheck: PhasePostConditionResult | null = null;
+        try {
+          postCheck = checkPhasePostCondition(phase.postCondition, {
+            runId: ctx.runId,
+            agentId: ctx.agentId,
+            projectId: rowProjectIdFromRequestContext(ctx.requestContext),
+            dryRun: ctx.config.dryRun === true,
+          });
+        } catch (err) {
+          logger?.warn('agent.phase.postcondition-error', `Phase ${phase.name} postCondition check threw — keeping completed result`, {
+            runId: ctx.runId,
+            phase: phase.name,
+            postCondition: phase.postCondition,
+            error: toErrorMessage(err),
+          });
+        }
+        if (postCheck && !postCheck.passed) {
+          const errorText = `Phase "${phase.name}" postcondition "${phase.postCondition}" not satisfied: ${postCheck.reason}`;
+          logger?.warn('agent.phase.postcondition-failed', errorText, {
+            runId: ctx.runId,
+            phase: phase.name,
+            postCondition: phase.postCondition,
+            turnsUsed: result.turnsUsed,
+          });
+
+          if (ctx.hooks?.phaseEnd) {
+            try {
+              await ctx.hooks.phaseEnd({
+                runId: ctx.runId,
+                agentId: ctx.agentId,
+                harnessId: ctx.config.harness,
+                phaseName: phase.name,
+                status: 'failed',
+                turnsUsed: result.turnsUsed,
+                tokensUsed: result.usage.totalTokens ?? 0,
+                costUsd: costData.costUsd,
+                durationMs: Date.now() - phaseHookStartedAt,
+              });
+            } catch {
+              /* hook callbacks are best-effort observability */
+            }
+          }
+
+          // Unlike the semantic-check summary above, the postcondition
+          // reason is safe to splice into later prompts — it names
+          // missing reports/state, no classifier oracle — and a failed
+          // required phase stops the pipeline anyway.
+          return buildPhaseResult({
+            name: phase.name,
+            status: 'failed',
+            summary: `Error: ${errorText}`,
+            usage: result.usage,
+            costData,
+            sessionRef: result.sessionRef,
+            sessionData: result.sessionData,
+            metadata: snapshotMetadata(toolSurface),
+            postConditionFailed: true,
+          });
+        }
+      }
     }
 
     if (ctx.hooks?.phaseEnd) {
@@ -1071,9 +1163,16 @@ export async function executePhasedQuery(
       // a fresh flaggedWritesAccumulator and fresh verdict cache — quietly
       // defeating the semantic check on resume. See
       // PhaseCheckpoint.semanticCheckBlocked.
+      //
+      // Same exclusion for a postcondition-failed phase: its history is
+      // the model's own non-compliant completion (e.g. prose instead of
+      // the required report call), and reattaching invites "as
+      // established, no action needed" repeat failures until resume
+      // attempts exhaust. See PhaseCheckpoint.postConditionFailed.
       const reuseSession = existingCheckpoint?.sessionRef
         && !(existingCheckpoint.status === 'failed' && (existingCheckpoint.turnsUsed ?? 0) === 0)
-        && existingCheckpoint.semanticCheckBlocked !== true;
+        && existingCheckpoint.semanticCheckBlocked !== true
+        && existingCheckpoint.postConditionFailed !== true;
       const sessionId = reuseSession
         ? existingCheckpoint!.sessionRef!
         : phaseSessionId(runId, phase.name);
@@ -1239,6 +1338,10 @@ export async function executePhasedQuery(
         // tool call, and reusing it would let the model retry against a
         // fresh accumulator and fresh verdict cache.
         ...(result.semanticCheckBlocked === true ? { semanticCheckBlocked: true } : {}),
+        // Same persistence for the postcondition-failed marker: the
+        // session's history is the model's own non-compliant completion,
+        // so the reuseSession exclusion must see the marker on resume.
+        ...(result.postConditionFailed === true ? { postConditionFailed: true } : {}),
         updatedAt: epochSeconds(),
       };
       // Skipped phases count as satisfied for downstream wave gating —

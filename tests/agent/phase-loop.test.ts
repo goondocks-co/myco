@@ -132,10 +132,25 @@ mock.module('@myco/agent/phase-preconditions.js', () => ({
   checkPhasePreCondition: () => phasePreConditionResult,
 }));
 
+// Per-phase postCondition resolver — programmable per test; an impl
+// function (not a value) so the check-throws fail-open path can be
+// exercised. The last call's arguments are captured for threading
+// assertions (projectId/dryRun parity with the run row).
+let phasePostConditionImpl: () => { passed: boolean; reason: string } = () => ({ passed: true, reason: 'default-pass' });
+let lastPostConditionCall: { kind: string; input: Record<string, unknown> } | null = null;
+mock.module('@myco/agent/phase-postconditions.js', () => ({
+  checkPhasePostCondition: (kind: string, input: Record<string, unknown>) => {
+    lastPostConditionCall = { kind, input };
+    return phasePostConditionImpl();
+  },
+}));
+
 // projectScopeFromRequestContext is called only when a requestContext is
-// present; tests that supply one need a non-throwing stub.
+// present; tests that supply one need a non-throwing stub. Same for the
+// row-parity projectId resolver the postCondition gate uses.
 mock.module('@myco/grove/request-context.js', () => ({
   projectScopeFromRequestContext: () => ({ kind: 'all' as const }),
+  rowProjectIdFromRequestContext: () => 'proj_test',
 }));
 
 // Cost resolution is async but doesn't need real numbers here.
@@ -246,6 +261,8 @@ beforeEach(() => {
   runtimeSupportsSessionResume = false;
   runtimeSupportsStructuredOutput = false;
   phasePreConditionResult = { passed: true, reason: 'default-pass' };
+  phasePostConditionImpl = () => ({ passed: true, reason: 'default-pass' });
+  lastPostConditionCall = null;
   mapPhaseResultOverride = null;
 });
 
@@ -477,6 +494,91 @@ describe('executePhase', () => {
     });
     expect(result.status).toBe('completed');
     expect(capturedExecuteInputs).toHaveLength(1);
+  });
+
+  it('converts a completed phase to failed when its postCondition is unsatisfied', async () => {
+    // The live failure mode this gate closes: the model completes the
+    // phase with prose only (zero required tool calls), the phase would
+    // otherwise report completed, and the missing report/state is only
+    // discovered by the run-end task postcondition after every later
+    // phase ran at full cost.
+    phasePostConditionImpl = () => ({
+      passed: false,
+      reason: 'skill-evolve completed without a skill-evolve-inventory report',
+    });
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('inventory', { postCondition: 'skill-evolve-inventory', required: true }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.postConditionFailed).toBe(true);
+    expect(result.summary).toContain('postcondition "skill-evolve-inventory" not satisfied');
+    expect(result.summary).toContain('without a skill-evolve-inventory report');
+    // The harness DID run — this is a post-execution conversion, not a skip.
+    expect(capturedExecuteInputs).toHaveLength(1);
+  });
+
+  it('threads row-parity projectId and config dryRun into the postCondition check', async () => {
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+      config: { ...baseConfig(), dryRun: true },
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('inventory', { postCondition: 'skill-evolve-inventory' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(lastPostConditionCall).not.toBeNull();
+    expect(lastPostConditionCall!.kind).toBe('skill-evolve-inventory');
+    expect(lastPostConditionCall!.input).toMatchObject({
+      runId: ctx.runId,
+      agentId: ctx.agentId,
+      projectId: 'proj_test',
+      dryRun: true,
+    });
+  });
+
+  it('keeps the completed result when the postCondition check throws (fail-open)', async () => {
+    // Same philosophy as preConditions: a transient SQL error must never
+    // fail otherwise-completed work.
+    phasePostConditionImpl = () => {
+      throw new Error('SQLITE_BUSY');
+    };
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('inventory', { postCondition: 'skill-evolve-inventory' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(result.postConditionFailed).toBeUndefined();
+  });
+
+  it('bypasses the postCondition gate when no requestContext is available', async () => {
+    phasePostConditionImpl = () => ({ passed: false, reason: 'should not be consulted' });
+    const ctx = baseContext({ requestContext: undefined });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('inventory', { postCondition: 'skill-evolve-inventory' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(lastPostConditionCall).toBeNull();
   });
 
   it('reports abort reason when the run is aborted mid-execution', async () => {

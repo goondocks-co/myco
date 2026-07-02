@@ -198,6 +198,15 @@ const MapPhaseSinkSchema = z.object({
 import { PHASE_PRECONDITION_KINDS } from './phase-precondition-kinds.js';
 const PhasePreConditionSchema = z.enum(PHASE_PRECONDITION_KINDS);
 
+/**
+ * Phase-level postCondition kinds. Same zero-dep tuple-module pattern as
+ * preConditions above — codegen loads this file in plain Node, so the
+ * kinds tuple must not pull in the DB layer that phase-postconditions.ts
+ * (the runtime dispatch) uses.
+ */
+import { PHASE_POSTCONDITION_KINDS } from './phase-postcondition-kinds.js';
+const PhasePostConditionSchema = z.enum(PHASE_POSTCONDITION_KINDS);
+
 /** Schema for a single phase within a phased task pipeline. */
 export const PhaseDefinitionSchema = z.object({
   name: z.string(),
@@ -213,6 +222,7 @@ export const PhaseDefinitionSchema = z.object({
   skipPriorContext: z.boolean().optional(),
   readOnly: z.boolean().optional(),
   preCondition: PhasePreConditionSchema.optional(),
+  postCondition: PhasePostConditionSchema.optional(),
   gateOnPriorMetadata: z.object({
     phase: z.string().min(1),
     key: z.string().min(1),
@@ -243,6 +253,13 @@ export const PhaseDefinitionSchema = z.object({
   // task-YAML field that quietly does nothing on a map-mode phase.
   (p) => p.mode !== 'map' || !p.deferredTools || p.deferredTools.length === 0,
   { message: 'deferredTools is not supported on mode: map phases (map-phase execution does not read it)' },
+).refine(
+  // Map-phase execution exits executePhase before the gate logic runs
+  // (see the mode === 'map' branch in phase-loop.ts), so a postCondition
+  // on a map phase would silently never be checked. Reject at load time
+  // instead of shipping a task-YAML field that quietly does nothing.
+  (p) => p.mode !== 'map' || !p.postCondition,
+  { message: 'postCondition is not supported on mode: map phases (map-phase execution does not read it)' },
 );
 
 /** Schema for task YAML files in tasks/. */

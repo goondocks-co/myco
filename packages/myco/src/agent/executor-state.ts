@@ -40,6 +40,16 @@ export interface PhaseCheckpoint {
    */
   semanticCheckBlocked?: boolean;
   /**
+   * Set when the phase failed because an unsatisfied
+   * `PhaseDefinition.postCondition` converted an otherwise-"completed"
+   * result to "failed" (see phase-loop.ts). Same session-reuse hazard as
+   * `semanticCheckBlocked` above: the phase produced turns, but the
+   * session history is the model's own non-compliant completion —
+   * reattaching on resume invites the model to reaffirm it. See the
+   * `reuseSession` exclusion in phase-loop.ts.
+   */
+  postConditionFailed?: boolean;
+  /**
    * Metadata emitted by the phase via `phase_emit_metadata`. Persisted
    * so a resumed run preserves the same gate decisions for downstream
    * phases — gates evaluate against this checkpoint, not against a
@@ -154,11 +164,13 @@ export function buildPhaseResult(input: {
   allowedMaxTurns?: number;
   metadata?: Record<string, unknown>;
   semanticCheckBlocked?: boolean;
+  postConditionFailed?: boolean;
 }): PhaseResult & { sessionData?: unknown } {
   const {
     name, status, summary, usage, costData,
     turnsUsed, tokensUsed, costUsd, costSource,
     sessionRef, sessionData, capHit, allowedMaxTurns, metadata, semanticCheckBlocked,
+    postConditionFailed,
   } = input;
   return {
     name,
@@ -172,6 +184,7 @@ export function buildPhaseResult(input: {
     ...(sessionData !== undefined ? { sessionData } : {}),
     ...(capHit === true ? { capHit: true } : {}),
     ...(semanticCheckBlocked === true ? { semanticCheckBlocked: true } : {}),
+    ...(postConditionFailed === true ? { postConditionFailed: true } : {}),
     ...(allowedMaxTurns !== undefined ? { allowedMaxTurns } : {}),
     ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
     summary,

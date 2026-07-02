@@ -186,6 +186,49 @@ describe('PhaseDefinitionSchema', () => {
       // missing prompt, tools, maxTurns, required
     })).toThrow();
   });
+
+  it('accepts a phase with a known postCondition kind', () => {
+    const result = PhaseDefinitionSchema.parse({
+      name: 'inventory',
+      prompt: 'Validate structural analysis.',
+      tools: ['vault_set_state', 'vault_report'],
+      maxTurns: 8,
+      required: true,
+      postCondition: 'skill-evolve-inventory',
+    });
+    expect(result.postCondition).toBe('skill-evolve-inventory');
+  });
+
+  it('rejects an unknown postCondition kind', () => {
+    expect(PhaseDefinitionSchema.safeParse({
+      name: 'inventory',
+      prompt: 'p',
+      tools: [],
+      maxTurns: 8,
+      required: true,
+      postCondition: 'not-a-registered-kind',
+    }).success).toBe(false);
+  });
+
+  it('rejects postCondition on mode: map phases', () => {
+    // Map-phase execution exits executePhase before the gate logic —
+    // the field would silently never be checked, so it fails at load.
+    const result = PhaseDefinitionSchema.safeParse({
+      name: 'describe',
+      prompt: 'unused',
+      tools: [],
+      maxTurns: 60,
+      required: true,
+      mode: 'map',
+      perItemMaxTurns: 1,
+      source: { tool: 't', args: {}, itemsPath: 'entries' },
+      item: { prompt: 'p' },
+      sink: { tool: 's', argMap: {} },
+      postCondition: 'skill-evolve-inventory',
+    });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues ?? [])).toContain('postCondition is not supported on mode: map');
+  });
 });
 
 describe('PhaseDefinitionSchema — map mode', () => {
