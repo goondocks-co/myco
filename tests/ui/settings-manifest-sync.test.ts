@@ -26,6 +26,10 @@ const ALLOWLIST: readonly string[] = [
   'agent.cold_project_threshold_days',
   'agent.provider.local_backend',
   'agent.provider.reasoning_map',
+  // Per-tier reasoning-budget maps (PR #609) are yaml-only advanced config,
+  // same as reasoning_map; a Settings editor is an explicit fast-follow.
+  'agent.provider.thinking_budget_map',
+  'agent.provider.effort_map',
   'notifications.domains',
   // release_provenance.reconcile_interval_minutes appears in BOTH the project
   // tier (ReleaseProvenanceSchema) and the grove tier (GroveReleaseProvenanceSchema).
