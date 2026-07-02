@@ -200,6 +200,7 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
         hooks: toolSurface.hooks,
         hookContext: toolSurface.hookContext,
         deferredNames: toolSurface.deferredNames ? new Set(toolSurface.deferredNames) : undefined,
+        logger: toolSurface.logger,
       },
     );
   }
@@ -220,6 +221,7 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
     flaggedWritesAccumulator: toolSurface.flaggedWritesAccumulator,
     hooks: toolSurface.hooks,
     hookContext: toolSurface.hookContext,
+    logger: toolSurface.logger,
   });
 }
 

@@ -60,6 +60,7 @@ class LocalVaultMcpServer implements MCPServer {
       hooks: toolSurface.hooks,
       hookContext: toolSurface.hookContext,
       deferredNames: toolSurface.deferredNames ? new Set(toolSurface.deferredNames) : undefined,
+      logger: toolSurface.logger,
     }).filter((tool) => !toolSurface.readOnly || tool.annotations?.readOnlyHint === true);
     // vault_search_tools is synthesized by createVaultTools when any tool
     // in scope is deferrable and is never itself in `toolNames` — let it

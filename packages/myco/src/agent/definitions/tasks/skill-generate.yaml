@@ -258,6 +258,11 @@ phases:
       - Whether finalize was called
       - Each criterion: pass/fail with brief note
       - Any re-stages performed
+    purpose: >-
+      Finalizes the staged skill via vault_finalize_skill, which atomically
+      inserts the vault_skill_records row plus lineage and transitions the
+      source candidate to 'generated' — no separate vault_skill_candidates
+      write call is made in this phase.
     tools:
       - vault_stage_skill
       - vault_finalize_skill

@@ -53,6 +53,7 @@ export interface MycoConfig {
     summary_batch_interval: number;
     scheduled_tasks_enabled?: boolean;
     event_tasks_enabled?: boolean;
+    semantic_write_check_enabled?: boolean;
     harness?: 'claude-sdk' | 'openai-agents';
     provider?: {
       harness?: 'claude-sdk' | 'openai-agents';

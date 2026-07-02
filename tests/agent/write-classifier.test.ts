@@ -51,6 +51,9 @@ describe('classifyWriteIntent', () => {
 
     expect(result.verdict).toBe('ok');
     expect(result.reason).toBeNull();
+    // Genuine ok: the classifier actually rendered this verdict, not a
+    // fail-open or unparseable degrade.
+    expect(result.outcome).toBe('ok');
     expect(mockExecute).toHaveBeenCalledTimes(1);
     const callArgs = mockExecute.mock.calls[0][0] as { toolSurface: { toolNames?: string[] }; maxTurns?: number };
     // The classifier must never be given any tools to call.
@@ -107,6 +110,7 @@ describe('classifyWriteIntent', () => {
 
     expect(result.verdict).toBe('flag');
     expect(result.reason).toBe('batch_id 42 does not appear anywhere in this phase\'s stated purpose');
+    expect(result.outcome).toBe('flag');
   });
 
   it('defaults to ok on any unparseable or ambiguous response (fail-open at the classification-uncertainty level)', async () => {
@@ -128,6 +132,10 @@ describe('classifyWriteIntent', () => {
     });
 
     expect(result.verdict).toBe('ok');
+    // Distinguishes an unparseable classifier response from a genuine ok
+    // — both currently degrade to verdict 'ok', but observability needs
+    // to tell them apart.
+    expect(result.outcome).toBe('unparseable');
   });
 
   it('defaults to ok when the harness call itself throws (classifier failure must never block a write on its own)', async () => {
@@ -146,6 +154,7 @@ describe('classifyWriteIntent', () => {
 
     expect(result.verdict).toBe('ok');
     expect(result.reason).toBeNull();
+    expect(result.outcome).toBe('fail-open');
   });
 
   it('defaults to ok when the harness call rejects with a non-Error value (thrown string/object)', async () => {
@@ -164,6 +173,7 @@ describe('classifyWriteIntent', () => {
 
     expect(result.verdict).toBe('ok');
     expect(result.reason).toBeNull();
+    expect(result.outcome).toBe('fail-open');
   });
 
   it('degrades to ok when the harness call never resolves within the deadline (wall-clock timeout, not just maxTurns)', async () => {
@@ -187,6 +197,7 @@ describe('classifyWriteIntent', () => {
 
     expect(result.verdict).toBe('ok');
     expect(result.reason).toBeNull();
+    expect(result.outcome).toBe('fail-open');
     // Should resolve close to the injected deadline, not hang indefinitely.
     expect(elapsedMs).toBeLessThan(2_000);
 

@@ -83,6 +83,16 @@ export interface PhaseDefinition {
   /** If true, the scoped tool server only includes read-only tools (readOnlyHint === true). */
   readOnly?: boolean;
   /**
+   * Authored statement of this phase's intended writes. Used verbatim as
+   * the semantic-check classifier's `phasePurpose.promptExcerpt` — must
+   * describe the phase's INTENDED WRITES, not general phase behavior.
+   * When absent, the classifier falls back to the first 500 characters of
+   * `prompt`. Note: an authored purpose means the classifier no longer
+   * sees orchestrator `contextNotes` spliced into the prompt — intended,
+   * since purpose is the static write contract, not the dynamic prompt.
+   */
+  purpose?: string;
+  /**
    * Optional mechanical precondition. When set, the phase loop runs the
    * registered SQL check before composing the prompt; on false the phase
    * is recorded as `skipped` and the harness is not invoked. Use to

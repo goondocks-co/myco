@@ -203,6 +203,15 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
         suffix: 'days',
         note: 'Deletes completed, skipped, and non-resumable failed agent runs older than this window.',
       },
+      {
+        key: 'agent.semantic_write_check_enabled',
+        label: 'Semantic write check',
+        scope: 'grove',
+        kind: 'toggle',
+        category: 'Agent',
+        icon: 'Bot',
+        note: 'Runs a lightweight semantic classifier against destructive vault writes before they execute, blocking any write that doesn\'t match the calling phase\'s stated purpose. Off by default; verdict quality depends on the classifier model, and the check fails open on classifier error or timeout.',
+      },
     ],
   },
   {

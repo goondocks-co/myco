@@ -35,4 +35,30 @@ describe('scope-aware merge', () => {
     expect(cfg.capture.plan_dirs).toEqual(['machine-dir/']); // grove stray pruned
     expect(cfg.agent.reasoningLevel).toBe('high');           // legit grove value kept
   });
+
+  it('grove.yaml no longer prunes agent.semantic_write_check_enabled (regression: dogfood gotcha)', () => {
+    // Prior to Task 5, this field lived only in AgentBaseSchema with no
+    // SCOPE_REGISTRY entry, so the scope-aware merge silently dropped any
+    // value set in grove.yaml before it ever reached the resolved config.
+    fs.writeFileSync(
+      path.join(home.path, 'groves', GROVE, 'grove.yaml'),
+      'agent:\n  semantic_write_check_enabled: true\n',
+      'utf-8',
+    );
+    invalidateMergedConfigCache();
+    const cfg = loadMergedConfig(vault, { groveId: GROVE });
+    expect(cfg.agent.semantic_write_check_enabled).toBe(true);
+  });
+
+  it('local.yaml overrides the grove value for agent.semantic_write_check_enabled (staging path)', () => {
+    fs.writeFileSync(
+      path.join(home.path, 'groves', GROVE, 'grove.yaml'),
+      'agent:\n  semantic_write_check_enabled: false\n',
+      'utf-8',
+    );
+    fs.writeFileSync(path.join(vault, 'local.yaml'), 'agent:\n  semantic_write_check_enabled: true\n', 'utf-8');
+    invalidateMergedConfigCache();
+    const cfg = loadMergedConfig(vault, { groveId: GROVE });
+    expect(cfg.agent.semantic_write_check_enabled).toBe(true);
+  });
 });

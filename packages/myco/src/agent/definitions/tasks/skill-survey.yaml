@@ -309,6 +309,12 @@ phases:
         lines: counts of CREATE/UPDATE/DEFER/DISMISS/SKIP plus any
         unreviewed bundle IDs. All durable detail goes through
         `vault_skill_survey_bundle_decisions`, not the narrative.
+    purpose: >-
+      No destructive writes via vault_skill_candidates/vault_skill_records
+      (list/get only); all durable output flows through
+      vault_skill_survey_bundle_decisions, the non-destructive tool that
+      persists CREATE/UPDATE/DEFER/DISMISS/SKIP decisions for the next
+      phase.
     tools:
       - vault_skill_survey_prepare
       - vault_skill_candidates
@@ -484,6 +490,11 @@ phases:
       restating their content. The assistant message outside tool calls
       MUST be ≤ 6 lines (counts per action). Durable detail goes through
       `vault_skill_survey_reconciliation_plan`, not the narrative.
+    purpose: >-
+      Writes reconciliation plan state via vault_skill_survey_reconciliation_plan
+      for persist-decisions to apply. vault_skill_candidates and
+      vault_skill_records are used for list/get lookups only — never create,
+      update, or delete in this phase.
     tools:
       - vault_skill_survey_prepare
       - vault_state
@@ -519,6 +530,10 @@ phases:
       under `remaining_cleanup_target_ids`.
 
       Report a summary via vault_report.
+    purpose: >-
+      Applies the stored reconciliation plan's Create/Update/Defer/Dismiss
+      decisions via vault_skill_survey_apply_reconciliation — the sole write
+      path for this phase.
     tools:
       - vault_skill_survey_prepare
       - vault_state
