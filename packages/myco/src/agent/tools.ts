@@ -600,7 +600,17 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     } else if (shouldSemanticCheck) {
       inner = wrapToolWithSemanticCheck(typed);
     }
-    return wrapToolWithAudit(inner, hooks, hookContext);
+    const audited = wrapToolWithAudit(inner, hooks, hookContext);
+    // Argument normalization is the OUTERMOST wrapper so it runs FIRST on
+    // the way in: audit events, dry-run write intents, the semantic-check
+    // classifier, and the real handler all see the same normalized args.
+    // Ordering matters for the dry-run path in particular — the intent row
+    // records the arguments verbatim, and the run-end/phase postconditions
+    // validate against that row, so a normalization applied only inside
+    // the real handler would leave dry runs validating unstamped payloads.
+    return typed.normalizeArgs
+      ? wrapToolWithArgNormalization(audited, typed.normalizeArgs)
+      : audited;
   });
 
   // Deferred-loading pass: built from the FULLY WRAPPED tool list so
@@ -657,6 +667,33 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
   return (searchTool
     ? [...withStubs, wrapToolWithAudit(searchTool, hooks, hookContext)]
     : withStubs) as typeof tools;
+
+  /**
+   * Outermost wrapper for tools that declare `normalizeArgs` (see
+   * MycoToolDefinition.normalizeArgs in tools/types.ts): rewrites the
+   * incoming arguments deterministically before ANY other consumer —
+   * audit events, dry-run write intents, the semantic-check classifier,
+   * and the real handler all receive the normalized shape. Fails open to
+   * the original args if the normalizer throws — normalization is a
+   * correction, never a gate.
+   */
+  function wrapToolWithArgNormalization(
+    toolDef: MycoToolDefinition<any>,
+    normalizeArgs: NonNullable<MycoToolDefinition<any>['normalizeArgs']>,
+  ): MycoToolDefinition<any> {
+    return {
+      ...toolDef,
+      handler: async (args, extra) => {
+        let normalized = args ?? {};
+        try {
+          normalized = normalizeArgs(normalized, { runId });
+        } catch {
+          normalized = args ?? {};
+        }
+        return toolDef.handler(normalized, extra);
+      },
+    };
+  }
 
   /**
    * Outer wrapper applied only when `dryRun === true` and the tool is a

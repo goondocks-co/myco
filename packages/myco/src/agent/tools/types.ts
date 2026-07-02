@@ -47,6 +47,46 @@ export interface MycoToolDefinition<TInput = any> {
    * checked (existing behavior, unchanged for single-action write tools).
    */
   destructiveActions?: string[];
+  /**
+   * Deterministic argument normalization applied by `createVaultTools()`
+   * as the OUTERMOST wrapper — before audit-event recording, dry-run
+   * write-intent capture, the semantic-check classifier, and the real
+   * handler, so every consumer sees the same normalized arguments.
+   *
+   * Motivating case: payloads whose shape asks the model to transcribe a
+   * load-bearing identifier (e.g. `run_id` in skill-evolve state/report
+   * payloads). Models fabricate placeholders instead of copying UUIDs,
+   * which the task postconditions then reject. Stamping the true value
+   * here makes that failure class structurally impossible.
+   *
+   * Must be pure and total: return the (possibly new) args object, never
+   * throw — `wrapToolWithArgNormalization` fails open to the original
+   * args if it does.
+   */
+  normalizeArgs?: (args: Record<string, unknown>, ctx: { runId: string }) => Record<string, unknown>;
+}
+
+/**
+ * Stamp `run_id` in a plain-object payload to the actual run id. Returns
+ * a new object when the payload carries a `run_id` key with a different
+ * value; returns the input unchanged otherwise (no key added — payloads
+ * without run-attribution semantics are never touched, so cursor-style
+ * state values and strict downstream parsers are unaffected).
+ */
+export function stampRunIdInPayload(
+  payload: unknown,
+  runId: string,
+): unknown {
+  if (
+    payload !== null
+    && typeof payload === 'object'
+    && !Array.isArray(payload)
+    && 'run_id' in payload
+    && (payload as Record<string, unknown>).run_id !== runId
+  ) {
+    return { ...(payload as Record<string, unknown>), run_id: runId };
+  }
+  return payload;
 }
 
 export function toSdkMcpToolDefinition<TInput>(
