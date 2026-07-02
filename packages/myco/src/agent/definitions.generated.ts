@@ -228,6 +228,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 18,
         "required": true,
+        "purpose": "Read-only prompt assembly; no vault_skill_records writes intended in this phase. Skill records are consulted only to surface repeatable project procedures for the built prompt.",
         "onItemError": "skip"
       }
     ]
@@ -347,6 +348,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "inventory"
         ],
+        "purpose": "Writes STALE/MERGE/NARROW classification updates to vault_skill_records properties (last_assessed_at, knowledge_watermark, last_classification, last_assessed_generation, file_fingerprints) for assessed skills. vault_skill_candidates is read-only triage input in this phase — it is consulted for merge/narrow signals but never created, updated, or deleted here.",
         "postCondition": "skill-evolve-assess",
         "onItemError": "skip"
       },
@@ -372,6 +374,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "assess"
         ],
+        "purpose": "Applies classified merges, narrowing, and content updates by writing to vault_skill_records — status transitions to retired/deleted for DEPRECATED and merged-away skills, and lineage-bearing content changes via vault_edit_skill/vault_write_skill, which carry no destructiveHint of their own.",
         "onItemError": "skip"
       }
     ],
@@ -428,6 +431,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "draft"
         ],
+        "purpose": "Finalizes the staged skill via vault_finalize_skill, which atomically inserts the vault_skill_records row plus lineage and transitions the source candidate to 'generated' — no separate vault_skill_candidates write call is made in this phase.",
         "onItemError": "skip"
       }
     ],
@@ -499,6 +503,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "explore"
         ],
+        "purpose": "No destructive writes via vault_skill_candidates/vault_skill_records (list/get only); all durable output flows through vault_skill_survey_bundle_decisions, the non-destructive tool that persists CREATE/UPDATE/DEFER/DISMISS/SKIP decisions for the next phase.",
         "onItemError": "skip"
       },
       {
@@ -517,6 +522,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "review-bundles"
         ],
+        "purpose": "Writes reconciliation plan state via vault_skill_survey_reconciliation_plan for persist-decisions to apply. vault_skill_candidates and vault_skill_records are used for list/get lookups only — never create, update, or delete in this phase.",
         "onItemError": "skip"
       },
       {
@@ -534,6 +540,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "reconcile-queue"
         ],
+        "purpose": "Applies the stored reconciliation plan's Create/Update/Defer/Dismiss decisions via vault_skill_survey_apply_reconciliation — the sole write path for this phase.",
         "onItemError": "skip"
       }
     ],
@@ -634,6 +641,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "read-state"
         ],
+        "purpose": "Resolves spore lifecycle via vault_resolve_spore action \"supersede\" when a new spore replaces an existing one with meaningful new detail, and marks source prompt batches processed via vault_mark_processed as extraction consumes them.",
         "onItemError": "skip"
       },
       {
@@ -690,6 +698,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "consolidate-shortlist"
         ],
+        "purpose": "Resolves source spores via vault_resolve_spore — action \"consolidate\" for spores folded into a new wisdom spore, action \"supersede\" for spores replaced by a richer one — superseding or consolidating them out of active search and context injection.",
         "preCondition": "has-recent-consolidatable-spores",
         "onItemError": "skip"
       },

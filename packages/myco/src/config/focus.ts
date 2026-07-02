@@ -152,6 +152,12 @@ const SECTION_RULES: PrefixRule[] = [
     sectionLabel: 'Scheduled tasks',
   },
   {
+    prefix: 'agent.semantic_write_check_enabled',
+    page: '/settings',
+    sectionId: CONFIG_SECTION_IDS.settingsAgent,
+    sectionLabel: 'Myco Agent',
+  },
+  {
     prefix: 'agent.summary_batch_interval',
     page: '/agent',
     sectionId: CONFIG_SECTION_IDS.agentOperations,

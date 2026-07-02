@@ -619,6 +619,16 @@ const GroveAgentSchema = rejectLegacyRuntimeKey(z.object({
   scheduled_tasks_enabled: z.boolean().default(true),
   event_tasks_enabled: z.boolean().default(true),
   cold_project_threshold_days: z.number().int().min(0).max(365).default(14),
+  /**
+   * Grove-tier override for the semantic write-check gate. DELIBERATELY
+   * `.optional()` with NO `.default()` — `saveGroveConfig` writes
+   * `YAML.stringify(GroveConfigSchema.parse(config))`, so a `.default(false)`
+   * would materialize an explicit `false` into every grove config.yaml on
+   * any grove save, shadowing future default flips. AgentBaseSchema's
+   * `default(false)` (schema.ts:217) remains the resolver floor when this
+   * field is absent here.
+   */
+  semantic_write_check_enabled: z.boolean().optional(),
   provider: ProviderOverrideSchema.optional(),
   harness: HarnessIdSchema.optional(),
   reasoningLevel: ReasoningLevelSchema.optional(),
@@ -706,6 +716,7 @@ export const GROVE_PROMOTED_FIELDS: ReadonlyArray<readonly string[]> = [
   ['agent', 'scheduled_tasks_enabled'],
   ['agent', 'event_tasks_enabled'],
   ['agent', 'cold_project_threshold_days'],
+  ['agent', 'semantic_write_check_enabled'],
 ];
 
 /**

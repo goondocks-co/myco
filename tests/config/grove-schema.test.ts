@@ -4,6 +4,7 @@ import {
   ProjectConfigSchema,
   MachineConfigSchema,
   PROJECT_TIER_LEGACY_FIELDS,
+  GROVE_PROMOTED_FIELDS,
 } from '@myco/config/schema';
 
 describe('GroveAgentSchema', () => {
@@ -54,6 +55,24 @@ describe('GroveAgentSchema', () => {
       },
     });
     expect(result.success).toBe(false);
+  });
+
+  test('accepts an explicit semantic_write_check_enabled override', () => {
+    const parsed = GroveConfigSchema.parse({
+      agent: { semantic_write_check_enabled: true },
+    });
+    expect(parsed.agent.semantic_write_check_enabled).toBe(true);
+  });
+
+  test('semantic_write_check_enabled is undefined (no default) when absent — deliberate deviation from the other agent booleans', () => {
+    // Unlike scheduled_tasks_enabled/event_tasks_enabled, this field must NOT
+    // materialize a default on parse: saveGroveConfig round-trips through
+    // GroveConfigSchema.parse before writing YAML, so a `.default(false)`
+    // would stamp an explicit `false` into every grove config.yaml on save,
+    // shadowing any future flip of the AgentBaseSchema floor default.
+    const parsed = GroveConfigSchema.parse({});
+    expect(parsed.agent.semantic_write_check_enabled).toBeUndefined();
+    expect('semantic_write_check_enabled' in parsed.agent).toBe(false);
   });
 });
 
@@ -180,22 +199,35 @@ describe('ProjectConfigSchema', () => {
 });
 
 describe('PROJECT_TIER_LEGACY_FIELDS', () => {
-  test('includes the 11 Grove-promoted paths — loader strips them when Grove-bound', () => {
+  test('includes every Grove-promoted path — loader strips them when Grove-bound', () => {
     // These paths are Grove-tier. The loader strips them from project myco.yaml
     // when the project is Grove-bound (gated by hasGrove), so stale project-tier
     // values never shadow Grove config.
+    //
+    // Asserted against GROVE_PROMOTED_FIELDS itself (rather than a hardcoded
+    // list/count) so a new promoted field can't silently go unasserted here —
+    // adding one to schema.ts without adding the matching toContain below
+    // fails this test immediately instead of drifting unnoticed.
     const stringified = PROJECT_TIER_LEGACY_FIELDS.map((p) => p.join('.'));
-    expect(stringified).toContain('embedding.provider');
-    expect(stringified).toContain('embedding.model');
-    expect(stringified).toContain('embedding.base_url');
-    expect(stringified).toContain('agent.provider');
-    expect(stringified).toContain('agent.harness');
-    expect(stringified).toContain('agent.model');
-    expect(stringified).toContain('agent.tasks');
-    expect(stringified).toContain('agent.summary_batch_interval');
-    expect(stringified).toContain('agent.scheduled_tasks_enabled');
-    expect(stringified).toContain('agent.event_tasks_enabled');
-    expect(stringified).toContain('agent.cold_project_threshold_days');
+    const promoted = GROVE_PROMOTED_FIELDS.map((p) => p.join('.'));
+    expect(promoted).toEqual([
+      'embedding.provider',
+      'embedding.model',
+      'embedding.base_url',
+      'agent.provider',
+      'agent.harness',
+      'agent.reasoningLevel',
+      'agent.model',
+      'agent.tasks',
+      'agent.summary_batch_interval',
+      'agent.scheduled_tasks_enabled',
+      'agent.event_tasks_enabled',
+      'agent.cold_project_threshold_days',
+      'agent.semantic_write_check_enabled',
+    ]);
+    for (const path of promoted) {
+      expect(stringified).toContain(path);
+    }
   });
 
   test('still includes the pre-existing legacy entries', () => {

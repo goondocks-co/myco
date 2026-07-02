@@ -28,4 +28,30 @@ describe('scope registry', () => {
     const projectRaw = { capture: { plan_dirs: ['x'] }, cortex: { digest_tier: 3 } };
     expect(pruneToTier(projectRaw, 'project')).toEqual({ cortex: { digest_tier: 3 } });
   });
+  it('agent.semantic_write_check_enabled is grove home + local override — NOT scheduled_tasks_enabled\'s grove-lock', () => {
+    // Deliberate deviation (Task 5): .myco/local.yaml is the per-machine
+    // staging path the Phase 0 gate and dogfooding rely on, so this leaf is
+    // NOT locked the way agent.scheduled_tasks_enabled/event_tasks_enabled are.
+    expect(scopePolicyForPath('agent.semantic_write_check_enabled'))
+      .toEqual({ home: 'grove', overridableBy: ['local'] });
+    expect(tierAllowsPath('grove', 'agent.semantic_write_check_enabled')).toBe(true);
+    expect(tierAllowsPath('local', 'agent.semantic_write_check_enabled')).toBe(true);
+    expect(tierAllowsPath('machine', 'agent.semantic_write_check_enabled')).toBe(false);
+    expect(tierAllowsPath('project', 'agent.semantic_write_check_enabled')).toBe(false);
+  });
+  it('pruneToTier retains agent.semantic_write_check_enabled at the grove tier (regression: dogfood gotcha)', () => {
+    // Before Task 5, grove.yaml silently pruned this field on every merge
+    // because SCOPE_REGISTRY had no leaf/block entry recognizing it as
+    // grove-owned (it lived only in AgentBaseSchema). Guard the fix.
+    const groveRaw = { agent: { semantic_write_check_enabled: true } };
+    expect(pruneToTier(groveRaw, 'grove')).toEqual({ agent: { semantic_write_check_enabled: true } });
+  });
+  it('pruneToTier retains agent.semantic_write_check_enabled at the local tier (staging override)', () => {
+    const localRaw = { agent: { semantic_write_check_enabled: false } };
+    expect(pruneToTier(localRaw, 'local')).toEqual({ agent: { semantic_write_check_enabled: false } });
+  });
+  it('pruneToTier still drops agent.semantic_write_check_enabled at the machine tier (unknown-field behavior unchanged)', () => {
+    const machineRaw = { agent: { semantic_write_check_enabled: true }, capture: { plan_dirs: ['x'] } };
+    expect(pruneToTier(machineRaw, 'machine')).toEqual({ capture: { plan_dirs: ['x'] } });
+  });
 });

@@ -105,6 +105,22 @@ export interface ClassifyWriteIntentResult {
    * per-phase flagged-writes accumulator.
    */
   usage?: RuntimeUsage;
+  /**
+   * Distinguishes WHY verdict is 'ok' — 'ok' alone conflates a genuine
+   * classification with a classifier that never rendered a verdict at
+   * all. Telemetry only: does not change verdict semantics, does not
+   * gate flag handling, caps, cache, or write-intent rows.
+   *   - 'ok': the classifier ran and genuinely judged the call consistent
+   *     with the phase's purpose.
+   *   - 'flag': the classifier ran and judged the call inconsistent.
+   *   - 'unparseable': the classifier ran but its response text didn't
+   *     match the "ok" / "flag: <reason>" contract — degrades to
+   *     verdict 'ok' (see parseVerdict).
+   *   - 'fail-open': the classifier never rendered a verdict at all —
+   *     the harness call threw, or the wall-clock deadline expired —
+   *     degrades to verdict 'ok' (see the catch block below).
+   */
+  outcome: 'ok' | 'flag' | 'fail-open' | 'unparseable';
 }
 
 const PATTERN_CATEGORIES = `
@@ -169,7 +185,7 @@ function parseVerdict(finalText: string, usage?: RuntimeUsage): ClassifyWriteInt
   const usageField = usage ? { usage } : {};
 
   if (lower === 'ok' || lower.startsWith('ok\n') || lower.startsWith('ok.')) {
-    return { verdict: 'ok', reason: null, ...usageField };
+    return { verdict: 'ok', reason: null, outcome: 'ok', ...usageField };
   }
 
   if (lower.startsWith('flag:')) {
@@ -177,12 +193,13 @@ function parseVerdict(finalText: string, usage?: RuntimeUsage): ClassifyWriteInt
     return {
       verdict: 'flag',
       reason: reason.length > 0 ? reason : 'Classifier flagged this write with no reason given.',
+      outcome: 'flag',
       ...usageField,
     };
   }
 
   // Ambiguous / unparseable — fail open at the classification level.
-  return { verdict: 'ok', reason: null, ...usageField };
+  return { verdict: 'ok', reason: null, outcome: 'unparseable', ...usageField };
 }
 
 export async function classifyWriteIntent(
@@ -225,7 +242,7 @@ export async function classifyWriteIntent(
     // A classifier that cannot run — including one that blew its
     // wall-clock deadline above — must never be the reason a write is
     // blocked — see the design spec's fail-open-at-uncertainty rationale.
-    return { verdict: 'ok', reason: null };
+    return { verdict: 'ok', reason: null, outcome: 'fail-open' };
   } finally {
     clearTimeout(timer);
   }

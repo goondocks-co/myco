@@ -736,4 +736,191 @@ describe('semantic write check', () => {
     expect(errorEvent).toBeDefined();
     expect(errorEvent!.errorMessage).toMatch(/blocked by a semantic safety check/i);
   });
+
+  describe('agent.write.classified observability line', () => {
+    // Verifies the ok-verdict observability line: one structured log line
+    // per RENDERED verdict (ok and flag), none on a cache-hit retry.
+
+    type LoggedCall = { kind: string; message: string; data?: Record<string, unknown> };
+
+    function createMockLogger() {
+      const calls: LoggedCall[] = [];
+      return {
+        calls,
+        logger: {
+          debug: (kind: string, message: string, data?: Record<string, unknown>) => { calls.push({ kind, message, data }); },
+          info: (kind: string, message: string, data?: Record<string, unknown>) => { calls.push({ kind, message, data }); },
+          warn: (kind: string, message: string, data?: Record<string, unknown>) => { calls.push({ kind, message, data }); },
+          error: (kind: string, message: string, data?: Record<string, unknown>) => { calls.push({ kind, message, data }); },
+        },
+      };
+    }
+
+    it('emits exactly one agent.write.classified line with outcome "ok" on a genuine ok verdict', async () => {
+      mockClassify.mockImplementation(async () => ({
+        verdict: 'ok' as const,
+        reason: null,
+        outcome: 'ok' as const,
+        usage: { requests: 1, inputTokens: 100, outputTokens: 3, totalTokens: 103 },
+      }));
+
+      const batch = seedBatch();
+      const { calls, logger } = createMockLogger();
+      const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: TEST_REQUEST_CONTEXT,
+        projectRoot: tmpDir,
+        vaultDir,
+        semanticCheckEnabled: true,
+        harnessId: 'claude-sdk',
+        model: 'claude-haiku-4-5-20251001',
+        classifierReasoningLevel: 'low',
+        phasePurpose: { name: 'cleanup', promptExcerpt: 'Mark stale prompt batches as processed.' },
+        logger,
+      });
+
+      const markProcessed = findTool(tools, 'vault_mark_processed');
+      await markProcessed.handler({ batch_id: batch.id }, undefined);
+
+      const classifiedCalls = calls.filter((c) => c.kind === 'agent.write.classified');
+      expect(classifiedCalls).toHaveLength(1);
+      expect(classifiedCalls[0].data).toMatchObject({
+        runId: TEST_RUN_ID,
+        phase: 'cleanup',
+        toolName: 'vault_mark_processed',
+        verdict: 'ok',
+        outcome: 'ok',
+        classifierTokens: 103,
+      });
+      expect(typeof classifiedCalls[0].data?.latencyMs).toBe('number');
+      expect(classifiedCalls[0].data?.latencyMs as number).toBeGreaterThanOrEqual(0);
+    });
+
+    it('emits exactly one agent.write.classified line with outcome "flag" on a flag verdict', async () => {
+      mockClassify.mockImplementation(async () => ({
+        verdict: 'flag' as const,
+        reason: 'batch_id does not appear in this phase\'s declared scope',
+        outcome: 'flag' as const,
+        usage: { requests: 1, inputTokens: 120, outputTokens: 15, totalTokens: 135 },
+      }));
+
+      const batch = seedBatch();
+      const { calls, logger } = createMockLogger();
+      const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: TEST_REQUEST_CONTEXT,
+        projectRoot: tmpDir,
+        vaultDir,
+        semanticCheckEnabled: true,
+        harnessId: 'claude-sdk',
+        model: 'claude-haiku-4-5-20251001',
+        classifierReasoningLevel: 'low',
+        phasePurpose: { name: 'cleanup', promptExcerpt: 'Mark stale prompt batches as processed.' },
+        logger,
+      });
+
+      const markProcessed = findTool(tools, 'vault_mark_processed');
+      await expect(markProcessed.handler({ batch_id: batch.id }, undefined)).rejects.toThrow(/blocked by a semantic safety check/i);
+
+      const classifiedCalls = calls.filter((c) => c.kind === 'agent.write.classified');
+      expect(classifiedCalls).toHaveLength(1);
+      expect(classifiedCalls[0].data).toMatchObject({
+        runId: TEST_RUN_ID,
+        phase: 'cleanup',
+        toolName: 'vault_mark_processed',
+        verdict: 'flag',
+        outcome: 'flag',
+        classifierTokens: 135,
+      });
+    });
+
+    it('emits outcome "fail-open" when the classifier throws or times out', async () => {
+      // The wrapper itself never sees the throw — classifyWriteIntent
+      // fails open internally and returns a resolved 'ok' verdict with
+      // outcome 'fail-open'. This test mocks that already-degraded
+      // return shape (the throw/timeout path is write-classifier.ts's
+      // own concern, covered in write-classifier.test.ts).
+      mockClassify.mockImplementation(async () => ({
+        verdict: 'ok' as const,
+        reason: null,
+        outcome: 'fail-open' as const,
+      }));
+
+      const batch = seedBatch();
+      const { calls, logger } = createMockLogger();
+      const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: TEST_REQUEST_CONTEXT,
+        projectRoot: tmpDir,
+        vaultDir,
+        semanticCheckEnabled: true,
+        harnessId: 'claude-sdk',
+        model: 'claude-haiku-4-5-20251001',
+        classifierReasoningLevel: 'low',
+        phasePurpose: { name: 'cleanup', promptExcerpt: 'Mark stale prompt batches as processed.' },
+        logger,
+      });
+
+      const markProcessed = findTool(tools, 'vault_mark_processed');
+      await markProcessed.handler({ batch_id: batch.id }, undefined);
+
+      const classifiedCalls = calls.filter((c) => c.kind === 'agent.write.classified');
+      expect(classifiedCalls).toHaveLength(1);
+      expect(classifiedCalls[0].data).toMatchObject({
+        toolName: 'vault_mark_processed',
+        verdict: 'ok',
+        outcome: 'fail-open',
+      });
+      // No usage on the fail-open path — classifierTokens must be undefined.
+      expect(classifiedCalls[0].data?.classifierTokens).toBeUndefined();
+    });
+
+    it('does not log a second line on a cache-hit retry of an identical call', async () => {
+      mockClassify.mockImplementation(async () => ({
+        verdict: 'ok' as const,
+        reason: null,
+        outcome: 'ok' as const,
+        usage: { requests: 1, totalTokens: 100 },
+      }));
+
+      const batch = seedBatch();
+      const { calls, logger } = createMockLogger();
+      const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: TEST_REQUEST_CONTEXT,
+        projectRoot: tmpDir,
+        vaultDir,
+        semanticCheckEnabled: true,
+        harnessId: 'claude-sdk',
+        model: 'claude-haiku-4-5-20251001',
+        classifierReasoningLevel: 'low',
+        phasePurpose: { name: 'cleanup', promptExcerpt: 'Mark stale prompt batches as processed.' },
+        logger,
+      });
+
+      const markProcessed = findTool(tools, 'vault_mark_processed');
+      await markProcessed.handler({ batch_id: batch.id }, undefined);
+      await markProcessed.handler({ batch_id: batch.id }, undefined);
+
+      expect(mockClassify).toHaveBeenCalledTimes(1);
+      const classifiedCalls = calls.filter((c) => c.kind === 'agent.write.classified');
+      expect(classifiedCalls).toHaveLength(1);
+    });
+
+    it('does not throw when no logger is supplied', async () => {
+      mockClassify.mockImplementation(async () => ({ verdict: 'ok' as const, reason: null, outcome: 'ok' as const }));
+
+      const batch = seedBatch();
+      const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: TEST_REQUEST_CONTEXT,
+        projectRoot: tmpDir,
+        vaultDir,
+        semanticCheckEnabled: true,
+        harnessId: 'claude-sdk',
+        model: 'claude-haiku-4-5-20251001',
+        classifierReasoningLevel: 'low',
+        phasePurpose: { name: 'cleanup', promptExcerpt: 'Mark stale prompt batches as processed.' },
+        // logger intentionally omitted
+      });
+
+      const markProcessed = findTool(tools, 'vault_mark_processed');
+      await expect(markProcessed.handler({ batch_id: batch.id }, undefined)).resolves.toBeDefined();
+    });
+  });
 });

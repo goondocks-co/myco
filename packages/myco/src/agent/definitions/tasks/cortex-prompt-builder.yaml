@@ -55,6 +55,10 @@ phases:
 
       Before finishing, call `vault_report` with action `cortex_prompt_builder`
       and put the final prompt in `details.prompt`.
+    purpose: >-
+      Read-only prompt assembly; no vault_skill_records writes intended in
+      this phase. Skill records are consulted only to surface repeatable
+      project procedures for the built prompt.
     tools:
       - vault_read_digest
       - vault_sessions

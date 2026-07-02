@@ -52,6 +52,7 @@ export const AGENT_PATHS = {
   eventTasksEnabled: 'agent.event_tasks_enabled',
   summaryBatchInterval: 'agent.summary_batch_interval',
   runRetentionDays: 'agent.run_retention_days',
+  semanticWriteCheckEnabled: 'agent.semantic_write_check_enabled',
 } as const;
 
 export const NOTIFICATIONS_PATHS = {

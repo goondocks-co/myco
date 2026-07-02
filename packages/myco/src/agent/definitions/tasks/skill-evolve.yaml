@@ -298,6 +298,13 @@ phases:
       2. One `vault_report` call with aggregate counts and any deferred/watch
          notes.
       3. Final assistant text <= 4 lines, no narrative walkthrough.
+    purpose: >-
+      Writes STALE/MERGE/NARROW classification updates to vault_skill_records
+      properties (last_assessed_at, knowledge_watermark, last_classification,
+      last_assessed_generation, file_fingerprints) for assessed skills.
+      vault_skill_candidates is read-only triage input in this phase — it is
+      consulted for merge/narrow signals but never created, updated, or
+      deleted here.
     tools:
       - vault_spores
       - vault_search_fts
@@ -455,6 +462,12 @@ phases:
       Required output shape:
       - One `vault_report` with executed/deferred counts.
       - Final assistant text <= 3 lines.
+    purpose: >-
+      Applies classified merges, narrowing, and content updates by writing
+      to vault_skill_records — status transitions to retired/deleted for
+      DEPRECATED and merged-away skills, and lineage-bearing content changes
+      via vault_edit_skill/vault_write_skill, which carry no destructiveHint
+      of their own.
     tools:
       - vault_edit_skill
       - vault_write_skill

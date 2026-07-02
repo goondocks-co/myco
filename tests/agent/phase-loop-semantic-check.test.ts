@@ -42,7 +42,28 @@ mock.module('@myco/agent/harness/index.js', () => ({
   getAgentHarness: () => getAgentHarnessOverride ?? fakeRuntime,
 }));
 
-import { executePhasedQuery, type PhaseLoopContext } from '@myco/agent/phase-loop.js';
+// Captures the options object runMapPhaseAdapter passes to createVaultTools
+// (mirrors map-phase-hooks.test.ts's mocking pattern) so the map-phase
+// phasePurpose construction site (phase-loop.ts's runMapPhaseAdapter) can be
+// asserted without needing full map-item harness scaffolding.
+const createVaultToolsCalls: unknown[] = [];
+mock.module('@myco/agent/tools.js', () => ({
+  createVaultTools: (...args: unknown[]) => {
+    createVaultToolsCalls.push(args);
+    return [];
+  },
+}));
+
+let executeMapPhaseResult: unknown = {
+  itemCount: 0, written: 0, skipped: 0, failed: 0, abandoned: 0,
+  skipReasons: {}, writeAfterThrow: 0, providerUnavailable: false, unavailable: 0,
+  usage: { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, reasoningTokens: 0, cachedTokens: 0, durationMs: 0 },
+};
+mock.module('@myco/agent/map-phase.js', () => ({
+  executeMapPhase: async () => executeMapPhaseResult,
+}));
+
+import { executePhasedQuery, executePhase, type PhaseLoopContext } from '@myco/agent/phase-loop.js';
 
 function baseConfig(phases?: PhaseDefinition[], extra: Partial<EffectiveConfig> = {}): EffectiveConfig {
   return {
@@ -94,6 +115,12 @@ function phase(name: string, extra: Partial<PhaseDefinition> = {}): PhaseDefinit
 beforeEach(() => {
   capturedExecuteInputs = [];
   getAgentHarnessOverride = undefined;
+  createVaultToolsCalls.length = 0;
+  executeMapPhaseResult = {
+    itemCount: 0, written: 0, skipped: 0, failed: 0, abandoned: 0,
+    skipReasons: {}, writeAfterThrow: 0, providerUnavailable: false, unavailable: 0,
+    usage: { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, reasoningTokens: 0, cachedTokens: 0, durationMs: 0 },
+  };
 });
 
 describe('phase-loop semantic-check config threading', () => {
@@ -303,5 +330,131 @@ describe('phase-loop semantic-check config threading', () => {
     expect(capturedExecuteInputs).toHaveLength(1);
     expect(capturedExecuteInputs[0].sessionRef).toBeDefined();
     expect(capturedExecuteInputs[0].sessionRef).not.toBe('blocked-session');
+  });
+
+  it('uses an authored phase.purpose verbatim as toolSurface.phasePurpose.promptExcerpt, not the prompt excerpt', async () => {
+    const longPrompt = 'x'.repeat(600); // longer than the 500-char excerpt cap, to prove it is bypassed entirely
+    const authoredPurpose = 'Mark stale prompt batches as processed. Never touch batches outside this run.';
+    const ctx = baseContext({
+      config: baseConfig([phase('only-phase', { prompt: longPrompt, purpose: authoredPurpose })], {
+        semanticWriteCheckEnabled: true,
+      }),
+    });
+
+    await executePhasedQuery(ctx);
+
+    expect(capturedExecuteInputs.length).toBeGreaterThan(0);
+    const surface = capturedExecuteInputs[0].toolSurface as {
+      phasePurpose?: { name?: string; promptExcerpt?: string };
+    };
+    expect(surface.phasePurpose?.promptExcerpt).toBe(authoredPurpose);
+    expect(surface.phasePurpose?.promptExcerpt).not.toContain('x'.repeat(500));
+  });
+
+  it('falls back to the truncated prompt excerpt on toolSurface.phasePurpose when phase.purpose is absent', async () => {
+    const longPrompt = 'y'.repeat(600);
+    const ctx = baseContext({
+      config: baseConfig([phase('only-phase', { prompt: longPrompt })], {
+        semanticWriteCheckEnabled: true,
+      }),
+    });
+
+    await executePhasedQuery(ctx);
+
+    expect(capturedExecuteInputs.length).toBeGreaterThan(0);
+    const surface = capturedExecuteInputs[0].toolSurface as {
+      phasePurpose?: { name?: string; promptExcerpt?: string };
+    };
+    expect(surface.phasePurpose?.promptExcerpt).toBe(`${'y'.repeat(500)}…`);
+  });
+});
+
+describe('phase-loop semantic-check phasePurpose threading — map-phase path', () => {
+  it('uses an authored phase.purpose verbatim as the phasePurpose passed to createVaultTools for a map phase', async () => {
+    // Mirrors map-phase-hooks.test.ts's Fix 5 regression test: the map path
+    // builds phasePurpose independently of the regular (wave-input) path,
+    // inside runMapPhaseAdapter's own createVaultTools call.
+    const authoredPurpose = 'Describe each source file in one sentence. Never write outside canopy_entries.';
+    const longPrompt = 'z'.repeat(600);
+
+    const ctx: PhaseLoopContext = {
+      config: {
+        harness: 'claude-sdk' as HarnessId,
+        taskName: 'test-task',
+        semanticWriteCheckEnabled: true,
+      } as EffectiveConfig,
+      systemPrompt: 'system',
+      vaultContext: 'vault context',
+      agentId: 'agent-1',
+      runId: 'run-1',
+      checkpointState: { schemaVersion: 2, harness: 'claude-sdk' as HarnessId, phases: {} },
+    } as PhaseLoopContext;
+
+    const mapPhase: PhaseDefinition = {
+      name: 'map-describe',
+      prompt: longPrompt,
+      purpose: authoredPurpose,
+      tools: [],
+      maxTurns: 5,
+      required: true,
+      mode: 'map',
+      source: { tool: 'source_tool', args: {}, itemsPath: 'items' },
+      item: { prompt: 'do {{item.path}}' },
+      sink: { tool: 'sink_tool', argMap: {} },
+    } as PhaseDefinition;
+
+    await executePhase({
+      ctx, phasePrompt: '', phaseModel: 'claude-sonnet-4-6', phase: mapPhase,
+      toolSurface: { agentId: 'agent-1', runId: 'run-1' },
+    });
+
+    expect(createVaultToolsCalls).toHaveLength(1);
+    const [, , options] = createVaultToolsCalls[0] as [string, string, {
+      phasePurpose?: { name?: string; promptExcerpt?: string };
+    }];
+    expect(options.phasePurpose?.name).toBe('map-describe');
+    expect(options.phasePurpose?.promptExcerpt).toBe(authoredPurpose);
+    expect(options.phasePurpose?.promptExcerpt).not.toContain('z'.repeat(500));
+  });
+
+  it('falls back to the truncated prompt excerpt for a map phase when phase.purpose is absent', async () => {
+    const longPrompt = 'w'.repeat(600);
+
+    const ctx: PhaseLoopContext = {
+      config: {
+        harness: 'claude-sdk' as HarnessId,
+        taskName: 'test-task',
+        semanticWriteCheckEnabled: true,
+      } as EffectiveConfig,
+      systemPrompt: 'system',
+      vaultContext: 'vault context',
+      agentId: 'agent-1',
+      runId: 'run-1',
+      checkpointState: { schemaVersion: 2, harness: 'claude-sdk' as HarnessId, phases: {} },
+    } as PhaseLoopContext;
+
+    const mapPhase: PhaseDefinition = {
+      name: 'map-describe',
+      prompt: longPrompt,
+      tools: [],
+      maxTurns: 5,
+      required: true,
+      mode: 'map',
+      source: { tool: 'source_tool', args: {}, itemsPath: 'items' },
+      item: { prompt: 'do {{item.path}}' },
+      sink: { tool: 'sink_tool', argMap: {} },
+    } as PhaseDefinition;
+
+    await executePhase({
+      ctx, phasePrompt: '', phaseModel: 'claude-sonnet-4-6', phase: mapPhase,
+      toolSurface: { agentId: 'agent-1', runId: 'run-1' },
+    });
+
+    expect(createVaultToolsCalls).toHaveLength(1);
+    const [, , options] = createVaultToolsCalls[0] as [string, string, {
+      phasePurpose?: { name?: string; promptExcerpt?: string };
+    }];
+    expect(options.phasePurpose?.name).toBe('map-describe');
+    expect(options.phasePurpose?.promptExcerpt).toBe(`${'w'.repeat(500)}…`);
   });
 });

@@ -61,6 +61,12 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   'agent.scheduled_tasks_enabled': { home: 'grove', overridableBy: [] },
   'agent.event_tasks_enabled': { home: 'grove', overridableBy: [] },
   'agent.run_retention_days': { home: 'grove', overridableBy: [] },
+  // Deliberately NOT grove-locked like the toggles above: `.myco/local.yaml`
+  // is the per-machine staging path the Phase 0 gate and dogfooding rely on
+  // for this rollout. This leaf resolves identically to the `agent` block
+  // row above via longest-prefix — it's self-documentation, not a behavior
+  // change, kept for parity with the other explicit agent.* leaf rows.
+  'agent.semantic_write_check_enabled': { home: 'grove', overridableBy: ['local'] },
   'skills': { home: 'grove', overridableBy: ['local'], gate: 'skills' },
   // Vault-Evolution capability master gate. Grove-tier home, per-project
   // Personal override so a project can be promoted/demoted on this machine.

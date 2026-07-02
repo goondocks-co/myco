@@ -679,9 +679,12 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     // comment history / cumulative-review report). phasePurpose is derived
     // from the map phase's own name/prompt the same way executePhase does
     // for the regular path.
+    // An authored purpose is used verbatim as the classifier's promptExcerpt;
+    // the truncated prompt excerpt is only a fallback when no purpose is set.
     phasePurpose: {
       name: phase.name,
-      promptExcerpt: phase.prompt.length > 500 ? `${phase.prompt.slice(0, 500)}…` : phase.prompt,
+      promptExcerpt:
+        phase.purpose ?? (phase.prompt.length > 500 ? `${phase.prompt.slice(0, 500)}…` : phase.prompt),
     },
     semanticCheckEnabled: ctx.config.semanticWriteCheckEnabled ?? false,
     harnessId: ctx.config.harness,
@@ -689,6 +692,7 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     classifierReasoningLevel: ctx.config.classifierReasoningLevel,
     provider,
     flaggedWritesAccumulator,
+    logger,
   });
 
   logger?.debug('agent.map.start', `Map phase "${phase.name}" starting`, {
@@ -1240,9 +1244,12 @@ export async function executePhasedQuery(
           hookContext: ctx.hooks
             ? { runId, agentId, harnessId: config.harness, phaseName: phase.name }
             : undefined,
+          // An authored purpose is used verbatim as the classifier's promptExcerpt;
+          // the truncated prompt excerpt is only a fallback when no purpose is set.
           phasePurpose: {
             name: phase.name,
-            promptExcerpt: phase.prompt.length > 500 ? `${phase.prompt.slice(0, 500)}…` : phase.prompt,
+            promptExcerpt:
+              phase.purpose ?? (phase.prompt.length > 500 ? `${phase.prompt.slice(0, 500)}…` : phase.prompt),
           },
           semanticCheckEnabled: config.semanticWriteCheckEnabled ?? false,
           harnessId: config.harness,
@@ -1250,6 +1257,7 @@ export async function executePhasedQuery(
           classifierReasoningLevel: config.classifierReasoningLevel,
           provider: phaseProvider,
           flaggedWritesAccumulator,
+          logger: ctx.options?.logger,
         },
       };
     });
