@@ -82,7 +82,10 @@ function suppressEffortLeakForLocalProvider(
 }
 
 /**
- * Drain a Claude SDK message stream into a final text + usage tally.
+ * Drain a Claude SDK message stream into a final text + usage tally,
+ * capturing the provider-validated `structured_output` (when the caller
+ * requested one via `outputFormat` and the terminal `result` message
+ * carries it) alongside the plain-text result.
  *
  * Both `execute` and `openScope.run` produce identical message-stream
  * shapes — only their `query()` options differ (resume + persistSession in
@@ -95,13 +98,14 @@ function suppressEffortLeakForLocalProvider(
 async function consumeClaudeMessageStream(
   messageStream: AsyncIterable<SDKMessage>,
   options: { localProvider: boolean; sessionRef?: string },
-): Promise<{ finalText: string; turnsUsed: number; usage: HarnessExecuteResult['usage'] }> {
+): Promise<{ finalText: string; turnsUsed: number; usage: HarnessExecuteResult['usage']; structuredOutput?: unknown }> {
   let finalText = '';
   let turnsUsed = 0;
   let inputTokens = 0;
   let outputTokens = 0;
   let costUsd = 0;
   let assistantMessages = 0;
+  let structuredOutput: unknown;
 
   const buildUsage = () => ({
     requests: turnsUsed,
@@ -132,6 +136,7 @@ async function consumeClaudeMessageStream(
         costUsd = options.localProvider ? 0 : (message.total_cost_usd ?? 0);
         if (message.subtype === 'success') {
           finalText = message.result;
+          structuredOutput = message.structured_output;
         }
       }
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -160,7 +165,7 @@ async function consumeClaudeMessageStream(
     throw err;
   }
 
-  return { finalText, turnsUsed, usage: buildUsage() };
+  return { finalText, turnsUsed, usage: buildUsage(), structuredOutput };
 }
 
 function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'] }) {
@@ -209,7 +214,9 @@ export class ClaudeSdkHarness implements AgentHarness {
   readonly id = HARNESS_CLAUDE_SDK;
 
   supports(capability: HarnessCapability): boolean {
-    return capability === 'supportsSessionResume' || capability === 'supportsMcp';
+    return capability === 'supportsSessionResume'
+      || capability === 'supportsMcp'
+      || capability === 'structuredOutput';
   }
 
   classifyError(error: unknown, context?: { attemptedResume?: boolean }) {
@@ -238,6 +245,7 @@ export class ClaudeSdkHarness implements AgentHarness {
       sessionRef: input.sessionRef,
       persistSession: true,
       abortController: input.abortController,
+      outputSchema: input.outputSchema,
     });
     return { ...drained, sessionRef: input.sessionRef };
   }
@@ -285,6 +293,7 @@ interface ClaudeRunOptions {
   sessionRef?: string;
   persistSession: boolean;
   abortController?: AbortController;
+  outputSchema?: HarnessExecuteInput['outputSchema'];
 }
 
 /** Narrow an ExecuteInput down to the setup-only fields shared with HarnessScopeSetup. */
@@ -394,6 +403,7 @@ async function runClaudeQuery(
       ...(prepared.claudeCodeExecutable ? { pathToClaudeCodeExecutable: prepared.claudeCodeExecutable } : {}),
       ...(options.sessionRef ? { sessionId: options.sessionRef } : {}),
       ...(options.abortController ? { abortController: options.abortController } : {}),
+      ...(options.outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: options.outputSchema.schema } } : {}),
     },
   });
 

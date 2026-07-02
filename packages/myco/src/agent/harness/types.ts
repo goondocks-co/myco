@@ -5,7 +5,8 @@ import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 export type HarnessCapability =
   | 'supportsSessionResume'
-  | 'supportsMcp';
+  | 'supportsMcp'
+  | 'structuredOutput';
 
 export interface HarnessToolSurface {
   agentId: string;
@@ -52,6 +53,21 @@ export interface HarnessExecuteInput {
   abortController?: AbortController;
   /** Optional logger for harness-level debug diagnostics. */
   logger?: RunLogger;
+  /**
+   * Optional structured-output request. When present AND the resolved
+   * harness's supports('structuredOutput') is true, the harness must
+   * request schema-validated output from the underlying provider and
+   * return the validated object via HarnessExecuteResult.structuredOutput
+   * instead of (or in addition to) finalText. Callers MUST still handle
+   * a missing structuredOutput on the result (harness didn't support it,
+   * or the provider's schema validation failed after retries) — never
+   * assume presence.
+   */
+  outputSchema?: {
+    /** Stable name for the schema — required by OpenAI's JsonSchemaDefinition; ignored by Claude. */
+    name: string;
+    schema: Record<string, unknown>;
+  };
 }
 
 export interface HarnessExecuteResult {
@@ -61,6 +77,13 @@ export interface HarnessExecuteResult {
   sessionRef?: string;
   sessionData?: unknown;
   rawRuntimeMetadata?: Record<string, unknown>;
+  /**
+   * Present only when the harness both supports 'structuredOutput' and
+   * the caller passed HarnessExecuteInput.outputSchema. Already validated
+   * against the requested schema by the underlying provider — callers on
+   * this path skip extractJson()/parse-and-hope entirely.
+   */
+  structuredOutput?: unknown;
 }
 
 export interface AgentHarness {
