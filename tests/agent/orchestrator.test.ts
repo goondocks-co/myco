@@ -14,6 +14,8 @@ import {
   composeOrchestratorPrompt,
   parseOrchestratorPlan,
   applyDirectives,
+  planFromStructuredOutput,
+  ORCHESTRATOR_PLAN_JSON_SCHEMA,
   resetOrchestratorPromptTemplateCacheForTests,
   resolveOrchestratorPromptTemplate,
 } from '@myco/agent/orchestrator.js';
@@ -229,6 +231,102 @@ describe('parseOrchestratorPlan', () => {
   it('returns empty phases array in run-all plan when no phases defined', () => {
     const plan = parseOrchestratorPlan('bad json', []);
     expect(plan.phases).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// planFromStructuredOutput
+// ---------------------------------------------------------------------------
+
+describe('planFromStructuredOutput', () => {
+  it('returns the plan unchanged when given a well-formed OrchestratorPlan object', () => {
+    const structured = {
+      phases: [{ name: 'extract', skip: false }],
+      reasoning: 'Run all phases.',
+    };
+    const plan = planFromStructuredOutput(structured, []);
+    expect(plan.phases).toHaveLength(1);
+    expect(plan.phases[0].name).toBe('extract');
+    expect(plan.reasoning).toBe('Run all phases.');
+  });
+
+  it('falls back to run-all plan when the object is missing phases', () => {
+    const phases = [makePhase({ name: 'extract' })];
+    const plan = planFromStructuredOutput({ reasoning: 'all good' }, phases);
+    expect(plan.phases).toHaveLength(1);
+    expect(plan.phases[0].name).toBe('extract');
+    expect(plan.phases[0].skip).toBe(false);
+    expect(plan.reasoning).toMatch(/missing phases/i);
+  });
+
+  it('falls back to run-all plan when given a non-object value', () => {
+    const phases = [makePhase({ name: 'digest' })];
+    expect(planFromStructuredOutput(null, phases).phases[0].name).toBe('digest');
+    expect(planFromStructuredOutput('not an object', phases).phases[0].name).toBe('digest');
+    expect(planFromStructuredOutput(['array', 'not', 'object'], phases).phases[0].name).toBe('digest');
+  });
+
+  it('logs a warning on shape mismatch', () => {
+    const warn = vi.fn();
+    const logger = { info: vi.fn(), debug: vi.fn(), warn, error: vi.fn() };
+    planFromStructuredOutput({ notPhases: true }, [], logger);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [kind, , meta] = warn.mock.calls[0];
+    expect(kind).toBe('agent.orchestrator.structured-output-shape-mismatch');
+    expect(meta).toMatchObject({ received: 'object' });
+  });
+
+  it('does not log when the shape is valid', () => {
+    const warn = vi.fn();
+    const logger = { info: vi.fn(), debug: vi.fn(), warn, error: vi.fn() };
+    planFromStructuredOutput({ phases: [], reasoning: 'ok' }, [], logger);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('drops a null maxTurns directive field so applyDirectives never zeroes the matched phase budget', () => {
+    // Regression guard for the CRITICAL #1 finding: a harness that forgot
+    // to strip OpenAI strict-mode nulls (see stripStrictNulls in
+    // harness/openai.ts) would hand planFromStructuredOutput a directive
+    // shaped like { skip: false, maxTurns: null, ... }. applyDirectives'
+    // `directive.maxTurns !== undefined` guard passes on a `null` value,
+    // and `Math.min(null, ceiling)` coerces to 0 — zeroing the phase's
+    // turn budget. planFromStructuredOutput must strip the null before it
+    // ever reaches applyDirectives; applyDirectives itself is untouched.
+    const structured = {
+      phases: [{ name: 'extract', skip: false, maxTurns: null }],
+      reasoning: 'x',
+    };
+    const plan = planFromStructuredOutput(structured, []);
+    const phases = [makePhase({ name: 'extract', maxTurns: 5 })];
+    const result = applyDirectives(phases, plan.phases);
+    expect(result[0].maxTurns).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ORCHESTRATOR_PLAN_JSON_SCHEMA
+// ---------------------------------------------------------------------------
+
+describe('ORCHESTRATOR_PLAN_JSON_SCHEMA', () => {
+  it('declares exactly the OrchestratorPhaseDirective fields', () => {
+    const directiveProps = (ORCHESTRATOR_PLAN_JSON_SCHEMA as any).properties.phases.items.properties;
+    expect(Object.keys(directiveProps).sort()).toEqual(
+      ['contextNotes', 'maxTurns', 'name', 'skip', 'skipReason'].sort(),
+    );
+  });
+
+  it('requires name and skip on each directive, leaves the rest optional', () => {
+    const items = (ORCHESTRATOR_PLAN_JSON_SCHEMA as any).properties.phases.items;
+    expect(items.required).toEqual(['name', 'skip']);
+  });
+
+  it('requires phases and reasoning at the top level', () => {
+    expect((ORCHESTRATOR_PLAN_JSON_SCHEMA as any).required).toEqual(['phases', 'reasoning']);
+  });
+
+  it('disallows additional properties at both levels', () => {
+    expect((ORCHESTRATOR_PLAN_JSON_SCHEMA as any).additionalProperties).toBe(false);
+    expect((ORCHESTRATOR_PLAN_JSON_SCHEMA as any).properties.phases.items.additionalProperties).toBe(false);
   });
 });
 

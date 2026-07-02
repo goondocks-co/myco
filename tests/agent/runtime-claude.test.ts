@@ -15,6 +15,7 @@ import { vi } from '../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 
 const queryCalls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
+let structuredOutputOverride: unknown = undefined;
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
@@ -42,6 +43,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
           permission_denials: [],
           uuid: 'r-1',
           session_id: 'test-session',
+          ...(structuredOutputOverride !== undefined ? { structured_output: structuredOutputOverride } : {}),
         };
       },
     };
@@ -125,6 +127,7 @@ describe('ClaudeSdkHarness.execute', () => {
     queryCalls.length = 0;
     scopedServerCalls.length = 0;
     fullServerCalls.length = 0;
+    structuredOutputOverride = undefined;
   });
 
   it('forwards sessionRef as sessionId to the SDK when provided', async () => {
@@ -275,5 +278,65 @@ describe('ClaudeSdkHarness.execute', () => {
     expect(result.usage.totalTokens).toBe(49);
     expect(result.usage.costUsd).toBeCloseTo(0.0123);
     expect(result.usage.requestUsageEntries).toHaveLength(1);
+  });
+
+  it('attaches outputFormat to the SDK call when outputSchema is provided', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    await runtime.execute({
+      prompt: 'plan the phases',
+      model: 'claude-sonnet-4-6',
+      toolSurface: { agentId: 'a', runId: 'r', toolNames: [] },
+      outputSchema: { name: 'orchestrator_plan', schema: { type: 'object', properties: {} } },
+    });
+    const lastCall = queryCalls[queryCalls.length - 1];
+    expect(lastCall.options.outputFormat).toEqual({
+      type: 'json_schema',
+      schema: { type: 'object', properties: {} },
+    });
+  });
+
+  it('omits outputFormat when outputSchema is not provided', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    await runtime.execute({
+      prompt: 'do something',
+      model: 'claude-sonnet-4-6',
+      toolSurface: { agentId: 'a', runId: 'r', toolNames: [] },
+    });
+    const lastCall = queryCalls[queryCalls.length - 1];
+    expect(lastCall.options.outputFormat).toBeUndefined();
+  });
+
+  it('returns structuredOutput from the result message when present', async () => {
+    structuredOutputOverride = { phases: [{ name: 'extract', skip: false }], reasoning: 'ok' };
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const result = await runtime.execute({
+      prompt: 'plan the phases',
+      model: 'claude-sonnet-4-6',
+      toolSurface: { agentId: 'a', runId: 'r', toolNames: [] },
+      outputSchema: { name: 'orchestrator_plan', schema: { type: 'object', properties: {} } },
+    });
+    expect(result.structuredOutput).toEqual({ phases: [{ name: 'extract', skip: false }], reasoning: 'ok' });
+  });
+
+  it('leaves structuredOutput undefined when the SDK never emits structured_output', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const result = await runtime.execute({
+      prompt: 'do something',
+      model: 'claude-sonnet-4-6',
+      toolSurface: { agentId: 'a', runId: 'r', toolNames: [] },
+    });
+    expect(result.structuredOutput).toBeUndefined();
+  });
+});
+
+describe('ClaudeSdkHarness.supports', () => {
+  it('reports structuredOutput support', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    expect(runtime.supports('structuredOutput')).toBe(true);
   });
 });

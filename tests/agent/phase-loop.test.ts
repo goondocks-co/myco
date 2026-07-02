@@ -25,6 +25,7 @@ import type {
 import type { AgentHarness, HarnessExecuteInput, HarnessExecuteResult } from '@myco/agent/harness/types.js';
 import { HarnessExecutionError } from '@myco/agent/harness/types.js';
 import type { RunCheckpointState } from '@myco/agent/executor-state.js';
+import { ORCHESTRATOR_PLAN_JSON_SCHEMA } from '@myco/agent/orchestrator.js';
 
 // ---------------------------------------------------------------------------
 // Harness mock — controls execute() behavior per test.
@@ -39,6 +40,7 @@ let runtimeBehaviors: RuntimeBehavior[] = [];
 let defaultRuntimeBehavior: RuntimeBehavior = { kind: 'success' };
 let capturedExecuteInputs: HarnessExecuteInput[] = [];
 let runtimeSupportsSessionResume = false;
+let runtimeSupportsStructuredOutput = false;
 
 const DEFAULT_USAGE: RuntimeUsage = {
   requests: 1,
@@ -95,6 +97,7 @@ const fakeRuntime: AgentHarness = {
   },
   supports(capability) {
     if (capability === 'supportsSessionResume') return runtimeSupportsSessionResume;
+    if (capability === 'structuredOutput') return runtimeSupportsStructuredOutput;
     return false;
   },
 	  classifyError(error) {
@@ -222,6 +225,16 @@ function phase(name: string, extra: Partial<PhaseDefinition> = {}): PhaseDefinit
   } as PhaseDefinition;
 }
 
+function buildPhaseLoopContextWithOrchestratorEnabled(phaseNames: string[] = ['extract']): PhaseLoopContext {
+  const phases = phaseNames.map((name) => phase(name));
+  return baseContext({
+    config: {
+      ...baseConfig(phases),
+      orchestrator: { enabled: true },
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Reset per test
 // ---------------------------------------------------------------------------
@@ -231,6 +244,7 @@ beforeEach(() => {
   defaultRuntimeBehavior = { kind: 'success' };
   capturedExecuteInputs = [];
   runtimeSupportsSessionResume = false;
+  runtimeSupportsStructuredOutput = false;
   phasePreConditionResult = { passed: true, reason: 'default-pass' };
   mapPhaseResultOverride = null;
 });
@@ -820,5 +834,146 @@ describe('executePhasedQuery turnOffset allocation', () => {
     const offsets = offsetsByPrompt();
     expect(capturedExecuteInputs).toHaveLength(1);
     expect(offsets.get('c')).toBe(13);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executePhasedQuery — orchestrator structured output
+// ---------------------------------------------------------------------------
+
+describe('executePhasedQuery orchestrator structured output', () => {
+  it('requests outputSchema on the orchestrator call when the harness supports structuredOutput', async () => {
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      { kind: 'success', result: { finalText: '{"phases":[],"reasoning":"structured path unused for this assertion"}' } },
+    ];
+    await executePhasedQuery(buildPhaseLoopContextWithOrchestratorEnabled());
+    const orchestratorCall = capturedExecuteInputs.find((input) => input.toolSurface.toolNames?.length === 0);
+    expect(orchestratorCall?.outputSchema).toEqual({
+      name: 'orchestrator_plan',
+      schema: ORCHESTRATOR_PLAN_JSON_SCHEMA,
+    });
+  });
+
+  it('does not request outputSchema when the harness does not support structuredOutput', async () => {
+    runtimeSupportsStructuredOutput = false;
+    runtimeBehaviors = [
+      { kind: 'success', result: { finalText: '{"phases":[],"reasoning":"text path"}' } },
+    ];
+    await executePhasedQuery(buildPhaseLoopContextWithOrchestratorEnabled());
+    const orchestratorCall = capturedExecuteInputs.find((input) => input.toolSurface.toolNames?.length === 0);
+    expect(orchestratorCall?.outputSchema).toBeUndefined();
+  });
+
+  it('applies directives from structuredOutput when the harness returns it', async () => {
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      {
+        kind: 'success',
+        result: {
+          finalText: '{"phases":[],"reasoning":"should not be used"}',
+          structuredOutput: {
+            phases: [{ name: 'extract', skip: true, skipReason: 'nothing pending' }],
+            reasoning: 'structured plan used directly',
+          },
+        },
+      },
+    ];
+    const ctx = buildPhaseLoopContextWithOrchestratorEnabled(['extract', 'graph']);
+    const result = await executePhasedQuery(ctx);
+    const executedPhaseNames = result.phases.map((p) => p.name);
+    expect(executedPhaseNames).not.toContain('extract');
+    expect(executedPhaseNames).toContain('graph');
+  });
+
+  it('falls back to text parsing when structuredOutput is undefined despite harness support', async () => {
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      {
+        kind: 'success',
+        result: {
+          finalText: '{"phases":[{"name":"extract","skip":true,"skipReason":"nothing pending"}],"reasoning":"fallback text plan"}',
+          structuredOutput: undefined,
+        },
+      },
+    ];
+    const ctx = buildPhaseLoopContextWithOrchestratorEnabled(['extract', 'graph']);
+    const result = await executePhasedQuery(ctx);
+    const executedPhaseNames = result.phases.map((p) => p.name);
+    expect(executedPhaseNames).not.toContain('extract');
+    expect(executedPhaseNames).toContain('graph');
+  });
+
+  it('warns "structured-output-missing" once when the schema\'d call succeeds but returns no structuredOutput, then falls back to text parsing', async () => {
+    // Soft-failure path: outputSchema WAS attached, the call did NOT throw,
+    // but the provider's structured-output validation failed after its own
+    // retries (e.g. Claude's error_max_structured_output_retries subtype —
+    // empty finalText, no structured_output on the result message). This is
+    // distinct from the throw-and-retry path above, which never has
+    // outputSchema attached on its retry and therefore never double-warns
+    // here.
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      {
+        kind: 'success',
+        result: {
+          finalText: '{"phases":[{"name":"extract","skip":true,"skipReason":"nothing pending"}],"reasoning":"fallback text plan"}',
+          structuredOutput: undefined,
+        },
+      },
+    ];
+    const warn = vi.fn();
+    const logger = { info: vi.fn(), debug: vi.fn(), warn, error: vi.fn() };
+    const ctx = buildPhaseLoopContextWithOrchestratorEnabled(['extract', 'graph']);
+    ctx.options = { logger };
+
+    const result = await executePhasedQuery(ctx);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [kind, , meta] = warn.mock.calls[0];
+    expect(kind).toBe('agent.orchestrator.structured-output-missing');
+    expect(meta).toMatchObject({ runId: 'run-123' });
+
+    const executedPhaseNames = result.phases.map((p) => p.name);
+    expect(executedPhaseNames).not.toContain('extract');
+    expect(executedPhaseNames).toContain('graph');
+  });
+
+  it('retries without outputSchema exactly once when the harness throws on the structured-output call, and uses the retry result', async () => {
+    runtimeSupportsStructuredOutput = true;
+    runtimeBehaviors = [
+      { kind: 'error', message: 'malformed structured output JSON' },
+      {
+        kind: 'success',
+        result: {
+          finalText: '{"phases":[{"name":"extract","skip":true,"skipReason":"nothing pending"}],"reasoning":"retry text plan"}',
+        },
+      },
+    ];
+    const warn = vi.fn();
+    const logger = { info: vi.fn(), debug: vi.fn(), warn, error: vi.fn() };
+    const ctx = buildPhaseLoopContextWithOrchestratorEnabled(['extract', 'graph']);
+    ctx.options = { logger };
+
+    const result = await executePhasedQuery(ctx);
+
+    // The orchestrator planning calls always happen before any phase
+    // executes, so the first two captured inputs are the initial
+    // structured-output attempt and its no-outputSchema retry.
+    const orchestratorCalls = capturedExecuteInputs.slice(0, 2);
+    expect(orchestratorCalls[0].outputSchema).toEqual({
+      name: 'orchestrator_plan',
+      schema: ORCHESTRATOR_PLAN_JSON_SCHEMA,
+    });
+    expect(orchestratorCalls[1].outputSchema).toBeUndefined();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [kind, , meta] = warn.mock.calls[0];
+    expect(kind).toBe('agent.orchestrator.structured-output-failed');
+    expect(meta?.error).toContain('malformed structured output JSON');
+
+    const executedPhaseNames = result.phases.map((p) => p.name);
+    expect(executedPhaseNames).not.toContain('extract');
+    expect(executedPhaseNames).toContain('graph');
   });
 });

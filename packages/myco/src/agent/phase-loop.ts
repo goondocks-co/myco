@@ -19,7 +19,9 @@ import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import {
   composeOrchestratorPrompt,
   parseOrchestratorPlan,
+  planFromStructuredOutput,
   applyDirectives,
+  ORCHESTRATOR_PLAN_JSON_SCHEMA,
   DEFAULT_ORCHESTRATOR_MAX_TURNS,
 } from './orchestrator.js';
 import { executeContextQueries } from './context-queries.js';
@@ -637,7 +639,8 @@ export async function executePhasedQuery(
     );
     const orchestratorMaxTurns = config.orchestrator.maxTurns ?? DEFAULT_ORCHESTRATOR_MAX_TURNS;
     const harness = getAgentHarness(config.harness);
-    const planResponse = await harness.execute({
+    const supportsStructuredOutput = harness.supports('structuredOutput');
+    const orchestratorExecuteInput = {
       prompt: orchestratorPrompt,
       model: orchestratorModel,
       maxTurns: orchestratorMaxTurns,
@@ -653,9 +656,46 @@ export async function executePhasedQuery(
       },
       abortController: ctx.abortController,
       logger: ctx.options?.logger,
-    });
+    };
 
-    const plan = parseOrchestratorPlan(planResponse.finalText, phases, ctx.options?.logger);
+    let planResponse;
+    if (supportsStructuredOutput) {
+      try {
+        planResponse = await harness.execute({
+          ...orchestratorExecuteInput,
+          outputSchema: { name: 'orchestrator_plan', schema: ORCHESTRATOR_PLAN_JSON_SCHEMA },
+        });
+        if (planResponse.structuredOutput === undefined) {
+          // The call succeeded (no throw) but the provider's structured-output
+          // validation failed after its own internal retries — e.g. Claude's
+          // error_max_structured_output_retries subtype, which yields an empty
+          // finalText and no structured_output on the result message. This is
+          // NOT the same path as the catch below (which never had outputSchema
+          // attached on its retry, so it can't double-warn here) — surface it
+          // so operators can see the schema'd call quietly degraded to the
+          // text-parse fallback.
+          ctx.options?.logger?.warn(
+            'agent.orchestrator.structured-output-missing',
+            'Orchestrator structured-output call succeeded but returned no structuredOutput — falling back to text parsing',
+            { runId },
+          );
+        }
+      } catch (err) {
+        if (ctx.abortController?.signal.aborted) throw err;
+        ctx.options?.logger?.warn(
+          'agent.orchestrator.structured-output-failed',
+          'Orchestrator structured-output request failed — retrying without outputSchema',
+          { runId, error: toErrorMessage(err) },
+        );
+        planResponse = await harness.execute(orchestratorExecuteInput);
+      }
+    } else {
+      planResponse = await harness.execute(orchestratorExecuteInput);
+    }
+
+    const plan = planResponse.structuredOutput !== undefined
+      ? planFromStructuredOutput(planResponse.structuredOutput, phases, ctx.options?.logger)
+      : parseOrchestratorPlan(planResponse.finalText, phases, ctx.options?.logger);
     effectivePhases = applyDirectives(phases, plan.phases, ctx.options?.logger);
     ctx.options?.logger?.debug('agent.orchestrator.plan', 'Orchestrator plan applied', {
       runId,
