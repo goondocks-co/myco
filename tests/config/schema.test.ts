@@ -192,6 +192,19 @@ describe('MycoConfigSchema v3', () => {
     expect(config.agent.tasks?.['skill-survey']?.schedule?.intervalSeconds).toBe(900);
   });
 
+  it('defaults agent.semantic_write_check_enabled to false', () => {
+    const config = MycoConfigSchema.parse({ version: 3 });
+    expect(config.agent.semantic_write_check_enabled).toBe(false);
+  });
+
+  it('accepts an explicit agent.semantic_write_check_enabled override', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      agent: { semantic_write_check_enabled: true },
+    });
+    expect(config.agent.semantic_write_check_enabled).toBe(true);
+  });
+
   it('rejects legacy runtime keys after config migration', () => {
     expect(MycoConfigSchema.safeParse({
       version: 3,

@@ -494,6 +494,23 @@ export interface EffectiveConfig {
    * effective config for this run. Passed through to the tool surface.
    */
   dryRun?: boolean;
+  /**
+   * Snapshotted per-run semantic-check gate, resolved once by the executor
+   * from RunOptions.executionOverrides.semanticWriteCheckEnabled (Task 2b)
+   * — same propagation contract as dryRun above. Passed through to the
+   * tool surface so wrapToolWithSemanticCheck (tools.ts) can read it.
+   */
+  semanticWriteCheckEnabled?: boolean;
+  /**
+   * Snapshotted per-run reasoning tier for the semantic-check classifier,
+   * resolved once by the executor from
+   * RunOptions.executionOverrides.classifierReasoningLevel (Task 2b) —
+   * same propagation contract as semanticWriteCheckEnabled above.
+   * Undefined simply means "use the classifier's low default" (see
+   * write-classifier.ts / tools.ts's `classifierReasoningLevel ?? 'low'`
+   * ladder) — this field carries no fallback of its own.
+   */
+  classifierReasoningLevel?: ReasoningLevel;
 }
 
 /**
@@ -575,6 +592,23 @@ export interface RunOptions {
      * persisting to config.
      */
     provider?: ProviderConfig;
+    /**
+     * Per-run override/snapshot for the destructive-write semantic
+     * classifier (agent.semantic_write_check_enabled). Resolved once at
+     * dispatch time — either from a caller-supplied override or from
+     * ResolvedRunConfig.semanticWriteCheckEnabledDefault — and persisted
+     * onto agent_runs.execution_overrides so a resumed run keeps the
+     * ORIGINAL dispatch's setting even if myco.yaml changes in between.
+     * Same contract as dryRun (executor.ts:196).
+     */
+    semanticWriteCheckEnabled?: boolean;
+    /**
+     * Per-run override for the classifier's reasoning tier. Defaults to
+     * 'low' if omitted. Follows the same resolveReasoningModel() ladder as
+     * every other reasoning-level override in the harness — never a bare
+     * literal in write-classifier.ts.
+     */
+    classifierReasoningLevel?: ReasoningLevel;
     /**
      * Per-phase overrides. Key is the phase name from the task definition.
      * When a phase name matches, its fields take precedence over the task's

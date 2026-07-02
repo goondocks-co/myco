@@ -126,6 +126,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 63, migrate: (db) => migrateV62ToV63(db) },
   { version: 64, migrate: (db) => migrateV63ToV64(db) },
   { version: 65, migrate: (db) => migrateV64ToV65(db) },
+  { version: 66, migrate: (db) => migrateV65ToV66(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4053,6 +4054,36 @@ function migrateV64ToV65(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(65, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v65 -> v66: add classifier_verdict/classifier_reason to
+ * agent_run_write_intents for the destructive-write semantic check.
+ *
+ * Both columns are nullable with no default — NULL means "the semantic
+ * check either didn't run (feature disabled) or wasn't applicable to this
+ * tool", which is the correct backward-compatible reading for every row
+ * written before this feature existed.
+ */
+function migrateV65ToV66(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'agent_run_write_intents');
+    if (!cols.has('classifier_verdict')) {
+      db.prepare('ALTER TABLE agent_run_write_intents ADD COLUMN classifier_verdict TEXT').run();
+    }
+    if (!cols.has('classifier_reason')) {
+      db.prepare('ALTER TABLE agent_run_write_intents ADD COLUMN classifier_reason TEXT').run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(66, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

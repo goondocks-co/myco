@@ -203,6 +203,19 @@ const AgentBaseSchema = z.object({
   /** Global toggle for event-driven agent tasks (title-summary, Cortex refresh). */
   event_tasks_enabled: z.boolean().default(true),
   /**
+   * Enable the lightweight semantic classifier pass on destructive vault
+   * writes (destructiveHint === true tools only). When true, each such
+   * write is checked against the calling phase's stated purpose via a
+   * cheap isolated harness call before the write executes; a "flag"
+   * verdict blocks the write and fails the phase. Off by default —
+   * additive safety feature, not a default-on behavior change. Verdict
+   * quality depends entirely on the classifier model: small local models
+   * (e.g. via Ollama) may produce unreliable verdicts, and the check fails
+   * open — letting the write through unchecked — on any classifier error
+   * or timeout.
+   */
+  semantic_write_check_enabled: z.boolean().default(false),
+  /**
    * Skip scheduled agent tasks when the project has had no session or
    * prompt-batch activity within this window. Token-spending tasks
    * (canopy-describe, skill-survey, …) shouldn't keep firing on a

@@ -215,7 +215,21 @@ export async function runAgent(
     taskProviderOverride: resolvedTaskProvider,
     phaseProviderOverrides: resolvedPhaseOverrides,
     taskParams: resolvedTaskParams,
+    semanticWriteCheckEnabledDefault,
   } = resolveRunConfig(agentId, requestedTask, vaultDir, options?.requestContext?.groveId ?? null);
+
+  // Resolved once here; a resumed run already has this baked into
+  // options.executionOverrides.semanticWriteCheckEnabled via the restore
+  // block above, so semanticWriteCheckEnabledDefault only matters for a
+  // run's FIRST dispatch. Runs dispatched before the snapshot existed (execution_overrides null/keyless)
+  // fall back to the CURRENT config value — safe while the default is false.
+  const semanticWriteCheckEnabled =
+    options?.executionOverrides?.semanticWriteCheckEnabled
+    ?? semanticWriteCheckEnabledDefault
+    ?? false;
+  const classifierReasoningLevel =
+    options?.executionOverrides?.classifierReasoningLevel
+    ?? 'low';
 
   // Block duplicate runs of the SAME task — different tasks may run
   // concurrently. A 'running' row older than the task timeout (+ margin)
@@ -267,6 +281,8 @@ export async function runAgent(
     ...resolvedConfig,
     harness: runHarness,
     dryRun: options?.dryRun ?? false,
+    semanticWriteCheckEnabled,
+    classifierReasoningLevel,
     ...(taskParams ? { taskParams } : {}),
     ...(overrideReasoning ? { reasoningLevel: overrideReasoning } : {}),
     ...(overrideModel ? { model: overrideModel } : {}),
@@ -449,6 +465,19 @@ export async function runAgent(
     started_at: now,
   } as const;
   if (!resumedRun) {
+    // Resolved once here, same as the reasoningLevel column below. Folding it
+    // into the executionOverrides snapshot too keeps the resume-restore
+    // ladder's rung 2 (`resumedRun.execution_overrides`) complete on its own:
+    // since this blob is now ALWAYS non-null (it always carries
+    // semanticWriteCheckEnabled/classifierReasoningLevel), rung 3
+    // (`resumedRun.reasoning_level ? {reasoningLevel} : undefined`) would
+    // otherwise never run, and a resumed run would re-resolve reasoningLevel
+    // from live config instead of the original dispatch's tier.
+    const resolvedReasoningLevel =
+      options?.executionOverrides?.reasoningLevel
+      ?? config.reasoningLevel
+      ?? config.execution?.reasoningLevel
+      ?? null;
     insertRun({
       id: runId,
       project_id: projectId,
@@ -460,12 +489,13 @@ export async function runAgent(
       usage_data: buildUsageData({}),
       run_context: options?.runContext ? JSON.stringify(options.runContext) : null,
       dryRun: options?.dryRun ?? false,
-      reasoningLevel:
-        options?.executionOverrides?.reasoningLevel
-        ?? config.reasoningLevel
-        ?? config.execution?.reasoningLevel
-        ?? null,
-      executionOverrides: options?.executionOverrides ?? null,
+      reasoningLevel: resolvedReasoningLevel,
+      executionOverrides: {
+        ...(options?.executionOverrides ?? {}),
+        ...(resolvedReasoningLevel ? { reasoningLevel: resolvedReasoningLevel } : {}),
+        semanticWriteCheckEnabled,
+        classifierReasoningLevel,
+      },
     });
   } else {
     applyRunUpdate(runId, {

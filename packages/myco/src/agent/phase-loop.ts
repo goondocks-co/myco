@@ -354,6 +354,56 @@ export async function executePhase(
       usage: result.usage,
     });
 
+    // Deterministic failure conversion: the Claude SDK converts a tool
+    // handler's throw into an `isError` MCP tool result returned to the
+    // MODEL, not a JS exception — wrapToolWithSemanticCheck's block-throw
+    // (tools.ts) never reaches this function's try/catch on its own. A
+    // retrying model can otherwise talk its way to a "successful" phase
+    // completion immediately after a blocked destructive write. Check the
+    // accumulator the toolSurface carried through the whole call and
+    // convert an otherwise-"completed" result to "failed" when it recorded
+    // anything — same shape as the try/catch's own failure path below, so
+    // downstream consumers (resume, cost audit) see one failure contract.
+    const flagged = snapshotFlaggedWrites(toolSurface);
+    if (flagged) {
+      const errorText = `Semantic check blocked ${flagged.count} destructive write${flagged.count === 1 ? '' : 's'} in phase "${phase.name}": ${flagged.summary}`;
+      logger?.warn('agent.phase.semantic-check-blocked', errorText, {
+        runId: ctx.runId,
+        phase: phase.name,
+        flaggedTools: flagged.toolNames,
+        classifierTokens: flagged.classifierTokens,
+      });
+
+      if (ctx.hooks?.phaseEnd) {
+        try {
+          await ctx.hooks.phaseEnd({
+            runId: ctx.runId,
+            agentId: ctx.agentId,
+            harnessId: ctx.config.harness,
+            phaseName: phase.name,
+            status: 'failed',
+            turnsUsed: result.turnsUsed,
+            tokensUsed: result.usage.totalTokens ?? 0,
+            costUsd: costData.costUsd,
+            durationMs: Date.now() - phaseHookStartedAt,
+          });
+        } catch {
+          /* hook callbacks are best-effort observability */
+        }
+      }
+
+      return buildPhaseResult({
+        name: phase.name,
+        status: 'failed',
+        summary: `Error: ${errorText}`,
+        usage: result.usage,
+        costData,
+        sessionRef: result.sessionRef,
+        sessionData: result.sessionData,
+        metadata: snapshotMetadata(toolSurface),
+      });
+    }
+
     if (ctx.hooks?.phaseEnd) {
       try {
         await ctx.hooks.phaseEnd({
@@ -452,6 +502,32 @@ function snapshotMetadata(toolSurface: HarnessToolSurface): Record<string, unkno
   const accumulator = toolSurface.metadataAccumulator;
   if (!accumulator || accumulator.size === 0) return undefined;
   return Object.fromEntries(accumulator);
+}
+
+/** Summary of a phase's flagged-writes accumulator, built once for logging + the failure message. */
+interface FlaggedWritesSummary {
+  count: number;
+  toolNames: string[];
+  summary: string;
+  classifierTokens: number;
+}
+
+/**
+ * Snapshot the per-phase flagged-writes accumulator on the tool surface.
+ * Returns undefined when no accumulator was set up (semantic check
+ * disabled for this phase) or nothing was flagged — the common case, so
+ * `executePhase` can cheaply check "did anything get blocked" without
+ * building the summary object on every phase.
+ */
+function snapshotFlaggedWrites(toolSurface: HarnessToolSurface): FlaggedWritesSummary | undefined {
+  const accumulator = toolSurface.flaggedWritesAccumulator;
+  if (!accumulator || accumulator.length === 0) return undefined;
+  const toolNames = accumulator.map((record) => record.toolName);
+  const summary = accumulator
+    .map((record) => `${record.toolName} (${record.reason ?? 'no reason given'})`)
+    .join('; ');
+  const classifierTokens = accumulator.reduce((sum, record) => sum + (record.classifierTokens ?? 0), 0);
+  return { count: accumulator.length, toolNames, summary, classifierTokens };
 }
 
 // ---------------------------------------------------------------------------
@@ -941,6 +1017,16 @@ export async function executePhasedQuery(
         ? new Map<string, unknown>()
         : undefined;
 
+      // Same allocate-only-when-needed pattern as metadataAccumulator
+      // above, gated on the semantic-check flag instead of a tools-list
+      // opt-in: only phases that can actually trigger
+      // wrapToolWithSemanticCheck need somewhere to record a flagged
+      // write, and executePhase below only inspects this array when it
+      // was allocated.
+      const flaggedWritesAccumulator = config.semanticWriteCheckEnabled
+        ? []
+        : undefined;
+
       return {
         phase,
         phasePrompt,
@@ -967,6 +1053,16 @@ export async function executePhasedQuery(
           hookContext: ctx.hooks
             ? { runId, agentId, harnessId: config.harness, phaseName: phase.name }
             : undefined,
+          phasePurpose: {
+            name: phase.name,
+            promptExcerpt: phase.prompt.length > 500 ? `${phase.prompt.slice(0, 500)}…` : phase.prompt,
+          },
+          semanticCheckEnabled: config.semanticWriteCheckEnabled ?? false,
+          harnessId: config.harness,
+          model: phaseModel,
+          classifierReasoningLevel: config.classifierReasoningLevel,
+          provider: phaseProvider,
+          flaggedWritesAccumulator,
         },
       };
     });

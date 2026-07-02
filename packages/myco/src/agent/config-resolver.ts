@@ -130,6 +130,15 @@ export interface ResolvedRunConfig {
   taskParams?: Record<string, string | number | boolean>;
   /** Effective harness after applying YAML + myco.yaml overrides. */
   harness: HarnessId;
+  /**
+   * Merged agent.semantic_write_check_enabled value from myco.yaml, used
+   * ONLY as the default for a run's FIRST dispatch (see executor.ts). A
+   * resumed run must never re-read this — it reads the snapshotted value
+   * from agent_runs.execution_overrides instead. Lives here (not on
+   * EffectiveConfig) because EffectiveConfig is a per-task-execution shape
+   * (harness/model/phases/tools), not a mirror of agent.* config.
+   */
+  semanticWriteCheckEnabledDefault: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,12 +293,14 @@ export function resolveRunConfig(
   // Grove-wide default reasoning tier — applied below when neither the
   // per-task override nor the task definition sets one.
   let defaultReasoningLevel: ReasoningLevel | undefined;
+  let semanticWriteCheckEnabledDefault = false;
   try {
     const mycoConfig = loadMergedConfig(vaultDir, { groveId });
 
     // Per-task override takes priority over global
     taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
     defaultReasoningLevel = mycoConfig.agent.reasoningLevel;
+    semanticWriteCheckEnabledDefault = mycoConfig.agent.semantic_write_check_enabled ?? false;
     const globalProvider = mycoConfig.agent.provider;
     harness = resolveEffectiveHarness({
       taskHarness: taskConfig?.harness,
@@ -340,5 +351,6 @@ export function resolveRunConfig(
     taskName,
     taskParams,
     harness,
+    semanticWriteCheckEnabledDefault,
   };
 }
