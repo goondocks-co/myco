@@ -22,6 +22,7 @@ export const PHASE_POSTCONDITION_KINDS = [
   'skill-generate-validate',
   'skill-survey-reconcile-queue',
   'skill-survey-persist-decisions',
+  'harness-health-report',
 ] as const;
 
 export type PhasePostConditionKind = (typeof PHASE_POSTCONDITION_KINDS)[number];
