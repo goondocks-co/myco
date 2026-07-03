@@ -34,6 +34,7 @@ import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { createVaultTools, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
 import { DEFERRED_STUB_DESCRIPTION } from '@myco/agent/tools/deferred-tools.js';
+import { ALL_VAULT_TOOL_NAMES } from '@myco/agent/tool-names.js';
 import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
@@ -169,6 +170,35 @@ describe('vault tools', () => {
   });
 
   // -------------------------------------------------------------------------
+  // ALL_VAULT_TOOL_NAMES drift guard
+  //
+  // tool-names.ts (imported by both tools.ts and schemas.ts) must stay in
+  // lockstep with the REAL tool registry this file builds via
+  // createVaultTools — the registry is imported here in the TEST, not in
+  // tool-names.ts itself, since tool-names.ts must stay zero-dep (no
+  // bun:sqlite-adjacent imports) for codegen to load schemas.ts safely.
+  // -------------------------------------------------------------------------
+
+  describe('ALL_VAULT_TOOL_NAMES drift guard', () => {
+    it('union size matches VAULT_TOOL_COUNT', () => {
+      expect(ALL_VAULT_TOOL_NAMES.size).toBe(VAULT_TOOL_COUNT);
+    });
+
+    it('every tool the real registry produces is in ALL_VAULT_TOOL_NAMES', () => {
+      for (const t of tools) {
+        expect(ALL_VAULT_TOOL_NAMES.has(t.name)).toBe(true);
+      }
+    });
+
+    it('every name in ALL_VAULT_TOOL_NAMES is produced by the real registry', () => {
+      const registryNames = new Set(tools.map((t) => t.name));
+      for (const name of ALL_VAULT_TOOL_NAMES) {
+        expect(registryNames.has(name)).toBe(true);
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Deferred tool loading
   // -------------------------------------------------------------------------
 
@@ -210,6 +240,44 @@ describe('vault tools', () => {
       // Non-deferred tools in the same scoped surface are untouched.
       const sporesTool = scopedTools.find((t) => t.name === 'vault_spores')!;
       expect(sporesTool.description).not.toContain('deferred');
+    });
+
+    it('createVaultToolServer (the FULL-SURFACE / unscoped MCP server factory) threads deferredNames through to real stubs and vault_search_tools', async () => {
+      // P3-T1: single-query tasks (executeSingleQuery, phase-loop.ts) have
+      // no `phases:` block, so they hit createVaultToolServer directly —
+      // the FULL-SURFACE path — never createScopedVaultToolServer. Before
+      // this task, createVaultToolServer's options Pick (tools.ts) excluded
+      // 'deferredNames' entirely, so a task-level deferredTools field would
+      // have reached this call and been silently dropped. Assert against
+      // the real MCP server's registered-tools surface (not a mock) to
+      // prove the stub/meta-tool synthesis actually happens on this path.
+      const { createVaultToolServer: freshCreateVaultToolServer } = await import('@myco/agent/tools.js');
+      const server = freshCreateVaultToolServer(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: TEST_REQUEST_CONTEXT,
+        deferredNames: new Set(['vault_report']),
+      });
+      const registeredTools = (server as unknown as { instance: { _registeredTools: Record<string, { description?: string }> } })
+        .instance._registeredTools;
+      const names = Object.keys(registeredTools);
+
+      expect(names).toContain('vault_search_tools');
+      expect(names).toContain('vault_report');
+      expect(registeredTools.vault_report.description).toBe(DEFERRED_STUB_DESCRIPTION);
+
+      // A non-deferred tool on the same full surface is untouched.
+      expect(registeredTools.vault_spores.description).not.toBe(DEFERRED_STUB_DESCRIPTION);
+
+      // Deferral never changes callability — the stub only replaces
+      // description/schema; the real handler still runs end-to-end and
+      // writes through to the vault exactly as an undeferred call would.
+      const result = await registeredTools.vault_report.handler(
+        { action: 'extract', summary: 'Deferred-stub call still reaches the real handler.' },
+        undefined,
+      );
+      const report = JSON.parse(result.content[0].text) as { run_id: string; agent_id: string; action: string };
+      expect(report.run_id).toBe(TEST_RUN_ID);
+      expect(report.agent_id).toBe(TEST_AGENT_ID);
+      expect(report.action).toBe('extract');
     });
   });
 
