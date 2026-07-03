@@ -18,6 +18,10 @@
 export const PHASE_POSTCONDITION_KINDS = [
   'skill-evolve-inventory',
   'skill-evolve-assess',
+  'cortex-prompt-builder-build',
+  'skill-generate-validate',
+  'skill-survey-reconcile-queue',
+  'skill-survey-persist-decisions',
 ] as const;
 
 export type PhasePostConditionKind = (typeof PHASE_POSTCONDITION_KINDS)[number];

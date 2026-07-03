@@ -4,6 +4,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { insertRun } from '@myco/db/queries/runs.js';
+import { insertTurn } from '@myco/db/queries/turns.js';
 import { insertWriteIntent } from '@myco/db/queries/write-intents.js';
 import { validateTaskPostconditions } from '@myco/agent/task-postconditions.js';
 import { DEFAULT_AGENT_ID, epochSeconds } from '@myco/constants.js';
@@ -11,6 +12,7 @@ import { DEFAULT_AGENT_ID, epochSeconds } from '@myco/constants.js';
 const TEST_PROJECT_ID = 'proj_skill_evolve_postconditions';
 const TEST_RUN_ID = 'run-skill-evolve';
 const CUSTOM_AGENT_ID = 'custom-skill-evolve-agent';
+const TITLE_SUMMARY_RUN_ID = 'run-title-summary';
 
 function inventoryPayload(runId = TEST_RUN_ID) {
   return {
@@ -221,5 +223,127 @@ describe('task postconditions', () => {
 
     expect(validateTaskPostconditions({ runId: TEST_RUN_ID, taskName: 'skill-evolve', dryRun: true }))
       .toBe('skill-evolve dry-run completed without a valid skill-evolve-classifications write intent');
+  });
+});
+
+describe('title-summary task postconditions', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'Myco Agent', created_at: epochSeconds() });
+    insertRun({
+      id: TITLE_SUMMARY_RUN_ID,
+      project_id: TEST_PROJECT_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      task: 'title-summary',
+      status: 'running',
+      started_at: epochSeconds(),
+    });
+  });
+
+  it('accepts a summary report when sessions were updated', () => {
+    insertTurn({
+      run_id: TITLE_SUMMARY_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      turn_number: 1,
+      tool_name: 'vault_update_session',
+    });
+    insertReport({
+      run_id: TITLE_SUMMARY_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'summary',
+      summary: 'Sessions updated: 2, sessions skipped: 0',
+      details: JSON.stringify({ run_id: TITLE_SUMMARY_RUN_ID, updated: 2, skipped: 0 }),
+      created_at: epochSeconds(),
+    });
+
+    expect(validateTaskPostconditions({ runId: TITLE_SUMMARY_RUN_ID, taskName: 'title-summary' })).toBeNull();
+  });
+
+  it('accepts a zero-update summary report with structured details', () => {
+    insertReport({
+      run_id: TITLE_SUMMARY_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'summary',
+      summary: 'Sessions updated: 0, sessions skipped: 3 (already current)',
+      details: JSON.stringify({ run_id: TITLE_SUMMARY_RUN_ID, updated: 0, skipped: 3 }),
+      created_at: epochSeconds(),
+    });
+
+    expect(validateTaskPostconditions({ runId: TITLE_SUMMARY_RUN_ID, taskName: 'title-summary' })).toBeNull();
+  });
+
+  it('accepts a zero-update summary report with updated as a numeric string', () => {
+    insertReport({
+      run_id: TITLE_SUMMARY_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'summary',
+      summary: 'Sessions updated: 0, sessions skipped: 3 (already current)',
+      details: JSON.stringify({ run_id: TITLE_SUMMARY_RUN_ID, updated: '0', skipped: 3 }),
+      created_at: epochSeconds(),
+    });
+
+    expect(validateTaskPostconditions({ runId: TITLE_SUMMARY_RUN_ID, taskName: 'title-summary' })).toBeNull();
+  });
+
+  it('fails on a summary report with updated as an empty string', () => {
+    insertReport({
+      run_id: TITLE_SUMMARY_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'summary',
+      summary: 'Sessions updated: , sessions skipped: 0',
+      details: JSON.stringify({ run_id: TITLE_SUMMARY_RUN_ID, updated: '', skipped: 0 }),
+      created_at: epochSeconds(),
+    });
+
+    expect(validateTaskPostconditions({ runId: TITLE_SUMMARY_RUN_ID, taskName: 'title-summary' }))
+      .toBe('title-summary completed without vault_update_session or a report showing zero updates');
+  });
+
+  it('accepts an explicit skip report (backward compat)', () => {
+    insertReport({
+      run_id: TITLE_SUMMARY_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'skip',
+      summary: 'No unprocessed sessions',
+      details: null,
+      created_at: epochSeconds(),
+    });
+
+    expect(validateTaskPostconditions({ runId: TITLE_SUMMARY_RUN_ID, taskName: 'title-summary' })).toBeNull();
+  });
+
+  it('fails when there is no update call and no report at all', () => {
+    expect(validateTaskPostconditions({ runId: TITLE_SUMMARY_RUN_ID, taskName: 'title-summary' }))
+      .toBe('title-summary completed without calling vault_report');
+  });
+
+  it('fails on a summary report without parseable zero-update details (the incident shape)', () => {
+    insertReport({
+      run_id: TITLE_SUMMARY_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'summary',
+      summary: 'Sessions updated: 0, sessions skipped: 0',
+      details: null,
+      created_at: epochSeconds(),
+    });
+
+    expect(validateTaskPostconditions({ runId: TITLE_SUMMARY_RUN_ID, taskName: 'title-summary' }))
+      .toBe('title-summary completed without vault_update_session or a report showing zero updates');
+  });
+
+  it('fails on a summary report with malformed details JSON', () => {
+    insertReport({
+      run_id: TITLE_SUMMARY_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'summary',
+      summary: 'Sessions updated: 0',
+      details: '{not valid json',
+      created_at: epochSeconds(),
+    });
+
+    expect(validateTaskPostconditions({ runId: TITLE_SUMMARY_RUN_ID, taskName: 'title-summary' }))
+      .toBe('title-summary completed without vault_update_session or a report showing zero updates');
   });
 });

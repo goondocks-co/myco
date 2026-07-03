@@ -55,6 +55,24 @@ export function projectBatchForAgent(batch: BatchRow, options: ProjectionOptions
   };
 }
 
+/**
+ * Content-free grouping projection: ids, counts, and timestamps only — no
+ * user_prompt/response_summary. Lets a listing step group unprocessed work
+ * by session without pulling every session's content into one shared
+ * context; callers fetch a given session's content separately (e.g. via
+ * vault_session_summary_material) only when they are about to act on it.
+ */
+export function projectBatchForGrouping(batch: BatchRow): Record<string, unknown> {
+  return {
+    id: batch.id,
+    session_id: batch.session_id,
+    prompt_number: batch.prompt_number,
+    ...(batch.started_at !== null ? { started_at: batch.started_at } : {}),
+    ...(batch.ended_at !== null ? { ended_at: batch.ended_at } : {}),
+    created_at: batch.created_at,
+  };
+}
+
 export function projectBatchForSessionSummary(batch: BatchRow, options: ProjectionOptions = {}): Record<string, unknown> {
   return {
     prompt_number: batch.prompt_number,

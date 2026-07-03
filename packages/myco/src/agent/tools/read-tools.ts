@@ -43,6 +43,7 @@ import { requireProjectId } from '@myco/grove/request-context.js';
 import { projectScopeFromVaultToolDeps, textResult, type VaultToolDeps } from './types.js';
 import {
   projectBatchForAgent,
+  projectBatchForGrouping,
   projectBatchForSessionSummary,
   projectEdgeForAgent,
   projectSessionForAgent,
@@ -119,7 +120,7 @@ export function createReadTools(deps: VaultToolDeps) {
   const originValues = Object.values(PROMPT_BATCH_ORIGIN) as [PromptBatchOrigin, ...PromptBatchOrigin[]];
   const vaultUnprocessed = tool(
     'vault_unprocessed',
-    "Get unprocessed prompt batches, ordered by id ASC. Supports cursor-based pagination. Defaults exclude in-flight sessions AND non-human-origin batches (env_context, task notifications, sub-agent dispatches) — intelligence tasks should reason over user intent, not harness chatter. Pass include_active=true for live data (e.g., title-summary). Pass include_origins to broaden beyond the default ['human'].",
+    "Get unprocessed prompt batches, ordered by id ASC. Supports cursor-based pagination. Defaults exclude in-flight sessions AND non-human-origin batches (env_context, task notifications, sub-agent dispatches) — intelligence tasks should reason over user intent, not harness chatter. Pass include_active=true for live data (e.g., title-summary). Pass include_origins to broaden beyond the default ['human']. Pass grouping_only=true for a content-free projection (ids/counts/timestamps, no user_prompt/response_summary) — use this to group batches by session_id before fetching one session's content at a time, so a multi-session listing never mixes two sessions' content into one context.",
     {
       after_id: z.number().optional().describe('Return batches with id greater than this'),
       limit: z.number().optional().describe('Maximum number of batches to return'),
@@ -127,6 +128,9 @@ export function createReadTools(deps: VaultToolDeps) {
       include_metadata: z.boolean().optional().describe('Return full batch metadata instead of the compact task-oriented projection'),
       include_origins: z.array(z.enum(originValues)).optional().describe(
         "Origin allowlist. Defaults to ['human'] so intelligence tasks skip harness-injected system batches. Pass ['human','system','agent_dispatch','hook_injected'] to see everything.",
+      ),
+      grouping_only: z.boolean().optional().describe(
+        'Return only id/session_id/prompt_number/timestamps — no user_prompt or response_summary. For grouping unprocessed batches by session before fetching each session\'s content individually (default: false). Takes precedence over include_metadata.',
       ),
     },
     async (args) => {
@@ -140,6 +144,9 @@ export function createReadTools(deps: VaultToolDeps) {
         origins,
         scope,
       });
+      if (args.grouping_only === true) {
+        return textResult(batches.map((batch) => projectBatchForGrouping(batch)));
+      }
       const releases = releaseStateAnnotationMap('prompt_batches', batches.map((b) => String(b.id)), scope);
       return projectToolRows(
         batches,
