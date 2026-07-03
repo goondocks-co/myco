@@ -206,6 +206,12 @@ export function aggregateUsage(usages: Array<RuntimeUsage | undefined>): Runtime
     durationMs: 0,
   };
   let sawCost = false;
+  // Concatenated (not summed) across phases/items — each entry is still a
+  // single request's own usage, so `analyzeRuntimeTokenBudget`'s
+  // peak-over-entries can find the true per-request peak across the whole
+  // run instead of only the last phase's entries (which is what a naive
+  // overwrite would leave behind).
+  const requestUsageEntries: Array<Record<string, unknown>> = [];
 
   for (const usage of usages) {
     if (!usage) continue;
@@ -220,10 +226,16 @@ export function aggregateUsage(usages: Array<RuntimeUsage | undefined>): Runtime
       aggregate.costUsd = (aggregate.costUsd ?? 0) + usage.costUsd;
       sawCost = true;
     }
+    if (usage.requestUsageEntries && usage.requestUsageEntries.length > 0) {
+      requestUsageEntries.push(...usage.requestUsageEntries);
+    }
   }
 
   if (!sawCost) {
     delete aggregate.costUsd;
+  }
+  if (requestUsageEntries.length > 0) {
+    aggregate.requestUsageEntries = requestUsageEntries;
   }
 
   return aggregate;

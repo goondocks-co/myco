@@ -17,24 +17,41 @@ import { vi } from '../helpers/vi-shim.js';
 const queryCalls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
 let structuredOutputOverride: unknown = undefined;
 let usageOverride: Record<string, number> | undefined = undefined;
+// Override for multi-turn fixtures: an array of raw per-message usage
+// snapshots (BetaUsage shape). When set, the mock emits one `assistant`
+// message per entry, each carrying `message.usage` — the real SDK's
+// per-request usage field — instead of the default single content-only
+// assistant message with no usage.
+let assistantUsageSequenceOverride: Array<Record<string, number>> | undefined = undefined;
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
     queryCalls.push(args);
     return {
       [Symbol.asyncIterator]: async function* () {
-        yield {
-          type: 'assistant' as const,
-          message: { role: 'assistant', content: 'thinking' },
-          uuid: 'a-1',
-          session_id: 'test-session',
-        };
+        if (assistantUsageSequenceOverride) {
+          for (const [i, usage] of assistantUsageSequenceOverride.entries()) {
+            yield {
+              type: 'assistant' as const,
+              message: { role: 'assistant', content: 'thinking', usage },
+              uuid: `a-${i + 1}`,
+              session_id: 'test-session',
+            };
+          }
+        } else {
+          yield {
+            type: 'assistant' as const,
+            message: { role: 'assistant', content: 'thinking' },
+            uuid: 'a-1',
+            session_id: 'test-session',
+          };
+        }
         yield {
           type: 'result' as const,
           subtype: 'success' as const,
           total_cost_usd: 0.0123,
           usage: usageOverride ?? { input_tokens: 42, output_tokens: 7 },
-          num_turns: 1,
+          num_turns: assistantUsageSequenceOverride?.length ?? 1,
           duration_ms: 100,
           duration_api_ms: 80,
           is_error: false,
@@ -130,6 +147,7 @@ describe('ClaudeSdkHarness.execute', () => {
     fullServerCalls.length = 0;
     structuredOutputOverride = undefined;
     usageOverride = undefined;
+    assistantUsageSequenceOverride = undefined;
   });
 
   it('forwards sessionRef as sessionId to the SDK when provided', async () => {
@@ -601,6 +619,79 @@ describe('ClaudeSdkHarness.execute', () => {
     expect(breakdown.cachedInputTokens).toBe(0);
     expect(breakdown.uncachedInputTokens).toBe(42);
     expect(breakdown.uncachedInputTokens).toBeGreaterThanOrEqual(0);
+  });
+
+  it('emits one requestUsageEntries entry per assistant message on a multi-turn run, summing to the run totals', async () => {
+    // Each SDK assistant message carries its own BetaUsage snapshot — a
+    // genuine per-request peak, not the run-cumulative total the terminal
+    // `result` message reports. Three turns, each re-reading a cached
+    // prompt (mirrors real multi-turn agent conversations under prompt
+    // caching): entries.length must equal turn count, each entry's own
+    // composition must be correct, and the entries must sum to the run
+    // totals — run totals are untouched by this fix.
+    assistantUsageSequenceOverride = [
+      { input_tokens: 50, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      { input_tokens: 10, output_tokens: 30, cache_creation_input_tokens: 0, cache_read_input_tokens: 400 },
+      { input_tokens: 15, output_tokens: 45, cache_creation_input_tokens: 0, cache_read_input_tokens: 420 },
+    ];
+    usageOverride = {
+      input_tokens: 75,
+      output_tokens: 95,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 820,
+    };
+
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const result = await runtime.execute(makeInput());
+
+    expect(result.turnsUsed).toBe(3);
+    const entries = result.usage.requestUsageEntries as Array<{
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
+      totalTokens: number;
+    }>;
+    expect(entries).toHaveLength(3);
+    expect(entries[0]).toEqual({ inputTokens: 50, outputTokens: 20, cachedTokens: 0, totalTokens: 70 });
+    expect(entries[1]).toEqual({ inputTokens: 410, outputTokens: 30, cachedTokens: 400, totalTokens: 440 });
+    expect(entries[2]).toEqual({ inputTokens: 435, outputTokens: 45, cachedTokens: 420, totalTokens: 480 });
+
+    const sumInput = entries.reduce((sum, e) => sum + e.inputTokens, 0);
+    const sumOutput = entries.reduce((sum, e) => sum + e.outputTokens, 0);
+    expect(sumInput).toBe(result.usage.inputTokens);
+    expect(sumOutput).toBe(result.usage.outputTokens);
+
+    // Run totals unchanged: still sourced from the terminal result message.
+    expect(result.usage.inputTokens).toBe(75 + 0 + 820);
+    expect(result.usage.outputTokens).toBe(95);
+    expect(result.usage.cachedTokens).toBe(820);
+    expect(result.usage.costUsd).toBeCloseTo(0.0123);
+
+    // Peak-over-entries is far below the cumulative run total — the bug
+    // this fix closes.
+    const peak = Math.max(...entries.map((e) => e.totalTokens));
+    expect(peak).toBeLessThan(result.usage.totalTokens!);
+  });
+
+  it('single-turn multi-message-mock fixture stays a single entry equal to run totals (unchanged behavior)', async () => {
+    assistantUsageSequenceOverride = [
+      { input_tokens: 42, output_tokens: 7, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    ];
+
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+    const result = await runtime.execute(makeInput());
+
+    expect(result.usage.requestUsageEntries).toHaveLength(1);
+    expect(result.usage.requestUsageEntries![0]).toEqual({
+      inputTokens: 42,
+      outputTokens: 7,
+      cachedTokens: 0,
+      totalTokens: 49,
+    });
+    expect(result.usage.inputTokens).toBe(42);
+    expect(result.usage.outputTokens).toBe(7);
   });
 
   it('attaches outputFormat to the SDK call when outputSchema is provided', async () => {
