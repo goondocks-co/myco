@@ -20,6 +20,7 @@ import { loadMergedConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { notify } from '@myco/notifications/notify.js';
 import { agentRunNotificationLink } from '@myco/notifications/links.js';
+import { HARNESS_HEALTH_TASK_NAME, notifyHarnessHealthFindings } from '@myco/notifications/harness-health-consumer.js';
 import { buildPhaseAudit } from '@myco/services/phase-audit.js';
 import { ExecutionOverrideBody } from './schemas/execution-overrides.js';
 import { transformProviderOverrides } from './schemas/execution-overrides-traversal.js';
@@ -316,6 +317,16 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
             status: result.status,
             phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
           });
+
+          if (result.status === 'completed' && task === HARNESS_HEALTH_TASK_NAME) {
+            notifyHarnessHealthFindings({
+              runId: result.runId,
+              projectVaultDir: runVaultDir,
+              config: mycoConfig,
+              projectId: req.requestContext?.projectId ?? undefined,
+              logger,
+            });
+          }
         }
       })
       .catch((err) => {
@@ -438,6 +449,15 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
           provider: result.provider,
           model: result.model,
         });
+
+        if (result.status === 'completed' && run.task === HARNESS_HEALTH_TASK_NAME) {
+          notifyHarnessHealthFindings({
+            runId: result.runId,
+            projectVaultDir: runVaultDir,
+            projectId: req.requestContext?.projectId ?? undefined,
+            logger,
+          });
+        }
       })
       .catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run resume threw unhandled error', {

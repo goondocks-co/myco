@@ -30,7 +30,7 @@ import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 // ---------------------------------------------------------------------------
 
 /** Number of built-in task YAML files. */
-const EXPECTED_TASK_COUNT = 14;
+const EXPECTED_TASK_COUNT = 15;
 
 /** Built-in agent name from agent.yaml. */
 const BUILT_IN_AGENT_NAME = 'myco-agent';

@@ -1,0 +1,119 @@
+# =============================================================================
+# Built-in Task: Harness Health (Tier 3)
+# =============================================================================
+# Scheduled sentinel that interprets vault_run_health's aggregate
+# anomaly buckets and files a single vault_report under action
+# "harness-health". The report is the sole hand-off surface to the daemon:
+# the notification consumer (notifications/harness-health-consumer.ts)
+# reverse-scans for the latest report with this action and fires
+# agent.harness-health.findings when any bucket's `entries` array is
+# non-empty. An all-clear run (every bucket empty) still reports — silence
+# is indistinguishable from "never ran" without one.
+#
+# Single phase, read-only: vault_run_health and vault_report both carry
+# readOnlyHint: true and no destructiveHint, so this task makes no writes
+# beyond the observability report itself.
+# =============================================================================
+
+name: harness-health
+displayName: Harness Health
+description: >-
+  Scheduled sentinel that reads aggregate agent-run telemetry (unpaired
+  events, turn-budget hits, postcondition failures, cost spikes, blocked
+  writes, zero-usage runs, and silent scheduled tasks) and files a single
+  harness-health report summarizing findings.
+agent: myco-agent
+isDefault: false
+reasoningLevel: low
+maxTurns: 20
+timeoutSeconds: 300
+schedule:
+  enabled: true
+  intervalSeconds: 86400
+  runIn:
+    - idle
+    - sleep
+prompt: >-
+  Read aggregate harness-health signals via vault_run_health and file one
+  vault_report under action "harness-health" summarizing what the buckets
+  show, including an all-clear run when nothing is anomalous.
+phases:
+  - name: assess
+    reasoningLevel: low
+    readOnly: true
+    required: true
+    tools:
+      - vault_run_health
+      - vault_report
+    maxTurns: 20
+    prompt: |
+      Call `vault_run_health` with no arguments (the default lookback
+      window is sufficient — do not narrow it unless a bucket result
+      tells you to look closer with a `task` filter).
+
+      The result has the following buckets under `buckets`: `unpaired_events`,
+      `cap_hits`, `postcondition_failures`, `cost_spikes`,
+      `flag_clusters`, `zero_usage`, `silent_streams`. Each bucket
+      already carries a `description` explaining what it means and a
+      pre-computed `entries` array — every anomaly is deterministic SQL
+      computed for you. Do not re-derive counts or re-judge whether an
+      entry belongs; your job is to interpret and narrate what the tool
+      already found, not to re-analyze raw rows.
+
+      `silent_streams` is info-tier only: a schedule-enabled task with no
+      runs in the window may be entirely expected (nothing to do, or a
+      myco.yaml override disabled it). Note it in the report without
+      treating it as an alarm on its own.
+
+      ## Report — mandatory, exactly once, every run
+
+      This phase is not done until you call `vault_report` with action
+      `harness-health`. This applies whether you found anomalies or the
+      run is completely clean — there is no other way to end this phase,
+      and an all-clear run must still report so a stale or missing report
+      is never confused with "nothing wrong". Call it exactly once.
+
+      Pass `details` as an object whose top-level keys are exactly every
+      bucket name listed above, each value shaped as:
+      {
+        "description": "<one-line human summary of this bucket for this run>",
+        "entries": [ ... ]
+      }
+      - `description` — required on every bucket, even when `entries` is
+        empty. Summarize what you found (or "no anomalies in this
+        window" when clean) in your own words; do not just copy the
+        tool's bucket description verbatim.
+      - `entries` — required on every bucket, MANDATORY even when there
+        is nothing to report: use an empty array `[]` for a clean
+        bucket, never omit the key. The notification consumer treats
+        `entries.length` as the sole signal for whether a bucket has
+        findings — a bucket with a description but no `entries` key
+        would be misread as non-empty and fire a false-positive
+        notification.
+      - Populate `entries` from `vault_run_health`'s own attribution rows
+        for that bucket (run ids, task names, counts) — do not invent
+        entries or drop the tool's attribution detail.
+
+      Canonical shape for `details` (fill in real values; keep every key,
+      including empty `entries` arrays, exactly as shown):
+      {
+        "unpaired_events": { "description": "...", "entries": [] },
+        "cap_hits": { "description": "...", "entries": [] },
+        "postcondition_failures": { "description": "...", "entries": [] },
+        "cost_spikes": { "description": "...", "entries": [] },
+        "flag_clusters": { "description": "...", "entries": [] },
+        "zero_usage": { "description": "...", "entries": [] },
+        "silent_streams": { "description": "...", "entries": [] }
+      }
+
+      Set `summary` to a one-sentence overview (e.g. "all clear" or
+      "2 anomaly buckets: cap_hits, cost_spikes").
+    purpose: >-
+      Read-only interpretation of vault_run_health's pre-computed
+      buckets, followed by exactly one vault_report call. Neither tool
+      carries destructiveHint — vault_run_health is a pure read and
+      vault_report only appends an observability row — so this phase
+      makes no destructive or state-mutating writes; the purpose is
+      documented per the Phase 0+1 convention rather than enforced by a
+      classifier signal.
+    postCondition: harness-health-report
