@@ -158,6 +158,46 @@ describe('gatherStats', () => {
     expect(stats.daemon.active_sessions).toEqual(['sess-1', 'sess-2']);
   });
 
+  it('reports last_run_at from a resumed run\'s CURRENT-attempt clock, not its original dispatch time', () => {
+    const now = epochNow();
+    const originalDispatch = now - 10_000; // T0: resumed run's original dispatch, long ago
+    const resumeTime = now - 100; // T2: resumed run's most recent attempt — the true recency signal
+    const freshDispatch = now - 5_000; // T1: a fresh (never-resumed) run dispatched after T0 but before T2
+
+    registerAgent({ id: AGENT_ID, name: 'Stats Agent', created_at: now });
+
+    // Resumed old run: started_at preserves ORIGINAL dispatch (T0); resumed_at
+    // is the per-attempt recency clock (T2) and must win the ORDER BY.
+    insertRun({
+      id: 'run-resumed',
+      agent_id: AGENT_ID,
+      task: 'digest',
+      status: 'completed',
+      started_at: originalDispatch,
+      resumed_at: resumeTime,
+      completed_at: resumeTime + 5,
+    });
+
+    // Fresh run: dispatched at T1, strictly between T0 and T2, never resumed.
+    // A started_at-only sort would incorrectly pick this row over run-resumed.
+    insertRun({
+      id: 'run-fresh',
+      agent_id: AGENT_ID,
+      task: 'digest',
+      status: 'failed',
+      started_at: freshDispatch,
+      completed_at: freshDispatch + 5,
+    });
+
+    const stats = gatherStats(vaultDir, { active_sessions: [], scope: ALL_PROJECTS_SCOPE });
+
+    // last_run_at must reflect the resumed run's CURRENT-attempt clock (T2),
+    // not its original dispatch (T0), and the resumed run — not the fresher
+    // never-resumed dispatch (T1) — must be the row selected.
+    expect(stats.agent.last_run_at).toBe(resumeTime);
+    expect(stats.agent.last_run_status).toBe('completed');
+  });
+
   it('reads Grove-scoped counts from an explicit database path instead of the singleton', () => {
     const now = epochNow();
     const targetVaultDir = path.join(tempDir, 'target', '.myco');

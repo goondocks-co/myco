@@ -379,6 +379,14 @@ function buildRunsWhere(
  * (`dryRun`, `reasoningLevel`, `executionOverrides`) are handled
  * separately below because their column names differ, `dryRun` needs
  * boolean->integer coercion, and `executionOverrides` serializes to JSON.
+ *
+ * `started_at` is deliberately absent: it is a run's ORIGINAL dispatch
+ * time and must never be re-stamped by an update (see executor.ts's
+ * resume branch and the recency-sort comments on listRuns/getRunningRun*
+ * below). Excluding it here makes that guarantee structural — even a
+ * caller that accidentally includes `started_at` in a RunUpdate cannot
+ * move the column, because `buildUpdateClauses` only emits SET clauses
+ * for keys present in this list.
  */
 const UPDATE_COLUMNS: readonly (keyof RunUpdate)[] = [
   'status',
@@ -388,7 +396,6 @@ const UPDATE_COLUMNS: readonly (keyof RunUpdate)[] = [
   'provider',
   'model',
   'session_ref',
-  'started_at',
   'resumable',
   'resume_status',
   'resume_mode',
@@ -517,11 +524,18 @@ export function listRuns(options: ListRunsOptions): RunRow[] {
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
   const offset = options.offset ?? 0;
 
+  // Orders by the CURRENT-attempt clock (`COALESCE(resumed_at,
+  // started_at)`), not `started_at` alone — `started_at` is preserved as
+  // each run's ORIGINAL dispatch time (see executor.ts), so a run resumed
+  // long after its first dispatch still surfaces near the top of the list
+  // it was just active in, matching the rail's ACTIVE/TODAY/YESTERDAY
+  // section bucketing (RunList.tsx's `sectionRows` call uses the same
+  // attempt-start value client-side).
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_runs
      ${where}
-     ORDER BY started_at DESC NULLS LAST
+     ORDER BY COALESCE(resumed_at, started_at) DESC NULLS LAST
      LIMIT ?
      OFFSET ?`,
   ).all(...params, limit, offset) as Record<string, unknown>[];
@@ -576,6 +590,10 @@ export function updateRunStatus(
   return updateRun(id, { status, ...completion }, scope);
 }
 
+// Orders by the CURRENT-attempt clock (`COALESCE(resumed_at, started_at)`),
+// matching getRunningRunForTask below — `started_at` alone would surface a
+// stale never-resumed running row over one whose resume attempt is actually
+// the most recent activity for this agent.
 export function getRunningRun(agentId: string, scope: ProjectScope): RunRow | null {
   const db = getDatabase();
   const conditions = ['agent_id = ?', 'status = ?'];
@@ -585,7 +603,7 @@ export function getRunningRun(agentId: string, scope: ProjectScope): RunRow | nu
     `SELECT ${SELECT_COLUMNS}
      FROM agent_runs
      WHERE ${conditions.join(' AND ')}
-     ORDER BY started_at DESC NULLS LAST
+     ORDER BY COALESCE(resumed_at, started_at) DESC NULLS LAST
      LIMIT 1`,
   ).get(...params) as Record<string, unknown> | undefined;
   return row ? toRunRow(row) : null;
@@ -595,11 +613,16 @@ export interface RunningRunRef {
   id: string;
   started_at: number | null;
   /**
-   * True when `maxAgeSeconds` was given and the row's `started_at` exceeds
-   * the cutoff — a 'running' row no run loop is still driving (e.g. an
-   * update killed the process between boot-recovery sweeps). Callers treat
-   * a stale ref as not-running and log it; the row itself is NOT mutated
-   * here (boot recovery's `markRunningRunsInterrupted` owns that).
+   * True when `maxAgeSeconds` was given and the row's CURRENT-attempt clock
+   * — `COALESCE(resumed_at, started_at)` — exceeds the cutoff: a 'running'
+   * row no run loop is still driving (e.g. an update killed the process
+   * between boot-recovery sweeps). Deliberately NOT `started_at` alone: a
+   * resumed run preserves its original dispatch time (see executor.ts), so
+   * gauging staleness off `started_at` would immediately flag a
+   * just-resumed long-dormant run as stale even though its current attempt
+   * is seconds old. Callers treat a stale ref as not-running and log it; the
+   * row itself is NOT mutated here (boot recovery's
+   * `markRunningRunsInterrupted` owns that).
    */
   stale: boolean;
 }
@@ -615,15 +638,16 @@ export function getRunningRunForTask(
   const params: unknown[] = [agentId, taskName, STATUS_RUNNING];
   appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
-    `SELECT id, started_at FROM agent_runs
+    `SELECT id, started_at, resumed_at FROM agent_runs
      WHERE ${conditions.join(' AND ')}
-     ORDER BY started_at DESC NULLS LAST
+     ORDER BY COALESCE(resumed_at, started_at) DESC NULLS LAST
      LIMIT 1`,
-  ).get(...params) as { id: string; started_at: number | null } | undefined;
+  ).get(...params) as { id: string; started_at: number | null; resumed_at: number | null } | undefined;
   if (!row) return null;
+  const attemptClock = row.resumed_at ?? row.started_at;
   const stale = maxAgeSeconds !== undefined
-    && row.started_at !== null
-    && epochSeconds() - row.started_at > maxAgeSeconds;
+    && attemptClock !== null
+    && epochSeconds() - attemptClock > maxAgeSeconds;
   return { id: row.id, started_at: row.started_at ?? null, stale };
 }
 
@@ -725,13 +749,11 @@ function appendSupersedeEquivalenceCondition(
  * run's own (agentId, taskName, scope, dryRun, instruction) as the
  * equivalence key. Terminal-marks (`resumable=0`,
  * `resume_status='superseded'`) every OTHER currently-resumable failed run
- * matching the key — structural, no timestamp comparison: anything still
- * resumable when an equivalent run completes is stale BY DEFINITION,
+ * matching the key — structural, no timestamp comparison needed: anything
+ * still resumable when an equivalent run completes is stale BY DEFINITION,
  * because the just-completed run's dispatch necessarily started no earlier
- * than the failed run's most recent attempt. Sidesteps the started_at
- * overwrite trap entirely (a resume re-stamps started_at:now — comparing
- * against it would be comparing the wrong clock). Swept runs hit the
- * existing resumable-guard 400 at the manual resume endpoint automatically
+ * than the failed run's most recent attempt. Swept runs hit the existing
+ * resumable-guard 400 at the manual resume endpoint automatically
  * (agent-runs.ts).
  *
  * `excludeRunId` is the completing run's own id — never supersede itself.
@@ -758,12 +780,13 @@ export function supersedeEquivalentResumableRuns(
  * before the completion-time sweep existed, and any race the sweep's
  * single-completion trigger can't see. Returns the newest COMPLETED
  * equivalent run whose `completed_at` is newer than the failed run's own
- * `COALESCE(completed_at, started_at)` — the failed side must use COALESCE
- * because an interrupted run (`markRunningRunsInterrupted`) sets
- * status='failed' + resume_status='ready' WITHOUT a completed_at. Never
- * compare against the failed run's `started_at` alone: a resume overwrites
- * `started_at` on every attempt, so it is not stable dispatch-order evidence.
- * Returns null when no such run exists. Callers that only need the
+ * ORIGINAL dispatch (`started_at`) — a resume attempt never re-stamps
+ * `started_at` (see executor.ts), so it is stable dispatch-order evidence:
+ * a completion newer than the failed run's first dispatch necessarily
+ * postdates whatever work the failed run represents, resumed or not. The
+ * `COALESCE(F.started_at, 0)` guard only covers a pathological NULL
+ * `started_at`, never a resume — resumed rows keep their real dispatch
+ * time. Returns null when no such run exists. Callers that only need the
  * yes/no answer (`gateScheduledResume`) test the return for non-null;
  * callers that need to NAME the superseding run (the manual resume
  * endpoint's 409) read `.id` off the row.
@@ -777,7 +800,7 @@ export function findNewerCompletedEquivalentRun(
   const params: unknown[] = [failedRun.id, STATUS_COMPLETED];
   appendSupersedeEquivalenceCondition(conditions, params, match);
   conditions.push('completed_at > ?');
-  params.push(failedRun.completed_at ?? failedRun.started_at ?? 0);
+  params.push(failedRun.started_at ?? 0);
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM agent_runs
      WHERE ${conditions.join(' AND ')}
@@ -805,11 +828,15 @@ export function hasNewerCompletedEquivalentRun(
  * a daemon crash before the completing run's success path ran). Terminal-
  * marks every resumable failed run F for which ANY completed run C shares
  * F's equivalence key (agent_id, task, project scope, dry_run, instruction
- * equal or both NULL) and has `completed_at` newer than F's
- * `COALESCE(completed_at, started_at)` — same predicate as the gate-time
- * belt (`hasNewerCompletedEquivalentRun`), expressed as a single
- * correlated-EXISTS UPDATE so the whole scope sweeps in one SQL pass. Safe
- * to run on every boot: a fully-swept vault matches zero rows.
+ * equal or both NULL) and has `completed_at` newer than F's ORIGINAL
+ * dispatch (`started_at`) — same predicate as the gate-time belt
+ * (`hasNewerCompletedEquivalentRun`), expressed as a single
+ * correlated-EXISTS UPDATE so the whole scope sweeps in one SQL pass. A
+ * completed equivalent newer than the failed run's original dispatch
+ * supersedes it, resumed or not — `started_at` is stable dispatch-order
+ * evidence because a resume never re-stamps it (see executor.ts).
+ * `COALESCE(F.started_at, 0)` only guards a pathological NULL. Safe to run
+ * on every boot: a fully-swept vault matches zero rows.
  */
 export function sweepStaleSupersededRuns(scope: ProjectScope): number {
   const db = getDatabase();
@@ -835,7 +862,7 @@ export function sweepStaleSupersededRuns(scope: ProjectScope): number {
            AND COALESCE(C.project_id, '') = COALESCE(F.project_id, '')
            AND C.dry_run = F.dry_run
            AND (C.instruction = F.instruction OR (C.instruction IS NULL AND F.instruction IS NULL))
-           AND C.completed_at > COALESCE(F.completed_at, F.started_at, 0)
+           AND C.completed_at > COALESCE(F.started_at, 0)
        )`,
   ).run(RESUME_STATUS_SUPERSEDED, STATUS_FAILED, STATUS_COMPLETED, ...outerParams);
   return info.changes;

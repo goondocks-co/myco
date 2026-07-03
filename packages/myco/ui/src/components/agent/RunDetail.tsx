@@ -22,7 +22,7 @@ import {
 import { RunTaskDialog } from './RunTaskDialog';
 import { AuditTrail } from './AuditTrail';
 import { EventsPanel } from './EventsPanel';
-import { formatEpochRelative, capitalize } from '../../lib/format';
+import { formatEpochRelative, capitalize, runAttemptStart } from '../../lib/format';
 import { formatCost, formatTokens, formatDuration, resolveTaskName, statusBadgeVariant } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 import type { CostResolution } from '@myco/agent/cost/types';
@@ -499,7 +499,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         />
         <MetricCard label="Task" value={resolveTaskName(run.task, tasksList)} mono />
         <MetricCard label="Started" value={formatEpochRelative(run.started_at)} mono />
-        <MetricCard label="Duration" value={formatDuration(run.started_at, run.completed_at)} mono />
+        <MetricCard label="Duration" value={formatDuration(runAttemptStart(run), run.completed_at)} mono />
         <MetricCard label="Tokens" value={formatTokens(run.tokens_used)} tone="ochre" mono />
         <MetricCard label={costCardLabel} value={formatCost(run.cost_usd, run.cost_source)} tone="ochre" mono />
       </div>

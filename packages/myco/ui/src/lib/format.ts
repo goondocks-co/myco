@@ -64,6 +64,19 @@ export function capitalize(str: string): string {
 }
 
 /**
+ * Resolve an agent run's CURRENT-attempt start time: `resumed_at` when the
+ * run has been resumed at least once, else `started_at`. `started_at` is
+ * preserved as the run's ORIGINAL dispatch time across every resume (see
+ * executor.ts) — per-attempt displays (duration, "started" recency,
+ * rail-list section bucketing) must anchor on this instead, or a run
+ * resumed long after its first dispatch reads as having a multi-day
+ * duration / stale recency it never actually had.
+ */
+export function runAttemptStart(run: { started_at: number | null; resumed_at?: number | null }): number | null {
+  return run.resumed_at ?? run.started_at;
+}
+
+/**
  * Format the duration between two epoch-second timestamps as a human-readable string.
  * Returns an em dash if either timestamp is null.
  */

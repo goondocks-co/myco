@@ -1,7 +1,35 @@
 import { describe, expect, it } from 'bun:test';
-import { analyzeRuntimeTokenBudget, buildRunAccountingUpdate, summarizePhaseCosts } from '@myco/agent/run-accounting.js';
+import { analyzeRuntimeTokenBudget, buildRunAccountingUpdate, runDurationMs, summarizePhaseCosts } from '@myco/agent/run-accounting.js';
 import type { CostResolution } from '@myco/agent/cost/types.js';
 import type { PhaseResult } from '@myco/agent/types.js';
+
+describe('runDurationMs', () => {
+  it('measures from started_at when the run was never resumed', () => {
+    const ms = runDurationMs({ started_at: 1000, completed_at: 1010, resumed_at: null });
+    expect(ms).toBe(10_000);
+  });
+
+  it('measures from resumed_at, not the original started_at, once the run has been resumed', () => {
+    // started_at is preserved as the run's ORIGINAL dispatch time across
+    // resumes (executor.ts) — duration must reflect the CURRENT attempt's
+    // wall-clock span, not the time since the very first dispatch.
+    const ms = runDurationMs({ started_at: 1000, completed_at: 1010, resumed_at: 1008 });
+    expect(ms).toBe(2_000);
+  });
+
+  it('tolerates a missing resumed_at field (RunRow shape without the optional key)', () => {
+    const ms = runDurationMs({ started_at: 1000, completed_at: 1010 });
+    expect(ms).toBe(10_000);
+  });
+
+  it('returns null when completed_at is missing', () => {
+    expect(runDurationMs({ started_at: 1000, completed_at: null, resumed_at: null })).toBeNull();
+  });
+
+  it('returns null when started_at is missing, even with a resumed_at present', () => {
+    expect(runDurationMs({ started_at: null, completed_at: 1010, resumed_at: null })).toBeNull();
+  });
+});
 
 describe('analyzeRuntimeTokenBudget', () => {
   it('computes utilization and headroom when context length is known', () => {

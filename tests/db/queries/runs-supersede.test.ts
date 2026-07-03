@@ -242,4 +242,76 @@ describe('sweepStaleSupersededRuns (boot-time backfill)', () => {
     expect(sweepStaleSupersededRuns(ALL_PROJECTS_SCOPE)).toBe(0);
     expect(getRun(untouched.id, ALL_PROJECTS_SCOPE)!.resumable).toBe(1);
   });
+
+  // ---------------------------------------------------------------------
+  // Regression: the resume-overwrites-started_at zombie (discovery-936c7370
+  // live incident, PR #622 follow-up). A resumed-but-still-failed run must
+  // stay sweepable by its ORIGINAL dispatch time even after its own zombie
+  // resume attempt inflates completed_at/resumed_at past the superseding
+  // run's completion — started_at is what makes this comparison exact now
+  // that resumes no longer re-stamp it.
+  // ---------------------------------------------------------------------
+
+  it('sweeps a run whose LAST-ATTEMPT timestamps are newer than the superseding completion, using its ORIGINAL dispatch time', () => {
+    const t0 = epochNow() - 10_000;
+    // Original dispatch far in the past — the zombie's own later resume
+    // attempt (resumed_at/completed_at below) does NOT touch started_at.
+    const zombie = insertRun({
+      id: 'run-zombie-resumed-past-supersede',
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK,
+      status: 'failed',
+      resumable: 1,
+      resume_status: RESUME_STATUS_READY,
+      started_at: t0,
+      // A stale resume attempt fired AFTER the superseding run below
+      // completed — completed_at/resumed_at land later in wall-clock time
+      // than the equivalent's completion, mirroring the live zombie shape.
+      resumed_at: t0 + 5_000,
+      completed_at: t0 + 5_010,
+    });
+    // The superseding equivalent completed BEFORE the zombie's own last
+    // attempt, but AFTER the zombie's ORIGINAL dispatch.
+    insertRun(makeRun({
+      id: 'run-superseding-equivalent',
+      status: 'completed',
+      started_at: t0 + 100,
+      completed_at: t0 + 2_300,
+    }));
+
+    const swept = sweepStaleSupersededRuns(ALL_PROJECTS_SCOPE);
+
+    expect(swept).toBe(1);
+    const after = getRun(zombie.id, ALL_PROJECTS_SCOPE)!;
+    expect(after.resumable).toBe(0);
+    expect(after.resume_status).toBe(RESUME_STATUS_SUPERSEDED);
+  });
+
+  it('does NOT sweep a run whose ORIGINAL dispatch postdates the last equivalent completion — genuinely newer work is preserved', () => {
+    const t0 = epochNow() - 10_000;
+    // The only completed equivalent finished well before this failed run
+    // was ever dispatched — this failed run represents newer work and must
+    // survive the sweep even though it is still resumable.
+    insertRun(makeRun({
+      id: 'run-older-equivalent',
+      status: 'completed',
+      started_at: t0,
+      completed_at: t0 + 50,
+    }));
+    const newerDispatch = insertRun({
+      id: 'run-genuinely-newer-dispatch',
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK,
+      status: 'failed',
+      resumable: 1,
+      resume_status: RESUME_STATUS_READY,
+      started_at: t0 + 5_000,
+      completed_at: t0 + 5_010,
+    });
+
+    expect(sweepStaleSupersededRuns(ALL_PROJECTS_SCOPE)).toBe(0);
+    const after = getRun(newerDispatch.id, ALL_PROJECTS_SCOPE)!;
+    expect(after.resumable).toBe(1);
+    expect(after.resume_status).toBe(RESUME_STATUS_READY);
+  });
 });

@@ -329,5 +329,67 @@ describe('gateScheduledResume', () => {
       expect(after.resumable).toBe(0);
       expect(after.resume_status).toBe(RESUME_STATUS_SUPERSEDED);
     });
+
+    // -----------------------------------------------------------------
+    // Regression: resume-overwrites-started_at zombie (discovery-936c7370
+    // live incident). Compares against runs-supersede.test.ts's boot-sweep
+    // pair for the same shape via the OTHER enforcement point (the
+    // gate-time belt, reached through gateScheduledResume).
+    // -----------------------------------------------------------------
+
+    it('supersedes a run whose own zombie resume inflated completed_at/resumed_at past the superseding completion, using ORIGINAL dispatch time', () => {
+      const t0 = epochNow() - 10_000;
+      const run = insertRun({
+        id: 'run-zombie-belt',
+        agent_id: TEST_AGENT_ID,
+        task: TEST_TASK,
+        status: 'failed',
+        resumable: 1,
+        resume_status: RESUME_STATUS_READY,
+        started_at: t0,
+        resumed_at: t0 + 5_000,
+        completed_at: t0 + 5_010,
+      });
+      insertRun({
+        id: 'run-superseding-belt',
+        agent_id: TEST_AGENT_ID,
+        task: TEST_TASK,
+        status: 'completed',
+        started_at: t0 + 100,
+        completed_at: t0 + 2_300,
+      });
+
+      expect(gate(run)).toBe('superseded');
+      const after = getRun('run-zombie-belt', ALL_PROJECTS_SCOPE)!;
+      expect(after.resumable).toBe(0);
+      expect(after.resume_status).toBe(RESUME_STATUS_SUPERSEDED);
+    });
+
+    it('does NOT supersede a run whose ORIGINAL dispatch postdates the last equivalent completion — genuinely newer work resumes normally', () => {
+      const t0 = epochNow() - 10_000;
+      insertRun({
+        id: 'run-older-equivalent-belt',
+        agent_id: TEST_AGENT_ID,
+        task: TEST_TASK,
+        status: 'completed',
+        started_at: t0,
+        completed_at: t0 + 50,
+      });
+      const run = insertRun({
+        id: 'run-genuinely-newer-belt',
+        agent_id: TEST_AGENT_ID,
+        task: TEST_TASK,
+        status: 'failed',
+        resumable: 1,
+        resume_status: RESUME_STATUS_READY,
+        started_at: t0 + 5_000,
+        completed_at: t0 + 5_010,
+      });
+
+      expect(gate(run)).toBe('resume');
+      const after = getRun('run-genuinely-newer-belt', ALL_PROJECTS_SCOPE)!;
+      expect(after.resumable).toBe(1);
+      expect(after.resume_status).toBe(RESUME_STATUS_READY);
+    });
   });
 });

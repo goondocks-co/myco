@@ -62,7 +62,8 @@ export function getActivityFeed(
     SELECT * FROM (
       SELECT 'agent_run' as type, id, task || ' — ' || status as summary,
               COALESCE(completed_at, started_at) as timestamp
-       FROM agent_runs WHERE 1 = 1${clause.sql} ORDER BY started_at DESC LIMIT ?
+       FROM agent_runs WHERE 1 = 1${clause.sql}
+       ORDER BY COALESCE(resumed_at, started_at) DESC LIMIT ?
     )
 
     UNION ALL
