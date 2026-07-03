@@ -24,9 +24,11 @@ import { withDatabase } from '@myco/db/client.js';
 import {
   applyRunUpdate,
   getLatestResumableRunForTask,
+  hasNewerCompletedEquivalentRun,
   incrementRunResumeAttempts,
   refundRunResumeAttempt,
   RESUME_STATUS_EXHAUSTED,
+  RESUME_STATUS_SUPERSEDED,
   type RunRow,
 } from '@myco/db/queries/runs.js';
 import { countToolCallsByRun } from '@myco/db/queries/turns.js';
@@ -178,6 +180,16 @@ export interface ScheduledResumeGateInput {
 /**
  * Decide whether a resumable run may consume another scheduled resume.
  *
+ * - Superseded belt (Part 1 secondary): if a completed equivalent run
+ *   (same agent/task/project scope/dry_run/instruction) finished AFTER this
+ *   run's own `COALESCE(completed_at, started_at)`, terminal-marks
+ *   (`resumable=0`, `resume_status='superseded'`) and returns 'superseded'
+ *   — the caller falls through to a fresh dispatch. Defends legacy rows
+ *   written before the completion-time sweep existed, and any race the
+ *   sweep's single-completion trigger can't see. No side effects live in
+ *   the db/queries read helper (`hasNewerCompletedEquivalentRun`) —
+ *   `gateScheduledResume` already owns terminal-marking for this run, so
+ *   the write happens here.
  * - Under the cap: increments `resume_attempts` (before dispatch, so a
  *   crash mid-resume still counts) and returns 'resume'.
  * - At the cap: terminal-marks the run (`resumable=0` +
@@ -185,8 +197,27 @@ export interface ScheduledResumeGateInput {
  *   notification, and returns 'exhausted' — the caller falls through to a
  *   fresh dispatch in the same tick.
  */
-export function gateScheduledResume(input: ScheduledResumeGateInput): 'resume' | 'exhausted' {
+export function gateScheduledResume(input: ScheduledResumeGateInput): 'resume' | 'exhausted' | 'superseded' {
   const { run, taskName, scope, projectVaultDir, projectId, config, logger } = input;
+
+  if (hasNewerCompletedEquivalentRun(run, {
+    agentId: run.agent_id,
+    taskName,
+    scope,
+    dryRun: run.dry_run,
+    instruction: run.instruction,
+  })) {
+    applyRunUpdate(run.id, {
+      resumable: 0,
+      resume_status: RESUME_STATUS_SUPERSEDED,
+    }, scope);
+    logger.warn(LOG_KINDS.AGENT_ERROR, `Scheduled task ${taskName} resume superseded by a newer completed run — starting fresh`, {
+      project_id: projectId,
+      runId: run.id,
+    });
+    return 'superseded';
+  }
+
   if (run.resume_attempts < RESUME_MAX_ATTEMPTS) {
     incrementRunResumeAttempts(run.id, scope);
     return 'resume';
@@ -489,7 +520,11 @@ export async function registerScheduledTasks(
         });
         return;
       }
-      // 'exhausted' — fall through to a fresh run in the same tick.
+      // 'exhausted' or 'superseded' — fall through to a fresh run in the
+      // same tick (Part 4: the interval-clock stamp above is deliberately
+      // pre-dispatch, so this fall-through keeps the tick from being a
+      // no-op even though gateScheduledResume already terminal-marked the
+      // old run).
     }
 
     const taskConfig = config.agent.tasks?.[taskName];
