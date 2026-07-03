@@ -89,7 +89,51 @@ function getIsolatedPluginCacheDir(): string {
  * the two had already drifted (e.g., `assistantMessages` rescue was added
  * to one and not the other).
  */
-async function consumeClaudeMessageStream(
+/** Raw usage shape shared by both the per-message `BetaUsage` and the run-level result usage. */
+interface RawAnthropicUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+/**
+ * Fold a raw Anthropic usage snapshot into the composition the rest of
+ * Myco's cost/budget pipeline expects.
+ *
+ * The Anthropic SDK's `input_tokens` counts only tokens billed at the full
+ * uncached rate — cache writes and cache reads are reported separately and
+ * excluded from it. Fold both into `inputTokens` so it represents the true
+ * total prompt size (what cost/breakdown.ts's `uncachedInputTokens =
+ * inputTokens - cachedTokens` subtraction expects), and surface
+ * `cachedTokens` as just the cache-read count — the portion that did NOT
+ * pay the uncached rate. Cache-creation tokens stay folded into
+ * `inputTokens` only, since they bill at their own (higher, but still not
+ * "uncached") rate rather than the cached-read rate.
+ *
+ * Read defensively: the declared SDK type is non-null, but a future SDK
+ * revision or an error-subtype result could omit these fields.
+ */
+function foldUsageComposition(rawUsage: RawAnthropicUsage | undefined): {
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+} {
+  const cacheCreationTokens = rawUsage?.cache_creation_input_tokens ?? 0;
+  const cacheReadTokens = rawUsage?.cache_read_input_tokens ?? 0;
+  const inputTokens = (rawUsage?.input_tokens ?? 0) + cacheCreationTokens + cacheReadTokens;
+  const outputTokens = rawUsage?.output_tokens ?? 0;
+  return {
+    inputTokens,
+    outputTokens,
+    cachedTokens: cacheReadTokens,
+    totalTokens: inputTokens + outputTokens,
+  };
+}
+
+/** Exported for unit testing usage-entry composition against synthetic SDK message streams. */
+export async function consumeClaudeMessageStream(
   messageStream: AsyncIterable<SDKMessage>,
   options: { localProvider: boolean; sessionRef?: string },
 ): Promise<{ finalText: string; turnsUsed: number; usage: HarnessExecuteResult['usage']; structuredOutput?: unknown }> {
@@ -101,6 +145,14 @@ async function consumeClaudeMessageStream(
   let costUsd = 0;
   let assistantMessages = 0;
   let structuredOutput: unknown;
+  // Per-request usage entries, one per `assistant` message — each carries
+  // the SDK's own `BetaMessage.usage`, a genuine per-request snapshot (not
+  // a running total). Populated as messages arrive; only falls back to a
+  // single run-cumulative entry (see `buildUsage` below) if the stream
+  // produced turns/tokens but no assistant message exposed usage — a
+  // defensive path for SDK message shapes that don't carry per-message
+  // usage, so budget analysis still has something to peak over.
+  const requestUsageEntries: Array<{ inputTokens: number; outputTokens: number; cachedTokens: number; totalTokens: number }> = [];
 
   const buildUsage = () => ({
     requests: turnsUsed,
@@ -109,15 +161,29 @@ async function consumeClaudeMessageStream(
     cachedTokens,
     totalTokens: inputTokens + outputTokens,
     costUsd,
-    requestUsageEntries: turnsUsed > 0
-      ? [{ inputTokens, outputTokens, cachedTokens, totalTokens: inputTokens + outputTokens }]
-      : [],
+    requestUsageEntries: requestUsageEntries.length > 0
+      ? requestUsageEntries
+      : turnsUsed > 0
+        ? [{ inputTokens, outputTokens, cachedTokens, totalTokens: inputTokens + outputTokens }]
+        : [],
   });
 
   try {
     for await (const message of messageStream) {
       if (message.type === 'assistant') {
         assistantMessages += 1;
+        // `message.message` is the raw Anthropic `BetaMessage` for this
+        // turn — its `usage` is a per-request snapshot (input/output/cache
+        // tokens for THIS API call only), unlike the terminal `result`
+        // message's `usage`, which is the run-cumulative total. Compose it
+        // the same way the run totals are composed below so
+        // SUM(requestUsageEntries) tracks the run total and peak-over-
+        // entries reflects a real single-request peak instead of the
+        // cumulative sum every turn re-reads via prompt caching.
+        const rawMessageUsage = (message.message as { usage?: RawAnthropicUsage } | undefined)?.usage;
+        if (rawMessageUsage) {
+          requestUsageEntries.push(foldUsageComposition(rawMessageUsage));
+        }
         // Yield to libuv so the daemon's HTTP listener and lag probe
         // don't starve during high-message-count runs.
         await new Promise<void>((resolve) => setImmediate(resolve));
@@ -125,32 +191,16 @@ async function consumeClaudeMessageStream(
       }
       if (message.type === 'result') {
         // Capture usage on any subtype — error variants still burn tokens.
-        // finalText only exists on a successful result.
+        // finalText only exists on a successful result. This is the
+        // run-cumulative total across every turn — the source of truth for
+        // run totals/cost, left unchanged; per-request granularity comes
+        // from `requestUsageEntries` above instead.
         turnsUsed = message.num_turns ?? assistantMessages;
-        // The Anthropic SDK's `input_tokens` counts only tokens billed at
-        // the full uncached rate — cache writes and cache reads are
-        // reported separately and excluded from it. Fold both into
-        // `inputTokens` so it represents the true total prompt size (what
-        // cost/breakdown.ts's `uncachedInputTokens = inputTokens -
-        // cachedTokens` subtraction expects), and surface `cachedTokens` as
-        // just the cache-read count — the portion that did NOT pay the
-        // uncached rate. Cache-creation tokens stay folded into
-        // `inputTokens` only, since they bill at their own (higher, but
-        // still not "uncached") rate rather than the cached-read rate.
-        // Read defensively: the declared SDK type is non-null, but a
-        // future SDK revision or an error-subtype result could omit these
-        // fields.
-        const rawUsage = message.usage as {
-          input_tokens?: number;
-          output_tokens?: number;
-          cache_creation_input_tokens?: number;
-          cache_read_input_tokens?: number;
-        } | undefined;
-        const cacheCreationTokens = rawUsage?.cache_creation_input_tokens ?? 0;
-        const cacheReadTokens = rawUsage?.cache_read_input_tokens ?? 0;
-        inputTokens = (rawUsage?.input_tokens ?? 0) + cacheCreationTokens + cacheReadTokens;
-        outputTokens = rawUsage?.output_tokens ?? 0;
-        cachedTokens = cacheReadTokens;
+        const rawUsage = message.usage as RawAnthropicUsage | undefined;
+        const composed = foldUsageComposition(rawUsage);
+        inputTokens = composed.inputTokens;
+        outputTokens = composed.outputTokens;
+        cachedTokens = composed.cachedTokens;
         costUsd = options.localProvider ? 0 : (message.total_cost_usd ?? 0);
         if (message.subtype === 'success') {
           finalText = message.result;
