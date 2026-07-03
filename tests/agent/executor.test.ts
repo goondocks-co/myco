@@ -2469,4 +2469,128 @@ describe('runAgent — run lifecycle', () => {
     expect(run.cost_usd).toBe(0.0042);
     expect(run.cost_source).toBe('actual');
   });
+
+  // ---------------------------------------------------------------------
+  // Regression test 3: all-restored resume + failing run-end validator ⇒
+  // ONE attempt terminal-marks 'postcondition_unsatisfiable' (typed error
+  // path), checkpoints preserved; does not burn 3 attempts.
+  // ---------------------------------------------------------------------
+
+  describe('Part 3 — PostconditionUnsatisfiableError on an all-restored resume', () => {
+    it('terminal-marks postcondition_unsatisfiable in ONE attempt when every phase was restored and the contract is still unmet', async () => {
+      mockTaskName = 'skill-evolve';
+      mockYamlPhases = [
+        {
+          name: 'inventory',
+          prompt: 'Write inventory.',
+          tools: ['vault_report'],
+          maxTurns: 2,
+          required: true,
+        },
+        {
+          name: 'assess',
+          prompt: 'Write assessment.',
+          tools: ['vault_report'],
+          maxTurns: 2,
+          required: true,
+          dependsOn: ['inventory'],
+        },
+      ];
+      await createTask('skill-evolve', 'Run skill evolution.');
+
+      // Checkpoint has BOTH phases already marked completed — a resume
+      // restores them without re-invoking the harness. No matching
+      // agent_reports/agent_state rows exist in the DB (this test never
+      // ran the phases for real), so the run-end postcondition validator
+      // fails exactly as it would for a genuinely stuck run.
+      const runId = insertResumableRun({
+        task: 'skill-evolve',
+        checkpoints: JSON.stringify({
+          harness: 'claude-sdk',
+          phases: {
+            inventory: { name: 'inventory', status: 'completed', summary: 'done', turnsUsed: 2, tokensUsed: 100, updatedAt: 0 },
+            assess: { name: 'assess', status: 'completed', summary: 'done', turnsUsed: 2, tokensUsed: 100, updatedAt: 0 },
+          },
+        }),
+      });
+
+      const { runAgent } = await import('@myco/agent/executor.js');
+      const result = await runAgent(TEST_VAULT_DIR, {
+        requestContext: TEST_REQUEST_CONTEXT,
+        resumeRunId: runId,
+        resumeMode: 'scheduled',
+      });
+
+      // Zero fresh harness calls — every phase was trusted from the checkpoint.
+      expect(allQueryCalls.length).toBe(0);
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('skill-evolve completed without a skill-evolve-inventory report');
+
+      const run = getRun(runId, ALL_PROJECTS_SCOPE)!;
+      expect(run.status).toBe('failed');
+      // Terminal-marked in ONE attempt — resumable=0 stops the scheduler
+      // from re-admitting a run that can never satisfy its contract by
+      // retrying (retrying re-runs nothing).
+      expect(run.resumable).toBe(0);
+      expect(run.resume_status).toBe('postcondition_unsatisfiable');
+      expect(run.resume_attempts).toBe(0);
+      // Unlike session-expired, checkpoints are PRESERVED for debugging —
+      // never nulled.
+      expect(run.checkpoints).not.toBeNull();
+      const checkpoints = JSON.parse(run.checkpoints!);
+      expect(checkpoints.phases.inventory.status).toBe('completed');
+      expect(checkpoints.phases.assess.status).toBe('completed');
+    });
+
+    it('does NOT terminal-mark postcondition_unsatisfiable when at least one phase executed fresh this attempt', async () => {
+      mockTaskName = 'skill-evolve';
+      mockYamlPhases = [
+        {
+          name: 'inventory',
+          prompt: 'Write inventory.',
+          tools: ['vault_report'],
+          maxTurns: 2,
+          required: true,
+        },
+        {
+          name: 'assess',
+          prompt: 'Write assessment.',
+          tools: ['vault_report'],
+          maxTurns: 2,
+          required: true,
+          dependsOn: ['inventory'],
+        },
+      ];
+      await createTask('skill-evolve', 'Run skill evolution.');
+
+      // Only 'inventory' is restored; 'assess' has no checkpoint entry, so
+      // it re-executes fresh this attempt (executedPhaseCount === 1).
+      const runId = insertResumableRun({
+        task: 'skill-evolve',
+        checkpoints: JSON.stringify({
+          harness: 'claude-sdk',
+          phases: {
+            inventory: { name: 'inventory', status: 'completed', summary: 'done', turnsUsed: 2, tokensUsed: 100, updatedAt: 0 },
+          },
+        }),
+      });
+
+      const { runAgent } = await import('@myco/agent/executor.js');
+      const result = await runAgent(TEST_VAULT_DIR, {
+        requestContext: TEST_REQUEST_CONTEXT,
+        resumeRunId: runId,
+        resumeMode: 'scheduled',
+      });
+
+      expect(allQueryCalls.length).toBe(1);
+      expect(result.status).toBe('failed');
+
+      const run = getRun(runId, ALL_PROJECTS_SCOPE)!;
+      // The generic Error path (RESUME_STATUS_READY), not the typed
+      // PostconditionUnsatisfiableError path — this run made progress and
+      // is worth retrying under the normal resume budget.
+      expect(run.resumable).toBe(1);
+      expect(run.resume_status).toBe('ready');
+    });
+  });
 });

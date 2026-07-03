@@ -55,6 +55,30 @@ export const RESUME_STATUS_SESSION_EXPIRED = 'session_expired';
  */
 export const RESUME_STATUS_EXHAUSTED = 'exhausted';
 
+/**
+ * Resume status used when a newer, equivalent run (same agent/task/project
+ * scope/dry_run/instruction) has since completed. A resumable failed run
+ * left behind by an OLDER dispatch is stale by definition once an
+ * equivalent run finishes — resuming it would re-execute work against
+ * checkpoints, gates, and watermarks superseded by the completion. See
+ * `supersedeEquivalentResumableRuns` (completion-time sweep) and the
+ * `gateScheduledResume` belt (task-scheduling.ts) for the two enforcement
+ * points.
+ */
+export const RESUME_STATUS_SUPERSEDED = 'superseded';
+
+/**
+ * Resume status used when the run-end postcondition validator fails on a
+ * resume attempt that executed ZERO fresh phases (every phase was restored
+ * from checkpoints — see executor.ts's `executedPhaseCount === 0` check).
+ * Distinct from a normal postcondition failure on a run that did execute
+ * work: an all-restored resume can never satisfy the missing contract by
+ * retrying, because retrying re-runs nothing. Terminal-marking here (instead
+ * of `ready`) stops the scheduler from burning 3 resume attempts on a run
+ * that is deterministically unresumable.
+ */
+export const RESUME_STATUS_POSTCONDITION_UNSATISFIABLE = 'postcondition_unsatisfiable';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -663,6 +687,158 @@ export function getLatestResumableRunForTask(
      LIMIT 1`,
   ).get(...params) as Record<string, unknown> | undefined;
   return row ? toRunRow(row) : null;
+}
+
+/**
+ * Append the supersede equivalence-key predicate to an in-progress
+ * WHERE-clause builder: same `agent_id` + `task` + project scope (via
+ * `appendProjectCondition`) + `dry_run`, and `instruction` equal OR both
+ * NULL. Shared by the completion-time sweep and the gate-time belt so the
+ * two enforcement points can never drift apart on what counts as
+ * "equivalent" — the instruction/dry_run pinning is load-bearing:
+ * `getLatestResumableRunForTask` doesn't filter on either, and the executor
+ * restores `instruction`/`dryRun` on resume, so without this key a
+ * completed run for a DIFFERENT candidate/instruction would wrongly
+ * supersede or block an unrelated instruction-scoped failed run.
+ */
+function appendSupersedeEquivalenceCondition(
+  conditions: string[],
+  params: unknown[],
+  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean; instruction: string | null },
+): void {
+  conditions.push('agent_id = ?', 'task = ?');
+  params.push(match.agentId, match.taskName);
+  appendProjectCondition(conditions, params, match.scope);
+  conditions.push('dry_run = ?');
+  params.push(match.dryRun ? 1 : 0);
+  if (match.instruction === null) {
+    conditions.push('instruction IS NULL');
+  } else {
+    conditions.push('instruction = ?');
+    params.push(match.instruction);
+  }
+}
+
+/**
+ * Completion-time supersede sweep (Part 1 primary). Called from the
+ * executor's success path immediately after a run completes, with that
+ * run's own (agentId, taskName, scope, dryRun, instruction) as the
+ * equivalence key. Terminal-marks (`resumable=0`,
+ * `resume_status='superseded'`) every OTHER currently-resumable failed run
+ * matching the key — structural, no timestamp comparison: anything still
+ * resumable when an equivalent run completes is stale BY DEFINITION,
+ * because the just-completed run's dispatch necessarily started no earlier
+ * than the failed run's most recent attempt. Sidesteps the started_at
+ * overwrite trap entirely (a resume re-stamps started_at:now — comparing
+ * against it would be comparing the wrong clock). Swept runs hit the
+ * existing resumable-guard 400 at the manual resume endpoint automatically
+ * (agent-runs.ts).
+ *
+ * `excludeRunId` is the completing run's own id — never supersede itself.
+ */
+export function supersedeEquivalentResumableRuns(
+  excludeRunId: string,
+  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean; instruction: string | null },
+): number {
+  const db = getDatabase();
+  const conditions = ['id != ?', 'resumable = 1', 'status = ?'];
+  const params: unknown[] = [excludeRunId, STATUS_FAILED];
+  appendSupersedeEquivalenceCondition(conditions, params, match);
+  const info = db.prepare(
+    `UPDATE agent_runs
+     SET resumable = 0,
+         resume_status = ?
+     WHERE ${conditions.join(' AND ')}`,
+  ).run(RESUME_STATUS_SUPERSEDED, ...params);
+  return info.changes;
+}
+
+/**
+ * Gate-time supersede belt (Part 1 secondary). Defends legacy rows written
+ * before the completion-time sweep existed, and any race the sweep's
+ * single-completion trigger can't see. Returns the newest COMPLETED
+ * equivalent run whose `completed_at` is newer than the failed run's own
+ * `COALESCE(completed_at, started_at)` — the failed side must use COALESCE
+ * because an interrupted run (`markRunningRunsInterrupted`) sets
+ * status='failed' + resume_status='ready' WITHOUT a completed_at. Never
+ * compare against the failed run's `started_at` alone: a resume overwrites
+ * `started_at` on every attempt, so it is not stable dispatch-order evidence.
+ * Returns null when no such run exists. Callers that only need the
+ * yes/no answer (`gateScheduledResume`) test the return for non-null;
+ * callers that need to NAME the superseding run (the manual resume
+ * endpoint's 409) read `.id` off the row.
+ */
+export function findNewerCompletedEquivalentRun(
+  failedRun: Pick<RunRow, 'id' | 'started_at' | 'completed_at'>,
+  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean; instruction: string | null },
+): RunRow | null {
+  const db = getDatabase();
+  const conditions = ['id != ?', 'status = ?', 'completed_at IS NOT NULL'];
+  const params: unknown[] = [failedRun.id, STATUS_COMPLETED];
+  appendSupersedeEquivalenceCondition(conditions, params, match);
+  conditions.push('completed_at > ?');
+  params.push(failedRun.completed_at ?? failedRun.started_at ?? 0);
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM agent_runs
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY completed_at DESC
+     LIMIT 1`,
+  ).get(...params) as Record<string, unknown> | undefined;
+  return row ? toRunRow(row) : null;
+}
+
+/**
+ * Boolean convenience wrapper over `findNewerCompletedEquivalentRun` for
+ * callers that only need the yes/no answer.
+ */
+export function hasNewerCompletedEquivalentRun(
+  failedRun: Pick<RunRow, 'id' | 'started_at' | 'completed_at'>,
+  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean; instruction: string | null },
+): boolean {
+  return findNewerCompletedEquivalentRun(failedRun, match) !== null;
+}
+
+/**
+ * Boot-time supersede sweep (Part 1 one-time backfill). The completion-time
+ * sweep above only fires on FUTURE completions — this catches stale
+ * resumable rows that predate the sweep's existence (or were left behind by
+ * a daemon crash before the completing run's success path ran). Terminal-
+ * marks every resumable failed run F for which ANY completed run C shares
+ * F's equivalence key (agent_id, task, project scope, dry_run, instruction
+ * equal or both NULL) and has `completed_at` newer than F's
+ * `COALESCE(completed_at, started_at)` — same predicate as the gate-time
+ * belt (`hasNewerCompletedEquivalentRun`), expressed as a single
+ * correlated-EXISTS UPDATE so the whole scope sweeps in one SQL pass. Safe
+ * to run on every boot: a fully-swept vault matches zero rows.
+ */
+export function sweepStaleSupersededRuns(scope: ProjectScope): number {
+  const db = getDatabase();
+  const outerConditions: string[] = [];
+  const outerParams: unknown[] = [];
+  appendProjectCondition(outerConditions, outerParams, scope, 'F');
+  const outerScopeClause = outerConditions.length > 0 ? `AND ${outerConditions.join(' AND ')}` : '';
+
+  const info = db.prepare(
+    `UPDATE agent_runs AS F
+     SET resumable = 0,
+         resume_status = ?
+     WHERE F.resumable = 1
+       AND F.status = ?
+       ${outerScopeClause}
+       AND EXISTS (
+         SELECT 1 FROM agent_runs AS C
+         WHERE C.id != F.id
+           AND C.status = ?
+           AND C.completed_at IS NOT NULL
+           AND C.agent_id = F.agent_id
+           AND C.task = F.task
+           AND COALESCE(C.project_id, '') = COALESCE(F.project_id, '')
+           AND C.dry_run = F.dry_run
+           AND (C.instruction = F.instruction OR (C.instruction IS NULL AND F.instruction IS NULL))
+           AND C.completed_at > COALESCE(F.completed_at, F.started_at, 0)
+       )`,
+  ).run(RESUME_STATUS_SUPERSEDED, STATUS_FAILED, STATUS_COMPLETED, ...outerParams);
+  return info.changes;
 }
 
 export function markRunningRunsInterrupted(message: string, scope: ProjectScope): number {

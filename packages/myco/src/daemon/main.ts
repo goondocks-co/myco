@@ -161,7 +161,7 @@ import { createDigestRevisionHandlers } from './api/digest-revisions.js';
 import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
 import { logEntryToInsert } from './log-entry-insert.js';
-import { markRunningRunsInterrupted } from '../db/queries/runs.js';
+import { markRunningRunsInterrupted, sweepStaleSupersededRuns } from '../db/queries/runs.js';
 import {
   POWER_IDLE_THRESHOLD_MS,
   POWER_SLEEP_THRESHOLD_MS,
@@ -898,6 +898,18 @@ export async function main(): Promise<void> {
   if (interruptedRuns > 0) {
     logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
       count: interruptedRuns,
+      grove_id: dataPaths.requestContext.groveId,
+    });
+  }
+  // One-time backfill (Part 1 of the resume-admission gate): the
+  // completion-time sweep only fires on FUTURE completions, so a vault
+  // upgrading onto this release can still hold stale resumable rows a
+  // completed equivalent run already superseded. Safe on every boot — a
+  // fully-swept vault matches zero rows.
+  const supersededRuns = sweepStaleSupersededRuns({ kind: 'all' });
+  if (supersededRuns > 0) {
+    logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale resumable runs as superseded on boot', {
+      count: supersededRuns,
       grove_id: dataPaths.requestContext.groveId,
     });
   }
@@ -2528,7 +2540,7 @@ export async function main(): Promise<void> {
   // Boot-DB sweep already ran above; this catches the rest.
   void (async () => {
     try {
-      const { markRunningRunsInterrupted: markStale } = await import('../db/queries/runs.js');
+      const { markRunningRunsInterrupted: markStale, sweepStaleSupersededRuns: sweepStale } = await import('../db/queries/runs.js');
       await forEachGrove(
         runtimeCache,
         logger,
@@ -2538,6 +2550,13 @@ export async function main(): Promise<void> {
           if (count > 0) {
             logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
               count,
+              grove_id: grove.id,
+            });
+          }
+          const supersededCount = sweepStale({ kind: 'all' });
+          if (supersededCount > 0) {
+            logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale resumable runs as superseded on boot', {
+              count: supersededCount,
               grove_id: grove.id,
             });
           }
