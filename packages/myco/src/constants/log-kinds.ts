@@ -92,6 +92,14 @@ export const LOG_KINDS = {
   FETCH_TIMEOUT: 'fetch.timeout',
   FETCH_STALL: 'fetch.stall',
   FETCH_ABORT: 'fetch.abort',
+  // OpenRouter (and any Responses-API-shaped provider) can return HTTP 200
+  // for an upstream provider failure — status:"failed"/"incomplete" with an
+  // error body and empty/reasoning-only output. The OpenAI Agents SDK reads
+  // only output/usage and never checks status/error, so left unguarded this
+  // becomes a silent zero-item turn that loops to MaxTurnsExceededError.
+  // Emitted by openai.ts's harnessFetch wrapper when it converts one of
+  // these 200-wrapped failures into a synthesized error response.
+  FETCH_PROVIDER_FAILURE: 'fetch.provider-failure',
 
   // Server (HTTP)
   SERVER_REQUEST: 'server.request',

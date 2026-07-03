@@ -11,6 +11,12 @@ describe('isConnectionError', () => {
     'Unable to connect. Is the computer able to access the url?',
     'socket hang up',
     'ECONNRESET',
+    // The synthesized 502 message openai.ts's harnessFetch produces when
+    // OpenRouter's /api/v1/responses returns HTTP 200 for an upstream
+    // provider failure (spore discovery-5c27c512) — must classify as
+    // retryable connection-class, not a caller-content mistake.
+    '502 OpenRouter upstream provider failure: Azure upstream rejected the request (response id: gen-abc123)',
+    'provider_unavailable',
   ])('classifies "%s" as a connection error', (msg) => {
     expect(isConnectionError(msg)).toBe(true);
   });

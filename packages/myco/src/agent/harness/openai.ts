@@ -23,7 +23,7 @@ import {
 } from './types.js';
 import { isConnectionError, isCapHitMessage } from './classify-error.js';
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
-import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
+import type { ProviderConfig, RunLogger, RuntimeUsage } from '@myco/agent/types.js';
 import { HARNESS_OPENAI_AGENTS } from '@myco/agent/types.js';
 import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from '@myco/agent/context-windows.js';
 import { ensureOllamaContextVariant } from '@myco/agent/ollama-context.js';
@@ -38,7 +38,8 @@ import {
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 import { resolveModelSettings } from '@myco/agent/reasoning-levels.js';
 import { errorMessage } from '@myco/utils/error-message.js';
-import { createInstrumentedFetch } from '@myco/utils/instrumented-fetch.js';
+import { createInstrumentedFetch, type FetchLike, type InstrumentedFetchLogger } from '@myco/utils/instrumented-fetch.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
 export function classifyHarnessErrorKind(message: string, errName: string | undefined): HarnessErrorKind {
   if (isConnectionError(message)) return 'connection';
@@ -264,38 +265,209 @@ async function prepareLocalProviderExecution(
 }
 
 /**
- * Outbound LLM fetch instrumentation for the OpenAI Agents harness.
+ * A Responses-API response body shaped closely enough to check the fields
+ * the SDK ignores. OpenRouter's `/api/v1/responses` uses this exact shape
+ * for both success and upstream-provider-failure bodies — the only thing
+ * that changes is `status`/`error`/`output`. Left loose (all fields
+ * optional, `unknown` output items) because we only ever read three fields
+ * and must never throw while inspecting an otherwise-valid body from a
+ * spec-compliant provider.
+ */
+interface ResponsesBodyShape {
+  status?: string;
+  error?: { message?: string; code?: string; [key: string]: unknown } | null;
+  output?: Array<{ type?: string; [key: string]: unknown }> | null;
+  id?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * True when a parsed Responses-API body represents an upstream provider
+ * failure OpenAI's own SDK would never surface as an error on its own:
+ *   - `status: "failed"` with an `error` payload — the terminal failure
+ *     shape spore discovery-5c27c512 verified live against OpenRouter.
+ *   - `status: "incomplete"` where every output item is a `reasoning` item
+ *     (or there are none at all) — the model was cut off before producing
+ *     any real content, which agents-core's turn loop treats identically
+ *     to a fully empty turn ("if there is no output we just run again").
+ * `status: "completed"` (or any other status) with a non-empty non-
+ * reasoning output always passes through untouched.
+ */
+export function isUnsurfacedResponsesFailure(body: ResponsesBodyShape): boolean {
+  if (body.status === 'failed') {
+    return true;
+  }
+  if (body.status === 'incomplete') {
+    const output = Array.isArray(body.output) ? body.output : [];
+    const hasSubstantiveOutput = output.some((item) => item?.type !== 'reasoning');
+    return !hasSubstantiveOutput;
+  }
+  return false;
+}
+
+function describeResponsesFailure(body: ResponsesBodyShape): string {
+  const detail = body.error?.message ?? (body.status === 'incomplete'
+    ? 'incomplete response with no non-reasoning output'
+    : 'no error detail provided');
+  const generationId = body.id ? ` (response id: ${body.id})` : '';
+  return `OpenRouter upstream provider failure: ${detail}${generationId}`;
+}
+
+/**
+ * Wrap an already-instrumented fetch with Responses-API body validation —
+ * the fix for spore discovery-5c27c512: OpenRouter's `/api/v1/responses`
+ * returns HTTP 200 for an upstream provider failure (`status: "failed"`,
+ * `error: {...}`, `output: []`, `usage: null`; also `status: "incomplete"`
+ * with reasoning-only output). `@openai/agents` v0.12.0's
+ * `OpenAIResponsesModel.getResponse` reads only `response.output` and
+ * `response.usage` — it never checks `status`/`error` — so a 200-wrapped
+ * failure becomes a zero-item model turn, and agents-core's turn loop
+ * silently re-runs ("if there is no output we just run again") until
+ * `MaxTurnsExceededError`, burning the whole turn budget in seconds with
+ * zero tool events and zero recorded usage.
  *
- * Owns the cross-provider protection that's missing from the SDK out of
- * the box: bounded response-headers timeout, no-progress watchdog (any
- * stream that drops below the idle threshold gets aborted with a stable
- * `fetch.stall` log entry), and `setImmediate` yields between body chunks
- * so a high-rate streamed response never starves libuv timers or the
- * daemon's HTTP listener. See `utils/instrumented-fetch.ts` for the full
- * contract.
+ * Interception point: `@openai/agents`'s `Runner.run()` (called by
+ * `runOpenAIAgent` below) never passes `stream: true` — `getResponse`
+ * (non-streaming) is the only path this harness exercises, and it calls
+ * `this._client.responses.create(requestData, requestOptions)` with
+ * `requestData.stream` unset/false, which the OpenAI SDK turns into
+ * `POST /responses` with `stream: false` (openai/resources/responses/
+ * responses.js). That single non-streaming POST response is exactly what
+ * this wrapper inspects. Streaming responses (SSE body, incremental
+ * `response.output_text.delta` events) are NOT inspected here — this
+ * harness's own call path never produces one, so there is no streaming
+ * residual to cover. If a future caller starts passing `stream: true`,
+ * this wrapper passes those responses through untouched (the streaming
+ * check below only matches non-streaming POST requests) and the original
+ * silent-loop failure mode would return uncovered for that path.
+ *
+ * Applies to any POST whose URL path ends in `/responses` — not just
+ * OpenRouter — since the same SDK gap exists for any Responses-API-shaped
+ * provider that returns this 200-wrapped-failure shape.
+ *
+ * On a clean body (anything that doesn't match
+ * `isUnsurfacedResponsesFailure`), the original `Response` is returned
+ * byte-identical: same status/headers/body stream, no re-serialization.
+ */
+export function wrapResponsesFailureDetection(baseFetch: FetchLike, logger?: InstrumentedFetchLogger): FetchLike {
+  return async function harnessValidatingFetch(input, init) {
+    const response = await baseFetch(input, init);
+
+    const method = (init?.method
+      ?? (typeof input === 'object' && input !== null && 'method' in (input as Request) ? (input as Request).method : 'GET')
+      ?? 'GET').toUpperCase();
+    if (method !== 'POST' || !response.ok || !response.body) {
+      return response;
+    }
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+    let pathname: string;
+    try {
+      pathname = new URL(url, 'http://localhost').pathname;
+    } catch {
+      return response;
+    }
+    if (!pathname.endsWith('/responses')) {
+      return response;
+    }
+    // A streamed request (`stream: true` in the POST body) yields an SSE
+    // body, not a single JSON object — `.json()` would hang waiting for the
+    // stream to close or throw on the first `data: {...}` chunk. This
+    // harness never sends `stream: true` (see the doc comment above), so
+    // this branch protects against a future caller silently losing
+    // coverage rather than crashing on a shape this wrapper can't parse.
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('text/event-stream')) {
+      return response;
+    }
+
+    const cloned = response.clone();
+    let body: ResponsesBodyShape;
+    try {
+      body = await cloned.json();
+    } catch {
+      // Not JSON (or malformed) — not our shape to police. Let the OpenAI
+      // SDK's own body handling see the original, still-unread response.
+      return response;
+    }
+
+    if (!isUnsurfacedResponsesFailure(body)) {
+      return response;
+    }
+
+    const message = describeResponsesFailure(body);
+    logger?.warn?.(LOG_KINDS.FETCH_PROVIDER_FAILURE, `agent.openai-harness: ${message}`, {
+      component: 'agent.openai-harness',
+      url: redactQuery(url),
+      status: body.status,
+      responseId: body.id,
+      errorCode: body.error?.code,
+    });
+
+    // Synthesize a 5xx so the OpenAI SDK's own response handling
+    // (client.js) parses the body as an API error and throws `APIError`/
+    // `InternalServerError` — the same code path a genuine HTTP 5xx takes,
+    // including the SDK's own retry-on-5xx behavior. This keeps the error
+    // surfacing through the SDK's normal machinery instead of throwing
+    // out-of-band from inside a `fetch` implementation, which callers of
+    // `fetch` don't expect and the SDK isn't set up to catch cleanly.
+    return new Response(JSON.stringify({ error: { message, code: body.error?.code ?? 'provider_unavailable' } }), {
+      status: 502,
+      statusText: 'Bad Gateway',
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+}
+
+/** Strip query params before logging — provider URLs can carry tokens. */
+function redactQuery(url: string): string {
+  try {
+    const u = new URL(url);
+    u.search = '';
+    return u.href;
+  } catch {
+    return url.split('?')[0] ?? url;
+  }
+}
+
+/**
+ * Build the outbound LLM fetch for the OpenAI Agents harness: instrumented
+ * (bounded response-headers timeout, no-progress watchdog, per-chunk
+ * event-loop yields — see `utils/instrumented-fetch.ts`) and wrapped with
+ * Responses-API failure detection (`wrapResponsesFailureDetection` above).
+ *
+ * Called once per `createProvider` invocation (i.e. once per harness
+ * execute/openScope call) so the run's own logger flows into both layers —
+ * `agent.openai-harness` debug/warn log lines are otherwise permanently
+ * silent, since the run logger is the only logger threaded through
+ * `HarnessExecuteInput`/`HarnessScopeSetup` (there is no ambient daemon
+ * logger reachable from this module).
  *
  * Defaults are chosen for local-provider tolerance — LMStudio / Ollama
  * on cold first-byte and big context loads can take a while — but still
  * tight enough that a wedged stream dies in tens of seconds, not the
  * SDK's default 600s.
  */
-const harnessFetch = createInstrumentedFetch({
-  component: 'agent.openai-harness',
-  // 90s of silence allowed before headers — covers cold model warm-up on
-  // a local backend at high context.
-  responseHeadersTimeoutMs: 90_000,
-  // 45s between body chunks before we treat the stream as wedged. A
-  // healthy local model emits chunks well under a second apart even when
-  // it's reasoning; 45s is several orders of magnitude above that.
-  idleTimeoutMs: 45_000,
-});
+function createHarnessFetch(logger?: RunLogger): FetchLike {
+  const instrumented = createInstrumentedFetch({
+    component: 'agent.openai-harness',
+    logger,
+    // 90s of silence allowed before headers — covers cold model warm-up on
+    // a local backend at high context.
+    responseHeadersTimeoutMs: 90_000,
+    // 45s between body chunks before we treat the stream as wedged. A
+    // healthy local model emits chunks well under a second apart even when
+    // it's reasoning; 45s is several orders of magnitude above that.
+    idleTimeoutMs: 45_000,
+  });
+  return wrapResponsesFailureDetection(instrumented, logger);
+}
 
-function createProvider(provider: ProviderConfig | undefined): OpenAIProvider {
+function createProvider(provider: ProviderConfig | undefined, logger?: RunLogger): OpenAIProvider {
   const { apiKey, baseURL } = resolveOpenAIClientConfig(provider);
   const client = new OpenAI({
     apiKey,
     ...(baseURL ? { baseURL } : {}),
-    fetch: harnessFetch,
+    fetch: createHarnessFetch(logger),
   });
 
   return new OpenAIProvider({
@@ -536,6 +708,18 @@ export function toStrictJsonObjectSchema(schema: Record<string, unknown>): Recor
 }
 
 /**
+ * Strip an OpenRouter-style vendor prefix ("openai/gpt-5.4-mini" ->
+ * "gpt-5.4-mini") for model-family classification only. OpenRouter slugs
+ * are `<vendor>/<model>`; everything through the first '/' is the vendor.
+ * A slug with no '/' (a bare OpenAI model name, or a non-vendor-prefixed
+ * route) is returned unchanged.
+ */
+function stripVendorPrefix(model: string): string {
+  const slashIndex = model.indexOf('/');
+  return slashIndex === -1 ? model : model.slice(slashIndex + 1);
+}
+
+/**
  * Build the per-setup SDK machinery: connect the MCP server, construct
  * the Agent + Runner pair. Both `execute` (single-shot, runs once and
  * closes) and `openScope` (long-lived, scope.run() called N times) share
@@ -563,7 +747,13 @@ async function prepareOpenAIRun(
   // an arbitrary openrouter route would bypass that guard and send fields
   // the model's API rejects with a 400. Omitting the key entirely for a
   // non-reasoning-capable model preserves the SDK's own pre-branch default.
-  const modelSettings = gpt5ReasoningSettingsRequired(preparedExecution.model)
+  //
+  // `gpt5ReasoningSettingsRequired` does a plain `startsWith('gpt-5')` check,
+  // which fails on OpenRouter's vendor-prefixed slugs (e.g.
+  // "openai/gpt-5.4-mini") — the check must see the unprefixed model name.
+  // Strip the vendor prefix ONLY for this classification; the actual request
+  // still sends `preparedExecution.model` (the full slug) unchanged.
+  const modelSettings = gpt5ReasoningSettingsRequired(stripVendorPrefix(preparedExecution.model))
     ? resolveModelSettings(setup.reasoningLevel, setup.provider)
     : undefined;
   const agent = new Agent({
@@ -582,7 +772,7 @@ async function prepareOpenAIRun(
     } : {}),
   });
   const runner = new Runner({
-    modelProvider: testOverrides.modelProvider ?? createProvider(preparedExecution.provider),
+    modelProvider: testOverrides.modelProvider ?? createProvider(preparedExecution.provider, setup.logger),
   });
   return { agent, runner, mcpServer };
 }
@@ -592,12 +782,21 @@ async function prepareOpenAIRun(
  * thrown SDK error so the caller still gets usage telemetry on failure.
  * The shape varies across SDK versions and error types — we check the
  * common ones and return undefined if none match.
+ *
+ * `AgentsError` (the base class of e.g. `MaxTurnsExceededError`) carries a
+ * bare `RunState` on `.state`, not a `RunResult` — `RunResult.rawResponses`
+ * is a getter that reads `this.state._modelResponses` (agents-core
+ * result.js), but `RunState` itself exposes only `_modelResponses` directly,
+ * with no `rawResponses` getter of its own. Without this candidate, every
+ * MaxTurnsExceededError rescue silently returned {} usage even though the
+ * SDK had already accumulated real, billed turns on `state._modelResponses`.
  */
 function extractPartialRawResponses(err: unknown): Array<Parameters<typeof toOpenAIUsage>[0][number]> | undefined {
   if (!err || typeof err !== 'object') return undefined;
   const candidates: unknown[] = [
     (err as { rawResponses?: unknown }).rawResponses,
     (err as { state?: { rawResponses?: unknown } }).state?.rawResponses,
+    (err as { state?: { _modelResponses?: unknown } }).state?._modelResponses,
     (err as { result?: { rawResponses?: unknown } }).result?.rawResponses,
   ];
   for (const c of candidates) {
