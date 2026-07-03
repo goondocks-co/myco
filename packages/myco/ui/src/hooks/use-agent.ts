@@ -347,9 +347,10 @@ export interface RunCompareSummary {
   /** Per-run write-intent summary. Populated for every run (dry or not). */
   write_intents: WriteIntentsSummary;
   /**
-   * Wall-clock duration in milliseconds, computed as
-   * `(completed_at - started_at) * 1000`. Null when either timestamp is
-   * missing (run in-flight or never started).
+   * Wall-clock duration of the run's current attempt in milliseconds,
+   * computed server-side as `(completed_at - COALESCE(resumed_at,
+   * started_at)) * 1000`. Null when either timestamp is missing (run
+   * in-flight or never started).
    */
   duration_ms: number | null;
 }

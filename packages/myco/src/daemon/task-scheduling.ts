@@ -182,7 +182,7 @@ export interface ScheduledResumeGateInput {
  *
  * - Superseded belt (Part 1 secondary): if a completed equivalent run
  *   (same agent/task/project scope/dry_run/instruction) finished AFTER this
- *   run's own `COALESCE(completed_at, started_at)`, terminal-marks
+ *   run's own ORIGINAL dispatch (`started_at`), terminal-marks
  *   (`resumable=0`, `resume_status='superseded'`) and returns 'superseded'
  *   — the caller falls through to a fresh dispatch. Defends legacy rows
  *   written before the completion-time sweep existed, and any race the

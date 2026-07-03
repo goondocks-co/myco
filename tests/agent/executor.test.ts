@@ -1149,7 +1149,11 @@ describe('runAgent', () => {
     expect(run!.resume_status).toBe('ready');
   });
 
-  it('resets started_at to the resume attempt time when resuming a failed run', async () => {
+  it('preserves the original started_at and advances resumed_at when resuming a failed run', async () => {
+    // started_at must survive every resume attempt unchanged — it is the
+    // run's ORIGINAL dispatch time and the supersede sweep/belt (runs.ts)
+    // depend on it being stable dispatch-order evidence. resumed_at is the
+    // per-attempt clock: it advances on every resume.
     const { runAgent } = await import('@myco/agent/executor.js');
 
     const existingRunId = crypto.randomUUID();
@@ -1182,9 +1186,66 @@ describe('runAgent', () => {
     expect(result.status).toBe('completed');
     const run = getRun(existingRunId, ALL_PROJECTS_SCOPE);
     expect(run).not.toBeNull();
-    expect(run!.started_at).toBeGreaterThan(originalStartedAt);
-    expect(run!.started_at).toBeGreaterThanOrEqual(run!.resumed_at ?? 0);
-    expect(run!.completed_at).toBeGreaterThanOrEqual(run!.started_at ?? 0);
+    expect(run!.started_at).toBe(originalStartedAt);
+    expect(run!.resumed_at).not.toBeNull();
+    expect(run!.resumed_at!).toBeGreaterThan(originalCompletedAt);
+    expect(run!.completed_at).toBeGreaterThanOrEqual(run!.resumed_at ?? 0);
+  });
+
+  it('preserves started_at and sets a fresh resumed_at across TWO resume attempts', async () => {
+    // Pins the field across two attempts: the second resume must not
+    // re-stamp started_at either, and resumed_at must advance each time
+    // (not freeze at the first resume's value).
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const existingRunId = crypto.randomUUID();
+    const originalStartedAt = epochSeconds() - 500;
+    insertRun({
+      id: existingRunId,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'failed',
+      instruction: 'Retry this run twice',
+      harness: 'claude-sdk',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      resumable: 1,
+      resume_status: 'ready',
+      checkpoints: JSON.stringify({ harness: 'claude-sdk', phases: {} }),
+      started_at: originalStartedAt,
+      completed_at: originalStartedAt + 60,
+      error: 'boom',
+    });
+
+    // First resume attempt fails.
+    mockQueryBehavior = 'error';
+    mockErrorMessage = 'Transient provider failure';
+    const firstResult = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
+      task: TEST_TASK_NAME,
+      instruction: 'Retry this run twice',
+      resumeRunId: existingRunId,
+      resumeMode: 'manual',
+    });
+    expect(firstResult.status).toBe('failed');
+    const afterFirst = getRun(existingRunId, ALL_PROJECTS_SCOPE)!;
+    expect(afterFirst.started_at).toBe(originalStartedAt);
+    const firstResumedAt = afterFirst.resumed_at;
+    expect(firstResumedAt).not.toBeNull();
+
+    // Second resume attempt succeeds.
+    mockQueryBehavior = 'success';
+    const secondResult = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
+      task: TEST_TASK_NAME,
+      instruction: 'Retry this run twice',
+      resumeRunId: existingRunId,
+      resumeMode: 'manual',
+    });
+    expect(secondResult.status).toBe('completed');
+    const afterSecond = getRun(existingRunId, ALL_PROJECTS_SCOPE)!;
+    expect(afterSecond.started_at).toBe(originalStartedAt);
+    expect(afterSecond.resumed_at).not.toBeNull();
+    expect(afterSecond.resumed_at!).toBeGreaterThanOrEqual(firstResumedAt!);
+    expect(afterSecond.completed_at).toBeGreaterThanOrEqual(afterSecond.resumed_at ?? 0);
   });
 
   it('stores user instruction in run record and prompt', async () => {

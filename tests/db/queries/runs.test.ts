@@ -131,6 +131,28 @@ describe('run query helpers', () => {
       expect(rows[2].id).toBe('run-old');
     });
 
+    it('orders a resumed run by its CURRENT attempt (resumed_at), not its original dispatch', () => {
+      // started_at is preserved as the ORIGINAL dispatch time across resumes
+      // (executor.ts) — a run dispatched long ago but resumed moments ago
+      // must still surface near the top of the list, matching the rail's
+      // recency section bucketing (RunList.tsx).
+      const now = epochNow();
+      insertRun(makeRun({ id: 'run-recent-fresh', started_at: now - 50 }));
+      insertRun(makeRun({
+        id: 'run-old-dispatch-just-resumed',
+        started_at: now - 10_000,
+        resumed_at: now,
+      }));
+      insertRun(makeRun({ id: 'run-oldest', started_at: now - 200 }));
+
+      const rows = listRuns({ scope: ALL_PROJECTS_SCOPE });
+      expect(rows.map((r) => r.id)).toEqual([
+        'run-old-dispatch-just-resumed',
+        'run-recent-fresh',
+        'run-oldest',
+      ]);
+    });
+
     it('filters by agent_id', async () => {
       // Create a second agent
       registerAgent({
@@ -340,6 +362,30 @@ describe('run query helpers', () => {
       const updated = updateRunStatus('does-not-exist', 'running', undefined, ALL_PROJECTS_SCOPE);
       expect(updated).toBeNull();
     });
+
+    it('ignores started_at on an update — the column is structurally immutable once inserted', async () => {
+      // started_at is a run's ORIGINAL dispatch time (executor.ts) and must
+      // never move after insertRun. UPDATE_COLUMNS deliberately omits it, so
+      // buildUpdateClauses silently drops the key rather than emitting a SET
+      // clause for it — this pins that dropped-key behavior structurally,
+      // not just by caller discipline.
+      const now = epochNow();
+      const original = now - 10_000;
+      const data = makeRun({ started_at: original });
+      insertRun(data);
+
+      // Cast through RunUpdate's index signature is unnecessary — started_at
+      // is a legitimate (if inert) RunUpdate field — but the update also
+      // carries a real field so we can confirm the update otherwise applies.
+      const updated = updateRun(data.id, { started_at: now, status: 'completed' }, ALL_PROJECTS_SCOPE);
+
+      expect(updated).not.toBeNull();
+      expect(updated!.status).toBe('completed');
+      expect(updated!.started_at).toBe(original);
+
+      const reread = getRun(data.id, ALL_PROJECTS_SCOPE)!;
+      expect(reread.started_at).toBe(original);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -372,6 +418,20 @@ describe('run query helpers', () => {
       const running = getRunningRun(TEST_AGENT_ID, ALL_PROJECTS_SCOPE);
       expect(running).not.toBeNull();
       expect(running!.id).toBe('run-new');
+    });
+
+    it('picks a resumed run by its CURRENT attempt (resumed_at), not its original dispatch', async () => {
+      const now = epochNow();
+      // run-resumed was dispatched long ago (T0) but its resume attempt (T2)
+      // is the most recent activity; run-fresh was dispatched at T1, strictly
+      // between T0 and T2, and never resumed. A started_at-only ORDER BY
+      // would incorrectly pick run-fresh.
+      insertRun(makeRun({ id: 'run-resumed', status: 'running', started_at: now - 10_000, resumed_at: now - 100 }));
+      insertRun(makeRun({ id: 'run-fresh', status: 'running', started_at: now - 5_000 }));
+
+      const running = getRunningRun(TEST_AGENT_ID, ALL_PROJECTS_SCOPE);
+      expect(running).not.toBeNull();
+      expect(running!.id).toBe('run-resumed');
     });
   });
 
@@ -574,6 +634,40 @@ describe('run query helpers', () => {
 
       const running = getRunningRunForTask(TEST_AGENT_ID, 'digest', ALL_PROJECTS_SCOPE, 600);
       expect(running!.stale).toBe(false);
+    });
+
+    it('treats a long-dormant run as fresh once resumed — stale is judged off the CURRENT attempt, not the original dispatch', () => {
+      // started_at is preserved as the run's ORIGINAL dispatch time across
+      // resumes (executor.ts) — a resume dispatched long after that time
+      // must not immediately read as a stale zombie row just because its
+      // first attempt was old.
+      const now = epochNow();
+      insertRun(makeRun({
+        id: 'run-resumed-fresh',
+        task: 'digest',
+        status: 'running',
+        started_at: now - 10_000,
+        resumed_at: now - 5,
+      }));
+
+      const running = getRunningRunForTask(TEST_AGENT_ID, 'digest', ALL_PROJECTS_SCOPE, 600);
+      expect(running).not.toBeNull();
+      expect(running!.id).toBe('run-resumed-fresh');
+      expect(running!.stale).toBe(false);
+    });
+
+    it('still flags a resumed run as stale once its CURRENT attempt (resumed_at) exceeds the cutoff', () => {
+      const now = epochNow();
+      insertRun(makeRun({
+        id: 'run-resumed-stale',
+        task: 'digest',
+        status: 'running',
+        started_at: now - 20_000,
+        resumed_at: now - 10_000,
+      }));
+
+      const running = getRunningRunForTask(TEST_AGENT_ID, 'digest', ALL_PROJECTS_SCOPE, 600);
+      expect(running!.stale).toBe(true);
     });
   });
 });

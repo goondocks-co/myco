@@ -155,10 +155,19 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions): V2St
     ).get(...scope.params) as { cnt: number };
     const unprocessed_batches = Number(unprocessedRow.cnt ?? 0);
 
+    // Sorts and reports on `COALESCE(resumed_at, started_at)` — the
+    // CURRENT-attempt clock, not `started_at` alone. `started_at` is
+    // preserved as a run's ORIGINAL dispatch time across resumes (see
+    // executor.ts), so a run resumed long after its first dispatch would
+    // otherwise report stale recency and could lose the ORDER BY to a
+    // fresher but never-resumed run. Matches the RunList rail's recency
+    // sort (runs.ts's listRuns) and the badge treatment on this branch.
     const lastRun = db.prepare(
-      `SELECT started_at, status FROM agent_runs WHERE 1 = 1${scope.sql} ORDER BY started_at DESC LIMIT 1`,
-    ).get(...scope.params) as { started_at: number; status: string } | undefined;
-    const last_run_at = lastRun ? lastRun.started_at : null;
+      `SELECT COALESCE(resumed_at, started_at) AS last_run_at, status FROM agent_runs
+        WHERE 1 = 1${scope.sql}
+        ORDER BY COALESCE(resumed_at, started_at) DESC LIMIT 1`,
+    ).get(...scope.params) as { last_run_at: number; status: string } | undefined;
+    const last_run_at = lastRun ? lastRun.last_run_at : null;
     const last_run_status = lastRun ? lastRun.status : null;
 
     const agentTotalRow = db.prepare(

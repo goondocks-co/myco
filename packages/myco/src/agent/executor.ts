@@ -459,12 +459,14 @@ export async function runAgent(
   // (prompt loading, vault context, provider resolution above) can leave an
   // orphaned 'running' row that the catch below never marks failed.
   const now = epochSeconds();
+  // Fields common to both a fresh dispatch and a resume attempt. `started_at`
+  // is deliberately NOT here — see the two branches below: a fresh dispatch
+  // stamps it once (original dispatch time), a resume must never touch it.
   const runStart = {
     status: STATUS_RUNNING,
     harness: harnessId,
     model: effectiveModel,
     checkpoints: serializeCheckpointState(checkpointState),
-    started_at: now,
   } as const;
   if (!resumedRun) {
     // Resolved once here, same as the reasoningLevel column below. Folding it
@@ -491,6 +493,7 @@ export async function runAgent(
       task: config.taskName,
       instruction: options?.instruction ?? null,
       ...runStart,
+      started_at: now,
       provider: effectiveProvider?.type ?? null,
       usage_data: buildUsageData({}),
       run_context: options?.runContext ? JSON.stringify(options.runContext) : null,
@@ -504,15 +507,17 @@ export async function runAgent(
       },
     });
   } else {
-    // Diagnostic gotcha: this OVERWRITES the run row's story on every
-    // resume — started_at (via ...runStart), resumed_at, error, and (if
-    // this attempt itself fails) the checkpoint's postConditionFailed flag
-    // on any phase that succeeds this time. The row reflects only the
-    // LATEST attempt; per-attempt truth for prior attempts lives in the
-    // daemon log + agent_run_events, not in this row. This is exactly why
-    // Part 1's supersede sweep and the Part 1 belt never compare against
-    // started_at (resume-overwritten) and instead use
-    // COALESCE(completed_at, started_at) or completion-time triggers.
+    // `started_at` is preserved as the run's ORIGINAL dispatch time across
+    // every resume attempt — it is never re-stamped here. `resumed_at` is
+    // the per-attempt recency field: it advances on every resume and is the
+    // signal any "how long has the CURRENT attempt been alive" or "when did
+    // this row last move" consumer should read (COALESCE(resumed_at,
+    // started_at)). error and the checkpoint's postConditionFailed flag (on
+    // any phase that succeeds this time) still reflect only the LATEST
+    // attempt — per-attempt truth for prior attempts lives in the daemon log
+    // + agent_run_events, not in this row. The supersede sweep and belt
+    // compare completions against `started_at` directly (see runs.ts) now
+    // that it is stable dispatch-order evidence.
     applyRunUpdate(runId, {
       ...runStart,
       provider: effectiveProvider?.type ?? resumedRun.provider ?? null,
