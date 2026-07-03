@@ -10,7 +10,7 @@ import { RunTaskDialog } from './RunTaskDialog';
 import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { cn } from '../../lib/cn';
-import { formatEpochAgo, capitalize } from '../../lib/format';
+import { formatEpochAgo, capitalize, runAttemptStart } from '../../lib/format';
 import { sectionRows } from '../../lib/section-rows';
 import { statusBadgeVariant, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
 
@@ -147,11 +147,12 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
 
   // Meta segments built conditionally so missing fields drop out entirely
   // rather than rendering em-dash placeholders that read as broken state.
-  // started_at already appears in the top-right; the meta line carries
-  // duration, tokens, and cost only.
+  // started_at (attempt-adjusted) already appears in the top-right; the
+  // meta line carries duration, tokens, and cost only.
+  const attemptStart = runAttemptStart(run);
   const metaSegments: string[] = [];
-  if (run.started_at !== null && run.completed_at !== null) {
-    metaSegments.push(formatDuration(run.started_at, run.completed_at));
+  if (attemptStart !== null && run.completed_at !== null) {
+    metaSegments.push(formatDuration(attemptStart, run.completed_at));
   }
   if (run.tokens_used !== null && run.tokens_used > 0) {
     metaSegments.push(`${run.tokens_used.toLocaleString()} tok`);
@@ -227,9 +228,9 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {run.started_at !== null && (
+          {attemptStart !== null && (
             <span className="font-mono text-[10px] text-on-surface-variant whitespace-nowrap">
-              {formatEpochAgo(run.started_at)}
+              {formatEpochAgo(attemptStart)}
             </span>
           )}
           <div onClick={(e) => e.stopPropagation()}>
@@ -471,7 +472,7 @@ export function RunList({
           {(() => {
             const sections = sectionRows(runs, {
               isActive: (r) => r.status === 'running',
-              startedAtEpochSec: (r) => r.started_at,
+              startedAtEpochSec: (r) => runAttemptStart(r),
             });
             // Keyboard nav was wired with items=runs (flat array). The
             // setRowRef/cursorIndex indices must match positions in that

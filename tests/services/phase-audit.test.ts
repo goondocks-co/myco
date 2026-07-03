@@ -230,6 +230,31 @@ describe('buildPhaseAudit', () => {
     expect(only.writeIntents).toBeNull();
   });
 
+  it('computes the synthetic phase duration from the CURRENT attempt (resumed_at), not the original dispatch', () => {
+    // started_at is preserved as the run's ORIGINAL dispatch time across
+    // resumes (executor.ts) — the synthetic single-phase duration must
+    // reflect the resumed attempt's actual wall-clock span, matching
+    // runDurationMs's COALESCE(resumed_at, started_at) semantics.
+    const originalDispatch = epochNow() - 10_000;
+    const resumedAt = epochNow() - 8;
+    const completedAt = epochNow();
+    insertRun({
+      id: 'run-flat-resumed',
+      agent_id: AGENT_ID,
+      task: 'extract-only',
+      status: 'completed',
+      started_at: originalDispatch,
+      resumed_at: resumedAt,
+      completed_at: completedAt,
+      tokens_used: 100,
+    });
+    insertTurn({ run_id: 'run-flat-resumed', agent_id: AGENT_ID, turn_number: 1, tool_name: 'vault_recall' });
+
+    const audit = buildPhaseAudit('run-flat-resumed', ALL_PROJECTS_SCOPE)!;
+    const [only] = audit.phases;
+    expect(only.durationMs).toBe((completedAt - resumedAt) * 1000);
+  });
+
   it('returns empty phases array for an empty run with no turns', () => {
     insertRun({ id: 'run-empty', agent_id: AGENT_ID, task: null });
     const audit = buildPhaseAudit('run-empty', ALL_PROJECTS_SCOPE)!;

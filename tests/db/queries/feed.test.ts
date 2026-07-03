@@ -234,6 +234,42 @@ describe('getActivityFeed', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Agent run inner window selects by CURRENT-attempt recency
+  // ---------------------------------------------------------------------------
+
+  it('selects a resumed run into the inner agent_runs window by resumed_at, not started_at, when the window is smaller than the candidate set', async () => {
+    const now = epochNow();
+
+    // run-resumed was dispatched long ago (T0, started_at) but its resume
+    // attempt (T2, resumed_at) is the most recent activity of the three still-
+    // running rows below. If the inner per-branch window (`ORDER BY
+    // started_at DESC LIMIT ?`) sorted on started_at alone, this row would
+    // fall outside a window of 1 and never reach the outer sort at all —
+    // even though it is the most recently active agent_run in the feed.
+    insertRun({
+      id: 'run-resumed',
+      agent_id: TEST_AGENT_ID,
+      task: 'digest',
+      status: 'running',
+      started_at: now - 10_000,
+      resumed_at: now - 100,
+    });
+    insertRun({
+      id: 'run-fresh',
+      agent_id: TEST_AGENT_ID,
+      task: 'digest',
+      status: 'running',
+      started_at: now - 5_000,
+    });
+
+    // Inner window of 1 forces the branch to pick a single candidate before
+    // the outer ORDER BY timestamp DESC LIMIT ? ever sees the rest.
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE, 1);
+    expect(feed).toHaveLength(1);
+    expect(feed[0].id).toBe('run-resumed');
+  });
+
+  // ---------------------------------------------------------------------------
   // Only data from requested sources returned
   // ---------------------------------------------------------------------------
 
