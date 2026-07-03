@@ -26,7 +26,7 @@ export const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'vault_read_digest', 'vault_write_digest', 'vault_mark_processed',
 ]);
 
-export const OBSERVABILITY_TOOL_NAMES: ReadonlySet<string> = new Set(['vault_report']);
+export const OBSERVABILITY_TOOL_NAMES: ReadonlySet<string> = new Set(['vault_report', 'vault_run_health']);
 
 export const SKILL_TOOL_NAMES: ReadonlySet<string> = new Set([
   'vault_skill_survey_prepare', 'vault_skill_survey_bundle_decisions',

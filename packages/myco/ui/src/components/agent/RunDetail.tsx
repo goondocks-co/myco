@@ -21,6 +21,7 @@ import {
 } from '../../hooks/use-agent';
 import { RunTaskDialog } from './RunTaskDialog';
 import { AuditTrail } from './AuditTrail';
+import { EventsPanel } from './EventsPanel';
 import { formatEpochRelative, capitalize } from '../../lib/format';
 import { formatCost, formatTokens, formatDuration, resolveTaskName, statusBadgeVariant } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
@@ -651,6 +652,9 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
 
       {/* Phase audit — always available */}
       <AuditTrail runId={run.id} runStatus={run.status} />
+
+      {/* Harness lifecycle events — always available (empty for pre-events runs) */}
+      <EventsPanel runId={run.id} runStatus={run.status} />
 
       {/* Decisions / Reports */}
       <div className="space-y-3">

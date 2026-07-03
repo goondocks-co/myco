@@ -16,8 +16,9 @@
  * output contract: the run-end validator in task-postconditions.ts
  * delegates to the same functions (belt and suspenders — a later phase can
  * still clobber state the gate already validated, and resumes re-validate).
- * The other kinds (cortex-prompt-builder, skill-generate, skill-survey) are
- * phase-boundary-only — no run-end validator delegates to them today.
+ * The other kinds (cortex-prompt-builder, skill-generate, skill-survey,
+ * harness-health) are phase-boundary-only — no run-end validator delegates
+ * to them today.
  *
  * Failure `reason` strings are load-bearing: the skill-evolve run-end
  * validator surfaces them verbatim as the run error, and tests assert them
@@ -337,6 +338,57 @@ function checkSkillSurveyPersistDecisions(input: PhasePostConditionInput): Phase
   return PASSED;
 }
 
+/**
+ * harness-health (phase `assess`, kind `harness-health-report`): gate = a
+ * `harness-health` report exists with parseable `details`. Mirrors
+ * `checkCortexPromptBuilderBuild`'s last-match scan (the notification
+ * consumer in harness-health-consumer.ts does the same reverse scan for the
+ * same report action) and its no-run_id rationale: the report shape has no
+ * `run_id` key for `stampRunIdInPayload` to rewrite, and
+ * `listReports(runId, ...)` is already run-scoped, so there is no cross-run
+ * state row this report could be confused with.
+ *
+ * Does NOT require bucket contents (findings) — an all-clear report (every
+ * bucket's `entries` empty) is a designed success; the gate exists to catch
+ * a prose-only phase that never called `vault_report` at all, not to demand
+ * findings. It DOES enforce bucket *shape*: structural enforcement over a
+ * prompt contract (repo doctrine — gates belong in tool code, not in the
+ * model's self-discipline). Every `details` value that is a plain object
+ * must carry an `entries` array; a model that narrates a bucket as prose
+ * and drops its `entries` array produces a report the consumer silently
+ * mis-reads (a missing key reads as "no findings") instead of failing the
+ * phase boundary where the mistake actually happened. Array- or
+ * scalar-valued top-level details keys are unaffected — only plain-object
+ * values are required to carry `entries`.
+ */
+function checkHarnessHealthReport(input: PhasePostConditionInput): PhasePostConditionResult {
+  const reports = listReports(input.runId, { scope: ALL_PROJECTS_SCOPE });
+  let healthReport: (typeof reports)[number] | undefined;
+  for (let index = reports.length - 1; index >= 0; index -= 1) {
+    if (reports[index]?.action === 'harness-health') {
+      healthReport = reports[index];
+      break;
+    }
+  }
+  if (!healthReport) {
+    return failed('harness-health completed without a harness-health report');
+  }
+
+  const details = asPlainRecord(healthReport.details);
+  if (!details || Object.keys(details).length === 0) {
+    return failed('harness-health completed without parseable harness-health report details');
+  }
+
+  for (const [key, value] of Object.entries(details)) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
+    const bucket = value as Record<string, unknown>;
+    if (!Array.isArray(bucket.entries)) {
+      return failed(`harness-health report bucket "${key}" is missing its entries array`);
+    }
+  }
+  return PASSED;
+}
+
 const PHASE_POSTCONDITIONS: Record<PhasePostConditionKind, PhasePostConditionFn> = {
   'skill-evolve-inventory': checkSkillEvolveInventory,
   'skill-evolve-assess': checkSkillEvolveAssess,
@@ -344,6 +396,7 @@ const PHASE_POSTCONDITIONS: Record<PhasePostConditionKind, PhasePostConditionFn>
   'skill-generate-validate': checkSkillGenerateValidate,
   'skill-survey-reconcile-queue': checkSkillSurveyReconcileQueue,
   'skill-survey-persist-decisions': checkSkillSurveyPersistDecisions,
+  'harness-health-report': checkHarnessHealthReport,
 };
 
 export function checkPhasePostCondition(

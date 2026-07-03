@@ -253,6 +253,11 @@ describe('harness properties', () => {
       // unconditionally; the gather phase absorbs the no-op cases before
       // any LLM cost.
       'canopy-map',
+      // A sentinel task is deliberately unconditional — it must run every
+      // interval regardless of vault state to detect silence itself
+      // (the silent_streams bucket depends on the schedule firing even
+      // when there is nothing anomalous to report).
+      'harness-health',
     ];
 
     for (const file of yamlFiles) {

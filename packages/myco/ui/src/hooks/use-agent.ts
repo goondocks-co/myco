@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usePowerQuery } from './use-power-query';
 import { fetchJson, postJson, putJson, deleteJson } from '../lib/api';
@@ -30,6 +31,16 @@ const TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
 
 /** Poll interval for audit trail turns. */
 const TURNS_POLL_INTERVAL = POLL_INTERVALS.STATS;
+
+/** Poll interval for the run events stream (matches other live run-detail surfaces). */
+const RUN_EVENTS_POLL_INTERVAL = POLL_INTERVALS.RUN_DETAIL;
+
+/**
+ * Server-side page size for `GET /agent/runs/:id/events` (mirrors
+ * `AGENT_RUN_EVENTS_LIMIT` in `daemon/api/agent-runs.ts`). A response at
+ * exactly this count means more rows may be waiting past the cursor.
+ */
+const RUN_EVENTS_PAGE_LIMIT = 1000;
 
 /** Cache TTL for available task definitions (60 seconds — rarely changes). */
 const TASKS_STALE_TIME = 60_000;
@@ -178,6 +189,24 @@ export interface TurnRow {
   tool_output_summary: string | null;
   started_at: number | null;
   completed_at: number | null;
+}
+
+/**
+ * Harness lifecycle event row (`GET /agent/runs/:id/events`). `event_type`
+ * is an open TEXT column on the backend — new event kinds can appear
+ * without a UI release, so consumers must render unrecognized values
+ * gracefully rather than switching exhaustively over a closed set.
+ */
+export interface RunEventRow {
+  id: number;
+  run_id: string;
+  phase_name: string | null;
+  event_type: string;
+  tool_name: string | null;
+  outcome: string | null;
+  duration_ms: number | null;
+  payload: unknown;
+  recorded_at: number;
 }
 
 /**
@@ -332,6 +361,12 @@ export interface WriteIntentsResponse {
   count: number;
 }
 
+/** Response shape for `GET /agent/runs/:id/events` — no cursor field; the id of the last row IS the cursor. */
+export interface RunEventsResponse {
+  events: RunEventRow[];
+  count: number;
+}
+
 export interface AuditResponse {
   audit: PhaseAudit;
 }
@@ -464,6 +499,85 @@ export function useAgentTurns(runId: string | undefined, runStatus?: string) {
     pollCategory: 'standard',
     refetchInterval: isTerminal ? false : TURNS_POLL_INTERVAL,
   });
+}
+
+/**
+ * Tail the harness lifecycle event stream for a run.
+ *
+ * Unlike the other run-detail hooks, this endpoint has no cursor field in
+ * its response — the highest `id` among the events already fetched IS the
+ * cursor. Each poll requests `?since=<cursor>` and the new rows are
+ * appended to accumulated state; nothing is ever dropped or replaced client
+ * side. Polling runs at `POLL_INTERVALS.RUN_DETAIL` while `runStatus` is
+ * non-terminal (see `TERMINAL_STATUSES`); a terminal run fetches once and
+ * stops. A response that comes back at the server page limit
+ * (`RUN_EVENTS_PAGE_LIMIT`) means more rows are waiting past the cursor, so
+ * an immediate manual `refetch()` is triggered rather than waiting out the
+ * rest of the poll interval. Accumulated state resets whenever `runId`
+ * changes.
+ *
+ * The query key caches only the LAST incremental (`?since=`) page, not the
+ * full event history — so a warm react-query cache is unsafe to read on
+ * remount: within `gcTime` the cache still holds that stale tail page, and
+ * the effect below would append it to freshly-reset (empty) local `events`
+ * state, producing a cursor jumped past unseen events or duplicated rows.
+ * `gcTime: 0` / `staleTime: 0` force every remount to start cold instead of
+ * replaying that cached tail page. Event ids are also deduped on append as a
+ * second, independent guard.
+ */
+export function useRunEvents(runId: string | undefined, runStatus?: string) {
+  const isTerminal = runStatus ? TERMINAL_STATUSES.has(runStatus) : false;
+
+  const [events, setEvents] = useState<RunEventRow[]>([]);
+  const cursorRef = useRef<number | undefined>(undefined);
+  const runIdRef = useRef<string | undefined>(runId);
+  const seenIdsRef = useRef<Set<number>>(new Set());
+
+  // Reset accumulated state and cursor whenever the run being viewed changes.
+  if (runIdRef.current !== runId) {
+    runIdRef.current = runId;
+    cursorRef.current = undefined;
+    seenIdsRef.current = new Set();
+    if (events.length > 0) setEvents([]);
+  }
+
+  const query = usePowerQuery<RunEventsResponse>({
+    queryKey: ['agent-run-events', runId],
+    queryFn: ({ signal }) => {
+      const qs = cursorRef.current !== undefined ? `?since=${cursorRef.current}` : '';
+      return fetchJson<RunEventsResponse>(`/agent/runs/${runId}/events${qs}`, { signal });
+    },
+    enabled: runId !== undefined,
+    pollCategory: 'standard',
+    refetchInterval: isTerminal ? false : RUN_EVENTS_POLL_INTERVAL,
+    // Never serve a cached incremental page to a fresh mount — see the
+    // doc comment above.
+    gcTime: 0,
+    staleTime: 0,
+  });
+
+  const { data, refetch } = query;
+
+  useEffect(() => {
+    if (!data || runIdRef.current !== runId) return;
+    if (data.events.length > 0) {
+      const fresh = data.events.filter((e) => !seenIdsRef.current.has(e.id));
+      if (fresh.length > 0) {
+        for (const e of fresh) seenIdsRef.current.add(e.id);
+        const maxId = fresh.reduce((max, e) => (e.id > max ? e.id : max), cursorRef.current ?? 0);
+        cursorRef.current = maxId;
+        setEvents((prev) => [...prev, ...fresh]);
+      }
+    }
+    // A full page means more rows are waiting past the new cursor — catch up
+    // immediately instead of waiting for the next scheduled poll tick.
+    if (data.count === RUN_EVENTS_PAGE_LIMIT) {
+      void refetch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, runId]);
+
+  return { ...query, events };
 }
 
 export function useAgentTasks() {

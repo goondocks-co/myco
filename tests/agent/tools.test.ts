@@ -32,6 +32,8 @@ import { insertEntity } from '@myco/db/queries/entities.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
+import { insertRunEvent } from '@myco/db/queries/agent-run-events.js';
+import { insertWriteIntent } from '@myco/db/queries/write-intents.js';
 import { createVaultTools, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
 import { DEFERRED_STUB_DESCRIPTION } from '@myco/agent/tools/deferred-tools.js';
 import { ALL_VAULT_TOOL_NAMES } from '@myco/agent/tool-names.js';
@@ -1621,6 +1623,119 @@ describe('vault tools', () => {
         `SELECT * FROM agent_reports WHERE run_id = ?`,
       ).all(TEST_RUN_ID);
       expect(rows.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('vault_run_health', () => {
+    it('returns window bounds and every bucket, empty on clean data', async () => {
+      const t = findTool(tools, 'vault_run_health');
+      const result = await t.handler({}, undefined);
+      const health = parseResult(result) as {
+        window: { window_hours: number; started_after: number; ended_before: number };
+        buckets: Record<string, { description: string; entries: unknown[] }>;
+      };
+
+      expect(health.window.window_hours).toBe(24);
+      expect(health.window.started_after).toBeLessThan(health.window.ended_before);
+
+      const bucketNames = [
+        'unpaired_events', 'cap_hits', 'postcondition_failures',
+        'cost_spikes', 'flag_clusters', 'zero_usage', 'silent_streams',
+      ];
+      for (const name of bucketNames) {
+        expect(health.buckets[name]).toBeDefined();
+        expect(typeof health.buckets[name].description).toBe('string');
+      }
+      // TEST_RUN_ID has no events/intents/actions_taken seeded by beforeEach.
+      expect(health.buckets.unpaired_events.entries).toHaveLength(0);
+      expect(health.buckets.cap_hits.entries).toHaveLength(0);
+      expect(health.buckets.postcondition_failures.entries).toHaveLength(0);
+      expect(health.buckets.flag_clusters.entries).toHaveLength(0);
+    });
+
+    it('respects a custom window_hours', async () => {
+      const t = findTool(tools, 'vault_run_health');
+      const result = await t.handler({ window_hours: 6 }, undefined);
+      const health = parseResult(result) as { window: { window_hours: number } };
+      expect(health.window.window_hours).toBe(6);
+    });
+
+    // Sentinel self-observation false positive: the audit wrapper inserts
+    // pre_tool_use synchronously before a tool handler runs (tools.ts), so
+    // vault_run_health's OWN in-flight call always has a pre_tool_use row
+    // with no matching post_tool_use yet at query time. Without excluding
+    // the calling run, this call would always find itself unpaired.
+    it('excludes an unpaired pre/post tool-use group under the CALLING run id (self-observation)', async () => {
+      insertRunEvent({ runId: TEST_RUN_ID, eventType: 'pre_tool_use', phaseName: 'gather', toolName: 'vault_spores' });
+
+      const t = findTool(tools, 'vault_run_health');
+      const result = await t.handler({}, undefined);
+      const health = parseResult(result) as { buckets: Record<string, { entries: Array<{ run_id: string; tool_name: string }> }> };
+      expect(health.buckets.unpaired_events.entries).toHaveLength(0);
+    });
+
+    it('still detects an unpaired pre/post tool-use group under a DIFFERENT run id', async () => {
+      createRun('run-other-caller', TEST_AGENT_ID);
+      insertRunEvent({ runId: 'run-other-caller', eventType: 'pre_tool_use', phaseName: 'gather', toolName: 'vault_spores' });
+
+      const t = findTool(tools, 'vault_run_health');
+      const result = await t.handler({}, undefined);
+      const health = parseResult(result) as { buckets: Record<string, { entries: Array<{ run_id: string; tool_name: string }> }> };
+      expect(health.buckets.unpaired_events.entries).toHaveLength(1);
+      expect(health.buckets.unpaired_events.entries[0]).toMatchObject({ run_id: 'run-other-caller', tool_name: 'vault_spores' });
+    });
+
+    it('detects a cap_hit flag from actions_taken JSON', async () => {
+      getDatabase().prepare(`UPDATE agent_runs SET actions_taken = ? WHERE id = ?`).run(
+        JSON.stringify({
+          harness: 'claude-sdk',
+          model: 'sonnet',
+          provider: 'anthropic',
+          phases: [{ name: 'gather', status: 'failed', turnsUsed: 20, tokensUsed: 500, costUsd: 0, capHit: true, summary: 'ran out of turns' }],
+        }),
+        TEST_RUN_ID,
+      );
+
+      const t = findTool(tools, 'vault_run_health');
+      const result = await t.handler({}, undefined);
+      const health = parseResult(result) as { buckets: Record<string, { entries: Array<{ run_id: string; phase_name: string }> }> };
+      expect(health.buckets.cap_hits.entries).toHaveLength(1);
+      expect(health.buckets.cap_hits.entries[0]).toMatchObject({ run_id: TEST_RUN_ID, phase_name: 'gather' });
+      expect(health.buckets.postcondition_failures.entries).toHaveLength(0);
+    });
+
+    it('detects a flag_clusters entry and excludes a null-verdict dry-run intent', async () => {
+      insertWriteIntent({
+        runId: TEST_RUN_ID,
+        toolName: 'vault_create_spore',
+        toolInput: '{}',
+        syntheticOutput: '{}',
+        classifierVerdict: 'flag',
+        classifierReason: 'looked destructive',
+      });
+      insertWriteIntent({
+        runId: TEST_RUN_ID,
+        toolName: 'vault_mark_processed',
+        toolInput: '{}',
+        syntheticOutput: '{}',
+      });
+
+      const t = findTool(tools, 'vault_run_health');
+      const result = await t.handler({}, undefined);
+      const health = parseResult(result) as { buckets: Record<string, { entries: Array<{ run_id: string; tool_name: string }> }> };
+      expect(health.buckets.flag_clusters.entries).toHaveLength(1);
+      expect(health.buckets.flag_clusters.entries[0]).toMatchObject({ run_id: TEST_RUN_ID, tool_name: 'vault_create_spore' });
+    });
+
+    it('lists silent_streams by default and clears an entry once that task has a run', async () => {
+      const t = findTool(tools, 'vault_run_health');
+      const before = parseResult(await t.handler({}, undefined)) as { buckets: Record<string, { entries: Array<{ task: string }> }> };
+      expect(before.buckets.silent_streams.entries.some((e) => e.task === 'canopy-map')).toBe(true);
+
+      insertRun({ id: 'run-canopy-map-health', agent_id: TEST_AGENT_ID, task: 'canopy-map', started_at: epochNow() });
+
+      const after = parseResult(await t.handler({}, undefined)) as { buckets: Record<string, { entries: Array<{ task: string }> }> };
+      expect(after.buckets.silent_streams.entries.some((e) => e.task === 'canopy-map')).toBe(false);
     });
   });
 });

@@ -206,6 +206,7 @@ describe('PhaseDefinitionSchema', () => {
     'skill-generate-validate',
     'skill-survey-reconcile-queue',
     'skill-survey-persist-decisions',
+    'harness-health-report',
   ])('accepts registered postCondition kind %s', (kind) => {
     const result = PhaseDefinitionSchema.parse({
       name: 'phase',

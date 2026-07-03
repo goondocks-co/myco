@@ -32,8 +32,10 @@ import {
 import { countToolCallsByRun } from '@myco/db/queries/turns.js';
 import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { loadAllTasks } from '@myco/agent/registry.js';
+import type { AgentRunResult } from '@myco/agent/types.js';
 import { notify } from '@myco/notifications/notify.js';
 import { agentRunNotificationLink } from '@myco/notifications/links.js';
+import { HARNESS_HEALTH_TASK_NAME, notifyHarnessHealthFindings } from '@myco/notifications/harness-health-consumer.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -143,10 +145,16 @@ export function decideColdProjectGate(input: ColdProjectGateInput): ColdProjectG
   return active ? { should_run: true, state: 'warm' } : { should_run: false, state: 'cold' };
 }
 
-// These tasks derive their work queue from durable state, so resuming
-// a failed run would collapse history onto a single agent_runs row and
-// erase the failure signal we use to tune turn budgets. Always start fresh.
-const NON_RESUMABLE_SCHEDULED_TASKS = new Set<string>(['canopy-describe', 'canopy-map']);
+// canopy-describe / canopy-map derive their work queue from durable state,
+// so resuming a failed run would collapse history onto a single agent_runs
+// row and erase the failure signal we use to tune turn budgets. Always
+// start fresh. harness-health is non-resumable for a different reason: the
+// scheduled resume branch (dispatchScheduledTask's resumableRun path) emits
+// no completion notifications on its own, so a resumed run would silently
+// skip the harness-health-consumer notification seam — and a stale health
+// report from an old window isn't worth resuming toward anyway. A fresh
+// run always starts a new window.
+const NON_RESUMABLE_SCHEDULED_TASKS = new Set<string>(['canopy-describe', 'canopy-map', 'harness-health']);
 
 /**
  * Scheduled resume retry budget per run. A run that fails this many resumes
@@ -201,6 +209,79 @@ export function gateScheduledResume(input: ScheduledResumeGateInput): 'resume' |
     metadata: { taskName, runId: run.id },
   }, config, { projectId });
   return 'exhausted';
+}
+
+export interface ScheduledRunOutcomeInput {
+  result: Pick<AgentRunResult, 'runId' | 'status' | 'error'>;
+  taskName: string;
+  projectVaultDir: string;
+  projectId: GroveProjectId;
+  config: MycoConfig;
+  logger: DaemonLogger;
+}
+
+/**
+ * Emit the post-dispatch notifications for a scheduled run: task
+ * failure/success, spore/digest activity (from the run's tool calls), and —
+ * for a completed harness-health sentinel — the findings notification
+ * derived from the run's `harness-health` report. Skipped dispatches
+ * (`status: 'skipped'`) emit nothing.
+ */
+export async function notifyScheduledRunOutcome(input: ScheduledRunOutcomeInput): Promise<void> {
+  const { result, taskName, projectVaultDir, projectId, config, logger } = input;
+
+  if (result.status === 'failed') {
+    notify(projectVaultDir, {
+      domain: 'agents',
+      type: 'agent.task.failure',
+      title: `Task failed: ${taskName}`,
+      message: result.error ?? 'Unknown error',
+      link: agentRunNotificationLink(result.runId),
+      metadata: { taskName, runId: result.runId },
+    }, config, { projectId });
+  } else if (result.status === 'completed') {
+    notify(projectVaultDir, {
+      domain: 'agents',
+      type: 'agent.task.success',
+      title: `Task completed: ${taskName}`,
+      link: agentRunNotificationLink(result.runId),
+      metadata: { taskName, runId: result.runId },
+    }, config, { projectId });
+
+    const counts = countToolCallsByRun(result.runId, ['vault_create_spore', 'vault_write_digest']);
+    const sporeCount = counts['vault_create_spore'] ?? 0;
+    const digestCount = counts['vault_write_digest'] ?? 0;
+
+    if (sporeCount > 0) {
+      notify(projectVaultDir, {
+        domain: 'mycelium',
+        type: 'mycelium.spore.created',
+        title: sporeCount === 1 ? 'Extracted 1 observation' : `Extracted ${sporeCount} observations`,
+        message: `From ${taskName} run`,
+        link: '/mycelium?tab=spores',
+        metadata: { count: sporeCount, taskName, runId: result.runId },
+      }, config, { projectId });
+    }
+    if (digestCount > 0) {
+      notify(projectVaultDir, {
+        domain: 'mycelium',
+        type: 'mycelium.digest.completed',
+        title: `Digest updated (${digestCount} ${digestCount === 1 ? 'tier' : 'tiers'})`,
+        link: '/mycelium?tab=digest',
+        metadata: { tierCount: digestCount, taskName, runId: result.runId },
+      }, config, { projectId });
+    }
+
+    if (taskName === HARNESS_HEALTH_TASK_NAME) {
+      await notifyHarnessHealthFindings({
+        runId: result.runId,
+        projectVaultDir,
+        config,
+        projectId,
+        logger,
+      });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,48 +529,14 @@ export async function registerScheduledTasks(
       runId: result.runId,
     });
 
-    if (result.status === 'failed') {
-      notify(projectVaultDir, {
-        domain: 'agents',
-        type: 'agent.task.failure',
-        title: `Task failed: ${taskName}`,
-        message: result.error ?? 'Unknown error',
-        link: agentRunNotificationLink(result.runId),
-        metadata: { taskName, runId: result.runId },
-      }, config, { projectId });
-    } else if (result.status === 'completed') {
-      notify(projectVaultDir, {
-        domain: 'agents',
-        type: 'agent.task.success',
-        title: `Task completed: ${taskName}`,
-        link: agentRunNotificationLink(result.runId),
-        metadata: { taskName, runId: result.runId },
-      }, config, { projectId });
-
-      const counts = countToolCallsByRun(result.runId, ['vault_create_spore', 'vault_write_digest']);
-      const sporeCount = counts['vault_create_spore'] ?? 0;
-      const digestCount = counts['vault_write_digest'] ?? 0;
-
-      if (sporeCount > 0) {
-        notify(projectVaultDir, {
-          domain: 'mycelium',
-          type: 'mycelium.spore.created',
-          title: sporeCount === 1 ? 'Extracted 1 observation' : `Extracted ${sporeCount} observations`,
-          message: `From ${taskName} run`,
-          link: '/mycelium?tab=spores',
-          metadata: { count: sporeCount, taskName, runId: result.runId },
-        }, config, { projectId });
-      }
-      if (digestCount > 0) {
-        notify(projectVaultDir, {
-          domain: 'mycelium',
-          type: 'mycelium.digest.completed',
-          title: `Digest updated (${digestCount} ${digestCount === 1 ? 'tier' : 'tiers'})`,
-          link: '/mycelium?tab=digest',
-          metadata: { tierCount: digestCount, taskName, runId: result.runId },
-        }, config, { projectId });
-      }
-    }
+    await notifyScheduledRunOutcome({
+      result,
+      taskName,
+      projectVaultDir,
+      projectId,
+      config,
+      logger,
+    });
   }
 
   const coldStateKey = (groveId: string, projectId: GroveProjectId) => `${groveId}:${projectId}`;

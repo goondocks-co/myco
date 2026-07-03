@@ -282,6 +282,42 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     "timeoutSeconds": 300
   },
   {
+    "name": "harness-health",
+    "displayName": "Harness Health",
+    "description": "Scheduled sentinel that reads aggregate agent-run telemetry (unpaired events, turn-budget hits, postcondition failures, cost spikes, blocked writes, zero-usage runs, and silent scheduled tasks) and files a single harness-health report summarizing findings.",
+    "agent": "myco-agent",
+    "prompt": "Read aggregate harness-health signals via vault_run_health and file one vault_report under action \"harness-health\" summarizing what the buckets show, including an all-clear run when nothing is anomalous.",
+    "isDefault": false,
+    "reasoningLevel": "low",
+    "maxTurns": 20,
+    "timeoutSeconds": 300,
+    "phases": [
+      {
+        "name": "assess",
+        "prompt": "Call `vault_run_health` with no arguments (the default lookback\nwindow is sufficient — do not narrow it unless a bucket result\ntells you to look closer with a `task` filter).\n\nThe result has the following buckets under `buckets`: `unpaired_events`,\n`cap_hits`, `postcondition_failures`, `cost_spikes`,\n`flag_clusters`, `zero_usage`, `silent_streams`. Each bucket\nalready carries a `description` explaining what it means and a\npre-computed `entries` array — every anomaly is deterministic SQL\ncomputed for you. Do not re-derive counts or re-judge whether an\nentry belongs; your job is to interpret and narrate what the tool\nalready found, not to re-analyze raw rows.\n\n`silent_streams` is info-tier only: a schedule-enabled task with no\nruns in the window may be entirely expected (nothing to do, or a\nmyco.yaml override disabled it). Note it in the report without\ntreating it as an alarm on its own.\n\n## Report — mandatory, exactly once, every run\n\nThis phase is not done until you call `vault_report` with action\n`harness-health`. This applies whether you found anomalies or the\nrun is completely clean — there is no other way to end this phase,\nand an all-clear run must still report so a stale or missing report\nis never confused with \"nothing wrong\". Call it exactly once.\n\nPass `details` as an object whose top-level keys are exactly every\nbucket name listed above, each value shaped as:\n{\n  \"description\": \"<one-line human summary of this bucket for this run>\",\n  \"entries\": [ ... ]\n}\n- `description` — required on every bucket, even when `entries` is\n  empty. Summarize what you found (or \"no anomalies in this\n  window\" when clean) in your own words; do not just copy the\n  tool's bucket description verbatim.\n- `entries` — required on every bucket, MANDATORY even when there\n  is nothing to report: use an empty array `[]` for a clean\n  bucket, never omit the key. The notification consumer treats\n  `entries.length` as the sole signal for whether a bucket has\n  findings — a bucket with a description but no `entries` key\n  would be misread as non-empty and fire a false-positive\n  notification.\n- Populate `entries` from `vault_run_health`'s own attribution rows\n  for that bucket (run ids, task names, counts) — do not invent\n  entries or drop the tool's attribution detail.\n\nCanonical shape for `details` (fill in real values; keep every key,\nincluding empty `entries` arrays, exactly as shown):\n{\n  \"unpaired_events\": { \"description\": \"...\", \"entries\": [] },\n  \"cap_hits\": { \"description\": \"...\", \"entries\": [] },\n  \"postcondition_failures\": { \"description\": \"...\", \"entries\": [] },\n  \"cost_spikes\": { \"description\": \"...\", \"entries\": [] },\n  \"flag_clusters\": { \"description\": \"...\", \"entries\": [] },\n  \"zero_usage\": { \"description\": \"...\", \"entries\": [] },\n  \"silent_streams\": { \"description\": \"...\", \"entries\": [] }\n}\n\nSet `summary` to a one-sentence overview (e.g. \"all clear\" or\n\"2 anomaly buckets: cap_hits, cost_spikes\").\n",
+        "tools": [
+          "vault_run_health",
+          "vault_report"
+        ],
+        "maxTurns": 20,
+        "reasoningLevel": "low",
+        "required": true,
+        "readOnly": true,
+        "purpose": "Read-only interpretation of vault_run_health's pre-computed buckets, followed by exactly one vault_report call. Neither tool carries destructiveHint — vault_run_health is a pure read and vault_report only appends an observability row — so this phase makes no destructive or state-mutating writes; the purpose is documented per the Phase 0+1 convention rather than enforced by a classifier signal.",
+        "postCondition": "harness-health-report",
+        "onItemError": "skip"
+      }
+    ],
+    "schedule": {
+      "enabled": true,
+      "intervalSeconds": 86400,
+      "runIn": [
+        "idle",
+        "sleep"
+      ]
+    }
+  },
+  {
     "name": "review-session",
     "displayName": "Review Session",
     "description": "Process a single session end-to-end. Extracts spores from all prompt batches in the session, runs supersession checks, and generates the session title and summary.\n",

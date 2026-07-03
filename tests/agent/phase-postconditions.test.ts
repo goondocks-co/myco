@@ -6,6 +6,7 @@
  *   - skill-generate-validate
  *   - skill-survey-reconcile-queue
  *   - skill-survey-persist-decisions
+ *   - harness-health-report
  *
  * Each validator is deterministic DB reads only; these tests seed
  * agent_reports / agent_state / agent_run_write_intents rows directly and
@@ -412,6 +413,200 @@ describe('phase postconditions — new kinds', () => {
     it('fails a dry run with zero tool calls, same as live', () => {
       const result = checkPhasePostCondition('skill-survey-persist-decisions', baseInput({ dryRun: true, projectId: null }));
       expect(result.passed).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // harness-health-report
+  // ---------------------------------------------------------------------
+
+  describe('harness-health-report', () => {
+    it('fails when the phase completes with zero tool calls (no report at all)', () => {
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(false);
+      expect(result.reason).toBe('harness-health completed without a harness-health report');
+    });
+
+    it('passes when a harness-health report has parseable details', () => {
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: '2 anomaly buckets: cap_hits, cost_spikes',
+        details: JSON.stringify({
+          unpaired_events: { description: 'no anomalies', entries: [] },
+          cap_hits: { description: '1 phase hit its budget', entries: [{ run_id: 'run-x', task: 'skill-evolve' }] },
+        }),
+        created_at: epochSeconds(),
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(true);
+    });
+
+    it('fails when details are unparseable (not a plain object)', () => {
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'malformed',
+        details: JSON.stringify(['not', 'an', 'object']),
+        created_at: epochSeconds(),
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(false);
+      expect(result.reason).toBe('harness-health completed without parseable harness-health report details');
+    });
+
+    it('fails when details is an empty object', () => {
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'empty',
+        details: JSON.stringify({}),
+        created_at: epochSeconds(),
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(false);
+      expect(result.reason).toBe('harness-health completed without parseable harness-health report details');
+    });
+
+    it('PASSES on an all-clear report — every bucket present with empty entries is a designed success', () => {
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'all clear',
+        details: JSON.stringify({
+          unpaired_events: { description: 'no anomalies in this window', entries: [] },
+          cap_hits: { description: 'no anomalies in this window', entries: [] },
+          postcondition_failures: { description: 'no anomalies in this window', entries: [] },
+          cost_spikes: { description: 'no anomalies in this window', entries: [] },
+          flag_clusters: { description: 'no anomalies in this window', entries: [] },
+          zero_usage: { description: 'no anomalies in this window', entries: [] },
+          silent_streams: { description: 'no anomalies in this window', entries: [] },
+        }),
+        created_at: epochSeconds(),
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(true);
+    });
+
+    it('does not require run_id anywhere in the gate', () => {
+      // The report shape has no run_id key at all — this test documents
+      // that a report without run_id still satisfies the gate.
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'all clear',
+        details: JSON.stringify({ zero_usage: { description: 'no anomalies', entries: [] } }),
+        created_at: epochSeconds(),
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(true);
+    });
+
+    it('takes the LAST matching report — first parseable, last empty FAILS', () => {
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'first attempt',
+        details: JSON.stringify({ cap_hits: { description: 'ok', entries: [] } }),
+        created_at: epochSeconds(),
+      });
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'second attempt (malformed)',
+        details: JSON.stringify({}),
+        created_at: epochSeconds() + 1,
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(false);
+    });
+
+    it('is identical on dry runs (vault_report is dry-run exempt)', () => {
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'all clear',
+        details: JSON.stringify({ zero_usage: { description: 'no anomalies', entries: [] } }),
+        created_at: epochSeconds(),
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput({ dryRun: true, projectId: null }));
+      expect(result.passed).toBe(true);
+    });
+
+    it('fails a dry run with zero tool calls, same as live', () => {
+      const result = checkPhasePostCondition('harness-health-report', baseInput({ dryRun: true, projectId: null }));
+      expect(result.passed).toBe(false);
+      expect(result.reason).toBe('harness-health completed without a harness-health report');
+    });
+
+    // Structural enforcement (repo doctrine): a bucket that is a plain
+    // object MUST carry an `entries` array, or the gate fails the phase
+    // boundary instead of letting the consumer silently misread a dropped
+    // entries array as "no findings".
+    it('FAILS when a bucket is a described-but-entries-less object', () => {
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'model narrated the bucket as prose and dropped entries',
+        details: JSON.stringify({
+          unpaired_events: { description: 'no anomalies in this window' },
+        }),
+        created_at: epochSeconds(),
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(false);
+      expect(result.reason).toBe('harness-health report bucket "unpaired_events" is missing its entries array');
+    });
+
+    it('PASSES a well-formed { description, entries: [] } bucket', () => {
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'well-formed bucket',
+        details: JSON.stringify({
+          unpaired_events: { description: 'no anomalies in this window', entries: [] },
+        }),
+        created_at: epochSeconds(),
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(true);
+    });
+
+    it('does not require array/scalar top-level details keys to carry entries', () => {
+      insertReport({
+        run_id: TEST_RUN_ID,
+        agent_id: DEFAULT_AGENT_ID,
+        action: 'harness-health',
+        summary: 'mixed shapes',
+        details: JSON.stringify({
+          zero_usage: { description: 'no anomalies', entries: [] },
+          note: 'a scalar top-level key',
+          tags: ['info-tier'],
+        }),
+        created_at: epochSeconds(),
+      });
+
+      const result = checkPhasePostCondition('harness-health-report', baseInput());
+      expect(result.passed).toBe(true);
     });
   });
 });
