@@ -1353,6 +1353,16 @@ describe('runAgent', () => {
     const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run?.status).toBe('failed');
     expect(run?.error).toContain('title-summary');
+    // Regression guard: executeSingleQuery's mocked harness call succeeds
+    // (1500 input + 350 output = 1850 tokens, same usage shape as the
+    // 'records tokens_used from num_turns' success-path test) BEFORE the
+    // run-end postcondition throws a plain Error. Postcondition failures
+    // are not HarnessExecutionError, so before hoisting `tokensUsed`/`usage`
+    // out of the try block (executor.ts), the catch block's failure-usage
+    // rebuild had no way to see this already-populated usage and always
+    // persisted tokens_used=0 despite the run being fully billed (observed
+    // on ea34158d, 0f22a8c3).
+    expect(run?.tokens_used).toBe(1850);
   });
 
   it('allows title-summary to complete when it reports a skip', async () => {

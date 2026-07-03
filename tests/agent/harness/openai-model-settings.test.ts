@@ -187,17 +187,39 @@ describe('OpenAIAgentsHarness.execute — modelSettings wiring', () => {
   });
 
   // OpenRouter catalogs GPT-5-family models under vendor-prefixed slugs
-  // ('openai/gpt-5.4-mini'), which the SDK's gpt5ReasoningSettingsRequired
-  // classifies as non-reasoning (startsWith('gpt-5') fails on the prefix).
-  // The gate therefore sends no modelSettings for them — identical to the
-  // SDK's own pre-gate constructor behavior for these names. Attaching
-  // settings for prefixed slugs would require model-name normalization plus
-  // a live openrouter smoke; until then this test pins the parity behavior.
-  it('openrouter vendor-prefixed GPT-5 slugs currently get no modelSettings (SDK gpt5ReasoningSettingsRequired parity — known gap)', async () => {
+  // ('openai/gpt-5.4-mini'). The SDK's own gpt5ReasoningSettingsRequired does
+  // a plain startsWith('gpt-5') check, which fails on the vendor prefix — so
+  // prepareOpenAIRun strips everything through the first '/' before running
+  // the classification (stripVendorPrefix in openai.ts). The ACTUAL request
+  // still sends the full "openai/gpt-5.4-mini" slug; only the classification
+  // input is normalized.
+  it('openrouter vendor-prefixed GPT-5 slugs get modelSettings attached (vendor-prefix normalized before the gpt5 check)', async () => {
     const harness = new OpenAIAgentsHarness({ modelProvider: stubModelProvider() });
     const capturedAgent = await captureConstructedAgent(() => harness.execute({
       prompt: 'do something',
       model: 'openai/gpt-5.4-mini',
+      provider: {
+        type: 'openrouter',
+        effortMap: { high: { effort: 'xhigh', verbosity: 'high' } },
+      },
+      reasoningLevel: 'high',
+      toolSurface: { agentId: 'a', runId: 'r', toolNames: [] },
+    }));
+
+    expect(capturedAgent?.modelSettings).toEqual({
+      reasoning: { effort: 'xhigh' },
+      text: { verbosity: 'high' },
+    });
+    // The full vendor-prefixed slug is still what's sent as the model —
+    // normalization applies ONLY to the gpt5ReasoningSettingsRequired check.
+    expect(capturedAgent?.model).toBe('openai/gpt-5.4-mini');
+  });
+
+  it('vendor-prefixed NON-GPT-5 openrouter slugs still get no modelSettings after stripping the prefix', async () => {
+    const harness = new OpenAIAgentsHarness({ modelProvider: stubModelProvider() });
+    const capturedAgent = await captureConstructedAgent(() => harness.execute({
+      prompt: 'do something',
+      model: 'openai/gpt-4o-mini',
       provider: {
         type: 'openrouter',
         effortMap: { high: { effort: 'xhigh', verbosity: 'high' } },

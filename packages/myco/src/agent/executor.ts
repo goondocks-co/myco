@@ -537,11 +537,18 @@ export async function runAgent(
   }
 
   let phaseResults: PhaseResult[] | undefined;
+  // Declared outside the try so the catch block below can prefer whatever
+  // executeSingleQuery/executePhasedQuery already populated here over
+  // rebuilding usage from scratch. A postcondition check can throw a plain
+  // Error AFTER these locals hold real, billed usage (see the catch block's
+  // "run-end postcondition" comment) — without hoisting, that usage was
+  // invisible to the catch and contract-failed runs persisted tokens_used=0
+  // despite full billed turns (observed on ea34158d, 0f22a8c3).
+  let tokensUsed: number | undefined;
+  let costUsd: number | null | undefined;
+  let costData: CostResolution | undefined;
+  let usage: RuntimeUsage | undefined;
   try {
-    let tokensUsed: number;
-    let costUsd: number | null;
-    let costData: CostResolution;
-    let usage: RuntimeUsage;
     let runSessionRef = checkpointState.harnessState?.ref ?? checkpointState.sessionRef;
 
     const persistHarnessState = async (
@@ -742,21 +749,39 @@ export async function runAgent(
       error: errorMessage,
     });
 
+    // Captured before the inner try block shadows `usage`/`costData` with
+    // its own failure-record locals — see the priority-order comment below.
+    const preThrowUsage = usage;
+    const preThrowCostData = costData;
+
     try {
-      // Non-phased failures carry their usage on HarnessExecutionError
-      // telemetry — without it a failed single-query records zero
-      // tokens/cost even though the requests were billed.
+      // Usage/cost for the failure record, in priority order:
+      //  1. phaseResults — always authoritative when present (a phased run
+      //     that got at least one phase in).
+      //  2. `preThrowUsage`/`preThrowCostData` — already populated by
+      //     executeSingleQuery (or executePhasedQuery) BEFORE a run-end
+      //     postcondition check throws a plain Error. Postcondition failures
+      //     are not HarnessExecutionError, so without this branch their real,
+      //     billed usage was invisible here and the failure recorded
+      //     tokens_used=0 (observed on ea34158d, 0f22a8c3).
+      //  3. HarnessExecutionError.telemetry — the harness crashed before
+      //     executeSingleQuery returned, so its own partial-usage rescue is
+      //     the only source.
+      //  4. empty usage — nothing was ever populated (crashed before any
+      //     turn).
       const failureTelemetry = err instanceof HarnessExecutionError ? err.telemetry : undefined;
       const usage = phaseResults
         ? aggregateUsage(phaseResults.map((phase) => phase.usage))
-        : failureTelemetry?.usage ?? aggregateUsage([]);
+        : preThrowUsage ?? failureTelemetry?.usage ?? aggregateUsage([]);
       logTokenBudgetPressure(config.taskName, usage, effectiveProvider, options?.logger);
-      const costData = phaseResults ? summarizePhaseCosts(phaseResults) : await resolveCost({
-        harness: harnessId,
-        provider: effectiveProvider,
-        model: effectiveModel,
-        usage,
-      });
+      const costData = phaseResults
+        ? summarizePhaseCosts(phaseResults)
+        : preThrowCostData ?? await resolveCost({
+          harness: harnessId,
+          provider: effectiveProvider,
+          model: effectiveModel,
+          usage,
+        });
 
       // Detect the "expired SDK session" zombie-run pattern: we were
       // resuming a run whose checkpoint carried a sessionRef, the harness
