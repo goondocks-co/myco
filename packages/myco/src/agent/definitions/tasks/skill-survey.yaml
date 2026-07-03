@@ -503,6 +503,7 @@ phases:
       - vault_skill_survey_reconciliation_plan
     maxTurns: 22
     required: true
+    postCondition: skill-survey-reconcile-queue
     dependsOn:
       - review-bundles
 
@@ -520,16 +521,39 @@ phases:
       active queue was reviewed, applies only stored Create/Update/
       Defer/Dismiss actions, and ignores Keep/Blocked/Skip entries.
 
-      If vault_skill_survey_apply_reconciliation reports an error,
-      report blocked with the exact issues. Do not synthesize new
-      writes from phase prose.
+      If vault_skill_survey_apply_reconciliation reports an error, this
+      is a designed outcome, not a failure to recover from — do not
+      retry with synthesized writes from phase prose. Report it as
+      `outcome: "blocked"` per the mandatory report below with the
+      exact issues.
 
       After applying writes, call vault_skill_survey_prepare again. If
       queue.cleanup_targets is still non-empty, do not summarize the
       run as clean. Report remaining cleanup_target_ids in vault_report
       under `remaining_cleanup_target_ids`.
 
-      Report a summary via vault_report.
+      ## Report — mandatory on BOTH outcomes
+
+      This phase is not done until you call `vault_report` with
+      action `skill_survey_persist`. This applies whether the plan
+      applied cleanly or was blocked — there is no other way to end
+      this phase. Pass `details` including at minimum:
+      {
+        "run_id": "{{run_id}}",
+        "outcome": "applied"|"blocked",
+        ...
+      }
+      - `run_id` — always `{{run_id}}`, verbatim.
+      - `outcome` — `"applied"` when vault_skill_survey_apply_reconciliation
+        succeeded; `"blocked"` when it reported an error and nothing
+        was applied.
+      Also include in the same `details` payload:
+      - counts of Create/Update/Defer/Dismiss actions applied (when
+        `outcome` is `"applied"`)
+      - the exact issues reported by the tool (when `outcome` is
+        `"blocked"`)
+      - `remaining_cleanup_target_ids` when queue.cleanup_targets is
+        still non-empty after applying
     purpose: >-
       Applies the stored reconciliation plan's Create/Update/Defer/Dismiss
       decisions via vault_skill_survey_apply_reconciliation — the sole write
@@ -541,5 +565,6 @@ phases:
       - vault_report
     maxTurns: 24
     required: true
+    postCondition: skill-survey-persist-decisions
     dependsOn:
       - reconcile-queue
