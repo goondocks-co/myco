@@ -124,11 +124,14 @@ function StatTile({ label, value }: { label: string; value: string }) {
 
 /* ---------- Sub-components ---------- */
 
-function ReportCard({ report }: { report: ReportRow }) {
+/* Tailwind purge: line-clamp-3 must appear as a literal string. */
+
+export function ReportCard({ report }: { report: ReportRow }) {
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   const hasDetails = report.details !== null && report.details.length > 0;
   const isLongSummary = report.summary.length > 200 || report.summary.includes('\n');
+  const collapsed = !summaryExpanded && isLongSummary;
 
   const parsedDetails: unknown = hasDetails
     ? tryParseJson(report.details) ?? report.details
@@ -139,8 +142,8 @@ function ReportCard({ report }: { report: ReportRow }) {
       <div className="flex items-start gap-3">
         <Badge variant={actionBadgeVariant(report.action)}>{report.action}</Badge>
         <div className="flex-1 min-w-0">
-          <div className={!summaryExpanded && isLongSummary ? 'line-clamp-3' : undefined}>
-            <MarkdownContent content={report.summary} />
+          <div className={collapsed ? 'line-clamp-3' : undefined}>
+            <MarkdownContent content={report.summary} compact={collapsed} />
           </div>
           {isLongSummary && (
             <button

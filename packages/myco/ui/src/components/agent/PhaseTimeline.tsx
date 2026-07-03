@@ -28,11 +28,16 @@ export interface PhaseTimelineProps {
 function PhaseSummary({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   const isLong = text.length > 200 || text.includes('\n');
+  const collapsed = !expanded && isLong;
 
   return (
     <div className="mt-1">
-      <div className={!expanded && isLong ? 'line-clamp-2' : undefined}>
-        <MarkdownContent content={text} className="text-on-surface-variant [&>*]:text-on-surface-variant" />
+      <div className={collapsed ? 'line-clamp-2' : undefined}>
+        <MarkdownContent
+          content={text}
+          compact={collapsed}
+          className="text-on-surface-variant [&>*]:text-on-surface-variant"
+        />
       </div>
       {isLong && (
         <button
