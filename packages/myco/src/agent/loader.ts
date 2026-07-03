@@ -163,6 +163,7 @@ export function taskFromParsed(parsed: AgentTask): AgentTask {
     ...(parsed.schemaVersion ? { schemaVersion: parsed.schemaVersion } : {}),
     ...(parsed.schedule ? { schedule: parsed.schedule } : {}),
     ...(parsed.params ? { params: parsed.params } : {}),
+    ...(parsed.deferredTools ? { deferredTools: parsed.deferredTools } : {}),
   };
 }
 
@@ -273,6 +274,7 @@ export function resolveEffectiveConfig(
     ...(taskOverrides?.orchestrator ? { orchestrator: taskOverrides.orchestrator } : {}),
     ...(taskOverrides?.contextQueries ? { contextQueries: taskOverrides.contextQueries } : {}),
     ...(taskOverrides?.execution ? { execution: taskOverrides.execution } : {}),
+    ...(taskOverrides?.deferredTools ? { deferredTools: taskOverrides.deferredTools } : {}),
   };
 }
 

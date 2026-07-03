@@ -500,6 +500,14 @@ export interface AgentTask {
   orchestrator?: OrchestratorConfig; // orchestrator configuration for phased tasks
   schedule?: TaskSchedule; // schedule configuration for automatic execution
   params?: Record<string, string | number | boolean>; // task-specific params with defaults
+  /**
+   * Tool names to defer on a single-query (non-phased) task. Must be a
+   * subset of the vault tool registry (enforced at YAML-load time by
+   * AgentTaskSchema's refine, schemas.ts) and must not co-occur with
+   * `phases` — a phased task defers per-phase via
+   * `PhaseDefinition.deferredTools` instead.
+   */
+  deferredTools?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +538,14 @@ export interface EffectiveConfig {
   execution?: ExecutionConfig;
   /** Resolved task params — YAML defaults merged with myco.yaml overrides. */
   taskParams?: Record<string, string | number | boolean>;
+  /**
+   * Tool names to defer on the single-query (non-phased) execution path.
+   * Carried from AgentTask.deferredTools through resolveEffectiveConfig
+   * unchanged; executeSingleQuery (phase-loop.ts) reads it into the tool
+   * surface's `deferredNames`. Always undefined when `phases` is set —
+   * AgentTaskSchema's refine rejects the co-occurrence at load time.
+   */
+  deferredTools?: string[];
   /**
    * Propagated from RunOptions.dryRun by the executor when building the
    * effective config for this run. Passed through to the tool surface.

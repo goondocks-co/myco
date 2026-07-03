@@ -680,6 +680,114 @@ describe('AgentTaskSchema — backward compatibility', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AgentTaskSchema — deferredTools (task-level, single-query path)
+// ---------------------------------------------------------------------------
+
+describe('AgentTaskSchema — deferredTools', () => {
+  const minimalTask = {
+    name: 'extract-only',
+    displayName: 'Extract Only',
+    description: 'Extract spores only.',
+    agent: 'myco-agent',
+    prompt: 'Extract spores from unprocessed batches.',
+    isDefault: false,
+  };
+
+  it('accepts a task without deferredTools (field is optional)', () => {
+    const result = AgentTaskSchema.safeParse(minimalTask);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.deferredTools).toBeUndefined();
+    }
+  });
+
+  it('accepts a registry name that is NOT in toolOverrides — validation is registry-relative, not toolOverrides-relative', () => {
+    // C1 case: toolOverrides narrows the task's own tool list, but
+    // deferredTools is validated against the FULL vault tool registry
+    // (ALL_VAULT_TOOL_NAMES). A name absent from toolOverrides must still
+    // be accepted here — toolOverrides is a phantom surface nothing reads
+    // at runtime for this purpose (see loader.ts's taskFromParsed comment
+    // on the refine in schemas.ts).
+    const task = {
+      ...minimalTask,
+      toolOverrides: ['vault_write_digest'],
+      deferredTools: ['vault_report'],
+    };
+    const result = AgentTaskSchema.safeParse(task);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.deferredTools).toEqual(['vault_report']);
+    }
+  });
+
+  it('rejects a typo/unknown tool name in deferredTools', () => {
+    const task = { ...minimalTask, deferredTools: ['vault_reprot'] };
+    const result = AgentTaskSchema.safeParse(task);
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects deferredTools on a task that also has phases', () => {
+    const task = {
+      ...minimalTask,
+      deferredTools: ['vault_report'],
+      phases: [{
+        name: 'extract',
+        prompt: 'Extract structured data.',
+        tools: ['vault_report'],
+        maxTurns: 10,
+        required: true,
+      }],
+    };
+    const result = AgentTaskSchema.safeParse(task);
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts deferredTools on a task with an empty phases array', () => {
+    // Guards the refine's exact condition — `!t.phases || t.phases.length
+    // === 0` mirrors PhaseDefinitionSchema's own empty-array carve-out for
+    // mode: map, so an explicitly-empty phases list is not mistaken for
+    // "this is a phased task."
+    const task = { ...minimalTask, deferredTools: ['vault_report'], phases: [] };
+    const result = AgentTaskSchema.safeParse(task);
+    expect(result.success).toBe(true);
+  });
+
+  it('user-task strip-mode shape (registry/daemon-API load path) validates with deferredTools', () => {
+    // writeUserTask (registry.ts) strips isBuiltin/source before calling
+    // AgentTaskSchema.parse — this is that exact shape, proving the field
+    // survives the user-task write path, not just the built-in YAML path.
+    const userTaskShape = {
+      name: 'extract-only-custom',
+      displayName: 'Extract Only (custom)',
+      description: 'User override of extract-only.',
+      agent: 'myco-agent',
+      prompt: 'Extract spores from unprocessed batches.',
+      isDefault: false,
+      deferredTools: ['vault_report'],
+    };
+    const result = AgentTaskSchema.safeParse(userTaskShape);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.deferredTools).toEqual(['vault_report']);
+    }
+  });
+
+  it('user-task strip-mode shape rejects an invalid name loudly', () => {
+    const userTaskShape = {
+      name: 'extract-only-custom',
+      displayName: 'Extract Only (custom)',
+      description: 'User override of extract-only.',
+      agent: 'myco-agent',
+      prompt: 'Extract spores from unprocessed batches.',
+      isDefault: false,
+      deferredTools: ['not_a_real_tool'],
+    };
+    const result = AgentTaskSchema.safeParse(userTaskShape);
+    expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // AgentDefinitionSchema — basic coverage
 // ---------------------------------------------------------------------------
 

@@ -97,6 +97,7 @@ async function consumeClaudeMessageStream(
   let turnsUsed = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  let cachedTokens = 0;
   let costUsd = 0;
   let assistantMessages = 0;
   let structuredOutput: unknown;
@@ -105,10 +106,11 @@ async function consumeClaudeMessageStream(
     requests: turnsUsed,
     inputTokens,
     outputTokens,
+    cachedTokens,
     totalTokens: inputTokens + outputTokens,
     costUsd,
     requestUsageEntries: turnsUsed > 0
-      ? [{ inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }]
+      ? [{ inputTokens, outputTokens, cachedTokens, totalTokens: inputTokens + outputTokens }]
       : [],
   });
 
@@ -125,8 +127,30 @@ async function consumeClaudeMessageStream(
         // Capture usage on any subtype — error variants still burn tokens.
         // finalText only exists on a successful result.
         turnsUsed = message.num_turns ?? assistantMessages;
-        inputTokens = message.usage?.input_tokens ?? 0;
-        outputTokens = message.usage?.output_tokens ?? 0;
+        // The Anthropic SDK's `input_tokens` counts only tokens billed at
+        // the full uncached rate — cache writes and cache reads are
+        // reported separately and excluded from it. Fold both into
+        // `inputTokens` so it represents the true total prompt size (what
+        // cost/breakdown.ts's `uncachedInputTokens = inputTokens -
+        // cachedTokens` subtraction expects), and surface `cachedTokens` as
+        // just the cache-read count — the portion that did NOT pay the
+        // uncached rate. Cache-creation tokens stay folded into
+        // `inputTokens` only, since they bill at their own (higher, but
+        // still not "uncached") rate rather than the cached-read rate.
+        // Read defensively: the declared SDK type is non-null, but a
+        // future SDK revision or an error-subtype result could omit these
+        // fields.
+        const rawUsage = message.usage as {
+          input_tokens?: number;
+          output_tokens?: number;
+          cache_creation_input_tokens?: number;
+          cache_read_input_tokens?: number;
+        } | undefined;
+        const cacheCreationTokens = rawUsage?.cache_creation_input_tokens ?? 0;
+        const cacheReadTokens = rawUsage?.cache_read_input_tokens ?? 0;
+        inputTokens = (rawUsage?.input_tokens ?? 0) + cacheCreationTokens + cacheReadTokens;
+        outputTokens = rawUsage?.output_tokens ?? 0;
+        cachedTokens = cacheReadTokens;
         costUsd = options.localProvider ? 0 : (message.total_cost_usd ?? 0);
         if (message.subtype === 'success') {
           finalText = message.result;
@@ -221,6 +245,7 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
     flaggedWritesAccumulator: toolSurface.flaggedWritesAccumulator,
     hooks: toolSurface.hooks,
     hookContext: toolSurface.hookContext,
+    deferredNames: toolSurface.deferredNames ? new Set(toolSurface.deferredNames) : undefined,
     logger: toolSurface.logger,
   });
 }
