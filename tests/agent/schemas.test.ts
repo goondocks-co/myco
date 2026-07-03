@@ -199,6 +199,25 @@ describe('PhaseDefinitionSchema', () => {
     expect(result.postCondition).toBe('skill-evolve-inventory');
   });
 
+  it.each([
+    'skill-evolve-inventory',
+    'skill-evolve-assess',
+    'cortex-prompt-builder-build',
+    'skill-generate-validate',
+    'skill-survey-reconcile-queue',
+    'skill-survey-persist-decisions',
+  ])('accepts registered postCondition kind %s', (kind) => {
+    const result = PhaseDefinitionSchema.parse({
+      name: 'phase',
+      prompt: 'p',
+      tools: [],
+      maxTurns: 8,
+      required: true,
+      postCondition: kind,
+    });
+    expect(result.postCondition).toBe(kind);
+  });
+
   it('rejects an unknown postCondition kind', () => {
     expect(PhaseDefinitionSchema.safeParse({
       name: 'inventory',

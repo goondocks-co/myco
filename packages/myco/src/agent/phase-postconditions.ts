@@ -12,13 +12,17 @@
  * without producing the state/report the rest of the pipeline consumes
  * (observed on skill-evolve inventory across two model families).
  *
- * These checks are the single source of truth for the skill-evolve output
- * contract: the run-end validator in task-postconditions.ts delegates to
- * the same functions (belt and suspenders — a later phase can still
- * clobber state the gate already validated, and resumes re-validate).
+ * The skill-evolve checks are the single source of truth for that task's
+ * output contract: the run-end validator in task-postconditions.ts
+ * delegates to the same functions (belt and suspenders — a later phase can
+ * still clobber state the gate already validated, and resumes re-validate).
+ * The other kinds (cortex-prompt-builder, skill-generate, skill-survey) are
+ * phase-boundary-only — no run-end validator delegates to them today.
  *
- * Failure `reason` strings are load-bearing: the run-end validator
- * surfaces them verbatim as the run error, and tests assert them exactly.
+ * Failure `reason` strings are load-bearing: the skill-evolve run-end
+ * validator surfaces them verbatim as the run error, and tests assert them
+ * exactly. The newer kinds are gate-only but follow the same reason-string
+ * voice for consistency.
  *
  * Adding a new kind: add one entry to `PHASE_POSTCONDITIONS` below and the
  * literal to phase-postcondition-kinds.ts. The type, the Zod enum, and the
@@ -27,8 +31,9 @@
 
 import { getState } from '@myco/db/queries/agent-state.js';
 import { listReports } from '@myco/db/queries/reports.js';
-import { listWriteIntents } from '@myco/db/queries/write-intents.js';
+import { listWriteIntents, type WriteIntentRow } from '@myco/db/queries/write-intents.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { SKILL_SURVEY_RECONCILIATION_STATE_KEY } from './skill-candidate-quality.js';
 import {
   findLatestVaultSetStateValue,
   parseSkillEvolveClassificationPayload,
@@ -38,6 +43,7 @@ import {
   SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY,
   SKILL_EVOLVE_INVENTORY_REPORT_ACTION,
   SKILL_EVOLVE_INVENTORY_STATE_KEY,
+  SKILL_EVOLVE_TASK_NAME,
 } from './skill-evolve-output.js';
 import { PHASE_POSTCONDITION_KINDS, type PhasePostConditionKind } from './phase-postcondition-kinds.js';
 
@@ -74,24 +80,53 @@ function failed(reason: string): PhasePostConditionResult {
 }
 
 /**
- * Resolve the vault_set_state payload for `stateKey`: on live runs from the
- * agent-state row (what the tool wrote), on dry runs from the recorded
- * write intents (the dry-run interceptor blocks the state write itself).
- * Returns the raw value for the caller's parser, or a failure result when
- * the source itself is unavailable.
+ * Resolve the `vault_set_state` payload for `stateKey`: on live runs from
+ * the agent-state row (what the tool wrote), on dry runs from the recorded
+ * write intents (the dry-run interceptor blocks the state write itself, so
+ * the intent is the only record of what would have been written). Returns
+ * the raw value for the caller's parser, or a failure result when the
+ * source itself is unavailable.
+ *
+ * Generalized from the original skill-evolve-only helper: `taskName`
+ * parameterizes the no-project-scope failure string so callers outside
+ * skill-evolve get an accurate reason instead of a hardcoded "skill-evolve"
+ * prefix. Existing skill-evolve call sites pass `SKILL_EVOLVE_TASK_NAME`,
+ * making this byte-identical to the pre-extraction behavior.
  */
 function readStatePayloadValue(
   input: PhasePostConditionInput,
   stateKey: string,
+  taskName: string,
 ): { ok: true; value: unknown } | { ok: false; failure: PhasePostConditionResult } {
   if (input.dryRun) {
     const intents = listWriteIntents(input.runId, { scope: ALL_PROJECTS_SCOPE });
     return { ok: true, value: findLatestVaultSetStateValue(intents, stateKey) };
   }
   if (!input.projectId) {
-    return { ok: false, failure: failed('skill-evolve completed without a project scope for state validation') };
+    return { ok: false, failure: failed(`${taskName} completed without a project scope for state validation`) };
   }
   return { ok: true, value: getState(input.agentId, input.projectId, stateKey)?.value };
+}
+
+/**
+ * Find the latest write intent whose `tool_name` matches `toolNameMatcher`,
+ * for tools whose dry-run intent records raw call arguments rather than a
+ * `vault_set_state`-style `{ key, value }` envelope (no `normalizeArgs` on
+ * the tool, so nothing is stamped or reshaped before the intent is stored).
+ * Used by the asymmetric dry-run branches below, where dry-run gate
+ * satisfaction is "the tool was called", not "the value it would have
+ * written round-trips" — the intercepted tool never ran the live handler
+ * that computes that value.
+ */
+function findLatestIntentByToolName(
+  intents: WriteIntentRow[],
+  toolNameMatcher: string,
+): WriteIntentRow | undefined {
+  for (let index = intents.length - 1; index >= 0; index -= 1) {
+    const intent = intents[index];
+    if (intent.tool_name === toolNameMatcher) return intent;
+  }
+  return undefined;
 }
 
 function checkSkillEvolveInventory(input: PhasePostConditionInput): PhasePostConditionResult {
@@ -101,7 +136,7 @@ function checkSkillEvolveInventory(input: PhasePostConditionInput): PhasePostCon
     return failed('skill-evolve completed without a skill-evolve-inventory report');
   }
 
-  const stateValue = readStatePayloadValue(input, SKILL_EVOLVE_INVENTORY_STATE_KEY);
+  const stateValue = readStatePayloadValue(input, SKILL_EVOLVE_INVENTORY_STATE_KEY, SKILL_EVOLVE_TASK_NAME);
   if (!stateValue.ok) return stateValue.failure;
 
   const inventoryPayload = parseSkillEvolveInventoryPayload(stateValue.value);
@@ -133,7 +168,7 @@ function checkSkillEvolveAssess(input: PhasePostConditionInput): PhasePostCondit
     return failed('skill-evolve assess report run_id does not match the run');
   }
 
-  const stateValue = readStatePayloadValue(input, SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY);
+  const stateValue = readStatePayloadValue(input, SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY, SKILL_EVOLVE_TASK_NAME);
   if (!stateValue.ok) return stateValue.failure;
 
   const classificationPayload = parseSkillEvolveClassificationPayload(stateValue.value);
@@ -155,9 +190,160 @@ function checkSkillEvolveAssess(input: PhasePostConditionInput): PhasePostCondit
   return PASSED;
 }
 
+export function asPlainRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string') {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * cortex-prompt-builder `build`: gate = a `cortex_prompt_builder` report
+ * exists with a non-empty `details.prompt` string. Mirrors the consumer's
+ * own reverse scan (`getCortexPromptResult` / `getLatestReportForAction`,
+ * daemon/cortex.ts:149-155,306-320) by taking the LAST matching report
+ * rather than the first — a deliberate departure from the skill-evolve
+ * first-match precedent, so the gate fails exactly when the consumer would
+ * fall back to `prompt: ''`.
+ *
+ * No run_id requirement, unlike the validate/persist gates below: the
+ * build report shape carries no `run_id` key (stampRunIdInPayload only
+ * rewrites a key that's already present — it never adds one, so a gate
+ * requiring `details.run_id` here could never be satisfied). Attribution
+ * doesn't need it either — `listReports(runId, ...)` is already run-scoped,
+ * so there's no stale/fabricated agent-state row this report could be
+ * confused with the way `vault_set_state` payloads can.
+ */
+function checkCortexPromptBuilderBuild(input: PhasePostConditionInput): PhasePostConditionResult {
+  const reports = listReports(input.runId, { scope: ALL_PROJECTS_SCOPE });
+  let promptReport: (typeof reports)[number] | undefined;
+  for (let index = reports.length - 1; index >= 0; index -= 1) {
+    if (reports[index]?.action === 'cortex_prompt_builder') {
+      promptReport = reports[index];
+      break;
+    }
+  }
+  if (!promptReport) {
+    return failed('cortex-prompt-builder completed without a cortex_prompt_builder report');
+  }
+
+  const details = asPlainRecord(promptReport.details);
+  const prompt = details?.prompt;
+  if (typeof prompt !== 'string' || prompt.length === 0) {
+    return failed('cortex-prompt-builder completed without a non-empty details.prompt');
+  }
+  return PASSED;
+}
+
+/**
+ * skill-generate `validate`: gate = a `skill_generate_validate` report
+ * exists with `details.run_id` matching the run. `details.finalized` is
+ * NOT required to be `true` — declining to finalize is a designed outcome
+ * (criterion failure, re-stage needed) and must still satisfy the gate;
+ * only the report's existence and run attribution are load-bearing here.
+ */
+function checkSkillGenerateValidate(input: PhasePostConditionInput): PhasePostConditionResult {
+  const reports = listReports(input.runId, { scope: ALL_PROJECTS_SCOPE });
+  const validateReport = reports.find((report) => report.action === 'skill_generate_validate');
+  if (!validateReport) {
+    return failed('skill-generate completed without a skill_generate_validate report');
+  }
+
+  const details = asPlainRecord(validateReport.details);
+  if (!details || typeof details.run_id !== 'string') {
+    return failed('skill-generate completed without a valid skill_generate_validate report');
+  }
+  if (details.run_id !== input.runId) {
+    return failed('skill_generate_validate report run_id does not match the run');
+  }
+  return PASSED;
+}
+
+/**
+ * skill-survey `reconcile-queue`: ASYMMETRIC dry/live semantics, because
+ * `run_id`/`validated_at` are stamped server-side inside the LIVE
+ * `vault_skill_survey_reconciliation_plan` handler only (skill-tools.ts,
+ * around the `setState(..., SKILL_SURVEY_RECONCILIATION_STATE_KEY, ...)`
+ * call). On a dry run the tool is intercepted before the handler runs (it
+ * is destructiveHint-free but not readOnly and not in DRY_RUN_EXEMPT_TOOLS,
+ * so the dry-run interceptor takes it) — the intent records the raw call
+ * args verbatim, and there is no `normalizeArgs` on this tool to inject
+ * run_id/validated_at into that recording. A dry intent can therefore
+ * NEVER carry run_id/validated_at; requiring them on dry runs would make
+ * this gate permanently unsatisfiable in dry mode.
+ *
+ * - dry: PASS when a `vault_skill_survey_reconciliation_plan` write
+ *   intent exists (tool-call existence is the only dry-run signal
+ *   available); FAIL when none was recorded (prose-only phase).
+ * - live: full state-payload check — state must parse, and both run_id
+ *   and validated_at must be present (validated_at confirms the live
+ *   handler actually ran and stamped the row, not just that some prior
+ *   state value happens to exist).
+ */
+function checkSkillSurveyReconcileQueue(input: PhasePostConditionInput): PhasePostConditionResult {
+  if (input.dryRun) {
+    const intents = listWriteIntents(input.runId, { scope: ALL_PROJECTS_SCOPE });
+    const intent = findLatestIntentByToolName(intents, 'vault_skill_survey_reconciliation_plan');
+    if (!intent) {
+      return failed('skill-survey reconcile-queue dry-run completed without a vault_skill_survey_reconciliation_plan call');
+    }
+    return PASSED;
+  }
+
+  if (!input.projectId) {
+    return failed('skill-survey completed without a project scope for state validation');
+  }
+  const stateValue = getState(input.agentId, input.projectId, SKILL_SURVEY_RECONCILIATION_STATE_KEY)?.value;
+  const plan = asPlainRecord(stateValue);
+  if (!plan || typeof plan.run_id !== 'string' || plan.validated_at === undefined || plan.validated_at === null) {
+    return failed('skill-survey reconcile-queue completed without valid reconciliation plan state');
+  }
+  if (plan.run_id !== input.runId) {
+    return failed('skill-survey reconciliation plan state run_id does not match the run');
+  }
+  return PASSED;
+}
+
+/**
+ * skill-survey `persist-decisions`: gate = a `skill_survey_persist` report
+ * exists with `details.run_id` matching the run. `details.outcome` may be
+ * `applied` or `blocked` — blocked (vault_skill_survey_apply_reconciliation
+ * rejected the plan) is a designed outcome the phase reports and moves on
+ * from, so it must satisfy the gate the same as `applied`.
+ */
+function checkSkillSurveyPersistDecisions(input: PhasePostConditionInput): PhasePostConditionResult {
+  const reports = listReports(input.runId, { scope: ALL_PROJECTS_SCOPE });
+  const persistReport = reports.find((report) => report.action === 'skill_survey_persist');
+  if (!persistReport) {
+    return failed('skill-survey completed without a skill_survey_persist report');
+  }
+
+  const details = asPlainRecord(persistReport.details);
+  if (!details || typeof details.run_id !== 'string') {
+    return failed('skill-survey completed without a valid skill_survey_persist report');
+  }
+  if (details.run_id !== input.runId) {
+    return failed('skill_survey_persist report run_id does not match the run');
+  }
+  return PASSED;
+}
+
 const PHASE_POSTCONDITIONS: Record<PhasePostConditionKind, PhasePostConditionFn> = {
   'skill-evolve-inventory': checkSkillEvolveInventory,
   'skill-evolve-assess': checkSkillEvolveAssess,
+  'cortex-prompt-builder-build': checkCortexPromptBuilderBuild,
+  'skill-generate-validate': checkSkillGenerateValidate,
+  'skill-survey-reconcile-queue': checkSkillSurveyReconcileQueue,
+  'skill-survey-persist-decisions': checkSkillSurveyPersistDecisions,
 };
 
 export function checkPhasePostCondition(

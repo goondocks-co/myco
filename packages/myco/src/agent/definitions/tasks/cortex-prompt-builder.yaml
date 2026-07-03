@@ -69,3 +69,4 @@ phases:
       - vault_report
     maxTurns: 18
     required: true
+    postCondition: cortex-prompt-builder-build

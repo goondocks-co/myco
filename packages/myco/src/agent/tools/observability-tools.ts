@@ -22,7 +22,7 @@ export function createObservabilityTools(deps: VaultToolDeps) {
   const vaultReport = {
     ...tool(
       'vault_report',
-      'Record an observability report for the current run. Use action "skip" when skipping expected operations (e.g., not updating a session summary) with reasoning in the summary field. When details contains a run_id field, the daemon stamps it to the current run\'s id server-side — you do not need to reproduce the run id exactly.',
+      'Record an observability report for the current run. Use action "skip" when skipping expected operations (e.g., the digest is already current and needs no update) with reasoning in the summary field. When details contains a run_id field, the daemon stamps it to the current run\'s id server-side — you do not need to reproduce the run id exactly.',
       {
         action: z.string().describe('Action name (e.g., extract, consolidate, digest, skip)'),
         summary: z.string().describe('Human-readable summary of what was done'),

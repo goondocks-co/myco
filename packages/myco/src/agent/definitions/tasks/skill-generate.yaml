@@ -229,14 +229,16 @@ phases:
          reflected by a clear skill boundary or supersession rationale.
          If this fails, report failure and do not finalize.
 
-      ## If criteria fail
+      ## If criteria fail — decline to finalize
 
-      Call `vault_stage_skill` again with the candidate_id and
-      corrected content. This overwrites the staging file — the
-      dedup gate runs again. Do NOT call vault_finalize_skill until
-      all criteria pass.
+      Do NOT call vault_finalize_skill. Instead, report the decline via
+      `vault_report` as described below, and re-stage only if you have
+      corrected content ready (`vault_stage_skill` again with the
+      candidate_id — this overwrites the staging file and the dedup
+      gate runs again). A phase that ends without the mandated report
+      below has not completed, no matter how much re-staging happened.
 
-      ## If all criteria pass
+      ## If all criteria pass — finalize
 
       Call `vault_finalize_skill` with the candidate_id. This
       atomically promotes the staged skill to `.agents/skills/<name>/`,
@@ -251,11 +253,29 @@ phases:
       directory so the candidate stays in 'approved' state for the
       next generate cycle.
 
-      ## Report
+      ## Report — mandatory on BOTH outcomes
 
-      Report results using vault_report with:
+      This phase is not done until you call `vault_report` with
+      action `skill_generate_validate`. This applies whether you
+      finalized or declined — there is no other way to end this phase.
+      Pass `details` as exactly:
+      {
+        "run_id": "{{run_id}}",
+        "candidate_id": "<candidate id>",
+        "finalized": true|false,
+        "decline_reason": "<why>"
+      }
+      - `run_id` — always `{{run_id}}`, verbatim.
+      - `candidate_id` — the candidate ID from the instruction.
+      - `finalized` — `true` only if vault_finalize_skill returned
+        success in this phase; `false` on any decline (criterion
+        failure, unresolved re-stage, or budget exhaustion).
+      - `decline_reason` — required whenever `finalized` is `false`;
+        state which criterion(s) failed and why. Omit when
+        `finalized` is `true`.
+      Also include in the same report (or in `summary`/other detail
+      fields, not in place of the fields above):
       - Skill name and path
-      - Whether finalize was called
       - Each criterion: pass/fail with brief note
       - Any re-stages performed
     purpose: >-
@@ -274,5 +294,6 @@ phases:
       - code_grep
     maxTurns: 18
     required: true
+    postCondition: skill-generate-validate
     dependsOn:
       - draft

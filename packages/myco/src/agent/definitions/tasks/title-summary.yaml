@@ -33,11 +33,15 @@ prompt: |
   Do NOT skip even if there are no new unprocessed batches.
 
   **If no target session specified (automatic run):**
-  Call `vault_unprocessed` with `include_active: true` — titles are needed
-  mid-flight, not just after a session completes. Group by session_id —
-  each session with unprocessed batches needs its summary updated. For each
-  session, call `vault_session_summary_material`. If no sessions have
-  unprocessed batches, report "skip" and finish.
+  Call `vault_unprocessed` with `include_active: true, grouping_only: true` —
+  titles are needed mid-flight, not just after a session completes, and the
+  content-free listing means this step never mixes two sessions' content
+  into one context. Group the returned ids by session_id — each session
+  with unprocessed batches needs its summary updated. Do NOT read session
+  content here; content comes only from the per-session
+  `vault_session_summary_material` call in Phase 2, one session at a time.
+  If no sessions have unprocessed batches, skip straight to Phase 3 and
+  report a zero-update summary.
 
   ## Phase 2 — Update Each Session (budget: 8 turns)
 
@@ -72,9 +76,15 @@ prompt: |
 
   ## Phase 3 — Report (budget: 1 turn)
 
-  Call `vault_report` with action "summary":
-  - Sessions updated: N
-  - Sessions skipped (already current): N
+  Always call `vault_report` with action "summary" — even when there was
+  nothing to do. Set `details` to a structured object:
+  - `run_id`: leave empty string, the daemon stamps the current run's id
+  - `updated`: number of sessions you called `vault_update_session` for
+  - `skipped`: number of sessions left as-is (already current)
+
+  In the summary text, name each skipped session and the reason. A run
+  with zero unprocessed sessions still reports `updated: 0` — that is a
+  normal, successful outcome, not a failure.
 
 toolOverrides:
   - vault_unprocessed

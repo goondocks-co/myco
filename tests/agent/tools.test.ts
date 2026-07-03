@@ -310,6 +310,66 @@ describe('vault tools', () => {
       expect(data[0].activity_count).toBe(42);
     });
 
+    it('returns a content-free grouping projection when grouping_only=true', async () => {
+      insertBatch(makeBatch(sessionId, {
+        prompt_number: 1,
+        user_prompt: 'Session A prompt content',
+        response_summary: 'Session A summary content',
+      }));
+
+      const t = findTool(tools, 'vault_unprocessed');
+      const result = await t.handler({ include_active: true, grouping_only: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].id).toBeDefined();
+      expect(data[0].session_id).toBe(sessionId);
+      expect(data[0].prompt_number).toBe(1);
+      expect(data[0].created_at).toBeDefined();
+      // No content fields — this is the point of grouping_only.
+      expect(data[0].user_prompt).toBeUndefined();
+      expect(data[0].response_summary).toBeUndefined();
+      expect('user_prompt' in data[0]).toBe(false);
+      expect('response_summary' in data[0]).toBe(false);
+    });
+
+    it('grouping_only takes precedence over include_metadata', async () => {
+      insertBatch(makeBatch(sessionId, {
+        prompt_number: 1,
+        user_prompt: 'Session A prompt content',
+        response_summary: 'Session A summary content',
+        status: 'completed',
+        activity_count: 42,
+      }));
+
+      const t = findTool(tools, 'vault_unprocessed');
+      const result = await t.handler(
+        { include_active: true, grouping_only: true, include_metadata: true },
+        undefined,
+      );
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data[0].user_prompt).toBeUndefined();
+      expect(data[0].response_summary).toBeUndefined();
+      expect(data[0].status).toBeUndefined();
+      expect(data[0].activity_count).toBeUndefined();
+    });
+
+    it('default mode (no grouping_only) still returns content fields — regression', async () => {
+      insertBatch(makeBatch(sessionId, {
+        prompt_number: 1,
+        user_prompt: 'Session A prompt content',
+        response_summary: 'Session A summary content',
+      }));
+
+      const t = findTool(tools, 'vault_unprocessed');
+      const result = await t.handler({ include_active: true }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data[0].user_prompt).toBe('Session A prompt content');
+      expect(data[0].response_summary).toBe('Session A summary content');
+    });
+
     it('lists only unprocessed batches in the request-context project', async () => {
       const sessionA = makeSession({ id: 'sess-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', status: 'completed' });
       const sessionB = makeSession({ id: 'sess-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', status: 'completed' });

@@ -2,7 +2,7 @@ import { listReports } from '@myco/db/queries/reports.js';
 import { getRun } from '@myco/db/queries/runs.js';
 import { countToolCallsByRun } from '@myco/db/queries/turns.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
-import { checkPhasePostCondition } from './phase-postconditions.js';
+import { asPlainRecord, checkPhasePostCondition } from './phase-postconditions.js';
 import { SKILL_EVOLVE_TASK_NAME } from './skill-evolve-output.js';
 
 interface PostconditionInput {
@@ -13,12 +13,30 @@ interface PostconditionInput {
 
 type PostconditionValidator = (input: PostconditionInput) => string | null;
 
+/** True when `updated` is a number or numeric string equal to zero (NaN/empty-string/other types excluded). */
+function isZeroUpdateValue(updated: unknown): boolean {
+  if (typeof updated !== 'number' && typeof updated !== 'string') return false;
+  if (typeof updated === 'string' && updated.trim() === '') return false;
+  return Number(updated) === 0;
+}
+
+/** True when a `summary` report's details show a machine-readable zero-update outcome. */
+function hasZeroUpdateSummaryReport(reports: ReturnType<typeof listReports>): boolean {
+  return reports.some((report) => {
+    if (report.action !== 'summary') return false;
+    const details = asPlainRecord(report.details);
+    return isZeroUpdateValue(details?.updated);
+  });
+}
+
 function validateTitleSummaryRun({ runId }: PostconditionInput): string | null {
   const reports = listReports(runId, { scope: ALL_PROJECTS_SCOPE });
   if (reports.length === 0) {
     return 'title-summary completed without calling vault_report';
   }
 
+  // Backward compat: historical runs and older builds emit an explicit
+  // skip report instead of a summary with structured zero-update details.
   if (reports.some((report) => report.action === 'skip')) {
     return null;
   }
@@ -28,7 +46,11 @@ function validateTitleSummaryRun({ runId }: PostconditionInput): string | null {
     return null;
   }
 
-  return 'title-summary completed without vault_update_session or an explicit skip report';
+  if (hasZeroUpdateSummaryReport(reports)) {
+    return null;
+  }
+
+  return 'title-summary completed without vault_update_session or a report showing zero updates';
 }
 
 function validateSkillEvolveRun({ runId }: PostconditionInput): string | null {
