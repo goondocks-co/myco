@@ -13,6 +13,27 @@ interface PostconditionInput {
 
 type PostconditionValidator = (input: PostconditionInput) => string | null;
 
+/**
+ * Part 3 of the resume-admission gate. Thrown at the run-end validator
+ * throw site (executor.ts) instead of a generic Error when BOTH are true:
+ * the run was a resume (`options.resumeRunId` set) AND
+ * `executePhasedQuery`'s `executedPhaseCount === 0` — every phase in this
+ * attempt's plan was trusted from the checkpoint with none re-executed.
+ *
+ * Distinguishes a deterministically-unresumable run from an ordinary
+ * postcondition failure: retrying an all-restored resume can never satisfy
+ * the missing contract, because retrying re-runs nothing. The executor's
+ * catch block terminal-marks via `instanceof` — `resumable=0`,
+ * `resume_status='postcondition_unsatisfiable'` — in ONE attempt instead of
+ * burning the scheduler's full resume budget on a run that cannot recover.
+ */
+export class PostconditionUnsatisfiableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PostconditionUnsatisfiableError';
+  }
+}
+
 /** True when `updated` is a number or numeric string equal to zero (NaN/empty-string/other types excluded). */
 function isZeroUpdateValue(updated: unknown): boolean {
   if (typeof updated !== 'number' && typeof updated !== 'string') return false;

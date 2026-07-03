@@ -7,7 +7,14 @@
 
 import { z } from 'zod';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import { listRuns, countRuns, getRun } from '@myco/db/queries/runs.js';
+import {
+  listRuns,
+  countRuns,
+  getRun,
+  findNewerCompletedEquivalentRun,
+  applyRunUpdate,
+  RESUME_STATUS_SUPERSEDED,
+} from '@myco/db/queries/runs.js';
 import { getRunActivityBuckets, getRunBranches } from '@myco/db/queries/activity-buckets.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
@@ -422,6 +429,35 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     }
     if (run.resumable !== 1 || run.status !== 'failed') {
       return { status: 400, body: { error: 'Run is not resumable' } };
+    }
+
+    // Belt for the manual endpoint (Part 1 secondary): a newer completed
+    // equivalent run (same agent/task/project scope/dry_run/instruction)
+    // makes this run's checkpoints stale even though nothing has swept it
+    // yet (race with the completion-time sweep, or a legacy row from
+    // before the sweep existed). Terminal-mark here — same write this
+    // endpoint already owns via the 400 above — and refuse with 409,
+    // naming the superseding run and pointing at "Rerun with same
+    // settings" as the intent-preserving path (RunDetail.tsx).
+    const superseding = findNewerCompletedEquivalentRun(run, {
+      agentId: run.agent_id,
+      taskName: run.task ?? '',
+      scope,
+      dryRun: run.dry_run,
+      instruction: run.instruction,
+    });
+    if (superseding) {
+      applyRunUpdate(run.id, {
+        resumable: 0,
+        resume_status: RESUME_STATUS_SUPERSEDED,
+      }, scope);
+      return {
+        status: 409,
+        body: {
+          error: `Run superseded by a newer completed run (${superseding.id}) — use "Rerun with same settings" instead`,
+          supersededBy: superseding.id,
+        },
+      };
     }
 
     const { mode } = ResumeRunBody.parse(req.body ?? {});

@@ -980,11 +980,97 @@ export async function executePhasedQuery(
   costData: CostResolution;
   usage: RuntimeUsage;
   phases: PhaseResult[];
+  /**
+   * Count of phases actually dispatched through the harness THIS attempt
+   * (fresh work) — phases restored unchanged from checkpoints are excluded.
+   * Zero means every phase in this attempt's plan was trusted from the
+   * checkpoint with none re-executed; the run-end seam in executor.ts uses
+   * this to distinguish a genuinely-stuck resume from a resume that made
+   * progress but still failed its postcondition.
+   */
+  executedPhaseCount: number;
 }> {
   const { config, systemPrompt, vaultContext, agentId, runId } = ctx;
+  const logger = ctx.options?.logger;
   const phases = config.phases!;
   const state = ctx.checkpointState;
-  const phaseResults: PhaseResult[] = checkpointResultsForResume(config, state);
+  let phaseResults: PhaseResult[] = checkpointResultsForResume(config, state);
+
+  // Part 2 of the resume-admission gate: re-validate every RESTORED
+  // `completed` phase that declares a postCondition against the CURRENT
+  // contract before trusting it. checkpointResultsForResume is pure (no
+  // requestContext) — this runs at the production call site instead, where
+  // ctx.requestContext is available. `skipped` phases are never
+  // re-validated: they are a decision the resumed run must honor unchanged
+  // (see checkpointResultsForResume's doc comment on the skip-preservation
+  // invariant), and a gate that never ran the first time has no contract to
+  // have gone stale.
+  //
+  // On failure the demotion does BOTH:
+  //   (a) mutate the checkpoint state entry to status 'failed' +
+  //       postConditionFailed:true, so the reuseSession exclusion below
+  //       forces a fresh session for this phase (same marker the live
+  //       postCondition gate sets — see PhaseCheckpoint.postConditionFailed);
+  //   (b) omit the phase from the returned/local phaseResults, so the
+  //       runnableWave filter re-includes it in the next wave it appears in
+  //       and restoredPhaseNames (below) reflects only what's still trusted.
+  //
+  // Follows the two existing precedents from the live phase-boundary gate:
+  // no requestContext ⇒ loud bypass (contract unverified until run end, same
+  // as agent.phase.postcondition-no-context); a thrown check ⇒ fail OPEN
+  // (a transient SQL error must not demote an otherwise-valid checkpoint).
+  //
+  // Accepted invariant (not fixed here): demoting upstream phase A while a
+  // downstream restored phase B — which consumed A's now-invalid artifact —
+  // stays completed is accepted by the existing restore invariant
+  // (executor-state.ts). The run-end validator remains the backstop.
+  for (const phase of phases) {
+    if (!phase.postCondition) continue;
+    const restored = state.phases[phase.name];
+    if (!restored || restored.status !== 'completed') continue;
+
+    let postCheck: PhasePostConditionResult | null = null;
+    if (!ctx.requestContext) {
+      logger?.warn(
+        'agent.phase.postcondition-no-context',
+        `Restored phase ${phase.name} declares postCondition "${phase.postCondition}" but no requestContext is available — re-validation bypassed; contract unverified until run end.`,
+        { runId: ctx.runId, phase: phase.name, postCondition: phase.postCondition },
+      );
+      continue;
+    }
+    try {
+      postCheck = checkPhasePostCondition(phase.postCondition, {
+        runId: ctx.runId,
+        agentId: ctx.agentId,
+        projectId: rowProjectIdFromRequestContext(ctx.requestContext),
+        dryRun: ctx.config.dryRun === true,
+      });
+    } catch (err) {
+      logger?.warn('agent.phase.postcondition-error', `Restored phase ${phase.name} postCondition re-validation threw — keeping restored result`, {
+        runId: ctx.runId,
+        phase: phase.name,
+        postCondition: phase.postCondition,
+        error: toErrorMessage(err),
+      });
+      continue;
+    }
+    if (postCheck.passed) continue;
+
+    logger?.warn('agent.phase.postcondition-failed', `Restored phase ${phase.name} postcondition "${phase.postCondition}" no longer satisfied: ${postCheck.reason} — demoting for re-execution`, {
+      runId: ctx.runId,
+      phase: phase.name,
+      postCondition: phase.postCondition,
+    });
+
+    state.phases[phase.name] = {
+      ...restored,
+      status: 'failed',
+      postConditionFailed: true,
+      updatedAt: epochSeconds(),
+    };
+    phaseResults = phaseResults.filter((result) => result.name !== phase.name);
+  }
+
   const restoredPhaseNames = new Set(phaseResults.map((phase) => phase.name));
   // Allocation-based audit offsets: the running base advances by each wave's
   // total ALLOCATED turns (sum of resolved maxTurns), never by actual turns
@@ -993,6 +1079,15 @@ export async function executePhasedQuery(
   // never collide.
   let runningTurnCount = 0;
   const completedPhaseNames = new Set(phaseResults.map((phase) => phase.name));
+
+  // Part 3 of the resume-admission gate: phases actually dispatched through
+  // executePhase/executeMapPhase THIS attempt (fresh work, including any
+  // phase Part 2 demoted above) — distinct from phases trusted as restored.
+  // `recordedAnyTurns` in the executor's catch block can't make this
+  // distinction (a restored checkpoint carries its ORIGINAL turnsUsed/usage,
+  // so it looks identical to fresh work by that measure); this counter is
+  // the actual executed/restored signal the run-end seam needs.
+  const executedPhaseNames = new Set<string>();
 
   // -------------------------------------------------------------------------
   // Orchestrator planning (opt-in via config.orchestrator.enabled)
@@ -1120,6 +1215,7 @@ export async function executePhasedQuery(
     }
 
     const runnableWave = wave.filter((phase) => !completedPhaseNames.has(phase.name));
+    for (const phase of runnableWave) executedPhaseNames.add(phase.name);
     if (runnableWave.length === 0) {
       runningTurnCount += waveAllocatedTurns;
       continue;
@@ -1396,5 +1492,6 @@ export async function executePhasedQuery(
     costData,
     usage,
     phases: phaseResults,
+    executedPhaseCount: executedPhaseNames.size,
   };
 }

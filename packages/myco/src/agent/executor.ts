@@ -26,8 +26,10 @@ import {
   applyRunUpdate,
   getRun,
   getRunningRunForTask,
+  supersedeEquivalentResumableRuns,
   RESUME_STATUS_READY,
   RESUME_STATUS_SESSION_EXPIRED,
+  RESUME_STATUS_POSTCONDITION_UNSATISFIABLE,
   STATUS_RUNNING,
   STATUS_COMPLETED,
   STATUS_FAILED,
@@ -39,7 +41,7 @@ import { inferHarnessFromProviderType } from './provider-harness.js';
 import { resolveOllamaContextVariants } from './ollama-context.js';
 import { resolveLmStudioContextLoads } from './lmstudio-context.js';
 import { resolveReasoningModel } from './reasoning-levels.js';
-import { validateTaskPostconditions } from './task-postconditions.js';
+import { validateTaskPostconditions, PostconditionUnsatisfiableError } from './task-postconditions.js';
 import {
   CORTEX_INSTRUCTIONS_TASK,
   SKILL_GENERATE_TASK,
@@ -502,6 +504,15 @@ export async function runAgent(
       },
     });
   } else {
+    // Diagnostic gotcha: this OVERWRITES the run row's story on every
+    // resume — started_at (via ...runStart), resumed_at, error, and (if
+    // this attempt itself fails) the checkpoint's postConditionFailed flag
+    // on any phase that succeeds this time. The row reflects only the
+    // LATEST attempt; per-attempt truth for prior attempts lives in the
+    // daemon log + agent_run_events, not in this row. This is exactly why
+    // Part 1's supersede sweep and the Part 1 belt never compare against
+    // started_at (resume-overwritten) and instead use
+    // COALESCE(completed_at, started_at) or completion-time triggers.
     applyRunUpdate(runId, {
       ...runStart,
       provider: effectiveProvider?.type ?? resumedRun.provider ?? null,
@@ -594,6 +605,15 @@ export async function runAgent(
         dryRun: options?.dryRun ?? false,
       });
       if (postconditionError) {
+        // Part 3 of the resume-admission gate: a resume that executed ZERO
+        // fresh phases (every phase this attempt was trusted from the
+        // checkpoint) can never satisfy a missing contract by retrying —
+        // retrying re-runs nothing. Throw the typed error so the catch
+        // block below terminal-marks in one attempt instead of burning the
+        // scheduler's resume budget.
+        if (options?.resumeRunId && result.executedPhaseCount === 0) {
+          throw new PostconditionUnsatisfiableError(postconditionError);
+        }
         throw new Error(postconditionError);
       }
     } else {
@@ -668,6 +688,22 @@ export async function runAgent(
       }),
     }, scope);
 
+    // Part 1 (supersede) primary enforcement: this run just completed, so
+    // any OTHER resumable failed run for the same (agent, task, project
+    // scope, dry_run, instruction) is stale by definition — its checkpoints,
+    // gate verdicts, and watermarks are superseded by this completion.
+    // Terminal-mark it now rather than let the scheduler re-admit it. The
+    // instruction/dry_run pinning in the equivalence key is load-bearing:
+    // without it, this completion would wrongly sweep an unrelated
+    // instruction-scoped failed run (see supersedeEquivalentResumableRuns).
+    supersedeEquivalentResumableRuns(runId, {
+      agentId,
+      taskName: config.taskName,
+      scope,
+      dryRun: options?.dryRun ?? false,
+      instruction: options?.instruction ?? null,
+    });
+
     return {
       runId,
       status: STATUS_COMPLETED,
@@ -734,6 +770,15 @@ export async function runAgent(
         && !recordedAnyTurns
         && (harness.classifyError?.(err, { attemptedResume: true }) === 'session-expired');
 
+      // Part 3 of the resume-admission gate: the typed error thrown at the
+      // run-end seam above means this resume executed ZERO fresh phases and
+      // still failed its postcondition — deterministically unresumable, not
+      // a transient failure worth 3 scheduler retries. Unlike sessionExpired,
+      // checkpoints are PRESERVED (not nulled) — they're not a poisoned
+      // session id, and keeping them lets an operator inspect what the
+      // restored phases actually produced.
+      const postconditionUnsatisfiable = err instanceof PostconditionUnsatisfiableError;
+
       const accountingUpdate = buildRunAccountingUpdate({
         harness: harnessId,
         provider: effectiveProvider,
@@ -747,9 +792,16 @@ export async function runAgent(
         accountingUpdate.checkpoints = null;
       }
 
+      const resumable = sessionExpired || postconditionUnsatisfiable ? 0 : 1;
+      const resumeStatus = sessionExpired
+        ? RESUME_STATUS_SESSION_EXPIRED
+        : postconditionUnsatisfiable
+          ? RESUME_STATUS_POSTCONDITION_UNSATISFIABLE
+          : RESUME_STATUS_READY;
+
       updateRunStatus(runId, STATUS_FAILED, {
-        resumable: sessionExpired ? 0 : 1,
-        resume_status: sessionExpired ? RESUME_STATUS_SESSION_EXPIRED : RESUME_STATUS_READY,
+        resumable,
+        resume_status: resumeStatus,
         completed_at: failedAt,
         tokens_used: usage.totalTokens ?? phaseResults?.reduce((sum, phase) => sum + phase.tokensUsed, 0) ?? undefined,
         error: errorMessage,
