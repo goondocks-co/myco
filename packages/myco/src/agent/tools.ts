@@ -44,6 +44,14 @@ import { createExplorationTools } from './tools/exploration-tools.js';
 import { createCanopyTools } from './tools/canopy-tools.js';
 import { applyDeferredStubs, buildSearchToolsTool } from './tools/deferred-tools.js';
 import { textResult, toSdkMcpToolDefinitions } from './tools/types.js';
+import {
+  READ_TOOL_NAMES,
+  WRITE_TOOL_NAMES,
+  OBSERVABILITY_TOOL_NAMES,
+  SKILL_TOOL_NAMES,
+  EXPLORATION_TOOL_NAMES,
+  CANOPY_TOOL_NAMES,
+} from './tool-names.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { AgentEmbeddingPort, AgentTeamSearchPort } from '@myco/agent/runtime/ports.js';
@@ -264,39 +272,15 @@ const DRY_RUN_STUB_TOOLS = new Map<string, StubToolSpec>([
 // ---------------------------------------------------------------------------
 // Tool group membership — used to skip factory calls for unneeded groups
 // ---------------------------------------------------------------------------
-
-const READ_TOOL_NAMES = new Set([
-  'vault_unprocessed', 'vault_batches', 'vault_session_summary_material', 'vault_spores',
-  'vault_sessions', 'vault_search_fts', 'vault_search_semantic', 'vault_search_canopy',
-  'vault_release_state', 'vault_state', 'vault_edges',
-]);
-
-const WRITE_TOOL_NAMES = new Set([
-  'vault_create_spore', 'vault_resolve_spore', 'vault_update_session', 'vault_set_state',
-  'vault_read_digest', 'vault_write_digest', 'vault_mark_processed',
-]);
-
-const OBSERVABILITY_TOOL_NAMES = new Set(['vault_report']);
+//
+// The name-set literals live in tool-names.ts (zero-dep leaf module — see
+// its header comment) so schemas.ts can validate task-level `deferredTools`
+// against the full registry without pulling tools.ts's bun:sqlite-adjacent
+// dependency chain into codegen. This file is the only place they're
+// composed into factory-skipping Sets; import from tool-names.ts rather
+// than redeclaring a set literal here.
 
 const PHASE_METADATA_TOOL_NAMES_SET = new Set<string>(PHASE_METADATA_TOOL_NAMES);
-
-const SKILL_TOOL_NAMES = new Set([
-  'vault_skill_survey_prepare', 'vault_skill_survey_bundle_decisions',
-  'vault_skill_survey_reconciliation_plan',
-  'vault_skill_survey_apply_reconciliation',
-  'vault_skill_candidates', 'vault_skill_records', 'vault_scan_skill_contamination',
-  'vault_write_skill', 'vault_stage_skill', 'vault_finalize_skill',
-  'vault_edit_skill',
-]);
-
-const EXPLORATION_TOOL_NAMES = new Set([
-  'fs_read', 'fs_list', 'fs_tree', 'code_grep',
-]);
-
-const CANOPY_TOOL_NAMES = new Set([
-  'canopy_describe_next', 'canopy_describe_write', 'canopy_list',
-  'canopy_describe_charge',
-]);
 
 /** Max chars stored from a tool response in the run audit trail. */
 const TOOL_OUTPUT_SUMMARY_LIMIT = 240;
@@ -344,7 +328,7 @@ export const VAULT_TOOL_COUNT =
   CANOPY_TOOL_NAMES.size +
   PHASE_METADATA_TOOL_NAMES_SET.size;
 
-function setsOverlap(a: Set<string>, b: Set<string>): boolean {
+function setsOverlap(a: Set<string>, b: ReadonlySet<string>): boolean {
   for (const item of a) { if (b.has(item)) return true; }
   return false;
 }
@@ -1183,7 +1167,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 export function createVaultToolServer(
   agentId: string,
   runId: string,
-  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'phasePurpose' | 'semanticCheckEnabled' | 'harnessId' | 'model' | 'classifierReasoningLevel' | 'provider' | 'flaggedWritesAccumulator' | 'hooks' | 'hookContext' | 'logger'>,
+  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator' | 'phasePurpose' | 'semanticCheckEnabled' | 'harnessId' | 'model' | 'classifierReasoningLevel' | 'provider' | 'flaggedWritesAccumulator' | 'hooks' | 'hookContext' | 'deferredNames' | 'logger'>,
 ) {
   const tools = createVaultTools(agentId, runId, options);
 

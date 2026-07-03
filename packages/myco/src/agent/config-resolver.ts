@@ -202,6 +202,7 @@ function taskOverridesFromSources(
     ...(yamlTask?.execution ? { execution: yamlTask.execution } : {}),
     ...(yamlTask?.contextQueries ? { contextQueries: yamlTask.contextQueries } : {}),
     ...(yamlTask?.orchestrator ? { orchestrator: yamlTask.orchestrator } : {}),
+    ...(yamlTask?.deferredTools ? { deferredTools: yamlTask.deferredTools } : {}),
   };
 }
 

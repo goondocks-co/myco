@@ -892,6 +892,7 @@ export async function executeSingleQuery(
     dryRun: ctx.config.dryRun ?? false,
     hooks: ctx.hooks,
     hookContext: ctx.hooks ? { runId: ctx.runId, agentId: ctx.agentId, harnessId: ctx.config.harness } : undefined,
+    deferredNames: ctx.config.deferredTools,
   };
   const baseInput = {
     prompt: taskPrompt,

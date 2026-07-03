@@ -16,6 +16,7 @@ import { vi } from '../helpers/vi-shim.js';
 
 const queryCalls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
 let structuredOutputOverride: unknown = undefined;
+let usageOverride: Record<string, number> | undefined = undefined;
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
@@ -32,7 +33,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
           type: 'result' as const,
           subtype: 'success' as const,
           total_cost_usd: 0.0123,
-          usage: { input_tokens: 42, output_tokens: 7 },
+          usage: usageOverride ?? { input_tokens: 42, output_tokens: 7 },
           num_turns: 1,
           duration_ms: 100,
           duration_api_ms: 80,
@@ -128,6 +129,7 @@ describe('ClaudeSdkHarness.execute', () => {
     scopedServerCalls.length = 0;
     fullServerCalls.length = 0;
     structuredOutputOverride = undefined;
+    usageOverride = undefined;
   });
 
   it('forwards sessionRef as sessionId to the SDK when provided', async () => {
@@ -409,6 +411,68 @@ describe('ClaudeSdkHarness.execute', () => {
     expect(fullServerCalls[0].options.flaggedWritesAccumulator).toBe(flaggedWritesAccumulator);
   });
 
+  it('threads deferredNames through to createScopedVaultToolServer when toolNames is provided', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        toolNames: ['vault_report'],
+        deferredNames: ['vault_report'],
+      },
+    }));
+
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.deferredNames).toEqual(new Set(['vault_report']));
+  });
+
+  it('threads deferredNames through to createVaultToolServer when toolNames is omitted (P3-T1 fix — FULL-SURFACE path)', async () => {
+    // Prior to this fix, buildToolServer's FULL-SURFACE branch (the one
+    // executeSingleQuery hits for the five single-query tasks — no
+    // toolNames means the whole 39-tool registry ships every run) never
+    // read toolSurface.deferredNames at all: it built the
+    // createVaultToolServer options object without a deferredNames key.
+    // A task-level `deferredTools` (P3-T1's new AgentTaskSchema field)
+    // would therefore reach the phase-loop's toolSurface correctly and
+    // then silently no-op the moment it hit the harness adapter — no
+    // stub, no vault_search_tools, full undeferred payload every time.
+    // This test would have failed before the claude.ts fix; it must pass
+    // now that createVaultToolServer's options Pick (tools.ts) includes
+    // 'deferredNames' and the full-surface branch threads it.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: {
+        agentId: 'a1',
+        runId: 'r1',
+        deferredNames: ['vault_report'],
+      },
+    }));
+
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.deferredNames).toEqual(new Set(['vault_report']));
+  });
+
+  it('leaves deferredNames undefined on both server paths when absent from toolSurface', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1', toolNames: ['vault_report'] },
+    }));
+    expect(scopedServerCalls).toHaveLength(1);
+    expect(scopedServerCalls[0].options.deferredNames).toBeUndefined();
+
+    await runtime.execute(makeInput({
+      toolSurface: { agentId: 'a1', runId: 'r1' },
+    }));
+    expect(fullServerCalls).toHaveLength(1);
+    expect(fullServerCalls[0].options.deferredNames).toBeUndefined();
+  });
+
   it('isolates the agent from user settings via settingSources: []', async () => {
     // Regression: the SDK's plugin-sync path reads `enabledPlugins` from
     // ~/.claude/settings.json / project .claude/settings.json when
@@ -477,6 +541,66 @@ describe('ClaudeSdkHarness.execute', () => {
     expect(result.usage.totalTokens).toBe(49);
     expect(result.usage.costUsd).toBeCloseTo(0.0123);
     expect(result.usage.requestUsageEntries).toHaveLength(1);
+  });
+
+  it('leaves cachedTokens at 0 and inputTokens unchanged when the SDK usage carries no cache fields (backward compat)', async () => {
+    // The fixture above (`makeInput()`'s default query mock) only sets
+    // input_tokens/output_tokens — no cache_creation_input_tokens or
+    // cache_read_input_tokens. Pre-existing runs (and any SDK response
+    // that genuinely has no cache activity) must produce identical
+    // inputTokens/totalTokens to before this fix, with cachedTokens
+    // reported as 0 rather than left undefined.
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    const result = await runtime.execute(makeInput());
+    expect(result.usage.inputTokens).toBe(42);
+    expect(result.usage.outputTokens).toBe(7);
+    expect(result.usage.cachedTokens).toBe(0);
+    expect(result.usage.totalTokens).toBe(49);
+  });
+
+  it('folds cache_creation_input_tokens and cache_read_input_tokens into inputTokens and reports cache_read as cachedTokens', async () => {
+    // SDK usage shape carrying cache fields (BetaUsage on
+    // SDKResultMessage.usage): input_tokens excludes both cache_creation
+    // and cache_read — this fixture models a request where the large
+    // tool-schema payload was served from cache. inputTokens must be the
+    // full prompt size (sdk.input_tokens + cache_creation + cache_read) so
+    // cost/breakdown.ts's uncachedInputTokens = inputTokens - cachedTokens
+    // subtraction stays meaningful; cachedTokens is the cache_read portion
+    // only.
+    usageOverride = {
+      input_tokens: 100,
+      output_tokens: 20,
+      cache_creation_input_tokens: 5000,
+      cache_read_input_tokens: 3000,
+    };
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    const result = await runtime.execute(makeInput());
+    expect(result.usage.inputTokens).toBe(100 + 5000 + 3000);
+    expect(result.usage.cachedTokens).toBe(3000);
+    expect(result.usage.outputTokens).toBe(20);
+    expect(result.usage.totalTokens).toBe(100 + 5000 + 3000 + 20);
+
+    const { buildTokenBreakdown } = await import('@myco/agent/cost/breakdown.js');
+    const breakdown = buildTokenBreakdown(result.usage);
+    expect(breakdown.cachedInputTokens).toBe(3000);
+    expect(breakdown.uncachedInputTokens).toBe(100 + 5000 + 3000 - 3000);
+    expect(breakdown.uncachedInputTokens).toBeGreaterThanOrEqual(0);
+  });
+
+  it('keeps breakdown.uncachedInputTokens non-negative for the no-cache-fields fixture', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    const result = await runtime.execute(makeInput());
+    const { buildTokenBreakdown } = await import('@myco/agent/cost/breakdown.js');
+    const breakdown = buildTokenBreakdown(result.usage);
+    expect(breakdown.cachedInputTokens).toBe(0);
+    expect(breakdown.uncachedInputTokens).toBe(42);
+    expect(breakdown.uncachedInputTokens).toBeGreaterThanOrEqual(0);
   });
 
   it('attaches outputFormat to the SDK call when outputSchema is provided', async () => {

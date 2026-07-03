@@ -8,6 +8,7 @@
 import { z } from 'zod/v4';
 import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 import { ThinkingBudgetValueSchema, EffortValueSchema } from './reasoning-tier-schemas.js';
+import { ALL_VAULT_TOOL_NAMES } from './tool-names.js';
 
 // ---------------------------------------------------------------------------
 // Schema version
@@ -284,4 +285,27 @@ export const AgentTaskSchema = z.object({
   schedule: TaskScheduleSchema.optional(),
   /** Task-specific params with defaults. */
   params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
-});
+  /**
+   * Tool names to defer on a single-query (non-phased) task — the
+   * executeSingleQuery analog of PhaseDefinition.deferredTools. Validated
+   * against the full vault tool registry (ALL_VAULT_TOOL_NAMES), NOT
+   * against `toolOverrides` — toolOverrides is a phantom surface nothing
+   * reads at runtime for a single-query task's actual tool list resolution
+   * (see resolveEffectiveConfig in loader.ts), so a name outside it but
+   * inside the real registry must still be accepted. Only a typo'd/unknown
+   * name is a load-time error.
+   */
+  deferredTools: z.array(z.string()).optional(),
+}).refine(
+  (t) => !t.deferredTools || t.deferredTools.every((name) => ALL_VAULT_TOOL_NAMES.has(name)),
+  { message: 'deferredTools must only contain names from the vault tool registry' },
+).refine(
+  // A phased task's per-phase deferral (PhaseDefinition.deferredTools) is
+  // the only mechanism executePhase reads — executeSingleQuery is never
+  // invoked once `phases` is present (see phase-loop.ts), so a task-level
+  // deferredTools alongside phases would silently no-op instead of
+  // deferring anything. Reject at load time instead of shipping a field
+  // that quietly does nothing.
+  (t) => !t.deferredTools || !t.phases || t.phases.length === 0,
+  { message: 'deferredTools is not supported on tasks with phases (phased tasks use PhaseDefinition.deferredTools per phase)' },
+);
