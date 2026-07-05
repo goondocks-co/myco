@@ -31,8 +31,12 @@ export function GroveActionMenu({
       key: 'delete',
       label: 'Delete Grove',
       destructive: true,
-      disabled: hasProjects,
-      disabledReason: hasProjects ? 'Move or remove projects first' : undefined,
+      disabled: isDefault || hasProjects,
+      disabledReason: isDefault
+        ? "The default Grove can't be deleted — set another Grove as default first"
+        : hasProjects
+          ? 'Move or remove projects first'
+          : undefined,
       onSelect: onDelete,
     },
   ];

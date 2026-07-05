@@ -112,6 +112,9 @@ describe('myco grove CLI', () => {
   });
 
   it('deletes an empty Grove', async () => {
+    // Anchor Grove keeps `grove` non-default and non-last, isolating
+    // this test from the default/last-Grove refusals.
+    createGrove('Anchor', home);
     const grove = createGrove('To Delete', home);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -125,6 +128,7 @@ describe('myco grove CLI', () => {
   });
 
   it('refuses to delete a non-empty Grove without --force', async () => {
+    createGrove('Anchor', home);
     const grove = createGrove('Busy', home);
     const projectRoot = path.join(home, 'project-busy');
     fs.mkdirSync(projectRoot, { recursive: true });
@@ -151,6 +155,7 @@ describe('myco grove CLI', () => {
   });
 
   it('deletes a non-empty Grove with --force', async () => {
+    createGrove('Anchor', home);
     const grove = createGrove('Force Me', home);
     const projectRoot = path.join(home, 'project-force');
     fs.mkdirSync(projectRoot, { recursive: true });
@@ -166,6 +171,76 @@ describe('myco grove CLI', () => {
     expect(loadGroveRecord(grove.id, home)).toBeNull();
     const output = log.mock.calls.map((call) => call.join(' ')).join('\n');
     expect(output).toContain('Deleted Grove Force Me (force-me)');
+
+    log.mockRestore();
+  });
+
+  it('refuses to delete the default Grove and surfaces the refusal message', async () => {
+    const defaultGrove = createGrove('Primary', home);
+    createGrove('Secondary', home);
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as never);
+
+    await expect(run(['delete', defaultGrove.slug])).rejects.toThrow('exit:1');
+
+    expect(loadGroveRecord(defaultGrove.id, home)).not.toBeNull();
+    const errOut = errSpy.mock.calls.map((call) => call.join(' ')).join('\n');
+    expect(errOut).toMatch(/reassign the default Grove first/);
+
+    errSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('refuses to delete the default Grove even with --force', async () => {
+    const defaultGrove = createGrove('Primary', home);
+    createGrove('Secondary', home);
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as never);
+
+    await expect(run(['delete', defaultGrove.slug, '--force'])).rejects.toThrow('exit:1');
+
+    expect(loadGroveRecord(defaultGrove.id, home)).not.toBeNull();
+
+    errSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('refuses to delete the last remaining Grove (surfaces as the default-Grove refusal since the sole Grove is always default)', async () => {
+    const grove = createGrove('Solo', home);
+    expect(listGroves(home)).toHaveLength(1);
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as never);
+
+    await expect(run(['delete', grove.slug])).rejects.toThrow('exit:1');
+
+    expect(loadGroveRecord(grove.id, home)).not.toBeNull();
+    const errOut = errSpy.mock.calls.map((call) => call.join(' ')).join('\n');
+    expect(errOut).toMatch(/reassign the default Grove first/);
+
+    errSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('allows deleting a Grove after the default is reassigned elsewhere', async () => {
+    const a = createGrove('Alpha', home);
+    const b = createGrove('Beta', home);
+    setDefaultGrove(b.id, home);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await run(['delete', a.slug]);
+
+    expect(loadGroveRecord(a.id, home)).toBeNull();
+    const output = log.mock.calls.map((call) => call.join(' ')).join('\n');
+    expect(output).toContain(`Deleted Grove ${a.name}`);
 
     log.mockRestore();
   });

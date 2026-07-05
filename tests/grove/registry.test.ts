@@ -8,12 +8,14 @@ import {
   clearGroveRegistryCaches,
   archiveProjectInGrove,
   createGrove,
+  DefaultGroveUndeletableError,
   deleteGrove,
   deregisterProjectInGrove,
   ensureDefaultGrove,
   ensureGroveExistsLocally,
   ensureProjectRegistered,
   getDefaultGroveId,
+  LastGroveUndeletableError,
   listGroves,
   listRegisteredProjects,
   loadGroveRecord,
@@ -289,6 +291,9 @@ describe('Grove registry', () => {
 
   describe('deleteGrove', () => {
     it('refuses to delete a Grove with bound projects unless force is set', () => {
+      // A second Grove keeps `grove` non-default and non-last so this
+      // test isolates the bound-projects guard.
+      createGrove('Other', home);
       const grove = createGrove('Work', home);
       registerProjectInGrove(grove.id, {
         projectId: 'proj_demo',
@@ -301,6 +306,7 @@ describe('Grove registry', () => {
     });
 
     it('deletes a Grove when force is true even with bound projects', () => {
+      createGrove('Other', home);
       const grove = createGrove('Work', home);
       registerProjectInGrove(grove.id, {
         projectId: 'proj_demo',
@@ -315,19 +321,8 @@ describe('Grove registry', () => {
       expect(fs.existsSync(path.join(home, 'groves', grove.id))).toBe(false);
     });
 
-    it('clears the default pointer when the deleted Grove was the default', () => {
-      const a = createGrove('Alpha', home);
-      const b = createGrove('Beta', home);
-      setDefaultGrove(b.id, home);
-      expect(getDefaultGroveId(home)).toBe(b.id);
-
-      deleteGrove(b.id, {}, home);
-
-      expect(getDefaultGroveId(home)).toBeNull();
-      expect(loadGroveRecord(a.id, home)?.id).toBe(a.id);
-    });
-
     it('removes the on-disk Grove directory', () => {
+      createGrove('Other', home);
       const grove = createGrove('Lonely', home);
       const groveDir = path.join(home, 'groves', grove.id);
       expect(fs.existsSync(groveDir)).toBe(true);
@@ -335,6 +330,72 @@ describe('Grove registry', () => {
       deleteGrove(grove.id, {}, home);
 
       expect(fs.existsSync(groveDir)).toBe(false);
+    });
+
+    it('refuses to delete the default Grove with a typed error', () => {
+      const a = createGrove('Alpha', home);
+      createGrove('Beta', home);
+      expect(getDefaultGroveId(home)).toBe(a.id);
+
+      expect(() => deleteGrove(a.id, {}, home)).toThrow(DefaultGroveUndeletableError);
+      expect(loadGroveRecord(a.id, home)).not.toBeNull();
+    });
+
+    it('force does not bypass the default-Grove refusal', () => {
+      const a = createGrove('Alpha', home);
+      createGrove('Beta', home);
+      expect(getDefaultGroveId(home)).toBe(a.id);
+
+      expect(() => deleteGrove(a.id, { force: true }, home)).toThrow(DefaultGroveUndeletableError);
+      expect(loadGroveRecord(a.id, home)).not.toBeNull();
+    });
+
+    it('refuses to delete the last remaining Grove (surfaces as the default-Grove refusal since the sole Grove is always default)', () => {
+      const grove = createGrove('Solo', home);
+      expect(listGroves(home)).toHaveLength(1);
+
+      expect(() => deleteGrove(grove.id, {}, home)).toThrow(DefaultGroveUndeletableError);
+      expect(loadGroveRecord(grove.id, home)).not.toBeNull();
+    });
+
+    it('refuses to delete the last remaining Grove with LastGroveUndeletableError when the default pointer is stale/unset', () => {
+      const grove = createGrove('Solo', home);
+      // Simulate a stale/unset default pointer independent of the
+      // single-Grove state — the last-Grove guard must not rely on the
+      // pointer being correct.
+      const doc = YAML.parse(fs.readFileSync(path.join(home, 'groves', 'registry.yaml'), 'utf-8')) ?? {};
+      delete doc.default_grove_id;
+      fs.writeFileSync(path.join(home, 'groves', 'registry.yaml'), YAML.stringify(doc), 'utf-8');
+      clearGroveRegistryCaches();
+      expect(getDefaultGroveId(home)).toBeNull();
+
+      expect(() => deleteGrove(grove.id, {}, home)).toThrow(LastGroveUndeletableError);
+      expect(loadGroveRecord(grove.id, home)).not.toBeNull();
+    });
+
+    it('force does not bypass the last-Grove refusal even with a stale/unset default pointer', () => {
+      const grove = createGrove('Solo', home);
+      const doc = YAML.parse(fs.readFileSync(path.join(home, 'groves', 'registry.yaml'), 'utf-8')) ?? {};
+      delete doc.default_grove_id;
+      fs.writeFileSync(path.join(home, 'groves', 'registry.yaml'), YAML.stringify(doc), 'utf-8');
+      clearGroveRegistryCaches();
+
+      expect(() => deleteGrove(grove.id, { force: true }, home)).toThrow(LastGroveUndeletableError);
+      expect(loadGroveRecord(grove.id, home)).not.toBeNull();
+    });
+
+    it('allows deleting a Grove after the default is reassigned elsewhere', () => {
+      const a = createGrove('Alpha', home);
+      const b = createGrove('Beta', home);
+      expect(getDefaultGroveId(home)).toBe(a.id);
+
+      setDefaultGrove(b.id, home);
+      expect(getDefaultGroveId(home)).toBe(b.id);
+
+      deleteGrove(a.id, {}, home);
+
+      expect(loadGroveRecord(a.id, home)).toBeNull();
+      expect(getDefaultGroveId(home)).toBe(b.id);
     });
   });
 });
