@@ -104,6 +104,7 @@ import {
   createSubagentContextHandler,
 } from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
+import { registerOkfRoutes } from './api/okf.js';
 import { tenantRoute } from './api/route-helpers.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
 import { handleGetFeed } from './api/feed.js';
@@ -1430,6 +1431,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/cortex/instructions/refresh', tenantRoute(cortexTenant, cortexHandlers.handleRefreshInstructions));
   server.registerRoute('POST', '/api/cortex/prompt-builder', tenantRoute(cortexTenant, cortexHandlers.handleBuildPrompt));
   server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', tenantRoute(cortexTenant, cortexHandlers.handleGetPromptResult));
+  registerOkfRoutes(server, cortexTenant);
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};

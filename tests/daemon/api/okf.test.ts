@@ -1,0 +1,212 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { RouteRequest } from '@myco/daemon/router';
+import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context';
+import { assertGroveProjectId } from '@myco/grove/ids';
+import { tenantRoute } from '@myco/daemon/api/route-helpers';
+import type { RequestPrincipal } from '@myco/daemon/request-principal';
+import { OkfError } from '@myco/okf/errors';
+
+// --- Stub OkfBundle so the handlers' funnel + error mapping is exercised
+//     without a real DB. OkfError stays real (separate module). ---
+interface StubImpl {
+  maintain?: (input: unknown) => Promise<unknown>;
+  status?: () => unknown;
+  validate?: (root?: string) => unknown;
+  saveConcept?: (input: unknown) => Promise<unknown>;
+  supersedeConcept?: (input: unknown) => Promise<unknown>;
+  listConcepts?: () => unknown;
+  getConcept?: (id: string) => unknown;
+}
+let stub: StubImpl = {};
+const constructed: unknown[] = [];
+
+mock.module('@myco/okf/bundle.js', () => ({
+  OkfBundle: class {
+    constructor(deps: unknown) {
+      constructed.push(deps);
+    }
+    maintain(input: unknown) {
+      return stub.maintain?.(input) ?? Promise.resolve({ outputRoot: 'okf', conceptCount: 0, counts: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0 } });
+    }
+    status() {
+      return stub.status?.() ?? { outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, counts: null, conceptCount: null, stale: false, publishAcknowledged: true };
+    }
+    validate(root?: string) {
+      return stub.validate?.(root) ?? { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0, issues: [] };
+    }
+    saveConcept(input: unknown) {
+      return stub.saveConcept?.(input) ?? Promise.resolve({ id: 'concepts/x', bundleGeneration: 2, validation: { ok: true } });
+    }
+    supersedeConcept(input: unknown) {
+      return stub.supersedeConcept?.(input) ?? Promise.resolve({ oldId: 'concepts/a', newId: 'concepts/b', bundleGeneration: 3 });
+    }
+    listConcepts() {
+      return stub.listConcepts?.() ?? [];
+    }
+    getConcept(id: string) {
+      return stub.getConcept?.(id) ?? null;
+    }
+  },
+}));
+
+const {
+  handleOkfMaintain,
+  handleOkfStatus,
+  handleOkfValidate,
+  handleOkfConceptsList,
+  handleOkfConceptGet,
+  handleOkfConceptSave,
+  handleOkfConceptSupersede,
+} = await import('@myco/daemon/api/okf.js');
+
+const PROJECT_ID = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const GROVE_ID = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+let projectRoot: string;
+let vaultDir: string;
+
+function principalFor(ctx: MycoRequestContext): RequestPrincipal {
+  return {
+    identity: { machineId: ctx.machineId, userId: null },
+    tenancy: {
+      projectVaultDir: ctx.projectVaultDir as RequestPrincipal['tenancy']['projectVaultDir'],
+      projectId: ctx.projectId,
+      groveId: ctx.groveId ?? '',
+      requestContext: { projectVaultDir: ctx.projectVaultDir, projectId: ctx.projectId, groveId: ctx.groveId ?? '' },
+    },
+  } as RequestPrincipal;
+}
+
+function ctxFor(): MycoRequestContext {
+  return resolveLegacyRequestContext(vaultDir, {
+    projectId: assertGroveProjectId(PROJECT_ID),
+    groveId: GROVE_ID,
+    machineId: 'test-machine',
+    tenancySource: 'caller',
+  });
+}
+
+function req(overrides: Partial<RouteRequest> = {}): RouteRequest {
+  return { params: {}, query: {}, body: undefined, pathname: '/api/okf', ...overrides } as RouteRequest;
+}
+
+beforeEach(() => {
+  stub = {};
+  constructed.length = 0;
+  projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'okf-api-')));
+  vaultDir = path.join(projectRoot, '.myco');
+  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nokf:\n  enabled: true\n');
+});
+
+afterEach(() => {
+  fs.rmSync(projectRoot, { recursive: true, force: true });
+});
+
+describe('OKF API handlers', () => {
+  it('maintain delegates to OkfBundle and returns 200', async () => {
+    let received: unknown;
+    stub.maintain = (input) => {
+      received = input;
+      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), conceptCount: 1, counts: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 1, conceptsChecked: 1 } });
+    };
+    const res = await handleOkfMaintain(req({ body: { sporeStatus: 'all', dryRun: true } }), principalFor(ctxFor()));
+    expect(res.status).toBe(200);
+    expect((res.body as { ok: boolean }).ok).toBe(true);
+    expect((received as { sporeStatus: string; dryRun: boolean }).sporeStatus).toBe('all');
+    expect((received as { dryRun: boolean }).dryRun).toBe(true);
+  });
+
+  it('maps a disabled-gate OkfError to 403', async () => {
+    stub.maintain = () => Promise.reject(new OkfError('okf_disabled', 'off'));
+    const res = await handleOkfMaintain(req({ body: {} }), principalFor(ctxFor()));
+    expect(res.status).toBe(403);
+    expect((res.body as { error: { code: string } }).error.code).toBe('okf_disabled');
+  });
+
+  it('maps a generation conflict to 409', async () => {
+    stub.saveConcept = () => Promise.reject(new OkfError('okf_generation_conflict', 'stale', { currentGeneration: 1 }));
+    const res = await handleOkfConceptSave(req({ body: { id: 'concepts/x', markdown: '---\ntype: X\n---\n' } }), principalFor(ctxFor()));
+    expect(res.status).toBe(409);
+    expect((res.body as { error: { code: string } }).error.code).toBe('okf_generation_conflict');
+    expect((res.body as { details: { currentGeneration: number } }).details.currentGeneration).toBe(1);
+  });
+
+  it('status aggregates capability + config fields and never writes', async () => {
+    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, counts: null, conceptCount: null, stale: false, publishAcknowledged: true });
+    const snapshot = JSON.stringify(fs.readdirSync(vaultDir));
+    const res = await handleOkfStatus(req(), principalFor(ctxFor()));
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.enabled).toBe(true);
+    expect(body.outputPath).toBe('okf');
+    expect(body.lastRun).toBeNull();
+    expect((body.agentsPointer as { present: boolean }).present).toBe(false);
+    // No writes happened.
+    expect(JSON.stringify(fs.readdirSync(vaultDir))).toBe(snapshot);
+    expect(fs.existsSync(path.join(projectRoot, 'okf'))).toBe(false);
+  });
+
+  it('validate delegates and returns the report', async () => {
+    stub.validate = () => ({ ok: false, level: 'myco_strict', filesChecked: 3, conceptsChecked: 2, issues: [{ level: 'error', code: 'x', path: 'a.md', message: 'm' }] });
+    const res = await handleOkfValidate(req({ body: { path: 'okf' } }), principalFor(ctxFor()));
+    expect(res.status).toBe(200);
+    expect((res.body as { validation: { ok: boolean } }).validation.ok).toBe(false);
+  });
+
+  it('concept get resolves a slash-safe id from the prefix route', async () => {
+    let receivedId: string | undefined;
+    stub.getConcept = (id) => {
+      receivedId = id;
+      return { raw: '---\ntype: Note\n---\n\nBody.\n', concept: {} };
+    };
+    const res = await handleOkfConceptGet(
+      req({ pathname: '/api/okf/concepts/concepts/my-note' }),
+      principalFor(ctxFor()),
+    );
+    expect(res.status).toBe(200);
+    expect(receivedId).toBe('concepts/my-note');
+    expect((res.body as { concept: { id: string } }).concept.id).toBe('concepts/my-note');
+  });
+
+  it('concept list and supersede delegate to the capability', async () => {
+    stub.listConcepts = () => [{ id: 'concepts/a', type: 'Note' }];
+    const list = await handleOkfConceptsList(req(), principalFor(ctxFor()));
+    expect((list.body as { concepts: unknown[] }).concepts).toHaveLength(1);
+
+    stub.supersedeConcept = () => Promise.resolve({ oldId: 'concepts/a', newId: 'concepts/b', bundleGeneration: 4 });
+    const sup = await handleOkfConceptSupersede(
+      req({ body: { oldId: 'concepts/a', newId: 'concepts/b', reason: 'r' } }),
+      principalFor(ctxFor()),
+    );
+    expect((sup.body as { bundleGeneration: number }).bundleGeneration).toBe(4);
+  });
+
+  it('rejects a save with a missing body field (400)', async () => {
+    const res = await handleOkfConceptSave(req({ body: { id: 'concepts/x' } }), principalFor(ctxFor()));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('OKF API tenancy', () => {
+  it('rejects a request with no tenancy context with 400 tenancy-violation', async () => {
+    const wrapped = tenantRoute(
+      { machineId: 'm', logger: { debug() {}, info() {}, warn() {}, error() {} } as never },
+      handleOkfStatus,
+    );
+    const res = await wrapped(req({ requestContext: undefined }));
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { code: string } }).error.code).toBe('tenancy-violation');
+  });
+});
+
+describe('OKF API is a thin funnel', () => {
+  it('performs no direct filesystem writes', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../../packages/myco/src/daemon/api/okf.ts'), 'utf8');
+    expect(src).not.toMatch(/fs\.writeFileSync/);
+    expect(src).not.toMatch(/fs\.mkdirSync/);
+    expect(src).not.toMatch(/fs\.rmSync/);
+  });
+});
