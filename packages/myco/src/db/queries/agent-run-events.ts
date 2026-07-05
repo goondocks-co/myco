@@ -139,3 +139,24 @@ export function countPhaseToolCallsByOutcome(
   ).get(runId, phaseName, toolName, outcome) as { count: number };
   return row.count;
 }
+
+/**
+ * Counts `post_tool_use` events for a run, tool name, and outcome across
+ * every phase. Same shape as `countPhaseToolCallsByOutcome` without the
+ * `phase_name` filter — for callers that need a run-scoped total rather
+ * than a single phase's.
+ */
+export function countRunToolCallsByOutcome(
+  runId: string,
+  toolName: string,
+  outcome: 'success' | 'error',
+): number {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT COUNT(*) as count
+     FROM agent_run_events
+     WHERE run_id = ? AND event_type = 'post_tool_use'
+       AND tool_name = ? AND outcome = ?`,
+  ).get(runId, toolName, outcome) as { count: number };
+  return row.count;
+}
