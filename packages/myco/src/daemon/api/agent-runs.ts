@@ -13,8 +13,11 @@ import {
   getRun,
   findNewerCompletedEquivalentRun,
   applyRunUpdate,
+  insertRun,
   RESUME_STATUS_SUPERSEDED,
+  STATUS_FAILED,
 } from '@myco/db/queries/runs.js';
+import { epochSeconds } from '@myco/constants.js';
 import { getRunActivityBuckets, getRunBranches } from '@myco/db/queries/activity-buckets.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
@@ -24,6 +27,8 @@ import { runDurationMs } from '@myco/agent/run-accounting.js';
 import { buildTaskInstruction, isInstructionRequiredTask, SKILL_SURVEY_TASK } from '@myco/agent/instruction-builders.js';
 import { hasConfiguredProvider, resolveTaskDefinitionExecution } from '@myco/agent/config-resolver.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { CAPABILITIES, capabilityEnabled, governingCapability } from '@myco/config/capabilities.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { notify } from '@myco/notifications/notify.js';
 import { agentRunNotificationLink } from '@myco/notifications/links.js';
@@ -38,6 +43,7 @@ import type { DaemonLogger } from '../logger.js';
 import type { TeamSyncClient } from '../team-sync.js';
 import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -100,6 +106,29 @@ function sanitizeExecutionOverrides(
     stripBaseUrlForRemoteProviders,
   );
   return result as unknown as z.infer<typeof ExecutionOverrideBody>;
+}
+
+/**
+ * Rejects a manual dispatch/resume when the task's governing capability is
+ * off. Tasks with no governing capability always pass through.
+ */
+function capabilityGateError(
+  config: MycoConfig | null | undefined,
+  task: string | undefined,
+): RouteResponse | null {
+  if (!task) return null;
+  const capId = governingCapability(task);
+  if (!capId) return null;
+  if (capabilityEnabled(config, capId)) return null;
+  return {
+    status: 400,
+    body: {
+      ok: false,
+      error: 'capability_disabled',
+      capability: capId,
+      message: `Enable ${CAPABILITIES[capId].label} for this project to run ${task}`,
+    },
+  };
 }
 
 const AgentRunBody = z.object({
@@ -207,6 +236,11 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
     const mycoConfig = loadMergedConfig(runVaultDir, { groveId: req.requestContext?.groveId ?? null });
+
+    // Governed-task admission check, before the provider check.
+    const capabilityError = capabilityGateError(mycoConfig, task);
+    if (capabilityError) return capabilityError;
+
     // User-initiated manual run: the default claude-sdk harness (subscription
     // auth via the Claude Code CLI) is runnable with no explicit provider. The
     // automatic Cortex path keeps the strict check (no auto-default per grove).
@@ -337,10 +371,61 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
         }
       })
       .catch((err) => {
-        logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run threw unhandled error', {
-          error: (err as Error).message ?? String(err),
-          stack: (err as Error).stack?.split('\n').slice(0, 3).join(' | '),
-        });
+        // Executor threw before creating the run row. Persists a failed row
+        // so the runId already returned to the caller resolves to an
+        // inspectable outcome; falls back to a log + notification if the
+        // insert itself fails.
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        const projectId = req.requestContext?.projectId;
+        try {
+          insertRun({
+            id: runId,
+            project_id: projectId ?? null,
+            agent_id: effectiveAgentId,
+            task: task ?? null,
+            instruction: instruction ?? null,
+            status: STATUS_FAILED,
+            started_at: epochSeconds(),
+            completed_at: epochSeconds(),
+            error: errorMsg,
+            dryRun: dryRun ?? false,
+          });
+          const notificationOptions = projectId ? { projectId } : undefined;
+          notify(runVaultDir, {
+            domain: 'agents',
+            type: 'agent.task.failure',
+            title: `Task failed: ${task ?? 'agent run'}`,
+            message: errorMsg,
+            link: agentRunNotificationLink(runId),
+            metadata: { taskName: task ?? null, runId },
+          }, mycoConfig, notificationOptions);
+          logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run threw before its run row was created', {
+            runId,
+            task: task ?? null,
+            project_id: projectId ?? null,
+            error: errorMsg,
+            stack: (err as Error).stack?.split('\n').slice(0, 3).join(' | '),
+          });
+        } catch (insertErr) {
+          // Failed-row insert also failed; no row will exist for this runId.
+          logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run threw unhandled error', {
+            runId,
+            task: task ?? null,
+            project_id: projectId ?? null,
+            error: errorMsg,
+            stack: (err as Error).stack?.split('\n').slice(0, 3).join(' | '),
+            insertError: errorMessage(insertErr),
+          });
+          const notificationOptions = projectId ? { projectId } : undefined;
+          notify(runVaultDir, {
+            domain: 'agents',
+            type: 'agent.task.failure',
+            title: `Task failed: ${task ?? 'agent run'}`,
+            message: errorMsg,
+            link: agentRunNotificationLink(runId),
+            metadata: { taskName: task ?? null, runId },
+          }, mycoConfig, notificationOptions);
+        }
       });
 
     return { body: { ok: true, message: 'Agent started', runId } };
@@ -463,6 +548,13 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const { mode } = ResumeRunBody.parse(req.body ?? {});
     const embeddingManager = resolveEmbeddingManager(req.requestContext);
     const runVaultDir = vaultDirForRequest(req);
+
+    // Same governed-task admission as handleRun: resuming a governed task
+    // must not bypass a capability the project has since disabled.
+    const resumeMycoConfig = loadMergedConfig(runVaultDir, { groveId: req.requestContext?.groveId ?? null });
+    const capabilityError = capabilityGateError(resumeMycoConfig, run.task ?? undefined);
+    if (capabilityError) return capabilityError;
+
     const { dispatchAgentRun } = await import('@myco/agent/runner-host.js');
     const resultPromise = dispatchAgentRun(runVaultDir, {
       agentId: run.agent_id,
@@ -498,6 +590,8 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       .catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run resume threw unhandled error', {
           runId: run.id,
+          task: run.task ?? null,
+          project_id: req.requestContext?.projectId ?? null,
           error: err instanceof Error ? err.message : String(err),
         });
       });

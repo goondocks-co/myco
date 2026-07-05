@@ -22,7 +22,11 @@ export interface CapabilityDef {
   masterGate: string;
   /** Other config leaves this capability governs (UI grouping / demote). */
   memberGates: string[];
-  /** Agent task names this capability gates (consumed by the gate-honoring plan). */
+  /**
+   * Agent task names this capability governs. May include scheduleless,
+   * manual-only tasks — a scheduleless entry has zero scheduler effect and
+   * only wires manual-dispatch gating (governingCapability/capabilityForTask).
+   */
   scheduledTasks: string[];
   /** Settings route for advanced knobs (deep-linked from the panel; finalized in the UI plan). */
   advancedSettingsLink: string;
@@ -58,7 +62,8 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityDef> = {
     label: 'Vault Evolution',
     masterGate: 'vault_evolution.enabled',
     memberGates: [],
-    scheduledTasks: ['vault-evolve'],
+    // vault-seed has no schedule block; listed here only for manual-dispatch gating.
+    scheduledTasks: ['vault-evolve', 'vault-seed'],
     advancedSettingsLink: '/settings#scheduled-tasks',
   },
 };
