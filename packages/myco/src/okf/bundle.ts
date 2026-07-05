@@ -453,6 +453,12 @@ export class OkfBundle {
   // Projection + rendering
   // -------------------------------------------------------------------
 
+  /** The sporeStatus the config-driven scheduled maintain will use. */
+  private configuredSporeStatus(): 'active' | 'all' {
+    const statuses = this.deps.config.okf.maintain.include_status;
+    return statuses.length === 1 && statuses[0] === 'active' ? 'active' : 'all';
+  }
+
   private effectiveInclude(include?: OkfBundleInclude): OkfBundleInclude {
     if (include) return include;
     const configured = new Set(this.deps.config.okf.maintain.include);
@@ -830,7 +836,10 @@ export class OkfBundle {
           },
           {
             include: this.effectiveInclude(),
-            sporeStatus: 'active',
+            // Mirror the config-driven maintain the scheduled task will run: a
+            // single 'active' status maps to the 'active' filter, any broader
+            // set to 'all'. Prevents a false-stale for non-default configs.
+            sporeStatus: this.configuredSporeStatus(),
             includeUndescribedCanopy: this.deps.config.okf.maintain.include_undescribed_canopy,
           },
         );

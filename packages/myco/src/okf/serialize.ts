@@ -59,6 +59,14 @@ export function relativeConceptHref(fromPath: string, toId: string): string {
  * Provenance from `concept.source` is injected into frontmatter under `myco_*`
  * keys when the projector did not already set them, so every Myco-generated
  * concept carries stable source identity (`myco_id`) and passes `myco_strict`.
+ *
+ * Canonical concepts (`sourceKind === 'okf_concept'` — agent-maintained
+ * concepts and the generated guide) are the source of truth: their own
+ * frontmatter is complete, so ONLY the `myco_id` identity anchor is injected.
+ * Injecting the projection-provenance fields (`myco_source_hash`, the
+ * mtime-based `myco_source_updated_at`, etc.) would rewrite the file on the
+ * next maintain — non-deterministic churn on a git-committed bundle.
+ *
  * Outgoing links render as a deterministic `## Related` section.
  */
 export function renderConcept(concept: OkfConcept): { path: string; content: string } {
@@ -76,16 +84,19 @@ export function renderConcept(concept: OkfConcept): { path: string; content: str
 
   const fm: Record<string, unknown> = { ...concept.frontmatter };
   const source = concept.source;
-  const provenance: Record<string, unknown> = {
-    myco_id: source.id,
-    myco_source_kind: source.sourceKind,
-    myco_project: source.projectId ?? undefined,
-    myco_machine_id: source.machineId,
-    myco_source_hash: source.sourceHash,
-    myco_source_updated_at: source.sourceUpdatedAt,
-    myco_projection_version: source.projectionVersion,
-    myco_generated_by_run_ref: source.generatedByRunId ?? undefined,
-  };
+  const provenance: Record<string, unknown> =
+    source.sourceKind === 'okf_concept'
+      ? { myco_id: source.id }
+      : {
+          myco_id: source.id,
+          myco_source_kind: source.sourceKind,
+          myco_project: source.projectId ?? undefined,
+          myco_machine_id: source.machineId,
+          myco_source_hash: source.sourceHash,
+          myco_source_updated_at: source.sourceUpdatedAt,
+          myco_projection_version: source.projectionVersion,
+          myco_generated_by_run_ref: source.generatedByRunId ?? undefined,
+        };
   for (const [key, value] of Object.entries(provenance)) {
     if (value !== undefined && fm[key] === undefined) fm[key] = value;
   }

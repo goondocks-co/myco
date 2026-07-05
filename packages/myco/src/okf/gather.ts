@@ -13,10 +13,13 @@ import type { ProjectScope } from '@myco/grove/ids.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
 import {
   OKF_PROJECTION_VERSION,
+  OKF_RESERVED_FILES,
   type OkfBundleInclude,
   type OkfMaintainWarning,
   type OkfSporeStatusFilter,
 } from './types.js';
+
+const RESERVED_BASENAMES = new Set<string>(OKF_RESERVED_FILES);
 
 /**
  * Record gathering for a maintain run: fetch the vault rows that project into
@@ -92,7 +95,11 @@ function readExistingConceptFiles(outputRoot: string): OkfConceptFile[] {
         walk(rel);
         continue;
       }
-      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      // Skip GENERATED index.md/log.md files: they live inside concepts/ after
+      // a publish but must never be re-adopted as agent concepts (adoptConcepts
+      // hard-rejects reserved names, which would break every later maintain).
+      // Parity with reconstructConceptSet/listConcepts in bundle.ts.
+      if (!entry.isFile() || !entry.name.endsWith('.md') || RESERVED_BASENAMES.has(entry.name)) continue;
       const abs = path.join(conceptsRoot, rel);
       try {
         const raw = fs.readFileSync(abs, 'utf8');

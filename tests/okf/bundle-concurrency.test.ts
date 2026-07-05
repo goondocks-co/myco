@@ -150,6 +150,32 @@ describe('OkfBundle concept mutation', () => {
     );
   });
 
+  it('survives maintain -> saveConcept -> maintain once concepts/ is populated (generated index round-trip)', async () => {
+    // Regression: the generated concepts/index.md must never be re-adopted as
+    // an agent concept, or the second maintain throws okf_validation_failed.
+    seedSpore('decision-1', 'A decision.');
+    await makeBundle().maintain(baseInput());
+    await makeBundle().saveConcept({
+      id: 'concepts/locking-model',
+      markdown: VALID_CONCEPT,
+      provenance: { actor: 'symbiont' },
+    });
+    // A generated concepts/index.md now exists on disk.
+    expect(fs.existsSync(path.join(projectRoot, 'okf/concepts/index.md'))).toBe(true);
+    const savedBytes = fs.readFileSync(path.join(projectRoot, 'okf/concepts/locking-model.md'), 'utf8');
+
+    // A second maintain (triggered by a vault change) must succeed, not throw.
+    seedSpore('decision-2', 'A second decision changes the inputs.');
+    const result = await makeBundle().maintain(baseInput());
+    expect(result.validation.ok).toBe(true);
+    expect(result.unchanged).toBe(false);
+    // The agent concept survives the deterministic regeneration byte-for-byte.
+    expect(fs.readFileSync(path.join(projectRoot, 'okf/concepts/locking-model.md'), 'utf8')).toBe(savedBytes);
+    // And a THIRD maintain still works.
+    seedSpore('decision-3', 'A third decision.');
+    expect((await makeBundle().maintain(baseInput())).validation.ok).toBe(true);
+  });
+
   it('rejects a stale expectedGeneration with okf_generation_conflict', async () => {
     seedSpore('decision-1', 'A decision.');
     await makeBundle().maintain(baseInput());

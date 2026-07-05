@@ -138,6 +138,35 @@ describe('OkfBundle failure injection', () => {
     expect(fs.existsSync(path.join(okfDir(), 'spores/decisions/decision-2.md'))).toBe(false);
   });
 
+  it('backup-rename failure leaves the previous bundle intact (nothing moved yet)', async () => {
+    seedSpore('decision-1', 'First decision.');
+    await makeBundle().maintain(baseInput());
+    const conceptPath = path.join(okfDir(), 'spores/decisions/decision-1.md');
+    const before = fs.readFileSync(conceptPath, 'utf8');
+
+    seedSpore('decision-2', 'Second decision.');
+    // Fail the live→backup rename (to a state/backup- dir). The final swap is
+    // never reached, so the live bundle is untouched.
+    const bundle = makeBundle(
+      injectable({
+        onRename: (_from, to) => {
+          if (to.includes(`${path.sep}backup-`)) {
+            const e = new Error('injected backup rename') as NodeJS.ErrnoException;
+            e.code = 'EIO';
+            return e;
+          }
+        },
+      }),
+    );
+    await expect(bundle.maintain(baseInput())).rejects.toMatchObject({
+      code: 'atomic_replace_failed',
+      details: { lastResult: 'rolled_back' },
+    });
+    expect(manifest()?.bundle_generation).toBe(1); // not incremented
+    expect(fs.readFileSync(conceptPath, 'utf8')).toBe(before); // previous bundle intact
+    expect(fs.existsSync(path.join(okfDir(), 'spores/decisions/decision-2.md'))).toBe(false);
+  });
+
   it('rollback failure records rollback_failed and throws atomic_replace_failed', async () => {
     seedSpore('decision-1', 'First decision.');
     await makeBundle().maintain(baseInput());
