@@ -67,6 +67,7 @@ export const TOOL_SESSIONS = 'myco_sessions';
 export const TOOL_SKILLS = 'myco_skills';
 export const TOOL_SPORES = 'myco_spores';
 export const TOOL_AGENT = 'myco_agent';
+export const TOOL_OKF = 'myco_okf';
 export const TOOL_COLLECTIVE_SEARCH = 'collective_search';
 export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
@@ -281,6 +282,37 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         task: { type: 'string', description: 'Filter op: "runs" by task name' },
         agent_id: { type: 'string', description: 'Filter op: "runs" by agent id' },
         limit: { type: 'number', description: 'Max results for op: "runs" (default: 50)' },
+      },
+    },
+  },
+  {
+    name: TOOL_OKF,
+    description: 'Read and edit the project\'s Open Knowledge Format (OKF) bundle — the repo-visible knowledge export at okf/. op: "status" reports bundle metadata and staleness. op: "validate" checks the bundle against the OKF conformance rules. op: "list" enumerates agent-maintained concepts. op: "get" returns one concept\'s markdown by id. op: "save_concept" creates or updates an editorial concept under concepts/. op: "supersede_concept" marks one concept superseded by another. Regenerating the whole bundle (maintain) is a user/admin action and is deliberately not available here.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Read okf/index.md first for orientation. Use op: "status" to check the bundle and read the current bundle_generation. Use op: "save_concept" / "supersede_concept" ONLY for editorial concepts under concepts/ (deterministic spore/canopy paths are read-only) — write complete YAML-frontmatter markdown with a type, title, description, timestamp, and a stable identity (myco_id or resource), and cite sources. Pass expected_generation from a prior status call so a concurrent edit is detected. You cannot regenerate the bundle or choose output paths from here; that is a user action.',
+      priority: 40,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: {
+          type: 'string',
+          enum: ['status', 'validate', 'list', 'get', 'save_concept', 'supersede_concept'],
+          description: 'Operation (default: "status")',
+        },
+        id: { type: 'string', description: 'Concept id for op: "get" (e.g. concepts/my-note)' },
+        concept_id: { type: 'string', description: 'Concept id for op: "save_concept" — must start with concepts/' },
+        markdown: { type: 'string', description: 'Full YAML-frontmatter markdown document for op: "save_concept"' },
+        expected_generation: { type: 'number', description: 'Optimistic concurrency check for op: "save_concept" — the bundle_generation from a prior status call' },
+        old_id: { type: 'string', description: 'Concept id being superseded for op: "supersede_concept"' },
+        new_id: { type: 'string', description: 'Replacement concept id for op: "supersede_concept"' },
+        reason: { type: 'string', description: 'Why the old concept was superseded (op: "supersede_concept")' },
       },
     },
   },
