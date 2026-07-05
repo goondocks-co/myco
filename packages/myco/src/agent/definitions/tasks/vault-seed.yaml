@@ -452,13 +452,9 @@ phases:
 
       Call `vault_report` with action "complete" and a `details` object
       containing:
-      - `spores_created`: the exact NUMBER of `vault_create_spore` calls
-        you made this run — count your own tool calls, do not estimate
-        from the explore-themes observation list. The two can differ (an
-        observation dropped for quality, a call that errored) — report
-        what you actually called, not what you planned to call. This
-        field is validated against the run's tool-call log; a wrong count
-        fails the run's postcondition.
+      - `spores_created`: your best count of `vault_create_spore` calls
+        you made this run. Informational only — the run's tool-call log is
+        the authoritative count; this field is not gated.
       - `spores_by_type`: object mapping observation_type to count
       - `spores_superseded`: number
       - `digest_tiers_written`: array of tier numbers
