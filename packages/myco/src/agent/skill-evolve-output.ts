@@ -19,6 +19,10 @@ export const SKILL_EVOLVE_INVENTORY_STATE_KEY = 'skill-evolve-inventory';
 export const SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY = 'skill-evolve-classifications';
 export const SKILL_EVOLVE_INVENTORY_REPORT_ACTION = 'skill-evolve-inventory';
 export const SKILL_EVOLVE_ASSESS_REPORT_ACTION = 'assess';
+/** Matches the `name:` field of the `inventory` phase in skill-evolve.yaml. */
+export const SKILL_EVOLVE_INVENTORY_PHASE_NAME = 'inventory';
+/** Matches the `name:` field of the `assess` phase in skill-evolve.yaml. */
+export const SKILL_EVOLVE_ASSESS_PHASE_NAME = 'assess';
 
 const CLASSIFICATION_VALUES = new Set([
   'CURRENT',
@@ -37,13 +41,15 @@ export interface SkillEvolveClassification {
 }
 
 export interface SkillEvolveClassificationPayload {
-  run_id: string;
+  /** Omitted when the model dropped the field; freshness is proved by harness event evidence, not this value. */
+  run_id?: string;
   classifications: SkillEvolveClassification[];
   deferred_skills: string[];
 }
 
 export interface SkillEvolveInventoryPayload {
-  run_id: string;
+  /** Omitted when the model dropped the field; freshness is proved by harness event evidence, not this value. */
+  run_id?: string;
   merge_candidates: Array<{
     source: string;
     target: string;
@@ -122,8 +128,7 @@ function normalizeClassificationPayload(value: unknown): SkillEvolveClassificati
   const record = asRecord(value);
   if (!record) return null;
 
-  const runId = asString(record.run_id);
-  if (!runId || !Array.isArray(record.classifications)) return null;
+  if (!Array.isArray(record.classifications)) return null;
 
   const classifications = record.classifications.map(normalizeClassification);
   if (classifications.some((item) => item === null)) return null;
@@ -132,7 +137,7 @@ function normalizeClassificationPayload(value: unknown): SkillEvolveClassificati
   if (!deferredSkills) return null;
 
   return {
-    run_id: runId,
+    run_id: asString(record.run_id) ?? undefined,
     classifications: classifications as SkillEvolveClassification[],
     deferred_skills: deferredSkills,
   };
@@ -164,12 +169,18 @@ function normalizeNarrowCandidate(value: unknown): SkillEvolveInventoryPayload['
   };
 }
 
+/**
+ * Structural parse only — validates shape (`merge_candidates` and
+ * `narrow_candidates` arrays of well-formed entries), not run attribution.
+ * `run_id` is carried through when present but never required for a
+ * non-null result: callers that need this-run freshness prove it from
+ * harness event evidence, not from a model-supplied field.
+ */
 export function parseSkillEvolveInventoryPayload(value: unknown): SkillEvolveInventoryPayload | null {
   const record = asRecord(value);
   if (!record) return null;
 
-  const runId = asString(record.run_id);
-  if (!runId || !Array.isArray(record.merge_candidates) || !Array.isArray(record.narrow_candidates)) {
+  if (!Array.isArray(record.merge_candidates) || !Array.isArray(record.narrow_candidates)) {
     return null;
   }
 
@@ -180,12 +191,19 @@ export function parseSkillEvolveInventoryPayload(value: unknown): SkillEvolveInv
   }
 
   return {
-    run_id: runId,
+    run_id: asString(record.run_id) ?? undefined,
     merge_candidates: mergeCandidates as SkillEvolveInventoryPayload['merge_candidates'],
     narrow_candidates: narrowCandidates as SkillEvolveInventoryPayload['narrow_candidates'],
   };
 }
 
+/**
+ * Structural parse only — validates shape (`classifications` array of
+ * well-formed entries plus `deferred_skills`), not run attribution.
+ * `run_id` is carried through when present but never required for a
+ * non-null result: callers that need this-run freshness prove it from
+ * harness event evidence, not from a model-supplied field.
+ */
 export function parseSkillEvolveClassificationPayload(value: unknown): SkillEvolveClassificationPayload | null {
   return normalizeClassificationPayload(value);
 }

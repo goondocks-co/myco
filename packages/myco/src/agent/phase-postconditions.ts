@@ -41,8 +41,10 @@ import {
   parseSkillEvolveClassificationPayload,
   parseSkillEvolveInventoryPayload,
   skillEvolveClassificationPayloadsEqual,
+  SKILL_EVOLVE_ASSESS_PHASE_NAME,
   SKILL_EVOLVE_ASSESS_REPORT_ACTION,
   SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY,
+  SKILL_EVOLVE_INVENTORY_PHASE_NAME,
   SKILL_EVOLVE_INVENTORY_REPORT_ACTION,
   SKILL_EVOLVE_INVENTORY_STATE_KEY,
   SKILL_EVOLVE_TASK_NAME,
@@ -131,11 +133,28 @@ function findLatestIntentByToolName(
   return undefined;
 }
 
+/**
+ * True when this run's harness events prove a live `vault_set_state` call
+ * succeeded in `phaseName` — the only evidence that `getState`'s
+ * global-latest-value read reflects this run rather than a stale prior run.
+ * Dry runs never reach this: `readStatePayloadValue`'s dry-run branch reads
+ * `listWriteIntents(runId, ...)`, which is already run-scoped, so a
+ * recorded intent is itself the freshness proof.
+ */
+function hasFreshStateWrite(input: PhasePostConditionInput, phaseName: string): boolean {
+  if (input.dryRun) return true;
+  return countPhaseToolCallsByOutcome(input.runId, phaseName, 'vault_set_state', 'success') > 0;
+}
+
 function checkSkillEvolveInventory(input: PhasePostConditionInput): PhasePostConditionResult {
   const reports = listReports(input.runId, { scope: ALL_PROJECTS_SCOPE });
   const inventoryReport = reports.find((report) => report.action === SKILL_EVOLVE_INVENTORY_REPORT_ACTION);
   if (!inventoryReport) {
     return failed('skill-evolve completed without a skill-evolve-inventory report');
+  }
+
+  if (!hasFreshStateWrite(input, SKILL_EVOLVE_INVENTORY_PHASE_NAME)) {
+    return failed('skill-evolve inventory phase wrote no skill-evolve-inventory state this run');
   }
 
   const stateValue = readStatePayloadValue(input, SKILL_EVOLVE_INVENTORY_STATE_KEY, SKILL_EVOLVE_TASK_NAME);
@@ -146,11 +165,6 @@ function checkSkillEvolveInventory(input: PhasePostConditionInput): PhasePostCon
     return failed(input.dryRun
       ? 'skill-evolve dry-run completed without a valid skill-evolve-inventory write intent'
       : 'skill-evolve completed without valid skill-evolve-inventory state');
-  }
-  if (inventoryPayload.run_id !== input.runId) {
-    return failed(input.dryRun
-      ? 'skill-evolve inventory write intent run_id does not match the run'
-      : 'skill-evolve inventory state run_id does not match the run');
   }
   return PASSED;
 }
@@ -166,8 +180,9 @@ function checkSkillEvolveAssess(input: PhasePostConditionInput): PhasePostCondit
   if (!assessPayload) {
     return failed('skill-evolve assess report details are invalid');
   }
-  if (assessPayload.run_id !== input.runId) {
-    return failed('skill-evolve assess report run_id does not match the run');
+
+  if (!hasFreshStateWrite(input, SKILL_EVOLVE_ASSESS_PHASE_NAME)) {
+    return failed('skill-evolve assess phase wrote no skill-evolve-classifications state this run');
   }
 
   const stateValue = readStatePayloadValue(input, SKILL_EVOLVE_CLASSIFICATIONS_STATE_KEY, SKILL_EVOLVE_TASK_NAME);
@@ -178,11 +193,6 @@ function checkSkillEvolveAssess(input: PhasePostConditionInput): PhasePostCondit
     return failed(input.dryRun
       ? 'skill-evolve dry-run completed without a valid skill-evolve-classifications write intent'
       : 'skill-evolve completed without valid skill-evolve-classifications state');
-  }
-  if (classificationPayload.run_id !== input.runId) {
-    return failed(input.dryRun
-      ? 'skill-evolve classifications write intent run_id does not match the run'
-      : 'skill-evolve classifications state run_id does not match the run');
   }
   if (!skillEvolveClassificationPayloadsEqual(classificationPayload, assessPayload)) {
     return failed(input.dryRun
