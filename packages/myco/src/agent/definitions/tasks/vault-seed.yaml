@@ -452,9 +452,9 @@ phases:
 
       Call `vault_report` with action "complete" and a `details` object
       containing:
-      - `spores_created`: your best count of `vault_create_spore` calls
-        you made this run. Informational only — the run's tool-call log is
-        the authoritative count; this field is not gated.
+      - `spores_created`: put your best estimate — the daemon stamps
+        the authoritative count from the run's tool-call log; it is
+        overwritten server-side.
       - `spores_by_type`: object mapping observation_type to count
       - `spores_superseded`: number
       - `digest_tiers_written`: array of tier numbers
