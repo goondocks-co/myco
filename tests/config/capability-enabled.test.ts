@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'bun:test';
-import { capabilityEnabled, isCaptureOnly } from '../../packages/myco/src/config/capabilities';
+import {
+  CAPABILITIES,
+  capabilityEnabled,
+  effectiveTaskScheduleEnabled,
+  isCaptureOnly,
+} from '../../packages/myco/src/config/capabilities';
+import { CAPABILITY_IDS, type CapabilityId } from '../../packages/myco/src/config/scope';
 import { MycoConfigSchema } from '../../packages/myco/src/config/schema';
 import type { MycoConfig } from '../../packages/myco/src/config/schema';
 
@@ -49,6 +55,62 @@ describe('capabilityEnabled', () => {
 
   it('returns false when config is undefined (fail-closed)', () => {
     expect(capabilityEnabled(undefined, 'cortex')).toBe(false);
+  });
+});
+
+describe('capabilityEnabled — okf defaultEnabled semantics', () => {
+  it('okf is disabled on a schema-parsed default config (Zod default false)', () => {
+    expect(capabilityEnabled(defaults(), 'okf')).toBe(false);
+  });
+
+  it('okf resolves DISABLED when the whole block is absent (defaultEnabled branch)', () => {
+    // A parse-built config always materializes okf.enabled === false, which
+    // exercises the Zod default, not defaultEnabled — delete the block so
+    // getAtPath returns undefined and the defaultEnabled fallback decides.
+    const cfg = defaults();
+    delete (cfg as unknown as Record<string, unknown>).okf;
+    expect(capabilityEnabled(cfg, 'okf')).toBe(false);
+  });
+
+  it('all four legacy capabilities still resolve absent gates to ENABLED', () => {
+    const cfg = defaults();
+    const raw = cfg as unknown as Record<string, unknown>;
+    delete raw.cortex;
+    delete raw.skills;
+    delete raw.vault_evolution;
+    expect(capabilityEnabled(cfg, 'cortex')).toBe(true);
+    expect(capabilityEnabled(cfg, 'canopy')).toBe(true);
+    expect(capabilityEnabled(cfg, 'skills')).toBe(true);
+    expect(capabilityEnabled(cfg, 'vault_evolution')).toBe(true);
+  });
+
+  it('anti-drift: every capability resolves defaults to its declared defaultEnabled', () => {
+    for (const id of CAPABILITY_IDS as readonly CapabilityId[]) {
+      expect(capabilityEnabled(defaults(), id)).toBe(CAPABILITIES[id].defaultEnabled ?? true);
+    }
+  });
+
+  it('explicit okf.enabled true/false wins over the default', () => {
+    const on = defaults();
+    on.okf.enabled = true;
+    expect(capabilityEnabled(on, 'okf')).toBe(true);
+    const off = defaults();
+    off.okf.enabled = false;
+    expect(capabilityEnabled(off, 'okf')).toBe(false);
+  });
+});
+
+describe('effectiveTaskScheduleEnabled — okf-maintain gating', () => {
+  it('is false while okf is disabled even with the YAML schedule enabled', () => {
+    // Passing yamlScheduleEnabled=true is load-bearing: the task YAML ships
+    // schedule.enabled: true, so a false here would prove nothing.
+    expect(effectiveTaskScheduleEnabled(defaults(), 'okf-maintain', true)).toBe(false);
+  });
+
+  it('is true once okf is enabled', () => {
+    const cfg = defaults();
+    cfg.okf.enabled = true;
+    expect(effectiveTaskScheduleEnabled(cfg, 'okf-maintain', true)).toBe(true);
   });
 });
 

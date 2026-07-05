@@ -299,6 +299,83 @@ export class ProjectVault {
   }
 
   // -------------------------------------------------------------------
+  // OKF private control state — `.myco/okf/*`
+  //
+  // Three separate namespaces, all gitignored via VAULT_GITIGNORE's `okf/`
+  // entry: `state/` (lock + manifest — never atomically replaced),
+  // `staging/` (caller-managed staging dirs), and `bundle/` (the
+  // local-mode bundle output root — safe to atomically replace). The
+  // PUBLISHED repo-visible bundle lives at the project root and is not
+  // this class's concern. Write helpers run the gitignore-first
+  // discipline; read helpers never create anything — a status query
+  // against a disabled project must not write to the repo.
+  // -------------------------------------------------------------------
+
+  /** `.myco/okf/state` — created on demand (write path). */
+  okfStateDir(): string {
+    const dir = path.join(this.vaultDir, 'okf', 'state');
+    this._writePerMachineFile(dir, () => fs.mkdirSync(dir, { recursive: true }));
+    return dir;
+  }
+
+  /** `.myco/okf/staging` — created on demand (write path). */
+  okfStagingDir(): string {
+    const dir = path.join(this.vaultDir, 'okf', 'staging');
+    this._writePerMachineFile(dir, () => fs.mkdirSync(dir, { recursive: true }));
+    return dir;
+  }
+
+  /** `.myco/okf/bundle` — local-mode bundle output root. Path only; creates nothing. */
+  okfLocalBundleDir(): string {
+    return path.join(this.vaultDir, 'okf', 'bundle');
+  }
+
+  /** `.myco/okf/state/lock`. Path only; callers create the state dir first. */
+  okfLockPath(): string {
+    return path.join(this.vaultDir, 'okf', 'state', 'lock');
+  }
+
+  /** `.myco/okf/state/manifest.json`. Path only; creates nothing. */
+  okfManifestPath(): string {
+    return path.join(this.vaultDir, 'okf', 'state', 'manifest.json');
+  }
+
+  /**
+   * PURE READ: returns null on a missing or corrupt manifest (corrupt warns
+   * to stderr); never creates directories or the gitignore.
+   */
+  readOkfManifest(): OkfPrivateManifest | null {
+    const manifestPath = this.okfManifestPath();
+    let raw: string;
+    try {
+      raw = fs.readFileSync(manifestPath, 'utf-8');
+    } catch {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('manifest root must be a JSON object');
+      }
+      return parsed as OkfPrivateManifest;
+    } catch (err) {
+      console.warn(
+        `[myco] corrupt OKF manifest at ${this.rel(manifestPath)}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /** Atomic write with the gitignore-first per-machine discipline. */
+  writeOkfManifest(manifest: OkfPrivateManifest): void {
+    const manifestPath = this.okfManifestPath();
+    this._writePerMachineFile(manifestPath, () => {
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      atomicWriteFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8');
+    });
+  }
+
+  // -------------------------------------------------------------------
   // Structural per-machine-write guarantee
   // -------------------------------------------------------------------
 
@@ -352,6 +429,28 @@ export class ProjectVault {
 // =====================================================================
 // Types
 // =====================================================================
+
+/**
+ * Private OKF control-state manifest at `.myco/okf/state/manifest.json`.
+ * Owned by this module (master-plan interface freeze); the OkfBundle
+ * capability reads/writes it exclusively through the vault helpers.
+ * Snake_case throughout — it is an on-disk JSON contract.
+ */
+export interface OkfPrivateManifest {
+  bundle_generation: number;
+  inputs_hash: string | null;
+  output_root: string;
+  last_result: 'published' | 'rolled_back' | 'rollback_failed' | 'cleanup_pending' | null;
+  generated_at: string | null;
+  /** Publish-eligibility acknowledgement set (per-finding, not a boolean). */
+  acknowledged_findings: Array<{ code: string; path: string }>;
+  /**
+   * Hash of (source counts, max updated_ats, include config, projection +
+   * task versions) written at publish; the okf-maintain precondition probe
+   * compares against it.
+   */
+  probe_fingerprint: string | null;
+}
 
 export type ProjectLifecycleState =
   | { kind: 'unmanaged' }

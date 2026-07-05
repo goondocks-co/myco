@@ -205,3 +205,52 @@ describe('writeIdentity modes', () => {
     expect(afterLocal).toBe(beforeLocal);
   });
 });
+
+describe('OKF private control state — .myco/okf/*', () => {
+  it('write helpers materialize the gitignore (with okf/) before creating anything', () => {
+    const stateDir = vault.okfStateDir();
+    expect(fs.existsSync(stateDir)).toBe(true);
+    const gitignore = fs.readFileSync(path.join(projectRoot, '.myco/.gitignore'), 'utf-8');
+    expect(gitignore).toContain('okf/');
+
+    const stagingDir = vault.okfStagingDir();
+    expect(fs.existsSync(stagingDir)).toBe(true);
+    expect(stateDir).toBe(path.join(projectRoot, '.myco/okf/state'));
+    expect(stagingDir).toBe(path.join(projectRoot, '.myco/okf/staging'));
+  });
+
+  it('read helpers on a fresh project create NOTHING', () => {
+    expect(vault.okfLocalBundleDir()).toBe(path.join(projectRoot, '.myco/okf/bundle'));
+    expect(vault.okfLockPath()).toBe(path.join(projectRoot, '.myco/okf/state/lock'));
+    expect(vault.okfManifestPath()).toBe(path.join(projectRoot, '.myco/okf/state/manifest.json'));
+    expect(vault.readOkfManifest()).toBeNull();
+    // Snapshot: neither .myco/okf nor .myco/.gitignore was created by reads.
+    expect(fs.existsSync(path.join(projectRoot, '.myco/okf'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.myco/.gitignore'))).toBe(false);
+  });
+
+  it('manifest round-trips including acknowledged_findings and probe_fingerprint', () => {
+    const manifest = {
+      bundle_generation: 3,
+      inputs_hash: 'abc123',
+      output_root: path.join(projectRoot, 'okf'),
+      last_result: 'published' as const,
+      generated_at: '2026-07-05T12:00:00Z',
+      acknowledged_findings: [{ code: 'likely_secret', path: 'spores/decisions/d1.md' }],
+      probe_fingerprint: 'fp-1',
+    };
+    vault.writeOkfManifest(manifest);
+    expect(vault.readOkfManifest()).toEqual(manifest);
+    // Gitignore-first discipline held for the manifest write too.
+    const gitignore = fs.readFileSync(path.join(projectRoot, '.myco/.gitignore'), 'utf-8');
+    expect(gitignore).toContain('okf/');
+  });
+
+  it('corrupt manifest returns null without throwing', () => {
+    vault.okfStateDir();
+    fs.writeFileSync(vault.okfManifestPath(), '{ not json');
+    expect(vault.readOkfManifest()).toBeNull();
+    fs.writeFileSync(vault.okfManifestPath(), '"scalar-root"');
+    expect(vault.readOkfManifest()).toBeNull();
+  });
+});

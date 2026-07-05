@@ -642,6 +642,31 @@ const VaultEvolutionSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+const OkfMaintainSchema = z.object({
+  /** Bundle output root, relative to the project root. */
+  output_path: z.string().default('okf'),
+  include: z
+    .array(z.enum(['spores', 'canopy', 'concepts', 'guides']))
+    .default(['spores', 'canopy', 'concepts', 'guides']),
+  include_status: z
+    .array(z.enum(['active', 'superseded', 'consolidated', 'obsolete']))
+    .default(['active']),
+  include_undescribed_canopy: z.boolean().default(false),
+  agent_concept_refresh: z.boolean().default(true),
+  managed_agents_md_pointer: z.boolean().default(true),
+});
+
+const OkfSchema = z.object({
+  /**
+   * Master gate for the OKF capability (okf-maintain task, OKF page,
+   * AGENTS.md pointer). The FIRST off-by-default capability: absent config
+   * block ⇒ disabled. This Zod default is the runtime mechanism;
+   * CAPABILITIES.okf.defaultEnabled is defense-in-depth for raw configs.
+   */
+  enabled: z.boolean().default(false),
+  maintain: OkfMaintainSchema.default(() => OkfMaintainSchema.parse({})),
+});
+
 export const GroveConfigSchema = z.object({
   daemon: GroveDaemonSchema.default(() => GroveDaemonSchema.parse({})),
   backup: BackupSchema.default(() => BackupSchema.parse({})),
@@ -679,6 +704,7 @@ export const ProjectConfigSchema = z.object({
   // existing values to their new tier files.
   release_provenance: ReleaseProvenanceSchema.default(() => ReleaseProvenanceSchema.parse({})),
   cortex: CortexSchema.default(() => CortexSchema.parse({})),
+  okf: OkfSchema.default(() => OkfSchema.parse({})),
   symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
 });
 
@@ -789,6 +815,7 @@ export const MycoConfigSchema = z.preprocess(
     vault_evolution: VaultEvolutionSchema.default(() => VaultEvolutionSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
     cortex: CortexSchema.default(() => CortexSchema.parse({})),
+    okf: OkfSchema.default(() => OkfSchema.parse({})),
     appearance: AppearanceConfigSchema,
     symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
   }),
@@ -806,6 +833,7 @@ export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
 export type VaultEvolutionConfig = z.infer<typeof VaultEvolutionSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsSchema>;
+export type OkfConfig = z.infer<typeof OkfSchema>;
 // CanopyConfig removed in config_version 8 — Canopy now lives under
 // `cortex.canopy`. Use `MycoConfig['cortex']['canopy']` for the slice.
 export type CortexConfig = z.infer<typeof CortexSchema>;

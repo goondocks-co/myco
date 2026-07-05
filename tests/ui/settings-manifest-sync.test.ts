@@ -41,6 +41,9 @@ const ALLOWLIST: readonly string[] = [
   // is added here alongside the existing skills.* threshold fields.
   'vault_evolution.',
   'skills.enabled',
+  // OKF is toggled from the Groves capability panel; its advanced knobs are
+  // owned by the dedicated OKF page (UI plan), not the settings manifest.
+  'okf.',
   // Admission ignore list — managed via the Groves "Ignore" action and the
   // machine settings page, not a per-field settings card.
   'capture.ignore.',

@@ -92,6 +92,81 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
     expect(fs.existsSync(path.join(root, '.agents/myco-cli.cjs'))).toBe(false);
   });
 
+  it('adds the OKF pointer to the managed block when the capability is enabled', () => {
+    const root = makeGitProjectWithVault();
+    fs.writeFileSync(
+      path.join(root, '.myco/myco.yaml'),
+      'version: 3\nokf:\n  enabled: true\n',
+    );
+
+    reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
+
+    const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
+    expect(agents).toContain('If `okf/index.md` exists, read it before broad code exploration');
+    expect(agents).toContain('`okf/guides/maintaining-this-bundle.md`');
+    // The pointer lives INSIDE the managed block.
+    const managed = agents.slice(agents.indexOf('myco:managed:start'), agents.indexOf('myco:managed:end'));
+    expect(managed).toContain('okf/index.md');
+  });
+
+  it('omits the OKF pointer by default and removes it when the capability is disabled', () => {
+    const root = makeGitProjectWithVault();
+    // Default config (no okf block) — off by default, no pointer.
+    reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
+    const before = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
+    expect(before).not.toContain('okf/index.md');
+
+    // Enable, reconcile, then disable — the pointer must come and go while
+    // the rest of the managed block stays byte-identical.
+    fs.writeFileSync(path.join(root, '.myco/myco.yaml'), 'version: 3\nokf:\n  enabled: true\n');
+    reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
+    expect(fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8')).toContain('okf/index.md');
+
+    fs.writeFileSync(path.join(root, '.myco/myco.yaml'), 'version: 3\nokf:\n  enabled: false\n');
+    reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
+    const after = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
+    expect(after).not.toContain('okf/index.md');
+    expect(after).toBe(before);
+  });
+
+  it('renders a custom output path in both pointer occurrences', () => {
+    const root = makeGitProjectWithVault();
+    fs.writeFileSync(
+      path.join(root, '.myco/myco.yaml'),
+      'version: 3\nokf:\n  enabled: true\n  maintain:\n    output_path: docs/knowledge\n',
+    );
+
+    reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
+
+    const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
+    expect(agents).toContain('`docs/knowledge/index.md`');
+    expect(agents).toContain('`docs/knowledge/guides/maintaining-this-bundle.md`');
+    expect(agents).not.toContain('`okf/index.md`');
+  });
+
+  it('suppresses the pointer via managed_agents_md_pointer even when enabled', () => {
+    const root = makeGitProjectWithVault();
+    fs.writeFileSync(
+      path.join(root, '.myco/myco.yaml'),
+      'version: 3\nokf:\n  enabled: true\n  maintain:\n    managed_agents_md_pointer: false\n',
+    );
+
+    reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
+
+    expect(fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8')).not.toContain('okf/index.md');
+  });
+
+  it('is idempotent — double reconcile with the pointer enabled is byte-stable', () => {
+    const root = makeGitProjectWithVault();
+    fs.writeFileSync(path.join(root, '.myco/myco.yaml'), 'version: 3\nokf:\n  enabled: true\n');
+
+    reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
+    const first = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
+    reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
+    const second = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
+    expect(second).toBe(first);
+  });
+
   it('reconciles every registered project-managed file in the home (home is the filter)', () => {
     // Home is the boundary now: a single daemon owns every Grove under its
     // MYCO_HOME, so reconciliation covers all in-home projects regardless
