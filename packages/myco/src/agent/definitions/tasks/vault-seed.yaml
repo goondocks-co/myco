@@ -9,6 +9,19 @@
 # be run when adopting Myco on an existing repo — fills the vault with
 # an initial spore set and digest so the assistant has useful context
 # from day one.
+#
+# `reseed-check` (phase 1) decides skip vs. proceed and commits
+# `seedDecision: "skip" | "proceed"` via `phase_emit_metadata`. Every
+# downstream phase through the digest tiers gates on
+# `gateOnPriorMetadata: { phase: reseed-check, key: seedDecision, equals:
+# proceed }`. `orient` requires `dependsOn: [reseed-check]` so it lands in
+# a later wave and can read the gate. `report` is not gated: it runs on
+# both paths.
+#
+# Gate-skipped phases never evaluate their postCondition, so per-phase
+# checks (agent/phase-postconditions.ts) only ever see the seed path;
+# skip-path acceptance lives in the run-end validator
+# (task-postconditions.ts).
 # =============================================================================
 
 name: vault-seed
@@ -44,9 +57,63 @@ prompt: >
   "unavailable" based on what earlier phases used.
 
 phases:
+  - name: reseed-check
+    reasoningLevel: default
+    readOnly: true
+    prompt: |
+      **Your ONLY job this phase: decide whether the vault is already
+      seeded, and commit that decision.**
+
+      **Hard turn budget: {{max_turns}}.** This phase must finish in a
+      handful of turns — it exists so a re-run against an already-seeded
+      vault skips the rest of the pipeline instead of paying for
+      orient + explore-themes + seed-spores again.
+
+      ## Step 1: Broad search (1 tool call)
+
+      Call `vault_search_semantic` ONCE with a broad query naming the
+      project's primary architectural layer or domain (best guess from
+      whatever you already know about this repo — a generic query like
+      "architecture" is fine if nothing more specific comes to mind).
+
+      - If the search returns several high-similarity results (many
+        scores > 0.85), the vault is already populated.
+      - If the search returns nothing, only low-similarity results, or
+        errors (embedding provider unavailable — common on a cold vault
+        with no embeddings yet), treat it as a COLD vault and proceed.
+        **On any search error, default to "proceed" — never let an
+        embedding failure cause a false "skip" that leaves a cold vault
+        unseeded.**
+
+      ## Step 2: Commit the decision (REQUIRED, 2 tool calls)
+
+      Call `phase_emit_metadata` with `key: "seedDecision"` and
+      `value: "skip"` or `value: "proceed"` matching your Step 1
+      finding. Every downstream phase gates on this exact key — if you
+      skip this call, downstream phases default to skipped and the vault
+      never gets seeded.
+
+      Then call `vault_report`:
+      - If skipping: action "skip", reason "vault already populated".
+      - If proceeding: action "reseed-check", noting the cold-vault
+        finding briefly.
+
+      This report is your last tool call. The phase ends here.
+    tools:
+      - vault_search_semantic
+      - phase_emit_metadata
+      - vault_report
+    maxTurns: 3
+    required: true
+
   - name: orient
     reasoningLevel: default
     readOnly: true
+    dependsOn: [reseed-check]
+    gateOnPriorMetadata:
+      phase: reseed-check
+      key: seedDecision
+      equals: proceed
     prompt: |
       **Your ONLY job this phase: produce a 3-8 item theme list from
       surface signals.** You are NOT verifying themes, NOT reading
@@ -118,6 +185,10 @@ phases:
     reasoningLevel: default
     readOnly: true
     dependsOn: [orient]
+    gateOnPriorMetadata:
+      phase: reseed-check
+      key: seedDecision
+      equals: proceed
     prompt: |
       For each theme identified in the orient phase, drill down with
       `code_grep` and targeted `fs_read` calls. Collect specific,
@@ -173,6 +244,11 @@ phases:
   - name: seed-spores
     reasoningLevel: default
     dependsOn: [explore-themes]
+    gateOnPriorMetadata:
+      phase: reseed-check
+      key: seedDecision
+      equals: proceed
+    postCondition: vault-seed-spores
     prompt: |
       Create spores for the observations from the explore phase.
 
@@ -188,26 +264,12 @@ phases:
       are not needed here — the explore-themes summary in your
       context contains everything you need to create spores.
 
-      ## Step 1: Re-seed check (1 tool call)
+      You only reach this phase when reseed-check committed
+      `seedDecision: proceed` — the re-seed decision was already made
+      by the gate before this phase's harness ran. No re-seed check of
+      your own is needed here.
 
-      This phase runs on cold vaults AND on vaults that have been
-      seeded before. Call `vault_search_semantic` ONCE with a broad
-      query derived from the strongest theme (e.g. the name of the
-      highest-signal architectural layer from the explore summary).
-
-      - If the search returns several high-similarity results (many
-        scores > 0.85), the vault is already populated. Call
-        `vault_report` with action "skip" and reason "vault already
-        populated" and STOP. Do not create duplicate spores.
-      - If the search returns nothing or only low-similarity results
-        (typical for a cold vault with no embeddings, or a vault with
-        unrelated prior content), proceed to Step 2.
-
-      Do NOT run per-observation similarity searches — dedup across
-      existing spores is the job of the separate consolidation task,
-      not seed-spores. One broad re-seed check is enough.
-
-      ## Step 2: Create spores (the bulk of your budget)
+      ## Create spores (the bulk of your budget)
 
       For each observation in the explore summary, call
       `vault_create_spore` with:
@@ -237,7 +299,6 @@ phases:
       - Observations anchored to specific file paths are stronger than
         abstract statements
     tools:
-      - vault_search_semantic
       - vault_release_state
       - vault_create_spore
       - vault_report
@@ -251,6 +312,11 @@ phases:
   - name: digest-10000
     reasoningLevel: default
     dependsOn: [seed-spores]
+    gateOnPriorMetadata:
+      phase: reseed-check
+      key: seedDecision
+      equals: proceed
+    postCondition: vault-seed-digest-10000
     prompt: |
       Write digest tier 10000 — Full institutional knowledge (~10k tokens).
 
@@ -263,8 +329,9 @@ phases:
       phases are NOT in scope here — the spores created in seed-spores
       contain everything you need.
 
-      If the seed-spores phase short-circuited with "vault already populated",
-      call `vault_report` with action "skip" for tier 10000 and finish.
+      You only reach this phase when reseed-check committed
+      `seedDecision: proceed` — no "vault already populated" check is
+      needed here; the gate already filtered that case.
 
       1. Call `vault_read_digest` with tier 10000 to see any existing content.
          If this is a first seed run, it will be empty.
@@ -291,6 +358,11 @@ phases:
   - name: digest-5000
     reasoningLevel: default
     dependsOn: [seed-spores]
+    gateOnPriorMetadata:
+      phase: reseed-check
+      key: seedDecision
+      equals: proceed
+    postCondition: vault-seed-digest-5000
     prompt: |
       Write digest tier 5000 — Deep onboarding (~5k tokens).
 
@@ -301,8 +373,9 @@ phases:
       `vault_report`. They are registered and available. Call them
       directly. Filesystem tools from earlier phases are NOT in scope.
 
-      If the seed-spores phase short-circuited, call `vault_report` with
-      action "skip" for tier 5000 and finish.
+      You only reach this phase when reseed-check committed
+      `seedDecision: proceed` — no short-circuit check is needed here;
+      the gate already filtered that case.
 
       This tier focuses on trade-offs and patterns — what a developer
       needs after the README but before diving into code.
@@ -323,6 +396,11 @@ phases:
   - name: digest-1500
     reasoningLevel: default
     dependsOn: [seed-spores]
+    gateOnPriorMetadata:
+      phase: reseed-check
+      key: seedDecision
+      equals: proceed
+    postCondition: vault-seed-digest-1500
     prompt: |
       Write digest tier 1500 — Executive briefing (~1.5k tokens).
 
@@ -333,8 +411,9 @@ phases:
       `vault_report`. They are registered and available. Call them
       directly. Filesystem tools from earlier phases are NOT in scope.
 
-      If the seed-spores phase short-circuited, call `vault_report` with
-      action "skip" for tier 1500 and finish.
+      You only reach this phase when reseed-check committed
+      `seedDecision: proceed` — no short-circuit check is needed here;
+      the gate already filtered that case.
 
       The tightest tier: what someone needs to know in 2 minutes.
       Architectural overview in 1-2 sentences, 2-3 load-bearing decisions,
@@ -353,20 +432,39 @@ phases:
 
   - name: report
     reasoningLevel: low
-    dependsOn: [seed-spores, digest-10000, digest-5000, digest-1500]
+    dependsOn: [reseed-check, seed-spores, digest-10000, digest-5000, digest-1500]
     prompt: |
-      Summarize the seeding pass.
+      Summarize the run. This phase is NOT gated — it runs whether the
+      vault was seeded this run or already populated, so it must handle
+      both paths.
 
       Your only tool this phase is `vault_report`. Call it — it is
       registered and available.
 
-      Call `vault_report` with action "complete" and these details:
-      - Themes explored: N
-      - Spores created: N (by type)
-      - Spores superseded: N
-      - Digest tiers written: [list]
-      - Thin coverage: any themes where the exploration surfaced fewer than
-        3 observations — surface these so the user can follow up with a
+      ## If reseed-check decided "skip" (vault already populated)
+
+      seed-spores, explore-themes, and the digest phases never ran this
+      run — there is nothing to summarize from them. Call `vault_report`
+      with action "skip" and a summary noting the vault was already
+      populated (echo reseed-check's reason).
+
+      ## If reseed-check decided "proceed" (vault was seeded this run)
+
+      Call `vault_report` with action "complete" and a `details` object
+      containing:
+      - `spores_created`: the exact NUMBER of `vault_create_spore` calls
+        you made this run — count your own tool calls, do not estimate
+        from the explore-themes observation list. The two can differ (an
+        observation dropped for quality, a call that errored) — report
+        what you actually called, not what you planned to call. This
+        field is validated against the run's tool-call log; a wrong count
+        fails the run's postcondition.
+      - `spores_by_type`: object mapping observation_type to count
+      - `spores_superseded`: number
+      - `digest_tiers_written`: array of tier numbers
+      - `themes_explored`: number
+      - `thin_coverage`: array of theme names where exploration surfaced
+        fewer than 3 observations — so the user can follow up with a
         targeted review-session or additional manual curation
 
       This report MUST be the last tool call of the run.

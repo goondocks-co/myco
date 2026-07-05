@@ -116,3 +116,26 @@ export function listRunEvents(runId: string, options: ListRunEventsOptions): Run
   ).all(...params) as Record<string, unknown>[];
   return rows.map(toRunEventRow);
 }
+
+/**
+ * Counts `post_tool_use` events for a run, phase, tool name, and outcome.
+ * `agent_turns` (turns.ts) has no phase column; only `agent_run_events`
+ * carries `phase_name`. `outcome: 'success'` means the call did not
+ * throw/report `isError` — an app-level `textResult({ error })` return
+ * still counts as 'success'.
+ */
+export function countPhaseToolCallsByOutcome(
+  runId: string,
+  phaseName: string,
+  toolName: string,
+  outcome: 'success' | 'error',
+): number {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT COUNT(*) as count
+     FROM agent_run_events
+     WHERE run_id = ? AND phase_name = ? AND event_type = 'post_tool_use'
+       AND tool_name = ? AND outcome = ?`,
+  ).get(runId, phaseName, toolName, outcome) as { count: number };
+  return row.count;
+}

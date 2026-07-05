@@ -23,6 +23,10 @@ export const PHASE_POSTCONDITION_KINDS = [
   'skill-survey-reconcile-queue',
   'skill-survey-persist-decisions',
   'harness-health-report',
+  'vault-seed-spores',
+  'vault-seed-digest-10000',
+  'vault-seed-digest-5000',
+  'vault-seed-digest-1500',
 ] as const;
 
 export type PhasePostConditionKind = (typeof PHASE_POSTCONDITION_KINDS)[number];
