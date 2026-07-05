@@ -8,18 +8,34 @@
  */
 
 export class OkfPathError extends Error {
+  /** Stable machine-readable code, e.g. 'path_traversal', 'lone_surrogate'. */
+  readonly code: string;
+
   constructor(message: string) {
     super(message);
     this.name = 'OkfPathError';
+    // Every throw site formats messages as '<code>: <detail>'.
+    const prefix = message.split(':', 1)[0];
+    this.code = /^[a-z_]+$/.test(prefix) ? prefix : 'okf_path_error';
   }
 }
 
 const SAFE_SEGMENT_CHAR = /^[A-Za-z0-9._-]$/;
 
-/** Percent-encode every character outside `[A-Za-z0-9._-]` as uppercase UTF-8 hex. */
+/**
+ * Percent-encode every character outside `[A-Za-z0-9._-]` as uppercase UTF-8 hex.
+ *
+ * Rejects lone surrogates: Node's UTF-8 encoder collapses every unpaired
+ * surrogate (and U+FFFD itself) to the replacement character, which would make
+ * distinct inputs encode identically and silently overwrite one another.
+ */
 export function encodePathSegment(segment: string): string {
   let out = '';
   for (const ch of segment) {
+    const code = ch.codePointAt(0)!;
+    if (code >= 0xd800 && code <= 0xdfff) {
+      throw new OkfPathError(`lone_surrogate: segment ${JSON.stringify(segment)} contains an unpaired surrogate`);
+    }
     if (SAFE_SEGMENT_CHAR.test(ch)) {
       out += ch;
     } else {
@@ -80,7 +96,9 @@ export function conceptPathForId(id: string): string {
 export function detectCollisions(ids: string[]): string[] {
   const groups = new Map<string, string[]>();
   for (const id of ids) {
-    const key = id.toLowerCase();
+    // NFC-normalize before folding so composed/decomposed spellings of the
+    // same text collide the way case-insensitive filesystems treat them.
+    const key = id.normalize('NFC').toLowerCase();
     const group = groups.get(key);
     if (group) group.push(id);
     else groups.set(key, [id]);

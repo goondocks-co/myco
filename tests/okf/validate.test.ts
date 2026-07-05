@@ -131,6 +131,13 @@ describe('validateBundleTree — myco_strict', () => {
     expect(errorsOf(validateBundleTree(root, 'myco_strict'))).toEqual(['nonroot_index_frontmatter']);
   });
 
+  it('rejects a bundle-root index.md with no frontmatter block at all', () => {
+    write('index.md', '# Index\n\nstuff\n');
+    expect(errorsOf(validateBundleTree(root, 'myco_strict'))).toEqual(['missing_root_frontmatter']);
+    // Still acceptable at the conformance floor.
+    expect(validateBundleTree(root, 'conformance').issues).toEqual([]);
+  });
+
   it('requires recommended fields', () => {
     write('spores/decisions/decision-1.md', '---\ntype: decision\nmyco_id: decision-1\n---\n\nBody.\n');
     const codes = errorsOf(validateBundleTree(root, 'myco_strict'));
@@ -185,6 +192,14 @@ describe('validateBundleTree — myco_strict', () => {
     expect(errorsOf(validateBundleTree(root, 'myco_strict'))).toEqual(['raw_html']);
   });
 
+  it('does not flag markdown autolinks as raw HTML', () => {
+    write('spores/index.md', '# spores\n\nSee <https://example.com> for details.\n');
+    write('spores/decisions/decision-1.md', STRICT_CLEAN.replace('Reasoning.', 'Visit <https://example.com>.'));
+    const report = validateBundleTree(root, 'myco_strict');
+    expect(report.ok).toBe(true);
+    expect(report.issues).toEqual([]);
+  });
+
   it('detects duplicate concept ids after case-fold normalization', () => {
     write('spores/Decision-1.md', STRICT_CLEAN);
     write('spores/decision-1.md', STRICT_CLEAN);
@@ -206,9 +221,17 @@ describe('validateConceptSource', () => {
   it('returns issues instead of throwing on unparseable input', () => {
     const issues = validateConceptSource('no frontmatter at all', 'concepts/x.md', 'conformance');
     expect(issues).toHaveLength(1);
-    expect(issues[0].code).toBe('unparseable_frontmatter');
+    expect(issues[0].code).toBe('missing_frontmatter');
     expect(issues[0].level).toBe('error');
     expect(issues[0].path).toBe('concepts/x.md');
+  });
+
+  it('propagates the parser code for bound violations instead of a blanket label', () => {
+    const big = 'x'.repeat(1024 * 1024 + 1);
+    const issues = validateConceptSource(`---\ntype: Note\n---\n${big}`, 'concepts/x.md', 'conformance');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('body_too_large');
+    expect(issues[0].level).toBe('error');
   });
 
   it('is level-composed: conformance-clean but strict-dirty input reports only at strict', () => {

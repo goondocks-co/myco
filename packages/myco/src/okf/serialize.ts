@@ -12,9 +12,18 @@ import { OKF_RESERVED_FILES, OKF_VERSION, type OkfConcept } from './types.js';
  * stored verbatim; only text re-rendered into generated markdown is neutralized.
  */
 
-/** Neutralize raw HTML in generated markdown text. */
+/**
+ * Neutralize raw HTML in generated markdown text. Newlines collapse to a
+ * single space: every consumer interpolates into line-oriented constructs
+ * (headings, bullets, log lines), where an embedded newline would inject
+ * arbitrary markdown structure.
+ */
 export function escapeInlineText(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /** Escape text used as a markdown link label: raw HTML plus link metacharacters. */
@@ -28,10 +37,20 @@ export function escapeLinkLabel(text: string): string {
 
 const RESERVED_BASENAMES = new Set<string>(OKF_RESERVED_FILES);
 
-/** POSIX-relative path from the directory of `fromPath` to the file of concept `toId`. */
+/**
+ * POSIX-relative path from the directory of `fromPath` to the file of concept
+ * `toId`. Link targets must be derivation-produced ids — an id carrying
+ * whitespace, parentheses, or angle brackets (all percent-encoded by
+ * `deriveConceptId`) would break or reshape the markdown link, so those are
+ * rejected rather than emitted.
+ */
 export function relativeConceptHref(fromPath: string, toId: string): string {
   const fromDir = path.posix.dirname(fromPath);
-  return path.posix.relative(fromDir === '.' ? '' : fromDir, conceptPathForId(toId));
+  const href = path.posix.relative(fromDir === '.' ? '' : fromDir, conceptPathForId(toId));
+  if (/[\s()<>]/.test(href)) {
+    throw new OkfPathError(`unsafe_link_target: ${JSON.stringify(toId)} is not a derivation-produced concept id`);
+  }
+  return href;
 }
 
 /**
@@ -111,9 +130,12 @@ export function renderRootIndex(input: {
 
   const bodyParts = [`# ${escapeInlineText(input.title)}`, escapeInlineText(input.description)];
   if (input.sections.length > 0) {
-    const lines = input.sections.map(
-      (section) => `* [${escapeLinkLabel(section.dir)}/](${section.dir}/index.md) - ${escapeLinkLabel(section.summary)}`,
-    );
+    const lines = input.sections.map((section) => {
+      if (/[\s()<>]/.test(section.dir)) {
+        throw new OkfPathError(`unsafe_link_target: section dir ${JSON.stringify(section.dir)} is not a safe path`);
+      }
+      return `* [${escapeLinkLabel(section.dir)}/](${section.dir}/index.md) - ${escapeLinkLabel(section.summary)}`;
+    });
     bodyParts.push('## Contents', lines.join('\n'));
   }
 

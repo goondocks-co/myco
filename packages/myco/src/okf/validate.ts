@@ -30,7 +30,10 @@ const SAFE_RESOURCE_PREFIXES = ['myco://', 'repo://', 'https://'] as const;
 /** Findings that downgrade to warnings in local mode (richer local-only provenance is allowed). */
 const LOCAL_MODE_DOWNGRADES = new Set(['unsafe_resource_uri']);
 
-const RAW_HTML_PATTERN = /<\/?[a-zA-Z][^>]*>/;
+// Matches HTML-shaped tags (<b>, </script>, <img src=x>, <br/>) without
+// flagging markdown autolinks like <https://example.com> — after the tag name,
+// only a space-led attribute block, '/', or an immediate '>' qualifies.
+const RAW_HTML_PATTERN = /<\/?[a-zA-Z][-a-zA-Z0-9]*(\s[^>]*)?\/?>/;
 
 function containsRawHtml(text: string): boolean {
   return RAW_HTML_PATTERN.test(text);
@@ -66,8 +69,11 @@ export function validateConceptSource(
   try {
     ({ frontmatter, body } = parseConceptDoc(raw));
   } catch (err) {
+    // Propagate the parser's own code (missing_frontmatter, body_too_large, ...)
+    // so consumers get a structured code instead of one blanket label.
+    const code = err instanceof OkfFrontmatterError ? err.code : 'unparseable_frontmatter';
     const message = err instanceof OkfFrontmatterError ? err.message : String(err);
-    issues.push(issue('error', 'unparseable_frontmatter', bundleRelPath, message));
+    issues.push(issue('error', code, bundleRelPath, message));
     return issues;
   }
 
@@ -140,8 +146,9 @@ function validateIndexFile(
         );
       }
     } catch (err) {
+      const code = err instanceof OkfFrontmatterError ? err.code : 'unparseable_frontmatter';
       const message = err instanceof OkfFrontmatterError ? err.message : String(err);
-      issues.push(issue('error', 'unparseable_frontmatter', relPath, message));
+      issues.push(issue('error', code, relPath, message));
       return;
     }
     if (!isRoot && level === 'myco_strict') {
@@ -149,6 +156,12 @@ function validateIndexFile(
         issue('error', 'nonroot_index_frontmatter', relPath, 'non-root index.md files must not carry frontmatter'),
       );
     }
+  } else if (isRoot && level === 'myco_strict') {
+    // A Myco-generated root index always carries okf_version-led frontmatter;
+    // its complete absence must not validate cleaner than a merely incomplete one.
+    issues.push(
+      issue('error', 'missing_root_frontmatter', relPath, 'bundle-root index.md must carry okf_version frontmatter'),
+    );
   }
   if (level === 'myco_strict' && containsRawHtml(scanBody)) {
     issues.push(issue('error', 'raw_html', relPath, 'raw HTML in generated index'));
@@ -169,6 +182,10 @@ function validateLogFile(
   }
 }
 
+// Defense-in-depth: readdir-walked paths can never contain '.', '..', or NUL,
+// but this rule set is the contract for "no unsafe paths" at myco_strict and
+// must hold if the tree listing ever comes from a non-filesystem provider
+// (archive import, remote manifest).
 function checkPathSafety(relPath: string, issues: OkfValidationIssue[]): void {
   for (const segment of relPath.split('/')) {
     if (segment === '.' || segment === '..') {
@@ -185,7 +202,9 @@ function checkPathSafety(relPath: string, issues: OkfValidationIssue[]): void {
 /**
  * Walk a bundle tree on disk and validate it. Only `.md` files are validated;
  * the marker (`.myco-okf-maintain.json`) and any other non-markdown files are
- * non-concept files and are skipped. Symlinked directories are not followed.
+ * non-concept files and are skipped. Symlinks — directories AND files — are
+ * not followed: a symlinked `.md` is not a regular file and is excluded from
+ * `filesChecked`.
  *
  * `mode` defaults to `'published'`. In `'local'` mode, unsafe-resource findings
  * downgrade to warnings (local bundles may carry richer local-only provenance).
@@ -212,7 +231,7 @@ export function validateBundleTree(
       );
       return;
     }
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       const relPath = relDir === '' ? entry.name : `${relDir}/${entry.name}`;
       if (entry.isDirectory()) {
         walk(relPath);

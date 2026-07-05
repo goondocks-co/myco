@@ -90,6 +90,36 @@ describe('generateDirectoryIndexes', () => {
     expect([...first.entries()]).toEqual([...second.entries()]);
   });
 
+  it('neutralizes newline injection in titles, descriptions, and types', () => {
+    const indexes = generateDirectoryIndexes([
+      concept('spores/n1', 'note\n\n# Injected heading', 'Title\n# Also injected', 'desc\nwith newline'),
+    ]);
+    const content = indexes.get('spores/index.md')!;
+    // Every generated line is one of the known line shapes — nothing injected.
+    for (const line of content.split('\n').filter(Boolean)) {
+      expect(/^(# |## |\* \[)/.test(line)).toBe(true);
+    }
+    expect(content).toContain('## note # Injected heading');
+    expect(content).toContain('Title # Also injected');
+  });
+
+  it('groups concepts with a non-string type under "unknown" instead of crashing', () => {
+    const broken = concept('spores/x1', 'placeholder', 'T', 'D');
+    (broken.frontmatter as Record<string, unknown>).type = 42;
+    const indexes = generateDirectoryIndexes([broken]);
+    expect(indexes.get('spores/index.md')).toContain('## unknown');
+  });
+
+  it('sorts by UTF-16 code units, independent of runtime locale', () => {
+    const indexes = generateDirectoryIndexes([
+      concept('spores/a-item', 'note', 'ärgernis', 'Ad'),
+      concept('spores/z-item', 'note', 'zebra', 'Zd'),
+    ]);
+    const content = indexes.get('spores/index.md')!;
+    // 'z' (U+007A) < 'ä' (U+00E4) in code-unit order, whatever the locale says.
+    expect(content.indexOf('[zebra]')).toBeLessThan(content.indexOf('[ärgernis]'));
+  });
+
   it('escapes hostile titles and descriptions in entries', () => {
     const indexes = generateDirectoryIndexes([
       concept('spores/h1', 'note', '<script>alert(1)</script>', 'desc ](javascript:x) end'),

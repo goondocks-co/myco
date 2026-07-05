@@ -13,15 +13,11 @@ import path from 'node:path';
 
 const OKF_SRC = path.join(__dirname, '../../packages/myco/src/okf');
 
+// Match any quoted module reference — static imports, require(), dynamic
+// import(), side-effect imports, and root imports without a trailing slash.
 const FORBIDDEN_IMPORT_PATTERNS: RegExp[] = [
-  /from\s+['"]@myco\/db\//,
-  /from\s+['"]@myco\/daemon\//,
-  /from\s+['"]@myco\/config\//,
-  /from\s+['"]@myco\/vault\//,
-  /from\s+['"](?:\.\.\/)+db\//,
-  /from\s+['"](?:\.\.\/)+daemon\//,
-  /from\s+['"](?:\.\.\/)+config\//,
-  /from\s+['"](?:\.\.\/)+vault\//,
+  /['"]@myco\/(?:db|daemon|config|vault)(?:\/|['"])/,
+  /['"](?:\.\.\/)+(?:db|daemon|config|vault)(?:\/|['"])/,
 ];
 
 const GROVE_IDS_IMPORT = /from\s+['"]@myco\/grove\/ids(?:\.js)?['"]/;

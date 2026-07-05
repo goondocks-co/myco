@@ -34,6 +34,21 @@ function conceptTitle(concept: OkfConcept): string {
   return path.posix.basename(concept.id);
 }
 
+/**
+ * Bundle assemblers cast parsed frontmatter, so `type` may arrive as any YAML
+ * value at runtime; narrow it the same way title/description are narrowed.
+ */
+function conceptType(concept: OkfConcept): string {
+  const type: unknown = concept.frontmatter.type;
+  if (typeof type === 'string' && type.trim() !== '') return type;
+  return 'unknown';
+}
+
+/** Locale-independent comparison — index bytes must not vary by runtime locale or ICU build. */
+function compareStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function conceptDescription(concept: OkfConcept): string | null {
   const description = concept.frontmatter.description;
   if (typeof description === 'string' && description.trim() !== '') return description;
@@ -43,7 +58,7 @@ function conceptDescription(concept: OkfConcept): string | null {
 /** Recursive concept census for a directory subtree. */
 function subtreeStats(concepts: OkfConcept[]): { count: number; types: Set<string>; single: OkfConcept | null } {
   const types = new Set<string>();
-  for (const concept of concepts) types.add(concept.frontmatter.type);
+  for (const concept of concepts) types.add(conceptType(concept));
   return { count: concepts.length, types, single: concepts.length === 1 ? concepts[0] : null };
 }
 
@@ -121,15 +136,16 @@ export function generateDirectoryIndexes(concepts: OkfConcept[]): Map<string, st
 
     const byType = new Map<string, OkfConcept[]>();
     for (const concept of node.concepts) {
-      const group = byType.get(concept.frontmatter.type) ?? [];
+      const type = conceptType(concept);
+      const group = byType.get(type) ?? [];
       group.push(concept);
-      byType.set(concept.frontmatter.type, group);
+      byType.set(type, group);
     }
-    for (const type of [...byType.keys()].sort()) {
+    for (const type of [...byType.keys()].sort(compareStrings)) {
       const group = byType
         .get(type)!
         .slice()
-        .sort((a, b) => conceptTitle(a).localeCompare(conceptTitle(b)) || a.path.localeCompare(b.path));
+        .sort((a, b) => compareStrings(conceptTitle(a), conceptTitle(b)) || compareStrings(a.path, b.path));
       parts.push(`## ${escapeInlineText(type)}`, group.map((concept) => entryLine(concept, dir)).join('\n'));
     }
 

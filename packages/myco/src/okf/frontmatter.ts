@@ -15,12 +15,18 @@ export interface ParsedConceptDoc {
 }
 
 export class OkfFrontmatterError extends Error {
+  /** Stable machine-readable code, e.g. 'unparseable_frontmatter', 'scalar_too_large'. */
+  readonly code: string;
+
   constructor(
     message: string,
     readonly cause?: unknown,
   ) {
     super(message);
     this.name = 'OkfFrontmatterError';
+    // Every throw site formats messages as '<code>: <detail>'.
+    const prefix = message.split(':', 1)[0];
+    this.code = /^[a-z_]+$/.test(prefix) ? prefix : 'okf_frontmatter_error';
   }
 }
 
@@ -138,13 +144,18 @@ function orderKeys(
   frontmatter: Record<string, unknown>,
   keyOrder: 'canonical' | 'insertion',
 ): Record<string, unknown> {
-  if (keyOrder === 'insertion') return { ...frontmatter };
-  const out: Record<string, unknown> = {};
-  for (const key of CANONICAL_KEY_ORDER) {
-    if (key in frontmatter) out[key] = frontmatter[key];
+  // Null-prototype accumulator + Object.hasOwn: keys named after
+  // Object.prototype members ('toString', 'constructor', '__proto__', ...)
+  // must survive as ordinary data — externally authored frontmatter can
+  // legitimately contain any of them.
+  const out: Record<string, unknown> = Object.create(null);
+  if (keyOrder === 'canonical') {
+    for (const key of CANONICAL_KEY_ORDER) {
+      if (Object.hasOwn(frontmatter, key)) out[key] = frontmatter[key];
+    }
   }
   for (const key of Object.keys(frontmatter)) {
-    if (!(key in out)) out[key] = frontmatter[key];
+    if (!Object.hasOwn(out, key)) out[key] = frontmatter[key];
   }
   return out;
 }

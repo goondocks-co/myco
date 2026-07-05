@@ -116,6 +116,33 @@ describe('serializeConceptDoc', () => {
     expect(out).toBe('---\nokf_version: "0.1"\ntype: Bundle\n---\n');
   });
 
+  it('round-trips keys that shadow Object.prototype members', () => {
+    const raw = '---\ntype: Note\ntoString: keepme\nconstructor: alsome\nvalueOf: three\nhasOwnProperty: four\n---\nBody';
+    const parsed = parseConceptDoc(raw);
+    expect(Object.keys(parsed.frontmatter)).toEqual([
+      'type',
+      'toString',
+      'constructor',
+      'valueOf',
+      'hasOwnProperty',
+    ]);
+    const reparsed = parseConceptDoc(serializeConceptDoc(parsed.frontmatter, parsed.body));
+    expect(reparsed.frontmatter).toEqual({
+      type: 'Note',
+      toString: 'keepme',
+      constructor: 'alsome',
+      valueOf: 'three',
+      hasOwnProperty: 'four',
+    });
+  });
+
+  it('round-trips a __proto__ key as ordinary data', () => {
+    const parsed = parseConceptDoc('---\ntype: Note\n__proto__: kept\n---\nBody');
+    const reparsed = parseConceptDoc(serializeConceptDoc(parsed.frontmatter, parsed.body));
+    expect(Object.keys(reparsed.frontmatter)).toContain('__proto__');
+    expect(Object.getOwnPropertyDescriptor(reparsed.frontmatter, '__proto__')?.value).toBe('kept');
+  });
+
   it('round-trips unknown keys and values deep-equal through parse → serialize → parse', () => {
     const frontmatter = {
       type: 'Note',

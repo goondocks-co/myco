@@ -26,6 +26,18 @@ describe('encodePathSegment', () => {
   it('preserves case', () => {
     expect(encodePathSegment('MyFile.TS')).toBe('MyFile.TS');
   });
+
+  it('encodes well-formed astral characters', () => {
+    expect(encodePathSegment('a😀b')).toBe('a%F0%9F%98%80b');
+  });
+
+  it('rejects lone surrogates instead of collapsing them to U+FFFD', () => {
+    expect(() => encodePathSegment('a\uD800')).toThrow(/lone_surrogate/);
+    expect(() => encodePathSegment('a\uDC00')).toThrow(/lone_surrogate/);
+    expect(() => deriveConceptId(['files', 'a\uD800'])).toThrow(OkfPathError);
+    // The literal replacement character itself is a real character and encodes fine.
+    expect(encodePathSegment('a�')).toBe('a%EF%BF%BD');
+  });
 });
 
 describe('deriveConceptId', () => {
