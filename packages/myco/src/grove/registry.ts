@@ -244,6 +244,36 @@ export class UnknownGroveError extends Error {
 }
 
 /**
+ * A caller tried to delete the Grove currently pointed to by
+ * `default_grove_id`. Thrown by {@link deleteGrove} — every `MYCO_HOME`
+ * must keep a default Grove to operate against, so the default must be
+ * reassigned (`setDefaultGrove`) to another Grove before this one can be
+ * removed. Not bypassed by `force` (that flag only waives the
+ * bound-projects guard). The daemon transport maps this to a 409
+ * `default_grove_undeletable`.
+ */
+export class DefaultGroveUndeletableError extends Error {
+  constructor(public readonly groveId: string) {
+    super(`Grove ${groveId} is the default Grove; reassign the default Grove first`);
+    this.name = 'DefaultGroveUndeletableError';
+  }
+}
+
+/**
+ * A caller tried to delete the only Grove left in the registry. Thrown by
+ * {@link deleteGrove} as a belt for a stale or unset default pointer — the
+ * at-least-one-Grove invariant holds regardless of what
+ * `getDefaultGroveId` currently reports. Not bypassed by `force`. The
+ * daemon transport maps this to a 409 `last_grove_undeletable`.
+ */
+export class LastGroveUndeletableError extends Error {
+  constructor(public readonly groveId: string) {
+    super(`Grove ${groveId} is the only Grove; at least one Grove must remain`);
+    this.name = 'LastGroveUndeletableError';
+  }
+}
+
+/**
  * Existence + ownership gate for caller-named Grove ids that arrive
  * OUTSIDE the request-context funnel (body `ActionScope.grove_id`, URL
  * `:id` params). Throws {@link UnknownGroveError} when no record exists —
@@ -979,13 +1009,27 @@ export function renameGrove(
  * `force: true` is passed — moves are the supported path for project
  * relocation, not a "smart" delete.
  *
+ * Two additional refusals run BEFORE the bound-projects guard and are
+ * never bypassed by `force` — a Myco home must always have a default
+ * Grove to operate against:
+ *   1. Deleting the current default Grove throws
+ *      {@link DefaultGroveUndeletableError} — reassign the default
+ *      (`setDefaultGrove`) to another Grove first.
+ *   2. Deleting the last remaining Grove throws
+ *      {@link LastGroveUndeletableError} — belt for a stale/unset
+ *      default pointer; the at-least-one-Grove invariant holds
+ *      regardless of what the pointer says.
+ *
  * On success: removes `~/.myco/groves/<groveId>/` (metadata, registry,
  * SQLite, vectors). Clears the cross-Grove default pointer if the
- * deleted Grove was the default.
+ * deleted Grove was the default (unreachable in practice now that (1)
+ * refuses that case, kept as defense in depth).
  *
  * Note: `force: true` discards any per-project pause state on bound
  * projects along with the rest of the Grove dir — pauses live in the
- * Grove's `projects.toml`, which is removed with the directory.
+ * Grove's `projects.toml`, which is removed with the directory. `force`
+ * bypasses ONLY the bound-projects guard below; it never bypasses the
+ * default-Grove or last-Grove refusals.
  */
 export function deleteGrove(
   groveId: string,
@@ -994,6 +1038,14 @@ export function deleteGrove(
 ): void {
   const existing = loadGroveRecord(groveId, mycoHome);
   if (!existing) throw new Error(`Unknown Grove: ${groveId}`);
+
+  if (getDefaultGroveId(mycoHome) === groveId) {
+    throw new DefaultGroveUndeletableError(groveId);
+  }
+
+  if (listGroves(mycoHome).length === 1) {
+    throw new LastGroveUndeletableError(groveId);
+  }
 
   const projects = listRegisteredProjects(groveId, mycoHome);
   if (projects.length > 0 && !opts.force) {

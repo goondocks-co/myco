@@ -23,10 +23,12 @@ import { resolveGroveDbPath, resolveGroveDir, resolveProjectVaultDir } from '@my
 import {
   clearGroveRegistryCaches,
   createGrove,
+  getDefaultGroveId,
   listGroves,
   listRegisteredProjects,
   loadGroveRecord,
   registerProjectInGrove,
+  setDefaultGrove,
 } from '@myco/grove/registry.js';
 
 describe('Grove CRUD API', () => {
@@ -147,6 +149,10 @@ describe('Grove CRUD API', () => {
 
   describe('DELETE /api/groves/:id', () => {
     it('deletes an empty Grove and returns 204', async () => {
+      // A second Grove keeps `grove` non-default and non-last so this
+      // test isolates the empty/non-empty behavior from the new
+      // default/last-Grove guards.
+      createGrove('Anchor');
       const grove = createGrove('Disposable');
       const response = await call(createDeleteGroveHandler(serviceDir), { params: { id: grove.id } });
       expect(response.status).toBe(204);
@@ -154,6 +160,7 @@ describe('Grove CRUD API', () => {
     });
 
     it('returns 409 grove_not_empty when projects remain', async () => {
+      createGrove('Anchor');
       const grove = createGrove('Busy');
       const projectId = createProjectId();
       registerProjectInGrove(grove.id, {
@@ -170,6 +177,7 @@ describe('Grove CRUD API', () => {
     });
 
     it('returns 409 when only archived projects remain', async () => {
+      createGrove('Anchor');
       const grove = createGrove('Archived Busy');
       const projectId = createProjectId();
       registerProjectInGrove(grove.id, {
@@ -194,6 +202,61 @@ describe('Grove CRUD API', () => {
       });
       expect(response.status).toBe(404);
       expect((response.body as { error: { code: string } }).error.code).toBe('grove_not_found');
+    });
+
+    it('returns 409 default_grove_undeletable when deleting the default Grove', async () => {
+      const defaultGrove = createGrove('Primary');
+      createGrove('Secondary');
+      expect(getDefaultGroveId(mycoHome)).toBe(defaultGrove.id);
+
+      const response = await call(createDeleteGroveHandler(serviceDir), { params: { id: defaultGrove.id } });
+
+      expect(response.status).toBe(409);
+      expect((response.body as { error: { code: string } }).error.code).toBe('default_grove_undeletable');
+      expect(loadGroveRecord(defaultGrove.id)).not.toBeNull();
+    });
+
+    it('returns 409 default_grove_undeletable when deleting the only Grove (the sole Grove is always default)', async () => {
+      const grove = createGrove('Solo');
+      expect(listGroves(mycoHome)).toHaveLength(1);
+
+      const response = await call(createDeleteGroveHandler(serviceDir), { params: { id: grove.id } });
+
+      expect(response.status).toBe(409);
+      expect((response.body as { error: { code: string } }).error.code).toBe('default_grove_undeletable');
+      expect(loadGroveRecord(grove.id)).not.toBeNull();
+    });
+
+    it('returns 409 last_grove_undeletable when deleting the only Grove with a stale/unset default pointer', async () => {
+      const grove = createGrove('Solo');
+      expect(listGroves(mycoHome)).toHaveLength(1);
+      // Simulate a stale/unset default pointer independent of the
+      // single-Grove state — the last-Grove guard must not rely on the
+      // pointer being correct.
+      const registryPath = path.join(mycoHome, 'groves', 'registry.yaml');
+      fs.writeFileSync(registryPath, '{}\n', 'utf-8');
+      clearGroveRegistryCaches();
+      expect(getDefaultGroveId(mycoHome)).toBeNull();
+
+      const response = await call(createDeleteGroveHandler(serviceDir), { params: { id: grove.id } });
+
+      expect(response.status).toBe(409);
+      expect((response.body as { error: { code: string } }).error.code).toBe('last_grove_undeletable');
+      expect(loadGroveRecord(grove.id)).not.toBeNull();
+    });
+
+    it('allows deleting a Grove after the default is reassigned elsewhere', async () => {
+      const a = createGrove('Alpha');
+      const b = createGrove('Beta');
+      expect(getDefaultGroveId(mycoHome)).toBe(a.id);
+
+      setDefaultGrove(b.id, mycoHome);
+      expect(getDefaultGroveId(mycoHome)).toBe(b.id);
+
+      const response = await call(createDeleteGroveHandler(serviceDir), { params: { id: a.id } });
+
+      expect(response.status).toBe(204);
+      expect(loadGroveRecord(a.id)).toBeNull();
     });
   });
 

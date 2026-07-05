@@ -5,10 +5,12 @@ import type { CapabilityId } from '@myco/config/scope.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
   createGrove,
+  DefaultGroveUndeletableError,
   deleteGrove,
   findRegisteredProject,
   getDefaultGroveId,
   getRegisteredProjectInGrove,
+  LastGroveUndeletableError,
   listGroves,
   listRegisteredProjects,
   loadGroveRecord,
@@ -360,6 +362,12 @@ export function createDeleteGroveHandler(_daemonStateDir: string): RouteHandler 
       deleteGrove(groveId, { force: false });
       return { status: 204, body: undefined };
     } catch (err) {
+      if (err instanceof DefaultGroveUndeletableError) {
+        return { status: 409, body: errorBody('default_grove_undeletable', err.message) };
+      }
+      if (err instanceof LastGroveUndeletableError) {
+        return { status: 409, body: errorBody('last_grove_undeletable', err.message) };
+      }
       return { status: 500, body: errorBody('delete_failed', (err as Error).message) };
     }
   };
