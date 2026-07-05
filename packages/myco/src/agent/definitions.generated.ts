@@ -911,6 +911,20 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     "timeoutSeconds": 3600,
     "phases": [
       {
+        "name": "reseed-check",
+        "prompt": "**Your ONLY job this phase: decide whether the vault is already\nseeded, and commit that decision.**\n\n**Hard turn budget: {{max_turns}}.** This phase must finish in a\nhandful of turns — it exists so a re-run against an already-seeded\nvault skips the rest of the pipeline instead of paying for\norient + explore-themes + seed-spores again.\n\n## Step 1: Broad search (1 tool call)\n\nCall `vault_search_semantic` ONCE with a broad query naming the\nproject's primary architectural layer or domain (best guess from\nwhatever you already know about this repo — a generic query like\n\"architecture\" is fine if nothing more specific comes to mind).\n\n- If the search returns several high-similarity results (many\n  scores > 0.85), the vault is already populated.\n- If the search returns nothing, only low-similarity results, or\n  errors (embedding provider unavailable — common on a cold vault\n  with no embeddings yet), treat it as a COLD vault and proceed.\n  **On any search error, default to \"proceed\" — never let an\n  embedding failure cause a false \"skip\" that leaves a cold vault\n  unseeded.**\n\n## Step 2: Commit the decision (REQUIRED, 2 tool calls)\n\nCall `phase_emit_metadata` with `key: \"seedDecision\"` and\n`value: \"skip\"` or `value: \"proceed\"` matching your Step 1\nfinding. Every downstream phase gates on this exact key — if you\nskip this call, downstream phases default to skipped and the vault\nnever gets seeded.\n\nThen call `vault_report`:\n- If skipping: action \"skip\", reason \"vault already populated\".\n- If proceeding: action \"reseed-check\", noting the cold-vault\n  finding briefly.\n\nThis report is your last tool call. The phase ends here.\n",
+        "tools": [
+          "vault_search_semantic",
+          "phase_emit_metadata",
+          "vault_report"
+        ],
+        "maxTurns": 3,
+        "reasoningLevel": "default",
+        "required": true,
+        "readOnly": true,
+        "onItemError": "skip"
+      },
+      {
         "name": "orient",
         "prompt": "**Your ONLY job this phase: produce a 3-8 item theme list from\nsurface signals.** You are NOT verifying themes, NOT reading\nimplementation, and NOT building a comprehensive understanding.\nThat work belongs to the next phase (explore-themes), which has\na much larger budget and is designed for it.\n\n**Hard turn budget: {{max_turns}}.** Each tool call costs one\nturn. If you exhaust the budget before calling `vault_report`\nwith the theme list, this phase fails and blocks the rest of\nthe pipeline. Treat the budget as a constraint, not a suggestion\n— finish well under it.\n\n**Scope guard:** if you find yourself opening a file under\n`packages/*/src/**`, `src/**`, `lib/**`, or any implementation\ndirectory, STOP. That is explore-themes's job. Orient reads\ntop-level metadata and docs only.\n\n## Exact tool plan (budget: ~8 tool calls total)\n\nCall ONLY these tools, in this order. Do NOT add calls.\n\n1. `fs_tree` at `.` with depth=1 — 1 call, 1 turn.\n2. `fs_read` the README (no line window) — 1 call, 1 turn.\n3. `fs_read` the primary manifest (package.json / pyproject.toml /\n   Cargo.toml / go.mod / Gemfile / pom.xml — pick the one that\n   exists, skip if unclear) — 0 or 1 call.\n4. `fs_list` at `.` — 1 call, 1 turn. After this call you have\n   seen every top-level tooling signal. DO NOT list additional\n   directories in this phase; recursive layout exploration is\n   explore-themes's job.\n5. (Optional) `fs_list` on `docs/` — 0 or 1 call. If you do, then\n   `fs_read` AT MOST 2 files that clearly look like architecture\n   or overview docs — max 2 more calls.\n6. `vault_report` with action \"orient\" and the theme list — 1\n   call. This is your last tool call. The phase ends here.\n\nSkipping steps is fine. Adding steps is not. If you are tempted\nto list a subdirectory to \"see what's inside it,\" resist —\nexplore-themes will do that with more budget.\n\n**Frugality:** every tool response comes back as tokens on your\nnext turn's input. Narrow calls keep the budget healthy.\n\n## Output: theme outline\n\nFrom those surface signals alone, name 3-8 themes worth deeper\nexploration in the next phase. Name them confidently even if you\ndon't have full evidence yet — the next phase will verify them.\nGood themes:\n- major architectural layers (\"agent harness\", \"daemon\", \"UI\")\n- cross-cutting domain concepts (\"team sync\", \"session lifecycle\")\n- notable integration points (\"MCP server\", \"SQLite vault\")\n- conventions worth surfacing (testing style, error handling)\n\nAvoid generic themes like \"TypeScript code\" or \"tests exist\".\n\nCall `vault_report` with action \"orient\" and the structured theme\nlist. This is your final tool call for this phase.\n",
         "tools": [
@@ -922,7 +936,15 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "maxTurns": 25,
         "reasoningLevel": "default",
         "required": true,
+        "dependsOn": [
+          "reseed-check"
+        ],
         "readOnly": true,
+        "gateOnPriorMetadata": {
+          "phase": "reseed-check",
+          "key": "seedDecision",
+          "equals": "proceed"
+        },
         "onItemError": "skip"
       },
       {
@@ -942,13 +964,17 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "orient"
         ],
         "readOnly": true,
+        "gateOnPriorMetadata": {
+          "phase": "reseed-check",
+          "key": "seedDecision",
+          "equals": "proceed"
+        },
         "onItemError": "skip"
       },
       {
         "name": "seed-spores",
-        "prompt": "Create spores for the observations from the explore phase.\n\n**Hard turn budget: {{max_turns}}.** Each tool call costs one\nturn. Every observation needs one `vault_create_spore` call;\nbudget your work accordingly.\n\n## Your tools this phase\n\nYou have these tools and ONLY these tools: {{phase_tools}}.\nThey are registered and available. Call them directly. Do NOT\nverify or second-guess. Filesystem tools from earlier phases\nare not needed here — the explore-themes summary in your\ncontext contains everything you need to create spores.\n\n## Step 1: Re-seed check (1 tool call)\n\nThis phase runs on cold vaults AND on vaults that have been\nseeded before. Call `vault_search_semantic` ONCE with a broad\nquery derived from the strongest theme (e.g. the name of the\nhighest-signal architectural layer from the explore summary).\n\n- If the search returns several high-similarity results (many\n  scores > 0.85), the vault is already populated. Call\n  `vault_report` with action \"skip\" and reason \"vault already\n  populated\" and STOP. Do not create duplicate spores.\n- If the search returns nothing or only low-similarity results\n  (typical for a cold vault with no embeddings, or a vault with\n  unrelated prior content), proceed to Step 2.\n\nDo NOT run per-observation similarity searches — dedup across\nexisting spores is the job of the separate consolidation task,\nnot seed-spores. One broad re-seed check is enough.\n\n## Step 2: Create spores (the bulk of your budget)\n\nFor each observation in the explore summary, call\n`vault_create_spore` with:\n- observation_type: \"decision\", \"pattern\", \"wisdom\", \"gotcha\",\n  or \"architecture\" based on what the observation captures\n- content: the full observation — concrete and specific\n- importance: 1-10 (10 = load-bearing architectural invariant,\n  3 = minor stylistic preference)\n- tags: 2-4 tags covering theme and domain\n- file_path: the primary source file when the observation\n  anchors to one specific location\n- session_id: null (no session provenance — this is seed data)\n- prompt_batch_id: null\n- context: \"Seeded from vault-seed exploration pass\"\n\nSeed spores have no session provenance. Do not invent release\nconfidence for them; use release state only when file or package\nevidence has already been reconciled.\n\n## Quality rules\n\n- One observation per spore — specific, not vague\n- Prefer fewer, higher-signal spores over many low-signal ones\n- Target: 10-40 spores per seed run. If the exploration produced\n  far more candidates, prioritize by importance and drop the rest\n  rather than creating everything\n- Observations anchored to specific file paths are stronger than\n  abstract statements\n",
+        "prompt": "Create spores for the observations from the explore phase.\n\n**Hard turn budget: {{max_turns}}.** Each tool call costs one\nturn. Every observation needs one `vault_create_spore` call;\nbudget your work accordingly.\n\n## Your tools this phase\n\nYou have these tools and ONLY these tools: {{phase_tools}}.\nThey are registered and available. Call them directly. Do NOT\nverify or second-guess. Filesystem tools from earlier phases\nare not needed here — the explore-themes summary in your\ncontext contains everything you need to create spores.\n\nYou only reach this phase when reseed-check committed\n`seedDecision: proceed` — the re-seed decision was already made\nby the gate before this phase's harness ran. No re-seed check of\nyour own is needed here.\n\n## Create spores (the bulk of your budget)\n\nFor each observation in the explore summary, call\n`vault_create_spore` with:\n- observation_type: \"decision\", \"pattern\", \"wisdom\", \"gotcha\",\n  or \"architecture\" based on what the observation captures\n- content: the full observation — concrete and specific\n- importance: 1-10 (10 = load-bearing architectural invariant,\n  3 = minor stylistic preference)\n- tags: 2-4 tags covering theme and domain\n- file_path: the primary source file when the observation\n  anchors to one specific location\n- session_id: null (no session provenance — this is seed data)\n- prompt_batch_id: null\n- context: \"Seeded from vault-seed exploration pass\"\n\nSeed spores have no session provenance. Do not invent release\nconfidence for them; use release state only when file or package\nevidence has already been reconciled.\n\n## Quality rules\n\n- One observation per spore — specific, not vague\n- Prefer fewer, higher-signal spores over many low-signal ones\n- Target: 10-40 spores per seed run. If the exploration produced\n  far more candidates, prioritize by importance and drop the rest\n  rather than creating everything\n- Observations anchored to specific file paths are stronger than\n  abstract statements\n",
         "tools": [
-          "vault_search_semantic",
           "vault_release_state",
           "vault_create_spore",
           "vault_report"
@@ -959,11 +985,17 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "explore-themes"
         ],
+        "postCondition": "vault-seed-spores",
+        "gateOnPriorMetadata": {
+          "phase": "reseed-check",
+          "key": "seedDecision",
+          "equals": "proceed"
+        },
         "onItemError": "skip"
       },
       {
         "name": "digest-10000",
-        "prompt": "Write digest tier 10000 — Full institutional knowledge (~10k tokens).\n\n## Your tools this phase\n\nYou have these tools and ONLY these tools:\n`vault_spores`, `vault_search_semantic`, `vault_release_state`,\n`vault_read_digest`, `vault_write_digest`, `vault_report`. They are registered and\navailable. Call them directly. Filesystem tools from earlier\nphases are NOT in scope here — the spores created in seed-spores\ncontain everything you need.\n\nIf the seed-spores phase short-circuited with \"vault already populated\",\ncall `vault_report` with action \"skip\" for tier 10000 and finish.\n\n1. Call `vault_read_digest` with tier 10000 to see any existing content.\n   If this is a first seed run, it will be empty.\n2. Call `vault_spores` with status \"active\" to read the freshly seeded\n   observations.\n3. Organize the digest around the themes from the explore phase.\n   Include concrete file paths and function names. A reader should\n   come away with a thorough picture of the architecture, key\n   decisions, and gotchas.\n4. Call `vault_write_digest` with tier 10000.\n\nIf the existing digest already contains comparable content (re-seed\ncase), integrate rather than overwrite — preserve well-crafted text.\n",
+        "prompt": "Write digest tier 10000 — Full institutional knowledge (~10k tokens).\n\n## Your tools this phase\n\nYou have these tools and ONLY these tools:\n`vault_spores`, `vault_search_semantic`, `vault_release_state`,\n`vault_read_digest`, `vault_write_digest`, `vault_report`. They are registered and\navailable. Call them directly. Filesystem tools from earlier\nphases are NOT in scope here — the spores created in seed-spores\ncontain everything you need.\n\nYou only reach this phase when reseed-check committed\n`seedDecision: proceed` — no \"vault already populated\" check is\nneeded here; the gate already filtered that case.\n\n1. Call `vault_read_digest` with tier 10000 to see any existing content.\n   If this is a first seed run, it will be empty.\n2. Call `vault_spores` with status \"active\" to read the freshly seeded\n   observations.\n3. Organize the digest around the themes from the explore phase.\n   Include concrete file paths and function names. A reader should\n   come away with a thorough picture of the architecture, key\n   decisions, and gotchas.\n4. Call `vault_write_digest` with tier 10000.\n\nIf the existing digest already contains comparable content (re-seed\ncase), integrate rather than overwrite — preserve well-crafted text.\n",
         "tools": [
           "vault_spores",
           "vault_search_semantic",
@@ -978,11 +1010,17 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "seed-spores"
         ],
+        "postCondition": "vault-seed-digest-10000",
+        "gateOnPriorMetadata": {
+          "phase": "reseed-check",
+          "key": "seedDecision",
+          "equals": "proceed"
+        },
         "onItemError": "skip"
       },
       {
         "name": "digest-5000",
-        "prompt": "Write digest tier 5000 — Deep onboarding (~5k tokens).\n\n## Your tools this phase\n\nYou have these tools and ONLY these tools:\n`vault_spores`, `vault_read_digest`, `vault_write_digest`,\n`vault_report`. They are registered and available. Call them\ndirectly. Filesystem tools from earlier phases are NOT in scope.\n\nIf the seed-spores phase short-circuited, call `vault_report` with\naction \"skip\" for tier 5000 and finish.\n\nThis tier focuses on trade-offs and patterns — what a developer\nneeds after the README but before diving into code.\n\n1. Call `vault_read_digest` with tier 5000 for the baseline.\n2. Call `vault_spores` as the primary source (digest-10000 may still\n   be in-flight — don't depend on it).\n3. Call `vault_write_digest` with tier 5000. Trim and synthesize;\n   this tier is a compression of tier 10000's material.\n",
+        "prompt": "Write digest tier 5000 — Deep onboarding (~5k tokens).\n\n## Your tools this phase\n\nYou have these tools and ONLY these tools:\n`vault_spores`, `vault_read_digest`, `vault_write_digest`,\n`vault_report`. They are registered and available. Call them\ndirectly. Filesystem tools from earlier phases are NOT in scope.\n\nYou only reach this phase when reseed-check committed\n`seedDecision: proceed` — no short-circuit check is needed here;\nthe gate already filtered that case.\n\nThis tier focuses on trade-offs and patterns — what a developer\nneeds after the README but before diving into code.\n\n1. Call `vault_read_digest` with tier 5000 for the baseline.\n2. Call `vault_spores` as the primary source (digest-10000 may still\n   be in-flight — don't depend on it).\n3. Call `vault_write_digest` with tier 5000. Trim and synthesize;\n   this tier is a compression of tier 10000's material.\n",
         "tools": [
           "vault_spores",
           "vault_read_digest",
@@ -995,11 +1033,17 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "seed-spores"
         ],
+        "postCondition": "vault-seed-digest-5000",
+        "gateOnPriorMetadata": {
+          "phase": "reseed-check",
+          "key": "seedDecision",
+          "equals": "proceed"
+        },
         "onItemError": "skip"
       },
       {
         "name": "digest-1500",
-        "prompt": "Write digest tier 1500 — Executive briefing (~1.5k tokens).\n\n## Your tools this phase\n\nYou have these tools and ONLY these tools:\n`vault_spores`, `vault_read_digest`, `vault_write_digest`,\n`vault_report`. They are registered and available. Call them\ndirectly. Filesystem tools from earlier phases are NOT in scope.\n\nIf the seed-spores phase short-circuited, call `vault_report` with\naction \"skip\" for tier 1500 and finish.\n\nThe tightest tier: what someone needs to know in 2 minutes.\nArchitectural overview in 1-2 sentences, 2-3 load-bearing decisions,\nthe critical gotchas. Ruthlessly selective.\n\n1. Call `vault_spores` filtered to importance >= 8 to find the\n   top-signal observations.\n2. Call `vault_write_digest` with tier 1500.\n",
+        "prompt": "Write digest tier 1500 — Executive briefing (~1.5k tokens).\n\n## Your tools this phase\n\nYou have these tools and ONLY these tools:\n`vault_spores`, `vault_read_digest`, `vault_write_digest`,\n`vault_report`. They are registered and available. Call them\ndirectly. Filesystem tools from earlier phases are NOT in scope.\n\nYou only reach this phase when reseed-check committed\n`seedDecision: proceed` — no short-circuit check is needed here;\nthe gate already filtered that case.\n\nThe tightest tier: what someone needs to know in 2 minutes.\nArchitectural overview in 1-2 sentences, 2-3 load-bearing decisions,\nthe critical gotchas. Ruthlessly selective.\n\n1. Call `vault_spores` filtered to importance >= 8 to find the\n   top-signal observations.\n2. Call `vault_write_digest` with tier 1500.\n",
         "tools": [
           "vault_spores",
           "vault_read_digest",
@@ -1012,11 +1056,17 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "seed-spores"
         ],
+        "postCondition": "vault-seed-digest-1500",
+        "gateOnPriorMetadata": {
+          "phase": "reseed-check",
+          "key": "seedDecision",
+          "equals": "proceed"
+        },
         "onItemError": "skip"
       },
       {
         "name": "report",
-        "prompt": "Summarize the seeding pass.\n\nYour only tool this phase is `vault_report`. Call it — it is\nregistered and available.\n\nCall `vault_report` with action \"complete\" and these details:\n- Themes explored: N\n- Spores created: N (by type)\n- Spores superseded: N\n- Digest tiers written: [list]\n- Thin coverage: any themes where the exploration surfaced fewer than\n  3 observations — surface these so the user can follow up with a\n  targeted review-session or additional manual curation\n\nThis report MUST be the last tool call of the run.\n",
+        "prompt": "Summarize the run. This phase is NOT gated — it runs whether the\nvault was seeded this run or already populated, so it must handle\nboth paths.\n\nYour only tool this phase is `vault_report`. Call it — it is\nregistered and available.\n\n## If reseed-check decided \"skip\" (vault already populated)\n\nseed-spores, explore-themes, and the digest phases never ran this\nrun — there is nothing to summarize from them. Call `vault_report`\nwith action \"skip\" and a summary noting the vault was already\npopulated (echo reseed-check's reason).\n\n## If reseed-check decided \"proceed\" (vault was seeded this run)\n\nCall `vault_report` with action \"complete\" and a `details` object\ncontaining:\n- `spores_created`: the exact NUMBER of `vault_create_spore` calls\n  you made this run — count your own tool calls, do not estimate\n  from the explore-themes observation list. The two can differ (an\n  observation dropped for quality, a call that errored) — report\n  what you actually called, not what you planned to call. This\n  field is validated against the run's tool-call log; a wrong count\n  fails the run's postcondition.\n- `spores_by_type`: object mapping observation_type to count\n- `spores_superseded`: number\n- `digest_tiers_written`: array of tier numbers\n- `themes_explored`: number\n- `thin_coverage`: array of theme names where exploration surfaced\n  fewer than 3 observations — so the user can follow up with a\n  targeted review-session or additional manual curation\n\nThis report MUST be the last tool call of the run.\n",
         "tools": [
           "vault_report"
         ],
@@ -1024,6 +1074,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "reasoningLevel": "low",
         "required": true,
         "dependsOn": [
+          "reseed-check",
           "seed-spores",
           "digest-10000",
           "digest-5000",
