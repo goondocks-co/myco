@@ -99,7 +99,8 @@ export interface OkfBundleWriteInput {
   machineId: string;
   outputRoot?: string;
   mode: OkfBundleMode;
-  include: OkfBundleInclude;
+  /** Sections to include; when omitted, the capability derives them from config. */
+  include?: OkfBundleInclude;
   sporeStatus: OkfSporeStatusFilter;
   includeUndescribedCanopy?: boolean;
   dryRun?: boolean;

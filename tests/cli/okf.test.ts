@@ -1,0 +1,236 @@
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { parseOkfCommand, run } from '@myco/cli/okf.js';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
+import { openDatabase, withDatabase, closeDatabase } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
+import { registerAgent } from '@myco/db/queries/agents.js';
+import { insertSpore } from '@myco/db/queries/spores.js';
+import { REQUEST_CONTEXT_ENV } from '@myco/grove/request-context.js';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { resolveGroveDbPath } from '@myco/grove/paths.js';
+import { vi } from '../helpers/vi-shim.js';
+
+const PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const AGENT_ID = 'claude-code';
+
+// -------------------------- parseOkfCommand (pure) --------------------------
+
+describe('parseOkfCommand', () => {
+  it('parses maintain flags', () => {
+    const r = parseOkfCommand(['maintain', '--include', 'spores,guides', '--spore-status', 'all', '--dry-run']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.cmd.kind === 'maintain') {
+      expect(r.cmd.include).toEqual({ spores: true, canopy: false, concepts: false, guides: true });
+      expect(r.cmd.sporeStatus).toBe('all');
+      expect(r.cmd.dryRun).toBe(true);
+    }
+  });
+
+  it('rejects unknown include kinds and spore statuses', () => {
+    expect(parseOkfCommand(['maintain', '--include', 'spores,bogus']).ok).toBe(false);
+    expect(parseOkfCommand(['maintain', '--spore-status', 'zombie']).ok).toBe(false);
+  });
+
+  it('requires --out with --one-shot', () => {
+    const r = parseOkfCommand(['maintain', '--one-shot']);
+    expect(r.ok).toBe(false);
+  });
+
+  it('parses concept save/supersede/list/get', () => {
+    expect(parseOkfCommand(['concept', 'save', '--id', 'concepts/x', '--input', '@a.md']).ok).toBe(true);
+    expect(parseOkfCommand(['concept', 'save', '--id', 'concepts/x']).ok).toBe(false);
+    const sup = parseOkfCommand(['concept', 'supersede', 'concepts/a', 'concepts/b', '--reason', 'r']);
+    expect(sup.ok).toBe(true);
+    expect(parseOkfCommand(['concept', 'list']).ok).toBe(true);
+    expect(parseOkfCommand(['concept', 'get', 'concepts/x']).ok).toBe(true);
+  });
+
+  it('rejects an unknown subcommand', () => {
+    expect(parseOkfCommand(['frobnicate']).ok).toBe(false);
+  });
+});
+
+// -------------------------- run (integration) --------------------------
+
+describe('myco okf CLI', () => {
+  let rootDir: string;
+  let vaultDir: string;
+  let groveDbPath: string;
+  let written: string[];
+  let originalLog: typeof console.log;
+
+  function writeConfig(okfEnabled: boolean): void {
+    fs.writeFileSync(
+      path.join(vaultDir, 'myco.yaml'),
+      `version: 3\nokf:\n  enabled: ${okfEnabled}\ncortex:\n  enabled: false\n`,
+    );
+  }
+
+  function seedGroveDb(seed: () => void): void {
+    fs.mkdirSync(path.dirname(groveDbPath), { recursive: true });
+    const db = openDatabase(groveDbPath);
+    createSchema(db);
+    withDatabase(db, seed);
+    db.close();
+  }
+
+  function lastJson(): Record<string, unknown> {
+    return JSON.parse(written.join('')) as Record<string, unknown>;
+  }
+
+  beforeEach(() => {
+    rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'okf-cli-')));
+    const home = path.join(rootDir, 'home');
+    const projectRoot = path.join(rootDir, 'project');
+    vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    vi.stubEnv('MYCO_HOME', home);
+    const grove = createGrove('Work', home);
+    saveProjectManifest(vaultDir, {
+      project: { id: PROJECT_ID, name: 'okf-cli-test' },
+      grove: { binding_id: 'gbind-cli', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(
+      grove.id,
+      { projectId: PROJECT_ID, projectName: 'okf-cli-test', projectRoot, bindingId: 'gbind-cli' },
+      home,
+    );
+    vi.stubEnv(REQUEST_CONTEXT_ENV.projectRoot, projectRoot);
+    vi.stubEnv(REQUEST_CONTEXT_ENV.projectId, PROJECT_ID);
+    vi.stubEnv(REQUEST_CONTEXT_ENV.groveId, grove.id);
+    vi.stubEnv(REQUEST_CONTEXT_ENV.machineId, 'machine-a');
+    groveDbPath = resolveGroveDbPath(grove.id, home);
+
+    written = [];
+    originalLog = console.log;
+    console.log = ((...parts: unknown[]) => {
+      written.push(parts.map((p) => String(p)).join(' '));
+    }) as typeof console.log;
+    process.exitCode = 0;
+  });
+
+  afterEach(() => {
+    console.log = originalLog;
+    vi.unstubAllEnvs();
+    closeDatabase();
+    process.exitCode = 0;
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  const projectRoot = () => path.dirname(vaultDir);
+
+  it('maintain writes a bundle and exits 0', async () => {
+    writeConfig(true);
+    seedGroveDb(() => {
+      registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 });
+      insertSpore({ id: 'decision-1', project_id: PROJECT_ID, agent_id: AGENT_ID, observation_type: 'decision', content: 'A decision.', importance: 5, created_at: 1_783_000_000, machine_id: 'machine-a' });
+    });
+    await run(['maintain', '--acknowledge-publish'], vaultDir);
+    expect(process.exitCode).toBe(0);
+    const out = lastJson();
+    expect(out.ok).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot(), 'okf/index.md'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot(), 'okf/spores/decisions/decision-1.md'))).toBe(true);
+  });
+
+  it('blocks bare maintain when the capability is disabled (exit 1, okf_disabled)', async () => {
+    writeConfig(false);
+    seedGroveDb(() => {
+      registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 });
+    });
+    await run(['maintain'], vaultDir);
+    expect(process.exitCode).toBe(1);
+    expect((lastJson().error as { code: string }).code).toBe('okf_disabled');
+    expect(fs.existsSync(path.join(projectRoot(), 'okf'))).toBe(false);
+  });
+
+  it('allows --dry-run while disabled and writes nothing', async () => {
+    writeConfig(false);
+    seedGroveDb(() => registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 }));
+    await run(['maintain', '--dry-run'], vaultDir);
+    expect(process.exitCode).toBe(0);
+    expect((lastJson()).dryRun).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot(), 'okf'))).toBe(false);
+  });
+
+  it('rejects an invalid --out with exit 1 invalid_okf_output_root', async () => {
+    writeConfig(true);
+    seedGroveDb(() => registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 }));
+    await run(['maintain', '--one-shot', '--out', '.git'], vaultDir);
+    expect(process.exitCode).toBe(1);
+    expect((lastJson().error as { code: string }).code).toBe('invalid_okf_output_root');
+  });
+
+  it('runs the publish-acknowledgement flow', async () => {
+    writeConfig(true);
+    seedGroveDb(() => {
+      registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 });
+      insertSpore({ id: 'decision-1', project_id: PROJECT_ID, agent_id: AGENT_ID, observation_type: 'decision', content: 'Key AKIAIOSFODNN7EXAMPLE here.', importance: 5, created_at: 1_783_000_000, machine_id: 'machine-a' });
+    });
+    await run(['maintain'], vaultDir);
+    expect(process.exitCode).toBe(1);
+    expect((lastJson().error as { code: string }).code).toBe('okf_publish_not_acknowledged');
+
+    written = [];
+    process.exitCode = 0;
+    await run(['maintain', '--acknowledge-publish'], vaultDir);
+    expect(process.exitCode).toBe(0);
+    expect(lastJson().ok).toBe(true);
+  });
+
+  it('validates a maintained bundle', async () => {
+    writeConfig(true);
+    seedGroveDb(() => {
+      registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 });
+      insertSpore({ id: 'decision-1', project_id: PROJECT_ID, agent_id: AGENT_ID, observation_type: 'decision', content: 'A decision.', importance: 5, created_at: 1_783_000_000, machine_id: 'machine-a' });
+    });
+    await run(['maintain', '--acknowledge-publish'], vaultDir);
+    written = [];
+    await run(['validate', 'okf'], vaultDir);
+    expect(process.exitCode).toBe(0);
+    expect((lastJson().validation as { ok: boolean }).ok).toBe(true);
+  });
+
+  it('saves an agent concept from an @file of raw markdown', async () => {
+    writeConfig(true);
+    seedGroveDb(() => {
+      registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 });
+      insertSpore({ id: 'decision-1', project_id: PROJECT_ID, agent_id: AGENT_ID, observation_type: 'decision', content: 'A decision.', importance: 5, created_at: 1_783_000_000, machine_id: 'machine-a' });
+    });
+    await run(['maintain', '--acknowledge-publish'], vaultDir);
+    const conceptFile = path.join(rootDir, 'note.md');
+    fs.writeFileSync(
+      conceptFile,
+      '---\ntype: Note\ntitle: A Note\ndescription: D.\ntags:\n  - okf\ntimestamp: 2026-07-05\nmyco_id: concepts/note\n---\n\nBody.\n',
+    );
+    written = [];
+    await run(['concept', 'save', '--id', 'concepts/note', '--input', `@${conceptFile}`], vaultDir);
+    expect(process.exitCode).toBe(0);
+    expect(lastJson().bundleGeneration).toBe(2);
+    expect(fs.existsSync(path.join(projectRoot(), 'okf/concepts/note.md'))).toBe(true);
+  });
+
+  it('exits 2 on a bad-argument parse error path? (parse errors exit 1)', async () => {
+    writeConfig(true);
+    seedGroveDb(() => registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 }));
+    await run(['bogus-subcommand'], vaultDir);
+    expect(process.exitCode).toBe(1);
+    expect((lastJson().error as { code: string }).code).toBe('invalid_arguments');
+  });
+});
+
+// -------------------------- structural funnel --------------------------
+
+describe('okf CLI is a thin funnel', () => {
+  it('performs no direct filesystem writes (all writes go through OkfBundle)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../packages/myco/src/cli/okf.ts'), 'utf8');
+    expect(src).not.toMatch(/fs\.writeFileSync/);
+    expect(src).not.toMatch(/fs\.mkdirSync/);
+    expect(src).not.toMatch(/fs\.rmSync/);
+    // The only fs use is reading the concept @file.
+    expect(src).toMatch(/fs\.readFileSync/);
+  });
+});
