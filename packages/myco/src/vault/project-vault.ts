@@ -341,8 +341,11 @@ export class ProjectVault {
   }
 
   /**
-   * PURE READ: returns null on a missing or corrupt manifest (corrupt warns
-   * to stderr); never creates directories or the gitignore.
+   * PURE READ: returns null on a missing OR shape-invalid manifest (invalid
+   * warns to stderr); never creates directories or the gitignore. Callers can
+   * trust a non-null return to satisfy the full {@link OkfPrivateManifest}
+   * shape — arithmetic on `bundle_generation` and iteration of
+   * `acknowledged_findings` are safe without re-checking.
    */
   readOkfManifest(): OkfPrivateManifest | null {
     const manifestPath = this.okfManifestPath();
@@ -354,10 +357,10 @@ export class ProjectVault {
     }
     try {
       const parsed = JSON.parse(raw) as unknown;
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('manifest root must be a JSON object');
+      if (!isOkfPrivateManifest(parsed)) {
+        throw new Error('manifest does not match the OkfPrivateManifest shape');
       }
-      return parsed as OkfPrivateManifest;
+      return parsed;
     } catch (err) {
       console.warn(
         `[myco] corrupt OKF manifest at ${this.rel(manifestPath)}: ${err instanceof Error ? err.message : String(err)}`,
@@ -450,6 +453,33 @@ export interface OkfPrivateManifest {
    * compares against it.
    */
   probe_fingerprint: string | null;
+}
+
+const OKF_LAST_RESULTS = new Set(['published', 'rolled_back', 'rollback_failed', 'cleanup_pending']);
+
+/**
+ * Structural guard for a manifest read from disk. A hand-edited or
+ * partially-written file that parses as JSON but violates the shape is
+ * treated as corrupt (readOkfManifest returns null), so a non-null return is
+ * a real {@link OkfPrivateManifest}.
+ */
+function isOkfPrivateManifest(value: unknown): value is OkfPrivateManifest {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const m = value as Record<string, unknown>;
+  if (typeof m.bundle_generation !== 'number' || !Number.isFinite(m.bundle_generation)) return false;
+  if (typeof m.inputs_hash !== 'string' && m.inputs_hash !== null) return false;
+  if (typeof m.output_root !== 'string') return false;
+  if (m.last_result !== null && !OKF_LAST_RESULTS.has(m.last_result as string)) return false;
+  if (typeof m.generated_at !== 'string' && m.generated_at !== null) return false;
+  if (typeof m.probe_fingerprint !== 'string' && m.probe_fingerprint !== null) return false;
+  if (!Array.isArray(m.acknowledged_findings)) return false;
+  return m.acknowledged_findings.every(
+    (f) =>
+      f !== null &&
+      typeof f === 'object' &&
+      typeof (f as Record<string, unknown>).code === 'string' &&
+      typeof (f as Record<string, unknown>).path === 'string',
+  );
 }
 
 export type ProjectLifecycleState =

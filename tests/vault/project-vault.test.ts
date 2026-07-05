@@ -253,4 +253,42 @@ describe('OKF private control state — .myco/okf/*', () => {
     fs.writeFileSync(vault.okfManifestPath(), '"scalar-root"');
     expect(vault.readOkfManifest()).toBeNull();
   });
+
+  it('treats a shape-invalid manifest as corrupt (null), not a malformed object', () => {
+    vault.okfStateDir();
+    // Parses as JSON but violates the OkfPrivateManifest shape — a hand-edited
+    // or partially-written file. The pure-read contract must return null so
+    // Plan-4 consumers never see a NaN generation or an undefined findings list.
+    fs.writeFileSync(vault.okfManifestPath(), JSON.stringify({ bundle_generation: 'not-a-number', extra: true }));
+    expect(vault.readOkfManifest()).toBeNull();
+    fs.writeFileSync(vault.okfManifestPath(), JSON.stringify({}));
+    expect(vault.readOkfManifest()).toBeNull();
+    // Missing acknowledged_findings array.
+    fs.writeFileSync(
+      vault.okfManifestPath(),
+      JSON.stringify({
+        bundle_generation: 1,
+        inputs_hash: null,
+        output_root: '/x',
+        last_result: null,
+        generated_at: null,
+        probe_fingerprint: null,
+      }),
+    );
+    expect(vault.readOkfManifest()).toBeNull();
+    // A bad last_result enum value.
+    fs.writeFileSync(
+      vault.okfManifestPath(),
+      JSON.stringify({
+        bundle_generation: 1,
+        inputs_hash: null,
+        output_root: '/x',
+        last_result: 'exploded',
+        generated_at: null,
+        acknowledged_findings: [],
+        probe_fingerprint: null,
+      }),
+    );
+    expect(vault.readOkfManifest()).toBeNull();
+  });
 });

@@ -1,6 +1,6 @@
-import path from 'node:path';
 import type { ConfigReaction } from './config-reactions/registry.js';
 import { reconcileManagedProjectFiles } from '../symbionts/reconcile.js';
+import { resolveProjectRoot } from '../vault/resolve.js';
 
 export interface OkfReconcileReactionDeps {
   /** Injectable for tests; defaults to the real reconciler. */
@@ -20,6 +20,8 @@ export interface OkfReconcileReactionDeps {
 export function createOkfReconcileReaction(deps: OkfReconcileReactionDeps = {}): ConfigReaction {
   const reconcile = deps.reconcile ?? reconcileManagedProjectFiles;
   return (_ctx, scope) => {
-    reconcile(path.dirname(scope.vaultDir), scope.vaultDir, scope.groveId);
+    // resolveProjectRoot (not a bare path.dirname) names the vaultDir↔projectRoot
+    // coupling — scope.vaultDir is always the canonical <projectRoot>/.myco.
+    reconcile(resolveProjectRoot(scope.vaultDir), scope.vaultDir, scope.groveId);
   };
 }
