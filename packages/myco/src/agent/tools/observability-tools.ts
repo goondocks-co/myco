@@ -8,6 +8,7 @@ import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds } from '@myco/constants.js';
 import { insertReport } from '@myco/db/queries/reports.js';
+import { countRunToolCallsByOutcome } from '@myco/db/queries/agent-run-events.js';
 import {
   findCapHits,
   findCostSpikes,
@@ -18,7 +19,7 @@ import {
   findZeroUsageRuns,
   resolveRunHealthWindow,
 } from '@myco/db/queries/run-health.js';
-import { textResult, stampRunIdInPayload, projectScopeFromVaultToolDeps, type VaultToolDeps } from './types.js';
+import { textResult, stampRunIdInPayload, stampSporeCountInPayload, projectScopeFromVaultToolDeps, type VaultToolDeps } from './types.js';
 import { rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 
 // ---------------------------------------------------------------------------
@@ -52,13 +53,22 @@ export function createObservabilityTools(deps: VaultToolDeps) {
       async (args) => {
         const now = epochSeconds();
 
+        // run_id is stamped upstream in normalizeArgs (no DB access there);
+        // spores_created needs a query against this run's event log, which
+        // only the handler can do, so it is stamped here instead.
+        let details = args.details;
+        if (details && typeof details === 'object' && !Array.isArray(details) && 'spores_created' in details) {
+          const sporesCreated = countRunToolCallsByOutcome(runId, 'vault_create_spore', 'success');
+          details = stampSporeCountInPayload(details, sporesCreated) as typeof details;
+        }
+
         const report = insertReport({
           run_id: runId,
           project_id: projectId,
           agent_id: agentId,
           action: args.action,
           summary: args.summary,
-          details: args.details ? JSON.stringify(args.details) : null,
+          details: details ? JSON.stringify(details) : null,
           created_at: now,
         });
 

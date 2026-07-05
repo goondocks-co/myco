@@ -89,6 +89,28 @@ export function stampRunIdInPayload(
   return payload;
 }
 
+/**
+ * Stamp `spores_created` in a plain-object payload to the actual count.
+ * Returns a new object when the payload carries a `spores_created` key
+ * with a different value; returns the input unchanged otherwise (no key
+ * added — payloads without this field are never touched).
+ */
+export function stampSporeCountInPayload(
+  payload: unknown,
+  count: number,
+): unknown {
+  if (
+    payload !== null
+    && typeof payload === 'object'
+    && !Array.isArray(payload)
+    && 'spores_created' in payload
+    && (payload as Record<string, unknown>).spores_created !== count
+  ) {
+    return { ...(payload as Record<string, unknown>), spores_created: count };
+  }
+  return payload;
+}
+
 export function toSdkMcpToolDefinition<TInput>(
   tool: MycoToolDefinition<TInput>,
 ): SdkMcpToolDefinition<any> {
