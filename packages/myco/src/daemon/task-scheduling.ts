@@ -41,7 +41,7 @@ import { HARNESS_HEALTH_TASK_NAME, notifyHarnessHealthFindings } from '@myco/not
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
-import { effectiveTaskScheduleEnabled } from '@myco/config/capabilities.js';
+import { effectiveTaskScheduleEnabled, isCaptureOnly } from '@myco/config/capabilities.js';
 import {
   forEachGrove,
   forEachRegisteredProject,
@@ -374,6 +374,26 @@ async function seedInitialLastRuns(
 }
 
 // ---------------------------------------------------------------------------
+// Task-admission gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Effective schedule-enablement for one (project config, task) pair.
+ *
+ * harness-health has no governing capability in the capability map, so
+ * `effectiveTaskScheduleEnabled` fails open for it; this additionally
+ * disables it on a capture-only project (every opt-in capability off).
+ */
+export function resolveTaskScheduleEnabled(
+  config: MycoConfig | null,
+  taskName: string,
+  yamlScheduleEnabled: boolean,
+): boolean {
+  if (taskName === HARNESS_HEALTH_TASK_NAME && isCaptureOnly(config)) return false;
+  return effectiveTaskScheduleEnabled(config, taskName, yamlScheduleEnabled);
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -661,8 +681,17 @@ export async function registerScheduledTasks(
       if (!config) return { schedule: { enabled: false } };
       return config.agent.tasks?.[taskName];
     },
-    getTaskScheduleEnabled: (scope, taskName, yamlScheduleEnabled) =>
-      effectiveTaskScheduleEnabled(resolveProjectConfig(scope), taskName, yamlScheduleEnabled),
+    getTaskScheduleEnabled: (scope, taskName, yamlScheduleEnabled) => {
+      const config = resolveProjectConfig(scope);
+      const enabled = resolveTaskScheduleEnabled(config, taskName, yamlScheduleEnabled);
+      if (!enabled && taskName === HARNESS_HEALTH_TASK_NAME && isCaptureOnly(config)) {
+        logger.debug(LOG_KINDS.AGENT_RUN, 'Skipping harness-health — project is capture-only', {
+          grove_id: scope.grove.id,
+          project_id: scope.projectId,
+        });
+      }
+      return enabled;
+    },
     isTaskRunning: (groveId, projectId, name) =>
       runningTasks.has(runningKey(groveId, projectId, name)),
     setTaskRunning: (groveId, projectId, name, running) => {

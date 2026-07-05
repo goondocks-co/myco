@@ -68,6 +68,9 @@ const HTTP_CONFLICT = 409;
  * List all tasks: built-in definitions merged with user-created overrides.
  *
  * Optionally filtered by `?source=user` or `?source=built-in`.
+ *
+ * Each task carries `governingCapability` (or `null`), resolved server-side
+ * from `config/capabilities.ts`.
  */
 export async function handleListTasks(
   req: RouteRequest,
@@ -82,7 +85,12 @@ export async function handleListTasks(
     tasks = tasks.filter((t) => t.source === sourceFilter);
   }
 
-  return { status: HTTP_OK, body: { tasks } };
+  const tasksWithCapability = tasks.map((task) => ({
+    ...task,
+    governingCapability: governingCapability(task.name),
+  }));
+
+  return { status: HTTP_OK, body: { tasks: tasksWithCapability } };
 }
 
 /**

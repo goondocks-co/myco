@@ -42,6 +42,9 @@ import {
 } from '../../hooks/use-providers';
 import { useTaskExecutionDefaults } from '../../hooks/use-task-execution-defaults';
 import { useModels } from '../../hooks/use-models';
+import { useScopedConfig } from '../../hooks/use-scoped-config';
+import { CAPABILITIES, capabilityEnabled } from '@myco/config/capabilities';
+import type { MycoConfig } from '@myco/config/schema';
 import type { HarnessId, ReasoningLevel } from '@myco/agent/types';
 import {
   buildExecutionOverrides,
@@ -119,6 +122,7 @@ export function RunTaskDialog({
   const { mutate: triggerRun, isPending, error } = useTriggerRun();
   const { data: providersData, isPending: isLoadingProviders } = useProviders();
   const providers = providersData?.providers ?? [];
+  const { effective: effectiveConfig } = useScopedConfig();
 
   // Resolve the active task row
   const availableTasks: TaskRow[] = tasksData?.tasks ?? [];
@@ -141,6 +145,15 @@ export function RunTaskDialog({
     draftDefaults: providerDraftDefaults,
   } = useTaskExecutionDefaults(effectiveSelection || undefined);
   const activeTaskRow = preselectedTask ?? resolvedTaskRow;
+
+  // Disables the Run action with a reason when the task's governing
+  // capability is off. `governingCapability` comes from the tasks-listing API.
+  const activeCapId = activeTaskRow?.governingCapability;
+  const capabilityOff = activeCapId != null
+    && !capabilityEnabled(effectiveConfig as MycoConfig | undefined, activeCapId);
+  const capabilityDisabledReason = capabilityOff
+    ? `Enable ${CAPABILITIES[activeCapId].label} for this project to run ${activeTaskRow?.name ?? effectiveSelection}`
+    : undefined;
 
   const {
     draft,
@@ -653,25 +666,33 @@ export function RunTaskDialog({
               {runNotice}
             </p>
           )}
+
+          {capabilityDisabledReason && (
+            <p className="rounded-md bg-surface-container-low px-3 py-2 font-sans text-xs text-on-surface-variant">
+              {capabilityDisabledReason}
+            </p>
+          )}
         </div>
 
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={isPending}>
             Cancel
           </Button>
-          <Button size="sm" className="gap-2" onClick={handleRun} disabled={isPending}>
-            {isPending ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Starting...
-              </>
-            ) : (
-              <>
-                <Play className="h-3.5 w-3.5" />
-                Run
-              </>
-            )}
-          </Button>
+          <span title={capabilityDisabledReason}>
+            <Button size="sm" className="gap-2" onClick={handleRun} disabled={isPending || capabilityOff}>
+              {isPending ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Starting...
+                </>
+              ) : (
+                <>
+                  <Play className="h-3.5 w-3.5" />
+                  Run
+                </>
+              )}
+            </Button>
+          </span>
         </DialogFooter>
       </DialogContent>
     </Dialog>

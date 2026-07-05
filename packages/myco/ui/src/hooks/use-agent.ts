@@ -8,6 +8,7 @@ import type { PhaseAudit, PhaseAuditEntry } from '@myco/services/phase-audit';
 import type { WriteIntentRow } from '@myco/db/queries/write-intents';
 import type { DigestExtractRevisionRow } from '@myco/db/queries/digest-extracts';
 import type { HarnessId, ReasoningLevel } from '@myco/agent/types';
+import type { CapabilityId } from '@myco/config/scope';
 
 /* ---------- Re-exported backend types ---------- */
 
@@ -245,6 +246,8 @@ export interface TaskRow {
   schedule?: { enabled: boolean; intervalSeconds: number; runIn: ('active' | 'idle' | 'sleep')[]; preCondition?: string };
   params?: Record<string, string | number | boolean>;
   schemaVersion?: number;
+  /** The capability that governs manual dispatch of this task, or `null` when ungoverned. */
+  governingCapability?: CapabilityId | null;
 }
 
 export interface TriggerRunPayload {
