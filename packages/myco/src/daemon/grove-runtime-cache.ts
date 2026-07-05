@@ -237,17 +237,9 @@ function openInitializedDatabase(databasePath: string): Database {
   // choke point that serves every non-boot Grove; defaulting here would
   // permanently stamp v52 with the conversion skipped.
   createSchema(db, getMachineId());
-  // Seed built-in agents/tasks for every non-boot Grove DB. Fresh Groves
-  // otherwise have empty agents/agent_tasks tables (only boot registration
-  // and the migration importer populate them), which makes every dispatch
-  // throw a FOREIGN KEY failure on agent_runs.agent_id -> agents(id). This
-  // choke point runs on every open (including re-opens of an existing,
-  // already-broken Grove), so a previously broken Grove self-heals on its
-  // next access with no separate boot sweep required.
-  // `withDatabase` scopes `getDatabase()` inside the seed call to this `db`
-  // via AsyncLocalStorage — the established per-grove write pattern used
-  // throughout daemon/ — so registerAgent/upsertTask need no signature
-  // changes to target a specific Grove's handle.
+  // Seeds built-in agents/tasks into this Grove DB on every open.
+  // `withDatabase` scopes `getDatabase()` to this `db` via AsyncLocalStorage
+  // so registerAgent/upsertTask target this handle without signature changes.
   withDatabase(db, () => seedBuiltInAgentsAndTasks(resolveDefinitionsDir()));
   return db;
 }
