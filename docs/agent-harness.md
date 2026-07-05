@@ -28,6 +28,8 @@ Fourteen tasks cover the full lifecycle. Most users only interact with `vault-ev
 | `digest-only` | Regenerate digest extracts from the current vault state. |
 | `supersession-sweep` | Find and resolve duplicate or contradictory spores. |
 
+`vault-seed` is safe to re-run. It checks the vault first and, if a prior seeding pass already populated it, exits after a brief check instead of creating duplicate spores — so re-triggering it by accident (or running it again after a partial failure) costs a few cents rather than a full pass. A full pass over a mid-sized codebase runs a few dollars and several minutes; the re-seed check itself completes in seconds.
+
 ### Cortex injection
 
 | Task | What it does |

@@ -5,6 +5,9 @@ import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { asPlainRecord, checkPhasePostCondition } from './phase-postconditions.js';
 import { SKILL_EVOLVE_TASK_NAME } from './skill-evolve-output.js';
 
+/** Task name for vault-seed.yaml — matches the YAML's `name:` field. */
+const VAULT_SEED_TASK_NAME = 'vault-seed';
+
 interface PostconditionInput {
   runId: string;
   taskName?: string;
@@ -108,6 +111,66 @@ function validateSkillEvolveRun({ runId }: PostconditionInput): string | null {
   return null;
 }
 
+/**
+ * vault-seed run-end validator. Accepts exactly two shapes:
+ *
+ *   - SKIP path: a `skip` report exists AND zero `vault_create_spore`
+ *     calls were made this run.
+ *   - SEED path: at least one `vault_create_spore` call succeeded AND all
+ *     three digest-tier postConditions pass AND a `complete` report exists
+ *     whose reported spore count matches the run-scoped create count.
+ */
+function validateVaultSeedRun({ runId }: PostconditionInput): string | null {
+  const reports = listReports(runId, { scope: ALL_PROJECTS_SCOPE });
+  if (reports.length === 0) {
+    return 'vault-seed completed without calling vault_report';
+  }
+
+  const toolCounts = countToolCallsByRun(runId, ['vault_create_spore']);
+  const createCount = toolCounts.vault_create_spore ?? 0;
+
+  const skipReport = reports.find((report) => report.action === 'skip');
+  if (skipReport) {
+    if (createCount > 0) {
+      return `vault-seed reported skip but ${createCount} vault_create_spore call(s) were made this run`;
+    }
+    return null;
+  }
+
+  if (createCount < 1) {
+    return 'vault-seed completed without a skip report or a successful vault_create_spore call';
+  }
+
+  const digest10000 = checkPhasePostCondition('vault-seed-digest-10000', { runId, agentId: '', projectId: null, dryRun: false });
+  if (!digest10000.passed) {
+    return digest10000.reason;
+  }
+  const digest5000 = checkPhasePostCondition('vault-seed-digest-5000', { runId, agentId: '', projectId: null, dryRun: false });
+  if (!digest5000.passed) {
+    return digest5000.reason;
+  }
+  const digest1500 = checkPhasePostCondition('vault-seed-digest-1500', { runId, agentId: '', projectId: null, dryRun: false });
+  if (!digest1500.passed) {
+    return digest1500.reason;
+  }
+
+  const completeReport = reports.find((report) => report.action === 'complete');
+  if (!completeReport) {
+    return 'vault-seed made vault_create_spore calls but completed without a "complete" report';
+  }
+
+  const details = asPlainRecord(completeReport.details);
+  const reportedCreated = details?.spores_created;
+  if (typeof reportedCreated !== 'number') {
+    return 'vault-seed "complete" report is missing a numeric details.spores_created count';
+  }
+  if (reportedCreated !== createCount) {
+    return `vault-seed "complete" report claims ${reportedCreated} spores created but ${createCount} vault_create_spore call(s) were recorded this run`;
+  }
+
+  return null;
+}
+
 const TASK_POSTCONDITION_RULES: Array<{
   taskNames: string[];
   validate: PostconditionValidator;
@@ -119,6 +182,10 @@ const TASK_POSTCONDITION_RULES: Array<{
   {
     taskNames: [SKILL_EVOLVE_TASK_NAME],
     validate: validateSkillEvolveRun,
+  },
+  {
+    taskNames: [VAULT_SEED_TASK_NAME],
+    validate: validateVaultSeedRun,
   },
 ];
 

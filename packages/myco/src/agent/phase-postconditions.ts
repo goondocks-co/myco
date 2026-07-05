@@ -31,6 +31,7 @@
  */
 
 import { getState } from '@myco/db/queries/agent-state.js';
+import { countPhaseToolCallsByOutcome } from '@myco/db/queries/agent-run-events.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listWriteIntents, type WriteIntentRow } from '@myco/db/queries/write-intents.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
@@ -389,6 +390,40 @@ function checkHarnessHealthReport(input: PhasePostConditionInput): PhasePostCond
   return PASSED;
 }
 
+/**
+ * Passes when the `seed-spores` phase made at least one successful
+ * `vault_create_spore` call. Checkers receive no phase name, so each kind
+ * hardcodes its target phase. `outcome: 'success'` means the call did not
+ * throw — an app-level `textResult({ error })` return still counts.
+ */
+function checkVaultSeedSpores(input: PhasePostConditionInput): PhasePostConditionResult {
+  const count = countPhaseToolCallsByOutcome(input.runId, 'seed-spores', 'vault_create_spore', 'success');
+  if (count < 1) {
+    return failed('vault-seed seed-spores phase completed without a successful vault_create_spore call');
+  }
+  return PASSED;
+}
+
+/**
+ * Passes when the matching digest-tier phase made at least one successful
+ * `vault_write_digest` call. Not gated on `digest_extracts` existence:
+ * that table has no `run_id` column and keeps only the latest content per
+ * (project_id, agent_id, tier), so a row can already exist from a prior run.
+ */
+function checkVaultSeedDigestTier(phaseName: string, tierLabel: string): PhasePostConditionFn {
+  return (input: PhasePostConditionInput): PhasePostConditionResult => {
+    const count = countPhaseToolCallsByOutcome(input.runId, phaseName, 'vault_write_digest', 'success');
+    if (count < 1) {
+      return failed(`vault-seed ${phaseName} phase completed without a successful vault_write_digest call for tier ${tierLabel}`);
+    }
+    return PASSED;
+  };
+}
+
+const checkVaultSeedDigest10000 = checkVaultSeedDigestTier('digest-10000', '10000');
+const checkVaultSeedDigest5000 = checkVaultSeedDigestTier('digest-5000', '5000');
+const checkVaultSeedDigest1500 = checkVaultSeedDigestTier('digest-1500', '1500');
+
 const PHASE_POSTCONDITIONS: Record<PhasePostConditionKind, PhasePostConditionFn> = {
   'skill-evolve-inventory': checkSkillEvolveInventory,
   'skill-evolve-assess': checkSkillEvolveAssess,
@@ -397,6 +432,10 @@ const PHASE_POSTCONDITIONS: Record<PhasePostConditionKind, PhasePostConditionFn>
   'skill-survey-reconcile-queue': checkSkillSurveyReconcileQueue,
   'skill-survey-persist-decisions': checkSkillSurveyPersistDecisions,
   'harness-health-report': checkHarnessHealthReport,
+  'vault-seed-spores': checkVaultSeedSpores,
+  'vault-seed-digest-10000': checkVaultSeedDigest10000,
+  'vault-seed-digest-5000': checkVaultSeedDigest5000,
+  'vault-seed-digest-1500': checkVaultSeedDigest1500,
 };
 
 export function checkPhasePostCondition(
