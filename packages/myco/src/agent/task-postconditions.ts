@@ -117,8 +117,11 @@ function validateSkillEvolveRun({ runId }: PostconditionInput): string | null {
  *   - SKIP path: a `skip` report exists AND zero `vault_create_spore`
  *     calls were made this run.
  *   - SEED path: at least one `vault_create_spore` call succeeded AND all
- *     three digest-tier postConditions pass AND a `complete` report exists
- *     whose reported spore count matches the run-scoped create count.
+ *     three digest-tier postConditions pass AND a `complete` report exists.
+ *
+ * The report's self-reported spore count is not gated — the run's tool-call
+ * log is the authoritative count, and a model self-tally is not reliable
+ * enough to fail a run on.
  */
 function validateVaultSeedRun({ runId }: PostconditionInput): string | null {
   const reports = listReports(runId, { scope: ALL_PROJECTS_SCOPE });
@@ -157,15 +160,6 @@ function validateVaultSeedRun({ runId }: PostconditionInput): string | null {
   const completeReport = reports.find((report) => report.action === 'complete');
   if (!completeReport) {
     return 'vault-seed made vault_create_spore calls but completed without a "complete" report';
-  }
-
-  const details = asPlainRecord(completeReport.details);
-  const reportedCreated = details?.spores_created;
-  if (typeof reportedCreated !== 'number') {
-    return 'vault-seed "complete" report is missing a numeric details.spores_created count';
-  }
-  if (reportedCreated !== createCount) {
-    return `vault-seed "complete" report claims ${reportedCreated} spores created but ${createCount} vault_create_spore call(s) were recorded this run`;
   }
 
   return null;

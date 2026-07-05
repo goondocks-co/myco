@@ -130,7 +130,7 @@ describe('validateTaskPostconditions — vault-seed', () => {
     });
   });
 
-  test('SEED path fails: reported spore count does not match the run-scoped create count (retires the 19-vs-18 drift)', () => {
+  test('SEED path passes when the reported spore count differs from the actual count (self-tally is not gated)', () => {
     withDatabase(db, () => {
       createSporeTurn(1);
       createSporeTurn(2);
@@ -146,13 +146,11 @@ describe('validateTaskPostconditions — vault-seed', () => {
         created_at: epochSeconds(),
       });
       const error = validateTaskPostconditions({ runId, taskName });
-      expect(error).not.toBeNull();
-      expect(error).toContain('19');
-      expect(error).toContain('2');
+      expect(error).toBeNull();
     });
   });
 
-  test('SEED path fails: complete report omits the numeric spores_created count', () => {
+  test('SEED path passes when the complete report omits a spore count (count is informational)', () => {
     withDatabase(db, () => {
       createSporeTurn(1);
       writeDigestEvent('digest-10000');
@@ -167,8 +165,7 @@ describe('validateTaskPostconditions — vault-seed', () => {
         created_at: epochSeconds(),
       });
       const error = validateTaskPostconditions({ runId, taskName });
-      expect(error).not.toBeNull();
-      expect(error).toContain('spores_created');
+      expect(error).toBeNull();
     });
   });
 
