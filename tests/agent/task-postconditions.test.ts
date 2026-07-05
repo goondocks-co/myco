@@ -4,9 +4,14 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { insertRun } from '@myco/db/queries/runs.js';
+import { insertRunEvent } from '@myco/db/queries/agent-run-events.js';
 import { insertTurn } from '@myco/db/queries/turns.js';
 import { insertWriteIntent } from '@myco/db/queries/write-intents.js';
 import { validateTaskPostconditions } from '@myco/agent/task-postconditions.js';
+import {
+  SKILL_EVOLVE_ASSESS_PHASE_NAME,
+  SKILL_EVOLVE_INVENTORY_PHASE_NAME,
+} from '@myco/agent/skill-evolve-output.js';
 import { DEFAULT_AGENT_ID, epochSeconds } from '@myco/constants.js';
 
 const TEST_PROJECT_ID = 'proj_skill_evolve_postconditions';
@@ -57,6 +62,24 @@ function seedRun(options: { dryRun?: boolean; agentId?: string } = {}) {
   });
 }
 
+/** Records the freshness evidence a live skill-evolve run leaves behind: a successful `vault_set_state` call in each phase. */
+function writeSkillEvolveStateEvents(runId = TEST_RUN_ID) {
+  insertRunEvent({
+    runId,
+    phaseName: SKILL_EVOLVE_INVENTORY_PHASE_NAME,
+    eventType: 'post_tool_use',
+    toolName: 'vault_set_state',
+    outcome: 'success',
+  });
+  insertRunEvent({
+    runId,
+    phaseName: SKILL_EVOLVE_ASSESS_PHASE_NAME,
+    eventType: 'post_tool_use',
+    toolName: 'vault_set_state',
+    outcome: 'success',
+  });
+}
+
 function insertSkillEvolveReports(
   runId = TEST_RUN_ID,
   assessPayload = classificationPayload(runId),
@@ -91,16 +114,76 @@ describe('task postconditions', () => {
   it('accepts skill-evolve when reports and persisted state agree', () => {
     seedRun();
     insertSkillEvolveReports();
+    writeSkillEvolveStateEvents();
     setState(DEFAULT_AGENT_ID, TEST_PROJECT_ID, 'skill-evolve-inventory', JSON.stringify(inventoryPayload()), epochSeconds());
     setState(DEFAULT_AGENT_ID, TEST_PROJECT_ID, 'skill-evolve-classifications', JSON.stringify(classificationPayload()), epochSeconds());
 
     expect(validateTaskPostconditions({ runId: TEST_RUN_ID, taskName: 'skill-evolve' })).toBeNull();
   });
 
+  it('accepts skill-evolve when the model omits run_id from state and report payloads', () => {
+    seedRun();
+    insertReport({
+      run_id: TEST_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'skill-evolve-inventory',
+      summary: 'Inventory complete',
+      details: JSON.stringify({ merge_count: 1, narrow_count: 1 }),
+      created_at: epochSeconds(),
+    });
+    insertReport({
+      run_id: TEST_RUN_ID,
+      agent_id: DEFAULT_AGENT_ID,
+      action: 'assess',
+      summary: 'Assess complete',
+      details: JSON.stringify({
+        classifications: classificationPayload().classifications,
+        deferred_skills: classificationPayload().deferred_skills,
+      }),
+      created_at: epochSeconds() + 1,
+    });
+    writeSkillEvolveStateEvents();
+    setState(
+      DEFAULT_AGENT_ID,
+      TEST_PROJECT_ID,
+      'skill-evolve-inventory',
+      JSON.stringify({
+        merge_candidates: inventoryPayload().merge_candidates,
+        narrow_candidates: inventoryPayload().narrow_candidates,
+      }),
+      epochSeconds(),
+    );
+    setState(
+      DEFAULT_AGENT_ID,
+      TEST_PROJECT_ID,
+      'skill-evolve-classifications',
+      JSON.stringify({
+        classifications: classificationPayload().classifications,
+        deferred_skills: classificationPayload().deferred_skills,
+      }),
+      epochSeconds(),
+    );
+
+    expect(validateTaskPostconditions({ runId: TEST_RUN_ID, taskName: 'skill-evolve' })).toBeNull();
+  });
+
+  it('fails skill-evolve when the inventory phase wrote no state this run (stale prior-run state present)', () => {
+    seedRun();
+    insertSkillEvolveReports();
+    // No writeSkillEvolveStateEvents() call: simulates a prior run's leftover
+    // agent_state row with no fresh write this run.
+    setState(DEFAULT_AGENT_ID, TEST_PROJECT_ID, 'skill-evolve-inventory', JSON.stringify(inventoryPayload()), epochSeconds());
+    setState(DEFAULT_AGENT_ID, TEST_PROJECT_ID, 'skill-evolve-classifications', JSON.stringify(classificationPayload()), epochSeconds());
+
+    expect(validateTaskPostconditions({ runId: TEST_RUN_ID, taskName: 'skill-evolve' }))
+      .toBe('skill-evolve inventory phase wrote no skill-evolve-inventory state this run');
+  });
+
   it('validates persisted skill-evolve state under the run agent', () => {
     registerAgent({ id: CUSTOM_AGENT_ID, name: 'Custom Agent', created_at: epochSeconds() });
     seedRun({ agentId: CUSTOM_AGENT_ID });
     insertSkillEvolveReports(TEST_RUN_ID, classificationPayload(TEST_RUN_ID, 'STALE'), CUSTOM_AGENT_ID);
+    writeSkillEvolveStateEvents();
     setState(
       DEFAULT_AGENT_ID,
       TEST_PROJECT_ID,
@@ -143,6 +226,7 @@ describe('task postconditions', () => {
   it('fails skill-evolve when classification state does not match the assess report', () => {
     seedRun();
     insertSkillEvolveReports(TEST_RUN_ID, classificationPayload(TEST_RUN_ID, 'STALE'));
+    writeSkillEvolveStateEvents();
     setState(DEFAULT_AGENT_ID, TEST_PROJECT_ID, 'skill-evolve-inventory', JSON.stringify(inventoryPayload()), epochSeconds());
     setState(DEFAULT_AGENT_ID, TEST_PROJECT_ID, 'skill-evolve-classifications', JSON.stringify(classificationPayload(TEST_RUN_ID, 'CURRENT')), epochSeconds());
 
