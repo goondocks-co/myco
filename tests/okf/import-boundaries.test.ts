@@ -1,15 +1,17 @@
 /**
- * Structural guard: the OKF format library stays pure. Layer rules:
+ * Structural guards on the OKF module layering (grep-and-fail, mirroring
+ * tests/ui/capability-gate-no-hardcode.test.ts).
  *
- * - Top-level packages/myco/src/okf/*.ts (the format core) may not reference
- *   db/, daemon/, config/, or vault/ at all — those dependencies arrive in
- *   later layers. Exception: types.ts may import the ProjectScope TYPE from
- *   @myco/grove/ids.
- * - packages/myco/src/okf/projectors/*.ts take already-fetched rows, so they
- *   may use `import type` from @myco/db/... (row shapes only) — but never a
- *   value import: no DB handles, no query execution, no daemon/config/vault.
- *
- * Mirrors the grep-and-fail pattern of tests/ui/capability-gate-no-hardcode.test.ts.
+ * Three layers under packages/myco/src/okf/:
+ *  - Pure format core (types, frontmatter, paths, serialize, indexes, validate,
+ *    privacy, errors, output-root, publish-eligibility): no db/daemon/config/
+ *    vault value imports. types.ts may import the ProjectScope TYPE.
+ *  - Projectors (projectors/*.ts): may `import type` row shapes from @myco/db,
+ *    never a value import.
+ *  - Capability layer (bundle.ts, gather.ts): may use db/config/vault — that is
+ *    their job — but must NEVER import SymbiontInstaller, the daemon, the
+ *    scheduler, AGENTS.md machinery, or Cortex modules. OkfBundle is the single
+ *    writer of bundle files and owns none of discovery/scheduling.
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -18,70 +20,92 @@ import path from 'node:path';
 
 const OKF_SRC = path.join(__dirname, '../../packages/myco/src/okf');
 
-// Match any quoted module reference — static imports, require(), dynamic
-// import(), side-effect imports, and root imports without a trailing slash.
-const FORBIDDEN_REFERENCE_PATTERNS: RegExp[] = [
+const PURE_CORE = [
+  'types.ts',
+  'frontmatter.ts',
+  'paths.ts',
+  'serialize.ts',
+  'indexes.ts',
+  'validate.ts',
+  'privacy.ts',
+  'errors.ts',
+  'output-root.ts',
+  'publish-eligibility.ts',
+];
+const CAPABILITY_LAYER = ['bundle.ts', 'gather.ts'];
+
+const DB_CONFIG_VAULT: RegExp[] = [
   /['"]@myco\/(?:db|daemon|config|vault)(?:\/|['"])/,
   /['"](?:\.\.\/)+(?:db|daemon|config|vault)(?:\/|['"])/,
 ];
-
 const GROVE_IDS_IMPORT = /from\s+['"]@myco\/grove\/ids(?:\.js)?['"]/;
 
-function tsFiles(dir: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'))
-    .map((name) => path.join(dir, name));
+// Modules the capability layer must never reach — discovery, scheduling, Cortex.
+const FORBIDDEN_FOR_CAPABILITY: RegExp[] = [
+  /['"]@myco\/symbionts\//,
+  /['"]@myco\/daemon\//,
+  /['"]@myco\/context\//,
+  /SymbiontInstaller/,
+  /AGENTS\.md/,
+  /task-schedul/i,
+];
+
+function read(file: string): string {
+  return fs.readFileSync(path.join(OKF_SRC, file), 'utf8');
 }
 
-const CORE_FILES = tsFiles(OKF_SRC);
-const PROJECTOR_FILES = tsFiles(path.join(OKF_SRC, 'projectors'));
-
 describe('okf import boundaries', () => {
-  it('has source files to scan', () => {
-    expect(CORE_FILES.length).toBeGreaterThanOrEqual(5);
-    expect(PROJECTOR_FILES.length).toBeGreaterThanOrEqual(4);
+  it('the enumerated layers exist on disk', () => {
+    for (const f of [...PURE_CORE, ...CAPABILITY_LAYER]) {
+      expect(fs.existsSync(path.join(OKF_SRC, f))).toBe(true);
+    }
   });
 
-  it('format core never references db/, daemon/, config/, or vault/', () => {
+  it('the pure format core never references db/, daemon/, config/, or vault/', () => {
     const violations: string[] = [];
-    for (const file of CORE_FILES) {
-      const content = fs.readFileSync(file, 'utf8');
-      for (const pattern of FORBIDDEN_REFERENCE_PATTERNS) {
-        if (pattern.test(content)) {
-          violations.push(`${path.basename(file)}: matches ${pattern}`);
-        }
+    for (const file of PURE_CORE) {
+      const content = read(file);
+      for (const pattern of DB_CONFIG_VAULT) {
+        if (pattern.test(content)) violations.push(`${file}: matches ${pattern}`);
       }
     }
     expect(violations).toEqual([]);
   });
 
   it('projectors reference @myco/db only via type-only imports', () => {
+    const projDir = path.join(OKF_SRC, 'projectors');
+    const files = fs.readdirSync(projDir).filter((n) => n.endsWith('.ts') && !n.endsWith('.test.ts'));
+    expect(files.length).toBeGreaterThanOrEqual(4);
     const violations: string[] = [];
-    for (const file of PROJECTOR_FILES) {
-      const content = fs.readFileSync(file, 'utf8');
+    for (const name of files) {
+      const content = fs.readFileSync(path.join(projDir, name), 'utf8');
       for (const line of content.split('\n')) {
-        const referencesForbidden = FORBIDDEN_REFERENCE_PATTERNS.some((pattern) => pattern.test(line));
-        if (!referencesForbidden) continue;
-        const isTypeOnlyDbImport = /^import\s+type\s.*from\s+['"]@myco\/db\//.test(line.trim());
-        if (!isTypeOnlyDbImport) {
-          violations.push(`${path.basename(file)}: ${line.trim()}`);
-        }
+        if (!DB_CONFIG_VAULT.some((p) => p.test(line))) continue;
+        if (!/^import\s+type\s.*from\s+['"]@myco\/db\//.test(line.trim())) violations.push(`${name}: ${line.trim()}`);
       }
     }
     expect(violations).toEqual([]);
   });
 
   it('imports @myco/grove/ids only from types.ts, and only as a type import', () => {
-    for (const file of [...CORE_FILES, ...PROJECTOR_FILES]) {
-      const content = fs.readFileSync(file, 'utf8');
+    for (const file of PURE_CORE) {
+      const content = read(file);
       if (!GROVE_IDS_IMPORT.test(content)) continue;
-      expect(path.basename(file)).toBe('types.ts');
-      const importLines = content.split('\n').filter((line) => GROVE_IDS_IMPORT.test(line));
-      for (const line of importLines) {
+      expect(file).toBe('types.ts');
+      for (const line of content.split('\n').filter((l) => GROVE_IDS_IMPORT.test(l))) {
         expect(line).toMatch(/^import\s+type\s/);
       }
     }
+  });
+
+  it('the capability layer never imports SymbiontInstaller, the daemon, the scheduler, AGENTS.md, or Cortex', () => {
+    const violations: string[] = [];
+    for (const file of CAPABILITY_LAYER) {
+      const content = read(file);
+      for (const pattern of FORBIDDEN_FOR_CAPABILITY) {
+        if (pattern.test(content)) violations.push(`${file}: matches ${pattern}`);
+      }
+    }
+    expect(violations).toEqual([]);
   });
 });
