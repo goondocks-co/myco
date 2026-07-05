@@ -9,9 +9,12 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { getDatabase } from '@myco/db/client.js';
 import { getAgent } from '@myco/db/queries/agents.js';
 import { listTasks, getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
@@ -20,6 +23,7 @@ import {
   loadSystemPrompt,
   resolveEffectiveConfig,
   registerBuiltInAgentsAndTasks,
+  seedBuiltInAgentsAndTasks,
 } from '@myco/agent/loader.js';
 import { SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN } from '@myco/agent/instruction-builders.js';
 import type { AgentRow } from '@myco/db/queries/agents.js';
@@ -556,6 +560,202 @@ describe('agent loader', () => {
       const overrides = JSON.parse(digestOnly!.tool_overrides!) as string[];
       expect(Array.isArray(overrides)).toBe(true);
       expect(overrides).toContain('vault_write_digest');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // seedBuiltInAgentsAndTasks (sync, built-in-only body; requires PGlite)
+  // -------------------------------------------------------------------------
+
+  describe('seedBuiltInAgentsAndTasks', () => {
+    beforeAll(() => { setupTestDb(); });
+    afterAll(() => { teardownTestDb(); });
+    beforeEach(() => { cleanTestDb(); });
+
+    it('is synchronous and seeds the built-in agent + every built-in task on a fresh DB', () => {
+      const expectedTaskCount = loadAgentTasks(DEFINITIONS_DIR).length;
+
+      // No `await` — proves the built-in-only body is sync end to end.
+      seedBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+
+      const agent = getAgent(BUILT_IN_AGENT_NAME);
+      expect(agent).not.toBeNull();
+      expect(agent!.source).toBe('built-in');
+
+      const tasks = listTasks({ agent_id: BUILT_IN_AGENT_NAME });
+      expect(tasks).toHaveLength(expectedTaskCount);
+    });
+
+    it('re-seeding an already-seeded DB is idempotent', () => {
+      seedBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      seedBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+
+      const expectedTaskCount = loadAgentTasks(DEFINITIONS_DIR).length;
+      const tasks = listTasks({ agent_id: BUILT_IN_AGENT_NAME });
+      expect(tasks).toHaveLength(expectedTaskCount);
+    });
+
+    it('short-circuits on an already-seeded DB: the second call performs no writes', () => {
+      seedBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+
+      const db = getDatabase();
+      const before = (db.prepare('SELECT total_changes() AS c').get() as { c: number }).c;
+      seedBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+      const after = (db.prepare('SELECT total_changes() AS c').get() as { c: number }).c;
+
+      // The short-circuit's own SELECTs don't count toward total_changes();
+      // only INSERT/UPDATE/DELETE would move this counter, so a match here
+      // is a timing-free proof the upsert path was skipped entirely.
+      expect(after).toBe(before);
+    });
+
+    it('sweeps a built-in task row whose YAML has been removed, and only source=built-in rows', () => {
+      seedBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+
+      // Simulate a task YAML that existed in a previous version and was
+      // removed, plus a user-authored task with the same agent_id that
+      // must survive the built-in-only sweep.
+      const now = Math.floor(Date.now() / 1000);
+      const db = getDatabase();
+      db.prepare(
+        `INSERT INTO agent_tasks (id, agent_id, source, display_name, description, prompt, is_default, created_at, updated_at)
+         VALUES (?, ?, 'built-in', 'Stale Task', 'stale', 'stale prompt', 0, ?, ?)`,
+      ).run('stale-removed-task', BUILT_IN_AGENT_NAME, now, now);
+      db.prepare(
+        `INSERT INTO agent_tasks (id, agent_id, source, display_name, description, prompt, is_default, created_at, updated_at)
+         VALUES (?, ?, 'user', 'User Task', 'user-authored', 'user prompt', 0, ?, ?)`,
+      ).run('user-authored-task', BUILT_IN_AGENT_NAME, now, now);
+
+      // Re-seeding must sweep the stale built-in row (its id is no longer
+      // in the current YAML-derived set) but leave the user-authored row
+      // untouched — the DELETE is scoped to source='built-in'.
+      seedBuiltInAgentsAndTasks(DEFINITIONS_DIR);
+
+      const tasks = listTasks({ agent_id: BUILT_IN_AGENT_NAME });
+      const ids = tasks.map((t) => t.id);
+      expect(ids).not.toContain('stale-removed-task');
+      expect(ids).toContain('user-authored-task');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // seedBuiltInAgentsAndTasks content marker (requires PGlite)
+  //
+  // Regression pin for review finding H1: the id-set short-circuit alone
+  // missed content-only definition changes (same task ids, edited
+  // prompt/phases/config), and because the boot delegation shares the
+  // short-circuit, no path re-upserted them. The marker — a SHA-256 of the
+  // parsed definitions persisted in the built-in agent row's config column
+  // by each completed seed — makes content changes re-seed on every path.
+  // -------------------------------------------------------------------------
+
+  describe('seedBuiltInAgentsAndTasks content marker', () => {
+    beforeAll(() => { setupTestDb(); });
+    afterAll(() => { teardownTestDb(); });
+    beforeEach(() => { cleanTestDb(); });
+
+    const FIXTURE_AGENT = 'fixture-agent';
+    const FIXTURE_TASK = 'fixture-task';
+    const fixtureDirs: string[] = [];
+
+    afterAll(() => {
+      for (const dir of fixtureDirs) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    /**
+     * Write a minimal definitions dir whose task id set never changes —
+     * only the prompt content varies — so any re-seed between two fixture
+     * dirs can only be triggered by the content marker, never the id set.
+     */
+    function writeFixtureDefinitions(prompt: string): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loader-fixture-defs-'));
+      fixtureDirs.push(dir);
+      fs.mkdirSync(path.join(dir, 'tasks'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'agent.yaml'), [
+        `name: ${FIXTURE_AGENT}`,
+        'displayName: Fixture Agent',
+        'description: Fixture agent for content-marker tests',
+        'model: sonnet',
+        'maxTurns: 5',
+        'timeoutSeconds: 60',
+        'systemPromptPath: ../prompts/agent.md',
+        'tools: []',
+        '',
+      ].join('\n'), 'utf-8');
+      fs.writeFileSync(path.join(dir, 'tasks', `${FIXTURE_TASK}.yaml`), [
+        `name: ${FIXTURE_TASK}`,
+        'displayName: Fixture Task',
+        'description: Fixture task for content-marker tests',
+        `agent: ${FIXTURE_AGENT}`,
+        `prompt: ${JSON.stringify(prompt)}`,
+        'isDefault: true',
+        '',
+      ].join('\n'), 'utf-8');
+      return dir;
+    }
+
+    function fixtureTaskPrompt(): string {
+      const row = getDatabase().prepare(
+        'SELECT prompt FROM agent_tasks WHERE id = ? AND agent_id = ?',
+      ).get(FIXTURE_TASK, FIXTURE_AGENT) as { prompt: string } | undefined;
+      expect(row).toBeDefined();
+      return row!.prompt;
+    }
+
+    it('re-seeds when task content changes but the task id set is identical', () => {
+      const v1 = writeFixtureDefinitions('prompt version one');
+      const v2 = writeFixtureDefinitions('prompt version two');
+
+      seedBuiltInAgentsAndTasks(v1);
+      expect(fixtureTaskPrompt()).toBe('prompt version one');
+
+      // Same agent name, same single task id — only the prompt differs.
+      // Without the content marker this second seed would short-circuit
+      // and the stale prompt would persist indefinitely (finding H1).
+      seedBuiltInAgentsAndTasks(v2);
+      expect(fixtureTaskPrompt()).toBe('prompt version two');
+    });
+
+    it('boot delegation re-seeds on a content-only change and short-circuits when unchanged', async () => {
+      const v1 = writeFixtureDefinitions('boot prompt one');
+      const v2 = writeFixtureDefinitions('boot prompt two');
+
+      // Boot path = registerBuiltInAgentsAndTasks (no vaultDir at the
+      // fixture level; the user-task tail is exercised elsewhere).
+      await registerBuiltInAgentsAndTasks(v1);
+      expect(fixtureTaskPrompt()).toBe('boot prompt one');
+
+      // A "restart on the upgraded binary": content changed, ids identical.
+      await registerBuiltInAgentsAndTasks(v2);
+      expect(fixtureTaskPrompt()).toBe('boot prompt two');
+
+      // A plain restart with nothing changed short-circuits (no writes).
+      const db = getDatabase();
+      const before = (db.prepare('SELECT total_changes() AS c').get() as { c: number }).c;
+      await registerBuiltInAgentsAndTasks(v2);
+      const after = (db.prepare('SELECT total_changes() AS c').get() as { c: number }).c;
+      expect(after).toBe(before);
+    });
+
+    it('a DB last seeded by a pre-marker binary (config NULL) re-seeds once and gains the marker', () => {
+      const v1 = writeFixtureDefinitions('marker upgrade prompt');
+      seedBuiltInAgentsAndTasks(v1);
+
+      // Simulate the pre-marker state: no marker, stale task content —
+      // exactly what every existing DB looks like on first open after
+      // this change ships.
+      const db = getDatabase();
+      db.prepare('UPDATE agents SET config = NULL WHERE id = ?').run(FIXTURE_AGENT);
+      db.prepare('UPDATE agent_tasks SET prompt = ? WHERE id = ?').run('stale pre-marker prompt', FIXTURE_TASK);
+
+      seedBuiltInAgentsAndTasks(v1);
+
+      expect(fixtureTaskPrompt()).toBe('marker upgrade prompt');
+      const agentConfig = (db.prepare('SELECT config FROM agents WHERE id = ?').get(FIXTURE_AGENT) as { config: string | null }).config;
+      expect(agentConfig).not.toBeNull();
+      const parsed = JSON.parse(agentConfig!) as { definitions_hash?: string };
+      expect(typeof parsed.definitions_hash).toBe('string');
+      expect(parsed.definitions_hash!.length).toBeGreaterThan(0);
     });
   });
 });

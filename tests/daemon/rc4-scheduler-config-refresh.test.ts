@@ -9,7 +9,11 @@
  * grove-tier toggle on disk between ticks, and asserts the gate sees it.
  *
  * Uses mock.module — keep this file's mocks self-contained (per-file
- * isolation, PR #466 rule).
+ * isolation, PR #466 rule). `@myco/db/client.js` is deliberately NOT
+ * mocked: the scheduler tick opens a real per-Grove DB file through
+ * `GroveRuntimeCache`, and `openInitializedDatabase` seeds built-in
+ * agents/tasks on that real handle (Plan B Task 1) — a fake `getDatabase`
+ * stub would break that seed call, not just this test's own assertions.
  */
 import { describe, it, expect, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
@@ -31,13 +35,6 @@ mock.module('@myco/agent/registry.js', () => ({
       schedule: { enabled: true, intervalSeconds: 300, runIn: ['idle'] },
     }],
   ]),
-}));
-
-mock.module('@myco/db/client.js', () => ({
-  getDatabase: () => ({
-    prepare: () => ({ all: () => [], get: () => undefined }),
-  }),
-  withDatabase: <T,>(_db: unknown, fn: () => T) => fn(),
 }));
 
 import { registerScheduledTasks } from '@myco/daemon/task-scheduling.js';

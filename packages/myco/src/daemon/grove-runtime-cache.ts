@@ -1,6 +1,7 @@
-import { openDatabase, type Database } from '@myco/db/client.js';
+import { openDatabase, withDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { getMachineId } from '@myco/machine-id.js';
+import { resolveDefinitionsDir, seedBuiltInAgentsAndTasks } from '@myco/agent/loader.js';
 import type { EmbeddingManager, SqliteVecVectorStore } from './embedding/index.js';
 
 export interface GroveRuntimeEntry {
@@ -236,6 +237,18 @@ function openInitializedDatabase(databasePath: string): Database {
   // choke point that serves every non-boot Grove; defaulting here would
   // permanently stamp v52 with the conversion skipped.
   createSchema(db, getMachineId());
+  // Seed built-in agents/tasks for every non-boot Grove DB. Fresh Groves
+  // otherwise have empty agents/agent_tasks tables (only boot registration
+  // and the migration importer populate them), which makes every dispatch
+  // throw a FOREIGN KEY failure on agent_runs.agent_id -> agents(id). This
+  // choke point runs on every open (including re-opens of an existing,
+  // already-broken Grove), so a previously broken Grove self-heals on its
+  // next access with no separate boot sweep required.
+  // `withDatabase` scopes `getDatabase()` inside the seed call to this `db`
+  // via AsyncLocalStorage — the established per-grove write pattern used
+  // throughout daemon/ — so registerAgent/upsertTask need no signature
+  // changes to target a specific Grove's handle.
+  withDatabase(db, () => seedBuiltInAgentsAndTasks(resolveDefinitionsDir()));
   return db;
 }
 
