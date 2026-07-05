@@ -10,6 +10,7 @@ import { sha256Hex } from '@myco/canopy/hash.js';
 import { OkfError } from './errors.js';
 import { resolveOutputRoot, type OutputClass } from './output-root.js';
 import { gather, type OkfGatherResult } from './gather.js';
+import { computeOkfProbeFingerprint } from './schedule.js';
 import { projectSpores } from './projectors/spores.js';
 import { projectCanopy } from './projectors/canopy.js';
 import { adoptConcepts } from './projectors/concepts.js';
@@ -491,7 +492,11 @@ export class OkfBundle {
         map: gathered.canopyMap,
         projectId: this.deps.projectId,
         isExcluded: (p) => matcher(p, false),
-        includeUndescribed: false,
+        // gather() is the include-undescribed authority: it fetches only
+        // described rows unless the config flag is set, so the projector must
+        // render every entry it's handed rather than re-filtering (which would
+        // silently drop the undescribed rows the user asked to include).
+        includeUndescribed: true,
         mode,
       });
       for (const concept of canopy.concepts) {
@@ -796,18 +801,16 @@ export class OkfBundle {
   private computeProbeFingerprint(gathered: OkfGatherResult, input: OkfBundleWriteInput): string {
     const maxSporeUpdate = gathered.spores.reduce((m, s) => Math.max(m, s.updated_at ?? s.created_at), 0);
     const maxCanopyUpdate = gathered.canopyEntries.reduce((m, e) => Math.max(m, e.llm_updated_at ?? e.mechanical_updated_at), 0);
-    return sha256Hex(
-      JSON.stringify({
-        spore_count: gathered.spores.length,
-        canopy_count: gathered.canopyEntries.length,
-        concept_count: gathered.conceptFiles.length,
-        max_spore_update: maxSporeUpdate,
-        max_canopy_update: maxCanopyUpdate,
-        map_hash: gathered.canopyMap?.inputs_hash ?? null,
-        include: this.effectiveInclude(input.include),
-        spore_status: input.sporeStatus,
-      }),
-    );
+    return computeOkfProbeFingerprint({
+      sporeCount: gathered.spores.length,
+      maxSporeUpdate,
+      canopyCount: gathered.canopyEntries.length,
+      maxCanopyUpdate,
+      conceptCount: gathered.conceptFiles.length,
+      mapHash: gathered.canopyMap?.inputs_hash ?? null,
+      include: this.effectiveInclude(input.include),
+      sporeStatus: input.sporeStatus,
+    });
   }
 
   // -------------------------------------------------------------------

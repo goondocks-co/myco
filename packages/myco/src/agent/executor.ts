@@ -15,7 +15,7 @@ import { initDatabase, vaultDbPath } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { setState } from '@myco/db/queries/agent-state.js';
-import { listReports } from '@myco/db/queries/reports.js';
+import { listReports, insertReport } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { projectScopeFromRequestContext, requireProjectId, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
@@ -50,7 +50,15 @@ import {
   CANOPY_MAP_TASK,
   CANOPY_MAP_REPORT_ACTION,
   CANOPY_MAP_CONTENT_KEY,
+  OKF_MAINTAIN_TASK,
+  OKF_REPORT_ACTION,
 } from './instruction-builders.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
+import { ProjectVault } from '@myco/vault/project-vault.js';
+import { OkfBundle } from '@myco/okf/bundle.js';
+import { OkfError } from '@myco/okf/errors.js';
+import { configuredSporeStatus } from '@myco/okf/schedule.js';
+import { notify } from '@myco/notifications/notify.js';
 import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
@@ -931,6 +939,10 @@ export async function finalizeOnTaskSuccess(args: {
     finalizeCanopyMap(args);
     return;
   }
+  if (args.taskName === OKF_MAINTAIN_TASK) {
+    await finalizeOkfMaintain(args);
+    return;
+  }
 }
 
 function finalizeSkillSurvey(args: {
@@ -1041,6 +1053,107 @@ function finalizeCanopyMap(args: {
     token_estimate: estimateTokens(content),
     generated_by_run_id: args.runId,
   });
+}
+
+/**
+ * Publish the OKF bundle after a successful `okf-maintain` run.
+ *
+ * Mirrors `finalizeCanopyMap`'s shape: read the run's `okf_maintain` report
+ * row (thrown loudly when absent — the LLM phases are pure recorders via
+ * `okf_report`, so publication is entirely the executor's responsibility,
+ * not a tool call), then construct `OkfBundle` and run `maintain()` against
+ * the published root. This is what makes a deterministic-only run (render
+ * phase skipped via `gateOnPriorMetadata`) still publish — the report row
+ * the gather phase writes is what finalization keys off, not any write the
+ * render phase may or may not have made.
+ *
+ * `okf_publish_not_acknowledged` is caught and recorded as a clean "publish
+ * blocked" outcome (a report row + a single notification), not rethrown —
+ * rethrowing would fail the run and trigger the executor's failure
+ * notification + retry pressure every 6h until a human acknowledges the
+ * findings. See `okf/schedule.ts`'s `okfMaintainDue` doc comment for the
+ * companion precondition-side deviation (no "already blocked" skip rule).
+ */
+async function finalizeOkfMaintain(args: {
+  agentId: string;
+  runId: string;
+  requestContext?: RunOptions['requestContext'];
+  vaultDir?: string;
+}): Promise<void> {
+  if (!args.vaultDir) {
+    throw new Error('okf-maintain completed but vaultDir is unavailable — cannot resolve project root');
+  }
+  if (!args.requestContext) {
+    throw new Error('okf-maintain publisher requires a Grove request context — none supplied');
+  }
+
+  const report = findLastReportByAction(args.runId, OKF_REPORT_ACTION, projectScopeFromRequestContext(args.requestContext));
+  if (!report) {
+    throw new Error('okf-maintain completed without an okf report');
+  }
+
+  const projectRoot = resolveProjectRoot(args.vaultDir);
+  const projectId = requireProjectId(args.requestContext, 'okf-maintain publisher');
+  const machineId = args.requestContext.machineId;
+  const config = loadMergedConfig(args.vaultDir, { groveId: args.requestContext.groveId ?? undefined });
+  const scope = projectScopeFromRequestContext(args.requestContext);
+
+  const bundle = new OkfBundle({
+    projectRoot,
+    vault: new ProjectVault(projectRoot),
+    scope,
+    projectId,
+    machineId,
+    config,
+  });
+
+  try {
+    const result = await bundle.maintain({
+      scope,
+      projectRoot,
+      machineId,
+      mode: 'published',
+      sporeStatus: configuredSporeStatus(config),
+      // Must mirror the okfMaintainDue probe (schedule.ts) — which reads this
+      // config value — or the persisted probe_fingerprint diverges and the task
+      // is perpetually "due" (and the bundle would omit undescribed canopy the
+      // project asked to include). The CLI/API call sites thread it too.
+      includeUndescribedCanopy: config.okf.maintain.include_undescribed_canopy,
+      acknowledgePublish: false,
+      generatedByRunId: args.runId,
+    });
+    insertReport({
+      run_id: args.runId,
+      project_id: projectId,
+      agent_id: args.agentId,
+      action: `${OKF_REPORT_ACTION}_publish`,
+      summary: result.unchanged ? 'Bundle inputs unchanged; publish short-circuited.' : `Published ${result.conceptCount} concepts.`,
+      details: JSON.stringify(result),
+      created_at: epochSeconds(),
+    });
+  } catch (err) {
+    if (err instanceof OkfError && err.code === 'okf_publish_not_acknowledged') {
+      insertReport({
+        run_id: args.runId,
+        project_id: projectId,
+        agent_id: args.agentId,
+        action: `${OKF_REPORT_ACTION}_publish`,
+        summary: 'Publish blocked by unacknowledged findings.',
+        details: JSON.stringify({ outcome: 'publish_blocked', findings: err.details }),
+        created_at: epochSeconds(),
+      });
+      notify(args.vaultDir, {
+        domain: 'okf',
+        type: 'okf.publish_blocked',
+        title: 'OKF bundle publish blocked',
+        message: 'okf-maintain found unacknowledged publish-eligibility findings. Review and acknowledge them to resume publishing.',
+        link: '/okf',
+        metadata: { runId: args.runId },
+      }, config, { projectId });
+      return;
+    }
+    throw err;
+  }
 }
 
 function fallbackInstructionHash(instruction: string | undefined): string {

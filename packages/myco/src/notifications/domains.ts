@@ -49,6 +49,14 @@ export function registerBuiltinDomains(): void {
   });
 
   register({
+    domain: 'okf',
+    label: 'OKF',
+    types: [
+      { id: 'okf.publish_blocked', label: 'Bundle publish blocked', defaultMode: 'summary', defaultLevel: 'warning' },
+    ],
+  });
+
+  register({
     domain: 'daemon',
     label: 'Daemon',
     types: [

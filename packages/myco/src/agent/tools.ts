@@ -21,6 +21,8 @@
  *                    vault_edit_skill
  * - Canopy tools (4): canopy_describe_next, canopy_describe_write,
  *                    canopy_list, canopy_describe_charge
+ * - OKF tools (4): okf_read_bundle, okf_list_changes, okf_write_concept,
+ *                    okf_report
  *
  * `agentId` and `runId` are captured in closures — tools inject them
  * automatically so the agent cannot impersonate another agent.
@@ -42,6 +44,7 @@ import { createPhaseMetadataTools, PHASE_METADATA_TOOL_NAMES } from './tools/pha
 import { createSkillTools } from './tools/skill-tools.js';
 import { createExplorationTools } from './tools/exploration-tools.js';
 import { createCanopyTools } from './tools/canopy-tools.js';
+import { createOkfTools } from './tools/okf-tools.js';
 import { applyDeferredStubs, buildSearchToolsTool } from './tools/deferred-tools.js';
 import { textResult, toSdkMcpToolDefinitions } from './tools/types.js';
 import {
@@ -51,6 +54,7 @@ import {
   SKILL_TOOL_NAMES,
   EXPLORATION_TOOL_NAMES,
   CANOPY_TOOL_NAMES,
+  OKF_TOOL_NAMES,
 } from './tool-names.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
@@ -326,6 +330,7 @@ export const VAULT_TOOL_COUNT =
   SKILL_TOOL_NAMES.size +
   EXPLORATION_TOOL_NAMES.size +
   CANOPY_TOOL_NAMES.size +
+  OKF_TOOL_NAMES.size +
   PHASE_METADATA_TOOL_NAMES_SET.size;
 
 function setsOverlap(a: Set<string>, b: ReadonlySet<string>): boolean {
@@ -558,6 +563,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     ...(needsAll || setsOverlap(onlyNames!, SKILL_TOOL_NAMES) ? createSkillTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, EXPLORATION_TOOL_NAMES) ? createExplorationTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, CANOPY_TOOL_NAMES) ? createCanopyTools(deps) : []),
+    ...(needsAll || setsOverlap(onlyNames!, OKF_TOOL_NAMES) ? createOkfTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, PHASE_METADATA_TOOL_NAMES_SET) ? createPhaseMetadataTools(deps) : []),
   ];
 

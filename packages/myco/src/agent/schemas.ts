@@ -104,14 +104,21 @@ export const OrchestratorConfigSchema = z.object({
   maxTurns: z.number().optional(),
 });
 
-/** Pre-condition identifiers for scheduled task auto-runs. */
-const PreConditionSchema = z.enum([
+/**
+ * Pre-condition identifiers for scheduled task auto-runs. Exported so tests
+ * can assert every member has a registry entry in
+ * `daemon/task-scheduling.ts`'s `preConditions` — an unregistered name means
+ * the scheduler's `if (!check) continue;` silently never runs the task.
+ */
+export const PreConditionSchema = z.enum([
   'has-unprocessed-batches',
   'has-active-skills',
   'has-approved-candidates',
   'has-skill-survey-evidence',
   'has-pending-canopy-rows',
+  'okf-maintain-due',
 ]);
+export type PreCondition = z.infer<typeof PreConditionSchema>;
 
 /**
  * Accelerator names dispatch into domain-owned count functions in

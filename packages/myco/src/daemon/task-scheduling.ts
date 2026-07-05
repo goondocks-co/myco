@@ -55,6 +55,8 @@ import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
+import { ProjectVault } from '@myco/vault/project-vault.js';
+import { okfMaintainDue } from '@myco/okf/schedule.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
 
@@ -393,6 +395,65 @@ export function resolveTaskScheduleEnabled(
 }
 
 // ---------------------------------------------------------------------------
+// Scheduled-task preConditions
+// ---------------------------------------------------------------------------
+
+/**
+ * Free variables `preConditions` closes over from `registerScheduledTasks`.
+ * Extracted to a module-level factory (rather than an inline object literal
+ * in the closure) so a test can assert every `PreConditionSchema` member has
+ * a registry key here — the scheduler's `if (!check) continue;` means an
+ * unregistered precondition name silently means the task never runs, which
+ * only a membership test (not a runtime error) catches.
+ */
+export interface PreConditionRegistryDeps {
+  resolveProjectConfig: (scope: RegisteredProjectScope) => MycoConfig | null;
+  taskAgentMap: Map<string, string>;
+}
+
+/** Registry of scheduled-task preCondition checks, keyed by `PreConditionSchema` member. */
+export function buildPreConditions(
+  deps: PreConditionRegistryDeps,
+): Record<string, (scope: RegisteredProjectScope) => boolean> {
+  const { resolveProjectConfig, taskAgentMap } = deps;
+  return {
+    'has-unprocessed-batches': (scope) =>
+      countUnprocessedSettledBatches(toProjectScope(scope.projectId), {
+        origins: INTELLIGENCE_DEFAULT_ORIGINS,
+      }) > 0,
+    'has-pending-canopy-rows': (scope) =>
+      countPendingCanopyDescribe(
+        null,
+        scope.projectId,
+        undefined,
+        canopyDescribeMaxAttempts(resolveProjectConfig(scope)),
+      ) > 0,
+    'has-active-skills': (scope) =>
+      countSkillRecords({ status: 'active', scope: toProjectScope(scope.projectId) }) > 0,
+    'has-approved-candidates': (scope) =>
+      countCandidates({ status: 'approved', scope: toProjectScope(scope.projectId) }) > 0,
+    'has-skill-survey-evidence': (scope) =>
+      getSkillSurveyEligibility(
+        taskAgentMap.get(SKILL_SURVEY_TASK),
+        scope.requestContext,
+      ).eligible,
+    'okf-maintain-due': (scope) => {
+      const config = resolveProjectConfig(scope);
+      if (!config) return false;
+      const manifest = new ProjectVault(scope.projectRoot).readOkfManifest();
+      return okfMaintainDue(
+        toProjectScope(scope.projectId),
+        config,
+        scope.projectRoot,
+        scope.projectId,
+        scope.requestContext.machineId,
+        manifest,
+      );
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -707,28 +768,7 @@ export async function registerScheduledTasks(
         withDatabase(scope.db, () => dispatchScheduledTask(scope, taskName)),
       );
     },
-    preConditions: {
-      'has-unprocessed-batches': (scope) =>
-        countUnprocessedSettledBatches(toProjectScope(scope.projectId), {
-          origins: INTELLIGENCE_DEFAULT_ORIGINS,
-        }) > 0,
-      'has-pending-canopy-rows': (scope) =>
-        countPendingCanopyDescribe(
-          null,
-          scope.projectId,
-          undefined,
-          canopyDescribeMaxAttempts(resolveProjectConfig(scope)),
-        ) > 0,
-      'has-active-skills': (scope) =>
-        countSkillRecords({ status: 'active', scope: toProjectScope(scope.projectId) }) > 0,
-      'has-approved-candidates': (scope) =>
-        countCandidates({ status: 'approved', scope: toProjectScope(scope.projectId) }) > 0,
-      'has-skill-survey-evidence': (scope) =>
-        getSkillSurveyEligibility(
-          taskAgentMap.get(SKILL_SURVEY_TASK),
-          scope.requestContext,
-        ).eligible,
-    },
+    preConditions: buildPreConditions({ resolveProjectConfig, taskAgentMap }),
     accelerators: {
       'canopy-pending-describe': (scope, limit) =>
         countPendingCanopyDescribe(
