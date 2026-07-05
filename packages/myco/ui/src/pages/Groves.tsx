@@ -17,6 +17,7 @@ import {
   type GroveProjectSummary,
 } from '../lib/selection';
 import { buildCapabilityBadges } from '../lib/capability-badges';
+import type { CapabilityId } from '@myco/config/scope';
 import { CapabilityChipVisual } from '../components/symbionts/CapabilityChip';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageContainer } from '../components/ui/page-container';
@@ -246,7 +247,7 @@ export default function Groves() {
                               className="shrink-0 flex flex-wrap items-center gap-1 rounded-md p-1 hover:bg-surface-container-high transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
                             >
                               {buildCapabilityBadges(
-                                project.capabilities as Record<'cortex' | 'canopy' | 'skills' | 'vault_evolution', boolean>,
+                                project.capabilities as Record<CapabilityId, boolean>,
                               ).map((chip) => (
                                 <CapabilityChipVisual key={chip.id} chip={chip} />
                               ))}
