@@ -235,14 +235,8 @@ describe('GroveRuntimeCache', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Built-in agent/task seeding at the DB-open choke point
-  //
-  // Regression pin for the fresh-Grove FK death: fresh Groves had empty
-  // agents/agent_tasks tables because registration only ran once at boot
-  // through the boot-default DB handle. Every dispatch on a fresh Grove
-  // threw `FOREIGN KEY constraint failed` on `agent_runs.agent_id ->
-  // agents(id)`. `openInitializedDatabase` now seeds built-ins on every
-  // open via `withDatabase` + `seedBuiltInAgentsAndTasks`.
+  // Built-in agent/task seeding at the DB-open choke point: a fresh grove
+  // opened via the cache path has built-in agents/tasks.
   // ---------------------------------------------------------------------------
 
   describe('built-in agent/task seeding', () => {
@@ -297,12 +291,9 @@ describe('GroveRuntimeCache', () => {
 
       const first = cache.getDatabase(target);
 
-      // Plant a sentinel `updated_at` far in the past. If the short-circuit
-      // does NOT fire on the next open, the upsert path recomputes
-      // `updated_at` via `epochSeconds()` (current time) and this sentinel
-      // is overwritten — a deterministic, timing-independent tell distinct
-      // from comparing two "now" timestamps that could collide within the
-      // same second.
+      // Sentinel `updated_at` far in the past: the upsert path would
+      // overwrite it with the current time, so an unchanged value proves
+      // the short-circuit fired.
       const sentinel = 1;
       first.prepare('UPDATE agents SET updated_at = ? WHERE id = ?').run(sentinel, DEFAULT_AGENT_ID);
 
@@ -356,11 +347,9 @@ describe('GroveRuntimeCache', () => {
         "SELECT prompt FROM agent_tasks WHERE id = 'vault-evolve'",
       ).get() as { prompt: string };
 
-      // Simulate a DB last seeded by an OLDER binary whose definitions had
-      // the same task ids but different content: stale prompt + a marker
-      // hash the current binary's definitions won't match. The id-set
-      // check alone would pass here — only the content marker forces the
-      // re-seed (review finding H1).
+      // Same task ids as the current definitions, but a stale prompt and a
+      // marker hash that won't match — only the content marker check
+      // forces the re-seed here, not the id-set check.
       db.prepare(
         "UPDATE agent_tasks SET prompt = 'stale prompt from an older binary' WHERE id = 'vault-evolve'",
       ).run();
@@ -389,15 +378,9 @@ describe('GroveRuntimeCache', () => {
     });
 
     it('regression pin: dispatch on a freshly created Grove no longer FK-fails on agent_runs.agent_id', () => {
-      // This is the exact failure mode from Evidence: `agent_runs.agent_id
-      // -> agents(id)` FK violation on a fresh Grove DB whose `agents`
-      // table was never seeded. A full executor dispatch is too heavy for
-      // this unit-level regression pin (it needs a running harness,
-      // provider config, etc.) — inserting an `agent_runs` row is the
-      // exact statement that threw in production (`insertRun`,
-      // executor.ts), so reproducing that one INSERT against a Grove DB
-      // opened through the real cache path is a faithful, minimal pin for
-      // this specific bug class.
+      // Inserting an agent_runs row against a Grove DB opened through the
+      // real cache path must not throw the agent_runs.agent_id ->
+      // agents(id) FK violation.
       const cache = new GroveRuntimeCache();
       const fresh = emptyDbPath('dispatch-grove');
       const db = cache.getDatabase(fresh);

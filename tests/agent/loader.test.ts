@@ -603,9 +603,8 @@ describe('agent loader', () => {
       seedBuiltInAgentsAndTasks(DEFINITIONS_DIR);
       const after = (db.prepare('SELECT total_changes() AS c').get() as { c: number }).c;
 
-      // The short-circuit's own SELECTs don't count toward total_changes();
-      // only INSERT/UPDATE/DELETE would move this counter, so a match here
-      // is a timing-free proof the upsert path was skipped entirely.
+      // total_changes() only moves on INSERT/UPDATE/DELETE, so a match here
+      // proves the upsert path was skipped entirely.
       expect(after).toBe(before);
     });
 
@@ -639,14 +638,9 @@ describe('agent loader', () => {
   });
 
   // -------------------------------------------------------------------------
-  // seedBuiltInAgentsAndTasks content marker (requires PGlite)
-  //
-  // Regression pin for review finding H1: the id-set short-circuit alone
-  // missed content-only definition changes (same task ids, edited
-  // prompt/phases/config), and because the boot delegation shares the
-  // short-circuit, no path re-upserted them. The marker — a SHA-256 of the
-  // parsed definitions persisted in the built-in agent row's config column
-  // by each completed seed — makes content changes re-seed on every path.
+  // seedBuiltInAgentsAndTasks content marker (requires PGlite): content-only
+  // definition changes (same task ids, edited prompt/phases/config) force a
+  // re-seed via the marker, on every call path.
   // -------------------------------------------------------------------------
 
   describe('seedBuiltInAgentsAndTasks content marker', () => {
@@ -710,8 +704,6 @@ describe('agent loader', () => {
       expect(fixtureTaskPrompt()).toBe('prompt version one');
 
       // Same agent name, same single task id — only the prompt differs.
-      // Without the content marker this second seed would short-circuit
-      // and the stale prompt would persist indefinitely (finding H1).
       seedBuiltInAgentsAndTasks(v2);
       expect(fixtureTaskPrompt()).toBe('prompt version two');
     });
@@ -741,9 +733,7 @@ describe('agent loader', () => {
       const v1 = writeFixtureDefinitions('marker upgrade prompt');
       seedBuiltInAgentsAndTasks(v1);
 
-      // Simulate the pre-marker state: no marker, stale task content —
-      // exactly what every existing DB looks like on first open after
-      // this change ships.
+      // Pre-marker state: config marker is null, task content is stale.
       const db = getDatabase();
       db.prepare('UPDATE agents SET config = NULL WHERE id = ?').run(FIXTURE_AGENT);
       db.prepare('UPDATE agent_tasks SET prompt = ? WHERE id = ?').run('stale pre-marker prompt', FIXTURE_TASK);

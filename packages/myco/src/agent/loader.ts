@@ -284,11 +284,8 @@ export function resolveEffectiveConfig(
 // ---------------------------------------------------------------------------
 
 /**
- * JSON key inside `agents.config` (built-in agent row only) that stores the
- * content hash of the definitions the last COMPLETED seed wrote. The
- * built-in agent row's `config` column has no other writer or reader — it
- * is seed-owned (the only other `registerAgent` caller, spores/write.ts,
- * registers the separate MCP user-agent row and never sets config).
+ * JSON key inside `agents.config` (built-in agent row only) storing the
+ * content hash of the definitions the last completed seed wrote.
  */
 const DEFINITIONS_HASH_KEY = 'definitions_hash';
 
@@ -301,22 +298,13 @@ interface CachedDefinitions {
 
 /**
  * Cached parse of the built-in agent definition + tasks, keyed by
- * definitionsDir. The YAML is process-static — resolved once per
- * directory and reused across every `seedBuiltInAgentsAndTasks` call
- * (the per-grove DB-open choke point calls this on every cache miss,
- * so re-parsing ~15 task files on each call would be wasted work).
+ * definitionsDir. Resolved once per directory and reused across every
+ * `seedBuiltInAgentsAndTasks` call.
  *
- * The content hash is computed once alongside the parse: SHA-256 over
- * `JSON.stringify` of the parsed definition + tasks with the tasks array
- * sorted by name. Sorting removes the only nondeterminism (readdir order);
- * object key order is insertion order, which is deterministic for a given
- * file content (taskFromParsed builds top-level keys in fixed code order,
- * nested objects keep YAML document order). Any semantic content change —
- * prompt, phases, config, schedule — changes the parse and therefore the
- * hash. Hashing the parse (not the raw files) also covers the bundled
- * Bun-virtual-path fallback, which has no files to hash. A change that
- * only reorders YAML keys also changes the hash, which errs on the side of
- * re-seeding (when in doubt, upsert).
+ * The content hash is a SHA-256 over `JSON.stringify` of the parsed
+ * definition + tasks, with the tasks array sorted by name for a
+ * deterministic key order. Any semantic content change — prompt, phases,
+ * config, schedule — changes the hash.
  */
 const definitionsCache = new Map<string, CachedDefinitions>();
 
@@ -325,7 +313,7 @@ function loadCachedDefinitions(definitionsDir: string): CachedDefinitions {
   if (cached) return cached;
   const definition = loadAgentDefinition(definitionsDir);
   const tasks = loadAgentTasks(definitionsDir);
-  // Code-unit compare keeps the hash stable across host locales.
+  // Code-unit compare: hash is stable across host locales.
   const sortedTasks = [...tasks].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const contentHash = createHash('sha256')
     .update(JSON.stringify({ definition, tasks: sortedTasks }))
@@ -343,21 +331,11 @@ function loadCachedDefinitions(definitionsDir: string): CachedDefinitions {
  * so callers targeting a specific Grove DB must wrap the call in
  * `withDatabase(db, () => seedBuiltInAgentsAndTasks(...))`.
  *
- * Cost control: skips the upserts entirely when a cheap check shows the DB
- * already carries the current definitions. The check has two parts:
- * 1. Task id set (count + membership) — catches added/removed/renamed
- *    task YAMLs and partially-seeded DBs.
- * 2. Content marker — the SHA-256 hash of the parsed definitions, persisted
- *    in the built-in agent row's `config` column by the last COMPLETED
- *    seed. This catches content-only changes (same task ids, different
- *    prompt/phases/config) so an upgrade re-seeds every DB — boot and
- *    per-grove alike — on its next open, exactly once.
- * The marker is written LAST, after every upsert and the sweep, and the
- * agent upsert at the top clears it (config → null) first — so a seed
- * interrupted mid-way leaves no marker and re-runs in full on next open.
- * When in doubt (missing/unparseable marker, e.g. a DB last seeded by a
- * pre-marker binary), this falls through to the full upsert path —
- * correctness over cost savings.
+ * Skips the upserts when the DB already carries the current definitions:
+ * the built-in task id set matches the current YAML-derived set, and the
+ * content marker in the built-in agent row's `config` column (a SHA-256 of
+ * the parsed definitions) matches the current hash. A missing or
+ * unparseable marker falls through to the full upsert path.
  *
  * @param definitionsDir — path to the definitions directory.
  */
@@ -369,9 +347,7 @@ export function seedBuiltInAgentsAndTasks(definitionsDir: string): void {
 
   const now = epochSeconds();
 
-  // Upsert the built-in agent. `config` is intentionally omitted (→ null):
-  // the upsert clears any previous content marker, so the marker only
-  // exists when the write of it below — the seed's final statement — ran.
+  // `config` is intentionally omitted (→ null), clearing any previous marker.
   registerAgent({
     id: definition.name,
     name: definition.displayName,
@@ -416,25 +392,16 @@ export function seedBuiltInAgentsAndTasks(definitionsDir: string): void {
     ).run(BUILT_IN_SOURCE, definition.name, ...validTaskIds);
   }
 
-  // Persist the content marker LAST — its presence means "this seed ran to
-  // completion against these exact definitions". The agent upsert above
-  // cleared it, so an interrupted seed leaves no marker and re-runs fully.
+  // Marker write is last: its presence means this seed ran to completion.
   getDatabase().prepare(`UPDATE agents SET config = ? WHERE id = ? AND source = ?`)
     .run(JSON.stringify({ [DEFINITIONS_HASH_KEY]: contentHash }), definition.name, BUILT_IN_SOURCE);
 }
 
 /**
- * Cheap short-circuit check for `seedBuiltInAgentsAndTasks`: true only when
- * ALL of the following hold —
- * 1. the built-in agent row exists;
- * 2. its persisted content marker (`config.definitions_hash`, written only
- *    by a completed seed) matches the current definitions hash, so
- *    content-only changes (same ids, edited prompt/phases/config) re-seed;
- * 3. the set of built-in task ids in the DB exactly matches the current
- *    YAML-derived task id set (count + membership) — a structural belt for
- *    externally deleted/injected rows the marker can't see.
- * A missing or unparseable marker (DB last seeded by a pre-marker binary,
- * or a seed that never completed) fails the check → full upsert.
+ * Short-circuit check for `seedBuiltInAgentsAndTasks`: true only when the
+ * built-in agent row exists, its content marker matches the current
+ * definitions hash, and the DB's built-in task id set exactly matches the
+ * current YAML-derived set (count + membership).
  */
 function isAlreadySeeded(agentId: string, validTaskIds: string[], contentHash: string): boolean {
   const db = getDatabase();
@@ -470,16 +437,12 @@ function markerMatches(config: string | null, contentHash: string): boolean {
  * then (if a vault dir is provided) register user tasks discovered in the
  * vault.
  *
- * The built-in portion is synchronous (see `seedBuiltInAgentsAndTasks`)
- * and shares its short-circuit: at boot this refreshes built-ins whenever
- * the definitions' content marker (or task id set) differs from what the
- * DB carries, and skips the writes when nothing changed — an upgrade that
- * edits any built-in definition re-seeds on the next boot exactly once.
+ * The built-in portion is synchronous (see `seedBuiltInAgentsAndTasks`).
  * This wrapper stays `async` only because the user-task branch below does
- * a dynamic `import('./registry.js')`. That branch is vaultDir-dependent
- * and stays boot/bootstrap-scoped — it is NOT called from the per-grove
- * DB-open choke point (`grove-runtime-cache.ts`), which has no vaultDir in
- * scope and only needs the built-in seed. Do not move it there.
+ * a dynamic `import('./registry.js')`. That branch requires a vaultDir and
+ * is boot/bootstrap-scoped only; the per-grove DB-open choke point
+ * (`grove-runtime-cache.ts`) has no vaultDir in scope and calls
+ * `seedBuiltInAgentsAndTasks` directly instead.
  *
  * @param definitionsDir — path to the definitions directory.
  */
