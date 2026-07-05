@@ -11,9 +11,9 @@
  * Uses mock.module — keep this file's mocks self-contained (per-file
  * isolation, PR #466 rule). `@myco/db/client.js` is deliberately NOT
  * mocked: the scheduler tick opens a real per-Grove DB file through
- * `GroveRuntimeCache`, and `openInitializedDatabase` seeds built-in
- * agents/tasks on that real handle (Plan B Task 1) — a fake `getDatabase`
- * stub would break that seed call, not just this test's own assertions.
+ * `GroveRuntimeCache`, and `openInitializedDatabase` seeds built-in agents/
+ * tasks on that real handle — a fake `getDatabase` stub would break that
+ * seed call, not just this test's own assertions.
  */
 import { describe, it, expect, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
