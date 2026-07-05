@@ -10,6 +10,8 @@ import {
 } from '@myco/daemon/grove-runtime-cache.js';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
+import { resolveDefinitionsDir, loadAgentTasks } from '@myco/agent/loader.js';
+import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 describe('GroveRuntimeCache', () => {
   let workDir: string;
@@ -229,6 +231,191 @@ describe('GroveRuntimeCache', () => {
       const cache = new GroveRuntimeCache({ capacity: 4 });
       const out = cache.growCapacity(GROVE_RUNTIME_CACHE_CEILING + 1000);
       expect(out).toBe(GROVE_RUNTIME_CACHE_CEILING);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Built-in agent/task seeding at the DB-open choke point
+  //
+  // Regression pin for the fresh-Grove FK death: fresh Groves had empty
+  // agents/agent_tasks tables because registration only ran once at boot
+  // through the boot-default DB handle. Every dispatch on a fresh Grove
+  // threw `FOREIGN KEY constraint failed` on `agent_runs.agent_id ->
+  // agents(id)`. `openInitializedDatabase` now seeds built-ins on every
+  // open via `withDatabase` + `seedBuiltInAgentsAndTasks`.
+  // ---------------------------------------------------------------------------
+
+  describe('built-in agent/task seeding', () => {
+    it('a freshly opened Grove DB has the built-in agent + all built-in tasks', () => {
+      const cache = new GroveRuntimeCache();
+      const fresh = emptyDbPath('fresh-grove');
+
+      const db = cache.getDatabase(fresh);
+
+      const agentRow = db.prepare('SELECT id, source FROM agents WHERE id = ?').get(DEFAULT_AGENT_ID) as
+        | { id: string; source: string }
+        | undefined;
+      expect(agentRow?.id).toBe(DEFAULT_AGENT_ID);
+      expect(agentRow?.source).toBe('built-in');
+
+      const expectedTaskCount = loadAgentTasks(resolveDefinitionsDir()).length;
+      const taskRows = db.prepare(
+        "SELECT id FROM agent_tasks WHERE source = 'built-in' AND agent_id = ?",
+      ).all(DEFAULT_AGENT_ID) as Array<{ id: string }>;
+      expect(taskRows).toHaveLength(expectedTaskCount);
+
+      cache.closeAll();
+    });
+
+    it('re-opening an existing Grove DB is idempotent (self-heals a previously broken Grove)', () => {
+      const cache = new GroveRuntimeCache();
+      const target = emptyDbPath('reopen-grove');
+
+      const first = cache.getDatabase(target);
+      const expectedTaskCount = loadAgentTasks(resolveDefinitionsDir()).length;
+      const firstCount = first.prepare(
+        "SELECT COUNT(*) AS c FROM agent_tasks WHERE source = 'built-in'",
+      ).get() as { c: number };
+      expect(firstCount.c).toBe(expectedTaskCount);
+
+      // Evict and re-open, simulating a fresh process opening a Grove DB
+      // that was already seeded on a prior open (or, for a pre-existing
+      // broken Grove, a DB the importer never touched).
+      cache.evict(target);
+      const second = cache.getDatabase(target);
+      const secondCount = second.prepare(
+        "SELECT COUNT(*) AS c FROM agent_tasks WHERE source = 'built-in'",
+      ).get() as { c: number };
+      expect(secondCount.c).toBe(expectedTaskCount);
+
+      cache.closeAll();
+    });
+
+    it('short-circuits on a re-open of an already-seeded Grove DB: rows are not rewritten', () => {
+      const cache = new GroveRuntimeCache();
+      const target = emptyDbPath('short-circuit-grove');
+
+      const first = cache.getDatabase(target);
+
+      // Plant a sentinel `updated_at` far in the past. If the short-circuit
+      // does NOT fire on the next open, the upsert path recomputes
+      // `updated_at` via `epochSeconds()` (current time) and this sentinel
+      // is overwritten — a deterministic, timing-independent tell distinct
+      // from comparing two "now" timestamps that could collide within the
+      // same second.
+      const sentinel = 1;
+      first.prepare('UPDATE agents SET updated_at = ? WHERE id = ?').run(sentinel, DEFAULT_AGENT_ID);
+
+      // Evict (closes the handle, exactly as the cache's LRU eviction
+      // would) and re-open through the cache — this re-runs
+      // `openInitializedDatabase`, which re-invokes the seed on every
+      // open.
+      cache.evict(target);
+      const second = cache.getDatabase(target);
+      const stamp = second.prepare(
+        'SELECT updated_at FROM agents WHERE id = ?',
+      ).get(DEFAULT_AGENT_ID) as { updated_at: number };
+
+      expect(stamp.updated_at).toBe(sentinel);
+
+      cache.closeAll();
+    });
+
+    it('sweeps only source=built-in task rows when a built-in task is removed from YAML', () => {
+      const cache = new GroveRuntimeCache();
+      const target = emptyDbPath('sweep-grove');
+
+      const db = cache.getDatabase(target);
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(
+        `INSERT INTO agent_tasks (id, agent_id, source, display_name, description, prompt, is_default, created_at, updated_at)
+         VALUES (?, ?, 'built-in', 'Stale', 'stale', 'stale prompt', 0, ?, ?)`,
+      ).run('removed-from-yaml', DEFAULT_AGENT_ID, now, now);
+      db.prepare(
+        `INSERT INTO agent_tasks (id, agent_id, source, display_name, description, prompt, is_default, created_at, updated_at)
+         VALUES (?, ?, 'user', 'User Task', 'user', 'user prompt', 0, ?, ?)`,
+      ).run('user-task-survives', DEFAULT_AGENT_ID, now, now);
+
+      // Re-open (evict + getDatabase) to re-run the choke point's seed.
+      cache.evict(target);
+      const reopened = cache.getDatabase(target);
+
+      const ids = (reopened.prepare('SELECT id, source FROM agent_tasks').all() as Array<{ id: string; source: string }>);
+      expect(ids.some((r) => r.id === 'removed-from-yaml')).toBe(false);
+      expect(ids.some((r) => r.id === 'user-task-survives' && r.source === 'user')).toBe(true);
+
+      cache.closeAll();
+    });
+
+    it('re-seeds through the cache path when the stored content marker is stale (upgrade skew)', () => {
+      const cache = new GroveRuntimeCache();
+      const target = emptyDbPath('skew-grove');
+
+      const db = cache.getDatabase(target);
+      const current = db.prepare(
+        "SELECT prompt FROM agent_tasks WHERE id = 'vault-evolve'",
+      ).get() as { prompt: string };
+
+      // Simulate a DB last seeded by an OLDER binary whose definitions had
+      // the same task ids but different content: stale prompt + a marker
+      // hash the current binary's definitions won't match. The id-set
+      // check alone would pass here — only the content marker forces the
+      // re-seed (review finding H1).
+      db.prepare(
+        "UPDATE agent_tasks SET prompt = 'stale prompt from an older binary' WHERE id = 'vault-evolve'",
+      ).run();
+      db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(
+        JSON.stringify({ definitions_hash: 'stale-hash-from-older-binary' }),
+        DEFAULT_AGENT_ID,
+      );
+
+      cache.evict(target);
+      const reopened = cache.getDatabase(target);
+
+      const after = reopened.prepare(
+        "SELECT prompt FROM agent_tasks WHERE id = 'vault-evolve'",
+      ).get() as { prompt: string };
+      expect(after.prompt).toBe(current.prompt);
+
+      const config = (reopened.prepare('SELECT config FROM agents WHERE id = ?').get(DEFAULT_AGENT_ID) as {
+        config: string | null;
+      }).config;
+      expect(config).not.toBeNull();
+      const parsed = JSON.parse(config!) as { definitions_hash?: string };
+      expect(parsed.definitions_hash).toBeDefined();
+      expect(parsed.definitions_hash).not.toBe('stale-hash-from-older-binary');
+
+      cache.closeAll();
+    });
+
+    it('regression pin: dispatch on a freshly created Grove no longer FK-fails on agent_runs.agent_id', () => {
+      // This is the exact failure mode from Evidence: `agent_runs.agent_id
+      // -> agents(id)` FK violation on a fresh Grove DB whose `agents`
+      // table was never seeded. A full executor dispatch is too heavy for
+      // this unit-level regression pin (it needs a running harness,
+      // provider config, etc.) — inserting an `agent_runs` row is the
+      // exact statement that threw in production (`insertRun`,
+      // executor.ts), so reproducing that one INSERT against a Grove DB
+      // opened through the real cache path is a faithful, minimal pin for
+      // this specific bug class.
+      const cache = new GroveRuntimeCache();
+      const fresh = emptyDbPath('dispatch-grove');
+      const db = cache.getDatabase(fresh);
+
+      const now = Math.floor(Date.now() / 1000);
+      expect(() => {
+        db.prepare(
+          `INSERT INTO agent_runs (id, project_id, agent_id, task, status, started_at)
+           VALUES (?, ?, ?, ?, 'running', ?)`,
+        ).run('test-run-1', 'test-project', DEFAULT_AGENT_ID, 'vault-evolve', now);
+      }).not.toThrow();
+
+      const row = db.prepare('SELECT agent_id FROM agent_runs WHERE id = ?').get('test-run-1') as
+        | { agent_id: string }
+        | undefined;
+      expect(row?.agent_id).toBe(DEFAULT_AGENT_ID);
+
+      cache.closeAll();
     });
   });
 });

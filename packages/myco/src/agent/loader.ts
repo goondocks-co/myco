@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -283,19 +284,94 @@ export function resolveEffectiveConfig(
 // ---------------------------------------------------------------------------
 
 /**
- * Register the built-in agent and all built-in tasks into the database.
+ * JSON key inside `agents.config` (built-in agent row only) that stores the
+ * content hash of the definitions the last COMPLETED seed wrote. The
+ * built-in agent row's `config` column has no other writer or reader — it
+ * is seed-owned (the only other `registerAgent` caller, spores/write.ts,
+ * registers the separate MCP user-agent row and never sets config).
+ */
+const DEFINITIONS_HASH_KEY = 'definitions_hash';
+
+interface CachedDefinitions {
+  definition: AgentDefinition;
+  tasks: AgentTask[];
+  /** Stable content hash of the parsed definitions — see loadCachedDefinitions. */
+  contentHash: string;
+}
+
+/**
+ * Cached parse of the built-in agent definition + tasks, keyed by
+ * definitionsDir. The YAML is process-static — resolved once per
+ * directory and reused across every `seedBuiltInAgentsAndTasks` call
+ * (the per-grove DB-open choke point calls this on every cache miss,
+ * so re-parsing ~15 task files on each call would be wasted work).
+ *
+ * The content hash is computed once alongside the parse: SHA-256 over
+ * `JSON.stringify` of the parsed definition + tasks with the tasks array
+ * sorted by name. Sorting removes the only nondeterminism (readdir order);
+ * object key order is insertion order, which is deterministic for a given
+ * file content (taskFromParsed builds top-level keys in fixed code order,
+ * nested objects keep YAML document order). Any semantic content change —
+ * prompt, phases, config, schedule — changes the parse and therefore the
+ * hash. Hashing the parse (not the raw files) also covers the bundled
+ * Bun-virtual-path fallback, which has no files to hash. A change that
+ * only reorders YAML keys also changes the hash, which errs on the side of
+ * re-seeding (when in doubt, upsert).
+ */
+const definitionsCache = new Map<string, CachedDefinitions>();
+
+function loadCachedDefinitions(definitionsDir: string): CachedDefinitions {
+  const cached = definitionsCache.get(definitionsDir);
+  if (cached) return cached;
+  const definition = loadAgentDefinition(definitionsDir);
+  const tasks = loadAgentTasks(definitionsDir);
+  // Code-unit compare keeps the hash stable across host locales.
+  const sortedTasks = [...tasks].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const contentHash = createHash('sha256')
+    .update(JSON.stringify({ definition, tasks: sortedTasks }))
+    .digest('hex');
+  const loaded = { definition, tasks, contentHash };
+  definitionsCache.set(definitionsDir, loaded);
+  return loaded;
+}
+
+/**
+ * Seed the built-in agent and all built-in tasks into the database.
  *
  * Idempotent: uses upsert (ON CONFLICT DO UPDATE) for both agent and tasks.
- * Safe to call on every daemon startup.
+ * Synchronous and DB-handle-agnostic — it writes through `getDatabase()`,
+ * so callers targeting a specific Grove DB must wrap the call in
+ * `withDatabase(db, () => seedBuiltInAgentsAndTasks(...))`.
+ *
+ * Cost control: skips the upserts entirely when a cheap check shows the DB
+ * already carries the current definitions. The check has two parts:
+ * 1. Task id set (count + membership) — catches added/removed/renamed
+ *    task YAMLs and partially-seeded DBs.
+ * 2. Content marker — the SHA-256 hash of the parsed definitions, persisted
+ *    in the built-in agent row's `config` column by the last COMPLETED
+ *    seed. This catches content-only changes (same task ids, different
+ *    prompt/phases/config) so an upgrade re-seeds every DB — boot and
+ *    per-grove alike — on its next open, exactly once.
+ * The marker is written LAST, after every upsert and the sweep, and the
+ * agent upsert at the top clears it (config → null) first — so a seed
+ * interrupted mid-way leaves no marker and re-runs in full on next open.
+ * When in doubt (missing/unparseable marker, e.g. a DB last seeded by a
+ * pre-marker binary), this falls through to the full upsert path —
+ * correctness over cost savings.
  *
  * @param definitionsDir — path to the definitions directory.
  */
-export async function registerBuiltInAgentsAndTasks(definitionsDir: string, vaultDir?: string): Promise<void> {
-  const definition = loadAgentDefinition(definitionsDir);
-  const tasks = loadAgentTasks(definitionsDir);
+export function seedBuiltInAgentsAndTasks(definitionsDir: string): void {
+  const { definition, tasks, contentHash } = loadCachedDefinitions(definitionsDir);
+  const validTaskIds = tasks.map((t) => t.name);
+
+  if (isAlreadySeeded(definition.name, validTaskIds, contentHash)) return;
+
   const now = epochSeconds();
 
-  // Upsert the built-in agent
+  // Upsert the built-in agent. `config` is intentionally omitted (→ null):
+  // the upsert clears any previous content marker, so the marker only
+  // exists when the write of it below — the seed's final statement — ran.
   registerAgent({
     id: definition.name,
     name: definition.displayName,
@@ -331,7 +407,6 @@ export async function registerBuiltInAgentsAndTasks(definitionsDir: string, vaul
   }
 
   // Remove built-in tasks that no longer have YAML definitions
-  const validTaskIds = tasks.map(t => t.name);
   if (validTaskIds.length > 0) {
     const db = getDatabase();
     const placeholders = validTaskIds.map(() => '?').join(', ');
@@ -341,8 +416,80 @@ export async function registerBuiltInAgentsAndTasks(definitionsDir: string, vaul
     ).run(BUILT_IN_SOURCE, definition.name, ...validTaskIds);
   }
 
+  // Persist the content marker LAST — its presence means "this seed ran to
+  // completion against these exact definitions". The agent upsert above
+  // cleared it, so an interrupted seed leaves no marker and re-runs fully.
+  getDatabase().prepare(`UPDATE agents SET config = ? WHERE id = ? AND source = ?`)
+    .run(JSON.stringify({ [DEFINITIONS_HASH_KEY]: contentHash }), definition.name, BUILT_IN_SOURCE);
+}
+
+/**
+ * Cheap short-circuit check for `seedBuiltInAgentsAndTasks`: true only when
+ * ALL of the following hold —
+ * 1. the built-in agent row exists;
+ * 2. its persisted content marker (`config.definitions_hash`, written only
+ *    by a completed seed) matches the current definitions hash, so
+ *    content-only changes (same ids, edited prompt/phases/config) re-seed;
+ * 3. the set of built-in task ids in the DB exactly matches the current
+ *    YAML-derived task id set (count + membership) — a structural belt for
+ *    externally deleted/injected rows the marker can't see.
+ * A missing or unparseable marker (DB last seeded by a pre-marker binary,
+ * or a seed that never completed) fails the check → full upsert.
+ */
+function isAlreadySeeded(agentId: string, validTaskIds: string[], contentHash: string): boolean {
+  const db = getDatabase();
+  const agentRow = db.prepare(`SELECT config FROM agents WHERE id = ? AND source = ?`)
+    .get(agentId, BUILT_IN_SOURCE) as { config: string | null } | undefined;
+  if (!agentRow) return false;
+
+  if (!markerMatches(agentRow.config, contentHash)) return false;
+
+  const existingIds = db.prepare(
+    `SELECT id FROM agent_tasks WHERE source = ? AND agent_id = ?`,
+  ).all(BUILT_IN_SOURCE, agentId) as Array<{ id: string }>;
+
+  if (existingIds.length !== validTaskIds.length) return false;
+
+  const existingSet = new Set(existingIds.map((row) => row.id));
+  return validTaskIds.every((id) => existingSet.has(id));
+}
+
+/** True when the persisted agents.config marker carries the current hash. */
+function markerMatches(config: string | null, contentHash: string): boolean {
+  if (!config) return false;
+  try {
+    const parsed = JSON.parse(config) as Record<string, unknown>;
+    return parsed[DEFINITIONS_HASH_KEY] === contentHash;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Register the built-in agent and all built-in tasks into the database,
+ * then (if a vault dir is provided) register user tasks discovered in the
+ * vault.
+ *
+ * The built-in portion is synchronous (see `seedBuiltInAgentsAndTasks`)
+ * and shares its short-circuit: at boot this refreshes built-ins whenever
+ * the definitions' content marker (or task id set) differs from what the
+ * DB carries, and skips the writes when nothing changed — an upgrade that
+ * edits any built-in definition re-seeds on the next boot exactly once.
+ * This wrapper stays `async` only because the user-task branch below does
+ * a dynamic `import('./registry.js')`. That branch is vaultDir-dependent
+ * and stays boot/bootstrap-scoped — it is NOT called from the per-grove
+ * DB-open choke point (`grove-runtime-cache.ts`), which has no vaultDir in
+ * scope and only needs the built-in seed. Do not move it there.
+ *
+ * @param definitionsDir — path to the definitions directory.
+ */
+export async function registerBuiltInAgentsAndTasks(definitionsDir: string, vaultDir?: string): Promise<void> {
+  seedBuiltInAgentsAndTasks(definitionsDir);
+
   // Register user tasks from the vault (if vault dir provided)
   if (vaultDir) {
+    const { definition } = loadCachedDefinitions(definitionsDir);
+    const now = epochSeconds();
     const { loadAllTasks } = await import('./registry.js');
     const allTasks = loadAllTasks(definitionsDir, vaultDir);
     for (const [name, task] of allTasks) {
