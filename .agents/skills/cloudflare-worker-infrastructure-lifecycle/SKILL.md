@@ -41,6 +41,12 @@ myco daemon status --grove-coordination
 
 Team sync is **only supported in Grove environments**. Legacy standalone installations cannot deploy team sync infrastructure.
 
+### Team Sync Tenancy Enforcement
+
+Schema table `team_sync_membership` (project_id PK, team_id) is the reconciled per-project projection of team membership, maintained by `packages/myco/src/db/queries/team-sync-state.ts`. `packages/myco/src/grove/project-tenancy.ts` is the single authority for tenancy — `isProjectSyncable(projectId)` gates whether a project's spores/outbox rows are eligible for team sync, and other modules (`packages/myco/src/daemon/api/team-selection.ts`, `packages/myco/src/daemon/api/groves.ts`) must route through this module rather than re-deriving tenancy ad-hoc (enforced by `tests/grove/tenancy-no-ad-hoc-derivation.test.ts`).
+
+**Outbox flood self-heal**: `purgeNonMemberOutbox(memberProjectIds, validTeamIds)` in `packages/myco/src/db/queries/team-outbox.ts` removes outbox rows for projects that are no longer team members, called from `packages/myco/src/daemon/team-sync-init.ts` on team registry changes. This closes a failure mode where projects removed from a team kept generating outbox rows indefinitely — the purge is a self-heal invoked automatically, not a manual operator step.
+
 ### Initial Deployment
 
 ```bash

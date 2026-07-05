@@ -267,6 +267,8 @@ var set.
   previous stable version. Always verify that `myco/v<GA>` is published and resolving
   correctly on the beta channel before removing any pre-release tags or GitHub releases.
 
+- **Code-signing binary swaps need re-verify + full re-bootstrap, not just `kickstart -k`.** `codesign -dv` only prints signature info — it does NOT verify the signature is valid; use `codesign --verify` to confirm validity before assuming a copied/dev binary will run under launchd. A signature-invalid binary is SIGKILLed by launchd in a crash loop. Both the newly swapped-in binary AND the already-installed binary can independently be invalidly signed — check and re-sign both. After re-signing, a plain `launchctl kickstart -k` may not be enough to recover; a full `launchctl bootout` + `launchctl bootstrap` re-registration may be required.
+
 - **Pin file trust check.** `runtime.command` and `runtime.home` pin files are only
   honored if the file is owned by the current user AND not group/other writable
   (mode bits checked against mask `0o022`). A pin whose trust check fails is silently

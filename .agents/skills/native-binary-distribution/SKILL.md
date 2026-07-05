@@ -384,6 +384,8 @@ string for a non-default-home daemon. Always obtain it via `serviceLabel(mycoHom
 Hardcoding the prod label for a dev daemon causes `launchctl bootstrap` to clobber the
 prod registration in the shared `gui/<uid>` domain.
 
+**Code-signing binary swaps need re-verify + full re-bootstrap, not just `kickstart -k`.** `codesign -dv` only prints signature info — it does NOT verify the signature is valid; use `codesign --verify` to confirm validity before assuming a copied/dev binary will run under launchd. A signature-invalid binary is SIGKILLed by launchd in a crash loop. Both the newly swapped-in binary AND the already-installed binary can independently be invalidly signed — check and re-sign both. After re-signing, a plain `launchctl kickstart -k` may not be enough to recover; a full `launchctl bootout` + `launchctl bootstrap` re-registration may be required.
+
 **Non-default home daemons never point their service unit at the managed binary.**
 `defaultServiceExecutable()` returns `process.execPath` unconditionally for non-default
 homes. Code that calls `managedBinaryPath()` and writes the result into a plist for a
