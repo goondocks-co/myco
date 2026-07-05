@@ -42,23 +42,45 @@ function epochToIso(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toISOString();
 }
 
+/** Code-point-safe truncation — never splits a surrogate pair at the boundary. */
 function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+  const points = Array.from(text);
+  return points.length <= max ? text : `${points.slice(0, max - 1).join('').trimEnd()}…`;
+}
+
+/** Lines outside fenced code blocks — a `# comment` inside a fence is not a heading. */
+function unfencedLines(content: string): string[] {
+  const out: string[] = [];
+  let inFence = false;
+  for (const line of content.split('\n')) {
+    if (/^(```|~~~)/.test(line.trim())) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) out.push(line);
+  }
+  return out;
 }
 
 function firstSentence(content: string): string {
-  const stripped = content
-    .replace(/^#{1,6}\s+.*$/gm, ' ')
+  const prose = unfencedLines(content)
+    .filter((line) => !/^#{1,6}\s/.test(line.trim()))
+    .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const match = /^(.*?[.!?])(\s|$)/.exec(stripped);
-  return (match ? match[1] : stripped).trim();
+  const match = /^(.*?[.!?])(\s|$)/.exec(prose);
+  return (match ? match[1] : prose).trim();
 }
 
 function deriveTitle(spore: SporeRow): string {
-  for (const line of spore.content.split('\n')) {
-    const heading = /^#{1,6}\s+(.+)$/.exec(line.trim());
+  // Only a LEADING heading names the spore; a heading buried after prose
+  // (or inside a code fence) does not outrank the first sentence.
+  for (const line of unfencedLines(spore.content)) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    const heading = /^#{1,6}\s+(.+)$/.exec(trimmed);
     if (heading) return truncate(heading[1].trim(), 80);
+    break;
   }
   const sentence = firstSentence(spore.content);
   return sentence !== '' ? truncate(sentence, 80) : `Myco spore ${spore.id}`;
@@ -142,9 +164,18 @@ export function projectSpores(input: SporeProjectionInput): {
 
     // --- Relationships (only rows that exist) ---
     const relationshipLines: string[] = [];
+    // resolution_events is append-only with no uniqueness — synced/replayed
+    // duplicates and self-edges are representable and must not render.
+    const seenEdgeKeys = new Set<string>();
     const edges = input.resolutionEdges
       .filter((edge) => edge.spore_id === spore.id || edge.new_spore_id === spore.id)
-      .slice()
+      .filter((edge) => edge.spore_id !== edge.new_spore_id)
+      .filter((edge) => {
+        const key = `${edge.action}:${edge.spore_id}:${edge.new_spore_id ?? ''}`;
+        if (seenEdgeKeys.has(key)) return false;
+        seenEdgeKeys.add(key);
+        return true;
+      })
       .sort((a, b) => {
         const ka = `${a.action}:${a.spore_id}:${a.new_spore_id ?? ''}`;
         const kb = `${b.action}:${b.spore_id}:${b.new_spore_id ?? ''}`;
@@ -171,7 +202,8 @@ export function projectSpores(input: SporeProjectionInput): {
           continue;
         }
       }
-      relationshipLines.push(`- ${verb} ${counterpartId}. Replacement spore ${counterpartId} was not included in this export.`);
+      const role = outgoing ? 'Replacement' : 'Predecessor';
+      relationshipLines.push(`- ${verb} ${counterpartId}. ${role} spore ${counterpartId} was not included in this export.`);
       warnings.push({
         code: 'relationship_target_excluded',
         message: `Spore ${spore.id}: relationship target ${counterpartId} is not included in this export.`,

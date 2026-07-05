@@ -191,6 +191,60 @@ describe('projectSpores', () => {
     expect(concepts[0].frontmatter.myco_session_id).toBe('sess-1111');
   });
 
+  it('injects myco_id into the rendered document', () => {
+    const { concepts } = projectSpores(input({ spores: [spore({})] }));
+    expect(renderConcept(concepts[0]).content).toContain('myco_id: decision-abc123\n');
+  });
+
+  it('ignores #-comment lines inside code fences when deriving the title', () => {
+    const content = 'Fix applied to the retry loop.\n\n```bash\n# run the smoke suite\nnpm test\n```';
+    const { concepts } = projectSpores(input({ spores: [spore({ content })] }));
+    expect(concepts[0].frontmatter.title).toBe('Fix applied to the retry loop.');
+  });
+
+  it('does not let a heading buried after prose outrank the first sentence', () => {
+    const content = 'The lock was broken. Details follow.\n\n# Appendix\n\nMore text.';
+    const { concepts } = projectSpores(input({ spores: [spore({ content })] }));
+    expect(concepts[0].frontmatter.title).toBe('The lock was broken.');
+  });
+
+  it('truncates titles on code-point boundaries, never splitting surrogate pairs', () => {
+    const content = `${'😀'.repeat(60)} end.`;
+    const { concepts } = projectSpores(input({ spores: [spore({ content })] }));
+    const title = concepts[0].frontmatter.title as string;
+    expect(title.isWellFormed()).toBe(true);
+    expect(Array.from(title).length).toBeLessThanOrEqual(80);
+  });
+
+  it('dedupes duplicate resolution edges and skips self-edges', () => {
+    const { concepts, warnings } = projectSpores(
+      input({
+        spores: [spore({ id: 'x', status: 'superseded' })],
+        resolutionEdges: [
+          { spore_id: 'x', new_spore_id: 'x', action: 'supersede' },
+          { spore_id: 'x', new_spore_id: 'y', action: 'supersede' },
+          { spore_id: 'x', new_spore_id: 'y', action: 'supersede' },
+        ],
+        includedIds: new Set(['x']),
+      }),
+    );
+    const body = concepts[0].body;
+    expect(body.split('Replacement spore y was not included in this export.')).toHaveLength(2);
+    expect(body).not.toContain('Superseded by [x]');
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('labels excluded incoming counterparts as predecessors, not replacements', () => {
+    const { concepts } = projectSpores(
+      input({
+        spores: [spore({ id: 'decision-new' })],
+        resolutionEdges: [{ spore_id: 'decision-gone', new_spore_id: 'decision-new', action: 'supersede' }],
+        includedIds: new Set(['decision-new']),
+      }),
+    );
+    expect(concepts[0].body).toContain('Predecessor spore decision-gone was not included in this export.');
+  });
+
   it('is deterministic — double projection is deep-equal', () => {
     const args = input({
       spores: [spore({}), spore({ id: 'gotcha-9', observation_type: 'gotcha' })],

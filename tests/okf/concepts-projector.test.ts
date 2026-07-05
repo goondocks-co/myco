@@ -92,6 +92,58 @@ describe('adoptConcepts', () => {
     expect(errors.filter((e) => e.level === 'error')).toEqual([]);
   });
 
+  it('rejects reserved bundle filenames under concepts/', () => {
+    const { concepts, errors } = adoptConcepts({
+      files: [
+        file('concepts/index.md', '---\ntype: X\n---\n\nBody.\n'),
+        file('concepts/log.md', '---\ntype: X\n---\n\nBody.\n'),
+      ],
+    });
+    expect(concepts).toEqual([]);
+    expect(errors.map((e) => e.code)).toEqual(['reserved_filename', 'reserved_filename']);
+  });
+
+  it('rejects traversal, empty, and NUL path segments', () => {
+    const { concepts, errors } = adoptConcepts({
+      files: [
+        file('concepts/../escape.md', '---\ntype: X\n---\n\nBody.\n'),
+        file('concepts/.md', '---\ntype: X\n---\n\nBody.\n'),
+        file('concepts//double.md', '---\ntype: X\n---\n\nBody.\n'),
+      ],
+    });
+    expect(concepts).toEqual([]);
+    expect(errors.map((e) => e.code)).toEqual([
+      'invalid_concept_path',
+      'invalid_concept_path',
+      'invalid_concept_path',
+    ]);
+  });
+
+  it('rejects non-markdown files with a dedicated code', () => {
+    const { errors } = adoptConcepts({ files: [file('concepts/notes.txt', 'plain text')] });
+    expect(errors.map((e) => e.code)).toEqual(['invalid_concept_file']);
+  });
+
+  it('surfaces alias-expansion bound violations as per-file errors instead of throwing', () => {
+    const bomb =
+      `---\ntype: X\ntitle: T\nbase: &a "${'A'.repeat(7000)}"\n` +
+      Array.from({ length: 8 }, (_, i) => `copy${i}: *a`).join('\n') +
+      '\n---\n\nBody.\n';
+    const ok = '---\ntype: Note\ntitle: Fine\ndescription: D.\n---\n\nBody with [link](./other.md).\n';
+    const { concepts, errors } = adoptConcepts({
+      files: [file('concepts/alias-bomb.md', bomb), file('concepts/fine.md', ok)],
+    });
+    // The sibling file still adopts; the offending file gets a structured error.
+    expect(concepts.map((c) => c.id)).toEqual(['concepts/fine']);
+    expect(errors.filter((e) => e.level === 'error').map((e) => e.code)).toEqual(['frontmatter_too_large']);
+  });
+
+  it('errors on non-string source_concepts entries', () => {
+    const raw = '---\ntype: X\ntitle: T\nsource_concepts:\n  - 42\n---\n\nBody.\n';
+    const { errors } = adoptConcepts({ files: [file('concepts/bad-citation.md', raw)] });
+    expect(errors.filter((e) => e.level === 'error').map((e) => e.code)).toEqual(['concept_citation_dangling']);
+  });
+
   it('is deterministic — double adoption is deep-equal', () => {
     const files = [file('concepts/locking-model.md', VALID_CONCEPT), file('concepts/decision-log.md', CITED_PEER)];
     expect(adoptConcepts({ files })).toEqual(adoptConcepts({ files }));

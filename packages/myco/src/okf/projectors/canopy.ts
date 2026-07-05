@@ -21,8 +21,23 @@ import {
 
 const UNDESCRIBED_FALLBACK = 'No LLM description has been generated for this file.';
 
+/** Effective description: null/empty/whitespace-only all count as undescribed. */
+function describedText(entry: CanopyEntry): string | null {
+  const text = entry.llm_description?.trim();
+  return text ? text : null;
+}
+
 function epochToIso(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toISOString();
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Boundary-delimited path occurrence — 'a.ts' must not match inside 'data.ts'. */
+function mentionsPath(content: string, repoPath: string): boolean {
+  return new RegExp(`(^|[^A-Za-z0-9_./-])${escapeRegExp(repoPath)}([^A-Za-z0-9_./-]|$)`).test(content);
 }
 
 function tableCell(value: string): string {
@@ -83,7 +98,8 @@ export function projectCanopy(input: CanopyProjectionInput): {
 
   for (const entry of input.entries) {
     if (input.isExcluded(entry.path)) continue;
-    if (entry.llm_description == null && !input.includeUndescribed) {
+    const description = describedText(entry);
+    if (description == null && !input.includeUndescribed) {
       undescribedSkipped += 1;
       continue;
     }
@@ -99,8 +115,7 @@ export function projectCanopy(input: CanopyProjectionInput): {
     const frontmatter: OkfFrontmatter = {
       type: 'Source File',
       title: entry.path,
-      description:
-        entry.llm_description != null ? firstLine(entry.llm_description) : UNDESCRIBED_FALLBACK,
+      description: description != null ? firstLine(description) : UNDESCRIBED_FALLBACK,
       resource: `repo://${entry.path}`,
       tags,
       timestamp,
@@ -126,7 +141,7 @@ export function projectCanopy(input: CanopyProjectionInput): {
 
     const body = [
       '# Summary',
-      entry.llm_description?.trim() || UNDESCRIBED_FALLBACK,
+      description ?? UNDESCRIBED_FALLBACK,
       '# File Anatomy',
       ['| Field | Value |', '| --- | --- |', ...anatomyRows.map(([k, v]) => `| ${k} | ${tableCell(v)} |`)].join('\n'),
       '# Exports',
@@ -181,7 +196,7 @@ export function projectCanopy(input: CanopyProjectionInput): {
     // in the map content AND it projects to an included concept. Never fuzzy.
     const referencedLines: string[] = [];
     for (const repoPath of [...includedByRepoPath.keys()].sort()) {
-      if (!input.map.content.includes(repoPath)) continue;
+      if (!mentionsPath(input.map.content, repoPath)) continue;
       referencedLines.push(
         `- [${escapeLinkLabel(repoPath)}](${relativeConceptHref(path, includedByRepoPath.get(repoPath)!)})`,
       );
@@ -213,5 +228,6 @@ export function projectCanopy(input: CanopyProjectionInput): {
 
 function firstLine(text: string): string {
   const line = text.split('\n', 1)[0].trim();
-  return line.length <= 200 ? line : `${line.slice(0, 199).trimEnd()}…`;
+  const points = Array.from(line);
+  return points.length <= 200 ? line : `${points.slice(0, 199).join('').trimEnd()}…`;
 }

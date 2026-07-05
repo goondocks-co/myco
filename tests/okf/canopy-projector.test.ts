@@ -120,6 +120,21 @@ describe('projectCanopy — file entries', () => {
     expect(concepts[0].frontmatter.timestamp).toBe(new Date(1_783_000_000 * 1000).toISOString());
   });
 
+  it('treats an empty or whitespace-only llm_description as undescribed', () => {
+    const skipped = projectCanopy(
+      input({ entries: [entry({ path: 'a.ts', llm_description: '' }), entry({ path: 'b.ts', llm_description: '  \n ' })] }),
+    );
+    expect(skipped.concepts).toHaveLength(0);
+    expect(fileWarnings(skipped.warnings)[0].code).toBe('canopy_entry_undescribed');
+
+    const included = projectCanopy(
+      input({ entries: [entry({ path: 'a.ts', llm_description: '' })], includeUndescribed: true }),
+    );
+    expect(included.concepts[0].frontmatter.description).toBe('No LLM description has been generated for this file.');
+    const rendered = renderConcept(included.concepts[0]);
+    expect(validateConceptSource(rendered.content, rendered.path, 'myco_strict').filter((i) => i.level === 'error')).toEqual([]);
+  });
+
   it('renders malformed exports_json as "None recorded." with a warning instead of crashing', () => {
     const { concepts, warnings } = projectCanopy(
       input({ entries: [entry({ exports_json: '{not json' })] }),
@@ -144,6 +159,18 @@ describe('projectCanopy — map', () => {
     expect(mapConcept.body).toContain('# Referenced Files\n\n- [src/lock.ts](files/src/lock.ts.md)');
     // src/missing.ts appears in the map text but projects no concept — no link.
     expect(mapConcept.body).not.toContain('](files/src/missing.ts.md)');
+  });
+
+  it('matches paths on boundaries — a.ts does not match inside data.ts', () => {
+    const { concepts } = projectCanopy(
+      input({
+        entries: [entry({ path: 'a.ts' }), entry({ path: 'data.ts' })],
+        map: map({ content: '# Map\n\n- data.ts — the only file mentioned\n' }),
+      }),
+    );
+    const mapConcept = concepts.find((c) => c.id === 'canopy/map')!;
+    expect(mapConcept.body).toContain('- [data.ts](files/data.ts.md)');
+    expect(mapConcept.body).not.toContain('- [a.ts](files/a.ts.md)');
   });
 
   it('omits the referenced-files section when nothing matches', () => {

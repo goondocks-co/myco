@@ -2,6 +2,7 @@ import { sha256Hex } from '@myco/canopy/hash.js';
 import { OkfFrontmatterError, parseConceptDoc, serializeConceptDoc } from '../frontmatter.js';
 import {
   OKF_PROJECTION_VERSION,
+  OKF_RESERVED_FILES,
   type OkfConcept,
   type OkfFrontmatter,
   type OkfValidationIssue,
@@ -62,9 +63,33 @@ export function adoptConcepts(input: ConceptAdoptionInput): ConceptAdoptionResul
     if (!relPath.endsWith('.md')) {
       errors.push({
         level: 'error',
-        code: 'unparseable_frontmatter',
+        code: 'invalid_concept_file',
         path: relPath,
         message: 'agent-maintained concepts must be .md files',
+      });
+      continue;
+    }
+
+    // Path hygiene mirroring deriveConceptId: adopted rel-paths may come from
+    // non-readdir tree providers (archive import, remote manifest), where
+    // traversal segments and empty basenames are expressible.
+    const segments = relPath.split('/');
+    const basename = segments[segments.length - 1];
+    if (segments.some((segment) => segment === '' || segment === '.' || segment === '..') || relPath.includes('\0') || basename === '.md') {
+      errors.push({
+        level: 'error',
+        code: 'invalid_concept_path',
+        path: relPath,
+        message: `concept path ${JSON.stringify(relPath)} contains empty, traversal, or NUL segments`,
+      });
+      continue;
+    }
+    if ((OKF_RESERVED_FILES as readonly string[]).includes(basename)) {
+      errors.push({
+        level: 'error',
+        code: 'reserved_filename',
+        path: relPath,
+        message: `${JSON.stringify(basename)} is a reserved bundle filename and cannot be an agent-maintained concept`,
       });
       continue;
     }
@@ -100,7 +125,15 @@ export function adoptConcepts(input: ConceptAdoptionInput): ConceptAdoptionResul
     if (Array.isArray(sourceConcepts) && sourceConcepts.length > 0) {
       hasCitation = true;
       for (const target of sourceConcepts) {
-        if (typeof target !== 'string') continue;
+        if (typeof target !== 'string') {
+          errors.push({
+            level: 'error',
+            code: 'concept_citation_dangling',
+            path: relPath,
+            message: `source_concepts entries must be strings; got ${JSON.stringify(target)}`,
+          });
+          continue;
+        }
         if (target.startsWith(CONCEPTS_PREFIX) && !adoptedIds.has(target)) {
           errors.push({
             level: 'error',
@@ -121,6 +154,23 @@ export function adoptConcepts(input: ConceptAdoptionInput): ConceptAdoptionResul
       });
     }
 
+    // The canonical re-serialization enforces the same bounds as parse, and
+    // YAML aliases legal on parse can expand past them here — surface that as
+    // a per-file issue, never an uncaught throw that aborts sibling files.
+    let sourceHash: string;
+    try {
+      sourceHash = sha256Hex(serializeConceptDoc(frontmatter, body));
+    } catch (err) {
+      const code = err instanceof OkfFrontmatterError ? err.code : 'frontmatter_serialization_failed';
+      errors.push({
+        level: 'error',
+        code,
+        path: relPath,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+
     const id = relPath.slice(0, -'.md'.length);
     concepts.push({
       id,
@@ -131,7 +181,7 @@ export function adoptConcepts(input: ConceptAdoptionInput): ConceptAdoptionResul
         sourceKind: 'okf_concept',
         id,
         projectId: null,
-        sourceHash: sha256Hex(serializeConceptDoc(frontmatter, body)),
+        sourceHash,
         sourceUpdatedAt: file.mtimeIso,
         projectionVersion: OKF_PROJECTION_VERSION,
       },
