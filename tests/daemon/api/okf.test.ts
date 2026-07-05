@@ -188,6 +188,42 @@ describe('OKF API handlers', () => {
     const res = await handleOkfConceptSave(req({ body: { id: 'concepts/x' } }), principalFor(ctxFor()));
     expect(res.status).toBe(400);
   });
+
+  it('rejects a maintain with a malformed include or spore status (400) before touching the capability', async () => {
+    let called = false;
+    stub.maintain = () => {
+      called = true;
+      return Promise.resolve({});
+    };
+    const badInclude = await handleOkfMaintain(req({ body: { include: 'everything' } }), principalFor(ctxFor()));
+    expect(badInclude.status).toBe(400);
+    const badKeys = await handleOkfMaintain(req({ body: { include: { spores: true, bogus: true } } }), principalFor(ctxFor()));
+    expect(badKeys.status).toBe(400);
+    const badStatus = await handleOkfMaintain(req({ body: { sporeStatus: 'zombie' } }), principalFor(ctxFor()));
+    expect(badStatus.status).toBe(400);
+    expect(called).toBe(false); // never reached the capability
+  });
+
+  it('status emits the frozen Plan-7 aggregation shape exactly', async () => {
+    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 3, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'published', counts: { spores: 1, canopy: 0, concepts: 1, guides: 1 }, conceptCount: 3, stale: false, publishAcknowledged: true });
+    stub.validate = () => ({ ok: true, level: 'myco_strict', filesChecked: 4, conceptsChecked: 3, issues: [] });
+    // A published bundle on disk for the scanner to read (clean → no findings).
+    fs.mkdirSync(path.join(projectRoot, 'okf'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, 'okf/note.md'), '---\ntype: Note\n---\n\nBody.\n');
+    const res = await handleOkfStatus(req(), principalFor(ctxFor()));
+    const body = res.body as Record<string, unknown>;
+    for (const key of ['outputRoot', 'bundleExists', 'bundleGeneration', 'inputsHash', 'generatedAt', 'lastResult', 'counts', 'conceptCount', 'stale', 'publishAcknowledged', 'enabled', 'outputPath', 'validation', 'agentsPointer', 'publishEligibility', 'lastRun']) {
+      expect(body).toHaveProperty(key);
+    }
+    expect(body.lastRun).toBeNull();
+    const validation = body.validation as Record<string, unknown>;
+    expect(Object.keys(validation).sort()).toEqual(['conceptsChecked', 'filesChecked', 'level', 'ok']);
+    const pubElig = body.publishEligibility as { ok: boolean; findings: unknown[] };
+    expect(typeof pubElig.ok).toBe('boolean');
+    expect(Array.isArray(pubElig.findings)).toBe(true);
+    const agentsPointer = body.agentsPointer as Record<string, unknown>;
+    expect(Object.keys(agentsPointer).sort()).toEqual(['present', 'stale']);
+  });
 });
 
 describe('OKF API tenancy', () => {

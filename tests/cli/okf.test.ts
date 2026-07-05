@@ -48,6 +48,16 @@ describe('parseOkfCommand', () => {
     expect(parseOkfCommand(['concept', 'get', 'concepts/x']).ok).toBe(true);
   });
 
+  it('supersede accepts a --reason string equal to a concept id (index-based flag consumption)', () => {
+    const r = parseOkfCommand(['concept', 'supersede', 'concepts/a', 'concepts/b', '--reason', 'concepts/b']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.cmd.kind === 'concept-supersede') {
+      expect(r.cmd.oldId).toBe('concepts/a');
+      expect(r.cmd.newId).toBe('concepts/b');
+      expect(r.cmd.reason).toBe('concepts/b');
+    }
+  });
+
   it('rejects an unknown subcommand', () => {
     expect(parseOkfCommand(['frobnicate']).ok).toBe(false);
   });
@@ -213,12 +223,26 @@ describe('myco okf CLI', () => {
     expect(fs.existsSync(path.join(projectRoot(), 'okf/concepts/note.md'))).toBe(true);
   });
 
-  it('exits 2 on a bad-argument parse error path? (parse errors exit 1)', async () => {
+  it('exits 1 on a parse error with invalid_arguments', async () => {
     writeConfig(true);
     seedGroveDb(() => registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 }));
     await run(['bogus-subcommand'], vaultDir);
     expect(process.exitCode).toBe(1);
     expect((lastJson().error as { code: string }).code).toBe('invalid_arguments');
+  });
+
+  it('exits 1 (user error, not 2) when the concept --input file is unreadable', async () => {
+    writeConfig(true);
+    seedGroveDb(() => {
+      registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 });
+      insertSpore({ id: 'decision-1', project_id: PROJECT_ID, agent_id: AGENT_ID, observation_type: 'decision', content: 'A decision.', importance: 5, created_at: 1_783_000_000, machine_id: 'machine-a' });
+    });
+    await run(['maintain', '--acknowledge-publish'], vaultDir);
+    written = [];
+    process.exitCode = 0;
+    await run(['concept', 'save', '--id', 'concepts/x', '--input', '@/nonexistent/file.md'], vaultDir);
+    expect(process.exitCode).toBe(1);
+    expect((lastJson().error as { code: string }).code).toBe('invalid_input_file');
   });
 });
 

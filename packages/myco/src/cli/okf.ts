@@ -47,6 +47,16 @@ export type OkfCliCommand =
 
 export type ParseResult = { ok: true; cmd: OkfCliCommand } | { ok: false; error: string };
 
+/** A bad invocation (e.g. an unreadable --input file) — exit 1, not a runtime error. */
+class OkfCliUserError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 function takeFlagValue(args: string[], flag: string): { value?: string; rest: string[] } {
   const idx = args.indexOf(flag);
   if (idx === -1) return { rest: args };
@@ -126,8 +136,12 @@ export function parseOkfCommand(argv: string[]): ParseResult {
         return { ok: true, cmd: { kind: 'concept-save', id, inputFile: bareFile, expectedGeneration } };
       }
       if (op === 'supersede') {
-        const reason = takeFlagValue(opArgs, '--reason').value;
-        const positionals = opArgs.filter((a) => !a.startsWith('--') && a !== reason);
+        // Consume --reason by INDEX (takeFlagValue removes the flag + its
+        // value from `rest`), so a reason string that equals a concept id
+        // can't accidentally strip that id from the positionals.
+        const reasonTake = takeFlagValue(opArgs, '--reason');
+        const reason = reasonTake.value;
+        const positionals = reasonTake.rest.filter((a) => !a.startsWith('--'));
         const [oldId, newId] = positionals;
         if (!oldId || !newId) return { ok: false, error: 'concept supersede requires <old-id> <new-id>' };
         if (!reason) return { ok: false, error: 'concept supersede requires --reason "<text>"' };
@@ -214,7 +228,12 @@ async function dispatch(ctx: BundleContext, cmd: OkfCliCommand): Promise<unknown
     case 'status':
       return { ok: true, status: bundle.status() };
     case 'concept-save': {
-      const markdown = fs.readFileSync(cmd.inputFile, 'utf8');
+      let markdown: string;
+      try {
+        markdown = fs.readFileSync(cmd.inputFile, 'utf8');
+      } catch (err) {
+        throw new OkfCliUserError('invalid_input_file', `cannot read --input file ${JSON.stringify(cmd.inputFile)}: ${(err as Error).message}`);
+      }
       const result = await bundle.saveConcept({
         id: cmd.id,
         markdown,
@@ -255,6 +274,11 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     const result = await dispatch(buildBundle(vaultDir), parsed.cmd);
     console.log(JSON.stringify(result, null, 2));
   } catch (err) {
+    if (err instanceof OkfCliUserError) {
+      console.log(JSON.stringify({ ok: false, error: { code: err.code, message: err.message } }, null, 2));
+      process.exitCode = 1;
+      return;
+    }
     if (err instanceof OkfError) {
       console.log(
         JSON.stringify(

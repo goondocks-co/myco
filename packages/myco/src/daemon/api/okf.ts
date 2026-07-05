@@ -75,6 +75,28 @@ function asRecord(body: unknown): Record<string, unknown> {
   return body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
 }
 
+const SPORE_STATUSES = new Set(['active', 'superseded', 'consolidated', 'obsolete', 'all']);
+
+/** Validate the maintain body's include/sporeStatus the way the CLI does; returns an error envelope or null. */
+function validateMaintainBody(body: Record<string, unknown>): RouteResponse | null {
+  if (body.include !== undefined) {
+    const inc = body.include;
+    const keysOk =
+      inc !== null &&
+      typeof inc === 'object' &&
+      !Array.isArray(inc) &&
+      Object.keys(inc as object).every((k) => ['spores', 'canopy', 'concepts', 'guides'].includes(k)) &&
+      Object.values(inc as Record<string, unknown>).every((v) => typeof v === 'boolean');
+    if (!keysOk) {
+      return { status: 400, body: errorBody('invalid_request', 'include must be an object of {spores,canopy,concepts,guides}: boolean') };
+    }
+  }
+  if (body.sporeStatus !== undefined && !SPORE_STATUSES.has(String(body.sporeStatus))) {
+    return { status: 400, body: errorBody('invalid_request', `unknown sporeStatus: ${String(body.sporeStatus)}`) };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Raw handlers — wrapped with tenantRoute at registration.
 // ---------------------------------------------------------------------------
@@ -82,6 +104,8 @@ function asRecord(body: unknown): Record<string, unknown> {
 export async function handleOkfMaintain(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
   const body = asRecord(req.body);
+  const invalid = validateMaintainBody(body);
+  if (invalid) return invalid;
   try {
     const result = await ctx.bundle.maintain({
       scope: ctx.scope,
@@ -106,47 +130,55 @@ export async function handleOkfMaintain(req: RouteRequest, principal: RequestPri
 
 export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
-  const status = ctx.bundle.status();
-  const enabled = capabilityEnabled(ctx.config, 'okf');
-  const outputPath = ctx.config.okf.maintain.output_path;
-
-  let validation: { ok: boolean; level: string; filesChecked: number; conceptsChecked: number } | null = null;
-  const publishFindings = status.bundleExists ? scanStagedBundle(status.outputRoot) : [];
-  if (status.bundleExists) {
-    const report = ctx.bundle.validate(status.outputRoot);
-    validation = {
-      ok: report.ok,
-      level: report.level,
-      filesChecked: report.filesChecked,
-      conceptsChecked: report.conceptsChecked,
-    };
-  }
-
-  // AGENTS.md pointer state (managed block reflects the reconciler's view).
-  const pointerExpected = enabled && ctx.config.okf.maintain.managed_agents_md_pointer !== false;
-  let pointerPresent = false;
   try {
-    const agents = fs.readFileSync(path.join(ctx.projectRoot, 'AGENTS.md'), 'utf8');
-    pointerPresent = agents.includes(`${outputPath.replace(/\/+$/, '')}/index.md`);
-  } catch {
-    pointerPresent = false;
-  }
+    const status = ctx.bundle.status();
+    const enabled = capabilityEnabled(ctx.config, 'okf');
+    const outputPath = ctx.config.okf.maintain.output_path;
 
-  return {
-    status: 200,
-    body: {
-      ...status,
-      enabled,
-      outputPath,
-      validation,
-      agentsPointer: { present: pointerPresent, stale: pointerPresent !== pointerExpected },
-      publishEligibility: {
-        ok: status.publishAcknowledged,
-        findings: publishFindings.map((f) => ({ code: f.code, path: f.path, excerpt: f.excerpt })),
+    let validation: { ok: boolean; level: string; filesChecked: number; conceptsChecked: number } | null = null;
+    const publishFindings = status.bundleExists ? scanStagedBundle(status.outputRoot) : [];
+    if (status.bundleExists) {
+      const report = ctx.bundle.validate(status.outputRoot);
+      validation = {
+        ok: report.ok,
+        level: report.level,
+        filesChecked: report.filesChecked,
+        conceptsChecked: report.conceptsChecked,
+      };
+    }
+
+    // AGENTS.md pointer state (managed block reflects the reconciler's view).
+    const pointerExpected = enabled && ctx.config.okf.maintain.managed_agents_md_pointer !== false;
+    let pointerPresent = false;
+    try {
+      const agents = fs.readFileSync(path.join(ctx.projectRoot, 'AGENTS.md'), 'utf8');
+      pointerPresent = agents.includes(`${outputPath.replace(/\/+$/, '')}/index.md`);
+    } catch {
+      pointerPresent = false;
+    }
+
+    return {
+      status: 200,
+      body: {
+        ...status,
+        enabled,
+        outputPath,
+        validation,
+        agentsPointer: { present: pointerPresent, stale: pointerPresent !== pointerExpected },
+        publishEligibility: {
+          // `ok` means "a repo-visible publish is NOT blocked" — i.e. every
+          // current finding is already acknowledged. It is NOT "zero findings"
+          // (see `findings` for the raw list). Plan 7 renders `ok` as the
+          // publishable state and `findings` as the reviewable detail.
+          ok: status.publishAcknowledged,
+          findings: publishFindings.map((f) => ({ code: f.code, path: f.path, excerpt: f.excerpt })),
+        },
+        lastRun: null, // filled by Plan 6 (okf-maintain task) from agent_runs
       },
-      lastRun: null, // filled by Plan 6 (okf-maintain task) from agent_runs
-    },
-  };
+    };
+  } catch (err) {
+    return okfErrorResponse(err);
+  }
 }
 
 export async function handleOkfValidate(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
