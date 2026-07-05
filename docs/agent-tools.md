@@ -14,7 +14,7 @@ These context routes augment the agent's native memory and tools. Myco does not 
 
 ## Local MCP tools
 
-Seven local tools are available to any symbiont Myco has connected. When the project is connected to a Myco Collective, four additional `collective_*` tools are also registered.
+Eight local tools are available to any symbiont Myco has connected. When the project is connected to a Myco Collective, four additional `collective_*` tools are also registered.
 
 The MCP surface is intentionally limited to **read and editorial** operations — symbionts use Myco's project intelligence; they do not administer Myco. Administrative operations such as restart, update, backup, restore, and maintenance live in the **CLI** and **UI**. See [Actors and Boundaries](architecture/actors-and-boundaries.md).
 
@@ -54,6 +54,8 @@ agent-editable.
 There is no `maintain`, output-root, or publish-acknowledgement op: regenerating
 or relocating the bundle is a user action, and that omission from the schema is
 the authorization boundary for symbionts.
+
+See the [OKF guide](okf.md) for the user-facing workflow this tool supports.
 
 ## Cloud MCP tools
 
