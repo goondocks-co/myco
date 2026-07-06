@@ -3,10 +3,11 @@ import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { registerScheduledTasks } from '@myco/daemon/task-scheduling.js';
+import { registerScheduledTasks, buildPreConditions } from '@myco/daemon/task-scheduling.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
 import { ProjectPowerStateTracker } from '@myco/daemon/project-power-state.js';
+import { PreConditionSchema } from '@myco/agent/schemas.js';
 import type { AgentTask } from '@myco/agent/types.js';
 
 mock.module('@myco/agent/registry.js', () => ({
@@ -93,5 +94,21 @@ describe('registerScheduledTasks', () => {
         expect.objectContaining({ name: 'scheduled:tasks' }),
       ]),
     );
+  });
+});
+
+describe('PreConditionSchema registry membership', () => {
+  it('every PreConditionSchema member has a buildPreConditions registry key', () => {
+    // resolveProjectConfig/taskAgentMap are never invoked by this
+    // assertion — it only checks that a key exists for each schema member,
+    // not runtime behavior of the functions.
+    const registry = buildPreConditions({
+      resolveProjectConfig: () => null,
+      taskAgentMap: new Map(),
+    });
+    for (const name of PreConditionSchema.options) {
+      expect(registry).toHaveProperty(name);
+      expect(typeof registry[name]).toBe('function');
+    }
   });
 });

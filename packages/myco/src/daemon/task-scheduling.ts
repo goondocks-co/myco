@@ -55,8 +55,6 @@ import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
-import { ProjectVault } from '@myco/vault/project-vault.js';
-import { okfMaintainDue } from '@myco/okf/schedule.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
 
@@ -437,19 +435,6 @@ export function buildPreConditions(
         taskAgentMap.get(SKILL_SURVEY_TASK),
         scope.requestContext,
       ).eligible,
-    'okf-maintain-due': (scope) => {
-      const config = resolveProjectConfig(scope);
-      if (!config) return false;
-      const manifest = new ProjectVault(scope.projectRoot).readOkfManifest();
-      return okfMaintainDue(
-        toProjectScope(scope.projectId),
-        config,
-        scope.projectRoot,
-        scope.projectId,
-        scope.requestContext.machineId,
-        manifest,
-      );
-    },
   };
 }
 

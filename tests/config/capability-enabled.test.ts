@@ -2,7 +2,6 @@ import { describe, it, expect } from 'bun:test';
 import {
   CAPABILITIES,
   capabilityEnabled,
-  effectiveTaskScheduleEnabled,
   isCaptureOnly,
 } from '../../packages/myco/src/config/capabilities';
 import { CAPABILITY_IDS, type CapabilityId } from '../../packages/myco/src/config/scope';
@@ -97,20 +96,6 @@ describe('capabilityEnabled — okf defaultEnabled semantics', () => {
     const off = defaults();
     off.okf.enabled = false;
     expect(capabilityEnabled(off, 'okf')).toBe(false);
-  });
-});
-
-describe('effectiveTaskScheduleEnabled — okf-maintain gating', () => {
-  it('is false while okf is disabled even with the YAML schedule enabled', () => {
-    // Passing yamlScheduleEnabled=true is load-bearing: the task YAML ships
-    // schedule.enabled: true, so a false here would prove nothing.
-    expect(effectiveTaskScheduleEnabled(defaults(), 'okf-maintain', true)).toBe(false);
-  });
-
-  it('is true once okf is enabled', () => {
-    const cfg = defaults();
-    cfg.okf.enabled = true;
-    expect(effectiveTaskScheduleEnabled(cfg, 'okf-maintain', true)).toBe(true);
   });
 });
 

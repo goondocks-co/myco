@@ -116,7 +116,6 @@ export const PreConditionSchema = z.enum([
   'has-approved-candidates',
   'has-skill-survey-evidence',
   'has-pending-canopy-rows',
-  'okf-maintain-due',
 ]);
 export type PreCondition = z.infer<typeof PreConditionSchema>;
 

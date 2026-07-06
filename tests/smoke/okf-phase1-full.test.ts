@@ -11,17 +11,10 @@ import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { REQUEST_CONTEXT_ENV, projectScopeFromRequestContext } from '@myco/grove/request-context.js';
-import { assertGroveProjectId, projectScope as toProjectScope } from '@myco/grove/ids.js';
-import { loadMergedConfig } from '@myco/config/loader.js';
 import { run as runOkf } from '@myco/cli/okf.js';
 import { run as runConfig } from '@myco/cli/config.js';
 import { run as runTool } from '@myco/cli/tool.js';
 import { reconcileManagedProjectFiles } from '@myco/symbionts/reconcile.js';
-import { ProjectVault } from '@myco/vault/project-vault.js';
-import { okfMaintainDue } from '@myco/okf/schedule.js';
-import { buildScheduledJobs, type ScheduledJobContext } from '@myco/daemon/task-scheduler.js';
-import type { RegisteredProjectScope } from '@myco/daemon/scope-iteration.js';
-import type { AgentTask } from '@myco/agent/types.js';
 import { handleOkfMaintain, handleOkfStatus } from '@myco/daemon/api/okf.js';
 import type { RequestPrincipal } from '@myco/daemon/request-principal.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
@@ -30,16 +23,19 @@ import { vi } from '../helpers/vi-shim.js';
 /**
  * Phase 1B end-to-end sandbox smoke, extending the Phase 1A smoke
  * (tests/smoke/okf-phase1a.test.ts, whose fixture setup this file mirrors
- * exactly) with the six 1B surfaces in one shared sandbox:
+ * exactly) with the following 1B surfaces in one shared sandbox:
  *
  *   1. CLI enable + maintain (real `myco okf maintain`)
  *   2. Symbiont path — `myco_okf` MCP tool save_concept via the CLI `call` shim
- *   3. Scheduler path — `okf-maintain-due` precondition + job dispatch
- *   4. API path — daemon HTTP handlers called directly
- *   5. Conflict path — stale `expected_generation` → 409 okf_generation_conflict
- *   6. Disable path — pointer removal, precondition flips false, warnings-only
+ *   3. API path — daemon HTTP handlers called directly
+ *   4. Conflict path — stale `expected_generation` → 409 okf_generation_conflict
+ *   5. Disable path — pointer removal, status reports disabled, warnings-only
  *
  * Cortex stays disabled throughout (mirrors 1A): OKF must not depend on it.
+ *
+ * The scheduler path (`okf-maintain-due` precondition + job dispatch) was
+ * retired along with the okf-maintain task; the `okf-synthesize-due`
+ * precondition covers that ground once it lands.
  */
 
 const PROJECT_ID = 'proj_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
@@ -118,9 +114,9 @@ beforeEach(() => {
     insertSpore({ id: 'decision-1', project_id: PROJECT_ID, agent_id: AGENT_ID, observation_type: 'decision', content: 'We chose the async lock.', importance: 5, created_at: 1_783_000_000, machine_id: 'machine-a' });
   });
   db.close();
-  // okfMaintainDue's SQL aggregates read the ambient getDatabase() singleton
-  // (not a passed-in handle) — pin it to the grove DB for the whole test,
-  // mirroring tests/agent/okf-maintain-task.test.ts's seedGroveDb helper.
+  // The CLI/MCP paths below (myco okf maintain, symbiont save_concept) read
+  // the ambient getDatabase() singleton, not a passed-in handle — pin it to
+  // the grove DB for the whole test.
   initDatabase(groveDbPath);
 
   written = [];
@@ -194,108 +190,7 @@ describe('OKF Phase 1B full smoke', () => {
     expect(concepts.some((c) => c.id === 'concepts/smoke-note')).toBe(true);
 
     // ---------------------------------------------------------------
-    // 3. Scheduler path — seed a NEW source change so the fingerprint the
-    //    precondition recomputes differs from the persisted one, then
-    //    dispatch through the real buildScheduledJobs seam.
-    // ---------------------------------------------------------------
-    // `myco okf maintain` (step 1) ran through the CLI's initVaultDb, which
-    // calls closeDatabase() in its cleanup and clears the ambient DB
-    // singleton. okfMaintainDue's SQL aggregates read that ambient
-    // getDatabase() singleton (not a passed-in handle), so it must be
-    // re-pinned to the grove DB before any precondition/insertSpore call —
-    // mirrors tests/agent/okf-maintain-task.test.ts's seedGroveDb pattern.
-    initDatabase(groveDbPath);
-    insertSpore({ id: 'decision-2', project_id: PROJECT_ID, agent_id: AGENT_ID, observation_type: 'decision', content: 'A second decision, seeded after the first maintain.', importance: 5, created_at: 1_783_000_100, machine_id: 'machine-a' });
-
-    const config = loadMergedConfig(vaultDir, { groveId });
-    const manifestBeforeDue = new ProjectVault(projectRoot).readOkfManifest();
-    const scopeForScheduler = toProjectScope(assertGroveProjectId(PROJECT_ID));
-    expect(
-      okfMaintainDue(scopeForScheduler, config, projectRoot, PROJECT_ID, 'machine-a', manifestBeforeDue),
-    ).toBe(true);
-
-    const requestContextForScope = {
-      projectRoot,
-      callerRoot: null,
-      projectId: assertGroveProjectId(PROJECT_ID),
-      groveId,
-      machineId: 'machine-a',
-      sessionId: null,
-      projectVaultDir: vaultDir,
-      databasePath: groveDbPath,
-      source: 'legacy-vault',
-      tenancySource: 'caller',
-    } as unknown as RegisteredProjectScope['requestContext'];
-
-    const fakeRegisteredScope: RegisteredProjectScope = {
-      grove: { id: groveId, slug: 'work' } as unknown as RegisteredProjectScope['grove'],
-      groveHome: home,
-      databasePath: groveDbPath,
-      db: {} as RegisteredProjectScope['db'],
-      project: {} as RegisteredProjectScope['project'],
-      projectId: assertGroveProjectId(PROJECT_ID),
-      projectRoot,
-      projectVaultDir: vaultDir,
-      requestContext: requestContextForScope,
-    };
-
-    const runTaskCalls: string[] = [];
-    const runTaskSpy = vi.fn().mockImplementation(async (scope: RegisteredProjectScope) => {
-      runTaskCalls.push(scope.projectId);
-    });
-
-    const tasks: AgentTask[] = [
-      {
-        name: 'okf-maintain',
-        displayName: 'OKF Maintain',
-        description: 'test',
-        agent: 'myco-agent',
-        prompt: 'test',
-        isDefault: false,
-        schedule: {
-          enabled: true,
-          intervalSeconds: 21600,
-          runIn: ['idle', 'sleep'],
-          preCondition: 'okf-maintain-due',
-          maxRunsPerDay: 4,
-        },
-      } as AgentTask,
-    ];
-
-    const schedulerContext: ScheduledJobContext = {
-      forEachProject: async (visit) => {
-        await visit(fakeRegisteredScope);
-      },
-      isTaskRunning: () => false,
-      setTaskRunning: vi.fn(),
-      getProjectPowerState: () => 'idle',
-      runTask: runTaskSpy,
-      getTaskConfig: () => undefined,
-      preConditions: {
-        'okf-maintain-due': (scope) => {
-          const manifest = new ProjectVault(scope.projectRoot).readOkfManifest();
-          return okfMaintainDue(
-            toProjectScope(scope.projectId),
-            loadMergedConfig(scope.projectVaultDir, { groveId: scope.requestContext.groveId ?? undefined }),
-            scope.projectRoot,
-            scope.projectId,
-            scope.requestContext.machineId,
-            manifest,
-          );
-        },
-      },
-    };
-
-    const { jobs } = buildScheduledJobs(tasks, schedulerContext);
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0].name).toBe('scheduled:tasks');
-
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTaskCalls).toEqual([PROJECT_ID]);
-
-    // ---------------------------------------------------------------
-    // 4. API path — call the daemon handlers directly against a real
+    // 3. API path — call the daemon handlers directly against a real
     //    RequestPrincipal, proving the HTTP surface funnels into the same
     //    capability without going through the CLI.
     // ---------------------------------------------------------------
@@ -334,7 +229,7 @@ describe('OKF Phase 1B full smoke', () => {
     expect(statusBody.publishEligibility.ok).toBe(true);
 
     // ---------------------------------------------------------------
-    // 5. Conflict path — a stale expected_generation must be rejected with
+    // 4. Conflict path — a stale expected_generation must be rejected with
     //    the frozen okf_generation_conflict code, reachable via the
     //    myco_okf symbiont tool's save_concept op.
     // ---------------------------------------------------------------
@@ -349,20 +244,14 @@ describe('OKF Phase 1B full smoke', () => {
     expect(fs.existsSync(okfPath('concepts/stale-attempt.md'))).toBe(false);
 
     // ---------------------------------------------------------------
-    // 6. Disable path — pointer removed, precondition flips false, status
-    //    reports disabled, and maintain still succeeds with Canopy absent
-    //    (missing Canopy data produces warnings, never failures).
+    // 5. Disable path — pointer removed, status reports disabled, and
+    //    maintain still succeeds with Canopy absent (missing Canopy data
+    //    produces warnings, never failures).
     // ---------------------------------------------------------------
     await runConfig(['set', 'okf.enabled', 'false'], vaultDir);
     reconcileManagedProjectFiles(projectRoot, vaultDir, groveId);
     const agentsAfterDisable = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf8');
     expect(agentsAfterDisable).not.toContain('okf/index.md');
-
-    const configAfterDisable = loadMergedConfig(vaultDir, { groveId });
-    const manifestAfterDisable = new ProjectVault(projectRoot).readOkfManifest();
-    expect(
-      okfMaintainDue(scopeForScheduler, configAfterDisable, projectRoot, PROJECT_ID, 'machine-a', manifestAfterDisable),
-    ).toBe(false);
 
     const statusAfterDisable = await handleOkfStatus(apiReq(), principal);
     const disabledBody = statusAfterDisable.body as { enabled: boolean };

@@ -50,11 +50,6 @@ import {
   getSkillSurveyEligibility,
   SKILL_SURVEY_WATERMARK_KEY,
 } from './skill-survey-prepare.js';
-import { ProjectVault } from '@myco/vault/project-vault.js';
-import { okfMaintainDue, configuredSporeStatus } from '@myco/okf/schedule.js';
-import { resolveOutputRoot } from '@myco/okf/output-root.js';
-import { gather } from '@myco/okf/gather.js';
-
 export { getSkillSurveyEligibility, SKILL_SURVEY_WATERMARK_KEY };
 
 // ---------------------------------------------------------------------------
@@ -103,8 +98,6 @@ export const CANOPY_MAP_TASK = 'canopy-map';
 export const CANOPY_MAP_REPORT_ACTION = 'canopy_map';
 /** details.content key on the canopy_map vault_report payload. */
 export const CANOPY_MAP_CONTENT_KEY = 'content';
-/** Task name for the OKF bundle-maintenance scheduled task. */
-export const OKF_MAINTAIN_TASK = 'okf-maintain';
 /** okf_report action that both phases use to record a maintenance summary. */
 export const OKF_REPORT_ACTION = 'okf_maintain';
 
@@ -1263,91 +1256,6 @@ export async function buildCanopyMapInstruction(
 }
 
 // ---------------------------------------------------------------------------
-// okf-maintain
-// ---------------------------------------------------------------------------
-
-/**
- * Build the instruction for an okf-maintain run.
- *
- * Belt-and-braces with the `okf-maintain-due` scheduler precondition: reuses
- * the same fail-closed `okfMaintainDue` check (capability, output-root
- * class, probe fingerprint) so a manual/API-triggered run gets the same
- * "nothing to do" skip a scheduled run would have gotten. When due, runs a
- * real `gather()` to produce a compact change brief (counts, not content —
- * output tokens are the LLM phase's real cost) and surfaces `okf_inputs_hash`
- * in the structured context for audit.
- *
- * Returns undefined when nothing is due; dispatchers combine this with
- * `isInstructionRequiredTask` to skip the run cleanly (same contract as
- * `buildCanopyMapInstruction`).
- */
-export async function buildOkfMaintainInstruction(
-  projectRoot?: string,
-  config?: MycoConfig,
-  requestContext?: MycoRequestContext,
-): Promise<BuiltTaskInstruction | undefined> {
-  if (!projectRoot || !config || !requestContext) return undefined;
-
-  const projectId = requestContext.projectId;
-  if (!projectId) return undefined;
-
-  const vault = new ProjectVault(projectRoot);
-  const manifest = vault.readOkfManifest();
-  const scope = projectScopeFromRequestContext(requestContext);
-  const due = okfMaintainDue(scope, config, projectRoot, projectId, requestContext.machineId, manifest);
-  if (!due) return undefined;
-
-  const resolved = resolveOutputRoot({
-    projectRoot,
-    mode: 'published',
-    publishedPath: config.okf.maintain.output_path,
-  });
-
-  const configured = new Set(config.okf.maintain.include);
-  const include = {
-    spores: configured.has('spores'),
-    canopy: configured.has('canopy'),
-    concepts: configured.has('concepts'),
-    guides: configured.has('guides'),
-  };
-  const sporeStatus = configuredSporeStatus(config);
-  const gathered = gather(
-    {
-      projectRoot,
-      scope,
-      projectId,
-      machineId: requestContext.machineId,
-      config,
-      outputRoot: resolved.absPath,
-    },
-    {
-      include,
-      sporeStatus,
-      includeUndescribedCanopy: config.okf.maintain.include_undescribed_canopy,
-    },
-  );
-
-  const inputsChanged = manifest?.inputs_hash !== gathered.inputsHash;
-  const parts: string[] = [];
-  parts.push('## OKF change brief');
-  parts.push('');
-  parts.push(`- inputs changed since last publish: ${inputsChanged}`);
-  parts.push(`- spores in scope: ${gathered.spores.length}`);
-  parts.push(`- canopy entries in scope: ${gathered.canopyEntries.length}`);
-  parts.push(`- existing agent-maintained concepts: ${gathered.conceptFiles.length}`);
-  if (gathered.warnings.length > 0) {
-    parts.push(`- warnings: ${gathered.warnings.map((w) => w.code).join(', ')}`);
-  }
-  parts.push('');
-  parts.push('Call okf_list_changes for the full detail. Emit agent_work_due via phase_emit_metadata only when agent-maintained concepts under concepts/ are invalidated or improvable.');
-
-  return {
-    instruction: parts.join('\n'),
-    context: { okf_inputs_hash: gathered.inputsHash },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Unified dispatch
 // ---------------------------------------------------------------------------
 
@@ -1400,8 +1308,6 @@ export async function buildTaskInstruction(
       return undefined;
     case CANOPY_MAP_TASK:
       return buildCanopyMapInstruction(taskParams, projectRoot, config);
-    case OKF_MAINTAIN_TASK:
-      return buildOkfMaintainInstruction(projectRoot, config, requestContext);
     default:
       return undefined;
   }
@@ -1423,6 +1329,5 @@ export function isInstructionRequiredTask(taskName: string): boolean {
     || taskName === SKILL_EVOLVE_TASK
     || taskName === SKILL_SURVEY_TASK
     || taskName === CORTEX_INSTRUCTIONS_TASK
-    || taskName === CANOPY_MAP_TASK
-    || taskName === OKF_MAINTAIN_TASK;
+    || taskName === CANOPY_MAP_TASK;
 }

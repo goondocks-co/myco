@@ -82,7 +82,7 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityDef> = {
     // Matches the universal precedent (all capabilities use []); the OKF page
     // owns the advanced knobs, so UI grouping via memberGates buys nothing.
     memberGates: [],
-    scheduledTasks: ['okf-maintain'],
+    scheduledTasks: [],
     advancedSettingsLink: '/okf',
     defaultEnabled: false,
   },

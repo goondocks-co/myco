@@ -34,7 +34,7 @@ import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 // ---------------------------------------------------------------------------
 
 /** Number of built-in task YAML files. */
-const EXPECTED_TASK_COUNT = 16;
+const EXPECTED_TASK_COUNT = 15;
 
 /** Built-in agent name from agent.yaml. */
 const BUILT_IN_AGENT_NAME = 'myco-agent';
@@ -260,18 +260,9 @@ describe('agent loader', () => {
       expect(se?.schedule?.preCondition).toBe('has-active-skills');
     });
 
-    it('loads schedule from okf-maintain task', () => {
+    it('no longer registers the retired okf-maintain task', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
-      const okf = tasks.find((t) => t.name === 'okf-maintain');
-      expect(okf?.schedule).toBeDefined();
-      expect(okf!.schedule!.enabled).toBe(true);
-      expect(okf!.schedule!.intervalSeconds).toBe(21600);
-      expect(okf!.schedule!.runIn).toEqual(['idle', 'sleep']);
-      // Pins the spec deviation: `schedule.preCondition`, NOT a top-level
-      // `precondition:` key (which non-strict Zod would silently strip,
-      // shipping an ungated scheduled task with no load error).
-      expect(okf!.schedule!.preCondition).toBe('okf-maintain-due');
-      expect(okf!.schedule!.maxRunsPerDay).toBe(4);
+      expect(tasks.map((task) => task.name)).not.toContain('okf-maintain');
     });
 
     it('loads skill-evolve candidate metadata triage guidance', () => {

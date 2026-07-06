@@ -318,63 +318,6 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     }
   },
   {
-    "name": "okf-maintain",
-    "displayName": "OKF Maintain",
-    "description": "Maintain the repository Open Knowledge Format bundle from Myco project intelligence.",
-    "agent": "myco-agent",
-    "prompt": "You maintain this project's Open Knowledge Format bundle. Deterministic spore and Canopy concepts are regenerated automatically; your judgment applies only to agent-maintained concepts under concepts/ — creating, updating, or superseding cross-source project concepts grounded in cited evidence.",
-    "isDefault": false,
-    "reasoningLevel": "low",
-    "maxTurns": 24,
-    "timeoutSeconds": 1800,
-    "phases": [
-      {
-        "name": "gather",
-        "prompt": "Review the change brief. Call okf_list_changes to see which source concepts\nchanged since the last inputs hash. Emit agent_work_due=true via\nphase_emit_metadata only when agent-maintained concepts under concepts/ are\ninvalidated or improvable; otherwise emit agent_work_due=false. Then call\nokf_report to record the maintenance summary. Do not write concepts in this\nphase.\n",
-        "tools": [
-          "okf_read_bundle",
-          "okf_list_changes",
-          "phase_emit_metadata",
-          "okf_report"
-        ],
-        "maxTurns": 6,
-        "required": true,
-        "readOnly": true,
-        "onItemError": "skip"
-      },
-      {
-        "name": "render",
-        "prompt": "Update agent-maintained concepts under concepts/ that are invalidated or\nimprovable given the changed sources. Every claim must cite source concepts\n(source_concepts frontmatter or in-bundle links). Prefer updating existing\nconcepts over creating near-duplicates. When done, call okf_report with your\nfinal summary. Publication happens automatically after the run succeeds.\n",
-        "tools": [
-          "okf_read_bundle",
-          "okf_write_concept",
-          "okf_report"
-        ],
-        "maxTurns": 16,
-        "required": false,
-        "dependsOn": [
-          "gather"
-        ],
-        "gateOnPriorMetadata": {
-          "phase": "gather",
-          "key": "agent_work_due",
-          "equals": true
-        },
-        "onItemError": "skip"
-      }
-    ],
-    "schedule": {
-      "enabled": true,
-      "intervalSeconds": 21600,
-      "runIn": [
-        "idle",
-        "sleep"
-      ],
-      "preCondition": "okf-maintain-due",
-      "maxRunsPerDay": 4
-    }
-  },
-  {
     "name": "review-session",
     "displayName": "Review Session",
     "description": "Process a single session end-to-end. Extracts spores from all prompt batches in the session, runs supersession checks, and generates the session title and summary.\n",
