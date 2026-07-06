@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { LifecycleLock, type LockHandle } from '@myco/utils/lifecycle-lock.js';
-import { createLayeredExcludeMatcher } from '@myco/canopy/exclude.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
@@ -11,10 +10,6 @@ import { OkfError } from './errors.js';
 import { resolveOutputRoot, type OutputClass } from './output-root.js';
 import { gather, type OkfGatherResult } from './gather.js';
 import { computeOkfProbeFingerprint } from './schedule.js';
-import { projectSpores } from './projectors/spores.js';
-import { projectCanopy } from './projectors/canopy.js';
-import { adoptConcepts } from './projectors/concepts.js';
-import { generateMaintenanceGuide } from './projectors/guides.js';
 import { mycoProjectRef, runRef } from './privacy.js';
 import { assertSafeConceptId, conceptPathForId, detectCollisions } from './paths.js';
 import { parseConceptDoc, serializeConceptDoc } from './frontmatter.js';
@@ -31,6 +26,7 @@ import {
   type OkfBundleWriteInput,
   type OkfBundleWriteResult,
   type OkfConcept,
+  type OkfDocument,
   type OkfIncludeKind,
   type OkfMaintainWarning,
   type OkfValidationReport,
@@ -266,20 +262,6 @@ export class OkfBundle {
     );
     warnings.push(...gathered.warnings);
 
-    // Adoption errors fail BEFORE any staging.
-    const adoption = adoptConcepts({ files: gathered.conceptFiles });
-    const adoptionErrors = adoption.errors.filter((e) => e.level === 'error');
-    if (adoptionErrors.length > 0) {
-      throw new OkfError('okf_validation_failed', 'agent-maintained concepts failed validation', {
-        issues: adoptionErrors,
-      });
-    }
-    warnings.push(
-      ...adoption.errors
-        .filter((e) => e.level === 'warning')
-        .map((e) => ({ code: e.code, message: e.message, path: e.path })),
-    );
-
     const bundleExists = this.markerExists(outputRoot);
     if (!input.dryRun && bundleExists && manifest?.inputs_hash === gathered.inputsHash) {
       return this.unchangedResult(outputRoot, manifest, gathered);
@@ -290,7 +272,7 @@ export class OkfBundle {
     const nextGeneration = (manifest?.bundle_generation ?? 0) + 1;
     const stagingDir = this.freshStagingDir();
     try {
-      const concepts = await this.projectAllConcepts(gathered, adoption.concepts, generatedAt, input.mode);
+      const concepts = await this.renderDocuments(gathered);
       this.assertCitationsResolve(concepts);
       const counts = this.countByKind(concepts);
       await this.writeConceptTree(stagingDir, concepts);
@@ -397,15 +379,9 @@ export class OkfBundle {
     );
     warnings.push(...gathered.warnings);
 
-    const adoption = adoptConcepts({ files: gathered.conceptFiles });
-    const adoptionErrors = adoption.errors.filter((e) => e.level === 'error');
-    if (adoptionErrors.length > 0) {
-      throw new OkfError('okf_validation_failed', 'agent-maintained concepts failed validation', { issues: adoptionErrors });
-    }
-
     const stagingDir = this.freshStagingDir();
     try {
-      const concepts = await this.projectAllConcepts(gathered, adoption.concepts, generatedAt, input.mode);
+      const concepts = await this.renderDocuments(gathered);
       this.assertCitationsResolve(concepts);
       const counts = this.countByKind(concepts);
       await this.writeConceptTree(stagingDir, concepts);
@@ -476,77 +452,21 @@ export class OkfBundle {
     };
   }
 
-  private async projectAllConcepts(
-    gathered: OkfGatherResult,
-    adoptedConcepts: OkfConcept[],
-    generatedAt: string,
-    mode: OkfBundleMode,
-  ): Promise<OkfConcept[]> {
-    const concepts: OkfConcept[] = [];
-
-    // Canopy first so spore file_path links can target included canopy concepts.
-    const canopyConceptIdByRepoPath = new Map<string, string>();
-    if (gathered.canopyEntries.length > 0 || gathered.canopyMap) {
-      const matcher = createLayeredExcludeMatcher({
-        projectRoot: this.deps.projectRoot,
-        defaultPatterns: this.deps.config.cortex.canopy.exclude.default_patterns,
-        userPatterns: this.deps.config.cortex.canopy.exclude.patterns,
-      });
-      const canopy = projectCanopy({
-        entries: gathered.canopyEntries,
-        map: gathered.canopyMap,
-        projectId: this.deps.projectId,
-        isExcluded: (p) => matcher(p, false),
-        // gather() is the include-undescribed authority: it fetches only
-        // described rows unless the config flag is set, so the projector must
-        // render every entry it's handed rather than re-filtering (which would
-        // silently drop the undescribed rows the user asked to include).
-        includeUndescribed: true,
-        mode,
-      });
-      for (const concept of canopy.concepts) {
-        concepts.push(concept);
-        if (concept.id.startsWith('canopy/files/')) {
-          const repoPath = typeof concept.frontmatter.myco_path === 'string' ? concept.frontmatter.myco_path : null;
-          if (repoPath) canopyConceptIdByRepoPath.set(repoPath, concept.id);
-        }
-      }
-    }
-
-    if (gathered.spores.length > 0) {
-      const spores = projectSpores({
-        spores: gathered.spores,
-        resolutionEdges: gathered.resolutionEdges,
-        releaseStates: gathered.releaseStates,
-        projectId: this.deps.projectId,
-        mode,
-        includedIds: gathered.includedSporeIds,
-        canopyConceptIdByRepoPath,
-      });
-      concepts.push(...spores.concepts);
-    }
-
-    concepts.push(...adoptedConcepts);
-
-    // Guide last; only when requested by the include set (checked by caller via gather concepts flag).
-    if (this.effectiveInclude().guides) {
-      concepts.push(generateMaintenanceGuide({ timestamp: generatedAt }));
-    }
-
-    // Collision guard across the full concept universe.
-    const collisions = detectCollisions(concepts.map((c) => c.id));
-    if (collisions.length > 0) {
-      throw new OkfError('concept_path_collision', `concept id collision after normalization: ${[...new Set(collisions)].join(', ')}`);
-    }
-    await yieldPoint();
-    return concepts;
+  /**
+   * Render seam: turns gathered vault rows into the bundle's documents.
+   * Phase 1's Myco-shaped projectors (canopy/spores/concepts/guides) are gone
+   * — Task 1.5 fills this in with the agent-synthesis pipeline that produces
+   * a portable OKF wiki from `gathered`.
+   */
+  private async renderDocuments(gathered: OkfGatherResult): Promise<OkfDocument[]> {
+    throw new OkfError('not_implemented', 'OKF document synthesis is not yet implemented (Phase 2)');
   }
 
   /**
    * Cross-namespace citation resolution (Plan 2 carried obligation): a
    * concept's declared `source_concepts` targeting spores/canopy/guides must
-   * resolve against the full concept universe. adoptConcepts only checked the
-   * concepts/ namespace.
+   * resolve against the full concept universe, not just the concepts/
+   * namespace.
    */
   private assertCitationsResolve(concepts: OkfConcept[]): void {
     const ids = new Set(concepts.map((c) => c.id));

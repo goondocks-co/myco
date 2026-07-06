@@ -2,12 +2,12 @@
  * Structural guards on the OKF module layering (grep-and-fail, mirroring
  * tests/ui/capability-gate-no-hardcode.test.ts).
  *
- * Three layers under packages/myco/src/okf/:
+ * Two layers under packages/myco/src/okf/ (Phase 1's projectors/*.ts layer was
+ * deleted in Task 0.1; Phase 2's synthesis layer will need its own boundary
+ * guard when it lands):
  *  - Pure format core (types, frontmatter, paths, serialize, indexes, validate,
  *    privacy, errors, output-root, publish-eligibility): no db/daemon/config/
  *    vault value imports. types.ts may import the ProjectScope TYPE.
- *  - Projectors (projectors/*.ts): may `import type` row shapes from @myco/db,
- *    never a value import.
  *  - Capability layer (bundle.ts, gather.ts): may use db/config/vault — that is
  *    their job — but must NEVER import SymbiontInstaller, the daemon, the
  *    scheduler, AGENTS.md machinery, or Cortex modules. OkfBundle is the single
@@ -72,7 +72,10 @@ describe('okf import boundaries', () => {
     expect(violations).toEqual([]);
   });
 
-  it('projectors reference @myco/db only via type-only imports', () => {
+  // Phase 2: the projectors/ layer was deleted in Task 0.1 (renderDocuments is
+  // stubbed); reinstate an equivalent boundary guard once the synthesis layer
+  // that replaces it lands.
+  it.skip('projectors reference @myco/db only via type-only imports', () => {
     const projDir = path.join(OKF_SRC, 'projectors');
     const files = fs.readdirSync(projDir).filter((n) => n.endsWith('.ts') && !n.endsWith('.test.ts'));
     expect(files.length).toBeGreaterThanOrEqual(4);

@@ -56,6 +56,13 @@ export interface OkfConcept {
   stale?: boolean;
 }
 
+/**
+ * Placeholder for the renderDocuments seam's output shape. Task 1.1 defines
+ * the real OKF document model; until then this is the existing concept shape
+ * so the seam can slot into the bundle-write pipeline unchanged.
+ */
+export type OkfDocument = OkfConcept;
+
 export interface OkfValidationIssue {
   level: 'error' | 'warning';
   /**

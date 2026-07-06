@@ -16,7 +16,8 @@ export type OkfErrorCode =
   | 'deterministic_path_not_editable'
   | 'non_myco_output_present'
   | 'okf_publish_not_acknowledged'
-  | 'atomic_replace_failed';
+  | 'atomic_replace_failed'
+  | 'not_implemented';
 
 export class OkfError extends Error {
   constructor(
@@ -41,4 +42,5 @@ export const OKF_ERROR_HTTP_STATUS: Record<OkfErrorCode, number> = {
   non_myco_output_present: 409,
   okf_publish_not_acknowledged: 422,
   atomic_replace_failed: 500,
+  not_implemented: 501,
 };
