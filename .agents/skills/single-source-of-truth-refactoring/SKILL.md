@@ -4,10 +4,10 @@ description: |
   Apply this skill whenever you encounter logic, values, or transformations
   duplicated across multiple files in the Myco codebase — even if the user
   doesn't explicitly ask for a refactor. Covers five recurring SSoT patterns:
-  (1) extracting shared read projections to read-projections.ts, (2)
-  centralizing provider capabilities in context-windows.ts, (3) replacing
-  magic strings with named constants in constants.ts, (4) creating semantic
-  wrapper functions in config/loader.ts and settings-merge.ts, and (5) adding
+  (1) extracting shared read projections to the shared read-projections module, (2)
+  centralizing provider capabilities in the shared context-window module, (3) replacing
+  magic strings with named constants in the shared constants module, (4) creating semantic
+  wrapper functions in the config loader and settings-merge modules, and (5) adding
   path properties to service state objects (DaemonServiceState). Also covers
   two critical violation classes to detect during code review: parallel
   ownership predicates (is-this-mine? checks duplicated across files) and
@@ -27,7 +27,7 @@ The Myco codebase has a recurring architectural smell: logic, values, or transfo
 
 ## Prerequisites
 
-- Identify the canonical home before touching code: is there already an obvious module that *should* own this value? (`constants.ts` for named scalars, `context-windows.ts` for provider capability defaults, service state objects for related file paths, `grove/paths.ts` for daemon-scoping decisions)
+- Identify the canonical home before touching code: is there already an obvious module that *should* own this value? (`the shared constants module` for named scalars, `the shared context-window module` for provider capability defaults, service state objects for related file paths, `daemon-scoping path helpers` for daemon-scoping decisions)
 - Grep for all existing usages before extracting so no call site is missed:
   ```bash
   grep -rn "the-pattern-or-literal" packages/
@@ -63,11 +63,11 @@ Symptoms:
 
 **When:** Two or more consumers (agent tools, harness, API, context queries) independently define the same lean field shape for a database entity.
 
-**Smell:** The same "pick these fields from a batch/session/spore" logic exists in both `read-tools.ts` and `context-queries.ts`. When they drift, agents receive a different field shape than what the harness validates against — silently.
+**Smell:** The same "pick these fields from a batch/session/spore" logic exists in both `the read-tools layer` and `the context query layer`. When they drift, agents receive a different field shape than what the harness validates against — silently.
 
 **Fix:**
 
-1. Create named projection functions in `read-projections.ts`:
+1. Create named projection functions in `the shared read-projections module`:
    ```typescript
    export function projectBatchForAgent(b: BatchRow, options: ProjectionOptions = {}) {
      return { user_prompt: b.user_prompt, response_summary: b.response_summary };
@@ -78,10 +78,10 @@ Symptoms:
    export function projectSporeForAgent(sp: SporeRow, options: ProjectionOptions = {}) {
      return { observation_type: sp.observation_type, title: sp.title, importance: sp.importance };
    }
-   // projectEntityForAgent(), projectEdgeForAgent() follow the same pattern
+   // the shared entity projection helper, projectEdgeForAgent() follow the same pattern
    ```
 
-2. Replace inline field picks in every consumer (`read-tools.ts`, `context-queries.ts`, any API layer) with calls to the shared projection functions.
+2. Replace inline field picks in every consumer (`the read-tools layer`, `the context query layer`, any API layer) with calls to the shared projection functions.
 
 3. Verify: a field shape change in `projectSessionForAgent()` now propagates to all consumers automatically — no grep required to find missed usages.
 
@@ -91,11 +91,11 @@ Symptoms:
 
 **When:** Provider-specific metadata (context window sizes, capability flags) appears as switch statements or hardcoded constants in multiple files.
 
-**Smell:** `run-accounting.ts`, `executor-state.ts`, and `openai.ts` each had independent `switch(provider)` blocks returning context window sizes. Adding a new provider required changes in all three.
+**Smell:** `the run-accounting module`, `the executor-state module`, and `the provider adapter module` each had independent `switch(provider)` blocks returning context window sizes. Adding a new provider required changes in all three.
 
 **Fix:**
 
-1. Define named constants in `context-windows.ts`:
+1. Define named constants in `the shared context-window module`:
    ```typescript
    /** Inferred frontier-model context window when the provider does not expose one. */
    export const DEFAULT_FRONTIER_CONTEXT_WINDOW_TOKENS = 200_000;
@@ -107,11 +107,11 @@ Symptoms:
    export const DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS = 32_768;
    ```
 
-2. Update `run-accounting.ts`'s `resolveContextWindow()` to import and use these constants as fallback defaults rather than repeating literals inline.
+2. Update `the run-accounting module`'s `resolveContextWindow()` to import and use these constants as fallback defaults rather than repeating literals inline.
 
-3. Remove hardcoded switch blocks from `run-accounting.ts`, `executor-state.ts`, `openai.ts`. Capability queries now route through the centralized constants.
+3. Remove hardcoded switch blocks from `the run-accounting module`, `the executor-state module`, `the provider adapter module`. Capability queries now route through the centralized constants.
 
-**Rule:** Provider capability defaults belong in `context-windows.ts`. Adding a new provider's default context window is a single-line edit; without this file, it's a multi-file grep.
+**Rule:** Provider capability defaults belong in `the shared context-window module`. Adding a new provider's default context window is a single-line edit; without this file, it's a multi-file grep.
 
 ## Procedure D: Replacing Magic Strings and Inline Strategy Config
 
@@ -122,18 +122,18 @@ Two related smells — both resolved by extracting a named owner. Handle them to
 **When:** The same string literal (a fallback name, filename, event key, variant tag) appears in 3+ code paths.
 
 **Fix:**
-1. Add a named constant to `constants.ts`:
+1. Add a named constant to `the shared constants module`:
    ```typescript
-   // constants.ts
+   // the shared constants module
    export const DEFAULT_SYMBIONT_NAME = 'claude-code';
    ```
 2. Replace all occurrences — use grep to find every call site including interpolated forms:
    ```bash
    grep -rn "DEFAULT_SYMBIONT_NAME\|'claude-code'" packages/myco/src/
    ```
-3. Add or verify a regression test for the fallback path (model: `manifest-schema.test.ts`).
+3. Add or verify a regression test for the fallback path (model: `a regression test for the fallback path`).
 
-Because changing the string now requires touching `constants.ts` once, a literal change is a single diff line. Without the constant, grep-and-hope misses aliased or interpolated uses.
+Because changing the string now requires touching `the shared constants module` once, a literal change is a single diff line. Without the constant, grep-and-hope misses aliased or interpolated uses.
 
 ### D2 — Inline strategy configuration
 
@@ -141,7 +141,7 @@ Because changing the string now requires touching `constants.ts` once, a literal
 
 **Fix — create named semantic wrappers in the appropriate module file:**
 
-- Config overlay wrapper in `config/loader.ts`:
+- Config overlay wrapper in `the config loader module`:
   ```typescript
   /** Config overlay uses replace semantics: arrays in source overwrite arrays in target. */
   export function deepMergeConfig<T extends Record<string, unknown>>(target: T, source: Partial<T>): T {
@@ -149,7 +149,7 @@ Because changing the string now requires touching `constants.ts` once, a literal
   }
   ```
 
-- Settings merge wrapper in `symbionts/settings-merge.ts`:
+- Settings merge wrapper in `the symbionts settings-merge module`:
   ```typescript
   /** Symbiont settings merge uses union semantics: arrays are concatenated and deduped. */
   export function deepMergeSettings(
@@ -160,7 +160,7 @@ Because changing the string now requires touching `constants.ts` once, a literal
   }
   ```
 
-Both wrappers call the primitive `deepMerge()` from `utils/deep-merge.ts` with the appropriate strategy. Each wrapper lives in its domain module — not in the utility itself.
+Both wrappers call the primitive `deepMerge()` from `the deep-merge utility` with the appropriate strategy. Each wrapper lives in its domain module — not in the utility itself.
 
 Named wrappers win over inlining because:
 - `deepMergeConfig` signals intent at the call site — readers understand *this is config overlay* without deciphering the options object
@@ -173,7 +173,7 @@ Trade-off: 2–4 lines of wrapper noise. Semantic clarity wins for shared infras
 
 **When:** Multiple callers independently load a config file, spread its contents, mutate a field, and re-save — the load-spread-save anti-pattern.
 
-**Fix:** Use `updateTierConfigRaw` (in `config/loader.ts`) as the single canonical write path for machine/grove config changes:
+**Fix:** Use `updateTierConfigRaw` (in `the config loader module`) as the single canonical write path for machine/grove config changes:
 ```typescript
 // Before: load-spread-save anti-pattern (duplicates merge logic, error-prone)
 const existing = await loadMachineConfig(vaultDir);
@@ -186,7 +186,7 @@ await updateTierConfigRaw({ kind: 'machine', vaultDir }, (raw) => {
 });
 ```
 
-`updateTierConfigRaw` owns the read-modify-write cycle. Internally it relies on the `GROVE_TIER_FIELDS` constant (in `config/loader.ts`) as the shared definition of which fields belong at the grove tier — the same constant consumed by strip, retain, and lift operations so those three code paths can never independently drift.
+`updateTierConfigRaw` owns the read-modify-write cycle. Internally it relies on the `GROVE_TIER_FIELDS` constant (in `the config loader module`) as the shared definition of which fields belong at the grove tier — the same constant consumed by strip, retain, and lift operations so those three code paths can never independently drift.
 
 ### D4 — Shared extract handler and UI error string consolidation
 
@@ -206,14 +206,14 @@ return handlePutTierConfig<MachineConfig>(body, { kind: 'machine' });
 
 ### E1 — Service state path properties
 
-**When:** A filename (e.g., `"daemon.lock"`) is reconstructed via `path.join(dir, filename)` at 3+ locations, potentially with inconsistent join styles.
+**When:** A filename (e.g., `"daemon.lock"`) is reconstructed via `platform-specific joins(dir, filename)` at 3+ locations, potentially with inconsistent join styles.
 
 **Fix:** Add the path as a first-class property to the service state object, following the existing pattern:
 ```typescript
 // Before: magic strings reconstructed in 3 places
-const lockFile = path.join(daemonDir, "daemon.lock");
+const lockFile = platform-specific joins(daemonDir, "daemon.lock");
 
-// After: centralized in DaemonServiceState (daemon/service-state.ts)
+// After: centralized in DaemonServiceState (the daemon service state module)
 export interface DaemonServiceState {
   statePath: DaemonStatePath;  // already existed — the precedent
   lockPath: string;            // new property, same discipline
@@ -226,7 +226,7 @@ const lockFile = daemonService.lockPath;
 
 `DaemonServiceState` already owned `statePath`; `lockPath` follows the same precedent. Any service object managing multiple related files should expose all paths as properties — not reconstruct them at call sites.
 
-**OS portability note:** `path.join` behavior differs across platforms. Centralizing the join ensures every consumer gets the same result regardless of OS.
+**OS portability note:** `platform-specific joins` behavior differs across platforms. Centralizing the join ensures every consumer gets the same result regardless of OS.
 
 ### E2 — Canonical ownership predicates
 
@@ -236,7 +236,7 @@ const lockFile = daemonService.lockPath;
 1. Audit all checks across the codebase — do they agree on which content is Myco-owned? (They often don't. That's the bug.)
 2. Consolidate into a single helper with a named constant for the match strings:
    ```typescript
-   // symbionts/install-helpers.ts
+   // the install-helpers module
    export const MYCO_LAUNCHER_SUBSTRINGS = [
      'myco-run.cjs',
      'myco-hook.cjs',
@@ -259,15 +259,15 @@ const lockFile = daemonService.lockPath;
 
 | Smell | Canonical fix | Canonical location |
 |-------|---------------|--------------------:|
-| Projection logic in 2+ consumers | Named projections module | `read-projections.ts` |
-| Provider capability defaults in switch blocks | Named constants | `context-windows.ts` |
-| Magic string literals scattered | Named constant | `constants.ts` |
-| Strategy config inline at call sites | Named semantic wrappers | `config/loader.ts`, `settings-merge.ts` |
-| Config write via load-spread-save | `updateTierConfigRaw()` + `GROVE_TIER_FIELDS` | `config/loader.ts` |
+| Projection logic in 2+ consumers | Named projections module | `the shared read-projections module` |
+| Provider capability defaults in switch blocks | Named constants | `the shared context-window module` |
+| Magic string literals scattered | Named constant | `the shared constants module` |
+| Strategy config inline at call sites | Named semantic wrappers | `the config loader module`, `settings-merge.ts` |
+| Config write via load-spread-save | `updateTierConfigRaw()` + `GROVE_TIER_FIELDS` | `the config loader module` |
 | Duplicated PUT handler validation logic | Typed extract helper (e.g. `handlePutTierConfig<T>`) | domain API module |
 | Ad-hoc error-to-string in UI | `errorMessage()` canonical helper | UI lib module |
-| File paths reconstructed at call sites | Service state path properties | `daemon/service-state.ts` |
-| Parallel ownership predicates | Single canonical helper | `symbionts/install-helpers.ts` |
+| File paths reconstructed at call sites | Service state path properties | `the daemon service state module` |
+| Parallel ownership predicates | Single canonical helper | `the install-helpers module` |
 | Direct DB calls in tool files | Queries belong in the data access layer | domain query/read module |
 
 **When you discover a new violation class:** don't only fix the instance — add it to this table. The skill grows with the codebase.
