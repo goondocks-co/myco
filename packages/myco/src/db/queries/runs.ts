@@ -57,9 +57,9 @@ export const RESUME_STATUS_EXHAUSTED = 'exhausted';
 
 /**
  * Resume status used when a newer, equivalent run (same agent/task/project
- * scope/dry_run/instruction) has since completed. A resumable failed run
- * left behind by an OLDER dispatch is stale by definition once an
- * equivalent run finishes — resuming it would re-execute work against
+ * scope/dry_run — same scheduled job) has since completed. A resumable
+ * failed run left behind by an OLDER dispatch is stale by definition once
+ * an equivalent run finishes — resuming it would re-execute work against
  * checkpoints, gates, and watermarks superseded by the completion. See
  * `supersedeEquivalentResumableRuns` (completion-time sweep) and the
  * `gateScheduledResume` belt (task-scheduling.ts) for the two enforcement
@@ -716,43 +716,42 @@ export function getLatestResumableRunForTask(
 /**
  * Append the supersede equivalence-key predicate to an in-progress
  * WHERE-clause builder: same `agent_id` + `task` + project scope (via
- * `appendProjectCondition`) + `dry_run`, and `instruction` equal OR both
- * NULL. Shared by the completion-time sweep and the gate-time belt so the
- * two enforcement points can never drift apart on what counts as
- * "equivalent" — the instruction/dry_run pinning is load-bearing:
- * `getLatestResumableRunForTask` doesn't filter on either, and the executor
- * restores `instruction`/`dryRun` on resume, so without this key a
- * completed run for a DIFFERENT candidate/instruction would wrongly
- * supersede or block an unrelated instruction-scoped failed run.
+ * `appendProjectCondition`) + `dry_run`. Shared by the completion-time
+ * sweep and the gate-time belt so the two enforcement points can never
+ * drift apart on what counts as "equivalent" — this is the natural
+ * identity of "the same scheduled job": a manual and a scheduled run of
+ * the same task+project+scope+dry_run ARE the same job and are meant to
+ * supersede one another. `instruction` is deliberately EXCLUDED: tasks
+ * like skill-evolve build their instruction dynamically per run (it
+ * embeds live skill state), so two runs of the same scheduled job never
+ * share an instruction string — keying equivalence on it meant a
+ * completed run could never retire that job's resumable failed runs, and
+ * they accumulated forever. `dry_run` pinning is still load-bearing: the
+ * executor restores `dryRun` on resume, so without it a completed live
+ * run would wrongly supersede or block a dry-run-scoped failed run.
  */
 function appendSupersedeEquivalenceCondition(
   conditions: string[],
   params: unknown[],
-  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean; instruction: string | null },
+  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean },
 ): void {
   conditions.push('agent_id = ?', 'task = ?');
   params.push(match.agentId, match.taskName);
   appendProjectCondition(conditions, params, match.scope);
   conditions.push('dry_run = ?');
   params.push(match.dryRun ? 1 : 0);
-  if (match.instruction === null) {
-    conditions.push('instruction IS NULL');
-  } else {
-    conditions.push('instruction = ?');
-    params.push(match.instruction);
-  }
 }
 
 /**
  * Completion-time supersede sweep (Part 1 primary). Called from the
  * executor's success path immediately after a run completes, with that
- * run's own (agentId, taskName, scope, dryRun, instruction) as the
- * equivalence key. Terminal-marks (`resumable=0`,
- * `resume_status='superseded'`) every OTHER currently-resumable failed run
- * matching the key — structural, no timestamp comparison needed: anything
- * still resumable when an equivalent run completes is stale BY DEFINITION,
- * because the just-completed run's dispatch necessarily started no earlier
- * than the failed run's most recent attempt. Swept runs hit the existing
+ * run's own (agentId, taskName, scope, dryRun) as the equivalence key.
+ * Terminal-marks (`resumable=0`, `resume_status='superseded'`) every OTHER
+ * currently-resumable failed run matching the key — structural, no
+ * timestamp comparison needed: anything still resumable when an
+ * equivalent run completes is stale BY DEFINITION, because the
+ * just-completed run's dispatch necessarily started no earlier than the
+ * failed run's most recent attempt. Swept runs hit the existing
  * resumable-guard 400 at the manual resume endpoint automatically
  * (agent-runs.ts).
  *
@@ -760,7 +759,7 @@ function appendSupersedeEquivalenceCondition(
  */
 export function supersedeEquivalentResumableRuns(
   excludeRunId: string,
-  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean; instruction: string | null },
+  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean },
 ): number {
   const db = getDatabase();
   const conditions = ['id != ?', 'resumable = 1', 'status = ?'];
@@ -793,7 +792,7 @@ export function supersedeEquivalentResumableRuns(
  */
 export function findNewerCompletedEquivalentRun(
   failedRun: Pick<RunRow, 'id' | 'started_at' | 'completed_at'>,
-  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean; instruction: string | null },
+  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean },
 ): RunRow | null {
   const db = getDatabase();
   const conditions = ['id != ?', 'status = ?', 'completed_at IS NOT NULL'];
@@ -816,7 +815,7 @@ export function findNewerCompletedEquivalentRun(
  */
 export function hasNewerCompletedEquivalentRun(
   failedRun: Pick<RunRow, 'id' | 'started_at' | 'completed_at'>,
-  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean; instruction: string | null },
+  match: { agentId: string; taskName: string; scope: ProjectScope; dryRun: boolean },
 ): boolean {
   return findNewerCompletedEquivalentRun(failedRun, match) !== null;
 }
@@ -827,16 +826,15 @@ export function hasNewerCompletedEquivalentRun(
  * resumable rows that predate the sweep's existence (or were left behind by
  * a daemon crash before the completing run's success path ran). Terminal-
  * marks every resumable failed run F for which ANY completed run C shares
- * F's equivalence key (agent_id, task, project scope, dry_run, instruction
- * equal or both NULL) and has `completed_at` newer than F's ORIGINAL
- * dispatch (`started_at`) — same predicate as the gate-time belt
- * (`hasNewerCompletedEquivalentRun`), expressed as a single
- * correlated-EXISTS UPDATE so the whole scope sweeps in one SQL pass. A
- * completed equivalent newer than the failed run's original dispatch
- * supersedes it, resumed or not — `started_at` is stable dispatch-order
- * evidence because a resume never re-stamps it (see executor.ts).
- * `COALESCE(F.started_at, 0)` only guards a pathological NULL. Safe to run
- * on every boot: a fully-swept vault matches zero rows.
+ * F's equivalence key (agent_id, task, project scope, dry_run) and has
+ * `completed_at` newer than F's ORIGINAL dispatch (`started_at`) — same
+ * predicate as the gate-time belt (`hasNewerCompletedEquivalentRun`),
+ * expressed as a single correlated-EXISTS UPDATE so the whole scope sweeps
+ * in one SQL pass. A completed equivalent newer than the failed run's
+ * original dispatch supersedes it, resumed or not — `started_at` is stable
+ * dispatch-order evidence because a resume never re-stamps it (see
+ * executor.ts). `COALESCE(F.started_at, 0)` only guards a pathological
+ * NULL. Safe to run on every boot: a fully-swept vault matches zero rows.
  */
 export function sweepStaleSupersededRuns(scope: ProjectScope): number {
   const db = getDatabase();
@@ -861,7 +859,6 @@ export function sweepStaleSupersededRuns(scope: ProjectScope): number {
            AND C.task = F.task
            AND COALESCE(C.project_id, '') = COALESCE(F.project_id, '')
            AND C.dry_run = F.dry_run
-           AND (C.instruction = F.instruction OR (C.instruction IS NULL AND F.instruction IS NULL))
            AND C.completed_at > COALESCE(F.started_at, 0)
        )`,
   ).run(RESUME_STATUS_SUPERSEDED, STATUS_FAILED, STATUS_COMPLETED, ...outerParams);
