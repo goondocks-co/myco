@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { OkfFrontmatterError, parseConceptDoc, serializeConceptDoc } from '@myco/okf/frontmatter.js';
+import {
+  OkfFrontmatterError,
+  parseConceptDoc,
+  serializeConceptDoc,
+  serializeOkfFrontmatter,
+} from '@myco/okf/frontmatter.js';
 
 describe('parseConceptDoc', () => {
   it('parses a minimal document', () => {
@@ -173,5 +178,64 @@ describe('serializeConceptDoc', () => {
     expect(() => serializeConceptDoc({ type: 'Note', big: 'x'.repeat(8 * 1024 + 1) }, 'Body')).toThrow(
       /scalar_too_large/,
     );
+  });
+});
+
+describe('serializeOkfFrontmatter', () => {
+  it('emits only the six canonical keys in canonical order, dropping unknown keys', () => {
+    const yamlText = serializeOkfFrontmatter({
+      type: 'Architecture',
+      title: 'Overview',
+      description: 'How it fits together.',
+      tags: ['arch'],
+      timestamp: '2026-07-06T00:00:00+00:00',
+      myco_id: 'should-be-dropped',
+    });
+    const keys = yamlText
+      .split('\n')
+      .filter((line) => /^[a-z]/.test(line))
+      .map((line) => line.split(':')[0]);
+    expect(keys).toEqual(['type', 'title', 'description', 'tags', 'timestamp']);
+    expect(yamlText).not.toContain('myco');
+  });
+
+  it('places resource in its canonical slot, right after type', () => {
+    const yamlText = serializeOkfFrontmatter({
+      type: 'Reference',
+      resource: 'https://example.com',
+      title: 'T',
+      description: 'D',
+      timestamp: '2026-07-06T00:00:00+00:00',
+    });
+    const keys = yamlText
+      .split('\n')
+      .filter((line) => /^[a-z]/.test(line))
+      .map((line) => line.split(':')[0]);
+    expect(keys).toEqual(['type', 'resource', 'title', 'description', 'timestamp']);
+  });
+
+  it('forces the timestamp scalar to single-quoted style', () => {
+    const yamlText = serializeOkfFrontmatter({
+      type: 'Note',
+      title: 'T',
+      description: 'D',
+      timestamp: '2026-07-06T00:00:00+00:00',
+    });
+    expect(yamlText).toContain("timestamp: '2026-07-06T00:00:00+00:00'\n");
+  });
+
+  it('throws when a required key is missing or empty', () => {
+    const base = { type: 'X', title: 'T', description: 'D', timestamp: 't' };
+    for (const key of ['type', 'title', 'description', 'timestamp']) {
+      expect(() => serializeOkfFrontmatter({ ...base, [key]: '' })).toThrow(/required_key_missing/);
+      const { [key]: _omit, ...rest } = base;
+      expect(() => serializeOkfFrontmatter(rest)).toThrow(/required_key_missing/);
+    }
+  });
+
+  it('enforces the same value bounds as serializeConceptDoc', () => {
+    expect(() =>
+      serializeOkfFrontmatter({ type: 'X', title: 'x'.repeat(8 * 1024 + 1), description: 'D', timestamp: 't' }),
+    ).toThrow(/scalar_too_large/);
   });
 });

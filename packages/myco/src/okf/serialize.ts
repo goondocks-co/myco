@@ -1,7 +1,7 @@
 import path from 'node:path';
-import { serializeConceptDoc } from './frontmatter.js';
+import { parseConceptDoc, serializeConceptDoc, serializeOkfFrontmatter } from './frontmatter.js';
 import { conceptPathForId, OkfPathError } from './paths.js';
-import { OKF_RESERVED_FILES, OKF_VERSION, type OkfConcept } from './types.js';
+import { OKF_RESERVED_FILES, OKF_VERSION, type OkfConcept, type OkfDocument } from './types.js';
 
 /**
  * Rendering for concept documents and the reserved root files.
@@ -111,6 +111,29 @@ export function renderConcept(concept: OkfConcept): { path: string; content: str
   }
 
   return { path: derivedPath, content: serializeConceptDoc(fm, body) };
+}
+
+/**
+ * Render an OKF v0.1 document — the portable-wiki document Phase 2 synthesis
+ * produces. Unlike {@link renderConcept}, no provenance is injected: the
+ * frontmatter is exactly what the caller supplies, subject to the OKF
+ * write-time floor (`type`/`title`/`description`/`timestamp` non-empty).
+ */
+export function renderOkfDocument(doc: OkfDocument): { path: string; content: string } {
+  const yamlText = serializeOkfFrontmatter(doc.frontmatter);
+  const canonicalBody = doc.body.replace(/\r\n/g, '\n').replace(/\n+$/, '');
+  const head = `---\n${yamlText}---\n`;
+  return { path: doc.path, content: canonicalBody === '' ? head : `${head}\n${canonicalBody}\n` };
+}
+
+/**
+ * Parse an OKF v0.1 document back from raw markdown. `path` is supplied by
+ * the caller — a document's bundle-relative location is filesystem context,
+ * not something recoverable from its own content — and defaults to `''`.
+ */
+export function parseOkfDocument(raw: string, filePath = ''): OkfDocument {
+  const { frontmatter, body } = parseConceptDoc(raw);
+  return { path: filePath, frontmatter: frontmatter as OkfDocument['frontmatter'], body };
 }
 
 /**

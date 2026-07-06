@@ -26,7 +26,6 @@ import {
   type OkfBundleWriteInput,
   type OkfBundleWriteResult,
   type OkfConcept,
-  type OkfDocument,
   type OkfIncludeKind,
   type OkfMaintainWarning,
   type OkfValidationReport,
@@ -456,9 +455,10 @@ export class OkfBundle {
    * Render seam: turns gathered vault rows into the bundle's documents.
    * Phase 1's Myco-shaped projectors (canopy/spores/concepts/guides) are gone
    * — Task 1.5 fills this in with the agent-synthesis pipeline that produces
-   * a portable OKF wiki from `gathered`.
+   * a portable OKF wiki from `gathered`, at which point this seam's return
+   * type becomes `OkfDocument[]` and its call sites move off `OkfConcept`.
    */
-  private async renderDocuments(gathered: OkfGatherResult): Promise<OkfDocument[]> {
+  private async renderDocuments(gathered: OkfGatherResult): Promise<OkfConcept[]> {
     throw new OkfError('not_implemented', 'OKF document synthesis is not yet implemented (Phase 2)');
   }
 

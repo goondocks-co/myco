@@ -57,11 +57,17 @@ export interface OkfConcept {
 }
 
 /**
- * Placeholder for the renderDocuments seam's output shape. Task 1.1 defines
- * the real OKF document model; until then this is the existing concept shape
- * so the seam can slot into the bundle-write pipeline unchanged.
+ * OKF v0.1 document — the portable-wiki document Phase 2 synthesis produces.
+ * Unlike `OkfConcept`, it carries no Myco source/provenance and no derived
+ * `links`; its frontmatter is the closed six-key OKF schema rendered by
+ * `renderOkfDocument` in serialize.ts.
  */
-export type OkfDocument = OkfConcept;
+export interface OkfDocument {
+  /** Bundle-relative path, including `.md`. */
+  path: string;
+  frontmatter: OkfFrontmatter;
+  body: string;
+}
 
 export interface OkfValidationIssue {
   level: 'error' | 'warning';

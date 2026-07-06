@@ -2,12 +2,14 @@ import { describe, expect, it } from 'bun:test';
 import {
   escapeInlineText,
   escapeLinkLabel,
+  parseOkfDocument,
   renderConcept,
+  renderOkfDocument,
   renderRootIndex,
   renderRootLog,
 } from '@myco/okf/serialize.js';
 import { validateConceptSource } from '@myco/okf/validate.js';
-import type { OkfConcept } from '@myco/okf/types.js';
+import type { OkfConcept, OkfDocument } from '@myco/okf/types.js';
 
 const RAW_HTML = /<\/?[a-zA-Z][^>]*>/;
 
@@ -128,6 +130,51 @@ describe('renderConcept', () => {
     expect(
       validateConceptSource(content, path, 'myco_strict').filter((issue) => issue.level === 'error'),
     ).toEqual([]);
+  });
+});
+
+describe('renderOkfDocument / parseOkfDocument', () => {
+  it('renders OKF frontmatter: canonical order, only the six keys, quoted timestamp', () => {
+    const { content } = renderOkfDocument({
+      path: 'architecture/overview.md',
+      frontmatter: {
+        type: 'Architecture',
+        title: 'Overview',
+        description: 'How it fits together.',
+        timestamp: '2026-07-06T00:00:00+00:00',
+        tags: ['arch'],
+      },
+      body: 'Body.\n',
+    });
+    const parsed = parseOkfDocument(content); // semantic, not toBe(bytes)
+    expect(Object.keys(parsed.frontmatter)).toEqual(['type', 'title', 'description', 'tags', 'timestamp']); // canonical order, resource omitted
+    expect(parsed.frontmatter.timestamp).toBe('2026-07-06T00:00:00+00:00');
+    expect(typeof parsed.frontmatter.timestamp).toBe('string'); // NOT a Date — forced single-quote
+    expect(content).toContain("timestamp: '2026-07-06T00:00:00+00:00'");
+    expect(content).not.toMatch(/myco/);
+  });
+
+  it('refuses to render a doc missing a required key', () => {
+    expect(() =>
+      renderOkfDocument({ path: 'x.md', frontmatter: { type: 'X', title: 'T', description: '', timestamp: 't' }, body: '' }),
+    ).toThrow(/required|floor/i);
+  });
+
+  it('round-trips a document through render then parse', () => {
+    // Canonical body form (matching parseConceptDoc's contract): no trailing newline.
+    const doc: OkfDocument = {
+      path: 'architecture/overview.md',
+      frontmatter: {
+        type: 'Architecture',
+        title: 'Overview',
+        description: 'How it fits together.',
+        timestamp: '2026-07-06T00:00:00+00:00',
+        tags: ['arch'],
+      },
+      body: 'Body.',
+    };
+    const { path, content } = renderOkfDocument(doc);
+    expect(parseOkfDocument(content, path)).toEqual(doc);
   });
 });
 

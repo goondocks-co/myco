@@ -44,6 +44,11 @@ const MAX_SCALAR_BYTES = 8 * 1024;
 /** Canonical leading key order for concept frontmatter; remaining keys keep insertion order. */
 const CANONICAL_KEY_ORDER = ['type', 'title', 'description', 'resource', 'tags', 'timestamp'] as const;
 
+/** OKF v0.1 document frontmatter's fixed key set, in canonical order. */
+const OKF_DOCUMENT_KEY_ORDER = ['type', 'resource', 'title', 'description', 'tags', 'timestamp'] as const;
+/** [R2] write-time floor: an OKF document cannot render without these four. */
+const REQUIRED_OKF_FRONTMATTER_KEYS = ['type', 'title', 'description', 'timestamp'] as const;
+
 function enforceValueBounds(value: unknown, depth: number, keyPath: string): void {
   if (typeof value === 'string') {
     if (Buffer.byteLength(value, 'utf8') > MAX_SCALAR_BYTES) {
@@ -187,4 +192,41 @@ export function serializeConceptDoc(
   }
   const head = `---\n${yamlText}---\n`;
   return canonicalBody === '' ? head : `${head}\n${canonicalBody}\n`;
+}
+
+/**
+ * Serialize OKF v0.1 document frontmatter to a YAML block.
+ *
+ * Unlike {@link serializeConceptDoc}'s frontmatter (an open, Myco-extensible
+ * schema), OKF document frontmatter is closed: only the six known keys are
+ * ever emitted, in canonical order — anything else on the input is dropped.
+ * `timestamp` is forced to single-quoted style so it round-trips as a plain
+ * string rather than resolving under a YAML parser's timestamp-tag handling
+ * (the OKF format must stay portable to non-JS consumers).
+ *
+ * Throws {@link OkfFrontmatterError} if `type`, `title`, `description`, or
+ * `timestamp` is missing or empty — the OKF reference's write-time floor.
+ */
+export function serializeOkfFrontmatter(frontmatter: Record<string, unknown>): string {
+  for (const key of REQUIRED_OKF_FRONTMATTER_KEYS) {
+    if (!frontmatter[key]) {
+      throw new OkfFrontmatterError(`required_key_missing: OKF frontmatter floor requires a non-empty "${key}"`);
+    }
+  }
+  // Null-prototype accumulator, built from a fixed key whitelist: see `orderKeys`
+  // above — the same untrusted-key concern applies, and this is stricter still.
+  const ordered: Record<string, unknown> = Object.create(null);
+  for (const key of OKF_DOCUMENT_KEY_ORDER) {
+    if (Object.hasOwn(frontmatter, key)) ordered[key] = frontmatter[key];
+  }
+  enforceValueBounds(ordered, 1, '');
+
+  const doc = new YAML.Document(ordered);
+  const timestamp = doc.get('timestamp', true);
+  if (timestamp instanceof YAML.Scalar) timestamp.type = YAML.Scalar.QUOTE_SINGLE;
+  const yamlText = doc.toString({ lineWidth: 0 });
+  if (Buffer.byteLength(yamlText, 'utf8') > MAX_FRONTMATTER_BYTES) {
+    throw new OkfFrontmatterError(`frontmatter_too_large: frontmatter exceeds ${MAX_FRONTMATTER_BYTES} bytes`);
+  }
+  return yamlText;
 }
