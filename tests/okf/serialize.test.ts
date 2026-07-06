@@ -176,6 +176,34 @@ describe('renderOkfDocument / parseOkfDocument', () => {
     const { path, content } = renderOkfDocument(doc);
     expect(parseOkfDocument(content, path)).toEqual(doc);
   });
+
+  const VALID_FRONTMATTER = {
+    type: 'Architecture',
+    title: 'Overview',
+    description: 'How it fits together.',
+    timestamp: '2026-07-06T00:00:00+00:00',
+  };
+
+  it('refuses a traversal path', () => {
+    expect(() =>
+      renderOkfDocument({ path: 'architecture/../../etc/passwd.md', frontmatter: VALID_FRONTMATTER, body: '' }),
+    ).toThrow(/path_traversal/);
+  });
+
+  it('refuses a reserved filename', () => {
+    expect(() => renderOkfDocument({ path: 'index.md', frontmatter: VALID_FRONTMATTER, body: '' })).toThrow(
+      /reserved_filename/,
+    );
+    expect(() =>
+      renderOkfDocument({ path: 'architecture/log.md', frontmatter: VALID_FRONTMATTER, body: '' }),
+    ).toThrow(/reserved_filename/);
+  });
+
+  it('refuses a path with a segment outside the okfSlug charset', () => {
+    expect(() =>
+      renderOkfDocument({ path: 'architecture/has space.md', frontmatter: VALID_FRONTMATTER, body: '' }),
+    ).toThrow(/invalid_segment/);
+  });
 });
 
 describe('renderRootIndex', () => {

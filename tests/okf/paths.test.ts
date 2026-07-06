@@ -1,82 +1,107 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  assertSafeConceptId,
+  bundleLink,
   conceptPathForId,
-  deriveConceptId,
   detectCollisions,
-  encodePathSegment,
+  okfSlug,
   OkfPathError,
 } from '@myco/okf/paths.js';
 
-describe('encodePathSegment', () => {
-  it('passes safe characters through untouched', () => {
-    expect(encodePathSegment('decision-abcd1234_v2.ts')).toBe('decision-abcd1234_v2.ts');
+describe('okfSlug', () => {
+  it('lowercases and underscores spaces and punctuation', () => {
+    expect(okfSlug('Grove Architecture!')).toBe('grove_architecture');
   });
 
-  it('percent-encodes characters outside [A-Za-z0-9._-] as uppercase UTF-8 hex', () => {
-    expect(encodePathSegment('a b')).toBe('a%20b');
-    expect(encodePathSegment('#x')).toBe('%23x');
-    expect(encodePathSegment('café')).toBe('caf%C3%A9');
+  it('collapses a run of punctuation/whitespace to a single underscore', () => {
+    expect(okfSlug('Hello,   World???')).toBe('hello_world');
   });
 
-  it('encodes % itself so the encoding stays injective', () => {
-    expect(encodePathSegment('50%')).toBe('50%25');
-    expect(encodePathSegment('50%25')).not.toBe(encodePathSegment('50%'));
+  it('never starts with - or .', () => {
+    expect(okfSlug('.hidden')).toBe('hidden');
+    expect(okfSlug('-leading-hyphen')).toBe('leading-hyphen');
+    expect(okfSlug('.hidden')[0]).not.toBe('.');
+    expect(okfSlug('-leading-hyphen')[0]).not.toBe('-');
   });
 
-  it('preserves case', () => {
-    expect(encodePathSegment('MyFile.TS')).toBe('MyFile.TS');
+  it('always matches the segment charset', () => {
+    for (const input of ['Grove Architecture!', '.hidden', '-x', 'café', '!!!', '', '   ']) {
+      expect(okfSlug(input)).toMatch(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/);
+    }
   });
 
-  it('encodes well-formed astral characters', () => {
-    expect(encodePathSegment('a😀b')).toBe('a%F0%9F%98%80b');
+  it('falls back to a single underscore when the input slugifies to nothing', () => {
+    expect(okfSlug('')).toBe('_');
+    expect(okfSlug('!!!')).toBe('_');
+    expect(okfSlug('...')).toBe('_');
   });
 
-  it('rejects lone surrogates instead of collapsing them to U+FFFD', () => {
-    expect(() => encodePathSegment('a\uD800')).toThrow(/lone_surrogate/);
-    expect(() => encodePathSegment('a\uDC00')).toThrow(/lone_surrogate/);
-    expect(() => deriveConceptId(['files', 'a\uD800'])).toThrow(OkfPathError);
-    // The literal replacement character itself is a real character and encodes fine.
-    expect(encodePathSegment('a�')).toBe('a%EF%BF%BD');
+  it('drops diacritics so accented and unaccented spellings agree', () => {
+    expect(okfSlug('café')).toBe('cafe');
+  });
+
+  it('slugifies NFC- and NFD-composed spellings of the same title identically', () => {
+    const nfc = 'caf\u00e9'; // pre-composed \u00e9 (single code point)
+    const nfd = 'cafe\u0301'; // e + combining acute accent U+0301 (two code points)
+    expect(nfc).not.toBe(nfd); // sanity: genuinely different code unit sequences
+    expect(okfSlug(nfc)).toBe(okfSlug(nfd));
+  });
+
+  it('preserves already-safe text unchanged (aside from case)', () => {
+    expect(okfSlug('decision-abcd1234_v2.ts')).toBe('decision-abcd1234_v2.ts');
   });
 });
 
-describe('deriveConceptId', () => {
-  it('joins simple segments', () => {
-    expect(deriveConceptId(['spores', 'decisions', 'decision-abcd1234'])).toBe(
-      'spores/decisions/decision-abcd1234',
-    );
+describe('bundleLink', () => {
+  it('root-anchors a bundle-relative path with a leading /', () => {
+    expect(bundleLink('a/c/d.md')).toBe('/a/c/d.md');
+    expect(bundleLink('x/y.md')).toBe('/x/y.md');
   });
 
-  it('encodes unsafe characters in repo paths deterministically', () => {
-    const id = deriveConceptId(['canopy', 'files', 'packages/a b/#x.ts']);
-    expect(id).toBe('canopy/files/packages/a%20b/%23x.ts');
-    expect(deriveConceptId(['canopy', 'files', 'packages/a b/#x.ts'])).toBe(id);
+  it('is root-anchored regardless of the source page depth (no from-relative computation)', () => {
+    // bundleLink takes only the target — there is no `from` parameter to vary,
+    // so a deeply nested source page links to the same absolute target.
+    expect(bundleLink('architecture/overview.md')).toBe('/architecture/overview.md');
   });
 
-  it('keeps distinct inputs distinct (no silent character drops)', () => {
-    expect(deriveConceptId(['files', 'a b.ts'])).not.toBe(deriveConceptId(['files', 'a_b.ts']));
-    expect(deriveConceptId(['files', 'a%20b.ts'])).not.toBe(deriveConceptId(['files', 'a b.ts']));
+  it('is idempotent for an already-absolute path', () => {
+    expect(bundleLink('/a/c/d.md')).toBe('/a/c/d.md');
   });
+});
 
-  it('normalizes backslash separators and strips a leading slash', () => {
-    expect(deriveConceptId(['canopy', 'files', '/src\\lib\\util.ts'])).toBe('canopy/files/src/lib/util.ts');
-  });
-
+describe('assertSafeConceptId', () => {
   it('rejects traversal segments', () => {
-    expect(() => deriveConceptId(['spores', '..', 'x'])).toThrow(OkfPathError);
-    expect(() => deriveConceptId(['spores', '../x'])).toThrow(/path_traversal/);
-    expect(() => deriveConceptId(['spores', '.'])).toThrow(/path_traversal/);
+    expect(() => assertSafeConceptId('spores/../x')).toThrow(OkfPathError);
+    expect(() => assertSafeConceptId('spores/../x')).toThrow(/path_traversal/);
+    expect(() => assertSafeConceptId('spores/.')).toThrow(/path_traversal/);
   });
 
-  it('rejects empty segments', () => {
-    expect(() => deriveConceptId([])).toThrow(/empty_segments/);
-    expect(() => deriveConceptId(['spores', ''])).toThrow(/empty_segment/);
-    expect(() => deriveConceptId(['spores', 'a//b'])).toThrow(/empty_segment/);
-    expect(() => deriveConceptId(['/'])).toThrow(/empty_segment/);
+  it('rejects a leading slash', () => {
+    expect(() => assertSafeConceptId('/etc/passwd')).toThrow(/path_traversal/);
   });
 
   it('rejects NUL bytes', () => {
-    expect(() => deriveConceptId(['spores', 'a\0b'])).toThrow(/nul_byte/);
+    expect(() => assertSafeConceptId('spores/a\0b')).toThrow(/nul_byte/);
+  });
+
+  it('rejects backslashes', () => {
+    expect(() => assertSafeConceptId('concepts\\..\\..\\x')).toThrow(/path_traversal|backslash/);
+  });
+
+  it('rejects empty segments', () => {
+    expect(() => assertSafeConceptId('')).toThrow(/empty_segments/);
+    expect(() => assertSafeConceptId('spores/')).toThrow(/empty_segment/);
+  });
+
+  it('rejects a segment outside the okfSlug charset', () => {
+    expect(() => assertSafeConceptId('concepts/has space')).toThrow(OkfPathError);
+    expect(() => assertSafeConceptId('concepts/has space')).toThrow(/invalid_segment/);
+    expect(() => assertSafeConceptId('canopy/café')).toThrow(/invalid_segment/);
+  });
+
+  it('accepts ids built from okfSlug segments', () => {
+    expect(() => assertSafeConceptId('spores/decisions/decision-abcd1234')).not.toThrow();
+    expect(() => assertSafeConceptId(['spores', okfSlug('Grove Architecture!')].join('/'))).not.toThrow();
   });
 });
 
@@ -88,13 +113,16 @@ describe('conceptPathForId', () => {
   });
 
   it('gives repo-file concepts a compound extension', () => {
-    const id = deriveConceptId(['canopy', 'files', 'src/util.ts']);
-    expect(conceptPathForId(id)).toBe('canopy/files/src/util.ts.md');
-    expect(conceptPathForId(id).endsWith('.ts.md')).toBe(true);
+    expect(conceptPathForId('canopy/files/src/util.ts')).toBe('canopy/files/src/util.ts.md');
+    expect(conceptPathForId('canopy/files/src/util.ts').endsWith('.ts.md')).toBe(true);
   });
 
   it('rejects an empty id', () => {
     expect(() => conceptPathForId('')).toThrow(OkfPathError);
+  });
+
+  it('rejects an id with a segment outside the okfSlug charset', () => {
+    expect(() => conceptPathForId('concepts/has space')).toThrow(OkfPathError);
   });
 });
 
@@ -109,5 +137,15 @@ describe('detectCollisions', () => {
 
   it('returns empty for distinct ids', () => {
     expect(detectCollisions(['a/b', 'a/c', 'd'])).toEqual([]);
+  });
+
+  it('catches two titles that slug-collide', () => {
+    const a = okfSlug('Grove Architecture');
+    const b = okfSlug('GROVE ARCHITECTURE!!!');
+    expect(a).toBe(b); // same slug, different source titles
+    expect(detectCollisions([`concepts/${a}`, `concepts/${b}`])).toEqual([
+      `concepts/${a}`,
+      `concepts/${b}`,
+    ]);
   });
 });

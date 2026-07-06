@@ -1057,8 +1057,8 @@ export class OkfBundle {
     if (!id.startsWith('concepts/')) {
       throw new OkfError('deterministic_path_not_editable', `${id} is not under concepts/ and cannot be edited`);
     }
-    // Reject traversal within the concepts/ namespace ('concepts/../../x') —
-    // the same rejection deriveConceptId applies to machine-generated ids.
+    // Reject traversal within the concepts/ namespace ('concepts/../../x'),
+    // and any segment outside the okfSlug charset assertSafeConceptId enforces.
     try {
       assertSafeConceptId(id);
     } catch {

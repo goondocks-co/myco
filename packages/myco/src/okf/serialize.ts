@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { parseConceptDoc, serializeConceptDoc, serializeOkfFrontmatter } from './frontmatter.js';
-import { conceptPathForId, OkfPathError } from './paths.js';
+import { assertSafeConceptId, conceptPathForId, OkfPathError } from './paths.js';
 import { OKF_RESERVED_FILES, OKF_VERSION, type OkfConcept, type OkfDocument } from './types.js';
 
 /**
@@ -39,10 +39,11 @@ const RESERVED_BASENAMES = new Set<string>(OKF_RESERVED_FILES);
 
 /**
  * POSIX-relative path from the directory of `fromPath` to the file of concept
- * `toId`. Link targets must be derivation-produced ids — an id carrying
- * whitespace, parentheses, or angle brackets (all percent-encoded by
- * `deriveConceptId`) would break or reshape the markdown link, so those are
- * rejected rather than emitted.
+ * `toId`. Link targets must be safe concept ids — an id carrying whitespace,
+ * parentheses, or angle brackets would break or reshape the markdown link,
+ * so those are rejected rather than emitted. In practice this never fires:
+ * `conceptPathForId` already rejects any id outside the `okfSlug` charset,
+ * which contains none of those characters.
  */
 export function relativeConceptHref(fromPath: string, toId: string): string {
   const fromDir = path.posix.dirname(fromPath);
@@ -118,8 +119,18 @@ export function renderConcept(concept: OkfConcept): { path: string; content: str
  * produces. Unlike {@link renderConcept}, no provenance is injected: the
  * frontmatter is exactly what the caller supplies, subject to the OKF
  * write-time floor (`type`/`title`/`description`/`timestamp` non-empty).
+ *
+ * `doc.path` is validated the same way a concept id is — `assertSafeConceptId`
+ * rejects traversal, and reserved bundle filenames (`index.md`, `log.md`)
+ * are refused — even though a document's path already carries `.md` and has
+ * no separate id; the okfSlug charset it enforces allows an in-segment `.`,
+ * so the extension passes through unaffected.
  */
 export function renderOkfDocument(doc: OkfDocument): { path: string; content: string } {
+  assertSafeConceptId(doc.path);
+  if (RESERVED_BASENAMES.has(path.posix.basename(doc.path))) {
+    throw new OkfPathError(`reserved_filename: ${JSON.stringify(doc.path)} collides with a reserved bundle file`);
+  }
   const yamlText = serializeOkfFrontmatter(doc.frontmatter);
   const canonicalBody = doc.body.replace(/\r\n/g, '\n').replace(/\n+$/, '');
   const head = `---\n${yamlText}---\n`;

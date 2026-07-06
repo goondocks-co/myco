@@ -15,7 +15,6 @@ import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle, OkfError, type OkfBundleDeps, type OkfFsOps } from '@myco/okf/bundle.js';
 import type { OkfBundleWriteInput } from '@myco/okf/types.js';
-import { deriveConceptId } from '@myco/okf/paths.js';
 import { scanStagedBundle } from '@myco/okf/publish-eligibility.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
@@ -271,20 +270,14 @@ describe('#3 recoverOrphanedBundle — crash between atomicReplace renames', () 
 
 // ---------------------------------------------------------------------------
 // #4 Unicode NFC collision
+//
+// `deriveConceptId` (the percent-encoding scheme this regression targeted) is
+// deleted as of Task 1.2 -- it had no live caller. Its NFC-before-encoding step
+// is superseded by `okfSlug`, which decomposes and strips diacritics outright,
+// so NFC- and NFD-composed spellings of the same title slugify identically.
+// See 'slugifies NFC- and NFD-composed spellings of the same title identically'
+// in tests/okf/paths.test.ts.
 // ---------------------------------------------------------------------------
-
-describe('#4 deriveConceptId — NFC normalization', () => {
-  it('derives the SAME id for NFC-composed and NFD-decomposed spellings', () => {
-    const nfc = 'café'; // café, precomposed é (U+00E9)
-    const nfd = 'café'; // café, e + combining acute accent (U+0301)
-    expect(nfc).not.toBe(nfd); // sanity: genuinely different code unit sequences
-    expect(nfc.normalize('NFC')).not.toBe(nfd); // sanity: nfd isn't already NFC
-
-    const idFromNfc = deriveConceptId(['concepts', nfc]);
-    const idFromNfd = deriveConceptId(['concepts', nfd]);
-    expect(idFromNfc).toBe(idFromNfd);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // #5 Absolute-path leak in errors
