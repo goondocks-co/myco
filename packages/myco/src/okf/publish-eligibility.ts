@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isCanopySensitivePath } from '@myco/canopy/sensitive-paths.js';
+import { sha256Hex } from '@myco/canopy/hash.js';
 import { parseConceptDoc } from './frontmatter.js';
 import { OKF_MARKER_FILENAME } from './types.js';
 
@@ -27,6 +28,17 @@ export interface PublishFinding {
   path: string;
   /** Short, secret-masked snippet for display (never the full secret). */
   excerpt: string;
+  /**
+   * Non-reversible hash of the raw offending content. Binds an acknowledgement
+   * to THIS finding: a different secret at the same (code, path) yields a new
+   * hash and re-blocks publish rather than riding a prior acknowledgement.
+   */
+  hash: string;
+}
+
+/** 16 hex chars of SHA-256 — enough to distinguish findings, never the secret. */
+function findingHash(raw: string): string {
+  return sha256Hex(raw).slice(0, 16);
 }
 
 /** Secret-shaped token detectors. One exported constant so the set is auditable. */
@@ -68,23 +80,23 @@ function scanText(text: string, relPath: string, findings: PublishFinding[]): vo
   for (const { re } of SECRET_PATTERNS) {
     const m = re.exec(text);
     if (m) {
-      findings.push({ code: 'likely_secret', path: relPath, excerpt: maskExcerpt(text, m.index, m[0].length) });
+      findings.push({ code: 'likely_secret', path: relPath, excerpt: maskExcerpt(text, m.index, m[0].length), hash: findingHash(m[0]) });
       break; // one secret finding per file is enough to block
     }
   }
   for (const re of ABSOLUTE_PATH_PATTERNS) {
     const m = re.exec(text);
     if (m) {
-      findings.push({ code: 'absolute_local_path', path: relPath, excerpt: maskExcerpt(text, m.index, m[0].length) });
+      findings.push({ code: 'absolute_local_path', path: relPath, excerpt: maskExcerpt(text, m.index, m[0].length), hash: findingHash(m[0]) });
       break;
     }
   }
   const keyMatch = RAW_ID_KEY_RE.exec(text);
   const uuidMatch = UUID_RE.exec(text);
   if (keyMatch) {
-    findings.push({ code: 'raw_session_identifier', path: relPath, excerpt: maskExcerpt(text, keyMatch.index, keyMatch[0].length) });
+    findings.push({ code: 'raw_session_identifier', path: relPath, excerpt: maskExcerpt(text, keyMatch.index, keyMatch[0].length), hash: findingHash(keyMatch[0]) });
   } else if (uuidMatch) {
-    findings.push({ code: 'raw_session_identifier', path: relPath, excerpt: maskExcerpt(text, uuidMatch.index, uuidMatch[0].length) });
+    findings.push({ code: 'raw_session_identifier', path: relPath, excerpt: maskExcerpt(text, uuidMatch.index, uuidMatch[0].length), hash: findingHash(uuidMatch[0]) });
   }
 }
 
@@ -134,7 +146,7 @@ export function scanStagedBundle(stagingRoot: string): PublishFinding[] {
       scanText(content, relPath, findings);
       const repoPath = representedRepoPath(content, relPath);
       if (repoPath && isCanopySensitivePath(repoPath)) {
-        findings.push({ code: 'sensitive_filename', path: relPath, excerpt: repoPath });
+        findings.push({ code: 'sensitive_filename', path: relPath, excerpt: repoPath, hash: findingHash(repoPath) });
       }
     }
   };

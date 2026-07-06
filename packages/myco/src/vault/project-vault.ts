@@ -445,8 +445,13 @@ export interface OkfPrivateManifest {
   output_root: string;
   last_result: 'published' | 'rolled_back' | 'rollback_failed' | 'cleanup_pending' | null;
   generated_at: string | null;
-  /** Publish-eligibility acknowledgement set (per-finding, not a boolean). */
-  acknowledged_findings: Array<{ code: string; path: string }>;
+  /**
+   * Publish-eligibility acknowledgement set (per-finding, not a boolean). The
+   * `hash` binds an acknowledgement to the specific offending content, so a
+   * DIFFERENT finding at the same (code, path) re-blocks instead of riding a
+   * prior acknowledgement.
+   */
+  acknowledged_findings: Array<{ code: string; path: string; hash?: string }>;
   /**
    * Hash of (source counts, max updated_ats, include config, projection +
    * task versions) written at publish; the okf-maintain precondition probe
@@ -473,13 +478,12 @@ function isOkfPrivateManifest(value: unknown): value is OkfPrivateManifest {
   if (typeof m.generated_at !== 'string' && m.generated_at !== null) return false;
   if (typeof m.probe_fingerprint !== 'string' && m.probe_fingerprint !== null) return false;
   if (!Array.isArray(m.acknowledged_findings)) return false;
-  return m.acknowledged_findings.every(
-    (f) =>
-      f !== null &&
-      typeof f === 'object' &&
-      typeof (f as Record<string, unknown>).code === 'string' &&
-      typeof (f as Record<string, unknown>).path === 'string',
-  );
+  return m.acknowledged_findings.every((f) => {
+    if (f === null || typeof f !== 'object') return false;
+    const entry = f as Record<string, unknown>;
+    if (typeof entry.code !== 'string' || typeof entry.path !== 'string') return false;
+    return entry.hash === undefined || typeof entry.hash === 'string';
+  });
 }
 
 export type ProjectLifecycleState =

@@ -16,7 +16,7 @@ import { projectCanopy } from './projectors/canopy.js';
 import { adoptConcepts } from './projectors/concepts.js';
 import { generateMaintenanceGuide } from './projectors/guides.js';
 import { mycoProjectRef, runRef } from './privacy.js';
-import { conceptPathForId, detectCollisions } from './paths.js';
+import { assertSafeConceptId, conceptPathForId, detectCollisions } from './paths.js';
 import { parseConceptDoc, serializeConceptDoc } from './frontmatter.js';
 import { renderConcept, renderRootIndex, renderRootLog, type OkfLogEntry } from './serialize.js';
 import { generateDirectoryIndexes } from './indexes.js';
@@ -211,7 +211,9 @@ export class OkfBundle {
     const resolved = this.resolve(input);
 
     // Gate is enforced INSIDE the capability (fail-closed), not at callers.
-    if (resolved.klass === 'published_default' && !input.dryRun && !input.oneShot) {
+    // Applies to every managed write — published_default AND private_local;
+    // only dry-run/one-shot preview and external export bypass it.
+    if (resolved.klass !== 'external_export' && !input.dryRun && !input.oneShot) {
       if (!capabilityEnabled(this.deps.config, 'okf')) {
         throw new OkfError('okf_disabled', 'OKF capability is disabled for this project');
       }
@@ -240,6 +242,9 @@ export class OkfBundle {
 
     let manifest = this.deps.vault.readOkfManifest();
     manifest = this.reconcileManifestForRoot(manifest, outputRoot, warnings);
+    // Restore a crash-orphaned bundle BEFORE recoverFromCrash reads the marker
+    // and BEFORE sweepStale would delete the sole surviving backup copy.
+    this.recoverOrphanedBundle(outputRoot, warnings);
     manifest = this.recoverFromCrash(manifest, outputRoot, warnings);
 
     this.assertOutputWritable(outputRoot, input.overwrite ?? false);
@@ -310,7 +315,7 @@ export class OkfBundle {
 
       if (isPublished && !input.dryRun) {
         const acknowledged = manifest?.acknowledged_findings ?? [];
-        const unacked = findings.filter((f) => !acknowledged.some((a) => a.code === f.code && a.path === f.path));
+        const unacked = findings.filter((f) => !this.findingAcknowledged(f, acknowledged));
         if (unacked.length > 0 && !input.acknowledgePublish) {
           throw new OkfError('okf_publish_not_acknowledged', 'publish blocked by unacknowledged findings', {
             findings: unacked,
@@ -660,7 +665,7 @@ export class OkfBundle {
       } catch (err) {
         // Nothing moved yet — the previous bundle is intact.
         this.persistLastResult(manifest, 'rolled_back');
-        throw new OkfError('atomic_replace_failed', `backup rename failed: ${errMsg(err)}`, {
+        throw new OkfError('atomic_replace_failed', `backup rename failed (${errCode(err)})`, {
           lastResult: 'rolled_back',
         });
       }
@@ -673,7 +678,7 @@ export class OkfBundle {
     } catch (err) {
       const lastResult = this.rollback(backup, outputRoot);
       this.persistLastResult(manifest, lastResult);
-      throw new OkfError('atomic_replace_failed', `final rename failed: ${errMsg(err)}`, { lastResult });
+      throw new OkfError('atomic_replace_failed', `final rename failed (${errCode(err)})`, { lastResult });
     }
 
     // Step 13: remove the backup.
@@ -750,21 +755,65 @@ export class OkfBundle {
     return null;
   }
 
+  /**
+   * Restore a bundle orphaned by a crash between atomicReplace's two renames:
+   * the live bundle was moved to `backup-{N+1}` but staging was not yet swapped
+   * into `outputRoot`, so the backup holds the only copy. Restore it BEFORE any
+   * sweep deletes it. Idempotent — a no-op when the live bundle is present.
+   */
+  private recoverOrphanedBundle(outputRoot: string, warnings: OkfMaintainWarning[]): void {
+    if (this.markerExists(outputRoot)) return;
+    const stateDir = this.deps.vault.okfStateDir();
+    let best: { path: string; gen: number } | null = null;
+    for (const name of this.safeReaddir(stateDir)) {
+      if (!name.startsWith('backup-')) continue;
+      const backupPath = path.join(stateDir, name);
+      const gen = this.readMarkerGeneration(backupPath);
+      if (gen === null) continue; // incomplete backup — no marker, skip
+      if (!best || gen > best.gen) best = { path: backupPath, gen };
+    }
+    if (!best) return;
+    try {
+      // Clear any partial/empty outputRoot the interrupted swap left behind first.
+      if (this.dirExists(outputRoot)) this.fsOps.rm(outputRoot, { recursive: true, force: true });
+      this.fsOps.mkdir(path.dirname(outputRoot), { recursive: true });
+      this.renameWithRetry(best.path, outputRoot);
+      warnings.push({
+        code: 'crash_recovery',
+        message: `restored the previous bundle from ${path.basename(best.path)} after an interrupted publish.`,
+      });
+    } catch {
+      // Restore failed — leave the backup in place; the regenerate path rebuilds
+      // from the vault and the backup is swept on the next successful publish.
+    }
+  }
+
+  /** Adopt the published marker's generation when it exceeds the manifest's. */
+  private reconcileGenerationWithMarker(
+    manifest: OkfPrivateManifest | null,
+    outputRoot: string,
+  ): OkfPrivateManifest | null {
+    if (!manifest) return manifest;
+    const markerGen = this.readMarkerGeneration(outputRoot);
+    if (markerGen !== null && markerGen > manifest.bundle_generation) {
+      return { ...manifest, bundle_generation: markerGen };
+    }
+    return manifest;
+  }
+
   private recoverFromCrash(
     manifest: OkfPrivateManifest | null,
     outputRoot: string,
     warnings: OkfMaintainWarning[],
   ): OkfPrivateManifest | null {
-    if (!manifest) return manifest;
-    const markerGen = this.readMarkerGeneration(outputRoot);
-    if (markerGen !== null && markerGen > manifest.bundle_generation) {
+    const reconciled = this.reconcileGenerationWithMarker(manifest, outputRoot);
+    if (reconciled !== manifest && reconciled) {
       warnings.push({
         code: 'crash_recovery',
-        message: `published marker generation ${markerGen} exceeds manifest ${manifest.bundle_generation}; adopting the marker's value.`,
+        message: `published marker generation ${reconciled.bundle_generation} exceeds the manifest; adopting the marker's value.`,
       });
-      return { ...manifest, bundle_generation: markerGen };
     }
-    return manifest;
+    return reconciled;
   }
 
   private sweepStale(manifest: OkfPrivateManifest | null, warnings: OkfMaintainWarning[]): void {
@@ -783,17 +832,25 @@ export class OkfBundle {
     }
   }
 
+  /** A finding is acknowledged only when a prior ack matches its (code, path, hash). */
+  private findingAcknowledged(
+    finding: { code: string; path: string; hash: string },
+    acknowledged: ReadonlyArray<{ code: string; path: string; hash?: string }>,
+  ): boolean {
+    return acknowledged.some((a) => a.code === finding.code && a.path === finding.path && a.hash === finding.hash);
+  }
+
   private mergeAcknowledgements(
     manifest: OkfPrivateManifest | null,
     findings: ReturnType<typeof scanStagedBundle>,
     isPublished: boolean,
     acknowledge: boolean,
-  ): Array<{ code: string; path: string }> {
+  ): Array<{ code: string; path: string; hash?: string }> {
     const existing = manifest?.acknowledged_findings ?? [];
     if (!isPublished || !acknowledge) return existing;
     const merged = [...existing];
     for (const f of findings) {
-      if (!merged.some((a) => a.code === f.code && a.path === f.path)) merged.push({ code: f.code, path: f.path });
+      if (!this.findingAcknowledged(f, merged)) merged.push({ code: f.code, path: f.path, hash: f.hash });
     }
     return merged;
   }
@@ -820,7 +877,9 @@ export class OkfBundle {
   status(): OkfBundleStatus {
     const resolved = this.resolve({ mode: 'published' });
     const outputRoot = resolved.absPath;
-    const manifest = this.deps.vault.readOkfManifest();
+    // Reconcile in-memory (no write from a read path) so a crash-lagged manifest
+    // reports the marker's true generation.
+    const manifest = this.reconcileGenerationWithMarker(this.deps.vault.readOkfManifest(), outputRoot);
     const marker = this.readMarker(outputRoot);
     const bundleExists = marker !== null;
 
@@ -910,10 +969,13 @@ export class OkfBundle {
 
   getConcept(id: string): { concept: OkfConcept; raw: string } | null {
     const root = this.resolve({ mode: 'published' }).absPath;
-    const abs = path.join(root, conceptPathForId(id));
+    let rel: string;
     let raw: string;
     try {
-      raw = fs.readFileSync(abs, 'utf8');
+      // conceptPathForId rejects a traversal id; an unsafe or unreadable id is
+      // reported as "not found" so no file outside the bundle is disclosed.
+      rel = conceptPathForId(id);
+      raw = fs.readFileSync(path.join(root, rel), 'utf8');
     } catch {
       return null;
     }
@@ -922,7 +984,7 @@ export class OkfBundle {
       raw,
       concept: {
         id,
-        path: conceptPathForId(id),
+        path: rel,
         frontmatter: frontmatter as OkfConcept['frontmatter'],
         body,
         source: { id, projectId: null },
@@ -997,7 +1059,10 @@ export class OkfBundle {
     const outputRoot = resolved.absPath;
     const lock = await this.acquireLock();
     try {
-      const manifest = this.deps.vault.readOkfManifest();
+      // Heal a crash-orphaned bundle before we require one to exist, and adopt
+      // the marker's generation so a stale manifest can't reissue a used number.
+      this.recoverOrphanedBundle(outputRoot, []);
+      const manifest = this.reconcileGenerationWithMarker(this.deps.vault.readOkfManifest(), outputRoot);
       if (!this.markerExists(outputRoot)) {
         throw new OkfError('okf_maintain_failed', 'no published bundle to edit; run maintain first');
       }
@@ -1037,7 +1102,7 @@ export class OkfBundle {
 
         const findings = scanStagedBundle(stagingDir);
         const acknowledged = manifest?.acknowledged_findings ?? [];
-        const unacked = findings.filter((f) => !acknowledged.some((a) => a.code === f.code && a.path === f.path));
+        const unacked = findings.filter((f) => !this.findingAcknowledged(f, acknowledged));
         if (unacked.length > 0) {
           throw new OkfError('okf_publish_not_acknowledged', 'concept edit introduced unacknowledged findings', {
             findings: unacked,
@@ -1071,6 +1136,13 @@ export class OkfBundle {
   private assertEditableConceptId(id: string): void {
     if (!id.startsWith('concepts/')) {
       throw new OkfError('deterministic_path_not_editable', `${id} is not under concepts/ and cannot be edited`);
+    }
+    // Reject traversal within the concepts/ namespace ('concepts/../../x') —
+    // the same rejection deriveConceptId applies to machine-generated ids.
+    try {
+      assertSafeConceptId(id);
+    } catch {
+      throw new OkfError('deterministic_path_not_editable', `${id} contains an unsafe path segment and cannot be edited`);
     }
   }
 
@@ -1175,7 +1247,7 @@ export class OkfBundle {
     if (!this.markerExists(outputRoot)) return true;
     const findings = scanStagedBundle(outputRoot);
     const ack = manifest.acknowledged_findings;
-    return findings.every((f) => ack.some((a) => a.code === f.code && a.path === f.path));
+    return findings.every((f) => this.findingAcknowledged(f, ack));
   }
 
   private countByKind(concepts: OkfConcept[]): Record<OkfIncludeKind, number> {
@@ -1301,6 +1373,8 @@ export class OkfBundle {
   }
 }
 
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+/** Errno code only — never the OS error message, which embeds absolute paths. */
+function errCode(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException).code;
+  return typeof code === 'string' ? code : 'unknown';
 }

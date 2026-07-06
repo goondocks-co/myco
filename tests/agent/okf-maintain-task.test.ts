@@ -599,4 +599,68 @@ describe('finalizeOkfMaintain', () => {
     const manifest = new ProjectVault(projectRoot).readOkfManifest();
     expect(manifest).toBeNull();
   });
+
+  it('propagates an OkfError OTHER than okf_publish_not_acknowledged instead of swallowing it', async () => {
+    // finalizeOkfMaintain's catch block only special-cases
+    // okf_publish_not_acknowledged (clean report + notify, no throw). Every
+    // other OkfError — here okf_validation_failed — must fail the run.
+    seedGroveDb(() => {
+      registerAgent({ id: AGENT_ID, name: 'A', created_at: 1_783_000_000 });
+      insertSpore({ id: 'decision-1', project_id: PROJECT_ID, agent_id: AGENT_ID, observation_type: 'decision', content: 'A clean decision.', importance: 5, created_at: 1_783_000_000, machine_id: 'machine-a' });
+      insertRun({ id: 'run-finalize-4', project_id: PROJECT_ID, agent_id: AGENT_ID, task: OKF_MAINTAIN_TASK, status: 'running', started_at: 1_783_000_000 });
+      insertReport({
+        run_id: 'run-finalize-4',
+        project_id: PROJECT_ID,
+        agent_id: AGENT_ID,
+        action: OKF_REPORT_ACTION,
+        summary: 'Nothing agent-worthy changed.',
+        created_at: 1_783_000_000,
+      });
+    });
+
+    // First, get a real published bundle on disk (so maintain() takes the
+    // "changed inputs" path rather than the disabled-capability or no-report
+    // early exits) — then poison it with a bare agent-authored concept file
+    // that passes adoption (a `type` field present) but fails myco_strict
+    // (missing recommended fields), exactly as bundle-failure-injection.test.ts's
+    // "validation failure" case does. The next finalize call re-gathers,
+    // re-stages, and myco_strict rejects the staged tree.
+    await finalizeOnTaskSuccess({
+      taskName: OKF_MAINTAIN_TASK,
+      agentId: AGENT_ID,
+      runId: 'run-finalize-4',
+      runContext: undefined,
+      requestContext: ctx,
+      vaultDir,
+    });
+    expect(fs.existsSync(path.join(projectRoot, 'okf/index.md'))).toBe(true);
+
+    const conceptsDir = path.join(projectRoot, 'okf/concepts');
+    fs.mkdirSync(conceptsDir, { recursive: true });
+    fs.writeFileSync(path.join(conceptsDir, 'bare.md'), '---\ntype: Note\n---\n\nBare.\n');
+
+    seedGroveDb(() => {
+      insertSpore({ id: 'decision-2', project_id: PROJECT_ID, agent_id: AGENT_ID, observation_type: 'decision', content: 'A second decision forces a real run.', importance: 5, created_at: 1_783_000_100, machine_id: 'machine-a' });
+      insertRun({ id: 'run-finalize-5', project_id: PROJECT_ID, agent_id: AGENT_ID, task: OKF_MAINTAIN_TASK, status: 'running', started_at: 1_783_000_100 });
+      insertReport({
+        run_id: 'run-finalize-5',
+        project_id: PROJECT_ID,
+        agent_id: AGENT_ID,
+        action: OKF_REPORT_ACTION,
+        summary: 'Second run.',
+        created_at: 1_783_000_100,
+      });
+    });
+
+    await expect(
+      finalizeOnTaskSuccess({
+        taskName: OKF_MAINTAIN_TASK,
+        agentId: AGENT_ID,
+        runId: 'run-finalize-5',
+        runContext: undefined,
+        requestContext: ctx,
+        vaultDir,
+      }),
+    ).rejects.toMatchObject({ code: 'okf_validation_failed' });
+  });
 });

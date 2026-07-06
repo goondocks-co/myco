@@ -75,17 +75,52 @@ export function deriveConceptId(segments: string[]): string {
       if (piece.includes('\0')) {
         throw new OkfPathError(`nul_byte: segment ${JSON.stringify(raw)} contains a NUL byte`);
       }
-      parts.push(encodePathSegment(piece));
+      // NFC-normalize BEFORE per-codepoint encoding so composed/decomposed
+      // spellings of the same text (café U+00E9 vs. e + U+0301) derive to the
+      // SAME id instead of two distinct percent-encodings that later slip past
+      // the case-fold-only `detectCollisions`.
+      parts.push(encodePathSegment(piece.normalize('NFC')));
     }
   }
   return parts.join('/');
 }
 
-/** Bundle-relative file path for a concept id — always `${id}.md`. */
-export function conceptPathForId(id: string): string {
+/**
+ * Reject a concept id that could escape the bundle root.
+ *
+ * `deriveConceptId` sanitizes machine-generated ids at projection time, but ids
+ * that arrive from a surface (`save_concept`/`get`/`supersede`) reach
+ * `conceptPathForId` directly. This is the single choke point that turns an id
+ * into a filesystem path, so the traversal rejection lives here: every path
+ * derivation — read and write — is guarded, and a future caller cannot
+ * reintroduce the hole. Mirrors `deriveConceptId`'s per-segment rules.
+ */
+export function assertSafeConceptId(id: string): void {
   if (id === '') {
     throw new OkfPathError('empty_segments: a concept id cannot be empty');
   }
+  if (id.startsWith('/')) {
+    throw new OkfPathError(`path_traversal: concept id ${JSON.stringify(id)} is absolute`);
+  }
+  for (const piece of id.split('/')) {
+    if (piece === '') {
+      throw new OkfPathError(`empty_segment: concept id ${JSON.stringify(id)} contains an empty path piece`);
+    }
+    if (piece === '.' || piece === '..') {
+      throw new OkfPathError(`path_traversal: concept id ${JSON.stringify(id)} contains ${JSON.stringify(piece)}`);
+    }
+    if (piece.includes('\0')) {
+      throw new OkfPathError(`nul_byte: concept id ${JSON.stringify(id)} contains a NUL byte`);
+    }
+    if (piece.includes('\\')) {
+      throw new OkfPathError(`path_traversal: concept id ${JSON.stringify(id)} contains a backslash`);
+    }
+  }
+}
+
+/** Bundle-relative file path for a concept id — always `${id}.md`. */
+export function conceptPathForId(id: string): string {
+  assertSafeConceptId(id);
   return `${id}.md`;
 }
 
