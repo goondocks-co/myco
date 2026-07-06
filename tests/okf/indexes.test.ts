@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { generateDirectoryIndexes } from '@myco/okf/indexes.js';
-import type { OkfConcept } from '@myco/okf/types.js';
+import { generateDirectoryIndexes, generateIndexes } from '@myco/okf/indexes.js';
+import type { OkfConcept, OkfDocument } from '@myco/okf/types.js';
 
 const RAW_HTML = /<\/?[a-zA-Z][^>]*>/;
 
@@ -13,6 +13,10 @@ function concept(id: string, type: string, title?: string, description?: string)
     source: { id, projectId: null },
     links: [],
   };
+}
+
+function doc(docPath: string, frontmatter: Record<string, unknown>, body = 'Body'): OkfDocument {
+  return { path: docPath, frontmatter: frontmatter as OkfDocument['frontmatter'], body };
 }
 
 const FIXTURE: OkfConcept[] = [
@@ -129,5 +133,102 @@ describe('generateDirectoryIndexes', () => {
     expect(content).toContain('&lt;script&gt;');
     // The escaped label cannot close the link early.
     expect(content).toContain('\\]\\(');
+  });
+});
+
+describe('generateIndexes', () => {
+  it('groups documents by type with empty frontmatter, and roots a Subdirectories section for the parent', () => {
+    const docs: OkfDocument[] = [
+      doc('tables/users.md', { type: 'Table', title: 'Users', description: 'User accounts' }),
+      doc('tables/posts.md', { type: 'Table', title: 'Posts', description: 'Blog posts' }),
+    ];
+    const indexes = generateIndexes(docs);
+    expect(indexes.map((d) => d.path).sort()).toEqual(['index.md', 'tables/index.md']);
+
+    const tablesIndex = indexes.find((d) => d.path === 'tables/index.md')!;
+    expect(tablesIndex.frontmatter).toEqual({});
+    expect(tablesIndex.body).not.toContain('---');
+    expect(tablesIndex.body).toBe(
+      '# Table\n\n' + '* [Posts](posts.md) - Blog posts\n' + '* [Users](users.md) - User accounts\n',
+    );
+
+    const rootIndex = indexes.find((d) => d.path === 'index.md')!;
+    expect(rootIndex.frontmatter).toEqual({});
+    expect(rootIndex.body).toBe('# Subdirectories\n\n' + '* [tables](tables/index.md) - 2 Table concepts\n');
+  });
+
+  it('produces a Subdirectories section at every nesting level, processed deepest-first', () => {
+    const docs: OkfDocument[] = [
+      doc('projects/backend/api.md', { type: 'Service', title: 'Api', description: 'Backend API service' }),
+      doc('projects/frontend/ui.md', { type: 'Service', title: 'Ui', description: 'Frontend UI service' }),
+      doc('projects/readme.md', { type: 'Doc', title: 'Readme', description: 'Project readme' }),
+    ];
+    const indexes = generateIndexes(docs);
+    const byPath = new Map(indexes.map((d) => [d.path, d]));
+
+    // Single-child directories reuse that child's description verbatim.
+    expect(byPath.get('projects/backend/index.md')!.body).toBe(
+      '# Service\n\n* [Api](api.md) - Backend API service\n',
+    );
+    expect(byPath.get('projects/frontend/index.md')!.body).toBe(
+      '# Service\n\n* [Ui](ui.md) - Frontend UI service\n',
+    );
+
+    // Mixed directory: own Doc entry + a Subdirectories section, bullets sorted by title.
+    expect(byPath.get('projects/index.md')!.body).toBe(
+      '# Doc\n\n' +
+        '* [Readme](readme.md) - Project readme\n' +
+        '\n' +
+        '# Subdirectories\n\n' +
+        '* [backend](backend/index.md) - Backend API service\n' +
+        '* [frontend](frontend/index.md) - Frontend UI service\n',
+    );
+
+    // Root's Subdirectories section carries a deterministic (non-LLM) summary
+    // for the multi-entry "projects" directory.
+    expect(byPath.get('index.md')!.body).toBe(
+      '# Subdirectories\n\n* [projects](projects/index.md) - 3 concepts across 2 types\n',
+    );
+  });
+
+  it('falls back to the file stem when a document has no title, and omits the suffix when it has no description', () => {
+    const indexes = generateIndexes([doc('notes/bare.md', { type: 'Note' })]);
+    expect(indexes.find((d) => d.path === 'notes/index.md')!.body).toBe('# Note\n\n* [bare](bare.md)\n');
+  });
+
+  it('buckets a missing or blank type under "Other"', () => {
+    const indexes = generateIndexes([doc('notes/untyped.md', { type: '' })]);
+    expect(indexes.find((d) => d.path === 'notes/index.md')!.body).toContain('# Other');
+  });
+
+  it('sorts bullets within a type by title, case-insensitively', () => {
+    const indexes = generateIndexes([
+      doc('mixed/z.md', { type: 'Note', title: 'zebra' }),
+      doc('mixed/a.md', { type: 'Note', title: 'Ardvark' }),
+    ]);
+    const body = indexes.find((d) => d.path === 'mixed/index.md')!.body;
+    expect(body.indexOf('Ardvark')).toBeLessThan(body.indexOf('zebra'));
+  });
+
+  it('skips an existing index.md child instead of double-listing it', () => {
+    const indexes = generateIndexes([
+      doc('notes/index.md', { type: 'Myco OKF Bundle' }),
+      doc('notes/one.md', { type: 'Note', title: 'One' }),
+    ]);
+    const body = indexes.find((d) => d.path === 'notes/index.md')!.body;
+    expect(body).not.toContain('index.md)');
+    expect(body).toContain('[One](one.md)');
+  });
+
+  it('produces no indexes for an empty document set', () => {
+    expect(generateIndexes([])).toEqual([]);
+  });
+
+  it('is deterministic — same inputs produce the same output', () => {
+    const docs = [
+      doc('a/one.md', { type: 'X', title: 'One', description: 'D1' }),
+      doc('a/two.md', { type: 'X', title: 'Two', description: 'D2' }),
+    ];
+    expect(generateIndexes(docs)).toEqual(generateIndexes([...docs]));
   });
 });
