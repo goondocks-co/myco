@@ -19,8 +19,9 @@
  * field does.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { getAtPath } from '@myco/utils/dot-path';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
 import { Panel } from '../components/ui/panel';
@@ -35,18 +36,31 @@ import { OkfActionsPanel } from '../components/okf/OkfActionsPanel';
 import { OkfSourcesPanel } from '../components/okf/OkfSourcesPanel';
 import { OkfDiscoveryPanel } from '../components/okf/OkfDiscoveryPanel';
 import { OkfValidationPanel } from '../components/okf/OkfValidationPanel';
-import { useOkfMaintain, useOkfStatus, useOkfValidate } from '../hooks/use-okf';
+import { useOkfMaintain, useOkfStatus, useOkfValidate, useInvalidateOkfStatus } from '../hooks/use-okf';
 import { useActiveProjectSelection } from '../hooks/use-project-selection';
+import { useScopedConfig } from '../hooks/use-scoped-config';
 
 export default function Okf() {
   const { data: status, isLoading, isError } = useOkfStatus();
+  const { effective: config } = useScopedConfig();
+  const invalidateOkfStatus = useInvalidateOkfStatus();
   const maintain = useOkfMaintain();
   const validate = useOkfValidate();
   const selection = useActiveProjectSelection();
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
+  // Gate on the live merged config — the enable switch writes `okf.enabled`
+  // through ScopedField, which invalidates the merged-config query, so this
+  // flips reactively without a manual reload (the status query's `enabled`
+  // field lags behind that write). Refetch status on the transition so bundle
+  // metadata reflects the new state too.
+  const configEnabled = getAtPath((config ?? {}) as Record<string, unknown>, 'okf.enabled') === true;
+  useEffect(() => {
+    invalidateOkfStatus();
+  }, [configEnabled, invalidateOkfStatus]);
+
   const unresolved = isLoading || isError || !status;
-  const enabled = !unresolved && status.enabled;
+  const enabled = !unresolved && configEnabled;
 
   return (
     <PageContainer>

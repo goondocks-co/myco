@@ -204,6 +204,41 @@ describe('Okf page — disabled state', () => {
     expect(body.scope).toBe('project');
     expect(body.patch).toEqual({ okf: { enabled: true } });
   });
+
+  it('reactively reveals the enabled panels after toggling enable — no reload needed', async () => {
+    // Stateful mock: the enable write flips okf.enabled so the next merged-config
+    // + status fetch reflect the enabled state, exactly as the daemon would.
+    let okfEnabled = false;
+    fetchJsonImpl = async (path: string) => {
+      if (path === '/okf/status') return okfEnabled ? ENABLED_VALID_STATUS : DISABLED_STATUS;
+      if (path === '/config/merged') return { okf: { enabled: okfEnabled } };
+      if (path === '/config/local') return {};
+      return {};
+    };
+    putJsonImpl = async (_path: string, body?: unknown) => {
+      if ((body as { patch?: { okf?: { enabled?: boolean } } })?.patch?.okf?.enabled === true) {
+        okfEnabled = true;
+      }
+      return {};
+    };
+
+    renderPage();
+
+    const toggle = await screen.findByRole('switch');
+    expect(screen.getByText(/OKF is disabled for this project/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /maintain now/i })).toBeNull();
+
+    fireEvent.click(toggle);
+
+    // The config write invalidates the merged-config query; the page re-derives
+    // `enabled` from it and reveals the panels WITHOUT a navigation/reload.
+    // (Without the reactive gate the status query's stale `enabled: false` would
+    // keep the opt-in panel up until a manual reload — this would time out.)
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /maintain now/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/OKF is disabled for this project/i)).toBeNull();
+  });
 });
 
 describe('Okf page — enabled + valid', () => {

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
+import { useCallback } from 'react';
 import { fetchJson, postJson } from '../lib/api';
 import { useActiveProjectSelection, useProjectScopedQueryKey } from './use-project-selection';
 import {
@@ -118,6 +119,20 @@ export function useOkfStatusForSelection(
 export function useOkfStatus(): UseQueryResult<OkfStatusResponse> {
   const selection = useActiveProjectSelection();
   return useOkfStatusForSelection(selection);
+}
+
+/**
+ * Returns a callback that invalidates every project's OKF status query.
+ * The enable toggle writes `okf.enabled` through the scoped-config hook, which
+ * does NOT know about this query — call this on the capability transition so
+ * the page reflects the new enabled state (and refreshed bundle metadata)
+ * without a manual reload. Prefix-matches all `selectionKey`-suffixed keys.
+ */
+export function useInvalidateOkfStatus(): () => void {
+  const qc = useQueryClient();
+  return useCallback(() => {
+    void qc.invalidateQueries({ queryKey: OKF_STATUS_BASE_KEY });
+  }, [qc]);
 }
 
 /* ---------- Mutations ---------- */
