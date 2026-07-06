@@ -65,7 +65,6 @@ describe('supersedeEquivalentResumableRuns (completion-time sweep)', () => {
       taskName: TEST_TASK,
       scope: ALL_PROJECTS_SCOPE,
       dryRun: false,
-      instruction: null,
     });
 
     expect(swept).toBe(1);
@@ -85,28 +84,31 @@ describe('supersedeEquivalentResumableRuns (completion-time sweep)', () => {
       taskName: TEST_TASK,
       scope: ALL_PROJECTS_SCOPE,
       dryRun: false,
-      instruction: null,
     });
 
     expect(swept).toBe(0);
   });
 
-  it('does NOT supersede a resumable run for a DIFFERENT instruction (candidate-scoped work stays isolated)', () => {
-    const stale = insertRun(makeResumableFailed({ id: 'run-candidate-x', instruction: 'candidate X' }));
-    const completing = insertRun(makeRun({ id: 'run-candidate-y', status: 'completed', instruction: 'candidate Y' }));
+  it('PROD SCENARIO: supersedes a resumable run of the same scheduled job even when instructions differ (dynamic per-run instruction, e.g. skill-evolve embeds live skill state)', () => {
+    // Verified live on prod 1.2.12: a completed skill-evolve run retired
+    // none of 3 equivalent-job zombies because every run — completed and
+    // failed alike — carried a different dynamically-built instruction
+    // string. The scheduled-job identity is (agent_id, task, project scope,
+    // dry_run) — instruction body must NOT gate equivalence.
+    const stale = insertRun(makeResumableFailed({ id: 'run-dynamic-instr-zombie', instruction: 'Live skill state snapshot A' }));
+    const completing = insertRun(makeRun({ id: 'run-dynamic-instr-complete', status: 'completed', instruction: 'Live skill state snapshot B (different run, same job)' }));
 
     const swept = supersedeEquivalentResumableRuns(completing.id, {
       agentId: TEST_AGENT_ID,
       taskName: TEST_TASK,
       scope: ALL_PROJECTS_SCOPE,
       dryRun: false,
-      instruction: 'candidate Y',
     });
 
-    expect(swept).toBe(0);
+    expect(swept).toBe(1);
     const after = getRun(stale.id, ALL_PROJECTS_SCOPE)!;
-    expect(after.resumable).toBe(1);
-    expect(after.resume_status).toBe(RESUME_STATUS_READY);
+    expect(after.resumable).toBe(0);
+    expect(after.resume_status).toBe(RESUME_STATUS_SUPERSEDED);
   });
 
   it('supersedes when both the stale run and the completing run have NULL instruction', () => {
@@ -118,7 +120,6 @@ describe('supersedeEquivalentResumableRuns (completion-time sweep)', () => {
       taskName: TEST_TASK,
       scope: ALL_PROJECTS_SCOPE,
       dryRun: false,
-      instruction: null,
     });
 
     expect(swept).toBe(1);
@@ -134,7 +135,6 @@ describe('supersedeEquivalentResumableRuns (completion-time sweep)', () => {
       taskName: TEST_TASK,
       scope: ALL_PROJECTS_SCOPE,
       dryRun: true,
-      instruction: null,
     });
 
     expect(swept).toBe(0);
@@ -151,7 +151,6 @@ describe('supersedeEquivalentResumableRuns (completion-time sweep)', () => {
       taskName: TEST_TASK,
       scope: ALL_PROJECTS_SCOPE,
       dryRun: false,
-      instruction: null,
     });
 
     expect(getRun(otherTaskRun.id, ALL_PROJECTS_SCOPE)!.resumable).toBe(1);
@@ -167,7 +166,6 @@ describe('supersedeEquivalentResumableRuns (completion-time sweep)', () => {
       taskName: TEST_TASK,
       scope: ALL_PROJECTS_SCOPE,
       dryRun: false,
-      instruction: null,
     });
 
     expect(swept).toBe(2);
@@ -202,7 +200,7 @@ describe('sweepStaleSupersededRuns (boot-time backfill)', () => {
     expect(sweepStaleSupersededRuns(ALL_PROJECTS_SCOPE)).toBe(0);
   });
 
-  it('does not sweep a resumable run whose instruction differs from the completed run', () => {
+  it('sweeps a resumable run even when its instruction differs from the completed run (same scheduled job, dynamic per-run instruction)', () => {
     const stale = insertRun(makeResumableFailed({
       id: 'run-boot-instr-x',
       instruction: 'candidate X',
@@ -215,8 +213,8 @@ describe('sweepStaleSupersededRuns (boot-time backfill)', () => {
       completed_at: epochNow() - 50,
     }));
 
-    expect(sweepStaleSupersededRuns(ALL_PROJECTS_SCOPE)).toBe(0);
-    expect(getRun(stale.id, ALL_PROJECTS_SCOPE)!.resumable).toBe(1);
+    expect(sweepStaleSupersededRuns(ALL_PROJECTS_SCOPE)).toBe(1);
+    expect(getRun(stale.id, ALL_PROJECTS_SCOPE)!.resumable).toBe(0);
   });
 
   it('handles an interrupted run (NULL completed_at) via COALESCE fallback to started_at', () => {

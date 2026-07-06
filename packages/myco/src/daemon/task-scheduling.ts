@@ -181,8 +181,8 @@ export interface ScheduledResumeGateInput {
  * Decide whether a resumable run may consume another scheduled resume.
  *
  * - Superseded belt (Part 1 secondary): if a completed equivalent run
- *   (same agent/task/project scope/dry_run/instruction) finished AFTER this
- *   run's own ORIGINAL dispatch (`started_at`), terminal-marks
+ *   (same agent/task/project scope/dry_run — same scheduled job) finished
+ *   AFTER this run's own ORIGINAL dispatch (`started_at`), terminal-marks
  *   (`resumable=0`, `resume_status='superseded'`) and returns 'superseded'
  *   — the caller falls through to a fresh dispatch. Defends legacy rows
  *   written before the completion-time sweep existed, and any race the
@@ -205,7 +205,6 @@ export function gateScheduledResume(input: ScheduledResumeGateInput): 'resume' |
     taskName,
     scope,
     dryRun: run.dry_run,
-    instruction: run.instruction,
   })) {
     applyRunUpdate(run.id, {
       resumable: 0,
