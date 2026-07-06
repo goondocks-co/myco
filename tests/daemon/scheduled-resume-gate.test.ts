@@ -206,10 +206,9 @@ describe('gateScheduledResume', () => {
   describe('supersede belt', () => {
     it('terminal-marks a resumable run as superseded when a newer equivalent run completed, without consuming resume_attempts', () => {
       const run = insertResumableRun('run-stale-legacy', 0);
-      // A newer COMPLETED equivalent run — same agent/task/scope/dry_run/
-      // instruction (both null here), completed after the failed run's
-      // own completed_at. Simulates a legacy row written before the
-      // completion-time sweep existed.
+      // A newer COMPLETED equivalent run — same agent/task/scope/dry_run,
+      // completed after the failed run's own completed_at. Simulates a
+      // legacy row written before the completion-time sweep existed.
       insertRun({
         id: 'run-newer-completed',
         agent_id: TEST_AGENT_ID,
@@ -239,7 +238,7 @@ describe('gateScheduledResume', () => {
       expect(getLatestResumableRunForTask(TEST_AGENT_ID, TEST_TASK, ALL_PROJECTS_SCOPE)).toBeNull();
     });
 
-    it('does NOT supersede when the newer completed run has a DIFFERENT instruction', () => {
+    it('supersedes even when the newer completed run has a DIFFERENT instruction (same scheduled job, dynamic per-run instruction)', () => {
       const run = insertResumableRun('run-instr-scoped', 0);
       applyRunUpdate(run.id, { instruction: 'candidate X' }, ALL_PROJECTS_SCOPE);
       const refreshed = getRun(run.id, ALL_PROJECTS_SCOPE)!;
@@ -254,10 +253,10 @@ describe('gateScheduledResume', () => {
         completed_at: refreshed.completed_at! + 20,
       });
 
-      expect(gate(refreshed)).toBe('resume');
+      expect(gate(refreshed)).toBe('superseded');
       const after = getRun('run-instr-scoped', ALL_PROJECTS_SCOPE)!;
-      expect(after.resumable).toBe(1);
-      expect(after.resume_status).toBe(RESUME_STATUS_READY);
+      expect(after.resumable).toBe(0);
+      expect(after.resume_status).toBe(RESUME_STATUS_SUPERSEDED);
     });
 
     it('does NOT supersede a live run using a completed DRY run as the equivalent', () => {

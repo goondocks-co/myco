@@ -517,19 +517,18 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     }
 
     // Belt for the manual endpoint (Part 1 secondary): a newer completed
-    // equivalent run (same agent/task/project scope/dry_run/instruction)
-    // makes this run's checkpoints stale even though nothing has swept it
-    // yet (race with the completion-time sweep, or a legacy row from
-    // before the sweep existed). Terminal-mark here — same write this
-    // endpoint already owns via the 400 above — and refuse with 409,
-    // naming the superseding run and pointing at "Rerun with same
+    // equivalent run (same agent/task/project scope/dry_run — same
+    // scheduled job) makes this run's checkpoints stale even though
+    // nothing has swept it yet (race with the completion-time sweep, or a
+    // legacy row from before the sweep existed). Terminal-mark here — same
+    // write this endpoint already owns via the 400 above — and refuse with
+    // 409, naming the superseding run and pointing at "Rerun with same
     // settings" as the intent-preserving path (RunDetail.tsx).
     const superseding = findNewerCompletedEquivalentRun(run, {
       agentId: run.agent_id,
       taskName: run.task ?? '',
       scope,
       dryRun: run.dry_run,
-      instruction: run.instruction,
     });
     if (superseding) {
       applyRunUpdate(run.id, {

@@ -702,18 +702,18 @@ export async function runAgent(
 
     // Part 1 (supersede) primary enforcement: this run just completed, so
     // any OTHER resumable failed run for the same (agent, task, project
-    // scope, dry_run, instruction) is stale by definition — its checkpoints,
-    // gate verdicts, and watermarks are superseded by this completion.
-    // Terminal-mark it now rather than let the scheduler re-admit it. The
-    // instruction/dry_run pinning in the equivalence key is load-bearing:
-    // without it, this completion would wrongly sweep an unrelated
-    // instruction-scoped failed run (see supersedeEquivalentResumableRuns).
+    // scope, dry_run) — the same scheduled job — is stale by definition —
+    // its checkpoints, gate verdicts, and watermarks are superseded by this
+    // completion. Terminal-mark it now rather than let the scheduler
+    // re-admit it. `instruction` is intentionally excluded from the
+    // equivalence key (see appendSupersedeEquivalenceCondition): tasks like
+    // skill-evolve build their instruction dynamically per run, so keying
+    // on it would prevent this sweep from ever retiring that job's zombies.
     supersedeEquivalentResumableRuns(runId, {
       agentId,
       taskName: config.taskName,
       scope,
       dryRun: options?.dryRun ?? false,
-      instruction: options?.instruction ?? null,
     });
 
     return {
