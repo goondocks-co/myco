@@ -3,15 +3,16 @@
  * tests/ui/capability-gate-no-hardcode.test.ts).
  *
  * Two layers under packages/myco/src/okf/ (Phase 1's projectors/*.ts layer was
- * deleted in Task 0.1; Phase 2's synthesis layer will need its own boundary
- * guard when it lands):
+ * deleted in Task 0.1; Task 2.1 replaced gather.ts with synthesis/sources.ts
+ * as the synthesis layer's own boundary-guarded member):
  *  - Pure format core (types, frontmatter, paths, serialize, indexes, validate,
  *    privacy, errors, output-root, publish-eligibility): no db/daemon/config/
  *    vault value imports. types.ts may import the ProjectScope TYPE.
- *  - Capability layer (bundle.ts, gather.ts): may use db/config/vault — that is
- *    their job — but must NEVER import SymbiontInstaller, the daemon, the
- *    scheduler, AGENTS.md machinery, or Cortex modules. OkfBundle is the single
- *    writer of bundle files and owns none of discovery/scheduling.
+ *  - Capability layer (bundle.ts, synthesis/sources.ts): may use db/config/
+ *    vault — that is their job — but must NEVER import SymbiontInstaller, the
+ *    daemon, the scheduler, AGENTS.md machinery, or Cortex modules. OkfBundle
+ *    is the single writer of bundle files and owns none of discovery/
+ *    scheduling; gatherSources only reads.
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -32,7 +33,7 @@ const PURE_CORE = [
   'output-root.ts',
   'publish-eligibility.ts',
 ];
-const CAPABILITY_LAYER = ['bundle.ts', 'gather.ts'];
+const CAPABILITY_LAYER = ['bundle.ts', 'synthesis/sources.ts'];
 
 const DB_CONFIG_VAULT: RegExp[] = [
   /['"]@myco\/(?:db|daemon|config|vault)(?:\/|['"])/,

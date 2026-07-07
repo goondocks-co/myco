@@ -1,4 +1,4 @@
-import type { OkfGatherResult } from '@myco/okf/gather.js';
+import type { OkfGatherResult } from '@myco/okf/bundle.js';
 import type { OkfDocument } from '@myco/okf/types.js';
 
 /**

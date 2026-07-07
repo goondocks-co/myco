@@ -16,7 +16,7 @@ import { loadMergedConfig } from '@myco/config/loader.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle } from '@myco/okf/bundle.js';
 import { OkfError } from '@myco/okf/errors.js';
-import { gather } from '@myco/okf/gather.js';
+import { gatherSources } from '@myco/okf/synthesis/sources.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { OKF_REPORT_ACTION } from '../instruction-builders.js';
 import { OKF_TOOL_NAMES } from '../tool-names.js';
@@ -94,9 +94,15 @@ export function createOkfTools(deps: VaultToolDeps) {
     { annotations: { readOnlyHint: true } },
   );
 
+  // Phase 2.3 replaces this tool with `okf_read_sources` (the synthesis
+  // harness's real source-reading tool, backed by the same `gatherSources`).
+  // Kept as a thin adapter in the meantime so it still compiles and returns a
+  // sensible snapshot rather than the old deterministic-projection change brief
+  // (inputs_hash / existing-concept-file counts), which no longer applies now
+  // that vault knowledge is source material, not a projected bundle section.
   const okfListChanges = tool(
     'okf_list_changes',
-    'Compute a change brief: whether the deterministic bundle inputs (spores, canopy, existing agent concepts) have changed since the last published inputs_hash, and the current concept list. Read-only — never writes.',
+    'Read a snapshot of OKF source material: spore/decision/canopy counts and the current concept list. Read-only — never writes.',
     {},
     async () => {
       const bundle = buildBundle(deps);
@@ -107,38 +113,19 @@ export function createOkfTools(deps: VaultToolDeps) {
         const config = loadMergedConfig(deps.vaultDir!, { groveId: deps.requestContext.groveId ?? undefined });
         const scope = projectScopeFromVaultToolDeps(deps);
         const machineId = deps.machineId ?? deps.requestContext.machineId;
-        const configured = new Set(config.okf.maintain.include);
-        const statuses = config.okf.maintain.include_status;
-        const sporeStatus = statuses.length === 1 && statuses[0] === 'active' ? 'active' as const : 'all' as const;
-        const gathered = gather(
-          {
-            projectRoot: deps.projectRoot,
-            scope,
-            projectId: projectId ?? '',
-            machineId,
-            config,
-            outputRoot: status.outputRoot,
-          },
-          {
-            include: {
-              spores: configured.has('spores'),
-              canopy: configured.has('canopy'),
-              concepts: configured.has('concepts'),
-              guides: configured.has('guides'),
-            },
-            sporeStatus,
-            includeUndescribedCanopy: config.okf.maintain.include_undescribed_canopy,
-          },
-        );
+        const gathered = gatherSources({
+          projectRoot: deps.projectRoot,
+          scope,
+          projectId: projectId ?? '',
+          machineId,
+          config,
+          outputRoot: status.outputRoot,
+        });
         return textResult({
-          inputsChanged: status.inputsHash !== gathered.inputsHash,
-          priorInputsHash: status.inputsHash,
-          currentInputsHash: gathered.inputsHash,
-          sporeCount: gathered.spores.length,
-          canopyCount: gathered.canopyEntries.length,
-          existingAgentConceptCount: gathered.conceptFiles.length,
+          sporeCount: gathered.vault.spores.length,
+          decisionCount: gathered.vault.decisions.length,
+          canopyCount: gathered.vault.canopyEntries.length,
           concepts: bundle.listConcepts(),
-          warnings: gathered.warnings,
         });
       } catch (err) {
         return okfErrorResult(err);

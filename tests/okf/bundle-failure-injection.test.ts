@@ -7,9 +7,8 @@ import { insertSpore } from '@myco/db/queries/spores.js';
 import { createProjectId, projectScope } from '@myco/grove/ids.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
-import { OkfBundle, type OkfBundleDeps, type OkfFsOps } from '@myco/okf/bundle.js';
+import { OkfBundle, type OkfBundleDeps, type OkfFsOps, type OkfGatherResult } from '@myco/okf/bundle.js';
 import type { OkfBundleWriteInput, OkfDocument } from '@myco/okf/types.js';
-import type { OkfGatherResult } from '@myco/okf/gather.js';
 import { fixtureRenderDocuments, invalidFixtureRenderDocuments } from '../helpers/okf-fixture.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
