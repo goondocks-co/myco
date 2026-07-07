@@ -43,6 +43,7 @@ import { loadMergedConfig } from '@myco/config/loader.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle } from '@myco/okf/bundle.js';
+import { readOwnership } from '@myco/okf/ownership.js';
 import { readPlan } from '@myco/okf/synthesis/plan.js';
 import { okfSynthesizeDue, computeOkfProbeFingerprint } from '@myco/okf/schedule.js';
 import { createOkfTools } from '@myco/agent/tools/okf-tools.js';
@@ -288,6 +289,229 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
     const bundle = publishedBundle();
     const next = await bundle.beginStagedGeneration({ mode: 'published', generatedByRunId: 'run-after-abort' });
     next.abort();
+  });
+
+  // The hand-edited page's body is fully REPLACED (not appended-to) by the
+  // human, so a "good" refine that carries `HAND_EDIT_ADDENDUM` forward
+  // verbatim is a clean containment check against the whole current body —
+  // no ambiguity about how much of the original Myco text needs to survive.
+  const HAND_EDIT_ADDENDUM = 'Human addendum: alpha is also useful for onboarding new teammates.';
+
+  function handEditedAlphaRaw(): string {
+    return [
+      '---',
+      'type: concept',
+      'title: Alpha',
+      'description: Hand-edited by a person.',
+      "timestamp: '2026-07-01T00:00:00.000Z'",
+      '---',
+      '',
+      HAND_EDIT_ADDENDUM,
+      '',
+    ].join('\n');
+  }
+
+  it('refine-not-clobber: a foreign page is rejected untouched, a hand-edited Myco page is augmented, and siblings link via okf_list_pages', async () => {
+    // --- Seed a published bundle with one Myco page. ---
+    const seedBundle = publishedBundle();
+    const seed = await seedBundle.beginStagedGeneration({ mode: 'published' });
+    seed.stageDocument({
+      path: 'concepts/alpha.md',
+      frontmatter: { type: 'concept', title: 'Alpha', description: 'Original alpha.', timestamp: '2026-07-01T00:00:00.000Z' },
+      body: 'Original Myco-synthesized body for alpha.',
+    });
+    await seed.finalize({ inputsHash: 'seed-1' });
+
+    const outputRoot = path.join(projectRoot, 'okf');
+    // A human replaces alpha's content entirely — the fingerprint no longer
+    // matches ownership, so it reads as hand-edited.
+    fs.writeFileSync(path.join(outputRoot, 'concepts', 'alpha.md'), handEditedAlphaRaw());
+    // A human drops a brand-new page directly into the bundle — Myco never
+    // published it, so it's absent from ownership entirely.
+    fs.mkdirSync(path.join(outputRoot, 'concepts'), { recursive: true });
+    fs.writeFileSync(
+      path.join(outputRoot, 'concepts', 'human-notes.md'),
+      "---\ntype: note\ntitle: Human Notes\ndescription: Written by a person.\ntimestamp: '2026-07-02T00:00:00.000Z'\n---\n\nThese are notes a human wrote directly; Myco never published this page.\n",
+    );
+
+    // --- This run's plan targets all three: the hand-edited page (refresh),
+    // the foreign page (deliberately, to exercise the reject guard), and a
+    // brand-new sibling page. A dedicated runId keeps this test's staged
+    // session isolated from its siblings (mirrors the "aborts" test above) —
+    // load-bearing if an assertion throws before finalize drops the session.
+    const runId = 'run-okf-synth-refine';
+    const refineDeps: VaultToolDeps = { ...deps, runId };
+    const tools = createOkfTools(refineDeps);
+    const writePlan = tools.find((t) => t.name === 'okf_write_plan')!;
+    const planResult = await invoke(writePlan, {
+      pages: [
+        { path: 'concepts/alpha', type: 'concept', title: 'Alpha', rationale: 'Refresh with new material.', sourceRefs: ['decision-1'] },
+        { path: 'concepts/human-notes', type: 'note', title: 'Human Notes', rationale: 'Plan targets a foreign page.', sourceRefs: [] },
+        { path: 'concepts/beta', type: 'concept', title: 'Beta', rationale: 'New sibling page.', sourceRefs: ['decision-1'] },
+      ],
+    });
+    expect(planResult.ok).toBe(true);
+
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: mock(async (input: any) => {
+        const sink = input.toolSurface.tools.find((t: any) => t.name === 'okf_write_page');
+        const itemPath = input.prompt.match(/Path: (\S+)/)![1];
+
+        if (itemPath === 'concepts/alpha') {
+          // Read current content first (the item prompt's instruction), then
+          // refine it forward — the human's addendum survives verbatim.
+          const readPage = input.toolSurface.tools.find((t: any) => t.name === 'okf_read_page');
+          const current = await invoke(readPage, { path: itemPath });
+          expect(current.page.raw).toContain(HAND_EDIT_ADDENDUM);
+          await sink.handler({
+            description: 'Refreshed alpha.',
+            body: `Refreshed synthesis for alpha with fresh material.\n\n${HAND_EDIT_ADDENDUM}`,
+          });
+        } else if (itemPath === 'concepts/human-notes') {
+          // A refine that ignores the foreign page entirely — the tool must
+          // reject this outright regardless of what content is proposed.
+          await sink.handler({ description: 'Overwritten notes.', body: 'Synthesis replacing the human page.' });
+        } else {
+          // Beta: weave in a sibling link discovered via okf_list_pages.
+          const listPages = input.toolSurface.tools.find((t: any) => t.name === 'okf_list_pages');
+          const listed = await invoke(listPages, {});
+          expect(listed.pages.some((p: any) => p.path === 'concepts/alpha.md')).toBe(true);
+          await sink.handler({
+            description: 'New sibling page.',
+            body: 'Beta covers the second concept. See also [Alpha](alpha.md) for related background.',
+          });
+        }
+
+        return { finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 }, sessionRef: undefined };
+      }),
+    };
+
+    const mapResult = await executeMapPhase({
+      phase: synthesizePhase,
+      allTools: tools as any,
+      harness: stubRuntime as any,
+      params: {},
+      systemPrompt: 'sys',
+      runId,
+      agentId: refineDeps.agentId,
+      projectRoot,
+      vaultDir,
+      probeAvailable: async () => true,
+    });
+
+    // alpha (augmented) + beta (new) staged; human-notes rejected untouched.
+    expect(mapResult.itemCount).toBe(3);
+    expect(mapResult.written).toBe(2);
+    expect(mapResult.skipped).toBe(1);
+    expect(mapResult.skipReasons.not_myco_owned).toBe(1);
+
+    await finalizeOkfSynthesize({ agentId: refineDeps.agentId, runId, requestContext: ctx, vaultDir });
+
+    const bundle = publishedBundle();
+    const alpha = bundle.readPage('concepts/alpha.md');
+    // Augmented: both the fresh synthesis AND the human's current content
+    // survive — no clobber. The refine already carried the addendum forward,
+    // so the tool's append fallback never had to engage (no marker present).
+    expect(alpha?.raw).toContain('Refreshed synthesis for alpha with fresh material.');
+    expect(alpha?.raw).toContain(HAND_EDIT_ADDENDUM);
+    expect(alpha?.raw).not.toContain('okf:preserved-hand-edit');
+
+    const beta = bundle.readPage('concepts/beta.md');
+    expect(beta?.raw).toContain('[Alpha](alpha.md)');
+
+    // The foreign page was never staged (the tool rejected the write before
+    // touching anything) — full-bundle republish drops any page outside this
+    // run's plan, Myco-owned or not, which is a separate, pre-existing
+    // property of staged-generation publish, not something this guard papers
+    // over. What this test guarantees is narrower and load-bearing: the write
+    // itself never overwrote the human's page with synthesized content.
+    expect(bundle.listPages().map((p) => p.path)).not.toContain('concepts/human-notes.md');
+  });
+
+  it('okf_write_page falls back to appending the current content when a refine drops it entirely (structural backstop)', async () => {
+    const seedBundle = publishedBundle();
+    const seed = await seedBundle.beginStagedGeneration({ mode: 'published' });
+    seed.stageDocument({
+      path: 'concepts/alpha.md',
+      frontmatter: { type: 'concept', title: 'Alpha', description: 'Original alpha.', timestamp: '2026-07-01T00:00:00.000Z' },
+      body: 'Original Myco-synthesized body for alpha.',
+    });
+    await seed.finalize({ inputsHash: 'seed-1' });
+
+    const outputRoot = path.join(projectRoot, 'okf');
+    fs.writeFileSync(path.join(outputRoot, 'concepts', 'alpha.md'), handEditedAlphaRaw());
+
+    // Call okf_write_page directly (no map phase) with a body that does NOT
+    // mention the human's addendum at all — a blind-clobber attempt. A
+    // dedicated runId keeps this test's staged session isolated from its
+    // siblings (mirrors the "aborts" test above).
+    const runId = 'run-okf-synth-augment-fallback';
+    const fallbackDeps: VaultToolDeps = { ...deps, runId };
+    const tools = createOkfTools(fallbackDeps);
+    const writePage = tools.find((t) => t.name === 'okf_write_page')!;
+    const result = await invoke(writePage, {
+      path: 'concepts/alpha', type: 'concept', title: 'Alpha',
+      description: 'Blind refresh.', body: 'Completely new content that ignores the current page.',
+    });
+    expect(result.ok).toBe(true);
+
+    await finalizeOkfSynthesize({ agentId: fallbackDeps.agentId, runId, requestContext: ctx, vaultDir });
+
+    const alpha = publishedBundle().readPage('concepts/alpha.md');
+    // The tool's structural fallback engaged: the new content is staged, but
+    // the human's current content is appended verbatim under the marker — the
+    // invariant holds even though the caller didn't read-then-refine properly.
+    expect(alpha?.raw).toContain('Completely new content that ignores the current page.');
+    expect(alpha?.raw).toContain('okf:preserved-hand-edit');
+    expect(alpha?.raw).toContain(HAND_EDIT_ADDENDUM);
+  });
+
+  it('a page exists but ownership.json is entirely absent (cold-start) — the write is adopted and reconciled, not rejected as foreign', async () => {
+    // Seed a published bundle the normal way (this DOES write ownership.json
+    // via Task 3.1's finalize hook) ...
+    const seedBundle = publishedBundle();
+    const seed = await seedBundle.beginStagedGeneration({ mode: 'published' });
+    seed.stageDocument({
+      path: 'concepts/alpha.md',
+      frontmatter: { type: 'concept', title: 'Alpha', description: 'Original alpha.', timestamp: '2026-07-01T00:00:00.000Z' },
+      body: 'Original Myco-synthesized body for alpha.',
+    });
+    await seed.finalize({ inputsHash: 'seed-1' });
+
+    // ... then delete it, simulating a bundle published before ownership
+    // tracking existed at all (this repo's own pre-3.1 bundle, live right now).
+    const ownershipPath = new ProjectVault(projectRoot).okfOwnershipPath();
+    expect(fs.existsSync(ownershipPath)).toBe(true);
+    fs.rmSync(ownershipPath);
+
+    const runId = 'run-okf-synth-cold-start';
+    const coldStartDeps: VaultToolDeps = { ...deps, runId };
+    const tools = createOkfTools(coldStartDeps);
+    const writePage = tools.find((t) => t.name === 'okf_write_page')!;
+
+    const result = await invoke(writePage, {
+      path: 'concepts/alpha', type: 'concept', title: 'Alpha',
+      description: 'Refreshed alpha.', body: 'Refreshed content for alpha, a normal update.',
+    });
+    // Adopted, not rejected as foreign — a bundle-generation-1 page with no
+    // ownership record is Myco's own past output, not a human's page.
+    expect(result.ok).toBe(true);
+
+    await finalizeOkfSynthesize({ agentId: coldStartDeps.agentId, runId, requestContext: ctx, vaultDir });
+
+    // Ownership was backfilled to the republished generation.
+    const ownership = readOwnership(new ProjectVault(projectRoot));
+    expect(ownership?.bundleGeneration).toBe(2);
+    expect(ownership?.pages['concepts/alpha.md']).toBeDefined();
+
+    // Adopted as clean (not hand-edited): the refresh replaced the content
+    // outright — no preserved-hand-edit marker, because reconciliation used
+    // the current on-disk content itself as the baseline fingerprint.
+    const alpha = publishedBundle().readPage('concepts/alpha.md');
+    expect(alpha?.raw).toContain('Refreshed content for alpha, a normal update.');
+    expect(alpha?.raw).not.toContain('okf:preserved-hand-edit');
   });
 });
 

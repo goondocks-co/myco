@@ -374,7 +374,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "purpose": "Synthesize one OKF page per planned entry and stage it into the run's single staged generation.",
         "mode": "map",
-        "perItemMaxTurns": 4,
+        "perItemMaxTurns": 5,
         "perItemTimeoutSeconds": 120,
         "onItemError": "skip",
         "source": {
@@ -383,10 +383,11 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "itemsPath": "pages"
         },
         "item": {
-          "prompt": "Synthesize this one OKF wiki page and stage it by calling\n`okf_write_page`. The harness pins path, type, and title from the plan —\nyou supply `description` (a one-line summary) and `body` (the full page\nmarkdown, no frontmatter). You MUST emit the tool call; a text-only\nresponse is discarded.\n\nRead the source material this page draws on with `okf_read_sources`, and\n`okf_read_page` for any published page you are refreshing. Write clear,\naccurate prose grounded in that material — do not invent facts. Use\nbundle-relative links to sibling pages where they help.\n\nPage: {{ item.title }}\nPath: {{ item.path }}\nType: {{ item.type }}\nRationale: {{ item.rationale }}\nSource refs: {{ item.sourceRefs }}\nOpen questions: {{ item.openQuestions }}\n",
+          "prompt": "Synthesize this one OKF wiki page and stage it by calling\n`okf_write_page`. The harness pins path, type, and title from the plan —\nyou supply `description` (a one-line summary) and `body` (the full page\nmarkdown, no frontmatter). You MUST emit the tool call; a text-only\nresponse is discarded.\n\nRead the source material this page draws on with `okf_read_sources`. If\na page already exists at this path, call `okf_read_page` FIRST and\nwrite a REFINED body that carries its current content forward — never\none that silently drops what's there. (`okf_write_page` preserves a\nhand-edited page's current content even if your refine misses it, but\nwrite the refinement properly rather than relying on that fallback.) If\nthis path isn't one Myco published, the write may be rejected — that's\nexpected, not an error to retry.\n\nCall `okf_list_pages` to see this run's sibling pages and weave in a\nfew bundle-relative links (e.g. `[Beta](../concepts/beta.md)`) where\nthey genuinely help a reader. A link that doesn't resolve is tolerated\n(OKF forgives a broken body link) and every directory index is\nregenerated deterministically after this phase — don't stall over one\nlink you can't confirm.\n\nWrite clear, accurate prose grounded in the source material — do not\ninvent facts.\n\nPage: {{ item.title }}\nPath: {{ item.path }}\nType: {{ item.type }}\nRationale: {{ item.rationale }}\nSource refs: {{ item.sourceRefs }}\nOpen questions: {{ item.openQuestions }}\n",
           "readTools": [
             "okf_read_sources",
-            "okf_read_page"
+            "okf_read_page",
+            "okf_list_pages"
           ]
         },
         "sink": {

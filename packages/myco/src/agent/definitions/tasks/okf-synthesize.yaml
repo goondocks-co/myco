@@ -10,7 +10,9 @@
 #              it via okf_write_plan (.myco/okf/state/plan.json).
 #   synthesize (map) → one page per planned entry. The map SOURCE reads the
 #              persisted plan back (okf_list_planned_pages); the map SINK stages
-#              each page (okf_write_page) into ONE staged generation.
+#              each page (okf_write_page) into ONE staged generation. The item
+#              surface also carries okf_list_pages (sibling awareness, for
+#              cross-links) and okf_read_page (read-current-before-refine).
 #
 # THE PLAN→MAP HANDOFF: a map-phase source is called by harness code with only
 # {params} — it cannot receive the plan phase's in-memory output. The plan
@@ -18,6 +20,13 @@
 # okf_list_planned_pages reads it back (the canopy-describe persisted-state
 # pattern). The whole run's staged pages publish atomically ONCE, in the
 # executor's finalizeOkfSynthesize success hook, under a single lock.
+#
+# REFINE-NOT-CLOBBER (Task 3.2): okf_write_page never touches a page that's
+# currently published but not in Myco's ownership manifest (human-authored) —
+# the write is rejected. A page Myco owns but a human has since hand-edited is
+# augmented, not overwritten — the tool keeps the human's current content
+# either because the model's refine already carries it forward, or (fallback)
+# by appending it verbatim. See okf/ownership.ts's isHandEdited.
 #
 # Schedule is opt-in (enabled: false); flip per project via myco.yaml under
 # `agent.tasks['okf-synthesize'].schedule.enabled`. The okf capability gates it.
@@ -123,7 +132,10 @@ phases:
     # skip (not abort): one page that fails to synthesize should not sink the
     # rest of the plan; item failures aren't necessarily systemic.
     onItemError: skip
-    perItemMaxTurns: 4
+    # 5: three read tools (sources / current page / siblings) plus the write —
+    # bumped from 4 once okf_list_pages joined the item surface for sibling
+    # links (Task 3.2).
+    perItemMaxTurns: 5
     # 120s/item: cloud reasoning writing a full page body from source material
     # takes longer than a one-sentence canopy describe.
     perItemTimeoutSeconds: 120
@@ -145,6 +157,7 @@ phases:
       readTools:
         - okf_read_sources
         - okf_read_page
+        - okf_list_pages
       prompt: |
         Synthesize this one OKF wiki page and stage it by calling
         `okf_write_page`. The harness pins path, type, and title from the plan —
@@ -152,10 +165,24 @@ phases:
         markdown, no frontmatter). You MUST emit the tool call; a text-only
         response is discarded.
 
-        Read the source material this page draws on with `okf_read_sources`, and
-        `okf_read_page` for any published page you are refreshing. Write clear,
-        accurate prose grounded in that material — do not invent facts. Use
-        bundle-relative links to sibling pages where they help.
+        Read the source material this page draws on with `okf_read_sources`. If
+        a page already exists at this path, call `okf_read_page` FIRST and
+        write a REFINED body that carries its current content forward — never
+        one that silently drops what's there. (`okf_write_page` preserves a
+        hand-edited page's current content even if your refine misses it, but
+        write the refinement properly rather than relying on that fallback.) If
+        this path isn't one Myco published, the write may be rejected — that's
+        expected, not an error to retry.
+
+        Call `okf_list_pages` to see this run's sibling pages and weave in a
+        few bundle-relative links (e.g. `[Beta](../concepts/beta.md)`) where
+        they genuinely help a reader. A link that doesn't resolve is tolerated
+        (OKF forgives a broken body link) and every directory index is
+        regenerated deterministically after this phase — don't stall over one
+        link you can't confirm.
+
+        Write clear, accurate prose grounded in the source material — do not
+        invent facts.
 
         Page: {{ item.title }}
         Path: {{ item.path }}

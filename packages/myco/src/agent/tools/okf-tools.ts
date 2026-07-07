@@ -31,12 +31,14 @@ import { OkfBundle } from '@myco/okf/bundle.js';
 import { OkfError } from '@myco/okf/errors.js';
 import { gatherSources } from '@myco/okf/synthesis/sources.js';
 import { validateWikiPlan, writePlan, readPlan, type WikiPlan } from '@myco/okf/synthesis/plan.js';
+import { isHandEdited } from '@myco/okf/ownership.js';
 import { renderOkfDocument } from '@myco/okf/serialize.js';
+import { parseConceptDoc } from '@myco/okf/frontmatter.js';
 import type { OkfDocument, OkfFrontmatter } from '@myco/okf/types.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { OKF_REPORT_ACTION } from '../instruction-builders.js';
 import { OKF_TOOL_NAMES } from '../tool-names.js';
-import { openOkfSynthesisSession } from './okf-staging.js';
+import { openOkfSynthesisSession, hasOkfSynthesisSession } from './okf-staging.js';
 import {
   textResult,
   projectScopeFromVaultToolDeps,
@@ -104,6 +106,32 @@ function sanitizeFrontmatterLine(text: string): string {
     out += code < 0x20 || code === 0x7f ? ' ' : ch;
   }
   return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Refine-not-clobber's structural half: `okf_write_page`'s item prompt asks the
+ * model to read a hand-edited page first (`okf_read_page`) and write a refined
+ * body that carries the human's current content forward — but the tool cannot
+ * trust that happened. If `refinedBody` already contains the current page's
+ * body verbatim, the refine worked; stage it as-is. If it doesn't (the
+ * synthesis missed it, paraphrased it away, or ignored it entirely), append the
+ * current body verbatim under a marker so it is never silently dropped — the
+ * deterministic backstop behind the prompt-driven refine.
+ */
+function augmentPreservingHandEdit(existingRaw: string, refinedBody: string): string {
+  let existingBody: string;
+  try {
+    existingBody = parseConceptDoc(existingRaw).body;
+  } catch {
+    // A hand edit can strip the frontmatter block entirely; fall back to the
+    // raw content itself so there's still something to preserve.
+    existingBody = existingRaw;
+  }
+  const trimmed = existingBody.trim();
+  if (trimmed === '' || refinedBody.replace(/\r\n/g, '\n').includes(trimmed.replace(/\r\n/g, '\n'))) {
+    return refinedBody;
+  }
+  return `${refinedBody}\n\n<!-- okf:preserved-hand-edit -->\n\n${trimmed}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +277,7 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   const okfWritePage = tool(
     'okf_write_page',
-    'Synthesize one OKF page and stage it into this run\'s single staging tree. The map-synthesize phase\'s SINK — the harness pins path/type/title from the plan; you supply description and body. Returns {ok:true} on stage, {ok:false, reason} when the document is rejected (reserved filename, unsafe path). The whole run\'s staged pages publish atomically once, after the map phase.',
+    'Synthesize one OKF page and stage it into this run\'s single staging tree. The map-synthesize phase\'s SINK — the harness pins path/type/title from the plan; you supply description and body. Refine-not-clobber: a page currently published at this path that Myco never fingerprinted (a human-authored page) is REJECTED untouched — {ok:false, reason:"not_myco_owned"}. A page Myco published that a human has since hand-edited is AUGMENTED, not overwritten — your body is staged as-is if it already carries the human\'s current content forward (read it first with okf_read_page), otherwise the current content is appended so it is never silently lost. Returns {ok:true} on stage, {ok:false, reason} when the document is rejected (reserved filename, unsafe path, not Myco-owned). The whole run\'s staged pages publish atomically once, after the map phase.',
     {
       path: z.string().describe('Bundle-relative page path (pinned from the plan).'),
       type: z.string().describe('OKF document type (pinned from the plan).'),
@@ -272,15 +300,48 @@ export function createOkfTools(deps: VaultToolDeps) {
           timestamp: nowIso(),
           ...(args.tags && args.tags.length > 0 ? { tags: args.tags } : {}),
         };
-        const doc: OkfDocument = { path: docPath, frontmatter, body: args.body };
+
         // Dry-run: validate the render (throws on an invalid path/reserved name)
-        // WITHOUT opening a lock or staging. A dry-run run never reaches
-        // finalizeOkfSynthesize (the success hook early-returns on dryRun), so
-        // opening a session here would leak the lock.
+        // WITHOUT touching ownership, opening a lock, or staging. A dry-run run
+        // never reaches finalizeOkfSynthesize (the success hook early-returns on
+        // dryRun), so opening a session — or the lock reconcileOwnership below
+        // takes — here would leak the lock.
         if (deps.dryRun) {
-          renderOkfDocument(doc);
+          const previewDoc: OkfDocument = { path: docPath, frontmatter, body: args.body };
+          renderOkfDocument(previewDoc);
           return textResult({ ok: true, path: docPath, dryRun: true });
         }
+
+        // Refine-not-clobber: a page currently published at docPath that isn't
+        // in ownership was never Myco's to begin with (human-authored) — never
+        // touch it. A page that IS in ownership but no longer matches its
+        // fingerprint was hand-edited by a human after Myco published it —
+        // augment instead of overwriting. A path with no current page (new, or
+        // never published) writes normally; Myco owns it going forward.
+        //
+        // reconcileOwnership() (not a bare read) is load-bearing here: a bundle
+        // published before ownership tracking existed — or one whose ownership
+        // write never landed (crash) — has a missing or stale ownership.json,
+        // which would otherwise read as "every existing page is foreign" and
+        // reject a plain refresh forever. But it takes the OKF lock, and a
+        // staged session already open for THIS run (a prior item in this same
+        // run already wrote successfully) holds that same lock for its entire
+        // lifetime — re-acquiring it here would block until the lock timeout.
+        // Once a session is open, ownership was already reconciled when IT
+        // opened, so a lock-free peek is both safe and sufficient.
+        const ownership = hasOkfSynthesisSession(runId)
+          ? bundle.currentOwnership()
+          : await bundle.reconcileOwnership();
+        const existing = bundle.readPage(docPath);
+        let body = args.body;
+        if (existing && !ownership?.pages[docPath]) {
+          return textResult({ ok: false, reason: 'not_myco_owned', path: docPath });
+        }
+        if (existing && isHandEdited(docPath, existing.raw, ownership)) {
+          body = augmentPreservingHandEdit(existing.raw, args.body);
+        }
+
+        const doc: OkfDocument = { path: docPath, frontmatter, body };
         const staged = await openOkfSynthesisSession(runId, bundle);
         staged.stageDocument(doc);
         return textResult({ ok: true, path: docPath });

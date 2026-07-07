@@ -532,6 +532,57 @@ export class OkfBundle {
     return this.openStagedSession(input);
   }
 
+  /**
+   * Public entry: ensure `ownership.json` reflects the currently-published
+   * marker's generation, backfilling it from the on-disk tree when it's
+   * missing or stale. Reuses {@link reconcileOwnershipForRoot} — the SAME
+   * signal (`!existing || existing.bundleGeneration !== markerGen`) covers
+   * both crash recovery (the ownership write for a completed publish never
+   * landed) AND cold-start (a bundle published before ownership tracking
+   * existed at all, so no `ownership.json` was ever written). A cold-start
+   * backfill necessarily ADOPTS whatever is currently on disk as the
+   * Myco-owned baseline: there is no prior fingerprint to compare against, so
+   * a hand-edit made before ownership existed can't be distinguished from
+   * Myco's own output.
+   *
+   * Callers that gate a per-page write on ownership (`okf_write_page`) MUST
+   * call this first — reading `readOkfOwnership()` directly, without
+   * reconciling, would see a missing/stale file as "every page is foreign"
+   * on any bundle whose ownership tracking hasn't caught up yet.
+   *
+   * Returns the reconciled ownership (null when nothing is published at this
+   * root yet). Cheap once ownership already matches the marker generation —
+   * the underlying reconcile no-ops and this is just a lock round-trip.
+   */
+  async reconcileOwnership(): Promise<OkfOwnership | null> {
+    if (!capabilityEnabled(this.deps.config, 'okf')) {
+      throw new OkfError('okf_disabled', 'OKF capability is disabled for this project');
+    }
+    const outputRoot = this.resolve({ mode: 'published' }).absPath;
+    const lock = await this.acquireLock();
+    try {
+      this.reconcileOwnershipForRoot(outputRoot, []);
+      return this.deps.vault.readOkfOwnership();
+    } finally {
+      this.releaseLock(lock);
+    }
+  }
+
+  /**
+   * Read the current `ownership.json` WITHOUT reconciling it — a lock-free
+   * peek. A `StagedGeneration` this same bundle's `beginStagedGeneration`
+   * opened holds the OKF lock for its ENTIRE lifetime (open → finalize/abort,
+   * not per-write) — calling {@link reconcileOwnership} while such a session
+   * is open for the SAME run would try to re-acquire a lock this process
+   * already holds and block until the lock timeout. A caller that knows a
+   * session for this run is already open (it reconciled ownership when IT
+   * opened, and nothing else can publish concurrently while it holds the
+   * lock) should use this instead.
+   */
+  currentOwnership(): OkfOwnership | null {
+    return this.deps.vault.readOkfOwnership();
+  }
+
   private async openStagedSession(input: BeginStagedGenerationInput): Promise<StagedSession> {
     const resolved = this.resolve({
       mode: input.mode,
