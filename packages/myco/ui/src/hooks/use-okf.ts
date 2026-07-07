@@ -56,8 +56,7 @@ export interface OkfStatusResponse {
   generatedAt: string | null;
   lastResult: string | null;
   byType: Record<string, number> | null;
-  conceptCount: number | null;
-  stale: boolean;
+  pageCount: number | null;
   publishAcknowledged: boolean;
   /** Findings that blocked the last synthesis publish, persisted to the manifest — the source `publishEligibility.ok` folds in so a blocked run stays visible on a plain reload. */
   pendingFindings: OkfPendingFinding[];

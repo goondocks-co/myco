@@ -95,7 +95,7 @@ describe('OkfBundle.beginStagedGeneration', () => {
       // Published bundle passes the OKF document-model strict validator from disk.
       expect(validateBundleTree(outputRoot, 'strict').ok).toBe(true);
       expect(result.unchanged).toBe(false);
-      expect(result.conceptCount).toBe(2);
+      expect(result.pageCount).toBe(2);
 
       // Root index carries NO frontmatter (OKF indexes are plain markdown).
       const rootIndex = fs.readFileSync(path.join(outputRoot, 'index.md'), 'utf8');
@@ -211,7 +211,7 @@ describe('OkfBundle.beginStagedGeneration — incremental carry-forward (Task 3.
 
     // Every page — carried-forward AND freshly staged — is counted, indexed,
     // and the tree still passes strict validation.
-    expect(result.conceptCount).toBe(4);
+    expect(result.pageCount).toBe(4);
     const pagesIndex = fs.readFileSync(path.join(outputRoot, 'pages/index.md'), 'utf8');
     expect(pagesIndex).toContain('alpha.md');
     expect(pagesIndex).toContain('beta.md');

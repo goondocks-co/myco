@@ -46,11 +46,10 @@ When you enable OKF, three things follow:
 
 ## Keeping it fresh
 
-Once enabled, the wiki stays current on its own, and you can push it forward on demand from the Maintain & validate controls on the OKF page.
+Once enabled, the wiki stays current on its own — there's no button to click and nothing to remember to run.
 
 - **Scheduled refreshes.** A background pass checks whether your project has meaningfully changed since the wiki was last synthesized and refreshes only when something is actually different. Quiet projects cost nothing — there's no churn when there's nothing new to say.
-- **Maintain Now.** Click **Maintain Now** on the OKF page to refresh immediately. Use it after a burst of work when you want the wiki current before a commit.
-- **Validate.** Click **Validate** to check the published wiki against the OKF conformance rules without changing anything.
+- **Validate.** Click **Validate** on the OKF page to check the published wiki against the OKF conformance rules without changing anything.
 
 If a refresh is blocked because something in it looks like it shouldn't be published, the OKF page shows exactly what was flagged and offers **Acknowledge & publish** to override it once you've confirmed it's fine.
 
@@ -68,7 +67,7 @@ Whichever way a page under `concepts/` gets written, writes go through one lock 
 
 The `myco okf` commands cover the whole workflow from the terminal. Each is a thin, scriptable front door to the same capability the dashboard uses.
 
-Check the current state of the wiki — whether it exists, when it was last refreshed, and whether it's stale:
+Check the current state of the wiki — whether it exists and when it was last refreshed:
 
 ```bash
 myco okf status
@@ -112,8 +111,8 @@ When the wiki is refreshed, the publish-eligibility scan looks for content that 
 
 ## Troubleshooting
 
-- **Validation failed and I'm worried the wiki is broken.** A failed refresh or validation pass leaves the previous good wiki in place — Myco stages the new version and only swaps it in once it's valid, so a failure never corrupts what you already published. Fix the flagged source and refresh again.
-- **The OKF page says the wiki is stale.** Your project has changed since the last refresh. Click **Maintain Now**, or wait for the next scheduled pass.
+- **Validation failed and I'm worried the wiki is broken.** A failed refresh leaves the previous good wiki in place — Myco stages the new version and only swaps it in once it's valid, so a failure never corrupts what you already published. Fix the flagged source; the next scheduled refresh retries automatically.
+- **I want to know if the wiki reflects my latest changes.** Check the **Generated at** timestamp on the OKF page's status panel. If it's older than a change you'd expect to show up, wait for the next scheduled pass — it only skips a refresh when nothing meaningful has changed.
 - **An agent got a generation conflict.** Two writers touched the same hand-authored page at once and the later write was based on an out-of-date version. The agent should re-read the current page and retry — the rejection is deliberate, protecting the other edit from being overwritten.
 - **I disabled OKF — what happens to `okf/`?** Scheduled refreshes stop and the `AGENTS.md` pointer is removed. The existing `okf/` directory stays in your repo as a readable, frozen snapshot; nothing deletes it. Re-enable to resume maintaining it.
 - **OKF won't turn on / isn't refreshing.** OKF is per-project and off by default — confirm it's enabled for the project you're in on the OKF page. A personal override set from the project capability panel can hold it off even when the project enables it; the OKF page's scope indicator shows when that's the case.

@@ -6,15 +6,14 @@ import type { OkfStatusResponse } from '../../hooks/use-okf';
 
 /**
  * Resolve the leading status chip tone + label from the status response.
- * "Failed" (lastResult) takes priority over stale/valid so a broken last
- * run is never masked by an otherwise-fresh bundle.
+ * "Failed" (lastResult) takes priority over invalid/valid so a broken last
+ * run is never masked by an otherwise-current bundle.
  */
 function describeBundleStatus(status: OkfStatusResponse): { label: string; tone: StatusTone } {
   if (!status.bundleExists) return { label: 'Not generated', tone: 'outline' };
   if (status.lastResult && status.lastResult !== 'published' && status.lastResult !== 'cleanup_pending') {
     return { label: 'Failed', tone: 'terracotta' };
   }
-  if (status.stale) return { label: 'Stale', tone: 'ochre' };
   if (status.validation && !status.validation.ok) return { label: 'Invalid', tone: 'terracotta' };
   return { label: 'Valid', tone: 'sage' };
 }
@@ -44,7 +43,7 @@ export function OkfStatusPanel({ status }: OkfStatusPanelProps) {
         />
         <MetricCard
           label="Pages"
-          value={status.conceptCount ?? '—'}
+          value={status.pageCount ?? '—'}
         />
         <MetricCard
           label="Generation"

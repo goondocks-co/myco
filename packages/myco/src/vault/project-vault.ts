@@ -556,9 +556,9 @@ export interface OkfPrivateManifest {
    */
   pending_findings?: Array<{ code: string; path: string; hash?: string }>;
   /**
-   * Hash of (source counts, max updated_ats, include config, projection +
-   * task versions) written at publish; the okf-maintain precondition probe
-   * compares against it.
+   * Hash of (spore/canopy counts, max updated_ats, the canopy map hash,
+   * include config) written at publish; the `okf-synthesize-due`
+   * precondition probe compares against it.
    */
   probe_fingerprint: string | null;
   /**

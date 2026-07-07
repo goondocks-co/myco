@@ -667,7 +667,7 @@ const OkfMaintainSchema = z.object({
 
 const OkfSchema = z.object({
   /**
-   * Master gate for the OKF capability (okf-maintain task, OKF page,
+   * Master gate for the OKF capability (okf-synthesize task, OKF page,
    * AGENTS.md pointer). The FIRST off-by-default capability: absent config
    * block ⇒ disabled. This Zod default is the runtime mechanism;
    * CAPABILITIES.okf.defaultEnabled is defense-in-depth for raw configs.

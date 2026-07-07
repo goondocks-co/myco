@@ -50,8 +50,7 @@ const BASE_STATUS: OkfStatusResponse = {
   generatedAt: '2026-07-01T00:00:00.000Z',
   lastResult: 'published',
   byType: { decision: 10, file: 5, guide: 1 },
-  conceptCount: 18,
-  stale: false,
+  pageCount: 18,
   publishAcknowledged: true,
   pendingFindings: [],
   enabled: true,
@@ -87,14 +86,9 @@ describe('OkfStatusPanel', () => {
     expect(eyebrow.className).toContain('myco-eyebrow');
   });
 
-  it('renders a Valid status chip when the bundle is not stale/failed/invalid', () => {
+  it('renders a Valid status chip when the bundle is not failed/invalid', () => {
     wrap(<OkfStatusPanel status={BASE_STATUS} />);
     expect(screen.getByTestId('okf-status-chip')).toHaveTextContent('Valid');
-  });
-
-  it('renders a Stale chip when status.stale is true', () => {
-    wrap(<OkfStatusPanel status={{ ...BASE_STATUS, stale: true }} />);
-    expect(screen.getByTestId('okf-status-chip')).toHaveTextContent('Stale');
   });
 
   it('renders a Not generated chip when the bundle does not exist', () => {

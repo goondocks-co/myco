@@ -80,14 +80,12 @@ export interface OkfBundleStatus {
   lastResult: OkfPrivateManifest['last_result'];
   /** Content-document counts grouped by OKF frontmatter `type` (replaces per-include-kind `counts`). */
   byType: Record<string, number> | null;
-  conceptCount: number | null;
-  stale: boolean;
+  pageCount: number | null;
   publishAcknowledged: boolean;
   /**
    * Findings that blocked the most recent synthesis publish (from
    * `manifest.pending_findings`), surfaced so the OKF page's load-time
-   * publish-block panel lights up on a plain reload after a blocked run — the
-   * synthesis-world replacement for the dead click-driven "Maintain Now" block.
+   * publish-block panel lights up on a plain reload after a blocked run.
    * Empty when nothing is pending. Drained by `acknowledgePendingFindings`.
    */
   pendingFindings: Array<{ code: string; path: string; hash?: string }>;
@@ -444,7 +442,7 @@ export class OkfBundle {
           outputRoot,
           dryRun: input.dryRun ?? false,
           generatedAt,
-          conceptCount: pageCount,
+          pageCount,
           byType,
           warnings,
           validation,
@@ -940,42 +938,6 @@ export class OkfBundle {
   }
 
   /**
-   * Fingerprint every currently-published content page under `outputRoot` —
-   * the same non-reserved-`.md` walk `derivePageStats` uses, skipping generated
-   * index/log files. Whole-tree fingerprint (superseded at the finalize/
-   * crash-recovery call sites by {@link computeOwnershipCarryingForward}, which
-   * only re-fingerprints staged pages and never adopts a human-authored page).
-   */
-  private computeOwnershipFromTree(outputRoot: string, bundleGeneration: number, generatedAt: string): OkfOwnership {
-    const pages: OkfOwnership['pages'] = {};
-    const walk = (relDir: string): void => {
-      for (const name of this.safeReaddir(relDir === '' ? outputRoot : path.join(outputRoot, relDir)).sort()) {
-        const rel = relDir === '' ? name : `${relDir}/${name}`;
-        const abs = path.join(outputRoot, rel);
-        let stat: fs.Stats;
-        try {
-          stat = fs.statSync(abs);
-        } catch {
-          continue;
-        }
-        if (stat.isDirectory()) {
-          walk(rel);
-          continue;
-        }
-        if (!name.endsWith('.md') || RESERVED_BASENAMES.has(name)) continue;
-        try {
-          const content = fs.readFileSync(abs, 'utf8');
-          pages[rel] = { fingerprint: sha256Hex(content), generatedAt };
-        } catch {
-          /* skip unreadable */
-        }
-      }
-    };
-    walk('');
-    return { bundleGeneration, pages };
-  }
-
-  /**
    * Compute the ownership manifest for a just-published tree WITHOUT adopting
    * anything Myco didn't write. Ownership must mean "what Myco last wrote", not
    * "what's on disk" — so, per content page currently under `outputRoot`:
@@ -986,9 +948,8 @@ export class OkfBundle {
    *     as hand-edited (`isHandEdited` true) and refine-not-clobber protects it;
    *   - neither staged nor previously owned → SKIP (human-authored; never
    *     adopted into Myco ownership via carry-forward).
-   * The finalize/carry-forward counterpart to {@link computeOwnershipFromTree}
-   * (which fingerprints the whole tree — correct only for a full rebuild that
-   * has no carried human/hand-edited pages).
+   * Used by every finalize and crash-recovery call site — ownership is never
+   * fingerprinted from the whole tree at once.
    *
    * `opts.fingerprintUnowned` flips the treatment of a page that is neither
    * staged nor in prior ownership: the default (false) SKIPs it (finalize/
@@ -1194,12 +1155,6 @@ export class OkfBundle {
     const marker = this.readMarker(outputRoot);
     const bundleExists = marker !== null;
 
-    // `stale` is retired: the synthesis pipeline never wrote `inputs_hash`, so
-    // the old gather-probe staleness check was always false for a
-    // synthesis-published bundle. Held at false until the field is dropped
-    // end-to-end (a later task removes it from the status shape + UI).
-    const stale = false;
-
     // Flat page count + per-type breakdown are derived from the published tree,
     // not the marker — the tree is the truth after any concept-mutation edit.
     const stats = bundleExists ? this.derivePageStats(outputRoot) : null;
@@ -1212,8 +1167,7 @@ export class OkfBundle {
       generatedAt: manifest?.generated_at ?? null,
       lastResult: manifest?.last_result ?? null,
       byType: stats?.byType ?? null,
-      conceptCount: stats?.pageCount ?? null,
-      stale,
+      pageCount: stats?.pageCount ?? null,
       publishAcknowledged: this.derivePublishAcknowledged(manifest, outputRoot),
       pendingFindings: manifest?.pending_findings ?? [],
     };
@@ -1432,7 +1386,7 @@ export class OkfBundle {
       const manifest = this.reconcileGenerationWithMarker(this.deps.vault.readOkfManifest(), outputRoot);
       this.reconcileOwnershipForRoot(outputRoot, []);
       if (!this.markerExists(outputRoot)) {
-        throw new OkfError('okf_maintain_failed', 'no published bundle to edit; run maintain first');
+        throw new OkfError('okf_maintain_failed', 'no published OKF bundle to edit yet; it is created by the okf-synthesize task');
       }
       if (expectedGeneration !== undefined && manifest && manifest.bundle_generation !== expectedGeneration) {
         throw new OkfError('okf_generation_conflict', 'bundle generation changed since read', {

@@ -105,8 +105,6 @@ export const OKF_VERSION = '0.1';
 export const OKF_RESERVED_FILES = ['index.md', 'log.md'] as const;
 /** Marker AND sidecar payload — one file (master-plan interface freeze). */
 export const OKF_MARKER_FILENAME = '.myco-okf-maintain.json';
-/** Bump intentionally to mark existing projections stale. */
-export const OKF_PROJECTION_VERSION = '1';
 
 // Bundle-write types are frozen here; the OkfBundle capability (Plan 4) consumes them.
 
@@ -149,7 +147,7 @@ export interface OkfBundleWriteResult {
   dryRun: boolean;
   generatedAt: string;
   /** Flat page count — total content documents in the published tree. */
-  conceptCount: number;
+  pageCount: number;
   /** Content-document counts grouped by OKF frontmatter `type` (replaces the Myco per-include-kind `counts`). */
   byType: Record<string, number>;
   warnings: OkfMaintainWarning[];

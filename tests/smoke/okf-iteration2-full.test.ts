@@ -307,7 +307,7 @@ describe('OKF Iteration 2 — full-flow smoke (conformance + privacy + naive-blo
     let status = bundle.status();
     expect(status.bundleExists).toBe(true);
     expect(status.bundleGeneration).toBe(1);
-    expect(status.conceptCount).toBe(3);
+    expect(status.pageCount).toBe(3);
 
     // --- conformance: strict structural validation ---
     let conformance = validateBundleTree(outputRoot, 'strict');
@@ -391,7 +391,7 @@ describe('OKF Iteration 2 — full-flow smoke (conformance + privacy + naive-blo
     expect(published.publishEligibility.ok).toBe(false); // the finding existed; acknowledging doesn't erase it, it overrides the block
     status = openBundle().status();
     expect(status.bundleGeneration).toBe(2);
-    expect(status.conceptCount).toBe(4);
+    expect(status.pageCount).toBe(4);
     expect(openBundle().readPage('notes/rotated-token.md')?.raw).toContain(FAKE_SECRET);
 
     // Structural conformance still holds — validate.ts checks shape, never secrets.

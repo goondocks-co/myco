@@ -60,9 +60,9 @@ See the [Skills docs](skills.md) for the full skill lifecycle.
 
 | Task | What it does |
 |------|-------------|
-| `okf-maintain` | Regenerates the project's [OKF](okf.md) bundle when its source knowledge changes — spores, Canopy descriptions, and agent-maintained concepts. Only runs when OKF is enabled for the project; a precondition check skips the run when nothing has changed since the last bundle. |
+| `okf-synthesize` | Synthesizes the project's [OKF](okf.md) knowledge wiki — a curated set of topic pages — when the project has meaningfully changed. Only runs when OKF is enabled for the project; a precondition check skips the run when nothing has changed since the last refresh. |
 
-See [OKF](okf.md) for the repository-carried bundle this keeps current.
+See [OKF](okf.md) for the repository-carried wiki this task keeps fresh.
 
 ## Configuring providers
 

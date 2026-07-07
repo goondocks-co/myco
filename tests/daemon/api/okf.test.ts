@@ -29,10 +29,10 @@ mock.module('@myco/okf/bundle.js', () => ({
       constructed.push(deps);
     }
     status() {
-      return stub.status?.() ?? { outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, conceptCount: null, stale: false, publishAcknowledged: true, pendingFindings: [] };
+      return stub.status?.() ?? { outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, pageCount: null, publishAcknowledged: true, pendingFindings: [] };
     }
     acknowledgePendingFindings() {
-      return stub.acknowledgePendingFindings?.() ?? Promise.resolve({ outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, conceptCount: null, stale: false, publishAcknowledged: true, pendingFindings: [] });
+      return stub.acknowledgePendingFindings?.() ?? Promise.resolve({ outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, pageCount: null, publishAcknowledged: true, pendingFindings: [] });
     }
     validate(root?: string) {
       return stub.validate?.(root) ?? { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0, issues: [] };
@@ -115,7 +115,7 @@ describe('OKF API handlers', () => {
   });
 
   it('status aggregates capability + config fields and never writes', async () => {
-    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, conceptCount: null, stale: false, publishAcknowledged: true });
+    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, pageCount: null, publishAcknowledged: true });
     const snapshot = JSON.stringify(fs.readdirSync(vaultDir));
     const res = await handleOkfStatus(req(), principalFor(ctxFor()));
     expect(res.status).toBe(200);
@@ -188,14 +188,14 @@ describe('OKF API handlers', () => {
   });
 
   it('status emits the frozen Plan-7 aggregation shape exactly', async () => {
-    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 3, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'published', byType: { decision: 2, guide: 1 }, conceptCount: 3, stale: false, publishAcknowledged: true, pendingFindings: [] });
+    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 3, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'published', byType: { decision: 2, guide: 1 }, pageCount: 3, publishAcknowledged: true, pendingFindings: [] });
     stub.validate = () => ({ ok: true, level: 'myco_strict', filesChecked: 4, conceptsChecked: 3, issues: [] });
     // A published bundle on disk for the scanner to read (clean → no findings).
     fs.mkdirSync(path.join(projectRoot, 'okf'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, 'okf/note.md'), '---\ntype: Note\n---\n\nBody.\n');
     const res = await handleOkfStatus(req(), principalFor(ctxFor()));
     const body = res.body as Record<string, unknown>;
-    for (const key of ['outputRoot', 'bundleExists', 'bundleGeneration', 'inputsHash', 'generatedAt', 'lastResult', 'byType', 'conceptCount', 'stale', 'publishAcknowledged', 'pendingFindings', 'enabled', 'outputPath', 'validation', 'agentsPointer', 'publishEligibility', 'lastRun']) {
+    for (const key of ['outputRoot', 'bundleExists', 'bundleGeneration', 'inputsHash', 'generatedAt', 'lastResult', 'byType', 'pageCount', 'publishAcknowledged', 'pendingFindings', 'enabled', 'outputPath', 'validation', 'agentsPointer', 'publishEligibility', 'lastRun']) {
       expect(body).toHaveProperty(key);
     }
     expect(body.lastRun).toBeNull();
@@ -211,7 +211,7 @@ describe('OKF API handlers', () => {
   it('status folds pending_findings into publishEligibility: ok=false and the findings are surfaced', async () => {
     // A published tree with no findings, but a synthesis run left pending
     // blocking findings on the manifest — the block must still surface.
-    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 1, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'publish_blocked', byType: {}, conceptCount: 0, stale: false, publishAcknowledged: true, pendingFindings: [{ code: 'absolute_local_path', path: 'pages/leaky.md', hash: 'abcd1234' }] });
+    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 1, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'publish_blocked', byType: {}, pageCount: 0, publishAcknowledged: true, pendingFindings: [{ code: 'absolute_local_path', path: 'pages/leaky.md', hash: 'abcd1234' }] });
     stub.validate = () => ({ ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0, issues: [] });
     fs.mkdirSync(path.join(projectRoot, 'okf'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, 'okf/note.md'), '---\ntype: Note\n---\n\nClean body.\n');
@@ -228,7 +228,7 @@ describe('OKF API handlers', () => {
     let called = false;
     stub.acknowledgePendingFindings = () => {
       called = true;
-      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 1, inputsHash: 'h', generatedAt: null, lastResult: 'publish_blocked', byType: {}, conceptCount: 0, stale: false, publishAcknowledged: true, pendingFindings: [] });
+      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 1, inputsHash: 'h', generatedAt: null, lastResult: 'publish_blocked', byType: {}, pageCount: 0, publishAcknowledged: true, pendingFindings: [] });
     };
     const res = await handleOkfAcknowledge(req({ body: {} }), principalFor(ctxFor()));
     expect(res.status).toBe(200);

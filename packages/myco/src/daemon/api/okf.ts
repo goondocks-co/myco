@@ -136,7 +136,7 @@ export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrin
               .map((f) => ({ code: f.code, path: f.path, excerpt: '' })),
           ],
         },
-        lastRun: null, // filled by Plan 6 (okf-maintain task) from agent_runs
+        lastRun: null, // filled from agent_runs once the okf-synthesize task reports its own run history
       },
     };
   } catch (err) {

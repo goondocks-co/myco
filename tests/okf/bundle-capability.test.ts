@@ -105,7 +105,7 @@ describe('OkfBundle staged generation — happy path', () => {
 
     expect(result.unchanged).toBe(false);
     expect(result.validation.ok).toBe(true);
-    expect(result.conceptCount).toBe(2);
+    expect(result.pageCount).toBe(2);
     expect(fs.existsSync(path.join(okfDir(), 'index.md'))).toBe(true);
     expect(fs.existsSync(path.join(okfDir(), 'log.md'))).toBe(true);
     // The KEPT marker filename — renaming it would orphan existing bundles.

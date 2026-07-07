@@ -24,7 +24,7 @@
  * and `hooks/use-project-selection` (a fixed active selection, mirroring the
  * raw-fetch-stub precedent's approach of keeping only the API boundary as
  * the seam). Covers: disabled-state banner linking to Settings, enabled+valid
- * metric tiles, stale chip, actions disabled while unresolved/erroring, the
+ * metric tiles, actions disabled while unresolved/erroring, the
  * naive-first-user load-time publish-block surface + Acknowledge → POST
  * /api/okf/acknowledge, and the reactive reveal of the page when
  * `okf.enabled` flips on externally (e.g. from Settings) without a
@@ -72,8 +72,7 @@ const DISABLED_STATUS: OkfStatusResponse = {
   generatedAt: null,
   lastResult: null,
   byType: null,
-  conceptCount: null,
-  stale: false,
+  pageCount: null,
   publishAcknowledged: true,
   pendingFindings: [],
   enabled: false,
@@ -92,8 +91,7 @@ const ENABLED_VALID_STATUS: OkfStatusResponse = {
   generatedAt: '2026-07-01T00:00:00.000Z',
   lastResult: 'published',
   byType: { concept: 17, guide: 1 },
-  conceptCount: 18,
-  stale: false,
+  pageCount: 18,
   publishAcknowledged: true,
   pendingFindings: [],
   enabled: true,
@@ -102,11 +100,6 @@ const ENABLED_VALID_STATUS: OkfStatusResponse = {
   agentsPointer: { present: true, stale: false },
   publishEligibility: { ok: true, findings: [] },
   lastRun: null,
-};
-
-const STALE_STATUS: OkfStatusResponse = {
-  ...ENABLED_VALID_STATUS,
-  stale: true,
 };
 
 // A PRIOR synthesis run left the bundle blocked from publishing —
@@ -347,17 +340,6 @@ describe('Okf page — enabled + valid', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('okf-status-chip')).toHaveTextContent('Valid');
-    });
-  });
-});
-
-describe('Okf page — stale state', () => {
-  it('renders the Stale chip when status.stale is true', async () => {
-    mockApiForStatus(STALE_STATUS);
-    renderPage();
-
-    await waitFor(() => {
-      expect(screen.getByTestId('okf-status-chip')).toHaveTextContent('Stale');
     });
   });
 });

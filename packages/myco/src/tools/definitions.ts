@@ -287,7 +287,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_OKF,
-    description: 'Read and edit the project\'s Open Knowledge Format (OKF) bundle — the repo-visible knowledge export at okf/. op: "status" reports bundle metadata and staleness. op: "validate" checks the bundle against the OKF conformance rules. op: "list" enumerates the published OKF document pages (path, type, title, description, timestamp). op: "get" returns one page\'s frontmatter fields plus rendered-markdown body, by bundle-relative path. op: "save_concept" creates or updates an editorial concept under concepts/. op: "supersede_concept" marks one concept superseded by another. Regenerating the whole bundle (maintain) is a user/admin action and is deliberately not available here.',
+    description: 'Read the project\'s Open Knowledge Format (OKF) knowledge wiki — the repo-visible export at okf/ — and edit its hand-authored pages under concepts/. op: "status" reports bundle metadata and the current bundle_generation. op: "validate" checks the published wiki against the OKF conformance rules. op: "list" enumerates the published pages (path, type, title, description, timestamp). op: "get" returns one page\'s frontmatter fields plus rendered-markdown body, by bundle-relative path. op: "save_concept" creates or updates a hand-authored page under concepts/. op: "supersede_concept" marks one page superseded by another. Regenerating the wiki itself is a scheduled background task and is deliberately not available here.',
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -295,7 +295,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Read okf/index.md first for orientation. Use op: "status" to check the bundle and read the current bundle_generation. Use op: "save_concept" / "supersede_concept" ONLY for editorial concepts under concepts/ (deterministic spore/canopy paths are read-only) — write complete YAML-frontmatter markdown with a type, title, description, timestamp, and a stable identity (myco_id or resource), and cite sources. Pass expected_generation from a prior status call so a concurrent edit is detected. You cannot regenerate the bundle or choose output paths from here; that is a user action.',
+      guidance: 'Read okf/index.md first for orientation. Use op: "status" to check the bundle and read the current bundle_generation. Use op: "save_concept" / "supersede_concept" ONLY for hand-authored pages under concepts/ (every other page is synthesized by Myco and read-only here) — write complete YAML-frontmatter markdown with a type, title, description, timestamp, and a stable identity (myco_id or resource), and cite sources. Pass expected_generation from a prior status call so a concurrent edit is detected. You cannot regenerate the wiki or choose output paths from here; that is a scheduled background task.',
       priority: 40,
     },
     inputSchema: {
