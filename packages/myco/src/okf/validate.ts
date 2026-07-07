@@ -344,6 +344,34 @@ function validateOkfDocumentContent(
 }
 
 /**
+ * Validate ONE OKF v0.1 content document (never `index.md`/`log.md`) with the
+ * EXACT per-content-file rule set {@link validateBundleTree} runs at the same
+ * `level` — `checkOkfSlugSafety` (strict only) plus `validateOkfDocumentContent`.
+ * The carried-page quarantine in `OkfBundle.finalize` uses this to decide, per
+ * file, whether a carried page would sink the whole-tree strict validate, so the
+ * two MUST stay in lockstep: reusing the same internal functions guarantees a
+ * page this reports `ok` can never still fail the whole-tree pass (and vice
+ * versa). The document-model levels emit no mode-downgradable code, so `mode` is
+ * irrelevant here (unlike the `myco_strict` walk) and is not a parameter.
+ */
+export function validateOkfDocumentFile(
+  relPath: string,
+  content: string,
+  level: 'conformance' | 'strict',
+): OkfValidationReport {
+  const issues: OkfValidationIssue[] = [];
+  if (level === 'strict') checkOkfSlugSafety(relPath, issues);
+  validateOkfDocumentContent(content, relPath, level, issues);
+  return {
+    ok: !issues.some((entry) => entry.level === 'error'),
+    level,
+    filesChecked: 1,
+    conceptsChecked: 1,
+    issues,
+  };
+}
+
+/**
  * Walk a bundle tree on disk and validate it. Only `.md` files are validated;
  * the marker (`.myco-okf-maintain.json`) and any other non-markdown files are
  * non-concept files and are skipped. Symlinks — directories AND files — are

@@ -22,7 +22,7 @@ import { assertSafeConceptId, conceptPathForId, detectCollisions, OkfPathError }
 import { parseConceptDoc, serializeConceptDoc } from './frontmatter.js';
 import { renderConcept, renderOkfDocument, renderRootIndex, renderRootLog, type OkfLogEntry } from './serialize.js';
 import { generateDirectoryIndexes, generateIndexes } from './indexes.js';
-import { validateBundleTree, validateConceptSource } from './validate.js';
+import { validateBundleTree, validateConceptSource, validateOkfDocumentFile } from './validate.js';
 import { scanStagedBundle } from './publish-eligibility.js';
 import {
   OKF_MARKER_FILENAME,
@@ -100,6 +100,14 @@ export interface OkfBundleStatus {
   conceptCount: number | null;
   stale: boolean;
   publishAcknowledged: boolean;
+  /**
+   * Findings that blocked the most recent synthesis publish (from
+   * `manifest.pending_findings`), surfaced so the OKF page's load-time
+   * publish-block panel lights up on a plain reload after a blocked run — the
+   * synthesis-world replacement for the dead click-driven "Maintain Now" block.
+   * Empty when nothing is pending. Drained by `acknowledgePendingFindings`.
+   */
+  pendingFindings: Array<{ code: string; path: string; hash?: string }>;
 }
 
 /**
@@ -632,6 +640,12 @@ export class OkfBundle {
     // this run's stageDocument calls never touch, reconstructed from the
     // staging copy so finalize's index/count/collision pass sees them too.
     const carriedForwardDocs = new Map<string, OkfDocument>();
+    // Every carried page's bundle-relative path (parseable OR not) — the
+    // quarantine pass in finalize per-file-validates each and drops any that
+    // would sink the whole-tree strict validate. A superset of
+    // carriedForwardDocs' keys: an unparseable carried page is on disk (and
+    // here) but absent from carriedForwardDocs.
+    const carriedForwardPaths = new Set<string>();
 
     const release = (): void => {
       if (released) return;
@@ -661,7 +675,7 @@ export class OkfBundle {
       if (stagingDir) return stagingDir;
       this.sweepStale(manifest, warnings);
       stagingDir = this.freshStagingDir();
-      if (carryForward) this.seedStagingFromPublished(stagingDir, outputRoot, carriedForwardDocs);
+      if (carryForward) this.seedStagingFromPublished(stagingDir, outputRoot, carriedForwardDocs, carriedForwardPaths);
       return stagingDir;
     };
 
@@ -676,6 +690,20 @@ export class OkfBundle {
         // sitting in the staging dir. A path this run DID stage wins over its
         // (now stale) seeded copy.
         const stagedPaths = new Set(docs.map((d) => d.path));
+
+        // Quarantine carried pages that fail per-file strict validation so one
+        // human-broken carried page (malformed frontmatter, a dropped floor key)
+        // can't wedge EVERY future publish by sinking the whole-tree strict
+        // validate below. Only pages this run did NOT re-stage are checked — a
+        // page re-synthesized fresh this run has its fresh content validated by
+        // the whole-tree pass, and that content wins over the seeded copy. A
+        // quarantined page is excluded from the staged tree (so the scan, the
+        // strict validate, and the atomic-replace never see it), from the
+        // regenerated indexes, and from ownership re-fingerprinting; a warning
+        // makes it recoverable. It is NOT destroyed in place — it lingers in the
+        // still-live prior bundle until this publish's atomic-replace drops it.
+        this.quarantineInvalidCarriedPages(dir, carriedForwardPaths, stagedPaths, carriedForwardDocs, input.mode, warnings);
+
         const contentDocs =
           carriedForwardDocs.size === 0
             ? docs
@@ -701,6 +729,14 @@ export class OkfBundle {
           const acknowledged = manifest?.acknowledged_findings ?? [];
           const unacked = findings.filter((f) => !this.findingAcknowledged(f, acknowledged));
           if (unacked.length > 0 && !input.acknowledgePublish) {
+            // Persist the blocking findings to the manifest BEFORE aborting, so
+            // the block survives this ephemeral run's teardown: the synthesis
+            // staged tree is dropped and nothing is published, but the OKF page
+            // (via status.pendingFindings) can surface the block on a plain
+            // reload and `POST /api/okf/acknowledge` can drain it. This is a
+            // MANIFEST-ONLY write — it does NOT publish the staged tree, and the
+            // run still fails exactly as before.
+            this.persistPendingFindings(manifest, unacked, outputRoot);
             throw new OkfError('okf_publish_not_acknowledged', 'publish blocked by unacknowledged findings', {
               findings: unacked,
             });
@@ -737,6 +773,10 @@ export class OkfBundle {
           last_result: cleanupPending ? 'cleanup_pending' : 'published',
           generated_at: generatedAt,
           acknowledged_findings: ackSet,
+          // A successful publish clears any prior block: we only reach here when
+          // no unacknowledged finding remained (or the caller acknowledged), so
+          // nothing is pending.
+          pending_findings: [],
           probe_fingerprint: opts?.probeFingerprint ?? null,
           // Preserve the prior manifest's baseline when this caller doesn't
           // provide one — the legacy `runManagedMaintain` path (still reachable
@@ -745,13 +785,25 @@ export class OkfBundle {
           // `okf-synthesize-due` baseline a prior synthesize run recorded.
           last_run_ref: opts?.lastRunRef ?? manifest?.last_run_ref ?? null,
         });
-        // Ownership — manifest-adjacent write, same as writeOkfManifest above: one
-        // fingerprint per currently-published page, read back from the swapped-in
-        // tree so it reflects exactly what's live. A crash between the atomic
-        // swap and this write is healed by reconcileOwnershipForRoot on the next
-        // session open (it recomputes from disk whenever the marker generation
-        // doesn't match this file's).
-        this.deps.vault.writeOkfOwnership(this.computeOwnershipFromTree(outputRoot, nextGeneration, generatedAt));
+        // Ownership — manifest-adjacent write, same as writeOkfManifest above.
+        // Ownership means "what Myco last WROTE", never "what's on disk": a page
+        // this run staged is re-fingerprinted from its new content, but a page
+        // carried forward untouched keeps its PRIOR fingerprint verbatim, and a
+        // page Myco never owned is never adopted. Re-fingerprinting the whole
+        // swapped-in tree (the old behavior) would fingerprint a human's
+        // between-runs hand-edit of an untouched page as Myco's own output —
+        // `isHandEdited` would then read false and a later synthesis could
+        // silently clobber the edit. A crash between the atomic swap and this
+        // write is healed by reconcileOwnershipForRoot on the next session open.
+        this.deps.vault.writeOkfOwnership(
+          this.computeOwnershipCarryingForward(
+            outputRoot,
+            stagedPaths,
+            this.deps.vault.readOkfOwnership(),
+            nextGeneration,
+            generatedAt,
+          ),
+        );
         if (cleanupPending) {
           warnings.push({ code: 'cleanup_pending', message: 'bundle published but a stale backup could not be removed; it will be swept next run.' });
         }
@@ -1303,7 +1355,23 @@ export class OkfBundle {
 
     const marker = this.readMarker(outputRoot);
     const generatedAt = typeof marker?.generated_at === 'string' ? marker.generated_at : this.now().toISOString();
-    this.deps.vault.writeOkfOwnership(this.computeOwnershipFromTree(outputRoot, markerGen, generatedAt));
+    // Recovery obeys the same "ownership = what Myco last WROTE" rule as
+    // finalize. A crash in the window between the atomic swap (marker → gen N)
+    // and the ownership write leaves ownership.json stamped at a stale
+    // generation; recomputing EVERY fingerprint from disk (the old behavior)
+    // would fingerprint a page a human hand-edited in that window as Myco's own
+    // → isHandEdited goes false → a later run clobbers the edit. Instead CARRY
+    // every prior fingerprint verbatim (a page Myco rewrote in the crashed run
+    // keeps its old fingerprint too → the next run augments-not-clobbers, still
+    // safe), and fingerprint fresh ONLY a page with no prior entry — the
+    // cold-start baseline (a bundle published before ownership tracking, or a
+    // net-new page from the crashed run; that net-new-in-crash-window edge is
+    // the one residual, noted as a narrow follow-up).
+    this.deps.vault.writeOkfOwnership(
+      this.computeOwnershipCarryingForward(outputRoot, new Set(), existing, markerGen, generatedAt, {
+        fingerprintUnowned: true,
+      }),
+    );
     warnings.push({
       code: 'crash_recovery',
       message: `ownership fingerprints reconciled to bundle generation ${markerGen} after an interrupted publish.`,
@@ -1344,6 +1412,173 @@ export class OkfBundle {
     };
     walk('');
     return { bundleGeneration, pages };
+  }
+
+  /**
+   * Compute the ownership manifest for a just-published tree WITHOUT adopting
+   * anything Myco didn't write. Ownership must mean "what Myco last wrote", not
+   * "what's on disk" — so, per content page currently under `outputRoot`:
+   *   - staged THIS run (`stagedPaths`) → re-fingerprint from current content
+   *     (Myco authored it this run);
+   *   - untouched but already Myco-owned (in `priorOwnership`) → carry the prior
+   *     fingerprint VERBATIM, so a human hand-edit made between runs still reads
+   *     as hand-edited (`isHandEdited` true) and refine-not-clobber protects it;
+   *   - neither staged nor previously owned → SKIP (human-authored; never
+   *     adopted into Myco ownership via carry-forward).
+   * The finalize/carry-forward counterpart to {@link computeOwnershipFromTree}
+   * (which fingerprints the whole tree — correct only for a full rebuild that
+   * has no carried human/hand-edited pages).
+   *
+   * `opts.fingerprintUnowned` flips the treatment of a page that is neither
+   * staged nor in prior ownership: the default (false) SKIPs it (finalize/
+   * mutateConcepts — a human-authored page is never adopted); recovery
+   * (`reconcileOwnershipForRoot`) sets it true so a page with no prior
+   * fingerprint is adopted from disk — the cold-start / net-new-page baseline.
+   */
+  private computeOwnershipCarryingForward(
+    outputRoot: string,
+    stagedPaths: Set<string>,
+    priorOwnership: OkfOwnership | null,
+    bundleGeneration: number,
+    generatedAt: string,
+    opts?: { fingerprintUnowned?: boolean },
+  ): OkfOwnership {
+    const fingerprintUnowned = opts?.fingerprintUnowned ?? false;
+    const prior = priorOwnership?.pages ?? {};
+    const pages: OkfOwnership['pages'] = {};
+    const walk = (relDir: string): void => {
+      for (const name of this.safeReaddir(relDir === '' ? outputRoot : path.join(outputRoot, relDir)).sort()) {
+        const rel = relDir === '' ? name : `${relDir}/${name}`;
+        const abs = path.join(outputRoot, rel);
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(abs);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          walk(rel);
+          continue;
+        }
+        if (!name.endsWith('.md') || RESERVED_BASENAMES.has(name)) continue;
+        if (prior[rel] && !stagedPaths.has(rel)) {
+          // Untouched, already Myco-owned → carry the prior fingerprint VERBATIM
+          // (preserves isHandEdited for a between-runs hand-edit).
+          pages[rel] = prior[rel];
+        } else if (stagedPaths.has(rel) || fingerprintUnowned) {
+          // Staged this run (Myco wrote it) OR recovery adopting a page with no
+          // prior fingerprint → fingerprint from current content.
+          try {
+            pages[rel] = { fingerprint: sha256Hex(fs.readFileSync(abs, 'utf8')), generatedAt };
+          } catch {
+            /* skip unreadable */
+          }
+        }
+        // else: not staged, not owned, not adopting → human-authored, never adopted.
+      }
+    };
+    walk('');
+    return { bundleGeneration, pages };
+  }
+
+  /**
+   * Per-file-validate each carried page (a page NOT re-staged this run) with the
+   * SAME strict rule set the whole-tree validate uses, and quarantine any that
+   * fail: delete it from the staging dir and drop it from `carried` so it's
+   * absent from the regenerated indexes, the publish-eligibility scan, the
+   * strict validate, and the atomic-replace. One human-broken carried page then
+   * can't wedge every future publish — the fresh pages still ship. Mutates
+   * `carried` and `warnings` in place.
+   */
+  private quarantineInvalidCarriedPages(
+    stagingDir: string,
+    carriedPaths: Set<string>,
+    stagedPaths: Set<string>,
+    carried: Map<string, OkfDocument>,
+    _mode: OkfBundleMode,
+    warnings: OkfMaintainWarning[],
+  ): void {
+    for (const rel of carriedPaths) {
+      if (stagedPaths.has(rel)) continue; // re-synthesized fresh this run — fresh content is validated wholesale below
+      const abs = path.join(stagingDir, rel);
+      let raw: string;
+      try {
+        raw = fs.readFileSync(abs, 'utf8');
+      } catch {
+        continue; // already gone — nothing to quarantine
+      }
+      if (validateOkfDocumentFile(rel, raw, 'strict').ok) continue;
+      this.safeUnlinkFile(abs);
+      carried.delete(rel);
+      warnings.push({
+        code: 'carried_page_quarantined',
+        message: 'a carried page failed OKF validation and was excluded from this publish; recover it from git history or the transient .myco/okf/state/backup-<gen> copy, then re-plan the page for a later run to republish it.',
+        path: rel,
+      });
+    }
+  }
+
+  /**
+   * Persist the findings that BLOCKED a synthesis publish to the manifest,
+   * WITHOUT publishing the staged tree. Called on the block path in `finalize`
+   * before it throws, so the block — which otherwise vanishes with the ephemeral
+   * staged tree — is durable and surfaceable (status.pendingFindings) and
+   * drainable ({@link acknowledgePendingFindings}). Runs under the finalize
+   * lock, like every other manifest write here.
+   */
+  private persistPendingFindings(
+    manifest: OkfPrivateManifest | null,
+    findings: ReturnType<typeof scanStagedBundle>,
+    outputRoot: string,
+  ): void {
+    const base: OkfPrivateManifest = manifest ?? {
+      bundle_generation: 0,
+      inputs_hash: null,
+      output_root: '',
+      last_result: null,
+      generated_at: null,
+      acknowledged_findings: [],
+      probe_fingerprint: null,
+      last_run_ref: null,
+    };
+    this.deps.vault.writeOkfManifest({
+      ...base,
+      output_root: base.output_root || outputRoot,
+      last_result: 'publish_blocked',
+      pending_findings: findings.map((f) => ({ code: f.code, path: f.path, hash: f.hash })),
+    });
+  }
+
+  /**
+   * Acknowledge every finding currently pending a publish block: merge
+   * `manifest.pending_findings` into `manifest.acknowledged_findings` (reusing
+   * the same (code, path, hash) dedup as {@link mergeAcknowledgements}) and clear
+   * `pending_findings`. The non-`maintain` acknowledge path (`POST
+   * /api/okf/acknowledge`): the next synthesis run then sees `unacked.length ===
+   * 0` and publishes. Lock-guarded like every other manifest write. Returns the
+   * refreshed status (pending now empty).
+   */
+  async acknowledgePendingFindings(): Promise<OkfBundleStatus> {
+    if (!capabilityEnabled(this.deps.config, 'okf')) {
+      throw new OkfError('okf_disabled', 'OKF capability is disabled for this project');
+    }
+    const lock = await this.acquireLock();
+    try {
+      const manifest = this.deps.vault.readOkfManifest();
+      const pending = manifest?.pending_findings ?? [];
+      if (manifest && pending.length > 0) {
+        const merged = [...manifest.acknowledged_findings];
+        for (const f of pending) {
+          if (!merged.some((a) => a.code === f.code && a.path === f.path && a.hash === f.hash)) {
+            merged.push({ code: f.code, path: f.path, hash: f.hash });
+          }
+        }
+        this.deps.vault.writeOkfManifest({ ...manifest, acknowledged_findings: merged, pending_findings: [] });
+      }
+      return this.status();
+    } finally {
+      this.releaseLock(lock);
+    }
   }
 
   private sweepStale(manifest: OkfPrivateManifest | null, warnings: OkfMaintainWarning[]): void {
@@ -1458,6 +1693,7 @@ export class OkfBundle {
       conceptCount: stats?.pageCount ?? null,
       stale,
       publishAcknowledged: this.derivePublishAcknowledged(manifest, outputRoot),
+      pendingFindings: manifest?.pending_findings ?? [],
     };
   }
 
@@ -1791,14 +2027,30 @@ export class OkfBundle {
           last_result: cleanupPending ? 'cleanup_pending' : 'published',
           generated_at: generatedAt,
           acknowledged_findings: acknowledged,
+          // A concept edit only reaches here with no unacknowledged finding
+          // (the block above threw otherwise) — clear any prior pending block.
+          pending_findings: [],
           probe_fingerprint: manifest?.probe_fingerprint ?? null,
           last_run_ref: manifest?.last_run_ref ?? null,
         });
-        // Ownership follows the manifest write here too — a concept edit
-        // republishes the whole tree, so every page's fingerprint moves to this
-        // generation (reconstruct-and-re-render is byte-stable for untouched
-        // concepts, so only the edited concept's fingerprint actually changes).
-        this.deps.vault.writeOkfOwnership(this.computeOwnershipFromTree(outputRoot, nextGeneration, generatedAt));
+        // Ownership carries forward here too, and for the same reason as the
+        // synthesis finalize path: this concept edit republishes the WHOLE
+        // reconstructed tree — including any human-authored or hand-edited page
+        // `reconstructConceptSet` picked up — so re-fingerprinting the whole tree
+        // would silently adopt a non-Myco page (and mask a hand-edit) into
+        // ownership. Re-fingerprint ONLY the concepts this edit actually changed;
+        // untouched Myco pages keep their prior fingerprint, human pages stay
+        // unowned. Byte-stable reconstruct means the "changed" set is normally
+        // just the one edited concept.
+        this.deps.vault.writeOkfOwnership(
+          this.computeOwnershipCarryingForward(
+            outputRoot,
+            this.changedConceptPaths(existing, concepts),
+            this.deps.vault.readOkfOwnership(),
+            nextGeneration,
+            generatedAt,
+          ),
+        );
         return nextGeneration;
       } finally {
         this.safeRm(stagingDir);
@@ -1893,6 +2145,27 @@ export class OkfBundle {
     return out;
   }
 
+  /**
+   * The bundle-relative paths whose rendered content a concept mutation actually
+   * changed (or newly added) — the "staged this run" set for
+   * {@link computeOwnershipCarryingForward}. Compares the reconstructed
+   * pre-mutation set against the post-mutation set by rendered bytes, so a
+   * byte-stable untouched concept is NOT flagged (its ownership carries forward)
+   * while the edited/added concept IS (Myco just wrote it). Rendered content is
+   * exactly what ownership fingerprints, so this comparison and the fingerprint
+   * can never disagree on "did Myco rewrite this page".
+   */
+  private changedConceptPaths(before: OkfConcept[], after: OkfConcept[]): Set<string> {
+    const beforeByPath = new Map(before.map((c) => [conceptPathForId(c.id), renderConcept(c).content]));
+    const changed = new Set<string>();
+    for (const c of after) {
+      const rel = conceptPathForId(c.id);
+      const prev = beforeByPath.get(rel);
+      if (prev === undefined || prev !== renderConcept(c).content) changed.add(rel);
+    }
+    return changed;
+  }
+
   // -------------------------------------------------------------------
   // Small helpers
   // -------------------------------------------------------------------
@@ -1952,7 +2225,12 @@ export class OkfBundle {
    * reconstruct-and-re-render concept-mutation path (`reconstructConceptSet`)
    * already accepts.
    */
-  private seedStagingFromPublished(stagingDir: string, outputRoot: string, carried: Map<string, OkfDocument>): void {
+  private seedStagingFromPublished(
+    stagingDir: string,
+    outputRoot: string,
+    carried: Map<string, OkfDocument>,
+    carriedPaths: Set<string>,
+  ): void {
     if (!this.markerExists(outputRoot)) return;
     const walk = (relDir: string): void => {
       for (const name of this.safeReaddir(relDir === '' ? outputRoot : path.join(outputRoot, relDir))) {
@@ -1978,6 +2256,11 @@ export class OkfBundle {
         const dest = path.join(stagingDir, rel);
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.writeFileSync(dest, raw);
+        // Record EVERY carried page (parseable or not) so finalize's quarantine
+        // pass per-file-validates each — an unparseable page is on disk but
+        // absent from `carried`, and would otherwise sink the whole-tree strict
+        // validate unnoticed.
+        carriedPaths.add(rel);
         try {
           const { frontmatter, body } = parseConceptDoc(raw);
           carried.set(rel, { path: rel, frontmatter: frontmatter as OkfDocument['frontmatter'], body });
@@ -2085,6 +2368,20 @@ export class OkfBundle {
   private safeRm(target: string): void {
     try {
       this.fsOps.rm(target, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /**
+   * Best-effort removal of a SINGLE staged file (content-level, not the
+   * structural atomic-replace), using raw `fs` rather than the injectable
+   * `fsOps` — matching seedStagingFromPublished/writeStagedDoc, which also stage
+   * content with raw fs (only backup/swap ops route through `fsOps`).
+   */
+  private safeUnlinkFile(target: string): void {
+    try {
+      fs.rmSync(target, { force: true });
     } catch {
       /* best-effort */
     }

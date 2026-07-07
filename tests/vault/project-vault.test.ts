@@ -274,6 +274,66 @@ describe('OKF private control state — .myco/okf/*', () => {
     expect(manifest?.last_run_ref).toBeNull();
   });
 
+  it('a manifest predating pending_findings (key entirely absent) reads clean, not corrupt', () => {
+    // Same backward-compat lesson as last_run_ref (Task 7.1 added pending_findings):
+    // an absent key must validate, or the guard would silently drop the whole
+    // manifest and reset generation/acks on the next publish.
+    vault.okfStateDir();
+    fs.writeFileSync(
+      vault.okfManifestPath(),
+      JSON.stringify({
+        bundle_generation: 2,
+        inputs_hash: 'abc123',
+        output_root: path.join(projectRoot, 'okf'),
+        last_result: 'published',
+        generated_at: '2026-07-05T12:00:00Z',
+        acknowledged_findings: [],
+        probe_fingerprint: 'fp-1',
+        last_run_ref: null,
+        // pending_findings intentionally omitted.
+      }),
+    );
+    const manifest = vault.readOkfManifest();
+    expect(manifest).not.toBeNull();
+    expect(manifest?.bundle_generation).toBe(2);
+    expect(manifest?.pending_findings).toBeUndefined();
+  });
+
+  it('manifest round-trips pending_findings and the publish_blocked last_result', () => {
+    const manifest = {
+      bundle_generation: 4,
+      inputs_hash: 'h',
+      output_root: path.join(projectRoot, 'okf'),
+      last_result: 'publish_blocked' as const,
+      generated_at: '2026-07-05T12:00:00Z',
+      acknowledged_findings: [],
+      pending_findings: [{ code: 'absolute_local_path', path: 'pages/leaky.md', hash: 'abcd1234' }],
+      probe_fingerprint: null,
+      last_run_ref: null,
+    };
+    vault.writeOkfManifest(manifest);
+    expect(vault.readOkfManifest()).toEqual(manifest);
+  });
+
+  it('treats a shape-invalid pending_findings as corrupt (null)', () => {
+    vault.okfStateDir();
+    fs.writeFileSync(
+      vault.okfManifestPath(),
+      JSON.stringify({
+        bundle_generation: 1,
+        inputs_hash: null,
+        output_root: '/x',
+        last_result: null,
+        generated_at: null,
+        acknowledged_findings: [],
+        probe_fingerprint: null,
+        last_run_ref: null,
+        pending_findings: [{ code: 'x' /* missing path */ }],
+      }),
+    );
+    expect(vault.readOkfManifest()).toBeNull();
+  });
+
   it('corrupt manifest returns null without throwing', () => {
     vault.okfStateDir();
     fs.writeFileSync(vault.okfManifestPath(), '{ not json');

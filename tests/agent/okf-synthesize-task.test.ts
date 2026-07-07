@@ -43,7 +43,7 @@ import { loadMergedConfig } from '@myco/config/loader.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle } from '@myco/okf/bundle.js';
-import { readOwnership } from '@myco/okf/ownership.js';
+import { readOwnership, isHandEdited } from '@myco/okf/ownership.js';
 import { readPlan } from '@myco/okf/synthesis/plan.js';
 import { okfSynthesizeDue, computeOkfProbeFingerprint } from '@myco/okf/schedule.js';
 import { createOkfTools } from '@myco/agent/tools/okf-tools.js';
@@ -513,6 +513,64 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
     const alpha = publishedBundle().readPage('concepts/alpha.md');
     expect(alpha?.raw).toContain('Refreshed content for alpha, a normal update.');
     expect(alpha?.raw).not.toContain('okf:preserved-hand-edit');
+  });
+
+  it('THREE-RUN WALK (Task 7.1): a hand-edit survives a carry-forward run and is augmented — not clobbered — when alpha is re-planned', async () => {
+    // --- Run 1: Myco publishes alpha. ---
+    const seed = await publishedBundle().beginStagedGeneration({ mode: 'published' });
+    seed.stageDocument({
+      path: 'concepts/alpha.md',
+      frontmatter: { type: 'concept', title: 'Alpha', description: 'Original alpha.', timestamp: '2026-07-01T00:00:00.000Z' },
+      body: 'Original Myco-synthesized body for alpha.',
+    });
+    await seed.finalize({ inputsHash: 'seed-1' });
+
+    const outputRoot = path.join(projectRoot, 'okf');
+    const alphaPath = path.join(outputRoot, 'concepts', 'alpha.md');
+    const originalFingerprint = readOwnership(new ProjectVault(projectRoot))?.pages['concepts/alpha.md'].fingerprint;
+    expect(originalFingerprint).toBeTruthy();
+
+    // A human hand-edits alpha directly on disk (replaces the body entirely).
+    const handEdited = handEditedAlphaRaw();
+    fs.writeFileSync(alphaPath, handEdited);
+
+    // --- Run 2: a synthesis whose plan does NOT include alpha — it writes a
+    // DIFFERENT page (beta) and carries alpha forward untouched. ---
+    const run2 = 'run-okf-7-1-carry';
+    const deps2: VaultToolDeps = { ...deps, runId: run2 };
+    const writePage2 = createOkfTools(deps2).find((t) => t.name === 'okf_write_page')!;
+    expect((await invoke(writePage2, {
+      path: 'concepts/beta', type: 'concept', title: 'Beta', description: 'A new sibling.', body: 'Beta body.',
+    })).ok).toBe(true);
+    await finalizeOkfSynthesize({ agentId: deps2.agentId, runId: run2, requestContext: ctx, vaultDir });
+
+    // The hand-edit survived carry-forward on disk ...
+    expect(fs.readFileSync(alphaPath, 'utf8')).toBe(handEdited);
+    // ... AND ownership STILL records Myco's ORIGINAL fingerprint. THIS is the
+    // fix: before Task 7.1 the carry-forward re-fingerprinted the whole tree,
+    // adopting the hand-edit as Myco's own so isHandEdited went false — and the
+    // next run would clobber it.
+    const ownership2 = readOwnership(new ProjectVault(projectRoot));
+    expect(ownership2?.pages['concepts/alpha.md'].fingerprint).toBe(originalFingerprint);
+    expect(isHandEdited('concepts/alpha.md', handEdited, ownership2)).toBe(true);
+
+    // --- Run 3: a synthesis that DOES re-plan alpha. A blind refresh that drops
+    // the human's addendum — the tool's structural augment backstop must still
+    // preserve it, precisely because run 2 kept alpha hand-edited. ---
+    const run3 = 'run-okf-7-1-replan';
+    const deps3: VaultToolDeps = { ...deps, runId: run3 };
+    const writePage3 = createOkfTools(deps3).find((t) => t.name === 'okf_write_page')!;
+    expect((await invoke(writePage3, {
+      path: 'concepts/alpha', type: 'concept', title: 'Alpha',
+      description: 'Refreshed alpha.', body: 'Fresh synthesis for alpha, third run.',
+    })).ok).toBe(true);
+    await finalizeOkfSynthesize({ agentId: deps3.agentId, runId: run3, requestContext: ctx, vaultDir });
+
+    const alpha = publishedBundle().readPage('concepts/alpha.md');
+    // Augment-not-clobber: BOTH the fresh synthesis AND the human's addendum survive.
+    expect(alpha?.raw).toContain('Fresh synthesis for alpha, third run.');
+    expect(alpha?.raw).toContain(HAND_EDIT_ADDENDUM);
+    expect(alpha?.raw).toContain('okf:preserved-hand-edit');
   });
 });
 

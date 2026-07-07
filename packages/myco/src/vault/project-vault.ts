@@ -535,7 +535,7 @@ export interface OkfPrivateManifest {
   bundle_generation: number;
   inputs_hash: string | null;
   output_root: string;
-  last_result: 'published' | 'rolled_back' | 'rollback_failed' | 'cleanup_pending' | null;
+  last_result: 'published' | 'rolled_back' | 'rollback_failed' | 'cleanup_pending' | 'publish_blocked' | null;
   generated_at: string | null;
   /**
    * Publish-eligibility acknowledgement set (per-finding, not a boolean). The
@@ -544,6 +544,17 @@ export interface OkfPrivateManifest {
    * prior acknowledgement.
    */
   acknowledged_findings: Array<{ code: string; path: string; hash?: string }>;
+  /**
+   * Findings that BLOCKED the most recent synthesis publish, persisted by
+   * `OkfBundle.finalize` before it throws so the (ephemeral, now-destroyed)
+   * staged tree's block is durable and surfaceable: the OKF page's load-time
+   * publish-block panel reads it, and `POST /api/okf/acknowledge` drains it into
+   * `acknowledged_findings`. A successful publish clears it. Optional (like
+   * `last_run_ref`): absent on any manifest written before this field existed —
+   * an absent key MUST still validate (see {@link isOkfPrivateManifest}) or the
+   * whole manifest would read as corrupt and silently reset generation/acks.
+   */
+  pending_findings?: Array<{ code: string; path: string; hash?: string }>;
   /**
    * Hash of (source counts, max updated_ats, include config, projection +
    * task versions) written at publish; the okf-maintain precondition probe
@@ -565,7 +576,18 @@ export interface OkfPrivateManifest {
   last_run_ref: { headSha: string | null; maxVaultUpdatedAt: number } | null;
 }
 
-const OKF_LAST_RESULTS = new Set(['published', 'rolled_back', 'rollback_failed', 'cleanup_pending']);
+const OKF_LAST_RESULTS = new Set(['published', 'rolled_back', 'rollback_failed', 'cleanup_pending', 'publish_blocked']);
+
+/** Shared shape check for a `{ code, path, hash? }` finding array (acknowledged + pending). */
+function isFindingArray(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.every((f) => {
+    if (f === null || typeof f !== 'object') return false;
+    const entry = f as Record<string, unknown>;
+    if (typeof entry.code !== 'string' || typeof entry.path !== 'string') return false;
+    return entry.hash === undefined || typeof entry.hash === 'string';
+  });
+}
 
 /**
  * Structural guard for a manifest read from disk. A hand-edited or
@@ -590,13 +612,14 @@ function isOkfPrivateManifest(value: unknown): value is OkfPrivateManifest {
     if (typeof ref.headSha !== 'string' && ref.headSha !== null) return false;
     if (typeof ref.maxVaultUpdatedAt !== 'number' || !Number.isFinite(ref.maxVaultUpdatedAt)) return false;
   }
-  if (!Array.isArray(m.acknowledged_findings)) return false;
-  return m.acknowledged_findings.every((f) => {
-    if (f === null || typeof f !== 'object') return false;
-    const entry = f as Record<string, unknown>;
-    if (typeof entry.code !== 'string' || typeof entry.path !== 'string') return false;
-    return entry.hash === undefined || typeof entry.hash === 'string';
-  });
+  // Absent key (a manifest written before pending_findings was added, Task 7.1)
+  // is valid — only shape-validate when the field is actually present. Same
+  // backward-compat posture as last_run_ref above; rejecting an absent-but-newly-
+  // added field would silently drop the whole manifest and reset generation/acks.
+  if (m.pending_findings !== undefined && m.pending_findings !== null && !isFindingArray(m.pending_findings)) {
+    return false;
+  }
+  return isFindingArray(m.acknowledged_findings);
 }
 
 /**

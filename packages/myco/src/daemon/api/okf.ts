@@ -7,6 +7,7 @@
  * typed `OkfError`s map to the frozen HTTP status set.
  *
  *   POST /api/okf/maintain
+ *   POST /api/okf/acknowledge
  *   GET  /api/okf/status
  *   POST /api/okf/validate
  *   GET  /api/okf/pages                (list — OKF document pages)
@@ -156,6 +157,14 @@ export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrin
       pointerPresent = false;
     }
 
+    // Findings that BLOCKED the last synthesis publish (persisted to the
+    // manifest when the ephemeral run aborted) — the synthesis-world source of a
+    // publish block, since a blocked run publishes nothing so the published tree
+    // never gains the offending finding. Fold them into publishEligibility so
+    // the OKF page's load-time block panel lights up on a plain reload.
+    const pendingFindings = status.pendingFindings ?? [];
+    const publishedKeys = new Set(publishFindings.map((f) => `${f.code}::${f.path}`));
+
     return {
       status: 200,
       body: {
@@ -165,16 +174,38 @@ export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrin
         validation,
         agentsPointer: { present: pointerPresent, stale: pointerPresent !== pointerExpected },
         publishEligibility: {
-          // `ok` means "a repo-visible publish is NOT blocked" — i.e. every
-          // current finding is already acknowledged. It is NOT "zero findings"
-          // (see `findings` for the raw list). Plan 7 renders `ok` as the
-          // publishable state and `findings` as the reviewable detail.
-          ok: status.publishAcknowledged,
-          findings: publishFindings.map((f) => ({ code: f.code, path: f.path, excerpt: f.excerpt })),
+          // `ok` means "a repo-visible publish is NOT blocked" — every published-
+          // tree finding is acknowledged AND nothing is pending from a blocked
+          // synthesis run. It is NOT "zero findings" (see `findings` for the raw
+          // list). Plan 7 renders `ok` as the publishable state.
+          ok: status.publishAcknowledged && pendingFindings.length === 0,
+          findings: [
+            ...publishFindings.map((f) => ({ code: f.code, path: f.path, excerpt: f.excerpt })),
+            ...pendingFindings
+              .filter((f) => !publishedKeys.has(`${f.code}::${f.path}`))
+              .map((f) => ({ code: f.code, path: f.path, excerpt: '' })),
+          ],
         },
         lastRun: null, // filled by Plan 6 (okf-maintain task) from agent_runs
       },
     };
+  } catch (err) {
+    return okfErrorResponse(err);
+  }
+}
+
+/**
+ * Acknowledge the findings that blocked the last synthesis publish, draining
+ * `manifest.pending_findings` into `acknowledged_findings` so the next
+ * `okf-synthesize` run publishes. The non-`maintain` replacement for the dead
+ * `maintain({acknowledgePublish:true})` acknowledge path (§B); returns the
+ * refreshed status envelope (pending now empty).
+ */
+export async function handleOkfAcknowledge(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
+  const ctx = contextFor(principal);
+  try {
+    const status = await ctx.bundle.acknowledgePendingFindings();
+    return { status: 200, body: { ok: true, status } };
   } catch (err) {
     return okfErrorResponse(err);
   }
@@ -257,6 +288,7 @@ export function registerOkfRoutes(
   tenant: { machineId: string; logger: DaemonLogger },
 ): void {
   server.registerRoute('POST', '/api/okf/maintain', tenantRoute(tenant, handleOkfMaintain));
+  server.registerRoute('POST', '/api/okf/acknowledge', tenantRoute(tenant, handleOkfAcknowledge));
   server.registerRoute('GET', '/api/okf/status', tenantRoute(tenant, handleOkfStatus));
   server.registerRoute('POST', '/api/okf/validate', tenantRoute(tenant, handleOkfValidate));
   server.registerRoute('GET', '/api/okf/pages', tenantRoute(tenant, handleOkfPagesList));

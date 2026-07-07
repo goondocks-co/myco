@@ -7,12 +7,13 @@ import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grov
 import { assertGroveProjectId } from '@myco/grove/ids';
 import { tenantRoute } from '@myco/daemon/api/route-helpers';
 import type { RequestPrincipal } from '@myco/daemon/request-principal';
-import { OkfError } from '@myco/okf/errors';
+import { OkfError, OKF_ERROR_HTTP_STATUS } from '@myco/okf/errors';
 
 // --- Stub OkfBundle so the handlers' funnel + error mapping is exercised
 //     without a real DB. OkfError stays real (separate module). ---
 interface StubImpl {
   maintain?: (input: unknown) => Promise<unknown>;
+  acknowledgePendingFindings?: () => Promise<unknown>;
   status?: () => unknown;
   validate?: (root?: string) => unknown;
   saveConcept?: (input: unknown) => Promise<unknown>;
@@ -32,7 +33,10 @@ mock.module('@myco/okf/bundle.js', () => ({
       return stub.maintain?.(input) ?? Promise.resolve({ outputRoot: 'okf', conceptCount: 0, byType: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0 } });
     }
     status() {
-      return stub.status?.() ?? { outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, conceptCount: null, stale: false, publishAcknowledged: true };
+      return stub.status?.() ?? { outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, conceptCount: null, stale: false, publishAcknowledged: true, pendingFindings: [] };
+    }
+    acknowledgePendingFindings() {
+      return stub.acknowledgePendingFindings?.() ?? Promise.resolve({ outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, conceptCount: null, stale: false, publishAcknowledged: true, pendingFindings: [] });
     }
     validate(root?: string) {
       return stub.validate?.(root) ?? { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0, issues: [] };
@@ -54,6 +58,7 @@ mock.module('@myco/okf/bundle.js', () => ({
 
 const {
   handleOkfMaintain,
+  handleOkfAcknowledge,
   handleOkfStatus,
   handleOkfValidate,
   handleOkfPagesList,
@@ -232,14 +237,14 @@ describe('OKF API handlers', () => {
   });
 
   it('status emits the frozen Plan-7 aggregation shape exactly', async () => {
-    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 3, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'published', byType: { decision: 2, guide: 1 }, conceptCount: 3, stale: false, publishAcknowledged: true });
+    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 3, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'published', byType: { decision: 2, guide: 1 }, conceptCount: 3, stale: false, publishAcknowledged: true, pendingFindings: [] });
     stub.validate = () => ({ ok: true, level: 'myco_strict', filesChecked: 4, conceptsChecked: 3, issues: [] });
     // A published bundle on disk for the scanner to read (clean → no findings).
     fs.mkdirSync(path.join(projectRoot, 'okf'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, 'okf/note.md'), '---\ntype: Note\n---\n\nBody.\n');
     const res = await handleOkfStatus(req(), principalFor(ctxFor()));
     const body = res.body as Record<string, unknown>;
-    for (const key of ['outputRoot', 'bundleExists', 'bundleGeneration', 'inputsHash', 'generatedAt', 'lastResult', 'byType', 'conceptCount', 'stale', 'publishAcknowledged', 'enabled', 'outputPath', 'validation', 'agentsPointer', 'publishEligibility', 'lastRun']) {
+    for (const key of ['outputRoot', 'bundleExists', 'bundleGeneration', 'inputsHash', 'generatedAt', 'lastResult', 'byType', 'conceptCount', 'stale', 'publishAcknowledged', 'pendingFindings', 'enabled', 'outputPath', 'validation', 'agentsPointer', 'publishEligibility', 'lastRun']) {
       expect(body).toHaveProperty(key);
     }
     expect(body.lastRun).toBeNull();
@@ -250,6 +255,42 @@ describe('OKF API handlers', () => {
     expect(Array.isArray(pubElig.findings)).toBe(true);
     const agentsPointer = body.agentsPointer as Record<string, unknown>;
     expect(Object.keys(agentsPointer).sort()).toEqual(['present', 'stale']);
+  });
+
+  it('status folds pending_findings into publishEligibility: ok=false and the findings are surfaced', async () => {
+    // A published tree with no findings, but a synthesis run left pending
+    // blocking findings on the manifest — the block must still surface.
+    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 1, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'publish_blocked', byType: {}, conceptCount: 0, stale: false, publishAcknowledged: true, pendingFindings: [{ code: 'absolute_local_path', path: 'pages/leaky.md', hash: 'abcd1234' }] });
+    stub.validate = () => ({ ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0, issues: [] });
+    fs.mkdirSync(path.join(projectRoot, 'okf'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, 'okf/note.md'), '---\ntype: Note\n---\n\nClean body.\n');
+    const res = await handleOkfStatus(req(), principalFor(ctxFor()));
+    const body = res.body as Record<string, unknown>;
+    const pubElig = body.publishEligibility as { ok: boolean; findings: Array<{ code: string; path: string }> };
+    // publishAcknowledged was true, but a non-empty pending set blocks publish.
+    expect(pubElig.ok).toBe(false);
+    expect(pubElig.findings.some((f) => f.code === 'absolute_local_path' && f.path === 'pages/leaky.md')).toBe(true);
+    expect((body.pendingFindings as unknown[]).length).toBe(1);
+  });
+
+  it('acknowledge delegates to acknowledgePendingFindings and returns the updated status', async () => {
+    let called = false;
+    stub.acknowledgePendingFindings = () => {
+      called = true;
+      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 1, inputsHash: 'h', generatedAt: null, lastResult: 'publish_blocked', byType: {}, conceptCount: 0, stale: false, publishAcknowledged: true, pendingFindings: [] });
+    };
+    const res = await handleOkfAcknowledge(req({ body: {} }), principalFor(ctxFor()));
+    expect(res.status).toBe(200);
+    expect(called).toBe(true);
+    const body = res.body as { ok: boolean; status: { pendingFindings: unknown[] } };
+    expect(body.ok).toBe(true);
+    expect(body.status.pendingFindings).toEqual([]);
+  });
+
+  it('acknowledge maps a thrown OkfError to its frozen envelope', async () => {
+    stub.acknowledgePendingFindings = () => Promise.reject(new OkfError('okf_disabled', 'off'));
+    const res = await handleOkfAcknowledge(req({ body: {} }), principalFor(ctxFor()));
+    expect(res.status).toBe(OKF_ERROR_HTTP_STATUS.okf_disabled);
   });
 });
 

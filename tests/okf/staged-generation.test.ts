@@ -242,3 +242,127 @@ describe('OkfBundle.beginStagedGeneration — incremental carry-forward (Task 3.
     expect(manifest()?.bundle_generation).toBe(1);
   });
 });
+
+describe('OkfBundle.beginStagedGeneration — carried-page quarantine (Task 7.1)', () => {
+  it('quarantines an invalid carried page instead of wedging the publish; fresh pages still ship', async () => {
+    const outputRoot = okfDir();
+    const bundle = makeBundle();
+
+    // Publish alpha + gamma (both valid).
+    const first = await bundle.beginStagedGeneration({ mode: 'published' });
+    first.stageDocument(contentDoc('pages/alpha'));
+    first.stageDocument(contentDoc('pages/gamma'));
+    await first.finalize({ inputsHash: 'gen-1' });
+
+    // A human hand-edits gamma into an INVALID OKF page — drops the required
+    // 'description' floor key. A whole-tree strict validate would throw
+    // okf_validation_failed and wedge every future publish on this one page.
+    fs.writeFileSync(
+      path.join(outputRoot, 'pages/gamma.md'),
+      '---\ntype: note\ntitle: Gamma\ntimestamp: 2026-07-05T00:00:00Z\n---\n\nA carried page missing the description floor key.\n',
+    );
+
+    // Second run stages a DIFFERENT fresh page. gamma is carried forward, fails
+    // per-file validation, is quarantined — and the run publishes anyway.
+    const second = await bundle.beginStagedGeneration({ mode: 'published' });
+    second.stageDocument(contentDoc('pages/beta'));
+    const result = await second.finalize({ inputsHash: 'gen-2' });
+
+    // finalize did NOT throw; the published tree is strict-valid.
+    expect(result.unchanged).toBe(false);
+    expect(validateBundleTree(outputRoot, 'strict').ok).toBe(true);
+
+    // Fresh page + the valid carried page published; the invalid one was excluded.
+    expect(fs.existsSync(path.join(outputRoot, 'pages/beta.md'))).toBe(true);
+    expect(fs.existsSync(path.join(outputRoot, 'pages/alpha.md'))).toBe(true);
+    expect(fs.existsSync(path.join(outputRoot, 'pages/gamma.md'))).toBe(false);
+
+    // A recoverable warning names the quarantined page.
+    const warning = result.warnings.find((w) => w.code === 'carried_page_quarantined');
+    expect(warning?.path).toBe('pages/gamma.md');
+
+    // The generated index omits the quarantined page.
+    const pagesIndex = fs.readFileSync(path.join(outputRoot, 'pages/index.md'), 'utf8');
+    expect(pagesIndex).toContain('alpha.md');
+    expect(pagesIndex).toContain('beta.md');
+    expect(pagesIndex).not.toContain('gamma.md');
+    expect(manifest()?.bundle_generation).toBe(2);
+  });
+
+  it('a carried page re-staged fresh this run is NOT quarantined even if its prior on-disk copy was invalid', async () => {
+    const outputRoot = okfDir();
+    const bundle = makeBundle();
+
+    const first = await bundle.beginStagedGeneration({ mode: 'published' });
+    first.stageDocument(contentDoc('pages/gamma'));
+    await first.finalize({ inputsHash: 'gen-1' });
+
+    // Break gamma on disk ...
+    fs.writeFileSync(
+      path.join(outputRoot, 'pages/gamma.md'),
+      '---\ntype: note\ntitle: Gamma\ntimestamp: 2026-07-05T00:00:00Z\n---\n\nBroken (no description).\n',
+    );
+
+    // ... but this run re-synthesizes gamma with a VALID fresh document — the
+    // fresh content wins and is validated wholesale, so gamma is not quarantined.
+    const second = await bundle.beginStagedGeneration({ mode: 'published' });
+    second.stageDocument(contentDoc('pages/gamma'));
+    const result = await second.finalize({ inputsHash: 'gen-2' });
+
+    expect(result.warnings.some((w) => w.code === 'carried_page_quarantined')).toBe(false);
+    expect(fs.existsSync(path.join(outputRoot, 'pages/gamma.md'))).toBe(true);
+    expect(validateBundleTree(outputRoot, 'strict').ok).toBe(true);
+  });
+});
+
+describe('OkfBundle publish-block acknowledge model (Task 7.1)', () => {
+  // A body that trips the publish-eligibility scanner (absolute local path).
+  function findingDoc(): OkfDocument {
+    return {
+      path: 'pages/leaky.md',
+      frontmatter: { type: 'note', title: 'Leaky', description: 'Carries an absolute path.', timestamp: '2026-07-05T00:00:00Z' },
+      body: 'See the config at /Users/someone/secret/config.toml for details.',
+    };
+  }
+
+  it('a blocking finding persists to pending_findings and blocks; acknowledging clears it so the next run publishes', async () => {
+    const bundle = makeBundle();
+
+    // Run 1: finalize BLOCKS on the unacknowledged finding — nothing publishes.
+    const first = await bundle.beginStagedGeneration({ mode: 'published' });
+    first.stageDocument(findingDoc());
+    await expect(first.finalize({ inputsHash: 'gen-1' })).rejects.toThrow(/publish blocked/);
+
+    // The block is durable on the manifest, though nothing was published.
+    expect(bundle.status().bundleExists).toBe(false);
+    const blocked = manifest();
+    expect(blocked?.last_result).toBe('publish_blocked');
+    expect(blocked?.pending_findings?.map((f) => f.code)).toEqual(['absolute_local_path']);
+    // status surfaces it for the OKF page's load-time block panel.
+    expect(bundle.status().pendingFindings.map((f) => f.code)).toEqual(['absolute_local_path']);
+
+    // Acknowledge — drains pending into acknowledged_findings.
+    const afterAck = await bundle.acknowledgePendingFindings();
+    expect(afterAck.pendingFindings).toEqual([]);
+    const acked = manifest();
+    expect(acked?.pending_findings).toEqual([]);
+    expect(acked?.acknowledged_findings.map((f) => f.code)).toEqual(['absolute_local_path']);
+
+    // Run 2: the SAME finding is now acknowledged → publishes.
+    const second = await bundle.beginStagedGeneration({ mode: 'published' });
+    second.stageDocument(findingDoc());
+    const result = await second.finalize({ inputsHash: 'gen-2' });
+    expect(result.unchanged).toBe(false);
+    expect(bundle.status().bundleExists).toBe(true);
+    // The successful publish cleared pending.
+    expect(manifest()?.pending_findings).toEqual([]);
+    expect(manifest()?.bundle_generation).toBe(1);
+  });
+
+  it('acknowledgePendingFindings is a no-op when nothing is pending', async () => {
+    const bundle = makeBundle();
+    const status = await bundle.acknowledgePendingFindings();
+    expect(status.pendingFindings).toEqual([]);
+    expect(manifest()).toBeNull();
+  });
+});
