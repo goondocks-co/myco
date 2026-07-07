@@ -50,8 +50,9 @@ import {
   CANOPY_MAP_TASK,
   CANOPY_MAP_REPORT_ACTION,
   CANOPY_MAP_CONTENT_KEY,
+  OKF_SYNTHESIZE_TASK,
 } from './instruction-builders.js';
-import { OkfError } from '@myco/okf/errors.js';
+import { finalizeOkfSynthesisSession, abortOkfSynthesisSession } from './tools/okf-staging.js';
 import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
@@ -848,6 +849,7 @@ export async function runAgent(
 
     await cleanupOnTaskFailure({
       taskName: config.taskName,
+      runId,
       vaultDir,
       runContext: options?.runContext,
     });
@@ -869,6 +871,12 @@ export async function runAgent(
  * for direct unit testing — the real executor call site lives in
  * runAgent's catch block.
  *
+ * okf-synthesize: the synthesize map phase may have opened a staged
+ * generation (taking the OKF lifecycle lock) on the first okf_write_page.
+ * A failed run never reaches finalizeOkfSynthesize, so abort here to publish
+ * nothing and release the lock. Safe no-op when no session was opened (empty
+ * plan, or a failure before the first page write).
+ *
  * skill-generate: the draft phase stages SKILL.md + manifest to
  * .myco/staging/skills/<candidate_id>/ via vault_stage_skill. If the
  * validate phase (or any later required phase) fails, the staged
@@ -878,9 +886,15 @@ export async function runAgent(
  */
 export async function cleanupOnTaskFailure(args: {
   taskName: string | undefined;
+  runId?: string;
   vaultDir: string | undefined;
   runContext: RunOptions['runContext'];
 }): Promise<void> {
+  if (args.taskName === OKF_SYNTHESIZE_TASK) {
+    if (args.runId) abortOkfSynthesisSession(args.runId);
+    return;
+  }
+
   if (args.taskName !== SKILL_GENERATE_TASK) return;
   if (!args.vaultDir) return;
   const candidateId = args.runContext?.candidate_id;
@@ -932,8 +946,10 @@ export async function finalizeOnTaskSuccess(args: {
     finalizeCanopyMap(args);
     return;
   }
-  // okf-synthesize (Task 2.3) will dispatch to finalizeOkfSynthesize here once
-  // that task exists — nothing currently runs the OKF publish hook.
+  if (args.taskName === OKF_SYNTHESIZE_TASK) {
+    await finalizeOkfSynthesize(args);
+    return;
+  }
 }
 
 function finalizeSkillSurvey(args: {
@@ -1047,10 +1063,12 @@ function finalizeCanopyMap(args: {
 }
 
 /**
- * Publish hook for a successful `okf-synthesize` run — stubbed pending Task
- * 2.3's staged-generation publish path. `renderDocuments()` still throws
- * `not_implemented` (Task 0.1), so there is nothing to publish yet; no task
- * currently dispatches into this hook (`okf-synthesize` is added in Task 2.3).
+ * Publish hook for a successful `okf-synthesize` run. The synthesize map phase
+ * staged each page into the run's single staged generation (opened lazily on
+ * the first `okf_write_page`, under one lock). This publishes that staging tree
+ * atomically and drops the registry entry. Returns without publishing when no
+ * page was ever staged — an empty plan or an all-skipped synthesize phase — in
+ * which case the previously published bundle is left untouched.
  */
 export async function finalizeOkfSynthesize(args: {
   agentId: string;
@@ -1058,7 +1076,9 @@ export async function finalizeOkfSynthesize(args: {
   requestContext?: RunOptions['requestContext'];
   vaultDir?: string;
 }): Promise<void> {
-  throw new OkfError('not_implemented', 'okf-synthesize publish finalization is not yet implemented (Phase 2)');
+  await finalizeOkfSynthesisSession(args.runId, {
+    logSummary: 'Synthesized OKF wiki pages.',
+  });
 }
 
 function fallbackInstructionHash(instruction: string | undefined): string {

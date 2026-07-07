@@ -34,7 +34,7 @@ import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 // ---------------------------------------------------------------------------
 
 /** Number of built-in task YAML files. */
-const EXPECTED_TASK_COUNT = 15;
+const EXPECTED_TASK_COUNT = 16;
 
 /** Built-in agent name from agent.yaml. */
 const BUILT_IN_AGENT_NAME = 'myco-agent';
@@ -208,6 +208,21 @@ describe('agent loader', () => {
       expect(names).toContain('extract-only');
       expect(names).toContain('supersession-sweep');
       expect(names).toContain('title-summary');
+      expect(names).toContain('okf-synthesize');
+    });
+
+    it('loads schedule from okf-synthesize task', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const okf = tasks.find((t) => t.name === 'okf-synthesize');
+      expect(okf?.schedule?.enabled).toBe(false);
+      expect(okf?.schedule?.preCondition).toBe('okf-synthesize-due');
+      const phaseNames = okf?.phases?.map((p) => p.name);
+      expect(phaseNames).toEqual(['explore', 'plan', 'synthesize']);
+      const synth = okf?.phases?.find((p) => p.name === 'synthesize');
+      expect(synth?.mode).toBe('map');
+      expect(synth?.source?.tool).toBe('okf_list_planned_pages');
+      expect(synth?.source?.itemsPath).toBe('pages');
+      expect(synth?.sink?.tool).toBe('okf_write_page');
     });
 
     it('tasks with toolOverrides have string arrays', () => {

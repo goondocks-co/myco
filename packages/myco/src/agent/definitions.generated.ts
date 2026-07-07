@@ -318,6 +318,98 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     }
   },
   {
+    "name": "okf-synthesize",
+    "displayName": "OKF Synthesize",
+    "description": "Synthesize the project's Open Knowledge Format wiki from repo, git, and vault source material: survey sources, plan a capped page set, then write one page per plan entry and publish the bundle atomically.",
+    "agent": "myco-agent",
+    "prompt": "Synthesize this project's OKF knowledge wiki. Survey the source material and the already-published pages, plan a focused set of pages, then write each one. Publication is automatic once the run succeeds — never try to publish by hand.",
+    "isDefault": false,
+    "reasoningLevel": "default",
+    "maxTurns": 30,
+    "timeoutSeconds": 1800,
+    "phases": [
+      {
+        "name": "explore",
+        "prompt": "Survey what this project's OKF knowledge wiki should contain.\n\nRead the source material with `okf_read_sources` (repo file tree, git\nchange context, and vault knowledge — spores, decisions, canopy — as\nid+title+type summaries). Read the currently-published pages with\n`okf_list_pages`, and `okf_read_page` for any whose current content you\nneed to judge. You write NOTHING in this phase.\n\nEmit a compact synthesis brief as your phase summary:\n\n## Pages the wiki should hold\n- <bundle-relative slug-safe path> (<type>) — <one sentence: what this\n  page covers and why it belongs>\n\nPrefer a small, durable set of concept/overview/glossary pages grounded in\nthe source material over an exhaustive file-by-file enumeration. Note which\nalready-published pages should be refreshed versus left as-is. If nothing\nmeaningful has changed since the last synthesis, say so plainly and list\nno pages.\n",
+        "tools": [
+          "okf_read_sources",
+          "okf_list_pages",
+          "okf_read_page"
+        ],
+        "maxTurns": 12,
+        "reasoningLevel": "high",
+        "required": true,
+        "dependsOn": [],
+        "readOnly": true,
+        "purpose": "Read-only survey of OKF source material and already-published pages to decide what the wiki should cover this run.",
+        "onItemError": "skip"
+      },
+      {
+        "name": "plan",
+        "prompt": "Turn the explore brief into the run's page-plan and persist it.\n\nCall `okf_write_plan` exactly once with the full set of pages to write\nthis run. For each page provide:\n  - path: bundle-relative, slug-safe (no leading slash, no traversal)\n  - type: non-empty OKF document type (e.g. concept, overview, glossary)\n  - title\n  - rationale: why this page belongs (auditable)\n  - sourceRefs: the stable ids from okf_read_sources this page draws on\n  - openQuestions: gaps to flag for this page; omit when there are none\n\nThe plan is the ONLY channel to the synthesis phase — a page not in the\nplan is never written. Keep the plan focused and within the page cap; a\nrunaway plan is rejected and nothing is written. If okf_write_plan returns\nvalidation errors, fix them and call it again. If the explore brief found\nnothing worth writing, write an empty plan (an empty pages array) so the\nsynthesis phase becomes a no-op and the previously published bundle is\nleft untouched.\n",
+        "tools": [
+          "okf_read_sources",
+          "okf_list_pages",
+          "okf_read_page",
+          "okf_write_plan"
+        ],
+        "maxTurns": 10,
+        "reasoningLevel": "high",
+        "required": true,
+        "dependsOn": [
+          "explore"
+        ],
+        "purpose": "Turn the explore brief into a capped, auditable page-plan and persist it via okf_write_plan so the map-synthesize phase can read it back.",
+        "onItemError": "skip"
+      },
+      {
+        "name": "synthesize",
+        "prompt": "",
+        "tools": [],
+        "maxTurns": 1,
+        "reasoningLevel": "default",
+        "required": true,
+        "dependsOn": [
+          "plan"
+        ],
+        "purpose": "Synthesize one OKF page per planned entry and stage it into the run's single staged generation.",
+        "mode": "map",
+        "perItemMaxTurns": 4,
+        "perItemTimeoutSeconds": 120,
+        "onItemError": "skip",
+        "source": {
+          "tool": "okf_list_planned_pages",
+          "args": {},
+          "itemsPath": "pages"
+        },
+        "item": {
+          "prompt": "Synthesize this one OKF wiki page and stage it by calling\n`okf_write_page`. The harness pins path, type, and title from the plan —\nyou supply `description` (a one-line summary) and `body` (the full page\nmarkdown, no frontmatter). You MUST emit the tool call; a text-only\nresponse is discarded.\n\nRead the source material this page draws on with `okf_read_sources`, and\n`okf_read_page` for any published page you are refreshing. Write clear,\naccurate prose grounded in that material — do not invent facts. Use\nbundle-relative links to sibling pages where they help.\n\nPage: {{ item.title }}\nPath: {{ item.path }}\nType: {{ item.type }}\nRationale: {{ item.rationale }}\nSource refs: {{ item.sourceRefs }}\nOpen questions: {{ item.openQuestions }}\n",
+          "readTools": [
+            "okf_read_sources",
+            "okf_read_page"
+          ]
+        },
+        "sink": {
+          "tool": "okf_write_page",
+          "argMap": {
+            "path": "{{ item.path }}",
+            "type": "{{ item.type }}",
+            "title": "{{ item.title }}"
+          }
+        }
+      }
+    ],
+    "schedule": {
+      "enabled": false,
+      "intervalSeconds": 21600,
+      "runIn": [
+        "idle",
+        "sleep"
+      ],
+      "preCondition": "okf-synthesize-due"
+    }
+  },
+  {
     "name": "review-session",
     "displayName": "Review Session",
     "description": "Process a single session end-to-end. Extracts spores from all prompt batches in the session, runs supersession checks, and generates the session title and summary.\n",

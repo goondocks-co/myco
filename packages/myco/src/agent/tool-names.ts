@@ -47,7 +47,9 @@ export const CANOPY_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 export const OKF_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'okf_read_bundle', 'okf_list_changes', 'okf_write_concept', 'okf_report',
+  'okf_read_sources', 'okf_list_pages', 'okf_read_page',
+  'okf_write_plan', 'okf_list_planned_pages', 'okf_write_page',
+  'okf_report',
 ]);
 
 /**

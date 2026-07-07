@@ -41,6 +41,7 @@ import {
 
 export { OkfError } from './errors.js';
 export type { OutputClass } from './output-root.js';
+export type { OkfBundleWriteResult } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Filesystem seam — structural ops the failure-injection tests override.
@@ -1381,6 +1382,71 @@ export class OkfBundle {
         links: [],
       },
     };
+  }
+
+  /**
+   * List published OKF v0.1 document pages — every non-reserved `.md` in the
+   * published tree (excluding `index.md`/`log.md`), each with its
+   * bundle-relative path and OKF frontmatter `type`/`title`. The document-model
+   * read primitive for the synthesis harness (`okf_list_pages`); unlike
+   * `listConcepts`, it walks the whole tree, not just `concepts/`, because
+   * Phase 2 documents live at arbitrary bundle-relative paths.
+   */
+  listPages(): Array<{ path: string; type: string; title?: string }> {
+    const root = this.resolve({ mode: 'published' }).absPath;
+    const out: Array<{ path: string; type: string; title?: string }> = [];
+    const walk = (relDir: string): void => {
+      for (const name of this.safeReaddir(relDir === '' ? root : path.join(root, relDir)).sort()) {
+        const rel = relDir === '' ? name : `${relDir}/${name}`;
+        const abs = path.join(root, rel);
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(abs);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          walk(rel);
+          continue;
+        }
+        if (!name.endsWith('.md') || RESERVED_BASENAMES.has(name)) continue;
+        try {
+          const { frontmatter } = parseConceptDoc(fs.readFileSync(abs, 'utf8'));
+          out.push({
+            path: rel,
+            type: typeof frontmatter.type === 'string' ? frontmatter.type : 'unknown',
+            title: typeof frontmatter.title === 'string' ? frontmatter.title : undefined,
+          });
+        } catch {
+          /* skip unparseable */
+        }
+      }
+    };
+    walk('');
+    return out;
+  }
+
+  /**
+   * Read one published document page's raw markdown by bundle-relative path
+   * (with or without the `.md` suffix). Returns null for a missing, unsafe, or
+   * unreadable path — an unsafe path is reported as "not found" so no file
+   * outside the bundle is ever disclosed. Reserved index/log files are not pages.
+   */
+  readPage(pagePath: string): { path: string; raw: string } | null {
+    const root = this.resolve({ mode: 'published' }).absPath;
+    const rel = pagePath.endsWith('.md') ? pagePath : `${pagePath}.md`;
+    try {
+      assertSafeConceptId(rel);
+    } catch {
+      return null;
+    }
+    if (RESERVED_BASENAMES.has(path.posix.basename(rel))) return null;
+    try {
+      const raw = fs.readFileSync(path.join(root, rel), 'utf8');
+      return { path: rel, raw };
+    } catch {
+      return null;
+    }
   }
 
   // -------------------------------------------------------------------

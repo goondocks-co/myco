@@ -435,6 +435,12 @@ export function buildPreConditions(
         taskAgentMap.get(SKILL_SURVEY_TASK),
         scope.requestContext,
       ).eligible,
+    // Stub gate: reports "never due", so an enabled okf-synthesize schedule
+    // performs no work. Task 2.4 replaces this with real meaningful-change
+    // detection (a source fingerprint diffed against the last published
+    // bundle). Registered now so the okf-synthesize YAML validates and the
+    // schema↔registry membership test passes.
+    'okf-synthesize-due': () => false,
   };
 }
 

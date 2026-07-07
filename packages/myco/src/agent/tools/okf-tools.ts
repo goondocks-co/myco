@@ -1,11 +1,24 @@
 /**
- * OKF harness tools.
+ * OKF synthesis harness tools.
  *
- * 4 tools: okf_read_bundle, okf_list_changes, okf_write_concept, okf_report
+ * 7 tools driving the `okf-synthesize` task's explore → plan → map-synthesize
+ * pipeline:
+ *   - okf_read_sources     — reduced, citable source material (Task 2.1).
+ *   - okf_list_pages       — currently-published document pages.
+ *   - okf_read_page        — one published page's raw markdown.
+ *   - okf_write_plan       — persist the capped wiki page-plan (Task 2.2).
+ *   - okf_list_planned_pages — the map-phase SOURCE: reads plan.json back.
+ *   - okf_write_page       — the map-phase SINK: stages one OkfDocument.
+ *   - okf_report           — pure observability report.
  *
- * Used by the `okf-maintain` scheduled task's `gather` (read-only) and
- * `render` phases. All bundle writes go through `OkfBundle` — this module
- * never touches the filesystem or DB directly, mirroring the constrained
+ * THE PLAN→MAP HANDOFF: a map-phase source tool is called by harness code with
+ * only `{params}` — it cannot receive a prior phase's in-memory output. The
+ * `WikiPlan` reaches the `synthesize` map phase ONLY because `okf_write_plan`
+ * persists it to `.myco/okf/state/plan.json` and `okf_list_planned_pages` reads
+ * it back (exactly the `canopy_describe_next` persisted-state pattern).
+ *
+ * All published-bundle writes go through `OkfBundle`/`StagedGeneration` — this
+ * module never touches the published tree directly, mirroring the constrained
  * `myco_okf` MCP surface (packages/myco/src/tools/okf.ts).
  */
 
@@ -17,9 +30,13 @@ import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle } from '@myco/okf/bundle.js';
 import { OkfError } from '@myco/okf/errors.js';
 import { gatherSources } from '@myco/okf/synthesis/sources.js';
+import { validateWikiPlan, writePlan, readPlan, type WikiPlan } from '@myco/okf/synthesis/plan.js';
+import { renderOkfDocument } from '@myco/okf/serialize.js';
+import type { OkfDocument, OkfFrontmatter } from '@myco/okf/types.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { OKF_REPORT_ACTION } from '../instruction-builders.js';
 import { OKF_TOOL_NAMES } from '../tool-names.js';
+import { openOkfSynthesisSession } from './okf-staging.js';
 import {
   textResult,
   projectScopeFromVaultToolDeps,
@@ -64,6 +81,31 @@ function okfErrorResult(err: unknown): { content: Array<{ type: 'text'; text: st
   return textResult({ error: err instanceof Error ? err.message : String(err) });
 }
 
+function nowIso(): string {
+  return new Date(epochSeconds() * 1000).toISOString();
+}
+
+/**
+ * Collapse any newline/CR/control char to a single space so a frontmatter
+ * `title`/`description` stays a single line. This is the PRIMARY sanitizer for
+ * the markdown-structure-injection vector: a title or description is later
+ * rendered raw into a generated index bullet's `* [title](link) - desc`, where
+ * an embedded newline splices a new markdown line. The validator's
+ * `unsafe_frontmatter_text` check (validate.ts) is only a publish-time backstop;
+ * a `]` in a title is left to that backstop (neutralizing it here would silently
+ * alter authored content).
+ */
+function sanitizeFrontmatterLine(text: string): string {
+  // Replace CR/LF/tab and any other C0 control char (and DEL) with a space,
+  // then collapse runs of whitespace, so the value stays a single line.
+  let out = '';
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    out += code < 0x20 || code === 0x7f ? ' ' : ch;
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -72,39 +114,13 @@ export function createOkfTools(deps: VaultToolDeps) {
   const { runId } = deps;
   const projectId = rowProjectIdFromVaultToolDeps(deps);
 
-  const okfReadBundle = tool(
-    'okf_read_bundle',
-    'Read the published OKF bundle. Pass id to read one concept\'s raw markdown (e.g. "concepts/foo"); omit id to get a bundle summary (status + concept list) instead.',
+  const okfReadSources = tool(
+    'okf_read_sources',
+    'Read the reduced, citable OKF source material this project synthesizes from: the repo file tree, git diff context, and vault knowledge (spores, decisions, canopy) as id+title+type summaries — never full bodies. Pass kind to fetch one slice (repo|git|vault); omit for all. Read-only.',
     {
-      id: z.string().optional().describe('Concept id (e.g. "concepts/foo") to read its raw markdown. Omit for a bundle summary.'),
+      kind: z.enum(['all', 'repo', 'git', 'vault']).optional().describe('Which source slice to return (default all).'),
     },
     async (args) => {
-      const bundle = buildBundle(deps);
-      if (!bundle) return textResult({ error: MISSING_DEPS_ERROR });
-      try {
-        if (args.id) {
-          const got = bundle.getConcept(args.id);
-          return textResult({ concept: got ? { id: args.id, raw: got.raw } : null });
-        }
-        return textResult({ status: bundle.status(), concepts: bundle.listConcepts() });
-      } catch (err) {
-        return okfErrorResult(err);
-      }
-    },
-    { annotations: { readOnlyHint: true } },
-  );
-
-  // Phase 2.3 replaces this tool with `okf_read_sources` (the synthesis
-  // harness's real source-reading tool, backed by the same `gatherSources`).
-  // Kept as a thin adapter in the meantime so it still compiles and returns a
-  // sensible snapshot rather than the old deterministic-projection change brief
-  // (inputs_hash / existing-concept-file counts), which no longer applies now
-  // that vault knowledge is source material, not a projected bundle section.
-  const okfListChanges = tool(
-    'okf_list_changes',
-    'Read a snapshot of OKF source material: spore/decision/canopy counts and the current concept list. Read-only — never writes.',
-    {},
-    async () => {
       const bundle = buildBundle(deps);
       if (!bundle) return textResult({ error: MISSING_DEPS_ERROR });
       if (!deps.projectRoot || !deps.requestContext) return textResult({ error: MISSING_DEPS_ERROR });
@@ -121,11 +137,32 @@ export function createOkfTools(deps: VaultToolDeps) {
           config,
           outputRoot: status.outputRoot,
         });
+        const kind = args.kind ?? 'all';
+        const out: Record<string, unknown> = {};
+        if (kind === 'all' || kind === 'repo') out.repoTree = gathered.repoTree;
+        if (kind === 'all' || kind === 'git') out.gitContext = gathered.gitContext;
+        if (kind === 'all' || kind === 'vault') out.vault = gathered.vault;
+        return textResult(out);
+      } catch (err) {
+        return okfErrorResult(err);
+      }
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const okfListPages = tool(
+    'okf_list_pages',
+    'List the currently-published OKF document pages (bundle-relative path + type + title) plus the bundle generation. Read-only — never writes.',
+    {},
+    async () => {
+      const bundle = buildBundle(deps);
+      if (!bundle) return textResult({ error: MISSING_DEPS_ERROR });
+      try {
+        const status = bundle.status();
         return textResult({
-          sporeCount: gathered.vault.spores.length,
-          decisionCount: gathered.vault.decisions.length,
-          canopyCount: gathered.vault.canopyEntries.length,
-          concepts: bundle.listConcepts(),
+          bundleExists: status.bundleExists,
+          generation: status.bundleGeneration,
+          pages: bundle.listPages(),
         });
       } catch (err) {
         return okfErrorResult(err);
@@ -134,53 +171,158 @@ export function createOkfTools(deps: VaultToolDeps) {
     { annotations: { readOnlyHint: true } },
   );
 
-  const okfWriteConcept = tool(
-    'okf_write_concept',
-    'Create, update, or overwrite an agent-maintained concept under concepts/. Every save immediately publishes and bumps the bundle generation — there is no expected_generation parameter, because harness writes serialize under this run and carry runRef provenance rather than racing another actor (optimistic generation checks are for cross-actor conflicts, e.g. a human editing via the CLI at the same time). Rejects paths outside concepts/ (deterministic projections like spores/ or canopy/ are not editable).',
+  const okfReadPage = tool(
+    'okf_read_page',
+    'Read one published OKF page\'s raw markdown by bundle-relative path (with or without the .md suffix). Returns {page:null} for a missing or unsafe path. Read-only.',
     {
-      id: z.string().describe('Concept id under concepts/ (e.g. "concepts/foo").'),
-      markdown: z.string().describe('Full concept markdown, including frontmatter.'),
+      path: z.string().describe('Bundle-relative page path, e.g. "guides/overview" or "guides/overview.md".'),
     },
     async (args) => {
       const bundle = buildBundle(deps);
       if (!bundle) return textResult({ error: MISSING_DEPS_ERROR });
       try {
-        const result = await bundle.saveConcept({
-          id: args.id,
-          markdown: args.markdown,
-          provenance: { actor: 'harness', runRef: runId },
-        });
-        return textResult(result);
+        return textResult({ page: bundle.readPage(args.path) });
       } catch (err) {
         return okfErrorResult(err);
       }
     },
-    { annotations: { destructiveHint: true } },
+    { annotations: { readOnlyHint: true } },
   );
 
-  const okfReport = {
-    ...tool(
-      'okf_report',
-      'Record a pure observability report for this okf-maintain run — a summary of what changed or was maintained. Does NOT publish the bundle; publication happens automatically after the run succeeds, driven by this report row.',
-      {
-        summary: z.string().describe('Human-readable summary of the maintenance activity this run performed (or decided was unnecessary).'),
-        details: z.record(z.string(), z.unknown()).optional().describe('Structured details as key-value pairs.'),
-      },
-      async (args) => {
-        const report = insertReport({
-          run_id: runId,
-          project_id: projectId,
-          agent_id: deps.agentId,
-          action: OKF_REPORT_ACTION,
-          summary: args.summary,
-          details: args.details ? JSON.stringify(args.details) : null,
-          created_at: epochSeconds(),
-        });
-        return textResult(report);
-      },
-      { annotations: { readOnlyHint: true } },
-    ),
-  };
+  const okfWritePlan = tool(
+    'okf_write_plan',
+    'Persist the wiki page-plan for this synthesis run to .myco/okf/state/plan.json — the capped, auditable list of pages the run intends to write. Validated (page cap, slug-safe paths, non-empty types, unique paths) before persisting; a plan with violations is rejected and nothing is written. This is the ONLY way the plan reaches the map-synthesize phase (it reads plan.json back through okf_list_planned_pages).',
+    {
+      pages: z.array(z.object({
+        path: z.string().describe('Bundle-relative, OKF-slug-safe page path (no leading slash, no traversal).'),
+        type: z.string().describe('Non-empty OKF document type, e.g. "concept", "overview", "glossary".'),
+        title: z.string().describe('Page title.'),
+        rationale: z.string().describe('Why this page belongs in the wiki (auditable).'),
+        sourceRefs: z.array(z.string()).default([]).describe('Stable ids of the source material this page synthesizes from.'),
+        openQuestions: z.array(z.string()).optional().describe('Gaps flagged for this page; omit when there are none.'),
+      })).describe('The pages to plan (capped; a runaway plan is rejected).'),
+      sinceRef: z.string().optional().describe('The git ref this run diffed against; omit for a full-scan run.'),
+    },
+    async (args) => {
+      if (!deps.projectRoot) return textResult({ ok: false, error: MISSING_DEPS_ERROR });
+      try {
+        const vault = new ProjectVault(deps.projectRoot);
+        const plan: WikiPlan = {
+          generatedAt: nowIso(),
+          sinceRef: args.sinceRef ?? '',
+          pages: args.pages.map((p) => ({
+            path: p.path,
+            type: p.type,
+            title: p.title,
+            rationale: p.rationale,
+            sourceRefs: p.sourceRefs ?? [],
+            ...(p.openQuestions && p.openQuestions.length > 0 ? { openQuestions: p.openQuestions } : {}),
+          })),
+        };
+        const errors = validateWikiPlan(plan);
+        if (errors.length > 0) return textResult({ ok: false, errors });
+        writePlan(vault, plan);
+        return textResult({ ok: true, pageCount: plan.pages.length });
+      } catch (err) {
+        return okfErrorResult(err);
+      }
+    },
+    { annotations: { idempotentHint: true } },
+  );
 
-  return [okfReadBundle, okfListChanges, okfWriteConcept, okfReport];
+  const okfListPlannedPages = tool(
+    'okf_list_planned_pages',
+    'Read back the persisted wiki page-plan (.myco/okf/state/plan.json) as {pages}. The map-synthesize phase\'s SOURCE tool — returns the pages okf_write_plan persisted, or an empty list when no plan exists. Read-only.',
+    {},
+    async () => {
+      if (!deps.projectRoot) return textResult({ error: MISSING_DEPS_ERROR, pages: [] });
+      try {
+        const vault = new ProjectVault(deps.projectRoot);
+        const plan = readPlan(vault);
+        return textResult({ pages: plan?.pages ?? [] });
+      } catch (err) {
+        return textResult({ error: err instanceof Error ? err.message : String(err), pages: [] });
+      }
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const okfWritePage = tool(
+    'okf_write_page',
+    'Synthesize one OKF page and stage it into this run\'s single staging tree. The map-synthesize phase\'s SINK — the harness pins path/type/title from the plan; you supply description and body. Returns {ok:true} on stage, {ok:false, reason} when the document is rejected (reserved filename, unsafe path). The whole run\'s staged pages publish atomically once, after the map phase.',
+    {
+      path: z.string().describe('Bundle-relative page path (pinned from the plan).'),
+      type: z.string().describe('OKF document type (pinned from the plan).'),
+      title: z.string().describe('Page title (pinned from the plan).'),
+      description: z.string().describe('One-line page description for the OKF frontmatter.'),
+      body: z.string().describe('Full page markdown body (no frontmatter).'),
+      tags: z.array(z.string()).optional().describe('Optional OKF tags.'),
+    },
+    async (args) => {
+      const bundle = buildBundle(deps);
+      if (!bundle) return textResult({ ok: false, reason: MISSING_DEPS_ERROR });
+      try {
+        const docPath = args.path.endsWith('.md') ? args.path : `${args.path}.md`;
+        const frontmatter: OkfFrontmatter = {
+          type: args.type.trim() || 'note',
+          // Sanitized to a single line at the write path (primary defense);
+          // the validator's hostile-frontmatter-text check is only a backstop.
+          title: sanitizeFrontmatterLine(args.title),
+          description: sanitizeFrontmatterLine(args.description),
+          timestamp: nowIso(),
+          ...(args.tags && args.tags.length > 0 ? { tags: args.tags } : {}),
+        };
+        const doc: OkfDocument = { path: docPath, frontmatter, body: args.body };
+        // Dry-run: validate the render (throws on an invalid path/reserved name)
+        // WITHOUT opening a lock or staging. A dry-run run never reaches
+        // finalizeOkfSynthesize (the success hook early-returns on dryRun), so
+        // opening a session here would leak the lock.
+        if (deps.dryRun) {
+          renderOkfDocument(doc);
+          return textResult({ ok: true, path: docPath, dryRun: true });
+        }
+        const staged = await openOkfSynthesisSession(runId, bundle);
+        staged.stageDocument(doc);
+        return textResult({ ok: true, path: docPath });
+      } catch (err) {
+        return textResult({ ok: false, reason: err instanceof Error ? err.message : String(err) });
+      }
+    },
+    // Re-staging the same page path with the same content yields the same
+    // staged state — idempotent, matching the sibling map sink
+    // canopy_describe_write.
+    { annotations: { idempotentHint: true } },
+  );
+
+  const okfReport = tool(
+    'okf_report',
+    'Record a pure observability report for this okf-synthesize run — a summary of what was synthesized or maintained. Does NOT publish the bundle; publication happens automatically after the run succeeds via the executor finalize hook.',
+    {
+      summary: z.string().describe('Human-readable summary of the synthesis activity this run performed (or decided was unnecessary).'),
+      details: z.record(z.string(), z.unknown()).optional().describe('Structured details as key-value pairs.'),
+    },
+    async (args) => {
+      const report = insertReport({
+        run_id: runId,
+        project_id: projectId,
+        agent_id: deps.agentId,
+        action: OKF_REPORT_ACTION,
+        summary: args.summary,
+        details: args.details ? JSON.stringify(args.details) : null,
+        created_at: epochSeconds(),
+      });
+      return textResult(report);
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  return [
+    okfReadSources,
+    okfListPages,
+    okfReadPage,
+    okfWritePlan,
+    okfListPlannedPages,
+    okfWritePage,
+    okfReport,
+  ];
 }

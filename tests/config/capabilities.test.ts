@@ -72,10 +72,6 @@ describe('capability map', () => {
 
   it('every capability lists at least one scheduled task', () => {
     for (const cap of Object.values(CAPABILITIES)) {
-      // okf is mid-rebuild: okf-maintain was retired in Task 0.2 and
-      // okf-synthesize doesn't land until Task 2.3 — legitimately empty
-      // in between.
-      if (cap.id === 'okf') continue;
       expect(cap.scheduledTasks.length).toBeGreaterThan(0);
     }
   });
