@@ -103,7 +103,8 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
 
     const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
     expect(agents).toContain('If `okf/index.md` exists, read it before broad code exploration');
-    expect(agents).toContain('`okf/guides/maintaining-this-bundle.md`');
+    expect(agents).toContain('OKF v0.1 frontmatter header');
+    expect(agents).not.toContain('guides/maintaining-this-bundle.md');
     // The pointer lives INSIDE the managed block.
     const managed = agents.slice(agents.indexOf('myco:managed:start'), agents.indexOf('myco:managed:end'));
     expect(managed).toContain('okf/index.md');
@@ -129,7 +130,7 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
     expect(after).toBe(before);
   });
 
-  it('renders a custom output path in both pointer occurrences', () => {
+  it('renders a custom output path in the pointer', () => {
     const root = makeGitProjectWithVault();
     fs.writeFileSync(
       path.join(root, '.myco/myco.yaml'),
@@ -140,7 +141,6 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
 
     const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
     expect(agents).toContain('`docs/knowledge/index.md`');
-    expect(agents).toContain('`docs/knowledge/guides/maintaining-this-bundle.md`');
     expect(agents).not.toContain('`okf/index.md`');
   });
 

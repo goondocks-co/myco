@@ -69,7 +69,7 @@ export function buildAgentsManagedBlock(opts: { okfPointer: boolean; okfOutputPa
   if (opts.okfPointer) {
     const root = (opts.okfOutputPath ?? 'okf').replace(/\/+$/, '');
     lines.push(
-      `- If \`${root}/index.md\` exists, read it before broad code exploration; it is the repository's Open Knowledge Format bundle generated from Myco project intelligence. See \`${root}/guides/maintaining-this-bundle.md\` before editing OKF files.`,
+      `- If \`${root}/index.md\` exists, read it before broad code exploration; it is this repository's Open Knowledge Format (OKF) wiki, synthesized and kept current by Myco. Content pages are plain markdown with a small OKF v0.1 frontmatter header; the per-folder index.md files and log.md are plain headerless markdown — start at \`${root}/index.md\` and follow its links to browse or extend it.`,
     );
   }
   return `${AGENTS_MANAGED_START}\n## Myco Managed Guidance\n\n${lines.join('\n')}\n${AGENTS_MANAGED_END}\n`;
