@@ -25,6 +25,7 @@ import {
 } from '@myco/grove/ids.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import type { WikiPlan } from '@myco/okf/synthesis/plan.js';
+import type { OkfOwnership } from '@myco/okf/ownership.js';
 import {
   removeProjectLaunchers,
   type RemoveProjectLaunchersOptions,
@@ -428,6 +429,47 @@ export class ProjectVault {
     });
   }
 
+  /** `.myco/okf/state/ownership.json`. Path only; creates nothing. */
+  okfOwnershipPath(): string {
+    return path.join(this.vaultDir, 'okf', 'state', 'ownership.json');
+  }
+
+  /**
+   * PURE READ: returns null on a missing OR shape-invalid ownership file
+   * (invalid warns to stderr); never creates directories or the gitignore.
+   * Mirrors {@link readOkfManifest}.
+   */
+  readOkfOwnership(): OkfOwnership | null {
+    const ownershipPath = this.okfOwnershipPath();
+    let raw: string;
+    try {
+      raw = fs.readFileSync(ownershipPath, 'utf-8');
+    } catch {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!isOkfOwnership(parsed)) {
+        throw new Error('ownership does not match the OkfOwnership shape');
+      }
+      return parsed;
+    } catch (err) {
+      console.warn(
+        `[myco] corrupt OKF ownership at ${this.rel(ownershipPath)}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /** Atomic write with the gitignore-first per-machine discipline. Mirrors {@link writeOkfManifest}. */
+  writeOkfOwnership(ownership: OkfOwnership): void {
+    const ownershipPath = this.okfOwnershipPath();
+    this._writePerMachineFile(ownershipPath, () => {
+      fs.mkdirSync(path.dirname(ownershipPath), { recursive: true });
+      atomicWriteFileSync(ownershipPath, `${JSON.stringify(ownership, null, 2)}\n`, 'utf-8');
+    });
+  }
+
   // -------------------------------------------------------------------
   // Structural per-machine-write guarantee
   // -------------------------------------------------------------------
@@ -576,6 +618,28 @@ function isWikiPlan(value: unknown): value is WikiPlan {
     if (!Array.isArray(pg.sourceRefs) || !pg.sourceRefs.every((r) => typeof r === 'string')) return false;
     if (pg.openQuestions === undefined) return true;
     return Array.isArray(pg.openQuestions) && pg.openQuestions.every((q) => typeof q === 'string');
+  });
+}
+
+/**
+ * Structural guard for an {@link OkfOwnership} read from disk. A hand-edited
+ * or partially-written file that parses as JSON but violates the shape is
+ * treated as corrupt (readOkfOwnership returns null). Checks only the fields
+ * this version defines and never rejects on unknown extra keys — so a FUTURE
+ * field addition here doesn't retroactively corrupt an ownership file written
+ * by an older Myco (the isOkfPrivateManifest lesson: a guard that hard-rejects
+ * an absent-but-newly-added field silently drops the whole record instead of
+ * normalizing it).
+ */
+function isOkfOwnership(value: unknown): value is OkfOwnership {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const o = value as Record<string, unknown>;
+  if (typeof o.bundleGeneration !== 'number' || !Number.isFinite(o.bundleGeneration)) return false;
+  if (o.pages === null || typeof o.pages !== 'object' || Array.isArray(o.pages)) return false;
+  return Object.values(o.pages as Record<string, unknown>).every((entry) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const e = entry as Record<string, unknown>;
+    return typeof e.fingerprint === 'string' && typeof e.generatedAt === 'string';
   });
 }
 

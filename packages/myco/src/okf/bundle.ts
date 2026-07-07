@@ -6,6 +6,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
 import type { ProjectVault, OkfPrivateManifest } from '@myco/vault/project-vault.js';
 import { sha256Hex } from '@myco/canopy/hash.js';
+import type { OkfOwnership } from './ownership.js';
 import { getDatabase } from '@myco/db/client.js';
 import { listSpores, type SporeRow } from '@myco/db/queries/spores.js';
 import { listResolutionEvents } from '@myco/db/queries/resolution-events.js';
@@ -574,6 +575,7 @@ export class OkfBundle {
       // and BEFORE sweepStale would delete the sole surviving backup copy.
       this.recoverOrphanedBundle(outputRoot, warnings);
       manifest = this.recoverFromCrash(manifest, outputRoot, warnings);
+      this.reconcileOwnershipForRoot(outputRoot, warnings);
       this.assertOutputWritable(outputRoot, input.overwrite ?? false);
     } catch (err) {
       release();
@@ -659,6 +661,13 @@ export class OkfBundle {
           // `okf-synthesize-due` baseline a prior synthesize run recorded.
           last_run_ref: opts?.lastRunRef ?? manifest?.last_run_ref ?? null,
         });
+        // Ownership — manifest-adjacent write, same as writeOkfManifest above: one
+        // fingerprint per currently-published page, read back from the swapped-in
+        // tree so it reflects exactly what's live. A crash between the atomic
+        // swap and this write is healed by reconcileOwnershipForRoot on the next
+        // session open (it recomputes from disk whenever the marker generation
+        // doesn't match this file's).
+        this.deps.vault.writeOkfOwnership(this.computeOwnershipFromTree(outputRoot, nextGeneration, generatedAt));
         if (cleanupPending) {
           warnings.push({ code: 'cleanup_pending', message: 'bundle published but a stale backup could not be removed; it will be swept next run.' });
         }
@@ -1174,6 +1183,67 @@ export class OkfBundle {
     return reconciled;
   }
 
+  /**
+   * Reconcile the ownership file to the on-disk generation. A crash between
+   * an atomic-replace and the ownership write (whether or not the manifest
+   * write itself landed) leaves ownership missing or stamped with a stale
+   * `bundleGeneration` — recompute every page's fingerprint from the tree
+   * actually on disk and persist it. Skipped when ownership already reflects
+   * the published marker's generation: at that point any fingerprint mismatch
+   * is a genuine hand-edit (what `isHandEdited` exists to detect), and this
+   * check must never clobber it.
+   */
+  private reconcileOwnershipForRoot(outputRoot: string, warnings: OkfMaintainWarning[]): void {
+    const markerGen = this.readMarkerGeneration(outputRoot);
+    if (markerGen === null) return; // no published bundle at this root yet
+    const existing = this.deps.vault.readOkfOwnership();
+    if (existing && existing.bundleGeneration === markerGen) return; // already caught up
+
+    const marker = this.readMarker(outputRoot);
+    const generatedAt = typeof marker?.generated_at === 'string' ? marker.generated_at : this.now().toISOString();
+    this.deps.vault.writeOkfOwnership(this.computeOwnershipFromTree(outputRoot, markerGen, generatedAt));
+    warnings.push({
+      code: 'crash_recovery',
+      message: `ownership fingerprints reconciled to bundle generation ${markerGen} after an interrupted publish.`,
+    });
+  }
+
+  /**
+   * Fingerprint every currently-published content page under `outputRoot` —
+   * the same non-reserved-`.md` walk `derivePageStats`/`listConcepts` use,
+   * skipping generated index/log files. The single computation both the
+   * `finalize` write path and crash-recovery reconciliation share, so the two
+   * can never disagree on what "the published page content" hashes to.
+   */
+  private computeOwnershipFromTree(outputRoot: string, bundleGeneration: number, generatedAt: string): OkfOwnership {
+    const pages: OkfOwnership['pages'] = {};
+    const walk = (relDir: string): void => {
+      for (const name of this.safeReaddir(relDir === '' ? outputRoot : path.join(outputRoot, relDir)).sort()) {
+        const rel = relDir === '' ? name : `${relDir}/${name}`;
+        const abs = path.join(outputRoot, rel);
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(abs);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          walk(rel);
+          continue;
+        }
+        if (!name.endsWith('.md') || RESERVED_BASENAMES.has(name)) continue;
+        try {
+          const content = fs.readFileSync(abs, 'utf8');
+          pages[rel] = { fingerprint: sha256Hex(content), generatedAt };
+        } catch {
+          /* skip unreadable */
+        }
+      }
+    };
+    walk('');
+    return { bundleGeneration, pages };
+  }
+
   private sweepStale(manifest: OkfPrivateManifest | null, warnings: OkfMaintainWarning[]): void {
     const stateDir = this.deps.vault.okfStateDir();
     // Sweep stale backups.
@@ -1528,6 +1598,7 @@ export class OkfBundle {
       // the marker's generation so a stale manifest can't reissue a used number.
       this.recoverOrphanedBundle(outputRoot, []);
       const manifest = this.reconcileGenerationWithMarker(this.deps.vault.readOkfManifest(), outputRoot);
+      this.reconcileOwnershipForRoot(outputRoot, []);
       if (!this.markerExists(outputRoot)) {
         throw new OkfError('okf_maintain_failed', 'no published bundle to edit; run maintain first');
       }
@@ -1586,6 +1657,11 @@ export class OkfBundle {
           probe_fingerprint: manifest?.probe_fingerprint ?? null,
           last_run_ref: manifest?.last_run_ref ?? null,
         });
+        // Ownership follows the manifest write here too — a concept edit
+        // republishes the whole tree, so every page's fingerprint moves to this
+        // generation (reconstruct-and-re-render is byte-stable for untouched
+        // concepts, so only the edited concept's fingerprint actually changes).
+        this.deps.vault.writeOkfOwnership(this.computeOwnershipFromTree(outputRoot, nextGeneration, generatedAt));
         return nextGeneration;
       } finally {
         this.safeRm(stagingDir);
