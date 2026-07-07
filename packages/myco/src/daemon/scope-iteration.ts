@@ -46,6 +46,7 @@ import {
   type GroveRecord,
   type RegisteredProject,
 } from '@myco/grove/registry.js';
+import { attachTargetGroveIds } from '@myco/host/registry.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { Logger } from '@myco/daemon/logger.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -125,23 +126,24 @@ export async function forEachGrove(
   options: ForEachGroveOptions,
 ): Promise<ScopeIterationSummary> {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
-  const allGroves = listGroves(mycoHome);
 
-  // Apply the optional pre-open filter before any cache touch so cold
-  // Groves don't displace warm entries. Filtering happens here rather
-  // than inside `visit` so `attempted` reflects only Groves the body
-  // actually ran for.
-  let groves: GroveRecord[];
+  // Team Host never-materialize invariant (defense-in-depth): a member daemon
+  // must never run intelligence for an attached project. Attached Groves are
+  // hosted, so by invariant they have no local Grove dir and never appear in
+  // listGroves — but if local state ever leaked for one, skipping its id here
+  // keeps every housekeeping/scheduler fan-out structurally clear of it.
+  const attachedGroveIds = attachTargetGroveIds();
+
+  // Apply the pre-open filters before any cache touch so cold or attached
+  // Groves don't displace warm entries. Filtering happens here rather than
+  // inside `visit` so `attempted` reflects only Groves the body actually ran for.
+  const groves: GroveRecord[] = [];
   let skipped = 0;
   const shouldVisitGrove = options.shouldVisitGrove;
-  if (shouldVisitGrove) {
-    groves = [];
-    for (const grove of allGroves) {
-      if (shouldVisitGrove(grove)) groves.push(grove);
-      else skipped += 1;
-    }
-  } else {
-    groves = allGroves;
+  for (const grove of listGroves(mycoHome)) {
+    if (attachedGroveIds.has(grove.id)) { skipped += 1; continue; }
+    if (shouldVisitGrove && !shouldVisitGrove(grove)) { skipped += 1; continue; }
+    groves.push(grove);
   }
 
   let ok = 0;

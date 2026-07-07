@@ -26,6 +26,7 @@ import {
   type RegistryResolvedProject,
 } from './registry-resolve.js';
 import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
+import { resolveAttach, type AttachRef, type HostRecord } from '../host/registry.js';
 
 export interface GroveRecord {
   id: string;
@@ -620,6 +621,62 @@ export function findRegisteredProject(
  * and symlink chains both compare equal.
  */
 /**
+ * If the checkout at `projectRoot` names a project (via its
+ * `.myco/project.toml` manifest id) that is attached to a remote host, return
+ * that host and the attach ref. Pure disk reads — the project manifest plus
+ * the machine-global host registry — so it is safe to call from the client
+ * process (hook/tool) and the daemon alike, before any Grove/DB resolution.
+ *
+ * The Team Host never-materialize invariant hangs off this: every path that
+ * would otherwise write local Grove state for the project
+ * (`ensureProjectRegistered`, the capture buffer fallback, the CLI migration
+ * gate) consults it first and refuses to materialize a local Grove for an
+ * attached project.
+ */
+export function resolveAttachForProjectRoot(
+  projectRoot: string,
+): { host: HostRecord; ref: AttachRef } | null {
+  const manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
+  const projectId = manifest?.project.id;
+  if (!projectId || !isGroveEraId(projectId, 'project')) return null;
+  return resolveAttach(projectId);
+}
+
+/**
+ * Synthesize the tenancy an attached project resolves to WITHOUT registering
+ * it locally. The real Grove/project records live on the host; this carrier
+ * exists only so `ensureProjectRegistered`'s callers see the
+ * `{ grove_id, project_id }` pair they read instead of a null. It is never
+ * persisted or iterated — no local Grove dir, registry row, roots entry, or
+ * DB is created — and the display fields are placeholders because the
+ * authoritative record is host-owned.
+ */
+function attachedRegistration(
+  ref: AttachRef,
+  projectRoot: string,
+): ResolvedRegisteredProject {
+  const epoch = new Date(0).toISOString();
+  const root = path.resolve(projectRoot);
+  return {
+    grove: {
+      id: ref.grove_id,
+      name: ref.grove_id,
+      slug: ref.grove_id,
+      mode: 'local',
+      created_at: epoch,
+    },
+    project: {
+      project_id: ref.project_id,
+      name: path.basename(root),
+      root,
+      status: 'active',
+      created_at: epoch,
+      updated_at: epoch,
+    },
+  };
+}
+
+/**
  * Auto-register a project under the machine default Grove when the
  * hook layer fires from a real project root that isn't yet known.
  *
@@ -629,6 +686,9 @@ export function findRegisteredProject(
  * existing record.
  *
  * Refuses to register when:
+ *   - the project is attached to a remote host; returns the attach tenancy
+ *     WITHOUT writing any local Grove state (Team Host never-materialize
+ *     invariant).
  *   - the path fails `isSafeProjectRoot` (cwd-fallback paths from a
  *     misfired hook, $HOME-rooted invocations, etc.); returns `null`.
  *   - the machine has no default Grove yet (extremely early bootstrap);
@@ -645,6 +705,18 @@ export function ensureProjectRegistered(
   const existing = findProjectByRoot(projectRoot, mycoHome, { includeArchived: true });
   if (existing?.project.status === 'archived') return null;
   if (existing) return existing;
+
+  // Team Host never-materialize invariant: an attached project's Grove lives
+  // on the host, so this checkout must never grow a local Grove registry row.
+  // Both client-process callers — DaemonClient.requestHeaders (every request)
+  // and the hook buffer fallback via resolveProjectBufferDirFromRoot — funnel
+  // through here, so this one gate closes both auto-registration vectors
+  // before any local write. It runs before isSafeProjectRoot's git probe so
+  // the hosted hot path never pays for a subprocess it would never register
+  // from.
+  const attach = resolveAttachForProjectRoot(projectRoot);
+  if (attach) return attachedRegistration(attach.ref, projectRoot);
+
   if (!isSafeProjectRoot(projectRoot)) return null;
 
   // Each MYCO_HOME owns its own grove tree — look up the default Grove

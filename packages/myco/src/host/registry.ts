@@ -143,6 +143,22 @@ export function resolveAttach(projectId: string): { host: HostRecord; ref: Attac
   return null;
 }
 
+/**
+ * The set of Grove ids that are attach targets (hosted Groves) across every
+ * host record. A member daemon consults this to keep attached Groves out of
+ * its local scope iteration — defense-in-depth for the never-materialize
+ * invariant: attached Groves have no local Grove dir and never appear in
+ * `listGroves`, but if local state ever leaked for one, its id lands here so
+ * the housekeeping/scheduler fan-out structurally skips it.
+ */
+export function attachTargetGroveIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const record of readHostRegistry()) {
+    for (const ref of record.projects) ids.add(ref.grove_id);
+  }
+  return ids;
+}
+
 /** Read all secrets (including the host bearer) for a host from its secrets.env. */
 export function readHostSecrets(hostId: string): Record<string, string> {
   return readSecretsFile(resolveHostDir(hostId));
@@ -161,6 +177,7 @@ export const hostRegistry = {
   attachProject,
   detachProject,
   resolveAttach,
+  attachTargetGroveIds,
   readHostSecrets,
   writeHostSecret,
 };
