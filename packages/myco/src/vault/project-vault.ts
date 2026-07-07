@@ -24,6 +24,7 @@ import {
   type GroveProjectId,
 } from '@myco/grove/ids.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import type { WikiPlan } from '@myco/okf/synthesis/plan.js';
 import {
   removeProjectLaunchers,
   type RemoveProjectLaunchersOptions,
@@ -302,7 +303,7 @@ export class ProjectVault {
   // OKF private control state — `.myco/okf/*`
   //
   // Three separate namespaces, all gitignored via VAULT_GITIGNORE's `okf/`
-  // entry: `state/` (lock + manifest — never atomically replaced),
+  // entry: `state/` (lock + manifest + plan — never atomically replaced),
   // `staging/` (caller-managed staging dirs), and `bundle/` (the
   // local-mode bundle output root — safe to atomically replace). The
   // PUBLISHED repo-visible bundle lives at the project root and is not
@@ -375,6 +376,48 @@ export class ProjectVault {
     this._writePerMachineFile(manifestPath, () => {
       fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
       atomicWriteFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8');
+    });
+  }
+
+  /** `.myco/okf/state/plan.json`. Path only; creates nothing. */
+  okfPlanPath(): string {
+    return path.join(this.vaultDir, 'okf', 'state', 'plan.json');
+  }
+
+  /**
+   * PURE READ: returns null on a missing OR shape-invalid plan (invalid warns
+   * to stderr); never creates directories or the gitignore. A non-null return
+   * satisfies the full {@link WikiPlan} shape, so consumers can iterate `pages`
+   * without re-checking. Mirrors {@link readOkfManifest}.
+   */
+  readOkfPlan(): WikiPlan | null {
+    const planPath = this.okfPlanPath();
+    let raw: string;
+    try {
+      raw = fs.readFileSync(planPath, 'utf-8');
+    } catch {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!isWikiPlan(parsed)) {
+        throw new Error('plan does not match the WikiPlan shape');
+      }
+      return parsed;
+    } catch (err) {
+      console.warn(
+        `[myco] corrupt OKF plan at ${this.rel(planPath)}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /** Atomic write with the gitignore-first per-machine discipline. Mirrors {@link writeOkfManifest}. */
+  writeOkfPlan(plan: WikiPlan): void {
+    const planPath = this.okfPlanPath();
+    this._writePerMachineFile(planPath, () => {
+      fs.mkdirSync(path.dirname(planPath), { recursive: true });
+      atomicWriteFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf-8');
     });
   }
 
@@ -483,6 +526,28 @@ function isOkfPrivateManifest(value: unknown): value is OkfPrivateManifest {
     const entry = f as Record<string, unknown>;
     if (typeof entry.code !== 'string' || typeof entry.path !== 'string') return false;
     return entry.hash === undefined || typeof entry.hash === 'string';
+  });
+}
+
+/**
+ * Structural guard for a {@link WikiPlan} read from disk. A hand-edited or
+ * partially-written file that parses as JSON but violates the shape is treated
+ * as corrupt (readOkfPlan returns null), so a non-null return is a real plan
+ * whose `pages` are safe to iterate. Mirrors {@link isOkfPrivateManifest}.
+ */
+function isWikiPlan(value: unknown): value is WikiPlan {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const p = value as Record<string, unknown>;
+  if (typeof p.generatedAt !== 'string' || typeof p.sinceRef !== 'string') return false;
+  if (!Array.isArray(p.pages)) return false;
+  return p.pages.every((page) => {
+    if (page === null || typeof page !== 'object' || Array.isArray(page)) return false;
+    const pg = page as Record<string, unknown>;
+    if (typeof pg.path !== 'string' || typeof pg.type !== 'string') return false;
+    if (typeof pg.title !== 'string' || typeof pg.rationale !== 'string') return false;
+    if (!Array.isArray(pg.sourceRefs) || !pg.sourceRefs.every((r) => typeof r === 'string')) return false;
+    if (pg.openQuestions === undefined) return true;
+    return Array.isArray(pg.openQuestions) && pg.openQuestions.every((q) => typeof q === 'string');
   });
 }
 
