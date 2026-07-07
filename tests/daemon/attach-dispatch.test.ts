@@ -24,18 +24,18 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 
-import { DaemonServer } from './server.js';
-import { DaemonLogger } from './logger.js';
-import { GroveRuntimeCache } from './grove-runtime-cache.js';
-import type { DaemonStateAuthority } from './daemon-state-authority.js';
+import { DaemonServer } from '@myco/daemon/server';
+import { DaemonLogger } from '@myco/daemon/logger';
+import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache';
+import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import {
   assertGroveProjectId,
   createGroveId,
   createHostId,
   createProjectId,
-} from '../grove/ids.js';
-import { upsertHost, writeHostSecret, type HostRecord } from '../host/registry.js';
-import { HOST_BEARER_SECRET } from '../constants.js';
+} from '@myco/grove/ids';
+import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { HOST_BEARER_SECRET } from '@myco/constants';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 

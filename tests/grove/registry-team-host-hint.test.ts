@@ -14,12 +14,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { clearProjectManifestCache } from '../config/project-manifest.js';
-import { __resetTeamHostHintNoticeForTests } from '../host/hint.js';
-import { upsertHost, type HostRecord } from '../host/registry.js';
-import { createHostId } from './ids.js';
-import { MYCO_HOME_ENV } from './paths.js';
-import { ensureDefaultGrove, ensureProjectRegistered, findProjectByRoot } from './registry.js';
+import { clearProjectManifestCache } from '@myco/config/project-manifest';
+import { __resetTeamHostHintNoticeForTests } from '@myco/host/hint';
+import { upsertHost, type HostRecord } from '@myco/host/registry';
+import { createHostId } from '@myco/grove/ids';
+import { MYCO_HOME_ENV } from '@myco/grove/paths';
+import { ensureDefaultGrove, ensureProjectRegistered, findProjectByRoot } from '@myco/grove/registry';
 
 function makeHost(hostId: string): HostRecord {
   return {

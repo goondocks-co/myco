@@ -11,16 +11,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { parseProjectManifest, type ProjectManifest } from '../config/project-manifest.js';
-import { createHostId, createProjectId } from '../grove/ids.js';
-import { attachProject, upsertHost, type HostRecord } from './registry.js';
+import { parseProjectManifest, type ProjectManifest } from '@myco/config/project-manifest';
+import { createHostId, createProjectId } from '@myco/grove/ids';
+import { attachProject, upsertHost, type HostRecord } from '@myco/host/registry';
 import {
   __resetTeamHostHintNoticeForTests,
   noticeTeamHostHintOnce,
   resolveTeamHostHintState,
   teamHostHintFromManifest,
   teamHostHintMessage,
-} from './hint.js';
+} from '@myco/host/hint';
 
 function manifestWith(grove?: ProjectManifest['grove']): ProjectManifest {
   return { project: { id: 'proj_test' }, grove };
@@ -179,16 +179,23 @@ describe('noticeTeamHostHintOnce', () => {
     expect(stderrChunks).toEqual([]);
   });
 
-  test('hint not joined → writes once; a second call for the same host is suppressed', () => {
+  test('hint not joined → notices once per (host, project); same project suppressed, a different project on the same host notices again', () => {
     const hostId = createHostId();
     const manifest = manifestWith({ mode: 'local', remote: { provider: 'team-host', remote_id: hostId } });
+    const projectA = createProjectId();
 
-    noticeTeamHostHintOnce(manifest, createProjectId());
-    noticeTeamHostHintOnce(manifest, createProjectId());
+    noticeTeamHostHintOnce(manifest, projectA);
+    noticeTeamHostHintOnce(manifest, projectA); // same (host, project) → suppressed
 
-    const hits = stderrChunks.filter((c) => c.includes(hostId));
+    let hits = stderrChunks.filter((c) => c.includes(hostId));
     expect(hits).toHaveLength(1);
     expect(hits[0]).toContain(`myco join ${hostId}`);
+
+    // A DIFFERENT project that hints at the same host still gets its own notice —
+    // the dedup is keyed on (host_id, project_id), not the host alone.
+    noticeTeamHostHintOnce(manifest, createProjectId());
+    hits = stderrChunks.filter((c) => c.includes(hostId));
+    expect(hits).toHaveLength(2);
   });
 
   test('resolved (attached) → never writes to stderr', () => {

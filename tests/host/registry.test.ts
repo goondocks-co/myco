@@ -12,8 +12,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { HOST_BEARER_SECRET } from '../constants.js';
-import { createHostId } from '../grove/ids.js';
+import { HOST_BEARER_SECRET } from '@myco/constants';
+import { createHostId } from '@myco/grove/ids';
 import {
   attachProject,
   detachProject,
@@ -26,7 +26,7 @@ import {
   upsertHost,
   writeHostSecret,
   type HostRecord,
-} from './registry.js';
+} from '@myco/host/registry';
 
 function makeHost(overrides: Partial<HostRecord> = {}): HostRecord {
   return {

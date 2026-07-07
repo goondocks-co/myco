@@ -229,7 +229,7 @@ export function hostProtocolCompatible(hostProtocol: number): boolean {
  *  log fires once per host rather than per request (routing-layer §5). */
 const loggedVersionMismatch = new Set<string>();
 
-function logVersionMismatchOnce(logger: ProxyLogger, target: RemoteTarget, hostReported?: number): void {
+export function logVersionMismatchOnce(logger: ProxyLogger, target: RemoteTarget, hostReported?: number): void {
   if (loggedVersionMismatch.has(target.host.host_id)) return;
   loggedVersionMismatch.add(target.host.host_id);
   logger.error('host protocol mismatch — upgrade Myco to reconnect', {
@@ -480,8 +480,10 @@ export async function handleAttachedRequest(
  * buffered:true}` (never the host's response — opacity holds both directions),
  * then best-effort forward to the host in the background. The ack's truthfulness
  * rests on the local buffer, so the hook never depends on synchronous host
- * reachability and its buffer-fallback (which would auto-register a local Grove,
- * §1.1) never fires.
+ * reachability and its buffer-fallback never fires — the daemon already holds the
+ * durable copy, so a hook-side fallback would only DOUBLE-BUFFER the same event.
+ * (Task 1.0 made the hook's `ensureProjectRegistered` attach-aware, so a fallback
+ * no longer materializes a local Grove; redundant buffering is the residual harm.)
  */
 async function handleCollectRoute(
   req: http.IncomingMessage,
@@ -511,7 +513,8 @@ async function handleCollectRoute(
     } catch (err) {
       // A failed buffer append must not hard-fail the agent. We still synthesize
       // the buffered ack rather than a fallback-tripping response: tripping the
-      // hook fallback auto-registers a local Grove (§1.1), the worse failure.
+      // hook fallback would double-buffer the event (the daemon owns the durable
+      // copy), the worse outcome.
       d.logger.error('collector buffer append failed', {
         host_id: target.host.host_id,
         session_id: sessionId,
@@ -521,14 +524,15 @@ async function handleCollectRoute(
   } else {
     // Contract violation — collect routes always carry a session_id. We cannot
     // key the buffer, so log loudly, but still synthesize the buffered ack to
-    // avoid the auto-register leak that a fallback-tripping response causes.
+    // avoid the redundant double-buffer a fallback-tripping response would cause.
     d.logger.error('collect route missing resolvable session_id — buffered ack synthesized without append', {
       host_id: target.host.host_id,
       path: pathname,
     });
   }
 
-  // Ack the hook now — it is unblocked and holds no reason to buffer/auto-register.
+  // Ack the hook now — it is unblocked and holds no reason to buffer (the daemon
+  // owns the durable copy).
   sendCollectAck(res);
 
   // Background best-effort forward: version-incompatible or unreachable hosts

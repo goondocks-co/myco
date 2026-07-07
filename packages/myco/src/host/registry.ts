@@ -34,6 +34,16 @@ import { findRegisteredProjectById } from '../grove/registry-resolve.js';
 export interface AttachRef {
   grove_id: string;
   project_id: string;
+  /**
+   * Member-local checkout root for this project — machine-local data recorded
+   * in the machine-global registry, mirroring `RegisteredProject.root`. Set at
+   * attach time so member-side config resolution (`handleAttachedConfigRequest`)
+   * can find the vault dir when a request omits `x-myco-project-root` (the
+   * browser Settings UI sends only grove/project ids), since an attached project
+   * has no local Grove registry row to resolve the path from. Optional: records
+   * created before this field simply lack it.
+   */
+  root?: string;
 }
 
 export interface HostRecord {

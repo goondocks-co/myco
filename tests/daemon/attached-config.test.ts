@@ -24,7 +24,9 @@ import {
   __resetAttachedConfigWarnForTests,
   type AttachedConfigDeps,
 } from '@myco/daemon/attached-config';
-import { defaultDial } from '@myco/daemon/host-proxy';
+import { defaultDial, __resetVersionMismatchLogForTests } from '@myco/daemon/host-proxy';
+import { upsertHost, type HostRecord } from '@myco/host/registry';
+import { HOST_PROTOCOL_HEADER } from '@myco/constants';
 import type { RemoteTarget } from '@myco/host/routing';
 
 const HOST_BEARER = 'host-bearer-secret';
@@ -37,6 +39,8 @@ function close(server: http.Server): Promise<void> {
 }
 
 let savedMycoHome: string | undefined;
+let savedTeamHome: string | undefined;
+let teamHome: string;
 let mycoHome: string;
 let projectRoot: string;
 let vaultDir: string;
@@ -99,6 +103,10 @@ beforeEach(async () => {
   savedMycoHome = process.env.MYCO_HOME;
   mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-ac-home-'));
   process.env.MYCO_HOME = mycoHome;
+  // Fresh, empty attach registry per test — resolveAttach reads MYCO_TEAM_HOME.
+  savedTeamHome = process.env.MYCO_TEAM_HOME;
+  teamHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-ac-team-'));
+  process.env.MYCO_TEAM_HOME = teamHome;
   projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-ac-proj-'));
   vaultDir = path.join(projectRoot, '.myco');
   fs.mkdirSync(vaultDir, { recursive: true });
@@ -106,6 +114,7 @@ beforeEach(async () => {
   warns = [];
   errors = [];
   __resetAttachedConfigWarnForTests();
+  __resetVersionMismatchLogForTests();
 
   groveResponder = (req, res) => {
     if (req.url === '/api/grove-config') {
@@ -137,9 +146,12 @@ afterEach(async () => {
   await close(member);
   await close(fixture);
   fs.rmSync(mycoHome, { recursive: true, force: true });
+  fs.rmSync(teamHome, { recursive: true, force: true });
   fs.rmSync(projectRoot, { recursive: true, force: true });
   if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
   else process.env.MYCO_HOME = savedMycoHome;
+  if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+  else process.env.MYCO_TEAM_HOME = savedTeamHome;
 });
 
 describe('handleAttachedConfigRequest — reads', () => {
@@ -177,10 +189,56 @@ describe('handleAttachedConfigRequest — reads', () => {
     expect(degradeWarns.length).toBe(1);
   });
 
-  test('a request with no x-myco-project-root is refused 400', async () => {
+  test('no x-myco-project-root AND no attach-record root → 400', async () => {
+    // Fresh empty attach registry (no seeded record) → the fallback finds no
+    // root either, so the request is refused.
     const { status, json } = await request('GET', '/api/config', { projectRoot: null });
     expect(status).toBe(400);
     expect(json.error).toBe('missing_project_root');
+  });
+
+  test('browser-shaped headers (grove-id + project-id, NO project-root) resolve the vault from the attach record root', async () => {
+    // The browser Settings UI cannot know the filesystem path — it sends only
+    // grove/project ids. The member falls back to the root recorded on the
+    // attach record at attach time, so the carve works end to end.
+    writeProjectConfig({ cortex: { enabled: false } });
+    const t = target();
+    upsertHost({
+      host_id: t.host.host_id,
+      label: t.host.label,
+      overlay_address: t.host.overlay_address,
+      protocol_version: 1,
+      created_at: new Date().toISOString(),
+      projects: [{ grove_id: t.groveId, project_id: t.projectId, root: projectRoot }],
+    } satisfies HostRecord);
+
+    const res = await fetch(`http://127.0.0.1:${memberPort}/api/config`, {
+      method: 'GET',
+      headers: { 'x-myco-grove-id': t.groveId, 'x-myco-project-id': t.projectId },
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.version).toBe(3);
+    expect(json.cortex.enabled).toBe(false);
+  });
+
+  test('GET /api/config/merged: host 409 protocol skew → loud version-mismatch log + defaults, NOT the unreachable warn', async () => {
+    writeMachineConfig({ daemon: { log_level: 'warn' } });
+    groveResponder = (_req, res) => {
+      res.writeHead(409, { [HOST_PROTOCOL_HEADER]: '2', 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'protocol_version_unsupported' }));
+    };
+
+    const { status, json } = await request('GET', '/api/config/merged');
+    expect(status).toBe(200);
+    expect(json.embedding.provider).toBe('ollama'); // grove tier degraded to defaults
+    expect(json.daemon.log_level).toBe('warn');     // machine tier still resolves
+
+    // The loud version-mismatch log fired; the "unreachable" warn did NOT.
+    const versionErrs = errors.filter(([m]) => m.includes('host protocol mismatch'));
+    expect(versionErrs.length).toBe(1);
+    const unreachableWarns = warns.filter(([m]) => m.includes('host unreachable for grove-tier config'));
+    expect(unreachableWarns.length).toBe(0);
   });
 });
 

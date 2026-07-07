@@ -28,11 +28,11 @@ import {
   createGroveId,
   createHostId,
   createProjectId,
-} from '../grove/ids.js';
-import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
-import { upsertHost, writeHostSecret, type HostRecord } from '../host/registry.js';
-import { HOST_BEARER_SECRET } from '../constants.js';
-import { createStreamableMcpHttpHandler } from './http.js';
+} from '@myco/grove/ids';
+import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
+import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { HOST_BEARER_SECRET } from '@myco/constants';
+import { createStreamableMcpHttpHandler } from '@myco/mcp/http';
 
 interface HostHit { url: string; body: string; }
 

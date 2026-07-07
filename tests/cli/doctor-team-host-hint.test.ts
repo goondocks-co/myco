@@ -13,16 +13,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { clearProjectManifestCache } from '../config/project-manifest.js';
-import { createHostId, createProjectId } from '../grove/ids.js';
+import { clearProjectManifestCache } from '@myco/config/project-manifest';
+import { createHostId, createProjectId } from '@myco/grove/ids';
 import {
   attachProject,
   readHostRegistry,
   resolveAttach,
   upsertHost,
   type HostRecord,
-} from '../host/registry.js';
-import { checkTeamHostHint } from './doctor.js';
+} from '@myco/host/registry';
+import { checkTeamHostHint } from '@myco/cli/doctor';
 
 function makeHost(hostId: string): HostRecord {
   return {

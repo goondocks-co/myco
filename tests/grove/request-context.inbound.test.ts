@@ -11,9 +11,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createProjectId } from './ids.js';
-import { REQUEST_CONTEXT_AUTH_HEADER, REQUEST_CONTEXT_HEADERS, resolveInboundProjectId, UnauthorizedRequestContextError } from './request-context.js';
-import { clearProjectManifestCache } from '../config/project-manifest.js';
+import { createProjectId } from '@myco/grove/ids';
+import { REQUEST_CONTEXT_AUTH_HEADER, REQUEST_CONTEXT_HEADERS, resolveInboundProjectId, UnauthorizedRequestContextError } from '@myco/grove/request-context';
+import { clearProjectManifestCache } from '@myco/config/project-manifest';
 
 const NO_AUTH = { expectedAuthToken: null };
 

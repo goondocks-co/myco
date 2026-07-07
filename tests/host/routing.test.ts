@@ -13,15 +13,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { HOST_BEARER_SECRET } from '../constants.js';
+import { HOST_BEARER_SECRET } from '@myco/constants';
 import {
   assertGroveProjectId,
   createGroveId,
   createHostId,
   createProjectId,
   type GroveProjectId,
-} from '../grove/ids.js';
-import { upsertHost, writeHostSecret, type HostRecord } from './registry.js';
+} from '@myco/grove/ids';
+import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
 import {
   classifyRoute,
   classifyRouteStamp,
@@ -29,7 +29,7 @@ import {
   hostedCapabilityUnavailable,
   refusalJson,
   refusalMcpBody,
-} from './routing.js';
+} from '@myco/host/routing';
 
 function seedAttached(overrides: Partial<HostRecord> = {}): { projectId: GroveProjectId; groveId: string; host: HostRecord } {
   const groveId = createGroveId();

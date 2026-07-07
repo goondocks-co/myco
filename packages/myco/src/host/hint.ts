@@ -30,7 +30,7 @@ import type { ProjectManifest } from '../config/project-manifest.js';
 import { getHost, resolveAttach } from './registry.js';
 
 /** The `grove.remote.provider` value that marks a Team Host affiliation hint. */
-export const TEAM_HOST_HINT_PROVIDER = 'team-host';
+const TEAM_HOST_HINT_PROVIDER = 'team-host';
 
 export interface TeamHostHint {
   host_id: string;
@@ -93,12 +93,15 @@ export function teamHostHintMessage(state: TeamHostHintState): string | null {
   }
 }
 
-/** Host ids already notified in this process. See `noticeTeamHostHintOnce`. */
-const noticedHosts = new Set<string>();
+/** `(host_id, project_id)` pairs already notified in this process. Keyed on the
+ *  pair, not the host alone, so two distinct projects on this machine that both
+ *  hint at the same host each get their own one-time notice. See
+ *  `noticeTeamHostHintOnce`. */
+const noticedHints = new Set<string>();
 
 /**
- * Print the Team Host hint guidance to stderr, once per host id. Intended
- * to be called from `ensureProjectRegistered`'s cold (first-ever
+ * Print the Team Host hint guidance to stderr, once per (host, project) pair.
+ * Intended to be called from `ensureProjectRegistered`'s cold (first-ever
  * registration) path, which by construction runs at most once per project
  * per machine — every later hook call finds the project already registered
  * and short-circuits before reaching this call, so no cross-process dedup
@@ -117,12 +120,13 @@ export function noticeTeamHostHintOnce(
   const message = teamHostHintMessage(state);
   if (!message) return;
   const hostId = state.kind === 'not_joined' || state.kind === 'not_attached' ? state.hostId : '';
-  if (noticedHosts.has(hostId)) return;
-  noticedHosts.add(hostId);
+  const key = `${hostId}::${projectId ?? ''}`;
+  if (noticedHints.has(key)) return;
+  noticedHints.add(key);
   process.stderr.write(`[myco] ${message}\n`);
 }
 
-/** Test seam only: reset the once-per-host notice de-dup. */
+/** Test seam only: reset the once-per-(host, project) notice de-dup. */
 export function __resetTeamHostHintNoticeForTests(): void {
-  noticedHosts.clear();
+  noticedHints.clear();
 }

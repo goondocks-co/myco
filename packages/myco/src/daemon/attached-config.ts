@@ -40,6 +40,7 @@ import { loadAttachedMergedConfig } from '../config/loader.js';
 import { enumerateLeafPaths } from '../config/leaf-paths.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import { resolveProjectVaultDir } from '../grove/paths.js';
+import { resolveAttach } from '../host/registry.js';
 import { groveTierWriteRefusal, refusalJson, type RemoteTarget } from '../host/routing.js';
 import type { RouteResponse } from './router.js';
 import {
@@ -47,7 +48,7 @@ import {
   handleGetLocalConfig,
   handlePutScopedConfig,
 } from './api/config.js';
-import { defaultDial, type Dialer, type ProxyLogger } from './host-proxy.js';
+import { defaultDial, logVersionMismatchOnce, type Dialer, type ProxyLogger } from './host-proxy.js';
 
 /** Fired once per host when the grove-tier fetch fails, so the member warns
  *  once rather than on every merged read (routing-layer §6.3 degrade). */
@@ -70,25 +71,41 @@ function readHeader(req: http.IncomingMessage, name: string): string | undefined
   return Array.isArray(value) ? value[0] : value;
 }
 
+/** Result of a grove-tier fetch. `doc` is null on any degrade; `versionSkew`
+ *  distinguishes a host protocol-version mismatch (loud, already logged) from
+ *  plain unreachability, so the caller fires the RIGHT log (routing-layer §5). */
+export interface FetchGroveConfigResult {
+  doc: Record<string, unknown> | null;
+  versionSkew: boolean;
+}
+
 /**
  * One-shot GET `/api/grove-config` against the host over the overlay, returning
- * the host's grove-tier config doc (the `config` field of its response) — or
- * `null` on any failure (unreachable, non-2xx, oversized, unparseable) so the
+ * the host's grove-tier config doc (the `config` field of its response) — or a
+ * null `doc` on any failure (unreachable, non-2xx, oversized, unparseable) so the
  * caller degrades to grove-tier defaults. Never throws; the whole point is a
  * clean soft-fail. The connect+headers timeout bounds the wait so a merged read
  * never hangs on an unreachable host.
+ *
+ * A host `409` carrying the `x-myco-host-protocol` header is a version skew, NOT
+ * unreachability: it fires the loud once-per-host version-mismatch log (shared
+ * with the proxy via `logVersionMismatchOnce`) and returns `versionSkew: true`,
+ * still degrading the read to defaults — a read must not hard-fail on skew, and
+ * a skew never self-heals by retry.
  */
 export function fetchHostGroveConfig(
   target: RemoteTarget,
   dial: Dialer = defaultDial,
-): Promise<Record<string, unknown> | null> {
+  logger?: ProxyLogger,
+): Promise<FetchGroveConfigResult> {
   return new Promise((resolve) => {
     let settled = false;
-    const done = (value: Record<string, unknown> | null): void => {
+    const done = (value: FetchGroveConfigResult): void => {
       if (settled) return;
       settled = true;
       resolve(value);
     };
+    const degrade = (): void => done({ doc: null, versionSkew: false });
 
     let proxyReq: http.ClientRequest;
     try {
@@ -104,20 +121,29 @@ export function fetchHostGroveConfig(
         },
       });
     } catch {
-      done(null);
+      degrade();
       return;
     }
 
     proxyReq.setTimeout(HOST_PROXY_CONNECT_TIMEOUT_MS + HOST_PROXY_HEADERS_TIMEOUT_MS, () => {
       proxyReq.destroy();
-      done(null);
+      degrade();
     });
-    proxyReq.on('error', () => done(null));
+    proxyReq.on('error', () => degrade());
     proxyReq.on('response', (proxyRes) => {
       const status = proxyRes.statusCode ?? 502;
       if (status >= 400) {
+        const hostProtocol = proxyRes.headers[HOST_PROTOCOL_HEADER];
+        if (status === 409 && hostProtocol !== undefined) {
+          const raw = Array.isArray(hostProtocol) ? hostProtocol[0] : hostProtocol;
+          const reported = Number(raw);
+          if (logger) logVersionMismatchOnce(logger, target, Number.isFinite(reported) ? reported : undefined);
+          proxyRes.resume();
+          done({ doc: null, versionSkew: true });
+          return;
+        }
         proxyRes.resume();
-        done(null);
+        degrade();
         return;
       }
       const chunks: Buffer[] = [];
@@ -126,23 +152,23 @@ export function fetchHostGroveConfig(
         total += chunk.length;
         if (total > HOST_PROXY_MAX_BUFFERED_BODY_BYTES) {
           proxyRes.destroy();
-          done(null);
+          degrade();
         } else {
           chunks.push(chunk);
         }
       });
-      proxyRes.on('error', () => done(null));
+      proxyRes.on('error', () => degrade());
       proxyRes.on('end', () => {
         try {
           const parsed = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as { config?: unknown };
           const config = parsed?.config;
           if (config && typeof config === 'object' && !Array.isArray(config)) {
-            done(config as Record<string, unknown>);
+            done({ doc: config as Record<string, unknown>, versionSkew: false });
           } else {
-            done(null);
+            degrade();
           }
         } catch {
-          done(null);
+          degrade();
         }
       });
     });
@@ -185,9 +211,17 @@ async function computeResponse(
         // would write a local grove config file for the hosted Grove.
         return handleGetLocalConfig(vaultDir);
       case '/api/config/merged': {
+        let versionSkew = false;
         const config = await loadAttachedMergedConfig(vaultDir, {
-          fetchGroveDoc: () => fetchHostGroveConfig(target, deps.dial),
+          fetchGroveDoc: async () => {
+            const result = await fetchHostGroveConfig(target, deps.dial, deps.logger);
+            versionSkew = result.versionSkew;
+            return result.doc;
+          },
           onGroveUnreachable: (err) => {
+            // A version skew already fired its own loud, once-per-host log inside
+            // fetchHostGroveConfig — don't ALSO warn "unreachable" for it.
+            if (versionSkew) return;
             if (warnedUnreachableHosts.has(target.host.host_id)) return;
             warnedUnreachableHosts.add(target.host.host_id);
             deps.logger.warn('host unreachable for grove-tier config — merged view degraded to grove defaults', {
@@ -221,10 +255,12 @@ async function computeResponse(
 
 /**
  * Handle a `config_carve` request for an attached project. Resolves the member's
- * vault dir from the `x-myco-project-root` header (NOT the Grove registry — an
- * attached project has no local row), dispatches to the right member-side path,
- * and writes the JSON response. `body` is the already-read request body for the
- * scoped PUT (undefined for GETs).
+ * vault dir from the `x-myco-project-root` header, falling back to the
+ * member-local `root` recorded on the attach record — the browser Settings UI
+ * sends only grove/project ids (`ui/src/lib/selection.ts`), never the filesystem
+ * path, and an attached project has no local Grove row to resolve it from.
+ * Dispatches to the right member-side path and writes the JSON response. `body`
+ * is the already-read request body for the scoped PUT (undefined for GETs).
  */
 export async function handleAttachedConfigRequest(
   req: http.IncomingMessage,
@@ -234,7 +270,8 @@ export async function handleAttachedConfigRequest(
   body: unknown,
   deps: AttachedConfigDeps,
 ): Promise<void> {
-  const projectRoot = readHeader(req, REQUEST_CONTEXT_HEADERS.projectRoot);
+  const projectRoot = readHeader(req, REQUEST_CONTEXT_HEADERS.projectRoot)
+    ?? resolveAttach(target.projectId)?.ref.root;
   if (!projectRoot) {
     respondJson(res, { status: 400, body: { error: 'missing_project_root' } });
     return;

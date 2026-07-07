@@ -26,12 +26,12 @@ import {
   __resetVersionMismatchLogForTests,
   type HostProxyDeps,
   type ProxyLogger,
-} from './host-proxy.js';
-import type { RemoteTarget, RouteClassification } from '../host/routing.js';
-import { shouldBufferFallback } from '../hooks/send-event.js';
-import { resolveProjectBufferDir } from '../grove/paths.js';
-import { listGroves } from '../grove/registry.js';
-import { HOST_PROTOCOL_HEADER } from '../constants.js';
+} from '@myco/daemon/host-proxy';
+import type { RemoteTarget, RouteClassification } from '@myco/host/routing';
+import { shouldBufferFallback } from '@myco/hooks/send-event';
+import { resolveProjectBufferDir } from '@myco/grove/paths';
+import { listGroves } from '@myco/grove/registry';
+import { HOST_PROTOCOL_HEADER } from '@myco/constants';
 
 const HOST_BEARER = 'host-bearer-secret';
 
