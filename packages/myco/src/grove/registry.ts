@@ -27,6 +27,7 @@ import {
 } from './registry-resolve.js';
 import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
 import { resolveAttach, type AttachRef, type HostRecord } from '../host/registry.js';
+import { noticeTeamHostHintOnce } from '../host/hint.js';
 
 export interface GroveRecord {
   id: string;
@@ -696,7 +697,11 @@ function attachedRegistration(
  *
  * Decision 2 of the plan: silent register, no prompt — discovery via
  * the Groves page in the UI. Per Decision 3, the default Grove is the
- * owner.
+ * owner. One narrow exception: a project whose manifest carries a Team
+ * Host affiliation hint (`grove.remote`, see `host/hint.ts`) gets a
+ * one-time stderr notice on the registration that would otherwise
+ * silently give a hosted-in-name project a local Grove row — it does
+ * NOT block the registration or change its outcome, only its visibility.
  */
 export function ensureProjectRegistered(
   projectRoot: string,
@@ -726,6 +731,13 @@ export function ensureProjectRegistered(
 
   const projectName = path.basename(path.resolve(projectRoot));
   let manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
+  // Team Host affiliation hint (prompt-only, see host/hint.ts): `attach` was
+  // already confirmed null above, so a project whose manifest carries a
+  // `grove.remote` hint is about to get a LOCAL Grove row here despite being
+  // meant for a host. This branch runs at most once per project on this
+  // machine — every later call finds `existing` above and never reaches
+  // here — so the notice is naturally once-ever, not once-per-hook-call.
+  noticeTeamHostHintOnce(manifest, manifest?.project.id);
   if (manifest && !manifest.grove?.binding_id) {
     manifest = ensureProjectManifest(resolveProjectVaultDir(projectRoot), {
       projectName,
