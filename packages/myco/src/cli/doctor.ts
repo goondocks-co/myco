@@ -17,6 +17,8 @@ import {
 } from '../daemon/daemon-state-authority.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
+import { teamHostHintFromManifest } from '../host/hint.js';
+import { getHost, resolveAttach } from '../host/registry.js';
 import { isProcessAlive } from './shared.js';
 import { parseStrictFlags } from './args.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
@@ -84,6 +86,47 @@ async function checkVault(vaultDir: string): Promise<{ check: DoctorCheck; confi
   } catch (err) {
     return { check: { name: 'Vault', status: 'fail', detail: `${CONFIG_FILENAME} parse error: ${(err as Error).message}`, fixable: false }, config: null };
   }
+}
+
+/**
+ * Check for a Team Host affiliation hint (`grove.remote { provider:
+ * 'team-host', remote_id }`) in the project manifest — the "freshly-cloned
+ * checkout, machine hasn't joined that host" scenario. Prompt only: this
+ * never grants access, never auto-attaches, and never auto-joins; it only
+ * tells the user what to run.
+ *
+ * Returns null (no row emitted) whenever there's nothing actionable to
+ * report: no hint at all (byte-identical to a project with no Team Host
+ * awareness), or a hint that's already resolved by an actual attach
+ * (`resolveAttach` non-null — normal routing, nothing to prompt).
+ *
+ * Reads `project.toml` directly rather than through `checkVault`'s `config`
+ * so the notice surfaces even before `myco.yaml` exists — a fresh clone of
+ * a hosted project's checkout has a committed manifest but no vault yet.
+ */
+export function checkTeamHostHint(vaultDir: string): DoctorCheck | null {
+  const manifest = loadProjectManifest(vaultDir);
+  const hint = teamHostHintFromManifest(manifest);
+  if (!hint) return null;
+
+  const projectId = manifest?.project.id;
+  if (projectId && resolveAttach(projectId)) return null;
+
+  const host = getHost(hint.host_id);
+  if (!host) {
+    return {
+      name: 'Team Host',
+      status: 'warn',
+      detail: `This project is served by Team Host ${hint.host_id} — run \`myco join ${hint.host_id}\` to enroll this machine, then attach this project.`,
+      fixable: false,
+    };
+  }
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail: `This project is served by Team Host ${hint.host_id} (already joined) — attach this project to route it through the host.`,
+    fixable: false,
+  };
 }
 
 /** Check that the SQLite database exists and can be queried. */
@@ -606,6 +649,12 @@ export async function checkInstallSource(): Promise<DoctorCheck> {
 export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   const { check: vaultCheck, config } = await checkVault(vaultDir);
   const checks: DoctorCheck[] = [vaultCheck];
+
+  // Reads project.toml directly (not `config`), so it applies even to a
+  // freshly-cloned checkout that has a committed manifest but no
+  // `myco.yaml` yet — exactly the scenario this hint exists for.
+  const teamHostHint = checkTeamHostHint(vaultDir);
+  if (teamHostHint) checks.push(teamHostHint);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:
