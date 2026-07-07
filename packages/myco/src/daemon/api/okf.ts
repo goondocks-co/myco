@@ -9,9 +9,9 @@
  *   POST /api/okf/maintain
  *   GET  /api/okf/status
  *   POST /api/okf/validate
- *   GET  /api/okf/concepts            (list)
- *   GET  /api/okf/concepts/*          (get — prefix route, slash-safe ids)
- *   POST /api/okf/concepts            (save)
+ *   GET  /api/okf/pages                (list — OKF document pages)
+ *   GET  /api/okf/pages/*              (get — prefix route, slash-safe paths)
+ *   POST /api/okf/concepts             (save — legacy editorial concept surface)
  *   POST /api/okf/concepts/supersede
  */
 
@@ -31,9 +31,9 @@ import { OkfBundle } from '@myco/okf/bundle.js';
 import { OkfError, OKF_ERROR_HTTP_STATUS } from '@myco/okf/errors.js';
 import { scanStagedBundle } from '@myco/okf/publish-eligibility.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import type { OkfBundleInclude, OkfSporeStatusFilter } from '@myco/okf/types.js';
+import type { OkfBundleInclude } from '@myco/okf/types.js';
 
-const CONCEPTS_PREFIX = '/api/okf/concepts/';
+const PAGES_PREFIX = '/api/okf/pages/';
 
 interface OkfContext {
   bundle: OkfBundle;
@@ -75,9 +75,7 @@ function asRecord(body: unknown): Record<string, unknown> {
   return body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
 }
 
-const SPORE_STATUSES = new Set(['active', 'superseded', 'consolidated', 'obsolete', 'all']);
-
-/** Validate the maintain body's include/sporeStatus the way the CLI does; returns an error envelope or null. */
+/** Validate the maintain body's include the way the CLI does; returns an error envelope or null. */
 function validateMaintainBody(body: Record<string, unknown>): RouteResponse | null {
   if (body.include !== undefined) {
     const inc = body.include;
@@ -90,9 +88,6 @@ function validateMaintainBody(body: Record<string, unknown>): RouteResponse | nu
     if (!keysOk) {
       return { status: 400, body: errorBody('invalid_request', 'include must be an object of {spores,canopy,concepts,guides}: boolean') };
     }
-  }
-  if (body.sporeStatus !== undefined && !SPORE_STATUSES.has(String(body.sporeStatus))) {
-    return { status: 400, body: errorBody('invalid_request', `unknown sporeStatus: ${String(body.sporeStatus)}`) };
   }
   return null;
 }
@@ -113,8 +108,12 @@ export async function handleOkfMaintain(req: RouteRequest, principal: RequestPri
       machineId: ctx.machineId,
       mode: 'published',
       include: body.include as OkfBundleInclude | undefined,
-      sporeStatus: (body.sporeStatus as OkfSporeStatusFilter | undefined) ?? 'active',
-      includeUndescribedCanopy: body.includeUndescribedCanopy === true,
+      // sporeStatus/includeUndescribedCanopy have no document-model
+      // equivalent (Task 4.2 retired the Myco-shaped include surface) —
+      // fixed constants matching OkfMaintainSchema's old defaults, not
+      // read from the request body.
+      sporeStatus: 'active',
+      includeUndescribedCanopy: false,
       outputRoot: typeof body.outputRoot === 'string' ? body.outputRoot : undefined,
       dryRun: body.dryRun === true,
       oneShot: body.oneShot === true,
@@ -192,24 +191,26 @@ export async function handleOkfValidate(req: RouteRequest, principal: RequestPri
   }
 }
 
-export async function handleOkfConceptsList(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
+/** List published OKF document pages — the document-model read primitive behind the knowledge browser (Task 5.1). */
+export async function handleOkfPagesList(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
-  return { status: 200, body: { ok: true, concepts: ctx.bundle.listConcepts() } };
+  return { status: 200, body: { ok: true, pages: ctx.bundle.listPages() } };
 }
 
-export async function handleOkfConceptGet(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
+/** Get one published OKF document page's frontmatter fields + rendered-markdown body, by bundle-relative path. */
+export async function handleOkfPageGet(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
-  if (!req.pathname.startsWith(CONCEPTS_PREFIX)) {
-    return { status: 400, body: errorBody('invalid_request', 'malformed concept path') };
+  if (!req.pathname.startsWith(PAGES_PREFIX)) {
+    return { status: 400, body: errorBody('invalid_request', 'malformed page path') };
   }
-  let id: string;
+  let pagePath: string;
   try {
-    id = decodeURIComponent(req.pathname.slice(CONCEPTS_PREFIX.length));
+    pagePath = decodeURIComponent(req.pathname.slice(PAGES_PREFIX.length));
   } catch {
-    return { status: 400, body: errorBody('invalid_request', 'undecodable concept id') };
+    return { status: 400, body: errorBody('invalid_request', 'undecodable page path') };
   }
-  const got = ctx.bundle.getConcept(id);
-  return { status: 200, body: { ok: true, concept: got ? { id, raw: got.raw } : null } };
+  const page = ctx.bundle.getPage(pagePath);
+  return { status: 200, body: { ok: true, page } };
 }
 
 export async function handleOkfConceptSave(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
@@ -258,8 +259,8 @@ export function registerOkfRoutes(
   server.registerRoute('POST', '/api/okf/maintain', tenantRoute(tenant, handleOkfMaintain));
   server.registerRoute('GET', '/api/okf/status', tenantRoute(tenant, handleOkfStatus));
   server.registerRoute('POST', '/api/okf/validate', tenantRoute(tenant, handleOkfValidate));
-  server.registerRoute('GET', '/api/okf/concepts', tenantRoute(tenant, handleOkfConceptsList));
+  server.registerRoute('GET', '/api/okf/pages', tenantRoute(tenant, handleOkfPagesList));
   server.registerRoute('POST', '/api/okf/concepts', tenantRoute(tenant, handleOkfConceptSave));
   server.registerRoute('POST', '/api/okf/concepts/supersede', tenantRoute(tenant, handleOkfConceptSupersede));
-  server.registerRoute('GET', '/api/okf/concepts/*', tenantRoute(tenant, handleOkfConceptGet));
+  server.registerRoute('GET', '/api/okf/pages/*', tenantRoute(tenant, handleOkfPageGet));
 }

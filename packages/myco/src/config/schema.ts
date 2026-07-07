@@ -642,17 +642,26 @@ const VaultEvolutionSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+/**
+ * Which OkfSourceSet slices (Task 2.1's `gatherSources`) the synthesis
+ * harness reads from — repo file tree, git diff context, vault knowledge
+ * (spores/decisions/Canopy). Reserved knob: no consumer wires it yet —
+ * `okf_read_sources` (okf-tools.ts) still takes its own per-call `kind`
+ * selector (repo|git|vault|all). A future task may wire this as the
+ * project-level default for that selector, the way `bundleLink` (Task 1.2)
+ * shipped ahead of its renderer consumer.
+ */
+const OkfSynthesisScopeSchema = z.object({
+  repo: z.boolean().default(true),
+  git: z.boolean().default(true),
+  vault: z.boolean().default(true),
+});
+
 const OkfMaintainSchema = z.object({
   /** Bundle output root, relative to the project root. */
   output_path: z.string().default('okf'),
-  include: z
-    .array(z.enum(['spores', 'canopy', 'concepts', 'guides']))
-    .default(['spores', 'canopy', 'concepts', 'guides']),
-  include_status: z
-    .array(z.enum(['active', 'superseded', 'consolidated', 'obsolete']))
-    .default(['active']),
-  include_undescribed_canopy: z.boolean().default(false),
-  agent_concept_refresh: z.boolean().default(true),
+  /** Synthesis source scope — see {@link OkfSynthesisScopeSchema}. */
+  scope: OkfSynthesisScopeSchema.default(() => OkfSynthesisScopeSchema.parse({})),
   managed_agents_md_pointer: z.boolean().default(true),
 });
 
@@ -789,6 +798,13 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['notifications'],
   // Grove-tier (only strippable once a Grove is bound — see GROVE_TIER_FIELDS):
   ['skills'],
+  // OKF Task 4.2: the Myco-shaped `include`/`include_status` config surface
+  // is retired outright (document-model synthesis has no equivalent knob),
+  // not moved to another tier — unconditionally strippable.
+  ['okf', 'maintain', 'include'],
+  ['okf', 'maintain', 'include_status'],
+  ['okf', 'maintain', 'include_undescribed_canopy'],
+  ['okf', 'maintain', 'agent_concept_refresh'],
 ];
 
 export const MycoConfigSchema = z.preprocess(

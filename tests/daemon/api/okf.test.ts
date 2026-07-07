@@ -17,8 +17,8 @@ interface StubImpl {
   validate?: (root?: string) => unknown;
   saveConcept?: (input: unknown) => Promise<unknown>;
   supersedeConcept?: (input: unknown) => Promise<unknown>;
-  listConcepts?: () => unknown;
-  getConcept?: (id: string) => unknown;
+  listPages?: () => unknown;
+  getPage?: (path: string) => unknown;
 }
 let stub: StubImpl = {};
 const constructed: unknown[] = [];
@@ -43,11 +43,11 @@ mock.module('@myco/okf/bundle.js', () => ({
     supersedeConcept(input: unknown) {
       return stub.supersedeConcept?.(input) ?? Promise.resolve({ oldId: 'concepts/a', newId: 'concepts/b', bundleGeneration: 3 });
     }
-    listConcepts() {
-      return stub.listConcepts?.() ?? [];
+    listPages() {
+      return stub.listPages?.() ?? [];
     }
-    getConcept(id: string) {
-      return stub.getConcept?.(id) ?? null;
+    getPage(path: string) {
+      return stub.getPage?.(path) ?? null;
     }
   },
 }));
@@ -56,8 +56,8 @@ const {
   handleOkfMaintain,
   handleOkfStatus,
   handleOkfValidate,
-  handleOkfConceptsList,
-  handleOkfConceptGet,
+  handleOkfPagesList,
+  handleOkfPageGet,
   handleOkfConceptSave,
   handleOkfConceptSupersede,
 } = await import('@myco/daemon/api/okf.js');
@@ -112,11 +112,22 @@ describe('OKF API handlers', () => {
       received = input;
       return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), conceptCount: 1, byType: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 1, conceptsChecked: 1 } });
     };
-    const res = await handleOkfMaintain(req({ body: { sporeStatus: 'all', dryRun: true } }), principalFor(ctxFor()));
+    const res = await handleOkfMaintain(req({ body: { dryRun: true } }), principalFor(ctxFor()));
     expect(res.status).toBe(200);
     expect((res.body as { ok: boolean }).ok).toBe(true);
-    expect((received as { sporeStatus: string; dryRun: boolean }).sporeStatus).toBe('all');
     expect((received as { dryRun: boolean }).dryRun).toBe(true);
+  });
+
+  it('maintain no longer reads sporeStatus/includeUndescribedCanopy from the request body — fixed constants', async () => {
+    let received: unknown;
+    stub.maintain = (input) => {
+      received = input;
+      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), conceptCount: 0, byType: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0 } });
+    };
+    // Even if a caller still sends the retired fields, they're ignored.
+    await handleOkfMaintain(req({ body: { sporeStatus: 'all', includeUndescribedCanopy: true } }), principalFor(ctxFor()));
+    expect((received as { sporeStatus: string; includeUndescribedCanopy: boolean }).sporeStatus).toBe('active');
+    expect((received as { sporeStatus: string; includeUndescribedCanopy: boolean }).includeUndescribedCanopy).toBe(false);
   });
 
   it('maps a disabled-gate OkfError to 403', async () => {
@@ -156,26 +167,44 @@ describe('OKF API handlers', () => {
     expect((res.body as { validation: { ok: boolean } }).validation.ok).toBe(false);
   });
 
-  it('concept get resolves a slash-safe id from the prefix route', async () => {
-    let receivedId: string | undefined;
-    stub.getConcept = (id) => {
-      receivedId = id;
-      return { raw: '---\ntype: Note\n---\n\nBody.\n', concept: {} };
+  it('page get resolves a slash-safe path from the prefix route and returns the document-model shape', async () => {
+    let receivedPath: string | undefined;
+    stub.getPage = (p) => {
+      receivedPath = p;
+      return { path: 'notes/my-note.md', type: 'Note', title: 'My Note', description: 'D.', timestamp: '2026-07-05', body: 'Body.' };
     };
-    const res = await handleOkfConceptGet(
-      req({ pathname: '/api/okf/concepts/concepts/my-note' }),
+    const res = await handleOkfPageGet(
+      req({ pathname: '/api/okf/pages/notes/my-note' }),
       principalFor(ctxFor()),
     );
     expect(res.status).toBe(200);
-    expect(receivedId).toBe('concepts/my-note');
-    expect((res.body as { concept: { id: string } }).concept.id).toBe('concepts/my-note');
+    expect(receivedPath).toBe('notes/my-note');
+    const page = (res.body as { page: Record<string, unknown> }).page;
+    expect(page.path).toBe('notes/my-note.md');
+    expect(page.body).toBe('Body.');
+    expect(page).not.toHaveProperty('myco_source_kind');
+    expect(page).not.toHaveProperty('raw');
   });
 
-  it('concept list and supersede delegate to the capability', async () => {
-    stub.listConcepts = () => [{ id: 'concepts/a', type: 'Note' }];
-    const list = await handleOkfConceptsList(req(), principalFor(ctxFor()));
-    expect((list.body as { concepts: unknown[] }).concepts).toHaveLength(1);
+  it('page get returns page: null for a missing page (never a 404)', async () => {
+    stub.getPage = () => null;
+    const res = await handleOkfPageGet(req({ pathname: '/api/okf/pages/notes/missing' }), principalFor(ctxFor()));
+    expect(res.status).toBe(200);
+    expect((res.body as { page: unknown }).page).toBeNull();
+  });
 
+  it('page list returns OKF-shaped pages with no Myco fields', async () => {
+    stub.listPages = () => [
+      { path: 'notes/a.md', type: 'Note', title: 'A', description: 'D', timestamp: '2026-07-05' },
+    ];
+    const list = await handleOkfPagesList(req(), principalFor(ctxFor()));
+    const pages = (list.body as { pages: Array<Record<string, unknown>> }).pages;
+    expect(pages).toHaveLength(1);
+    expect(pages[0]).toEqual({ path: 'notes/a.md', type: 'Note', title: 'A', description: 'D', timestamp: '2026-07-05' });
+    expect(pages[0]).not.toHaveProperty('myco_source_kind');
+  });
+
+  it('supersede delegates to the capability', async () => {
     stub.supersedeConcept = () => Promise.resolve({ oldId: 'concepts/a', newId: 'concepts/b', bundleGeneration: 4 });
     const sup = await handleOkfConceptSupersede(
       req({ body: { oldId: 'concepts/a', newId: 'concepts/b', reason: 'r' } }),
@@ -189,7 +218,7 @@ describe('OKF API handlers', () => {
     expect(res.status).toBe(400);
   });
 
-  it('rejects a maintain with a malformed include or spore status (400) before touching the capability', async () => {
+  it('rejects a maintain with a malformed include (400) before touching the capability', async () => {
     let called = false;
     stub.maintain = () => {
       called = true;
@@ -199,8 +228,6 @@ describe('OKF API handlers', () => {
     expect(badInclude.status).toBe(400);
     const badKeys = await handleOkfMaintain(req({ body: { include: { spores: true, bogus: true } } }), principalFor(ctxFor()));
     expect(badKeys.status).toBe(400);
-    const badStatus = await handleOkfMaintain(req({ body: { sporeStatus: 'zombie' } }), principalFor(ctxFor()));
-    expect(badStatus.status).toBe(400);
     expect(called).toBe(false); // never reached the capability
   });
 

@@ -121,8 +121,8 @@ describe('handleMycoOkf', () => {
   });
 
   it.skip('op list and validate are read-only', async () => {
-    const list = (await handleMycoOkf({ op: 'list' }, client, ctx)) as { concepts: unknown[] };
-    expect(Array.isArray(list.concepts)).toBe(true);
+    const list = (await handleMycoOkf({ op: 'list' }, client, ctx)) as { pages: unknown[] };
+    expect(Array.isArray(list.pages)).toBe(true);
     const validation = (await handleMycoOkf({ op: 'validate' }, client, ctx)) as { ok: boolean };
     expect(validation.ok).toBe(true);
   });
@@ -163,5 +163,76 @@ describe('handleMycoOkf', () => {
     const result = (await handleMycoOkf({ op: 'status' }, client, undefined)) as { ok: boolean; error: string };
     expect(result.ok).toBe(false);
     expect(result.error).toContain('request context');
+  });
+});
+
+// `list`/`get` (bundle.listPages()/getPage()) walk the published tree
+// directly — no manifest/marker dependency — so they can be exercised
+// without a real maintain() run (renderDocuments is still stubbed, Task
+// 0.1, which is why the describe block above is entirely .skip'd).
+describe('handleMycoOkf list/get — document model', () => {
+  let rootDir: string;
+  let vaultDir: string;
+  let projectRoot: string;
+  let ctx: MycoRequestContext;
+  const client = {} as never;
+
+  beforeEach(() => {
+    rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'okf-mcp-pages-')));
+    const home = path.join(rootDir, 'home');
+    projectRoot = path.join(rootDir, 'project');
+    vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    vi.stubEnv('MYCO_HOME', home);
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nokf:\n  enabled: true\n');
+    const grove = createGrove('Work', home);
+    saveProjectManifest(vaultDir, {
+      project: { id: PROJECT_ID, name: 'okf-mcp-pages' },
+      grove: { binding_id: 'g', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, { projectId: PROJECT_ID, projectName: 'okf-mcp-pages', projectRoot, bindingId: 'g' }, home);
+
+    ctx = resolveLegacyRequestContext(vaultDir, {
+      projectId: assertGroveProjectId(PROJECT_ID),
+      groveId: grove.id,
+      machineId: 'machine-a',
+      tenancySource: 'caller',
+    });
+
+    fs.mkdirSync(path.join(projectRoot, 'okf/notes'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, 'okf/notes/example.md'),
+      '---\ntype: Note\ntitle: Example\ndescription: D.\ntimestamp: 2026-07-05\n---\n\nBody text.\n',
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  it('op list returns OKF-shaped pages, no Myco fields', async () => {
+    const result = (await handleMycoOkf({ op: 'list' }, client, ctx)) as { pages: Array<Record<string, unknown>> };
+    expect(result.pages).toEqual([
+      { path: 'notes/example.md', type: 'Note', title: 'Example', description: 'D.', timestamp: '2026-07-05' },
+    ]);
+    expect(result.pages[0]).not.toHaveProperty('myco_source_kind');
+  });
+
+  it('op get returns the parsed page shape with a rendered-markdown body', async () => {
+    const result = (await handleMycoOkf({ op: 'get', id: 'notes/example' }, client, ctx)) as { page: Record<string, unknown> };
+    expect(result.page).toEqual({
+      path: 'notes/example.md',
+      type: 'Note',
+      title: 'Example',
+      description: 'D.',
+      timestamp: '2026-07-05',
+      body: 'Body text.',
+    });
+  });
+
+  it('op get returns page: null for a missing page', async () => {
+    const result = (await handleMycoOkf({ op: 'get', id: 'notes/missing' }, client, ctx)) as { page: unknown };
+    expect(result.page).toBeNull();
   });
 });

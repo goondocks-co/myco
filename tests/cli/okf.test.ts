@@ -20,18 +20,28 @@ const AGENT_ID = 'claude-code';
 
 describe('parseOkfCommand', () => {
   it('parses maintain flags', () => {
-    const r = parseOkfCommand(['maintain', '--include', 'spores,guides', '--spore-status', 'all', '--dry-run']);
+    const r = parseOkfCommand(['maintain', '--include', 'spores,guides', '--dry-run']);
     expect(r.ok).toBe(true);
     if (r.ok && r.cmd.kind === 'maintain') {
       expect(r.cmd.include).toEqual({ spores: true, canopy: false, concepts: false, guides: true });
-      expect(r.cmd.sporeStatus).toBe('all');
       expect(r.cmd.dryRun).toBe(true);
     }
   });
 
-  it('rejects unknown include kinds and spore statuses', () => {
+  it('rejects unknown include kinds', () => {
     expect(parseOkfCommand(['maintain', '--include', 'spores,bogus']).ok).toBe(false);
-    expect(parseOkfCommand(['maintain', '--spore-status', 'zombie']).ok).toBe(false);
+  });
+
+  it('no longer recognizes --spore-status/--include-undescribed-canopy (retired; silently ignored, not an error)', () => {
+    // These flags no longer correspond to anything in the document model —
+    // dropped from parsing, not rejected (matches the parser's existing
+    // permissiveness toward any other unrecognized flag).
+    const r = parseOkfCommand(['maintain', '--spore-status', 'all', '--include-undescribed-canopy']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.cmd.kind === 'maintain') {
+      expect(r.cmd).not.toHaveProperty('sporeStatus');
+      expect(r.cmd).not.toHaveProperty('includeUndescribedCanopy');
+    }
   });
 
   it('requires --out with --one-shot', () => {
@@ -39,13 +49,29 @@ describe('parseOkfCommand', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('parses concept save/supersede/list/get', () => {
+  it('parses concept save/supersede', () => {
     expect(parseOkfCommand(['concept', 'save', '--id', 'concepts/x', '--input', '@a.md']).ok).toBe(true);
     expect(parseOkfCommand(['concept', 'save', '--id', 'concepts/x']).ok).toBe(false);
     const sup = parseOkfCommand(['concept', 'supersede', 'concepts/a', 'concepts/b', '--reason', 'r']);
     expect(sup.ok).toBe(true);
-    expect(parseOkfCommand(['concept', 'list']).ok).toBe(true);
-    expect(parseOkfCommand(['concept', 'get', 'concepts/x']).ok).toBe(true);
+  });
+
+  it('rejects a bare concept list/get — retired in favor of `page list`/`page get`', () => {
+    expect(parseOkfCommand(['concept', 'list']).ok).toBe(false);
+    expect(parseOkfCommand(['concept', 'get', 'concepts/x']).ok).toBe(false);
+  });
+
+  it('parses page list/get', () => {
+    expect(parseOkfCommand(['page', 'list']).ok).toBe(true);
+    const get = parseOkfCommand(['page', 'get', 'notes/my-note']);
+    expect(get.ok).toBe(true);
+    if (get.ok && get.cmd.kind === 'page-get') {
+      expect(get.cmd.path).toBe('notes/my-note');
+    }
+  });
+
+  it('rejects a bare page get with no path', () => {
+    expect(parseOkfCommand(['page', 'get']).ok).toBe(false);
   });
 
   it('supersede accepts a --reason string equal to a concept id (index-based flag consumption)', () => {
@@ -248,6 +274,54 @@ describe('myco okf CLI', () => {
     await run(['concept', 'save', '--id', 'concepts/x', '--input', '@/nonexistent/file.md'], vaultDir);
     expect(process.exitCode).toBe(1);
     expect((lastJson().error as { code: string }).code).toBe('invalid_input_file');
+  });
+
+  // listPages()/getPage() walk the published tree directly (no manifest/
+  // marker dependency) — seed it with a raw file write instead of running a
+  // real maintain() (renderDocuments is still stubbed, Task 0.1).
+  it('page list returns published pages with OKF fields, no Myco fields', async () => {
+    writeConfig(true);
+    seedGroveDb(() => registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 }));
+    fs.mkdirSync(path.join(projectRoot(), 'okf', 'notes'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot(), 'okf/notes/example.md'),
+      '---\ntype: Note\ntitle: Example\ndescription: D.\ntimestamp: 2026-07-05\n---\n\nBody.\n',
+    );
+    await run(['page', 'list'], vaultDir);
+    expect(process.exitCode).toBe(0);
+    const pages = lastJson().pages as Array<Record<string, unknown>>;
+    expect(pages).toEqual([
+      { path: 'notes/example.md', type: 'Note', title: 'Example', description: 'D.', timestamp: '2026-07-05' },
+    ]);
+    expect(pages[0]).not.toHaveProperty('myco_source_kind');
+  });
+
+  it('page get returns the parsed page shape with a rendered-markdown body', async () => {
+    writeConfig(true);
+    seedGroveDb(() => registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 }));
+    fs.mkdirSync(path.join(projectRoot(), 'okf', 'notes'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot(), 'okf/notes/example.md'),
+      '---\ntype: Note\ntitle: Example\ndescription: D.\ntimestamp: 2026-07-05\n---\n\nBody text.\n',
+    );
+    await run(['page', 'get', 'notes/example'], vaultDir);
+    expect(process.exitCode).toBe(0);
+    expect(lastJson().page).toEqual({
+      path: 'notes/example.md',
+      type: 'Note',
+      title: 'Example',
+      description: 'D.',
+      timestamp: '2026-07-05',
+      body: 'Body text.',
+    });
+  });
+
+  it('page get returns page: null for a missing page', async () => {
+    writeConfig(true);
+    seedGroveDb(() => registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 }));
+    await run(['page', 'get', 'notes/missing'], vaultDir);
+    expect(process.exitCode).toBe(0);
+    expect(lastJson().page).toBeNull();
   });
 });
 

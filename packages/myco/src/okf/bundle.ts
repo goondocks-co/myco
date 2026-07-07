@@ -861,21 +861,39 @@ export class OkfBundle {
   // Document rendering + staged-tree materialization
   // -------------------------------------------------------------------
 
-  /** The sporeStatus the config-driven scheduled maintain will use. */
+  /**
+   * The sporeStatus the gather() path uses. Task 4.2 retired
+   * `okf.maintain.include_status` from the config schema (the Myco-shaped
+   * include surface has no document-model equivalent), so this is now a fixed
+   * constant rather than config-driven — it reproduces the old schema default
+   * (`include_status: ['active']`) exactly.
+   *
+   * TWO consumers, and they differ in liveness — the retirement cleanup must
+   * NOT treat this whole helper as dead:
+   *   - `maintain()`/`runManagedMaintain`: DEAD in production today
+   *     (`renderDocuments` throws `not_implemented` before maintain completes).
+   *   - `status()`'s staleness probe (inputs_hash comparison): LIVE — runs on
+   *     every `GET /api/okf/status` / `myco okf status`, does NOT go through
+   *     `renderDocuments`. So this helper IS reachable in production via
+   *     `status()`; whoever retires the inline-gather duplication (tracked
+   *     cleanup, Task 2.1/2.3) must keep the `status()` probe path working.
+   * Because the config leaf no longer exists, no config can diverge from this
+   * constant, so the probe and any future maintain gather always agree.
+   */
   private configuredSporeStatus(): 'active' | 'all' {
-    const statuses = this.deps.config.okf.maintain.include_status;
-    return statuses.length === 1 && statuses[0] === 'active' ? 'active' : 'all';
+    return 'active';
   }
 
+  /**
+   * The include-set the legacy gather()/runManagedMaintain path uses when a
+   * caller doesn't pass an explicit `include`. Fixed constant, not
+   * config-driven — see {@link configuredSporeStatus}'s doc comment for why.
+   * Reproduces the old schema default (`include: ['spores','canopy',
+   * 'concepts','guides']`) exactly.
+   */
   private effectiveInclude(include?: OkfBundleInclude): OkfBundleInclude {
     if (include) return include;
-    const configured = new Set(this.deps.config.okf.maintain.include);
-    return {
-      spores: configured.has('spores'),
-      canopy: configured.has('canopy'),
-      concepts: configured.has('concepts'),
-      guides: configured.has('guides'),
-    };
+    return { spores: true, canopy: true, concepts: true, guides: true };
   }
 
   /**
@@ -1414,7 +1432,9 @@ export class OkfBundle {
             // single 'active' status maps to the 'active' filter, any broader
             // set to 'all'. Prevents a false-stale for non-default configs.
             sporeStatus: this.configuredSporeStatus(),
-            includeUndescribedCanopy: this.deps.config.okf.maintain.include_undescribed_canopy,
+            // Fixed constant, not config-driven — `include_undescribed_canopy`
+            // was retired from the schema by Task 4.2; reproduces its old default.
+            includeUndescribedCanopy: false,
           },
         );
         stale = probe.inputsHash !== manifest.inputs_hash;
@@ -1555,9 +1575,9 @@ export class OkfBundle {
    * `listConcepts`, it walks the whole tree, not just `concepts/`, because
    * Phase 2 documents live at arbitrary bundle-relative paths.
    */
-  listPages(): Array<{ path: string; type: string; title?: string }> {
+  listPages(): Array<{ path: string; type: string; title?: string; description?: string; timestamp?: string }> {
     const root = this.resolve({ mode: 'published' }).absPath;
-    const out: Array<{ path: string; type: string; title?: string }> = [];
+    const out: Array<{ path: string; type: string; title?: string; description?: string; timestamp?: string }> = [];
     const walk = (relDir: string): void => {
       for (const name of this.safeReaddir(relDir === '' ? root : path.join(root, relDir)).sort()) {
         const rel = relDir === '' ? name : `${relDir}/${name}`;
@@ -1579,6 +1599,8 @@ export class OkfBundle {
             path: rel,
             type: typeof frontmatter.type === 'string' ? frontmatter.type : 'unknown',
             title: typeof frontmatter.title === 'string' ? frontmatter.title : undefined,
+            description: typeof frontmatter.description === 'string' ? frontmatter.description : undefined,
+            timestamp: typeof frontmatter.timestamp === 'string' ? frontmatter.timestamp : undefined,
           });
         } catch {
           /* skip unparseable */
@@ -1607,6 +1629,37 @@ export class OkfBundle {
     try {
       const raw = fs.readFileSync(path.join(root, rel), 'utf8');
       return { path: rel, raw };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Read one published document page's parsed shape — OKF frontmatter
+   * fields plus the rendered-markdown body — by bundle-relative path. The
+   * document-model read primitive behind `/api/okf/pages/*`
+   * (`handleOkfPageGet`) and the `myco_okf` MCP `get` op. Sibling to
+   * {@link readPage} (which stays the raw-content primitive the synthesis
+   * harness's refine-not-clobber flow needs): this one additionally parses
+   * frontmatter, so a hand-edited page with malformed frontmatter falls
+   * through to `null` — same "unsafe/unreadable/unparseable is reported as
+   * not found" posture as {@link getConcept}.
+   */
+  getPage(
+    pagePath: string,
+  ): { path: string; type: string; title?: string; description?: string; timestamp?: string; body: string } | null {
+    const got = this.readPage(pagePath);
+    if (!got) return null;
+    try {
+      const { frontmatter, body } = parseConceptDoc(got.raw);
+      return {
+        path: got.path,
+        type: typeof frontmatter.type === 'string' ? frontmatter.type : 'unknown',
+        title: typeof frontmatter.title === 'string' ? frontmatter.title : undefined,
+        description: typeof frontmatter.description === 'string' ? frontmatter.description : undefined,
+        timestamp: typeof frontmatter.timestamp === 'string' ? frontmatter.timestamp : undefined,
+        body,
+      };
     } catch {
       return null;
     }

@@ -287,7 +287,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_OKF,
-    description: 'Read and edit the project\'s Open Knowledge Format (OKF) bundle — the repo-visible knowledge export at okf/. op: "status" reports bundle metadata and staleness. op: "validate" checks the bundle against the OKF conformance rules. op: "list" enumerates agent-maintained concepts. op: "get" returns one concept\'s markdown by id. op: "save_concept" creates or updates an editorial concept under concepts/. op: "supersede_concept" marks one concept superseded by another. Regenerating the whole bundle (maintain) is a user/admin action and is deliberately not available here.',
+    description: 'Read and edit the project\'s Open Knowledge Format (OKF) bundle — the repo-visible knowledge export at okf/. op: "status" reports bundle metadata and staleness. op: "validate" checks the bundle against the OKF conformance rules. op: "list" enumerates the published OKF document pages (path, type, title, description, timestamp). op: "get" returns one page\'s frontmatter fields plus rendered-markdown body, by bundle-relative path. op: "save_concept" creates or updates an editorial concept under concepts/. op: "supersede_concept" marks one concept superseded by another. Regenerating the whole bundle (maintain) is a user/admin action and is deliberately not available here.',
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -306,7 +306,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           enum: ['status', 'validate', 'list', 'get', 'save_concept', 'supersede_concept'],
           description: 'Operation (default: "status")',
         },
-        id: { type: 'string', description: 'Concept id for op: "get" (e.g. concepts/my-note)' },
+        id: { type: 'string', description: 'Bundle-relative page path for op: "get" (e.g. notes/my-note)' },
         concept_id: { type: 'string', description: 'Concept id for op: "save_concept" — must start with concepts/' },
         markdown: { type: 'string', description: 'Full YAML-frontmatter markdown document for op: "save_concept"' },
         expected_generation: { type: 'number', description: 'Optimistic concurrency check for op: "save_concept" — the bundle_generation from a prior status call' },

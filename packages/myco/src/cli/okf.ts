@@ -9,7 +9,7 @@ import {
 } from '@myco/grove/request-context.js';
 import { OkfBundle } from '@myco/okf/bundle.js';
 import { OkfError, OKF_ERROR_HTTP_STATUS } from '@myco/okf/errors.js';
-import type { OkfBundleInclude, OkfSporeStatusFilter } from '@myco/okf/types.js';
+import type { OkfBundleInclude } from '@myco/okf/types.js';
 import { initVaultDb } from './shared.js';
 
 /**
@@ -24,14 +24,11 @@ import { initVaultDb } from './shared.js';
  */
 
 const INCLUDE_KINDS = ['spores', 'canopy', 'concepts', 'guides'] as const;
-const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete', 'all'] as const;
 
 export type OkfCliCommand =
   | {
       kind: 'maintain';
       include?: OkfBundleInclude;
-      sporeStatus: OkfSporeStatusFilter;
-      includeUndescribedCanopy: boolean;
       dryRun: boolean;
       oneShot: boolean;
       out?: string;
@@ -42,8 +39,8 @@ export type OkfCliCommand =
   | { kind: 'status' }
   | { kind: 'concept-save'; id: string; inputFile: string; expectedGeneration?: number }
   | { kind: 'concept-supersede'; oldId: string; newId: string; reason: string }
-  | { kind: 'concept-list' }
-  | { kind: 'concept-get'; id: string };
+  | { kind: 'page-list' }
+  | { kind: 'page-get'; path: string };
 
 export type ParseResult = { ok: true; cmd: OkfCliCommand } | { ok: false; error: string };
 
@@ -78,7 +75,6 @@ export function parseOkfCommand(argv: string[]): ParseResult {
       const oneShot = hasFlag(rest, '--one-shot');
       const overwrite = hasFlag(rest, '--overwrite');
       const acknowledgePublish = hasFlag(rest, '--acknowledge-publish');
-      const includeUndescribedCanopy = hasFlag(rest, '--include-undescribed-canopy');
       const out = takeFlagValue(rest, '--out').value;
       const includeRaw = takeFlagValue(rest, '--include').value;
       let include: OkfBundleInclude | undefined;
@@ -93,24 +89,10 @@ export function parseOkfCommand(argv: string[]): ParseResult {
           guides: parts.includes('guides'),
         };
       }
-      const sporeStatusRaw = takeFlagValue(rest, '--spore-status').value ?? 'active';
-      if (!(SPORE_STATUSES as readonly string[]).includes(sporeStatusRaw)) {
-        return { ok: false, error: `unknown --spore-status: ${sporeStatusRaw}` };
-      }
       if (oneShot && !out) return { ok: false, error: '--one-shot requires --out <path>' };
       return {
         ok: true,
-        cmd: {
-          kind: 'maintain',
-          include,
-          sporeStatus: sporeStatusRaw as OkfSporeStatusFilter,
-          includeUndescribedCanopy,
-          dryRun,
-          oneShot,
-          out,
-          overwrite,
-          acknowledgePublish,
-        },
+        cmd: { kind: 'maintain', include, dryRun, oneShot, out, overwrite, acknowledgePublish },
       };
     }
     case 'validate':
@@ -147,16 +129,20 @@ export function parseOkfCommand(argv: string[]): ParseResult {
         if (!reason) return { ok: false, error: 'concept supersede requires --reason "<text>"' };
         return { ok: true, cmd: { kind: 'concept-supersede', oldId, newId, reason } };
       }
-      if (op === 'list') return { ok: true, cmd: { kind: 'concept-list' } };
+      return { ok: false, error: 'usage: myco okf concept <save|supersede>' };
+    }
+    case 'page': {
+      const [op, ...opArgs] = rest;
+      if (op === 'list') return { ok: true, cmd: { kind: 'page-list' } };
       if (op === 'get') {
-        const id = opArgs[0];
-        if (!id) return { ok: false, error: 'concept get requires <id>' };
-        return { ok: true, cmd: { kind: 'concept-get', id } };
+        const pagePath = opArgs[0];
+        if (!pagePath) return { ok: false, error: 'page get requires <path>' };
+        return { ok: true, cmd: { kind: 'page-get', path: pagePath } };
       }
-      return { ok: false, error: 'usage: myco okf concept <save|supersede|list|get>' };
+      return { ok: false, error: 'usage: myco okf page <list|get>' };
     }
     default:
-      return { ok: false, error: 'usage: myco okf <maintain|validate|status|concept>' };
+      return { ok: false, error: 'usage: myco okf <maintain|validate|status|concept|page>' };
   }
 }
 
@@ -193,8 +179,10 @@ async function dispatch(ctx: BundleContext, cmd: OkfCliCommand): Promise<unknown
         machineId,
         mode: 'published',
         include: cmd.include,
-        sporeStatus: cmd.sporeStatus,
-        includeUndescribedCanopy: cmd.includeUndescribedCanopy,
+        // No document-model equivalent (Task 4.2 retired the Myco-shaped
+        // include surface from config) — fixed constants, not CLI flags.
+        sporeStatus: 'active',
+        includeUndescribedCanopy: false,
         outputRoot: cmd.out,
         dryRun: cmd.dryRun,
         oneShot: cmd.oneShot,
@@ -251,13 +239,10 @@ async function dispatch(ctx: BundleContext, cmd: OkfCliCommand): Promise<unknown
       });
       return { ok: true, oldId: result.oldId, newId: result.newId, bundleGeneration: result.bundleGeneration };
     }
-    case 'concept-list':
-      return { ok: true, concepts: bundle.listConcepts() };
-    case 'concept-get': {
-      const got = bundle.getConcept(cmd.id);
-      if (!got) return { ok: true, concept: null };
-      return { ok: true, concept: { id: cmd.id, raw: got.raw } };
-    }
+    case 'page-list':
+      return { ok: true, pages: bundle.listPages() };
+    case 'page-get':
+      return { ok: true, page: bundle.getPage(cmd.path) };
   }
 }
 

@@ -68,11 +68,10 @@ export async function handleMycoOkf(
       case 'validate':
         return bundle.validate();
       case 'list':
-        return { concepts: bundle.listConcepts() };
+        return { pages: bundle.listPages() };
       case 'get': {
-        if (!input.id) return fail('op "get" requires an id');
-        const got = bundle.getConcept(input.id);
-        return { concept: got ? { id: input.id, raw: got.raw } : null };
+        if (!input.id) return fail('op "get" requires an id (bundle-relative page path)');
+        return { page: bundle.getPage(input.id) };
       }
       case 'save_concept': {
         if (!input.concept_id || !input.markdown) return fail('op "save_concept" requires concept_id and markdown');

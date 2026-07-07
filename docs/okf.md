@@ -116,11 +116,11 @@ Save an editorial concept from a prepared markdown file (the `--id` must live un
 myco okf concept save --id concepts/my-note --input ./my-concept.md
 ```
 
-List the agent-maintained concepts, or read one back:
+List the published document pages, or read one back:
 
 ```bash
-myco okf concept list
-myco okf concept get concepts/my-note
+myco okf page list
+myco okf page get concepts/my-note
 ```
 
 Mark one concept as superseded by another, with a reason:
