@@ -372,10 +372,25 @@ function mcpSoftFail(code: string, message: string, target: RemoteTarget): strin
   });
 }
 
-/** Peek a `/mcp` JSON-RPC POST body for a Canopy tool call. Confined to the tool
- *  name + operation selector (`op`/`type`) — the sanctioned narrow exception —
- *  never data arguments. A batch (array) refuses if ANY element is a Canopy
- *  call (conservative; the SDK sends one message per tool-call POST). */
+/**
+ * Peek a `/mcp` JSON-RPC POST body for a Canopy tool call — the ONE sanctioned
+ * exception to `/mcp` opacity (scope-map §6.1).
+ *
+ * The peek covers the operation's IDENTITY only: the tool name plus the fixed
+ * enum operation discriminators (`op`, `type`) that select WHICH operation runs.
+ * It never reads operation DATA (query text, ids, paths, content). Canopy has no
+ * distinct MCP tool — its capability identity lives at the op level for
+ * `myco_cortex`/`myco_search` — so the discriminator is part of the operation's
+ * name in all but syntax.
+ *
+ * Canopy iff `myco_cortex {op: canopy_map|canopy_entry}` or
+ * `myco_search {type: canopy}`. Every other `myco_cortex` op (digest,
+ * instructions, notifications, …) and every other `myco_search` shape —
+ * including a plain search with NO type filter or `type: "all"`, whose valid
+ * vault hits must not be refused just because the host holds no Canopy entries —
+ * returns false and proxies untouched. A batch (array) refuses if ANY element is
+ * a Canopy call (conservative; the SDK sends one message per tool-call POST).
+ */
 export function isCanopyMcpCall(body: unknown): boolean {
   const isCanopyMessage = (msg: unknown): boolean => {
     if (!msg || typeof msg !== 'object') return false;

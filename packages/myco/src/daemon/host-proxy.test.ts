@@ -185,6 +185,11 @@ describe('host-proxy forwarder', () => {
     expect(isCanopyMcpCall(call('myco_cortex', { op: 'digest' }))).toBe(false);
     expect(isCanopyMcpCall(call('myco_search', { type: 'canopy', query: 'secret' }))).toBe(true);
     expect(isCanopyMcpCall(call('myco_search', { type: 'session', query: 'secret' }))).toBe(false);
+    // A plain search — no type filter, or the explicit type:"all" — is NOT
+    // Canopy: its valid vault hits must proxy, not be refused (the host simply
+    // holds no Canopy entries for an attached project).
+    expect(isCanopyMcpCall(call('myco_search', { query: 'secret' }))).toBe(false);
+    expect(isCanopyMcpCall(call('myco_search', { type: 'all', query: 'secret' }))).toBe(false);
     expect(isCanopyMcpCall(call('myco_plans', { op: 'list' }))).toBe(false);
     // A tools/list or initialize is never a Canopy call.
     expect(isCanopyMcpCall({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).toBe(false);
@@ -517,6 +522,26 @@ describe('host-proxy forwarder', () => {
     expect(res.status).toBe(200);
     expect(fixture.requests).toHaveLength(1);
     expect(JSON.parse(hostBody).params.name).toBe('myco_search');
+  });
+
+  test('/mcp plain search with no type filter → proxied, not refused', async () => {
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    fixture.setResponder((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"jsonrpc":"2.0","id":1,"result":{}}');
+    });
+    // No `type` argument at all: a valid vault search that must reach the host.
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_search', arguments: { query: 'design decision' } } });
+    const res = await fetch(memberUrl('/mcp'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    expect(res.status).toBe(200);
+    // Reached the host (not a -32004 refusal).
+    expect(fixture.requests).toHaveLength(1);
+    const parsed = await res.json();
+    expect(parsed.error).toBeUndefined();
   });
 
   // --- dial seam: CONNECT proxy ---
