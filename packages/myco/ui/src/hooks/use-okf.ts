@@ -135,6 +135,66 @@ export function useInvalidateOkfStatus(): () => void {
   }, [qc]);
 }
 
+/* ---------- Maintain error surfacing ---------- */
+
+export interface OkfMaintainErrorInfo {
+  /** OkfError code, or null when the failure carried none (network error, etc). */
+  code: string | null;
+  message: string;
+  /** Set only for `okf_publish_not_acknowledged` — the findings blocking publish. */
+  findings: OkfPublishFinding[] | null;
+  /** Set only for `okf_validation_failed` — names the failed page + remediation. */
+  validationHint: string | null;
+}
+
+interface OkfValidationIssueLike {
+  level: string;
+  path: string;
+  message: string;
+}
+
+/**
+ * Turns a `useOkfMaintain` mutation error into a renderable shape. Every
+ * maintain failure must reach the screen — this is the fix for the
+ * naive-first-user bug where a 422 publish-block was thrown by the daemon
+ * and nothing ever read `maintain.error`, so "Maintain Now" appeared to do
+ * nothing. Duck-types on `{body, message}` rather than `instanceof ApiError`
+ * so it works for any error-shaped rejection, not just the fetch-layer class.
+ */
+export function parseOkfMaintainError(error: unknown): OkfMaintainErrorInfo | null {
+  if (!error) return null;
+  const err = error as { body?: unknown; message?: string };
+  const body = err.body && typeof err.body === 'object' ? (err.body as Record<string, unknown>) : null;
+  const errorField = body?.error;
+  const code =
+    typeof errorField === 'object' && errorField !== null && typeof (errorField as { code?: unknown }).code === 'string'
+      ? (errorField as { code: string }).code
+      : null;
+  const bodyMessage =
+    typeof errorField === 'object' && errorField !== null && typeof (errorField as { message?: unknown }).message === 'string'
+      ? (errorField as { message: string }).message
+      : null;
+  const message = bodyMessage ?? (typeof err.message === 'string' && err.message.length > 0 ? err.message : 'Maintain failed.');
+
+  const details = body?.details && typeof body.details === 'object' ? (body.details as Record<string, unknown>) : null;
+
+  const findings =
+    code === 'okf_publish_not_acknowledged' && Array.isArray(details?.findings)
+      ? (details!.findings as OkfPublishFinding[])
+      : null;
+
+  let validationHint: string | null = null;
+  if (code === 'okf_validation_failed') {
+    const validation = details?.validation as { issues?: OkfValidationIssueLike[] } | undefined;
+    const firstError = validation?.issues?.find((issue) => issue.level === 'error') ?? validation?.issues?.[0];
+    validationHint = firstError
+      ? `${firstError.path} — ${firstError.message}. Fix or remove the hand-edited page, or trigger a full rebuild.`
+      : 'A carried-forward page failed validation. Fix or remove the hand-edited page, or trigger a full rebuild.';
+  }
+
+  return { code, message, findings, validationHint };
+}
+
 /* ---------- Mutations ---------- */
 
 /**

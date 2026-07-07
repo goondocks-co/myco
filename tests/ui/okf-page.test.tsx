@@ -325,6 +325,108 @@ describe('Okf page — actions disabled while unresolved/erroring', () => {
   });
 });
 
+describe('Okf page — Maintain Now surfaces errors (naive-first-user)', () => {
+  it('clicking Maintain Now on a 422 okf_publish_not_acknowledged renders the block + finding count + Acknowledge & publish, and acknowledging re-invokes maintain with acknowledgePublish: true', async () => {
+    mockApiForStatus(ENABLED_VALID_STATUS);
+    const { ApiError } = await import('../../packages/myco/ui/src/lib/api');
+    postJsonImpl = async (_path: string, body?: unknown) => {
+      if ((body as { acknowledgePublish?: boolean } | undefined)?.acknowledgePublish) {
+        return { ok: true, result: {} };
+      }
+      throw new ApiError(422, {
+        error: { code: 'okf_publish_not_acknowledged', message: 'publish blocked by unacknowledged findings' },
+        details: {
+          findings: [
+            { code: 'secret_like_content', path: 'docs/okf/concepts/foo.md', excerpt: 'sk-abc...' },
+            { code: 'secret_like_content', path: 'docs/okf/concepts/bar.md', excerpt: 'sk-def...' },
+          ],
+        },
+      });
+    };
+
+    renderPage();
+
+    // Drive it exactly as a naive first-time user would — click the button,
+    // don't call the hook/API directly. This is the whole point of the test:
+    // the original bug was a 422 the UI silently swallowed on this exact click.
+    const maintainBtn = await screen.findByRole('button', { name: /maintain now/i });
+    fireEvent.click(maintainBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('okf-maintain-error')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/2 findings need acknowledgement/i)).toBeInTheDocument();
+
+    const ackBtn = screen.getByRole('button', { name: /acknowledge & publish/i });
+    fireEvent.click(ackBtn);
+
+    await waitFor(() => {
+      expect(postJsonSpy).toHaveBeenCalledTimes(2);
+    });
+    const [path, body] = postJsonSpy.mock.calls[1] as [string, { acknowledgePublish?: boolean }];
+    expect(path).toBe('/okf/maintain');
+    expect(body).toEqual({ acknowledgePublish: true });
+  });
+
+  it('clicking Maintain Now on a not_implemented failure surfaces it visibly (never silently nothing)', async () => {
+    mockApiForStatus(ENABLED_VALID_STATUS);
+    const { ApiError } = await import('../../packages/myco/ui/src/lib/api');
+    postJsonImpl = async () => {
+      throw new ApiError(501, {
+        error: { code: 'not_implemented', message: 'OKF document synthesis is not yet implemented (Phase 2)' },
+      });
+    };
+
+    renderPage();
+
+    const maintainBtn = await screen.findByRole('button', { name: /maintain now/i });
+    fireEvent.click(maintainBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('okf-maintain-error')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/not yet implemented/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /acknowledge & publish/i })).toBeNull();
+  });
+
+  it('clicking Maintain Now on a 422 okf_validation_failed surfaces a remediation hint naming the failed page', async () => {
+    mockApiForStatus(ENABLED_VALID_STATUS);
+    const { ApiError } = await import('../../packages/myco/ui/src/lib/api');
+    postJsonImpl = async () => {
+      throw new ApiError(422, {
+        error: { code: 'okf_validation_failed', message: 'generated bundle failed strict validation' },
+        details: {
+          validation: {
+            ok: false,
+            level: 'strict',
+            filesChecked: 5,
+            conceptsChecked: 5,
+            issues: [
+              {
+                level: 'error',
+                code: 'missing_required_frontmatter_key',
+                path: 'docs/okf/concepts/hand-edited.md',
+                message: 'missing required key "title"',
+              },
+            ],
+          },
+        },
+      });
+    };
+
+    renderPage();
+
+    const maintainBtn = await screen.findByRole('button', { name: /maintain now/i });
+    fireEvent.click(maintainBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('okf-maintain-error')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/docs\/okf\/concepts\/hand-edited\.md/)).toBeInTheDocument();
+    expect(screen.getByText(/fix or remove the hand-edited page, or trigger a full rebuild/i)).toBeInTheDocument();
+  });
+});
+
 describe('Okf page — publish-eligibility acknowledgement', () => {
   it('renders the blocked publish-eligibility panel and re-invokes maintain with acknowledgePublish: true', async () => {
     mockApiForStatus(BLOCKED_STATUS);
