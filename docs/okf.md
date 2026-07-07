@@ -74,18 +74,6 @@ Check the current state of the wiki — whether it exists, when it was last refr
 myco okf status
 ```
 
-Refresh the wiki from the current state of your project:
-
-```bash
-myco okf maintain
-```
-
-Preview what a refresh would change without writing anything:
-
-```bash
-myco okf maintain --dry-run
-```
-
 Validate the published wiki against the OKF conformance rules:
 
 ```bash

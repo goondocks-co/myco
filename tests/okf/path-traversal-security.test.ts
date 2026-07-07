@@ -4,12 +4,14 @@
  * `assertSafeConceptId` (paths.ts) is the single choke point that rejects a
  * concept id that could escape the bundle root — `.`/`..`/empty/NUL/backslash
  * segments or a leading `/`. `conceptPathForId` calls it directly; `bundle.ts`
- * consumes it via `getConcept` (returns null for an unsafe id, never leaks a
- * read outside the bundle) and `assertEditableConceptId` (throws
+ * consumes it via `getPage`/`readPage` (returns null for an unsafe id, never
+ * leaks a read outside the bundle) and `assertEditableConceptId` (throws
  * `deterministic_path_not_editable` for an unsafe id, never writes outside the
  * bundle).
  *
- * Mirrors the makeBundle/config/seedSpore harness from bundle-capability.test.ts.
+ * The end-to-end integration tests were ported from the legacy `maintain()`
+ * setup onto `beginStagedGeneration` (which publishes the bundle saveConcept
+ * then edits) after the synchronous maintain surface was removed.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -20,9 +22,8 @@ import { createProjectId, projectScope } from '@myco/grove/ids.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle, OkfError, type OkfBundleDeps } from '@myco/okf/bundle.js';
-import type { OkfBundleWriteInput } from '@myco/okf/types.js';
+import type { OkfDocument } from '@myco/okf/types.js';
 import { assertSafeConceptId, conceptPathForId, OkfPathError } from '@myco/okf/paths.js';
-import { fixtureRenderDocuments } from '../helpers/okf-fixture.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
 const AGENT_ID = 'claude-code';
@@ -53,7 +54,7 @@ function config(overrides: Record<string, unknown> = {}): MycoConfig {
   return MycoConfigSchema.parse({ version: 3, okf: { enabled: true }, ...overrides });
 }
 
-function makeBundle(cfg: MycoConfig = config(), now = () => new Date('2026-07-05T12:00:00Z')): OkfBundle {
+function makeBundle(cfg: MycoConfig = config()): OkfBundle {
   const deps: OkfBundleDeps = {
     projectRoot,
     vault: new ProjectVault(projectRoot),
@@ -61,22 +62,24 @@ function makeBundle(cfg: MycoConfig = config(), now = () => new Date('2026-07-05
     projectId,
     machineId: MACHINE_ID,
     config: cfg,
-    now,
-    renderDocuments: fixtureRenderDocuments,
+    now: () => new Date('2026-07-05T12:00:00Z'),
   };
   return new OkfBundle(deps);
 }
 
-function baseInput(over: Partial<OkfBundleWriteInput> = {}): OkfBundleWriteInput {
+function contentDoc(id: string): OkfDocument {
   return {
-    scope: projectScope(projectId as ReturnType<typeof createProjectId>),
-    projectRoot,
-    machineId: MACHINE_ID,
-    mode: 'published',
-    include: { spores: true, canopy: true, concepts: true, guides: true },
-    sporeStatus: 'active',
-    ...over,
+    path: `${id}.md`,
+    frontmatter: { type: 'note', title: id, description: 'A portable knowledge page.', timestamp: '2026-07-05T00:00:00Z' },
+    body: `Body of ${id}.`,
   };
+}
+
+/** Publish a minimal bundle so mutateConcepts (saveConcept) has a marker to edit. */
+async function publishSeed(bundle: OkfBundle): Promise<void> {
+  const staged = await bundle.beginStagedGeneration({ mode: 'published' });
+  staged.stageDocument(contentDoc('pages/seed'));
+  await staged.finalize({ inputsHash: 'seed' });
 }
 
 // ---------------------------------------------------------------------------
@@ -126,20 +129,21 @@ describe('conceptPathForId — traversal rejection', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Integration: getConcept / saveConcept against a real published bundle
+// Integration: getPage / saveConcept against a real published bundle
 // ---------------------------------------------------------------------------
 
 describe('OkfBundle — path traversal is rejected end-to-end', () => {
-  it('getConcept returns null for a traversal id (never reads outside the bundle)', async () => {
+  it('getPage returns null for a traversal id (never reads outside the bundle)', async () => {
     const bundle = makeBundle();
-    await bundle.maintain(baseInput());
+    await publishSeed(bundle);
 
-    expect(bundle.getConcept('../../../../etc/passwd')).toBeNull();
+    expect(bundle.getPage('../../../../etc/passwd')).toBeNull();
+    expect(bundle.readPage('../../../../etc/passwd')).toBeNull();
   });
 
   it('saveConcept rejects a traversal id with deterministic_path_not_editable and creates no file at the escape target', async () => {
     const bundle = makeBundle();
-    await bundle.maintain(baseInput());
+    await publishSeed(bundle);
 
     // The escape target lives under a temp dir we control so we can assert
     // no file was created there by a would-be path-traversal write.
@@ -171,7 +175,7 @@ describe('OkfBundle — path traversal is rejected end-to-end', () => {
 
   it('saveConcept rejects a simple ../../ escape under concepts/ the same way', async () => {
     const bundle = makeBundle();
-    await bundle.maintain(baseInput());
+    await publishSeed(bundle);
 
     await expect(
       bundle.saveConcept({

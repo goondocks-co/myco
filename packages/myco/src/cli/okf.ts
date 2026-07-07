@@ -9,7 +9,6 @@ import {
 } from '@myco/grove/request-context.js';
 import { OkfBundle } from '@myco/okf/bundle.js';
 import { OkfError, OKF_ERROR_HTTP_STATUS } from '@myco/okf/errors.js';
-import type { OkfBundleInclude } from '@myco/okf/types.js';
 import { initVaultDb } from './shared.js';
 
 /**
@@ -23,18 +22,7 @@ import { initVaultDb } from './shared.js';
  * catch (which exits 1 on any uncaught throw) never masks the intended code.
  */
 
-const INCLUDE_KINDS = ['spores', 'canopy', 'concepts', 'guides'] as const;
-
 export type OkfCliCommand =
-  | {
-      kind: 'maintain';
-      include?: OkfBundleInclude;
-      dryRun: boolean;
-      oneShot: boolean;
-      out?: string;
-      overwrite: boolean;
-      acknowledgePublish: boolean;
-    }
   | { kind: 'validate'; path?: string }
   | { kind: 'status' }
   | { kind: 'concept-save'; id: string; inputFile: string; expectedGeneration?: number }
@@ -62,39 +50,10 @@ function takeFlagValue(args: string[], flag: string): { value?: string; rest: st
   return { value, rest: [...args.slice(0, idx), ...args.slice(idx + 2)] };
 }
 
-function hasFlag(args: string[], flag: string): boolean {
-  return args.includes(flag);
-}
-
 /** Pure argv → command parser. Never exits, never touches the filesystem. */
 export function parseOkfCommand(argv: string[]): ParseResult {
   const [sub, ...rest] = argv;
   switch (sub) {
-    case 'maintain': {
-      const dryRun = hasFlag(rest, '--dry-run');
-      const oneShot = hasFlag(rest, '--one-shot');
-      const overwrite = hasFlag(rest, '--overwrite');
-      const acknowledgePublish = hasFlag(rest, '--acknowledge-publish');
-      const out = takeFlagValue(rest, '--out').value;
-      const includeRaw = takeFlagValue(rest, '--include').value;
-      let include: OkfBundleInclude | undefined;
-      if (includeRaw !== undefined) {
-        const parts = includeRaw.split(',').map((p) => p.trim()).filter(Boolean);
-        const bad = parts.filter((p) => !(INCLUDE_KINDS as readonly string[]).includes(p));
-        if (bad.length > 0) return { ok: false, error: `unknown --include kinds: ${bad.join(', ')}` };
-        include = {
-          spores: parts.includes('spores'),
-          canopy: parts.includes('canopy'),
-          concepts: parts.includes('concepts'),
-          guides: parts.includes('guides'),
-        };
-      }
-      if (oneShot && !out) return { ok: false, error: '--one-shot requires --out <path>' };
-      return {
-        ok: true,
-        cmd: { kind: 'maintain', include, dryRun, oneShot, out, overwrite, acknowledgePublish },
-      };
-    }
     case 'validate':
       return { ok: true, cmd: { kind: 'validate', path: rest[0] } };
     case 'status':
@@ -142,7 +101,7 @@ export function parseOkfCommand(argv: string[]): ParseResult {
       return { ok: false, error: 'usage: myco okf page <list|get>' };
     }
     default:
-      return { ok: false, error: 'usage: myco okf <maintain|validate|status|concept|page>' };
+      return { ok: false, error: 'usage: myco okf <validate|status|concept|page>' };
   }
 }
 
@@ -170,43 +129,8 @@ function buildBundle(vaultDir: string): BundleContext {
 }
 
 async function dispatch(ctx: BundleContext, cmd: OkfCliCommand): Promise<unknown> {
-  const { bundle, scope, projectRoot, machineId } = ctx;
+  const { bundle, projectRoot } = ctx;
   switch (cmd.kind) {
-    case 'maintain': {
-      const result = await bundle.maintain({
-        scope,
-        projectRoot,
-        machineId,
-        mode: 'published',
-        include: cmd.include,
-        // No document-model equivalent (Task 4.2 retired the Myco-shaped
-        // include surface from config) — fixed constants, not CLI flags.
-        sporeStatus: 'active',
-        includeUndescribedCanopy: false,
-        outputRoot: cmd.out,
-        dryRun: cmd.dryRun,
-        oneShot: cmd.oneShot,
-        allowExternalOutput: cmd.out !== undefined,
-        overwrite: cmd.overwrite,
-        acknowledgePublish: cmd.acknowledgePublish,
-      });
-      return {
-        ok: true,
-        outputRoot: result.outputRoot,
-        dryRun: result.dryRun,
-        unchanged: result.unchanged ?? false,
-        conceptCount: result.conceptCount,
-        byType: result.byType,
-        warnings: result.warnings,
-        publishEligibility: result.publishEligibility,
-        validation: {
-          ok: result.validation.ok,
-          level: result.validation.level,
-          filesChecked: result.validation.filesChecked,
-          conceptsChecked: result.validation.conceptsChecked,
-        },
-      };
-    }
     case 'validate': {
       // A CLI-supplied path is relative to the project root, not the process cwd.
       const target = cmd.path ? path.resolve(projectRoot, cmd.path) : undefined;

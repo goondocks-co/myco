@@ -6,7 +6,6 @@
  * authorization. All routes funnel into the single `OkfBundle` capability;
  * typed `OkfError`s map to the frozen HTTP status set.
  *
- *   POST /api/okf/maintain
  *   POST /api/okf/acknowledge
  *   GET  /api/okf/status
  *   POST /api/okf/validate
@@ -32,7 +31,6 @@ import { OkfBundle } from '@myco/okf/bundle.js';
 import { OkfError, OKF_ERROR_HTTP_STATUS } from '@myco/okf/errors.js';
 import { scanStagedBundle } from '@myco/okf/publish-eligibility.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import type { OkfBundleInclude } from '@myco/okf/types.js';
 
 const PAGES_PREFIX = '/api/okf/pages/';
 
@@ -76,57 +74,9 @@ function asRecord(body: unknown): Record<string, unknown> {
   return body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
 }
 
-/** Validate the maintain body's include the way the CLI does; returns an error envelope or null. */
-function validateMaintainBody(body: Record<string, unknown>): RouteResponse | null {
-  if (body.include !== undefined) {
-    const inc = body.include;
-    const keysOk =
-      inc !== null &&
-      typeof inc === 'object' &&
-      !Array.isArray(inc) &&
-      Object.keys(inc as object).every((k) => ['spores', 'canopy', 'concepts', 'guides'].includes(k)) &&
-      Object.values(inc as Record<string, unknown>).every((v) => typeof v === 'boolean');
-    if (!keysOk) {
-      return { status: 400, body: errorBody('invalid_request', 'include must be an object of {spores,canopy,concepts,guides}: boolean') };
-    }
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------------------
 // Raw handlers — wrapped with tenantRoute at registration.
 // ---------------------------------------------------------------------------
-
-export async function handleOkfMaintain(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
-  const ctx = contextFor(principal);
-  const body = asRecord(req.body);
-  const invalid = validateMaintainBody(body);
-  if (invalid) return invalid;
-  try {
-    const result = await ctx.bundle.maintain({
-      scope: ctx.scope,
-      projectRoot: ctx.projectRoot,
-      machineId: ctx.machineId,
-      mode: 'published',
-      include: body.include as OkfBundleInclude | undefined,
-      // sporeStatus/includeUndescribedCanopy have no document-model
-      // equivalent (Task 4.2 retired the Myco-shaped include surface) —
-      // fixed constants matching OkfMaintainSchema's old defaults, not
-      // read from the request body.
-      sporeStatus: 'active',
-      includeUndescribedCanopy: false,
-      outputRoot: typeof body.outputRoot === 'string' ? body.outputRoot : undefined,
-      dryRun: body.dryRun === true,
-      oneShot: body.oneShot === true,
-      allowExternalOutput: typeof body.outputRoot === 'string',
-      overwrite: body.overwrite === true,
-      acknowledgePublish: body.acknowledgePublish === true,
-    });
-    return { status: 200, body: { ok: true, result } };
-  } catch (err) {
-    return okfErrorResponse(err);
-  }
-}
 
 export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
@@ -287,7 +237,6 @@ export function registerOkfRoutes(
   server: { registerRoute(method: string, routePath: string, handler: (req: RouteRequest) => Promise<RouteResponse>): void },
   tenant: { machineId: string; logger: DaemonLogger },
 ): void {
-  server.registerRoute('POST', '/api/okf/maintain', tenantRoute(tenant, handleOkfMaintain));
   server.registerRoute('POST', '/api/okf/acknowledge', tenantRoute(tenant, handleOkfAcknowledge));
   server.registerRoute('GET', '/api/okf/status', tenantRoute(tenant, handleOkfStatus));
   server.registerRoute('POST', '/api/okf/validate', tenantRoute(tenant, handleOkfValidate));

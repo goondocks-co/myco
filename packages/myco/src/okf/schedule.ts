@@ -11,14 +11,13 @@ import type { WikiPlan } from './synthesis/plan.js';
 import type { OkfBundleInclude, OkfSporeStatusFilter } from './types.js';
 
 /**
- * Deterministic probe-fingerprint inputs — the SAME shape `bundle.ts`'s
- * `computeProbeFingerprint` hashes from a live `gather()` result and
- * persists as `probe_fingerprint` on publish.
+ * Deterministic probe-fingerprint inputs — the shape `computeOkfSynthesizeSnapshot`
+ * hashes from the synthesis source reads and persists as `probe_fingerprint`
+ * on publish.
  *
- * Keep this hashed shape IDENTICAL to what bundle.ts feeds in — changing key
- * names or the payload shape silently invalidates every persisted
- * `probe_fingerprint`, which would make every project look "due" once
- * (harmless) but is still worth avoiding.
+ * Keep this hashed shape STABLE — changing key names or the payload shape
+ * silently invalidates every persisted `probe_fingerprint`, which would make
+ * every project look "due" once (harmless) but is still worth avoiding.
  */
 export interface OkfProbeFingerprintInputs {
   sporeCount: number;
@@ -32,8 +31,8 @@ export interface OkfProbeFingerprintInputs {
 }
 
 /**
- * Pure hash function used by `bundle.ts` to compute `probe_fingerprint`
- * from a live `gather()` result at publish time.
+ * Pure hash function used by `computeOkfSynthesizeSnapshot` to compute
+ * `probe_fingerprint` from the synthesis source reads at publish time.
  */
 export function computeOkfProbeFingerprint(inputs: OkfProbeFingerprintInputs): string {
   return sha256Hex(

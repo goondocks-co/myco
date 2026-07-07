@@ -1,22 +1,23 @@
 /**
- * Regression tests for OKF Phase 1 review-pass fixes #2, #3, #4, #5, #6, #7.
+ * Regression tests for OKF Phase 1 review-pass fixes #2, #3, #5, #6, #7.
  *
- * Mirrors the makeBundle/config/seedSpore harness from bundle-capability.test.ts
- * and the OkfFsOps injection seam from bundle-failure-injection.test.ts.
+ * Ported from the legacy `maintain()`-driven harness onto the staged-generation
+ * entry point (`beginStagedGeneration`/`stageDocument`/`finalize`) after the
+ * synchronous maintain surface was removed — the (code,path,hash) acknowledge
+ * keying, crash-window recovery, absolute-path-safe errors, capability gate,
+ * and generation-drift reconciliation are unchanged.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { registerAgent } from '@myco/db/queries/agents.js';
-import { insertSpore } from '@myco/db/queries/spores.js';
 import { createProjectId, projectScope } from '@myco/grove/ids.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle, OkfError, type OkfBundleDeps, type OkfFsOps } from '@myco/okf/bundle.js';
-import type { OkfBundleWriteInput } from '@myco/okf/types.js';
+import type { OkfDocument } from '@myco/okf/types.js';
 import { scanStagedBundle } from '@myco/okf/publish-eligibility.js';
-import { fixtureRenderDocuments } from '../helpers/okf-fixture.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
 const AGENT_ID = 'claude-code';
@@ -73,11 +74,7 @@ function injectable(hooks: { onRename?: (from: string, to: string) => Error | vo
   };
 }
 
-function makeBundle(
-  cfg: MycoConfig = config(),
-  now = () => new Date('2026-07-05T12:00:00Z'),
-  fsOps?: OkfFsOps,
-): OkfBundle {
+function makeBundle(cfg: MycoConfig = config(), fsOps?: OkfFsOps): OkfBundle {
   const deps: OkfBundleDeps = {
     projectRoot,
     vault: new ProjectVault(projectRoot),
@@ -85,38 +82,28 @@ function makeBundle(
     projectId,
     machineId: MACHINE_ID,
     config: cfg,
-    now,
+    now: () => new Date('2026-07-05T12:00:00Z'),
     fsOps,
-    renderDocuments: fixtureRenderDocuments,
   };
   return new OkfBundle(deps);
 }
 
-function seedSpore(id: string, content: string, extra: Record<string, unknown> = {}): void {
-  insertSpore({
-    id,
-    project_id: projectId,
-    agent_id: AGENT_ID,
-    observation_type: 'decision',
-    content,
-    importance: 5,
-    created_at: 1_783_000_000,
-    updated_at: 1_783_100_000,
-    machine_id: MACHINE_ID,
-    ...extra,
-  });
+function contentDoc(id: string): OkfDocument {
+  return {
+    path: `${id}.md`,
+    frontmatter: { type: 'note', title: id, description: 'A portable knowledge page.', timestamp: '2026-07-05T00:00:00Z' },
+    body: `Body of ${id}.`,
+  };
 }
 
-function baseInput(over: Partial<OkfBundleWriteInput> = {}): OkfBundleWriteInput {
-  return {
-    scope: projectScope(projectId as ReturnType<typeof createProjectId>),
-    projectRoot,
-    machineId: MACHINE_ID,
-    mode: 'published',
-    include: { spores: true, canopy: true, concepts: true, guides: true },
-    sporeStatus: 'active',
-    ...over,
-  };
+function secretDoc(id: string, secret: string): OkfDocument {
+  return { ...contentDoc(id), body: `A decision mentioning a key ${secret} inline.` };
+}
+
+async function publish(bundle: OkfBundle, doc: OkfDocument, opts: { acknowledgePublish?: boolean } = {}) {
+  const staged = await bundle.beginStagedGeneration({ mode: 'published', acknowledgePublish: opts.acknowledgePublish });
+  staged.stageDocument(doc);
+  return staged.finalize({ inputsHash: `hash-${doc.path}` });
 }
 
 function okfDir(): string {
@@ -184,28 +171,16 @@ describe('#2 publish-eligibility ack — end-to-end bypass closed', () => {
   const AWS_KEY_A = 'AKIAIOSFODNN7EXAMPLE';
   const AWS_KEY_B = 'AKIAJJJJJJJJJJEXAMPL';
 
-  it('acknowledging secret A does not suppress a DIFFERENT secret B at the same concept path', async () => {
-    seedSpore('decision-1', `A decision mentioning a key ${AWS_KEY_A} inline.`);
-    const first = await makeBundle().maintain(baseInput({ acknowledgePublish: true }));
+  it('acknowledging secret A does not suppress a DIFFERENT secret B at the same page path', async () => {
+    const first = await publish(makeBundle(), secretDoc('pages/leaky', AWS_KEY_A), { acknowledgePublish: true });
     expect(first.unchanged).toBe(false);
-    expect(fs.existsSync(path.join(okfDir(), 'spores/decisions/decision-1.md'))).toBe(true);
+    expect(fs.existsSync(path.join(okfDir(), 'pages/leaky.md'))).toBe(true);
 
-    // Same concept id/path, but the spore content now carries a DIFFERENT secret.
-    // We must delete+reinsert since insertSpore is an insert helper; update via
-    // seedSpore with the same id relies on the same row content mutation path
-    // used elsewhere in this suite (bundle-capability.test.ts's own re-blocking
-    // test instead ADDS a new spore; here we specifically need the SAME path to
-    // exercise the (code, path, hash) match, so we overwrite decision-1 in place).
-    const db = (await import('@myco/db/client.js')).getDatabase();
-    db.prepare('UPDATE spores SET content = ? WHERE id = ?').run(
-      `A decision mentioning a key ${AWS_KEY_B} inline.`,
-      'decision-1',
-    );
-
-    // Without the fix (ack keyed on code+path only), this would NOT throw and
-    // the new secret would silently publish. With the fix, the new hash at the
-    // same (code, path) is unacknowledged and re-blocks.
-    await expect(makeBundle().maintain(baseInput({ acknowledgePublish: false }))).rejects.toMatchObject({
+    // Same page path, but the body now carries a DIFFERENT secret. Without the
+    // fix (ack keyed on code+path only), this would NOT throw and the new secret
+    // would silently publish. With the fix, the new hash at the same (code, path)
+    // is unacknowledged and re-blocks.
+    await expect(publish(makeBundle(), secretDoc('pages/leaky', AWS_KEY_B))).rejects.toMatchObject({
       code: 'okf_publish_not_acknowledged',
     });
   });
@@ -217,9 +192,8 @@ describe('#2 publish-eligibility ack — end-to-end bypass closed', () => {
 
 describe('#3 recoverOrphanedBundle — crash between atomicReplace renames', () => {
   it('restores the previous bundle from a surviving backup-N dir when outputRoot is empty', async () => {
-    seedSpore('decision-1', 'First decision.');
-    await makeBundle().maintain(baseInput());
-    const conceptPath = path.join(okfDir(), 'spores/decisions/decision-1.md');
+    await publish(makeBundle(), contentDoc('pages/alpha'));
+    const conceptPath = path.join(okfDir(), 'pages/alpha.md');
     expect(fs.existsSync(conceptPath)).toBe(true);
     const markerPath = path.join(okfDir(), '.myco-okf-maintain.json');
     expect(fs.existsSync(markerPath)).toBe(true);
@@ -235,12 +209,8 @@ describe('#3 recoverOrphanedBundle — crash between atomicReplace renames', () 
     expect(fs.existsSync(okfDir())).toBe(false);
     expect(fs.existsSync(path.join(backupPath, '.myco-okf-maintain.json'))).toBe(true);
 
-    // Force a real (non-unchanged) run so the crash_recovery warning — pushed
-    // by recoverOrphanedBundle before the gather/render pipeline — survives
-    // into the returned result rather than being dropped by the
-    // unchanged-short-circuit path (which only forwards gather warnings).
-    seedSpore('decision-2', 'Second decision forces a real run.');
-    const result = await makeBundle().maintain(baseInput());
+    // The next run's recoverOrphanedBundle restores the bundle before staging.
+    const result = await publish(makeBundle(), contentDoc('pages/beta'));
 
     // The bundle reappeared at outputRoot (restored, not silently lost).
     expect(fs.existsSync(markerPath)).toBe(true);
@@ -251,15 +221,14 @@ describe('#3 recoverOrphanedBundle — crash between atomicReplace renames', () 
   });
 
   it('does not silently delete the backup and leave outputRoot empty', async () => {
-    seedSpore('decision-1', 'First decision.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/alpha'));
 
     const stateDir = path.join(projectRoot, '.myco/okf/state');
     fs.mkdirSync(stateDir, { recursive: true });
     const backupPath = path.join(stateDir, 'backup-2');
     fs.renameSync(okfDir(), backupPath);
 
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/beta'));
 
     // outputRoot is NOT empty/missing after the run.
     expect(fs.existsSync(okfDir())).toBe(true);
@@ -268,40 +237,30 @@ describe('#3 recoverOrphanedBundle — crash between atomicReplace renames', () 
 });
 
 // ---------------------------------------------------------------------------
-// #4 Unicode NFC collision
-//
-// `deriveConceptId` (the percent-encoding scheme this regression targeted) is
-// deleted as of Task 1.2 -- it had no live caller. Its NFC-before-encoding step
-// is superseded by `okfSlug`, which decomposes and strips diacritics outright,
-// so NFC- and NFD-composed spellings of the same title slugify identically.
-// See 'slugifies NFC- and NFD-composed spellings of the same title identically'
-// in tests/okf/paths.test.ts.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // #5 Absolute-path leak in errors
 // ---------------------------------------------------------------------------
 
 describe('#5 errCode — atomic_replace_failed never leaks an absolute path', () => {
   it('injects a rename failure whose message embeds an absolute path; the thrown error omits it and includes the errno code', async () => {
-    seedSpore('decision-1', 'First decision.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/alpha'));
 
-    seedSpore('decision-2', 'Second decision changes the inputs.');
-    const bundle = makeBundle(config(), () => new Date('2026-07-05T12:00:00Z'), injectable({
-      onRename: (from, to) => {
-        if (to === okfDir() && from.includes(`${path.sep}staging${path.sep}`)) {
-          const e = new Error('rename failed: /Users/victim/secret/okf -> /Users/victim/secret/okf') as NodeJS.ErrnoException;
-          e.code = 'EACCES';
-          return e;
-        }
-      },
-    }));
+    const bundle = makeBundle(
+      config(),
+      injectable({
+        onRename: (from, to) => {
+          if (to === okfDir() && from.includes(`${path.sep}staging${path.sep}`)) {
+            const e = new Error('rename failed: /Users/victim/secret/okf -> /Users/victim/secret/okf') as NodeJS.ErrnoException;
+            e.code = 'EACCES';
+            return e;
+          }
+        },
+      }),
+    );
 
     let caught: unknown;
     try {
-      await bundle.maintain(baseInput());
-      throw new Error('expected maintain() to reject');
+      await publish(bundle, contentDoc('pages/beta'));
+      throw new Error('expected finalize() to reject');
     } catch (err) {
       caught = err;
     }
@@ -321,9 +280,8 @@ describe('#5 errCode — atomic_replace_failed never leaks an absolute path', ()
 
 describe("#6 capability gate applies to mode:'local' too", () => {
   it("throws okf_disabled for a mode:'local' write when the capability is disabled", async () => {
-    seedSpore('decision-1', 'A decision.');
     const bundle = makeBundle(config({ okf: { enabled: false } }));
-    await expect(bundle.maintain(baseInput({ mode: 'local' }))).rejects.toMatchObject({ code: 'okf_disabled' });
+    await expect(bundle.beginStagedGeneration({ mode: 'local' })).rejects.toMatchObject({ code: 'okf_disabled' });
     expect(fs.existsSync(path.join(projectRoot, '.myco/okf/bundle'))).toBe(false);
   });
 });
@@ -334,8 +292,7 @@ describe("#6 capability gate applies to mode:'local' too", () => {
 
 describe('#7 reconcileGenerationWithMarker — status() reports the marker generation, not a stale manifest', () => {
   it("status().bundleGeneration reflects the marker's generation when the manifest is behind", async () => {
-    seedSpore('decision-1', 'A decision.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/alpha'));
 
     const manifestPath = path.join(projectRoot, '.myco/okf/state/manifest.json');
     const markerPath = path.join(okfDir(), '.myco-okf-maintain.json');

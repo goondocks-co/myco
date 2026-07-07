@@ -46,16 +46,6 @@ export function okfSlug(text: string): string {
   return trimmed === '' ? '_' : trimmed;
 }
 
-/**
- * Root-anchor `toPath` into an OKF §5.1 absolute link: always begins with
- * `/`, resolved against the bundle root regardless of the linking document's
- * own location (never computed relative to a `from` path). Idempotent — a
- * `toPath` that already starts with `/` passes through unchanged.
- */
-export function bundleLink(toPath: string): string {
-  return toPath.startsWith('/') ? toPath : `/${toPath}`;
-}
-
 const SEGMENT_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
 
 /**

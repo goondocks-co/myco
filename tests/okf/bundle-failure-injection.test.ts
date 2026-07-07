@@ -3,14 +3,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { registerAgent } from '@myco/db/queries/agents.js';
-import { insertSpore } from '@myco/db/queries/spores.js';
 import { createProjectId, projectScope } from '@myco/grove/ids.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
-import { OkfBundle, type OkfBundleDeps, type OkfFsOps, type OkfGatherResult } from '@myco/okf/bundle.js';
-import type { OkfBundleWriteInput, OkfDocument } from '@myco/okf/types.js';
-import { fixtureRenderDocuments, invalidFixtureRenderDocuments } from '../helpers/okf-fixture.js';
+import { OkfBundle, type OkfBundleDeps, type OkfFsOps } from '@myco/okf/bundle.js';
+import type { OkfDocument } from '@myco/okf/types.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+
+// Ported from the legacy `maintain()`-driven failure-injection suite onto the
+// staged-generation entry point. The atomic-replace / rollback / cleanup_pending
+// / rename-retry / strict-validation / crash-recovery machinery lives in
+// `openStagedSession`'s `finalize` + `atomicReplace`/`rollback`/`renameWithRetry`
+// — the SAME code the old maintain path drove — so the coverage is preserved,
+// just fed by staging documents instead of a gather→render fixture.
 
 const AGENT_ID = 'claude-code';
 const MACHINE_ID = 'test-machine-okf';
@@ -44,10 +49,7 @@ function realFsOps(): OkfFsOps {
   };
 }
 
-function makeBundle(
-  fsOps?: OkfFsOps,
-  renderDocuments: (g: OkfGatherResult) => OkfDocument[] = fixtureRenderDocuments,
-): OkfBundle {
+function makeBundle(fsOps?: OkfFsOps): OkfBundle {
   const deps: OkfBundleDeps = {
     projectRoot,
     vault: new ProjectVault(projectRoot),
@@ -57,39 +59,35 @@ function makeBundle(
     config: config(),
     now: () => new Date('2026-07-05T12:00:00Z'),
     fsOps,
-    renderDocuments,
   };
   return new OkfBundle(deps);
 }
 
-function seedSpore(id: string, content: string): void {
-  insertSpore({
-    id,
-    project_id: projectId,
-    agent_id: AGENT_ID,
-    observation_type: 'decision',
-    content,
-    importance: 5,
-    created_at: 1_783_000_000,
-    updated_at: 1_783_100_000,
-    machine_id: MACHINE_ID,
-  });
+function contentDoc(id: string): OkfDocument {
+  return {
+    path: `${id}.md`,
+    frontmatter: { type: 'note', title: id, description: 'A portable knowledge page.', timestamp: '2026-07-05T00:00:00Z' },
+    body: `Body of ${id}.`,
+  };
 }
 
-function baseInput(over: Partial<OkfBundleWriteInput> = {}): OkfBundleWriteInput {
+/** A document that fails `strict` validation (newline in title breaks the generated index bullet). */
+function invalidDoc(id: string): OkfDocument {
   return {
-    scope: projectScope(projectId as ReturnType<typeof createProjectId>),
-    projectRoot,
-    machineId: MACHINE_ID,
-    mode: 'published',
-    include: { spores: true, canopy: true, concepts: true, guides: true },
-    sporeStatus: 'active',
-    ...over,
+    path: `${id}.md`,
+    frontmatter: { type: 'note', title: 'Bad\nTitle', description: 'A page whose title breaks the index bullet.', timestamp: '2026-07-05T00:00:00Z' },
+    body: 'Structurally unsafe frontmatter.',
   };
 }
 
 const okfDir = () => path.join(projectRoot, 'okf');
 const manifest = () => new ProjectVault(projectRoot).readOkfManifest();
+
+async function publish(bundle: OkfBundle, doc: OkfDocument) {
+  const staged = await bundle.beginStagedGeneration({ mode: 'published' });
+  staged.stageDocument(doc);
+  return staged.finalize({ inputsHash: `hash-${doc.path}` });
+}
 
 /** fsOps that delegates to real fs but can inject failures at chosen points. */
 function injectable(hooks: {
@@ -115,13 +113,11 @@ function injectable(hooks: {
 
 describe('OkfBundle failure injection', () => {
   it('final-rename failure rolls back and leaves the previous bundle intact', async () => {
-    seedSpore('decision-1', 'First decision.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/alpha'));
     expect(manifest()?.bundle_generation).toBe(1);
-    const conceptPath = path.join(okfDir(), 'spores/decisions/decision-1.md');
+    const conceptPath = path.join(okfDir(), 'pages/alpha.md');
     const before = fs.readFileSync(conceptPath, 'utf8');
 
-    seedSpore('decision-2', 'Second decision changes the inputs.');
     // Fail only the staging→final swap; the backup→final rollback (from a
     // state/backup- dir) must still succeed.
     const bundle = makeBundle(
@@ -136,20 +132,18 @@ describe('OkfBundle failure injection', () => {
       }),
     );
 
-    await expect(bundle.maintain(baseInput())).rejects.toMatchObject({ code: 'atomic_replace_failed' });
+    await expect(publish(bundle, contentDoc('pages/beta'))).rejects.toMatchObject({ code: 'atomic_replace_failed' });
     expect(manifest()?.last_result).toBe('rolled_back');
     expect(manifest()?.bundle_generation).toBe(1); // not incremented
     expect(fs.readFileSync(conceptPath, 'utf8')).toBe(before); // previous bundle restored
-    expect(fs.existsSync(path.join(okfDir(), 'spores/decisions/decision-2.md'))).toBe(false);
+    expect(fs.existsSync(path.join(okfDir(), 'pages/beta.md'))).toBe(false);
   });
 
   it('backup-rename failure leaves the previous bundle intact (nothing moved yet)', async () => {
-    seedSpore('decision-1', 'First decision.');
-    await makeBundle().maintain(baseInput());
-    const conceptPath = path.join(okfDir(), 'spores/decisions/decision-1.md');
+    await publish(makeBundle(), contentDoc('pages/alpha'));
+    const conceptPath = path.join(okfDir(), 'pages/alpha.md');
     const before = fs.readFileSync(conceptPath, 'utf8');
 
-    seedSpore('decision-2', 'Second decision.');
     // Fail the live→backup rename (to a state/backup- dir). The final swap is
     // never reached, so the live bundle is untouched.
     const bundle = makeBundle(
@@ -163,20 +157,18 @@ describe('OkfBundle failure injection', () => {
         },
       }),
     );
-    await expect(bundle.maintain(baseInput())).rejects.toMatchObject({
+    await expect(publish(bundle, contentDoc('pages/beta'))).rejects.toMatchObject({
       code: 'atomic_replace_failed',
       details: { lastResult: 'rolled_back' },
     });
     expect(manifest()?.bundle_generation).toBe(1); // not incremented
     expect(fs.readFileSync(conceptPath, 'utf8')).toBe(before); // previous bundle intact
-    expect(fs.existsSync(path.join(okfDir(), 'spores/decisions/decision-2.md'))).toBe(false);
+    expect(fs.existsSync(path.join(okfDir(), 'pages/beta.md'))).toBe(false);
   });
 
   it('rollback failure records rollback_failed and throws atomic_replace_failed', async () => {
-    seedSpore('decision-1', 'First decision.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/alpha'));
 
-    seedSpore('decision-2', 'Second decision.');
     // Fail every rename targeting the final root — both the swap and the rollback.
     const bundle = makeBundle(
       injectable({
@@ -190,7 +182,7 @@ describe('OkfBundle failure injection', () => {
       }),
     );
 
-    await expect(bundle.maintain(baseInput())).rejects.toMatchObject({
+    await expect(publish(bundle, contentDoc('pages/beta'))).rejects.toMatchObject({
       code: 'atomic_replace_failed',
       details: { lastResult: 'rollback_failed' },
     });
@@ -198,7 +190,6 @@ describe('OkfBundle failure injection', () => {
   });
 
   it('first-publish final-rename failure yields a clean no-bundle state', async () => {
-    seedSpore('decision-1', 'A decision.');
     const bundle = makeBundle(
       injectable({
         onRename: (from, to) => {
@@ -210,17 +201,15 @@ describe('OkfBundle failure injection', () => {
         },
       }),
     );
-    await expect(bundle.maintain(baseInput())).rejects.toMatchObject({ code: 'atomic_replace_failed' });
+    await expect(publish(bundle, contentDoc('pages/alpha'))).rejects.toMatchObject({ code: 'atomic_replace_failed' });
     expect(manifest()?.last_result).toBe('rolled_back');
     // No partial bundle left behind.
     expect(fs.existsSync(path.join(okfDir(), 'index.md'))).toBe(false);
   });
 
   it('backup-cleanup failure records cleanup_pending and the next run sweeps it', async () => {
-    seedSpore('decision-1', 'First decision.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/alpha'));
 
-    seedSpore('decision-2', 'Second decision.');
     const bundle = makeBundle(
       injectable({
         onRm: (target) => {
@@ -228,21 +217,19 @@ describe('OkfBundle failure injection', () => {
         },
       }),
     );
-    const result = await bundle.maintain(baseInput());
+    const result = await publish(bundle, contentDoc('pages/beta'));
     expect(result.warnings.some((w) => w.code === 'cleanup_pending')).toBe(true);
     expect(manifest()?.last_result).toBe('cleanup_pending');
     expect(manifest()?.bundle_generation).toBe(2); // bundle IS published
 
-    // A stale backup remains; the next (unchanged) run's sweep removes it.
+    // A stale backup remains; the next run's sweep removes it.
     const stateDir = path.join(projectRoot, '.myco/okf/state');
     expect(fs.readdirSync(stateDir).some((n) => n.startsWith('backup-'))).toBe(true);
-    seedSpore('decision-3', 'Third decision forces a new run.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/gamma'));
     expect(fs.readdirSync(stateDir).some((n) => n.startsWith('backup-'))).toBe(false);
   });
 
   it('retries a rename on EBUSY and then succeeds (Windows-style transient lock)', async () => {
-    seedSpore('decision-1', 'A decision.');
     let failsLeft = 1;
     const bundle = makeBundle(
       injectable({
@@ -256,32 +243,29 @@ describe('OkfBundle failure injection', () => {
         },
       }),
     );
-    const result = await bundle.maintain(baseInput());
+    const result = await publish(bundle, contentDoc('pages/alpha'));
     expect(result.unchanged).toBe(false);
     expect(failsLeft).toBe(0);
     expect(fs.existsSync(path.join(okfDir(), 'index.md'))).toBe(true);
   });
 
   it('validation failure keeps the previous bundle intact and does not increment generation', async () => {
-    seedSpore('decision-1', 'A good decision.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/alpha'));
     expect(manifest()?.bundle_generation).toBe(1);
 
-    // A run whose rendered document fails strict validation (structure-breaking
-    // frontmatter) must reject at finalize, AFTER staging but BEFORE the swap.
-    // A new spore forces a changed (non-short-circuited) run.
-    seedSpore('decision-2', 'Second decision forces a real run.');
-    await expect(makeBundle(undefined, invalidFixtureRenderDocuments).maintain(baseInput())).rejects.toMatchObject({
+    // A run whose freshly-staged document fails strict validation (structure-
+    // breaking frontmatter) must reject at finalize, AFTER staging but BEFORE the
+    // swap. A freshly-staged (not carried) invalid page is validated wholesale.
+    await expect(publish(makeBundle(), invalidDoc('pages/broken'))).rejects.toMatchObject({
       code: 'okf_validation_failed',
     });
     // Generation unchanged; the good prior bundle is still present.
     expect(manifest()?.bundle_generation).toBe(1);
-    expect(fs.existsSync(path.join(okfDir(), 'spores/decisions/decision-1.md'))).toBe(true);
+    expect(fs.existsSync(path.join(okfDir(), 'pages/alpha.md'))).toBe(true);
   });
 
   it('adopts a crashed marker generation greater than the manifest on the next run', async () => {
-    seedSpore('decision-1', 'A decision.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), contentDoc('pages/alpha'));
 
     // Simulate a crash between the final rename and the manifest commit: the
     // published marker records a higher generation than the manifest.
@@ -290,8 +274,7 @@ describe('OkfBundle failure injection', () => {
     marker.bundle_generation = 5;
     fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2));
 
-    seedSpore('decision-2', 'Second decision forces a real run.');
-    const result = await makeBundle().maintain(baseInput());
+    const result = await publish(makeBundle(), contentDoc('pages/beta'));
     expect(result.warnings.some((w) => w.code === 'crash_recovery')).toBe(true);
     expect(manifest()?.bundle_generation).toBe(6); // adopted marker gen (5) + 1
   });

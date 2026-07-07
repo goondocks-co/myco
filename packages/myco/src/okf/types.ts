@@ -1,8 +1,5 @@
 import type { ProjectScope } from '@myco/grove/ids.js';
 
-/** Bundle section kinds a maintain run can include. */
-export type OkfIncludeKind = 'spores' | 'canopy' | 'concepts' | 'guides';
-
 /** Spore lifecycle filter for projection (real lifecycle: active|superseded|consolidated|obsolete). */
 export type OkfSporeStatusFilter = 'active' | 'superseded' | 'consolidated' | 'obsolete' | 'all';
 

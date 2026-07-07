@@ -12,7 +12,6 @@ import { OkfError, OKF_ERROR_HTTP_STATUS } from '@myco/okf/errors';
 // --- Stub OkfBundle so the handlers' funnel + error mapping is exercised
 //     without a real DB. OkfError stays real (separate module). ---
 interface StubImpl {
-  maintain?: (input: unknown) => Promise<unknown>;
   acknowledgePendingFindings?: () => Promise<unknown>;
   status?: () => unknown;
   validate?: (root?: string) => unknown;
@@ -28,9 +27,6 @@ mock.module('@myco/okf/bundle.js', () => ({
   OkfBundle: class {
     constructor(deps: unknown) {
       constructed.push(deps);
-    }
-    maintain(input: unknown) {
-      return stub.maintain?.(input) ?? Promise.resolve({ outputRoot: 'okf', conceptCount: 0, byType: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0 } });
     }
     status() {
       return stub.status?.() ?? { outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, conceptCount: null, stale: false, publishAcknowledged: true, pendingFindings: [] };
@@ -57,7 +53,6 @@ mock.module('@myco/okf/bundle.js', () => ({
 }));
 
 const {
-  handleOkfMaintain,
   handleOkfAcknowledge,
   handleOkfStatus,
   handleOkfValidate,
@@ -111,37 +106,6 @@ afterEach(() => {
 });
 
 describe('OKF API handlers', () => {
-  it('maintain delegates to OkfBundle and returns 200', async () => {
-    let received: unknown;
-    stub.maintain = (input) => {
-      received = input;
-      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), conceptCount: 1, byType: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 1, conceptsChecked: 1 } });
-    };
-    const res = await handleOkfMaintain(req({ body: { dryRun: true } }), principalFor(ctxFor()));
-    expect(res.status).toBe(200);
-    expect((res.body as { ok: boolean }).ok).toBe(true);
-    expect((received as { dryRun: boolean }).dryRun).toBe(true);
-  });
-
-  it('maintain no longer reads sporeStatus/includeUndescribedCanopy from the request body — fixed constants', async () => {
-    let received: unknown;
-    stub.maintain = (input) => {
-      received = input;
-      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), conceptCount: 0, byType: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0 } });
-    };
-    // Even if a caller still sends the retired fields, they're ignored.
-    await handleOkfMaintain(req({ body: { sporeStatus: 'all', includeUndescribedCanopy: true } }), principalFor(ctxFor()));
-    expect((received as { sporeStatus: string; includeUndescribedCanopy: boolean }).sporeStatus).toBe('active');
-    expect((received as { sporeStatus: string; includeUndescribedCanopy: boolean }).includeUndescribedCanopy).toBe(false);
-  });
-
-  it('maps a disabled-gate OkfError to 403', async () => {
-    stub.maintain = () => Promise.reject(new OkfError('okf_disabled', 'off'));
-    const res = await handleOkfMaintain(req({ body: {} }), principalFor(ctxFor()));
-    expect(res.status).toBe(403);
-    expect((res.body as { error: { code: string } }).error.code).toBe('okf_disabled');
-  });
-
   it('maps a generation conflict to 409', async () => {
     stub.saveConcept = () => Promise.reject(new OkfError('okf_generation_conflict', 'stale', { currentGeneration: 1 }));
     const res = await handleOkfConceptSave(req({ body: { id: 'concepts/x', markdown: '---\ntype: X\n---\n' } }), principalFor(ctxFor()));
@@ -221,19 +185,6 @@ describe('OKF API handlers', () => {
   it('rejects a save with a missing body field (400)', async () => {
     const res = await handleOkfConceptSave(req({ body: { id: 'concepts/x' } }), principalFor(ctxFor()));
     expect(res.status).toBe(400);
-  });
-
-  it('rejects a maintain with a malformed include (400) before touching the capability', async () => {
-    let called = false;
-    stub.maintain = () => {
-      called = true;
-      return Promise.resolve({});
-    };
-    const badInclude = await handleOkfMaintain(req({ body: { include: 'everything' } }), principalFor(ctxFor()));
-    expect(badInclude.status).toBe(400);
-    const badKeys = await handleOkfMaintain(req({ body: { include: { spores: true, bogus: true } } }), principalFor(ctxFor()));
-    expect(badKeys.status).toBe(400);
-    expect(called).toBe(false); // never reached the capability
   });
 
   it('status emits the frozen Plan-7 aggregation shape exactly', async () => {

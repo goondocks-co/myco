@@ -4,14 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
-import { insertSpore } from '@myco/db/queries/spores.js';
 import { createProjectId, projectScope } from '@myco/grove/ids.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle, type OkfBundleDeps } from '@myco/okf/bundle.js';
-import type { OkfBundleWriteInput } from '@myco/okf/types.js';
-import { fixtureRenderDocuments } from '../helpers/okf-fixture.js';
+import type { OkfDocument } from '@myco/okf/types.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+
+// Ported from the legacy `maintain()`-driven locking suite onto
+// `beginStagedGeneration` — the single-lock/timeout/exit-listener machinery is
+// `acquireLock`/`releaseLock` inside `openStagedSession`, unchanged.
 
 const AGENT_ID = 'claude-code';
 const MACHINE_ID = 'test-machine-okf';
@@ -44,48 +46,23 @@ function makeBundle(lockOptions?: { timeoutMs?: number; retryMs?: number }): Okf
     config: config(),
     now: () => new Date('2026-07-05T12:00:00Z'),
     lockOptions,
-    renderDocuments: fixtureRenderDocuments,
   };
   return new OkfBundle(deps);
 }
 
-function seedSpore(id: string, content: string): void {
-  insertSpore({
-    id,
-    project_id: projectId,
-    agent_id: AGENT_ID,
-    observation_type: 'decision',
-    content,
-    importance: 5,
-    created_at: 1_783_000_000,
-    updated_at: 1_783_100_000,
-    machine_id: MACHINE_ID,
-  });
-}
-
-function baseInput(over: Partial<OkfBundleWriteInput> = {}): OkfBundleWriteInput {
+function contentDoc(id: string): OkfDocument {
   return {
-    scope: projectScope(projectId as ReturnType<typeof createProjectId>),
-    projectRoot,
-    machineId: MACHINE_ID,
-    mode: 'published',
-    include: { spores: true, canopy: true, concepts: true, guides: true },
-    sporeStatus: 'active',
-    ...over,
+    path: `${id}.md`,
+    frontmatter: { type: 'note', title: id, description: 'A portable knowledge page.', timestamp: '2026-07-05T00:00:00Z' },
+    body: `Body of ${id}.`,
   };
 }
 
-const VALID_CONCEPT =
-  '---\n' +
-  'type: Architecture Note\n' +
-  'title: Locking Model\n' +
-  'description: Why the bundle lock is async.\n' +
-  'tags:\n  - okf\n' +
-  'timestamp: 2026-07-05T00:00:00Z\n' +
-  'myco_id: concepts/locking-model\n' +
-  '---\n' +
-  '\n' +
-  'The lock retries acquisition.\n';
+async function publish(bundle: OkfBundle, id: string) {
+  const staged = await bundle.beginStagedGeneration({ mode: 'published' });
+  staged.stageDocument(contentDoc(id));
+  return staged.finalize({ inputsHash: `hash-${id}` });
+}
 
 describe('OkfBundle locking', () => {
   it('times out with a typed error naming the holder pid when the lock is held', async () => {
@@ -96,10 +73,13 @@ describe('OkfBundle locking', () => {
     const acquired = LifecycleLock.acquire(vault.okfLockPath());
     if (!acquired.acquired) throw new Error('precondition: could not acquire lock');
     try {
-      seedSpore('decision-1', 'A decision.');
       const bundle = makeBundle({ timeoutMs: 250, retryMs: 50 });
-      await expect(bundle.maintain(baseInput())).rejects.toMatchObject({ code: 'okf_maintain_failed' });
-      await expect(bundle.maintain(baseInput())).rejects.toThrow(new RegExp(String(process.pid)));
+      // beginStagedGeneration acquires the lock inside openStagedSession, so the
+      // timeout surfaces on the open call itself.
+      await expect(bundle.beginStagedGeneration({ mode: 'published' })).rejects.toMatchObject({
+        code: 'okf_maintain_failed',
+      });
+      await expect(bundle.beginStagedGeneration({ mode: 'published' })).rejects.toThrow(new RegExp(String(process.pid)));
     } finally {
       acquired.lock.release();
       process.removeListener('exit', acquired.lock.release as unknown as NodeJS.ExitListener);
@@ -107,131 +87,15 @@ describe('OkfBundle locking', () => {
   });
 
   it('completes once the lock is released', async () => {
-    seedSpore('decision-1', 'A decision.');
-    const result = await makeBundle().maintain(baseInput());
+    const result = await publish(makeBundle(), 'pages/alpha');
     expect(result.unchanged).toBe(false);
   });
 
-  it('leaks no net exit listeners across repeated maintains', async () => {
-    seedSpore('decision-1', 'A decision.');
+  it('leaks no net exit listeners across repeated publishes', async () => {
     const before = process.listeners('exit').length;
-    await makeBundle().maintain(baseInput());
-    seedSpore('decision-2', 'Another.');
-    await makeBundle().maintain(baseInput());
-    seedSpore('decision-3', 'Third.');
-    await makeBundle().maintain(baseInput());
+    await publish(makeBundle(), 'pages/alpha');
+    await publish(makeBundle(), 'pages/beta');
+    await publish(makeBundle(), 'pages/gamma');
     expect(process.listeners('exit').length).toBe(before);
-  });
-});
-
-describe('OkfBundle concept mutation', () => {
-  // Task 3.2/4.2: the per-page concept-mutation path (saveConcept/supersede) is
-  // NOT yet reworked to the OKF document model. maintain() now publishes six-key
-  // OKF documents (validated `strict`), but mutateConcepts still reconstructs +
-  // re-renders the legacy `OkfConcept` tree at `myco_strict` — which the
-  // document-model tree fails (no myco_id/tags/source-identity). These stay
-  // skipped until okf_write_page (3.2) + the MCP save surface (4.2) rebuild this
-  // path on the document model; the staging/publish seam (Task 1.5) is complete.
-  it.skip('saveConcept adds a concept, bumps the generation, and leaves other files byte-identical', async () => {
-    seedSpore('decision-1', 'A decision.');
-    const bundle = makeBundle();
-    await bundle.maintain(baseInput());
-
-    const sporePath = path.join(projectRoot, 'okf/spores/decisions/decision-1.md');
-    const guidePath = path.join(projectRoot, 'okf/guides/maintaining-this-bundle.md');
-    const sporeBytes = fs.readFileSync(sporePath, 'utf8');
-    const guideBytes = fs.readFileSync(guidePath, 'utf8');
-
-    const result = await makeBundle().saveConcept({
-      id: 'concepts/locking-model',
-      markdown: VALID_CONCEPT,
-      provenance: { actor: 'symbiont' },
-    });
-
-    expect(result.bundleGeneration).toBe(2);
-    expect(fs.existsSync(path.join(projectRoot, 'okf/concepts/locking-model.md'))).toBe(true);
-    // Deterministic projections are copied verbatim — byte-identical.
-    expect(fs.readFileSync(sporePath, 'utf8')).toBe(sporeBytes);
-    expect(fs.readFileSync(guidePath, 'utf8')).toBe(guideBytes);
-    // The saved concept carries provenance.
-    expect(fs.readFileSync(path.join(projectRoot, 'okf/concepts/locking-model.md'), 'utf8')).toContain(
-      'myco_provenance',
-    );
-  });
-
-  it.skip('survives maintain -> saveConcept -> maintain once concepts/ is populated (generated index round-trip)', async () => {
-    // Regression: the generated concepts/index.md must never be re-adopted as
-    // an agent concept, or the second maintain throws okf_validation_failed.
-    seedSpore('decision-1', 'A decision.');
-    await makeBundle().maintain(baseInput());
-    await makeBundle().saveConcept({
-      id: 'concepts/locking-model',
-      markdown: VALID_CONCEPT,
-      provenance: { actor: 'symbiont' },
-    });
-    // A generated concepts/index.md now exists on disk.
-    expect(fs.existsSync(path.join(projectRoot, 'okf/concepts/index.md'))).toBe(true);
-    const savedBytes = fs.readFileSync(path.join(projectRoot, 'okf/concepts/locking-model.md'), 'utf8');
-
-    // A second maintain (triggered by a vault change) must succeed, not throw.
-    seedSpore('decision-2', 'A second decision changes the inputs.');
-    const result = await makeBundle().maintain(baseInput());
-    expect(result.validation.ok).toBe(true);
-    expect(result.unchanged).toBe(false);
-    // The agent concept survives the deterministic regeneration byte-for-byte.
-    expect(fs.readFileSync(path.join(projectRoot, 'okf/concepts/locking-model.md'), 'utf8')).toBe(savedBytes);
-    // And a THIRD maintain still works.
-    seedSpore('decision-3', 'A third decision.');
-    expect((await makeBundle().maintain(baseInput())).validation.ok).toBe(true);
-  });
-
-  it.skip('rejects a stale expectedGeneration with okf_generation_conflict', async () => {
-    seedSpore('decision-1', 'A decision.');
-    await makeBundle().maintain(baseInput());
-
-    await expect(
-      makeBundle().saveConcept({
-        id: 'concepts/locking-model',
-        markdown: VALID_CONCEPT,
-        expectedGeneration: 0, // stale (real is 1)
-        provenance: { actor: 'symbiont' },
-      }),
-    ).rejects.toMatchObject({ code: 'okf_generation_conflict', details: { currentGeneration: 1 } });
-  });
-
-  it.skip('rejects editing a deterministic projection path', async () => {
-    seedSpore('decision-1', 'A decision.');
-    await makeBundle().maintain(baseInput());
-
-    await expect(
-      makeBundle().saveConcept({
-        id: 'spores/decisions/decision-1',
-        markdown: VALID_CONCEPT,
-        provenance: { actor: 'symbiont' },
-      }),
-    ).rejects.toMatchObject({ code: 'deterministic_path_not_editable' });
-  });
-
-  it.skip('supersedeConcept marks the old concept and requires the replacement to exist', async () => {
-    seedSpore('decision-1', 'A decision.');
-    await makeBundle().maintain(baseInput());
-    await makeBundle().saveConcept({ id: 'concepts/old', markdown: VALID_CONCEPT.replace(/concepts\/locking-model/g, 'concepts/old'), provenance: { actor: 'cli' } });
-    await makeBundle().saveConcept({ id: 'concepts/new', markdown: VALID_CONCEPT.replace(/concepts\/locking-model/g, 'concepts/new'), provenance: { actor: 'cli' } });
-
-    // Missing replacement → rejected.
-    await expect(
-      makeBundle().supersedeConcept({ oldId: 'concepts/old', newId: 'concepts/ghost', reason: 'x', provenance: { actor: 'cli' } }),
-    ).rejects.toMatchObject({ code: 'okf_validation_failed' });
-
-    const result = await makeBundle().supersedeConcept({
-      oldId: 'concepts/old',
-      newId: 'concepts/new',
-      reason: 'replaced by the new model',
-      provenance: { actor: 'cli' },
-    });
-    expect(result.oldId).toBe('concepts/old');
-    const oldContent = fs.readFileSync(path.join(projectRoot, 'okf/concepts/old.md'), 'utf8');
-    expect(oldContent).toContain('status: superseded');
-    expect(oldContent).toContain('superseded_by: concepts/new');
   });
 });

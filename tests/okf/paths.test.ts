@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
   assertSafeConceptId,
-  bundleLink,
   conceptPathForId,
   detectCollisions,
   okfSlug,
@@ -49,23 +48,6 @@ describe('okfSlug', () => {
 
   it('preserves already-safe text unchanged (aside from case)', () => {
     expect(okfSlug('decision-abcd1234_v2.ts')).toBe('decision-abcd1234_v2.ts');
-  });
-});
-
-describe('bundleLink', () => {
-  it('root-anchors a bundle-relative path with a leading /', () => {
-    expect(bundleLink('a/c/d.md')).toBe('/a/c/d.md');
-    expect(bundleLink('x/y.md')).toBe('/x/y.md');
-  });
-
-  it('is root-anchored regardless of the source page depth (no from-relative computation)', () => {
-    // bundleLink takes only the target — there is no `from` parameter to vary,
-    // so a deeply nested source page links to the same absolute target.
-    expect(bundleLink('architecture/overview.md')).toBe('/architecture/overview.md');
-  });
-
-  it('is idempotent for an already-absolute path', () => {
-    expect(bundleLink('/a/c/d.md')).toBe('/a/c/d.md');
   });
 });
 

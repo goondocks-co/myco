@@ -10,8 +10,7 @@
  * `myco okf` tokens dropped, matching `parseOkfCommand`'s actual argv
  * contract: `run(args, vaultDir)` in `packages/myco/src/cli/okf.ts` passes
  * `parseOkfCommand` the tokens AFTER `myco okf` (confirmed from `run()`'s own
- * call site and mirrored by the existing `tests/smoke/okf-phase1a.test.ts`,
- * which calls `runOkf(['maintain'], vaultDir)` with no leading `okf` token).
+ * call site, e.g. `run(['status'], vaultDir)` with no leading `okf` token).
  *
  * A minimum-count assertion (>= 6) guards against a scanning regression that
  * would otherwise let this test pass vacuously on zero extracted commands.

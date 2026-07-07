@@ -648,8 +648,8 @@ const VaultEvolutionSchema = z.object({
  * (spores/decisions/Canopy). Reserved knob: no consumer wires it yet —
  * `okf_read_sources` (okf-tools.ts) still takes its own per-call `kind`
  * selector (repo|git|vault|all). A future task may wire this as the
- * project-level default for that selector, the way `bundleLink` (Task 1.2)
- * shipped ahead of its renderer consumer.
+ * project-level default for that selector — a config knob shipped ahead of
+ * the consumer that will read it.
  */
 const OkfSynthesisScopeSchema = z.object({
   repo: z.boolean().default(true),
