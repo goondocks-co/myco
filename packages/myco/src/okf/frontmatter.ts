@@ -46,8 +46,12 @@ const CANONICAL_KEY_ORDER = ['type', 'title', 'description', 'resource', 'tags',
 
 /** OKF v0.1 document frontmatter's fixed key set, in canonical order. */
 const OKF_DOCUMENT_KEY_ORDER = ['type', 'resource', 'title', 'description', 'tags', 'timestamp'] as const;
-/** [R2] write-time floor: an OKF document cannot render without these four. */
-const REQUIRED_OKF_FRONTMATTER_KEYS = ['type', 'title', 'description', 'timestamp'] as const;
+/**
+ * [R2] write-time floor: an OKF document cannot render without these four.
+ * Exported so `validate.ts`'s `conformance` level checks the exact same set
+ * the writer enforces — one invariant, not two copies that can drift.
+ */
+export const REQUIRED_OKF_FRONTMATTER_KEYS = ['type', 'title', 'description', 'timestamp'] as const;
 
 function enforceValueBounds(value: unknown, depth: number, keyPath: string): void {
   if (typeof value === 'string') {

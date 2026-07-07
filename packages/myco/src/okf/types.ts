@@ -10,10 +10,22 @@ export type OkfSporeStatusFilter = 'active' | 'superseded' | 'consolidated' | 'o
 export type OkfBundleMode = 'published' | 'local';
 
 /**
- * `conformance` is the OKF v0.1 floor any consumer must accept;
- * `myco_strict` is the superset Myco-generated output must satisfy.
+ * `myco_strict` is the superset the legacy `OkfConcept` bundle path (still
+ * live until Task 1.5) must satisfy — checked via `validateConceptSource`.
+ * `conformance`/`strict` validate the OKF-v0.1 `OkfDocument` model instead:
+ * `conformance` is the reference's real write-time floor (parseable
+ * frontmatter mapping + the four-key floor); `strict` is Myco's superset on
+ * top of it (no-frontmatter indexes, slug-safe paths, permissive-link
+ * preference, hostile-frontmatter-text backstop). The two families are
+ * validated by entirely separate per-file rule sets within
+ * `validateBundleTree` — they never call into each other.
+ *
+ * CAVEAT: this uniform meaning holds only inside `validateBundleTree`. Called
+ * directly, `validateConceptSource` still gives `'conformance'` its legacy
+ * type-only-floor meaning (see that function's own doc comment) — the same
+ * string means two different things depending on entry point.
  */
-export type OkfValidationLevel = 'conformance' | 'myco_strict';
+export type OkfValidationLevel = 'myco_strict' | 'conformance' | 'strict';
 
 export interface OkfFrontmatter {
   type: string;
@@ -74,7 +86,9 @@ export interface OkfValidationIssue {
   /**
    * Machine-readable finding code, e.g. 'missing_type', 'unparseable_frontmatter',
    * 'path_traversal', 'duplicate_concept_id', 'nonroot_index_frontmatter',
-   * 'unsafe_resource_uri', 'missing_recommended_field'.
+   * 'unsafe_resource_uri', 'missing_recommended_field' (`myco_strict`);
+   * 'missing_required_frontmatter_key', 'index_has_frontmatter',
+   * 'unsafe_frontmatter_text', 'prefer_absolute_link' (`conformance`/`strict`).
    */
   code: string;
   /** Bundle-relative file path. */

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { OkfFrontmatterError, parseConceptDoc } from './frontmatter.js';
-import { detectCollisions } from './paths.js';
+import { OkfFrontmatterError, parseConceptDoc, REQUIRED_OKF_FRONTMATTER_KEYS } from './frontmatter.js';
+import { assertSafeConceptId, detectCollisions, OkfPathError } from './paths.js';
 import {
   OKF_MARKER_FILENAME,
   type OkfBundleMode,
@@ -11,18 +11,34 @@ import {
 } from './types.js';
 
 /**
- * Bundle validation at two composed levels.
+ * Bundle validation, as two entirely separate rule-set families sharing one
+ * tree walk.
  *
- * `conformance` is the OKF v0.1 floor: every non-reserved `.md` has parseable
- * YAML frontmatter and a non-empty `type`; unknown types/keys, missing optional
- * fields, and broken links are all acceptable. `myco_strict` is the superset
- * Myco-generated output must satisfy. The two rule sets stay separately composed
- * (strict runs on top of conformance) because the future import path will run
- * `conformance` only.
- *
- * Content is data, not instructions: prompt-injection text in bodies is NOT a
+ * `myco_strict` validates the legacy `OkfConcept` bundle path (still live
+ * until Task 1.5 retires it): every non-reserved `.md` has parseable YAML
+ * frontmatter and a non-empty `type`, plus Myco's own superset (recommended
+ * fields, stable source identity, safe resource URIs, no raw HTML). Content
+ * is data, not instructions: prompt-injection text in bodies is NOT a
  * finding. Raw HTML is an error in generated indexes/logs and a warning in
- * concept bodies (a concept's own frontmatter is stored data and never scanned).
+ * concept bodies (a concept's own frontmatter is stored data and never
+ * scanned).
+ *
+ * `conformance`/`strict` validate the OKF v0.1 `OkfDocument` model instead —
+ * the format Phase 2 synthesis emits. `conformance` is the reference's real
+ * write-time gate (`reference_agent/bundle/document.py`'s `validate()`):
+ * parseable frontmatter *mapping* + the four-key floor (`type`, `title`,
+ * `description`, `timestamp` all non-empty) on every non-`index.md`/`log.md`
+ * `.md`. `strict` is Myco's superset on top of that floor: indexes carry no
+ * frontmatter at all, every path segment is `okfSlug`-safe, a relative body
+ * link is a *preference* warning (never a hard failure — rejecting either
+ * link form would reject a spec-conformant bundle), and a genuinely
+ * structure-breaking title/description is flagged as a publish-time backstop
+ * against the markdown injection that index generation (`buildIndexBody`)
+ * would otherwise emit raw: an embedded newline in either field splices a new
+ * line into the generated bullet, and a `]` in `title` specifically closes
+ * its `[title](link)` link label early. Parens/`#`/`*` are NOT flagged —
+ * they're inert in that template and common in real titles ("Auth (v2)",
+ * "Issue #42").
  */
 
 const RECOMMENDED_FIELDS = ['title', 'description', 'timestamp', 'tags'] as const;
@@ -35,6 +51,23 @@ const LOCAL_MODE_DOWNGRADES = new Set(['unsafe_resource_uri']);
 // only a space-led attribute block, '/', or an immediate '>' qualifies.
 const RAW_HTML_PATTERN = /<\/?[a-zA-Z][-a-zA-Z0-9]*(\s[^>]*)?\/?>/;
 
+// Only these two are genuinely structural in `buildIndexBody`'s
+// `* [${title}](${link}) - ${desc}` template — everything else (parens, #,
+// *) is inert there and appears in ordinary titles ("Auth (v2)", "Issue
+// #42"), so flagging them would be a false-positive publish blocker.
+/** Embedded newline/CR — splices a new markdown line into the generated bullet, in either field. */
+const UNSAFE_NEWLINE_PATTERN = /[\r\n]/;
+/** `]` in a TITLE closes its `[title](link)` link label early; inert in a description (plain trailing text). */
+const UNSAFE_TITLE_CLOSE_BRACKET_PATTERN = /\]/;
+
+// Markdown inline links: `[label](target)`. No code-fence exclusion — this
+// mirrors RAW_HTML_PATTERN's scope (whole-body scan), and a false positive
+// inside a fenced example only ever produces an extra *warning*, never a
+// hard failure.
+const MARKDOWN_LINK_PATTERN = /\[[^\]]*\]\(([^)]+)\)/g;
+/** Any URL scheme prefix (http:, https:, mailto:, tel:, ...) — never a bundle-relative link. */
+const EXTERNAL_LINK_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:/i;
+
 function containsRawHtml(text: string): boolean {
   return RAW_HTML_PATTERN.test(text);
 }
@@ -42,6 +75,19 @@ function containsRawHtml(text: string): boolean {
 function isSafeResourceUri(uri: string): boolean {
   const lower = uri.trim().toLowerCase();
   return SAFE_RESOURCE_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+function hasUnsafeFrontmatterText(value: unknown, field: 'title' | 'description'): boolean {
+  if (typeof value !== 'string') return false;
+  if (UNSAFE_NEWLINE_PATTERN.test(value)) return true;
+  return field === 'title' && UNSAFE_TITLE_CLOSE_BRACKET_PATTERN.test(value);
+}
+
+/** A same-doc anchor (`#section`) or an absolute (`/`-rooted) or external (`scheme:`) target is not a bundle-relative link. */
+function isBundleRelativeLinkTarget(target: string): boolean {
+  const trimmed = target.trim();
+  if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('/')) return false;
+  return !EXTERNAL_LINK_SCHEME_PATTERN.test(trimmed);
 }
 
 function issue(
@@ -57,6 +103,14 @@ function issue(
  * Single-document rule set for a non-reserved concept file. Shared with the
  * OkfBundle/MCP concept-write paths (Plans 4–5), which validate agent-authored
  * source before it ever reaches a bundle tree.
+ *
+ * CAVEAT: `level` here keeps its pre-existing, legacy meaning — `'conformance'`
+ * is the *old* type-only floor (non-empty `type`, nothing else), NOT the
+ * OkfDocument four-key floor `validateBundleTree`'s `'conformance'`/`'strict'`
+ * branches enforce below. The same string means two different things
+ * depending on entry point; this function is never reached by the
+ * document-model walk (see `validateOkfDocumentContent`), so the two never
+ * collide in practice, but don't reuse this function for OkfDocument checks.
  */
 export function validateConceptSource(
   raw: string,
@@ -200,6 +254,96 @@ function checkPathSafety(relPath: string, issues: OkfValidationIssue[]): void {
 }
 
 /**
+ * `strict`-only: every path segment (directories and filename alike) must be
+ * `okfSlug`-safe — the same choke point `renderOkfDocument` runs a document's
+ * `path` through before it is ever written. Reuses `assertSafeConceptId`
+ * rather than duplicating its charset, so the write-time and validate-time
+ * rules can never drift apart.
+ */
+function checkOkfSlugSafety(relPath: string, issues: OkfValidationIssue[]): void {
+  try {
+    assertSafeConceptId(relPath);
+  } catch (err) {
+    const code = err instanceof OkfPathError ? err.code : 'invalid_segment';
+    const message = err instanceof Error ? err.message : String(err);
+    issues.push(issue('error', code, relPath, message));
+  }
+}
+
+/** `strict`-only: an OKF index.md — root or nested — must carry no frontmatter block at all. */
+function checkOkfIndexHasNoFrontmatter(content: string, relPath: string, issues: OkfValidationIssue[]): void {
+  if (content.replace(/\r\n/g, '\n').startsWith('---\n')) {
+    issues.push(issue('error', 'index_has_frontmatter', relPath, 'OKF index.md files must carry no frontmatter block'));
+  }
+}
+
+/** `strict`-only: warn on every markdown link in `body` whose target is bundle-relative rather than absolute. */
+function checkLinkPreference(body: string, relPath: string, issues: OkfValidationIssue[]): void {
+  for (const match of body.matchAll(MARKDOWN_LINK_PATTERN)) {
+    const target = match[1];
+    if (isBundleRelativeLinkTarget(target)) {
+      issues.push(
+        issue(
+          'warning',
+          'prefer_absolute_link',
+          relPath,
+          `link target ${JSON.stringify(target)} is bundle-relative; an absolute ("/"-rooted) link is preferred and move-stable`,
+        ),
+      );
+    }
+  }
+}
+
+/**
+ * Single-document rule set for an OKF v0.1 content document (non-reserved,
+ * i.e. not `index.md`/`log.md`). `conformance` is the reference's real
+ * write-time floor; `strict` adds the hostile-frontmatter-text backstop and
+ * the link-preference scan.
+ */
+function validateOkfDocumentContent(
+  content: string,
+  relPath: string,
+  level: 'conformance' | 'strict',
+  issues: OkfValidationIssue[],
+): void {
+  let frontmatter: Record<string, unknown>;
+  let body: string;
+  try {
+    ({ frontmatter, body } = parseConceptDoc(content));
+  } catch (err) {
+    const code = err instanceof OkfFrontmatterError ? err.code : 'unparseable_frontmatter';
+    const message = err instanceof OkfFrontmatterError ? err.message : String(err);
+    issues.push(issue('error', code, relPath, message));
+    return;
+  }
+
+  for (const key of REQUIRED_OKF_FRONTMATTER_KEYS) {
+    if (!frontmatter[key]) {
+      issues.push(
+        issue('error', 'missing_required_frontmatter_key', relPath, `OKF frontmatter floor requires a non-empty "${key}"`),
+      );
+    }
+  }
+
+  if (level === 'strict') {
+    for (const key of ['title', 'description'] as const) {
+      if (hasUnsafeFrontmatterText(frontmatter[key], key)) {
+        const reason = key === 'title' ? 'a newline or a "]"' : 'a newline';
+        issues.push(
+          issue(
+            'error',
+            'unsafe_frontmatter_text',
+            relPath,
+            `frontmatter "${key}" contains ${reason} — unsafe once rendered into a generated index bullet's "[title](link) - desc" markdown`,
+          ),
+        );
+      }
+    }
+    checkLinkPreference(body, relPath, issues);
+  }
+}
+
+/**
  * Walk a bundle tree on disk and validate it. Only `.md` files are validated;
  * the marker (`.myco-okf-maintain.json`) and any other non-markdown files are
  * non-concept files and are skipped. Symlinks — directories AND files — are
@@ -208,6 +352,8 @@ function checkPathSafety(relPath: string, issues: OkfValidationIssue[]): void {
  *
  * `mode` defaults to `'published'`. In `'local'` mode, unsafe-resource findings
  * downgrade to warnings (local bundles may carry richer local-only provenance).
+ * `mode` only affects `myco_strict` findings; the OKF document-model levels
+ * never emit a downgradable code.
  */
 export function validateBundleTree(
   root: string,
@@ -249,6 +395,19 @@ export function validateBundleTree(
         continue;
       }
 
+      if (level !== 'myco_strict') {
+        // OKF document-model levels: an entirely separate rule set from the
+        // legacy OkfConcept walk below — see the module-level doc comment.
+        if (level === 'strict') checkOkfSlugSafety(relPath, issues);
+        if (entry.name === 'index.md') {
+          if (level === 'strict') checkOkfIndexHasNoFrontmatter(content, relPath, issues);
+        } else if (entry.name !== 'log.md') {
+          conceptsChecked += 1;
+          validateOkfDocumentContent(content, relPath, level, issues);
+        }
+        continue;
+      }
+
       if (entry.name === 'index.md') {
         validateIndexFile(content, relPath, relDir === '', level, issues);
       } else if (entry.name === 'log.md') {
@@ -256,10 +415,8 @@ export function validateBundleTree(
       } else {
         conceptsChecked += 1;
         issues.push(...validateConceptSource(content, relPath, level));
-        if (level === 'myco_strict') {
-          checkPathSafety(relPath, issues);
-          conceptIds.push(relPath.slice(0, -'.md'.length));
-        }
+        checkPathSafety(relPath, issues);
+        conceptIds.push(relPath.slice(0, -'.md'.length));
       }
     }
   };
