@@ -27,7 +27,9 @@ import {
   resolveHostsDir,
   resolveHostDir,
   resolveHostConfigPath,
+  resolveMycoHome,
 } from '../grove/paths.js';
+import { findRegisteredProjectById } from '../grove/registry-resolve.js';
 
 export interface AttachRef {
   grove_id: string;
@@ -105,14 +107,48 @@ export class ProjectAttachedToOtherHostError extends Error {
 }
 
 /**
- * Attach a project to a host. No-op if already attached to this same host.
- * Throws if the host is unknown, or if the project is already attached to a
- * different host (see {@link ProjectAttachedToOtherHostError}).
+ * Thrown by `attachProject` when `ref.project_id` still has a LOCAL Grove
+ * registry row. Attaching a project whose Grove state lives locally would
+ * leave a stale row the member daemon's scope iteration keeps running
+ * intelligence against (the never-materialize invariant's leak shape). The
+ * guard makes the local→attached transition structurally refuse until the
+ * caller deregisters/migrates the project off its local Grove first — the
+ * forcing function the future attach flow must honor.
  */
-export function attachProject(hostId: string, ref: AttachRef): void {
+export class ProjectRegisteredLocallyError extends Error {
+  constructor(
+    readonly projectId: string,
+    readonly groveId: string,
+  ) {
+    super(
+      `Project ${projectId} still has a local Grove registry row in Grove ${groveId}; `
+      + 'deregister or migrate it off the local Grove before attaching it to a host '
+      + '(an attached project must have no local Grove state).',
+    );
+    this.name = 'ProjectRegisteredLocallyError';
+  }
+}
+
+/**
+ * Attach a project to a host. No-op if already attached to this same host.
+ * Throws if the host is unknown, if the project still has a LOCAL Grove
+ * registry row (see {@link ProjectRegisteredLocallyError}), or if the project
+ * is already attached to a different host (see
+ * {@link ProjectAttachedToOtherHostError}).
+ */
+export function attachProject(
+  hostId: string,
+  ref: AttachRef,
+  mycoHome = resolveMycoHome(),
+): void {
   const record = getHost(hostId);
   if (!record) throw new Error(`Unknown host: ${hostId}`);
   if (record.projects.some((p) => p.project_id === ref.project_id)) return;
+
+  // Never-materialize invariant, enforced at the point of attach: refuse to
+  // create an attach record while local Grove state exists for the project.
+  const local = findRegisteredProjectById(ref.project_id, mycoHome);
+  if (local) throw new ProjectRegisteredLocallyError(ref.project_id, local.grove.id);
 
   const existing = resolveAttach(ref.project_id);
   if (existing && existing.host.host_id !== hostId) {
@@ -159,6 +195,22 @@ export function attachTargetGroveIds(): Set<string> {
   return ids;
 }
 
+/**
+ * The set of project ids that are attached to some host. A member daemon
+ * consults this to skip attached projects in per-project scope iteration
+ * regardless of which local Grove their (stale) registry row sits in — the
+ * grove-level {@link attachTargetGroveIds} skip only covers rows in the
+ * hosted Grove, not the leak shape where a local→attached project's row
+ * lingers in the local default Grove.
+ */
+export function attachTargetProjectIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const record of readHostRegistry()) {
+    for (const ref of record.projects) ids.add(ref.project_id);
+  }
+  return ids;
+}
+
 /** Read all secrets (including the host bearer) for a host from its secrets.env. */
 export function readHostSecrets(hostId: string): Record<string, string> {
   return readSecretsFile(resolveHostDir(hostId));
@@ -178,6 +230,7 @@ export const hostRegistry = {
   detachProject,
   resolveAttach,
   attachTargetGroveIds,
+  attachTargetProjectIds,
   readHostSecrets,
   writeHostSecret,
 };

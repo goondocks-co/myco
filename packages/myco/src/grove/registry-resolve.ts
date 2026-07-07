@@ -53,6 +53,26 @@ export function findRegisteredProjectByBinding(
   return null;
 }
 
+/**
+ * Locate the local Grove registry row for `projectId` across every local
+ * Grove, or null when the project has no local row. Disk-read-only and
+ * cycle-safe (same carve-out rationale as {@link findRegisteredProjectByBinding}):
+ * `host/registry.ts` `attachProject` consults it to refuse attaching a
+ * project that still holds local Grove state, without importing the cached
+ * `registry.ts` surface (which already imports the host registry).
+ */
+export function findRegisteredProjectById(
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): RegistryResolvedProject | null {
+  for (const grove of listGrovesUncached(mycoHome)) {
+    const project = listRegisteredProjectsUncached(grove.id, mycoHome)
+      .find((row) => row.project_id === projectId);
+    if (project) return { grove, project };
+  }
+  return null;
+}
+
 function listGrovesUncached(mycoHome: string): RegistryGroveRecord[] {
   const grovesDir = resolveGrovesDir(mycoHome);
   if (!fs.existsSync(grovesDir)) return [];

@@ -22,7 +22,7 @@ import { stringify } from 'smol-toml';
 
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
-import { forEachGrove } from '@myco/daemon/scope-iteration.js';
+import { forEachGrove, forEachRegisteredProject } from '@myco/daemon/scope-iteration.js';
 import { resolveProjectBufferDirFromRoot } from '@myco/capture/buffer-location.js';
 import { activateProjectMigration } from '@myco/grove/activation.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
@@ -42,9 +42,17 @@ import {
   findProjectByRoot,
   listGroves,
   listRegisteredProjects,
+  registerProjectInGrove,
   type GroveRecord,
 } from '@myco/grove/registry.js';
-import { attachProject, upsertHost, type HostRecord } from '@myco/host/registry.js';
+import {
+  attachProject,
+  getHost,
+  ProjectRegisteredLocallyError,
+  resolveAttach,
+  upsertHost,
+  type HostRecord,
+} from '@myco/host/registry.js';
 
 let home: string;
 let teamHome: string;
@@ -103,8 +111,13 @@ function makeCheckout(projectId?: string): string {
 function attach(groveId: string, projectId: string): HostRecord {
   const host = makeHost();
   upsertHost(host);
-  attachProject(host.host_id, { grove_id: groveId, project_id: projectId });
+  attachProject(host.host_id, { grove_id: groveId, project_id: projectId }, home);
   return host;
+}
+
+/** A safe (non-home) absolute project root; need not exist on disk. */
+function fakeRoot(tag: string): string {
+  return path.join(os.tmpdir(), `nevermat-${tag}`);
 }
 
 /**
@@ -292,6 +305,69 @@ describe('Team Host never-materialize invariant', () => {
         .toThrow(/Legacy project database not found/);
 
       fs.rmSync(projectRoot, { recursive: true, force: true });
+    });
+  });
+
+  describe('local→attached transition (the stale-local-row leak shape)', () => {
+    it('forEachRegisteredProject skips an attach-target project whose stale row sits in the local default Grove', async () => {
+      const defaultGrove = createGrove('Default', home);
+      ensureGroveDatabase(defaultGrove.id, home);
+
+      const attachGroveId = createGroveId();       // the host's Grove — never local
+      const attachedProjectId = createProjectId(); // registered locally AND attached
+      const siblingProjectId = createProjectId();  // local-only neighbour that must still run
+
+      registerProjectInGrove(defaultGrove.id, {
+        projectId: attachedProjectId,
+        projectName: 'attached',
+        projectRoot: fakeRoot(`attached-${attachedProjectId}`),
+      }, home);
+      registerProjectInGrove(defaultGrove.id, {
+        projectId: siblingProjectId,
+        projectName: 'sibling',
+        projectRoot: fakeRoot(`sibling-${siblingProjectId}`),
+      }, home);
+
+      // Seed the attach ref DIRECTLY via upsertHost. attachProject now refuses
+      // exactly this creation (the local-row guard below), so we reproduce the
+      // residual state that guard prevents to prove scope iteration also
+      // refuses it — the stale row lives in the DEFAULT Grove (G_local), not
+      // the attach-target Grove (G_host), so only the project-level filter
+      // catches it; the grove-level skip does not.
+      upsertHost({ ...makeHost(), projects: [{ grove_id: attachGroveId, project_id: attachedProjectId }] });
+
+      const cache = new GroveRuntimeCache();
+      const visited: string[] = [];
+      const summary = await forEachRegisteredProject(
+        cache,
+        makeLogger(),
+        ({ projectId }) => { visited.push(projectId); },
+        { mycoHome: home, machineId: 'machine-test' },
+      );
+      cache.closeAll();
+
+      expect(visited).toEqual([siblingProjectId]);
+      expect(summary.attempted).toBe(1);
+    });
+
+    it('attachProject refuses to create an attach record while a local Grove row exists, writing nothing', () => {
+      const defaultGrove = createGrove('Default', home);
+      const projectId = createProjectId();
+      registerProjectInGrove(defaultGrove.id, {
+        projectId,
+        projectName: 'local',
+        projectRoot: fakeRoot(`localrow-${projectId}`),
+      }, home);
+
+      const host = makeHost();
+      upsertHost(host);
+
+      expect(() => attachProject(host.host_id, { grove_id: createGroveId(), project_id: projectId }, home))
+        .toThrow(ProjectRegisteredLocallyError);
+
+      // The guard wrote nothing: no attach record exists for the project.
+      expect(resolveAttach(projectId)).toBeNull();
+      expect(getHost(host.host_id)?.projects).toEqual([]);
     });
   });
 });

@@ -46,7 +46,7 @@ import {
   type GroveRecord,
   type RegisteredProject,
 } from '@myco/grove/registry.js';
-import { attachTargetGroveIds } from '@myco/host/registry.js';
+import { attachTargetGroveIds, attachTargetProjectIds } from '@myco/host/registry.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { Logger } from '@myco/daemon/logger.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -251,6 +251,13 @@ export async function forEachRegisteredProject(
   const machineId = options.machineId;
   const shouldVisit = options.shouldVisit;
 
+  // Team Host never-materialize invariant (defense-in-depth): skip any
+  // registered project that is an attach target, regardless of which local
+  // Grove its row sits in. forEachGrove's grove-level skip only excludes rows
+  // in the hosted Grove; a local→attached project's stale row can linger in
+  // the local default Grove, and only a project-level filter catches that.
+  const attachedProjectIds = attachTargetProjectIds();
+
   let attempted = 0;
   let ok = 0;
   let failed = 0;
@@ -261,6 +268,7 @@ export async function forEachRegisteredProject(
     async ({ grove, groveHome, databasePath, db }) => {
       const projects = listRegisteredProjects(grove.id, mycoHome);
       for (const project of projects) {
+        if (attachedProjectIds.has(project.project_id)) continue;
         const registeredScope = buildRegisteredProjectScope({
           grove,
           groveHome,
