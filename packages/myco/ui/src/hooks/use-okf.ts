@@ -10,8 +10,6 @@ import {
 
 /* ---------- Types ---------- */
 
-export type OkfIncludeKind = 'spores' | 'canopy' | 'concepts' | 'guides';
-
 export interface OkfValidationSummary {
   ok: boolean;
   level: string;
@@ -36,11 +34,19 @@ export interface OkfAgentsPointerState {
   stale: boolean;
 }
 
+/** One entry in `status.pendingFindings` — a finding that blocked the most recent synthesis publish. */
+export interface OkfPendingFinding {
+  code: string;
+  path: string;
+  hash?: string;
+}
+
 /**
  * Shape of `GET /api/okf/status` — frozen by Plan 5
- * (packages/myco/src/daemon/api/okf.ts:handleOkfStatus). `lastRun` is null
- * until Plan 6 (okf-maintain task) fills it from agent_runs; render a
- * graceful empty state rather than treating it as an error.
+ * (packages/myco/src/daemon/api/okf.ts:handleOkfStatus), extended by Task 7.1
+ * with `pendingFindings`. `lastRun` is null until the `okf-synthesize` task
+ * fills it from agent_runs; render a graceful empty state rather than
+ * treating it as an error.
  */
 export interface OkfStatusResponse {
   outputRoot: string;
@@ -53,27 +59,14 @@ export interface OkfStatusResponse {
   conceptCount: number | null;
   stale: boolean;
   publishAcknowledged: boolean;
+  /** Findings that blocked the last synthesis publish, persisted to the manifest — the source `publishEligibility.ok` folds in so a blocked run stays visible on a plain reload. */
+  pendingFindings: OkfPendingFinding[];
   enabled: boolean;
   outputPath: string;
   validation: OkfValidationSummary | null;
   agentsPointer: OkfAgentsPointerState;
   publishEligibility: OkfPublishEligibility;
   lastRun: { status: string; finishedAt: string | null } | null;
-}
-
-export interface OkfMaintainBody {
-  include?: Partial<Record<OkfIncludeKind, boolean>>;
-  sporeStatus?: 'active' | 'superseded' | 'consolidated' | 'obsolete' | 'all';
-  includeUndescribedCanopy?: boolean;
-  dryRun?: boolean;
-  oneShot?: boolean;
-  overwrite?: boolean;
-  acknowledgePublish?: boolean;
-}
-
-export interface OkfMaintainResponse {
-  ok: boolean;
-  result: unknown;
 }
 
 export interface OkfValidateBody {
@@ -133,66 +126,6 @@ export function useInvalidateOkfStatus(): () => void {
   return useCallback(() => {
     void qc.invalidateQueries({ queryKey: OKF_STATUS_BASE_KEY });
   }, [qc]);
-}
-
-/* ---------- Maintain error surfacing ---------- */
-
-export interface OkfMaintainErrorInfo {
-  /** OkfError code, or null when the failure carried none (network error, etc). */
-  code: string | null;
-  message: string;
-  /** Set only for `okf_publish_not_acknowledged` — the findings blocking publish. */
-  findings: OkfPublishFinding[] | null;
-  /** Set only for `okf_validation_failed` — names the failed page + remediation. */
-  validationHint: string | null;
-}
-
-interface OkfValidationIssueLike {
-  level: string;
-  path: string;
-  message: string;
-}
-
-/**
- * Turns a `useOkfMaintain` mutation error into a renderable shape. Every
- * maintain failure must reach the screen — this is the fix for the
- * naive-first-user bug where a 422 publish-block was thrown by the daemon
- * and nothing ever read `maintain.error`, so "Maintain Now" appeared to do
- * nothing. Duck-types on `{body, message}` rather than `instanceof ApiError`
- * so it works for any error-shaped rejection, not just the fetch-layer class.
- */
-export function parseOkfMaintainError(error: unknown): OkfMaintainErrorInfo | null {
-  if (!error) return null;
-  const err = error as { body?: unknown; message?: string };
-  const body = err.body && typeof err.body === 'object' ? (err.body as Record<string, unknown>) : null;
-  const errorField = body?.error;
-  const code =
-    typeof errorField === 'object' && errorField !== null && typeof (errorField as { code?: unknown }).code === 'string'
-      ? (errorField as { code: string }).code
-      : null;
-  const bodyMessage =
-    typeof errorField === 'object' && errorField !== null && typeof (errorField as { message?: unknown }).message === 'string'
-      ? (errorField as { message: string }).message
-      : null;
-  const message = bodyMessage ?? (typeof err.message === 'string' && err.message.length > 0 ? err.message : 'Maintain failed.');
-
-  const details = body?.details && typeof body.details === 'object' ? (body.details as Record<string, unknown>) : null;
-
-  const findings =
-    code === 'okf_publish_not_acknowledged' && Array.isArray(details?.findings)
-      ? (details!.findings as OkfPublishFinding[])
-      : null;
-
-  let validationHint: string | null = null;
-  if (code === 'okf_validation_failed') {
-    const validation = details?.validation as { issues?: OkfValidationIssueLike[] } | undefined;
-    const firstError = validation?.issues?.find((issue) => issue.level === 'error') ?? validation?.issues?.[0];
-    validationHint = firstError
-      ? `${firstError.path} — ${firstError.message}. Fix or remove the hand-edited page, or trigger a full rebuild.`
-      : 'A carried-forward page failed validation. Fix or remove the hand-edited page, or trigger a full rebuild.';
-  }
-
-  return { code, message, findings, validationHint };
 }
 
 /* ---------- Document pages (knowledge browser, Task 5.1) ---------- */
@@ -265,18 +198,30 @@ export function useOkfDocument(path: string | undefined): UseQueryResult<OkfPage
 
 /* ---------- Mutations ---------- */
 
+export interface OkfAcknowledgeResponse {
+  ok: boolean;
+  /**
+   * The raw `OkfBundleStatus` from `bundle.acknowledgePendingFindings()` —
+   * NOT the enriched `OkfStatusResponse` shape (`handleOkfStatus` layers
+   * enabled/outputPath/validation/agentsPointer/publishEligibility/lastRun on
+   * top of it). Unused here — the status-query invalidation below refetches
+   * the enriched shape instead of trusting this narrower one.
+   */
+  status: unknown;
+}
+
 /**
- * POST /api/okf/maintain. The publish-acknowledgement flow re-invokes this
- * mutation with `acknowledgePublish: true` — there is no separate ack
- * endpoint (MCP has no ack path either). Invalidates the status query on
- * success so the page/panel picks up the new bundle generation immediately.
+ * POST /api/okf/acknowledge. Drains `manifest.pending_findings` into
+ * `acknowledged_findings` so the next `okf-synthesize` run publishes — the
+ * synthesis-world replacement for the dead `maintain({acknowledgePublish:
+ * true})` path. Invalidates the status query on success so the publish-block
+ * clears once the refreshed status reports `publishEligibility.ok`.
  */
-export function useOkfMaintain() {
+export function useOkfAcknowledge() {
   const qc = useQueryClient();
   const queryKey = useProjectScopedQueryKey(OKF_STATUS_BASE_KEY);
   return useMutation({
-    mutationFn: (body?: OkfMaintainBody) =>
-      postJson<OkfMaintainResponse>('/okf/maintain', body ?? {}),
+    mutationFn: () => postJson<OkfAcknowledgeResponse>('/okf/acknowledge', {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey });
       void qc.invalidateQueries({ queryKey: OKF_STATUS_BASE_KEY });

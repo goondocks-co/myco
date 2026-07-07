@@ -5,9 +5,9 @@
  * place project-level OKF state is shown outside the OKF page itself — the
  * SymbiontRow capability chip is symbiont-derived only (see capability-map.ts).
  *
- * Deliberately excludes: Maintain Now, output-path editing, publish
- * acknowledgement, include-set settings — those are OKF-page-only actions;
- * this panel links to /okf for anything actionable.
+ * Deliberately excludes: Validate/Copy-path actions, output-path editing,
+ * and publish acknowledgement — those are OKF-page-only actions; this panel
+ * links to /okf for anything actionable.
  */
 
 import { Link } from 'react-router-dom';

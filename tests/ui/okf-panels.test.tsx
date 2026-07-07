@@ -8,9 +8,12 @@
  *
  * OkfSourcesPanel and OkfValidationPanel were deleted in Task 5.2 — the
  * browser (OkfBrowser, Task 5.1) already groups pages by type, and the
- * validation/publish-block surface duplicated OkfActionsPanel's maintain-error
- * surface (Task 4.1); the Maintenance strip on the OKF page is now the single
- * publish-block surface.
+ * validation/publish-block surface duplicated OkfActionsPanel's publish-block
+ * surface; the Maintenance strip on the OKF page is now the single
+ * publish-block surface. Task 7.3 removed the "Maintain Now" action and its
+ * click-driven error surfacing entirely — the publish-block is now purely
+ * status-driven and "Acknowledge & publish" calls `useOkfAcknowledge`
+ * (`POST /api/okf/acknowledge`) instead of re-invoking a maintain mutation.
  *
  * Covers: component-consistency — panels use Panel/Surface/MetricCard/
  * Button/Switch primitives, asserted via their stable class/testid
@@ -50,6 +53,7 @@ const BASE_STATUS: OkfStatusResponse = {
   conceptCount: 18,
   stale: false,
   publishAcknowledged: true,
+  pendingFindings: [],
   enabled: true,
   outputPath: 'docs/okf',
   validation: { ok: true, level: 'strict', filesChecked: 18, conceptsChecked: 18 },
@@ -100,13 +104,13 @@ describe('OkfStatusPanel', () => {
 });
 
 describe('OkfActionsPanel — component-consistency + disabled states', () => {
-  it('renders Maintain/Validate/Copy as Button primitives', () => {
+  it('renders Validate/Copy path as Button primitives, with no Maintain Now button', () => {
     wrap(
-      <OkfActionsPanel status={BASE_STATUS} maintain={fakeMutation()} validate={fakeMutation()} />,
+      <OkfActionsPanel status={BASE_STATUS} acknowledge={fakeMutation()} validate={fakeMutation()} />,
     );
-    const maintainBtn = screen.getByRole('button', { name: /maintain now/i });
-    expect(maintainBtn.tagName).toBe('BUTTON');
-    expect(screen.getByRole('button', { name: /validate/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /maintain now/i })).toBeNull();
+    const validateBtn = screen.getByRole('button', { name: /validate/i });
+    expect(validateBtn.tagName).toBe('BUTTON');
     expect(screen.getByRole('button', { name: /copy path/i })).toBeInTheDocument();
   });
 
@@ -114,58 +118,56 @@ describe('OkfActionsPanel — component-consistency + disabled states', () => {
     wrap(
       <OkfActionsPanel
         status={{ ...BASE_STATUS, enabled: false }}
-        maintain={fakeMutation()}
+        acknowledge={fakeMutation()}
         validate={fakeMutation()}
       />,
     );
-    expect((screen.getByRole('button', { name: /maintain now/i }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: /validate/i }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: /copy path/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 
-describe('OkfActionsPanel — load-time publish-block (persisted status, no maintain click)', () => {
-  it('renders the block from status.publishEligibility alone when there is no mutation error', () => {
+describe('OkfActionsPanel — load-time publish-block (persisted status)', () => {
+  it('renders the block from status.publishEligibility alone, fed by status.pendingFindings', () => {
     const status = {
       ...BASE_STATUS,
+      publishAcknowledged: false,
+      pendingFindings: [{ code: 'secret_like_content', path: 'a.md' }],
       publishEligibility: {
         ok: false,
-        findings: [{ code: 'secret_like_content', path: 'a.md', excerpt: 'x' }],
+        findings: [{ code: 'secret_like_content', path: 'a.md', excerpt: '' }],
       },
     };
-    wrap(<OkfActionsPanel status={status} maintain={fakeMutation()} validate={fakeMutation()} />);
+    wrap(<OkfActionsPanel status={status} acknowledge={fakeMutation()} validate={fakeMutation()} />);
     expect(screen.getByTestId('okf-publish-eligibility-block')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /acknowledge & publish/i })).toBeInTheDocument();
   });
 
   it('does not render the load-time block when publishEligibility.ok is true', () => {
-    wrap(<OkfActionsPanel status={BASE_STATUS} maintain={fakeMutation()} validate={fakeMutation()} />);
+    wrap(<OkfActionsPanel status={BASE_STATUS} acknowledge={fakeMutation()} validate={fakeMutation()} />);
     expect(screen.queryByTestId('okf-publish-eligibility-block')).toBeNull();
   });
 
-  it('defers to the click-driven maintain-error block instead of double-rendering when both are present', () => {
+  it('clicking Acknowledge & publish invokes the acknowledge mutation (POST /api/okf/acknowledge)', () => {
+    const mutate = mock(() => {});
     const status = {
       ...BASE_STATUS,
+      publishAcknowledged: false,
+      pendingFindings: [{ code: 'secret_like_content', path: 'a.md' }],
       publishEligibility: {
         ok: false,
-        findings: [{ code: 'secret_like_content', path: 'a.md', excerpt: 'x' }],
-      },
-    };
-    const maintainError = {
-      message: 'boom',
-      body: {
-        error: { code: 'not_implemented', message: 'boom' },
+        findings: [{ code: 'secret_like_content', path: 'a.md', excerpt: '' }],
       },
     };
     wrap(
       <OkfActionsPanel
         status={status}
-        maintain={{ mutate: () => {}, isPending: false, error: maintainError } as any}
+        acknowledge={fakeMutation({ mutate })}
         validate={fakeMutation()}
       />,
     );
-    expect(screen.getByTestId('okf-maintain-error')).toBeInTheDocument();
-    expect(screen.queryByTestId('okf-publish-eligibility-block')).toBeNull();
+    screen.getByRole('button', { name: /acknowledge & publish/i }).click();
+    expect(mutate).toHaveBeenCalled();
   });
 });
 

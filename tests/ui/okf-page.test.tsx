@@ -4,23 +4,31 @@
  * OKF page — top-level project-scoped page owning the OKF workflow.
  *
  * Knowledge-first shape (Task 5.2): the primary content is the OkfBrowser
- * knowledge browser; a Maintenance strip below it (status + Maintain/Validate
- * actions + folded-in publish-review diagnostics + recent history) is
- * secondary. Config (enable, synthesis scope, output path, AGENTS.md
- * pointer) moved to Settings — this page no longer renders an enable Switch
- * or an Advanced options slideout, and the standalone Sources/Validation
- * cards were deleted (their content is either subsumed by the browser
- * (Sources) or folded into the Maintenance strip via OkfActionsPanel's
- * existing publish-block surface (Validation) — see Task 4.1).
+ * knowledge browser; a Maintenance strip below it (status + Validate action +
+ * the publish-block + recent history) is secondary. Config (enable,
+ * synthesis scope, output path, AGENTS.md pointer) moved to Settings — this
+ * page no longer renders an enable Switch or an Advanced options slideout,
+ * and the standalone Sources/Validation cards were deleted (their content is
+ * either subsumed by the browser (Sources) or folded into the Maintenance
+ * strip via OkfActionsPanel's publish-block surface (Validation) — see
+ * Task 4.1).
+ *
+ * Task 7.3 retired "Maintain Now" — maintenance is now the async
+ * `okf-synthesize` scheduled task, not a UI-triggered mutation. The
+ * publish-block is purely status-driven: a blocked synthesis run persists
+ * `pendingFindings`, which `handleOkfStatus` folds into
+ * `publishEligibility`, and "Acknowledge & publish" calls `useOkfAcknowledge`
+ * (`POST /api/okf/acknowledge`) instead of re-invoking a maintain mutation.
  *
  * Mocks `lib/api` (not data hooks — mirrors tests/ui/embedding-tab-stuck.test.tsx)
  * and `hooks/use-project-selection` (a fixed active selection, mirroring the
  * raw-fetch-stub precedent's approach of keeping only the API boundary as
  * the seam). Covers: disabled-state banner linking to Settings, enabled+valid
- * metric tiles, stale chip, Maintain button POST + pending-disable, actions
- * disabled while unresolved/erroring, the naive-first-user publish-block
- * surface, and the reactive reveal of the page when `okf.enabled` flips on
- * externally (e.g. from Settings) without a navigation/reload.
+ * metric tiles, stale chip, actions disabled while unresolved/erroring, the
+ * naive-first-user load-time publish-block surface + Acknowledge → POST
+ * /api/okf/acknowledge, and the reactive reveal of the page when
+ * `okf.enabled` flips on externally (e.g. from Settings) without a
+ * navigation/reload.
  */
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -67,6 +75,7 @@ const DISABLED_STATUS: OkfStatusResponse = {
   conceptCount: null,
   stale: false,
   publishAcknowledged: true,
+  pendingFindings: [],
   enabled: false,
   outputPath: 'docs/okf',
   validation: null,
@@ -86,6 +95,7 @@ const ENABLED_VALID_STATUS: OkfStatusResponse = {
   conceptCount: 18,
   stale: false,
   publishAcknowledged: true,
+  pendingFindings: [],
   enabled: true,
   outputPath: 'docs/okf',
   validation: { ok: true, level: 'strict', filesChecked: 18, conceptsChecked: 18 },
@@ -99,12 +109,13 @@ const STALE_STATUS: OkfStatusResponse = {
   stale: true,
 };
 
-// A PRIOR run left the bundle blocked from publishing — `publishEligibility`
-// is persisted status, not a mutation error, so this must be visible on a
-// plain page load with no click.
+// A PRIOR synthesis run left the bundle blocked from publishing —
+// `pendingFindings` is persisted status (Task 7.1), not a mutation error, so
+// this must be visible on a plain page load with no click.
 const BLOCKED_STATUS: OkfStatusResponse = {
   ...ENABLED_VALID_STATUS,
   publishAcknowledged: false,
+  pendingFindings: [{ code: 'secret_like_content', path: 'docs/okf/concepts/foo.md' }],
   publishEligibility: {
     ok: false,
     findings: [
@@ -192,7 +203,7 @@ beforeEach(() => {
 });
 
 describe('Okf page — disabled state', () => {
-  it('renders a disabled banner linking to Settings, with no enable switch and no maintain actions', async () => {
+  it('renders a disabled banner linking to Settings, with no enable switch and no action buttons', async () => {
     mockApiForStatus(DISABLED_STATUS);
     renderPage();
 
@@ -204,7 +215,7 @@ describe('Okf page — disabled state', () => {
     expect(screen.queryByRole('switch')).toBeNull();
     const settingsLink = screen.getByRole('link', { name: /settings/i });
     expect(settingsLink.getAttribute('href')).toBe('/settings#okf');
-    expect(screen.queryByRole('button', { name: /maintain now/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /validate/i })).toBeNull();
   });
 
   it('reactively reveals the browser + Maintenance strip when okf.enabled flips on externally (e.g. from Settings) — no reload needed', async () => {
@@ -225,7 +236,7 @@ describe('Okf page — disabled state', () => {
     await waitFor(() => {
       expect(screen.getByText(/OKF is disabled for this project/i)).toBeInTheDocument();
     });
-    expect(screen.queryByRole('button', { name: /maintain now/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /validate/i })).toBeNull();
 
     // Simulate the external config write (Settings) and invalidate the
     // merged-config query the same way a real write would.
@@ -237,7 +248,7 @@ describe('Okf page — disabled state', () => {
     // status query's stale `enabled: false` would keep the opt-in banner up
     // until a manual reload — this would time out.)
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /maintain now/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /validate/i })).toBeInTheDocument();
     });
     expect(screen.queryByText(/OKF is disabled for this project/i)).toBeNull();
   });
@@ -249,7 +260,7 @@ describe('Okf page — knowledge-first shape (Task 5.2)', () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /maintain now/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /validate/i })).toBeInTheDocument();
     });
     // Browser present (Knowledge panel wraps OkfBrowser).
     expect(screen.getByText('Knowledge')).toBeInTheDocument();
@@ -262,27 +273,56 @@ describe('Okf page — knowledge-first shape (Task 5.2)', () => {
   });
 });
 
-describe('Okf page — load-time publish-block (persisted status, no click)', () => {
-  it('renders the blocked-publish banner + finding count + Acknowledge on a plain load, and re-invokes maintain with acknowledgePublish: true', async () => {
+describe('Okf page — load-time publish-block (persisted status, synthesis-world)', () => {
+  it('renders the blocked-publish banner + finding count + Acknowledge on a plain load — no click needed', async () => {
     mockApiForStatus(BLOCKED_STATUS);
     renderPage();
 
-    // No click here — this is the persisted-state case: a PRIOR run left the
-    // bundle blocked, so the banner must appear from `status` alone.
+    // No click here — this is the persisted-state case (Task 7.1): a PRIOR
+    // synthesis run left the bundle blocked (status.pendingFindings
+    // non-empty), so the banner must appear from `status` alone.
     await waitFor(() => {
       expect(screen.getByTestId('okf-publish-eligibility-block')).toBeInTheDocument();
     });
     expect(screen.getByText(/1 finding need acknowledgement/i)).toBeInTheDocument();
+    expect(postJsonSpy).not.toHaveBeenCalled();
+  });
+
+  it('clicking Acknowledge & publish posts to /api/okf/acknowledge and the block clears on the refreshed status', async () => {
+    // Stateful mock: acknowledging flips the next /okf/status fetch to the
+    // unblocked status, exactly as the daemon would report it once
+    // `pending_findings` is drained.
+    let acknowledged = false;
+    fetchJsonImpl = async (path: string) => {
+      if (path === '/okf/status') return acknowledged ? ENABLED_VALID_STATUS : BLOCKED_STATUS;
+      if (path === '/config/merged') return { okf: { enabled: true } };
+      if (path === '/config/local') return {};
+      if (path === '/okf/pages') return { ok: true, pages: [] };
+      return {};
+    };
+    postJsonImpl = async (path: string) => {
+      if (path === '/okf/acknowledge') {
+        acknowledged = true;
+        return { ok: true, status: {} };
+      }
+      return { ok: true, result: {} };
+    };
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('okf-publish-eligibility-block')).toBeInTheDocument();
+    });
 
     const ackBtn = screen.getByRole('button', { name: /acknowledge & publish/i });
     fireEvent.click(ackBtn);
 
     await waitFor(() => {
-      expect(postJsonSpy).toHaveBeenCalled();
+      expect(postJsonSpy).toHaveBeenCalledWith('/okf/acknowledge', {});
     });
-    const [path, body] = postJsonSpy.mock.calls[0] as [string, { acknowledgePublish?: boolean }];
-    expect(path).toBe('/okf/maintain');
-    expect(body).toEqual({ acknowledgePublish: true });
+    await waitFor(() => {
+      expect(screen.queryByTestId('okf-publish-eligibility-block')).toBeNull();
+    });
   });
 });
 
@@ -322,28 +362,28 @@ describe('Okf page — stale state', () => {
   });
 });
 
-describe('Okf page — Maintain action', () => {
-  it('fires POST /okf/maintain and disables the button while pending', async () => {
+describe('Okf page — Validate action', () => {
+  it('fires POST /okf/validate and disables the button while pending', async () => {
     mockApiForStatus(ENABLED_VALID_STATUS);
     let resolveLater!: (value: unknown) => void;
     postJsonImpl = () => new Promise((resolve) => { resolveLater = resolve; });
 
     renderPage();
 
-    const maintainBtn = await screen.findByRole('button', { name: /maintain now/i });
-    fireEvent.click(maintainBtn);
+    const validateBtn = await screen.findByRole('button', { name: /validate/i });
+    fireEvent.click(validateBtn);
 
     await waitFor(() => {
       expect(postJsonSpy).toHaveBeenCalled();
     });
     const [path] = postJsonSpy.mock.calls[0] as [string, unknown];
-    expect(path).toBe('/okf/maintain');
+    expect(path).toBe('/okf/validate');
 
     await waitFor(() => {
-      expect((screen.getByRole('button', { name: /maintaining/i }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole('button', { name: /validating/i }) as HTMLButtonElement).disabled).toBe(true);
     });
 
-    resolveLater({ ok: true, result: {} });
+    resolveLater({ ok: true, validation: { ok: true, level: 'strict', filesChecked: 18, conceptsChecked: 18 } });
   });
 });
 
@@ -352,7 +392,7 @@ describe('Okf page — actions disabled while unresolved/erroring', () => {
     fetchJsonImpl = () => new Promise(() => {}); // never resolves
     renderPage();
 
-    expect(screen.queryByRole('button', { name: /maintain now/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /validate/i })).toBeNull();
     expect(screen.getByText(/loading okf status/i)).toBeInTheDocument();
   });
 
@@ -363,108 +403,6 @@ describe('Okf page — actions disabled while unresolved/erroring', () => {
     await waitFor(() => {
       expect(screen.getByTestId('okf-status-error')).toBeInTheDocument();
     });
-    expect(screen.queryByRole('button', { name: /maintain now/i })).toBeNull();
-  });
-});
-
-describe('Okf page — Maintain Now surfaces errors (naive-first-user)', () => {
-  it('clicking Maintain Now on a 422 okf_publish_not_acknowledged renders the block + finding count + Acknowledge & publish, and acknowledging re-invokes maintain with acknowledgePublish: true', async () => {
-    mockApiForStatus(ENABLED_VALID_STATUS);
-    const { ApiError } = await import('../../packages/myco/ui/src/lib/api');
-    postJsonImpl = async (_path: string, body?: unknown) => {
-      if ((body as { acknowledgePublish?: boolean } | undefined)?.acknowledgePublish) {
-        return { ok: true, result: {} };
-      }
-      throw new ApiError(422, {
-        error: { code: 'okf_publish_not_acknowledged', message: 'publish blocked by unacknowledged findings' },
-        details: {
-          findings: [
-            { code: 'secret_like_content', path: 'docs/okf/concepts/foo.md', excerpt: 'sk-abc...' },
-            { code: 'secret_like_content', path: 'docs/okf/concepts/bar.md', excerpt: 'sk-def...' },
-          ],
-        },
-      });
-    };
-
-    renderPage();
-
-    // Drive it exactly as a naive first-time user would — click the button,
-    // don't call the hook/API directly. This is the whole point of the test:
-    // the original bug was a 422 the UI silently swallowed on this exact click.
-    const maintainBtn = await screen.findByRole('button', { name: /maintain now/i });
-    fireEvent.click(maintainBtn);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('okf-maintain-error')).toBeInTheDocument();
-    });
-    expect(screen.getByText(/2 findings need acknowledgement/i)).toBeInTheDocument();
-
-    const ackBtn = screen.getByRole('button', { name: /acknowledge & publish/i });
-    fireEvent.click(ackBtn);
-
-    await waitFor(() => {
-      expect(postJsonSpy).toHaveBeenCalledTimes(2);
-    });
-    const [path, body] = postJsonSpy.mock.calls[1] as [string, { acknowledgePublish?: boolean }];
-    expect(path).toBe('/okf/maintain');
-    expect(body).toEqual({ acknowledgePublish: true });
-  });
-
-  it('clicking Maintain Now on a not_implemented failure surfaces it visibly (never silently nothing)', async () => {
-    mockApiForStatus(ENABLED_VALID_STATUS);
-    const { ApiError } = await import('../../packages/myco/ui/src/lib/api');
-    postJsonImpl = async () => {
-      throw new ApiError(501, {
-        error: { code: 'not_implemented', message: 'OKF document synthesis is not yet implemented (Phase 2)' },
-      });
-    };
-
-    renderPage();
-
-    const maintainBtn = await screen.findByRole('button', { name: /maintain now/i });
-    fireEvent.click(maintainBtn);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('okf-maintain-error')).toBeInTheDocument();
-    });
-    expect(screen.getByText(/not yet implemented/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /acknowledge & publish/i })).toBeNull();
-  });
-
-  it('clicking Maintain Now on a 422 okf_validation_failed surfaces a remediation hint naming the failed page', async () => {
-    mockApiForStatus(ENABLED_VALID_STATUS);
-    const { ApiError } = await import('../../packages/myco/ui/src/lib/api');
-    postJsonImpl = async () => {
-      throw new ApiError(422, {
-        error: { code: 'okf_validation_failed', message: 'generated bundle failed strict validation' },
-        details: {
-          validation: {
-            ok: false,
-            level: 'strict',
-            filesChecked: 5,
-            conceptsChecked: 5,
-            issues: [
-              {
-                level: 'error',
-                code: 'missing_required_frontmatter_key',
-                path: 'docs/okf/concepts/hand-edited.md',
-                message: 'missing required key "title"',
-              },
-            ],
-          },
-        },
-      });
-    };
-
-    renderPage();
-
-    const maintainBtn = await screen.findByRole('button', { name: /maintain now/i });
-    fireEvent.click(maintainBtn);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('okf-maintain-error')).toBeInTheDocument();
-    });
-    expect(screen.getByText(/docs\/okf\/concepts\/hand-edited\.md/)).toBeInTheDocument();
-    expect(screen.getByText(/fix or remove the hand-edited page, or trigger a full rebuild/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /validate/i })).toBeNull();
   });
 });

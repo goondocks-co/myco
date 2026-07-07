@@ -1,9 +1,9 @@
 /**
  * OKF (Open Knowledge Format) page — knowledge-first: the primary content is
  * the OkfBrowser knowledge browser (Task 5.1), with a secondary Maintenance
- * strip below it (bundle status, Maintain/Validate actions, the folded-in
- * publish-review diagnostics, and recent-run history). Discovery status
- * (the AGENTS.md pointer) rounds out the page.
+ * strip below it (bundle status, Validate action, the publish-block, and
+ * recent-run history). Discovery status (the AGENTS.md pointer) rounds out
+ * the page.
  *
  * Capability enable, synthesis scope, output path, and the AGENTS.md
  * pointer toggle are configured on the Settings page (`/settings#okf`) as
@@ -12,14 +12,14 @@
  * Personal ('local') scope for fast opt-in; a user who disabled OKF locally
  * there stays disabled here at project scope until that override clears.)
  *
- * "Reveal in Finder" is intentionally dropped (Phase 1 deviation #4 — no
- * reveal endpoint exists) and one-shot export is deliberately not a UI
- * action (API/CLI-only). See OkfActionsPanel for the action + publish-block
- * surface — it is the SINGLE publish-block surface on this page, folding in
- * both the click-driven case (a Maintain attempt just got a 422) and the
- * load-time case (a prior run left the bundle blocked, visible on a plain
- * reload with no click) that used to live in the now-deleted
- * OkfValidationPanel.
+ * Maintenance is the async `okf-synthesize` scheduled task, not a
+ * UI-triggered action — there is no "Maintain Now" button. "Reveal in
+ * Finder" is intentionally dropped (Phase 1 deviation #4 — no reveal
+ * endpoint exists) and one-shot export is deliberately not a UI action
+ * (API/CLI-only). See OkfActionsPanel for the Validate/Copy-path actions and
+ * the publish-block — a blocked synthesis run persists its findings so the
+ * block is visible on a plain page load, and "Acknowledge & publish" drains
+ * them via `POST /api/okf/acknowledge` so the next synthesis run publishes.
  */
 
 import { useEffect } from 'react';
@@ -34,7 +34,7 @@ import { OkfStatusPanel } from '../components/okf/OkfStatusPanel';
 import { OkfActionsPanel } from '../components/okf/OkfActionsPanel';
 import { OkfDiscoveryPanel } from '../components/okf/OkfDiscoveryPanel';
 import { OkfBrowser } from '../components/okf/OkfBrowser';
-import { useOkfMaintain, useOkfStatus, useOkfValidate, useInvalidateOkfStatus } from '../hooks/use-okf';
+import { useOkfAcknowledge, useOkfStatus, useOkfValidate, useInvalidateOkfStatus } from '../hooks/use-okf';
 import { useActiveProjectSelection } from '../hooks/use-project-selection';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 
@@ -42,7 +42,7 @@ export default function Okf() {
   const { data: status, isLoading, isError } = useOkfStatus();
   const { effective: config } = useScopedConfig();
   const invalidateOkfStatus = useInvalidateOkfStatus();
-  const maintain = useOkfMaintain();
+  const acknowledge = useOkfAcknowledge();
   const validate = useOkfValidate();
   const selection = useActiveProjectSelection();
 
@@ -103,7 +103,7 @@ export default function Okf() {
           <div className="space-y-3">
             <SectionHeader>Maintenance</SectionHeader>
             <OkfStatusPanel status={status} />
-            <OkfActionsPanel status={status} maintain={maintain} validate={validate} />
+            <OkfActionsPanel status={status} acknowledge={acknowledge} validate={validate} />
 
             <Panel eyebrow="History" title="Recent maintenance">
               {status.lastRun ? (
