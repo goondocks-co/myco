@@ -81,11 +81,44 @@ export function removeHost(hostId: string): void {
   fs.rmSync(resolveHostDir(hostId), { recursive: true, force: true });
 }
 
-/** Attach a project to a host. No-op if already attached. Throws if the host is unknown. */
+/**
+ * Thrown by `attachProject` when `ref.project_id` is already attached to a
+ * DIFFERENT host. Without this guard, `resolveAttach`'s reverse lookup over
+ * `readHostRegistry()` (filesystem `readdirSync` order, not guaranteed)
+ * would silently return whichever host happened to iterate first — the
+ * same ambiguity `daemon/api/team-selection.ts`'s `project_in_other_team`
+ * guard prevents for team membership. A future daemon transport (attach
+ * command, Task 1.2+) should map this to a 409 `project_attached_to_other_host`.
+ */
+export class ProjectAttachedToOtherHostError extends Error {
+  constructor(
+    readonly projectId: string,
+    readonly attemptedHostId: string,
+    readonly existingHostId: string,
+  ) {
+    super(
+      `Project ${projectId} is already attached to host ${existingHostId}; `
+      + `cannot attach it to host ${attemptedHostId} as well (a project may be attached to only one host).`,
+    );
+    this.name = 'ProjectAttachedToOtherHostError';
+  }
+}
+
+/**
+ * Attach a project to a host. No-op if already attached to this same host.
+ * Throws if the host is unknown, or if the project is already attached to a
+ * different host (see {@link ProjectAttachedToOtherHostError}).
+ */
 export function attachProject(hostId: string, ref: AttachRef): void {
   const record = getHost(hostId);
   if (!record) throw new Error(`Unknown host: ${hostId}`);
   if (record.projects.some((p) => p.project_id === ref.project_id)) return;
+
+  const existing = resolveAttach(ref.project_id);
+  if (existing && existing.host.host_id !== hostId) {
+    throw new ProjectAttachedToOtherHostError(ref.project_id, hostId, existing.host.host_id);
+  }
+
   upsertHost({ ...record, projects: [...record.projects, ref] });
 }
 

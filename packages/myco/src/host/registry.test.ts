@@ -18,6 +18,7 @@ import {
   attachProject,
   detachProject,
   getHost,
+  ProjectAttachedToOtherHostError,
   readHostRegistry,
   readHostSecrets,
   removeHost,
@@ -113,13 +114,41 @@ describe('host registry', () => {
       .toThrow(/Unknown host/);
   });
 
-  test('attachProject is idempotent for an already-attached project', () => {
+  test('attachProject is idempotent for an already-attached project (same host)', () => {
     const host = makeHost();
     const ref = { grove_id: 'grove-5', project_id: 'proj-5' };
     upsertHost(host);
     attachProject(host.host_id, ref);
-    attachProject(host.host_id, ref);
+    expect(() => attachProject(host.host_id, ref)).not.toThrow();
     expect(getHost(host.host_id)?.projects).toHaveLength(1);
+  });
+
+  test('attachProject throws ProjectAttachedToOtherHostError when the project is already attached to a different host', () => {
+    const hostA = makeHost({ label: 'Host A' });
+    const hostB = makeHost({ label: 'Host B' });
+    const ref = { grove_id: 'grove-6', project_id: 'proj-6' };
+    upsertHost(hostA);
+    upsertHost(hostB);
+    attachProject(hostA.host_id, ref);
+
+    let caught: unknown;
+    try {
+      attachProject(hostB.host_id, ref);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ProjectAttachedToOtherHostError);
+    const err = caught as ProjectAttachedToOtherHostError;
+    expect(err.projectId).toBe(ref.project_id);
+    expect(err.attemptedHostId).toBe(hostB.host_id);
+    expect(err.existingHostId).toBe(hostA.host_id);
+
+    // The write must not have happened — hostB stays unattached, hostA
+    // keeps sole ownership, and resolveAttach still resolves to hostA.
+    expect(getHost(hostB.host_id)?.projects).toEqual([]);
+    expect(getHost(hostA.host_id)?.projects).toEqual([ref]);
+    expect(resolveAttach(ref.project_id)?.host.host_id).toBe(hostA.host_id);
   });
 
   test('removeHost deletes the record and its secrets', () => {
