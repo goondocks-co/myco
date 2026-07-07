@@ -14,7 +14,8 @@ import {
   type MycoRequestContext,
 } from '../grove/request-context.js';
 import { classifyRoute, refusalMcpBody } from '../host/routing.js';
-import { handleAttachedRequest } from '../daemon/host-proxy.js';
+import { handleAttachedRequest, proxyLoggerFrom } from '../daemon/host-proxy.js';
+import { LOG_KINDS } from '../constants/log-kinds.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
 
@@ -150,7 +151,9 @@ export function createStreamableMcpHttpHandler(
         return;
       }
       if (decision.kind === 'remote') {
-        await handleAttachedRequest(req, res, decision.target, decision.classification);
+        await handleAttachedRequest(req, res, decision.target, decision.classification, {
+          logger: options.logger ? proxyLoggerFrom(options.logger, LOG_KINDS.SERVER_ERROR) : undefined,
+        });
         return;
       }
     } catch (err) {

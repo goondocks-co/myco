@@ -448,7 +448,7 @@ function tenancySourceFromExplicit(input: ExplicitContextInput): TenancySource {
  * because the URL path itself asserts the (Grove, project) — there are no
  * switching headers to gate on. No-op when no daemon token is configured.
  */
-function enforceUrlTenancyAuth(
+export function enforceUrlTenancyAuth(
   headers: IncomingHttpHeaders,
   expectedToken: string | null,
 ): void {

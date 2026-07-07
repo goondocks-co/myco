@@ -59,6 +59,10 @@ export interface RemoteTarget {
     label: string;
     overlay_address: string;
     protocol_version: number;
+    /** When set, the proxy dials through the local userspace-tailscaled HTTP
+     *  CONNECT proxy (`--outbound-http-proxy-listen`) at `127.0.0.1:<proxy_port>`
+     *  instead of a direct TCP connect to `overlay_address`. */
+    proxy_port?: number;
   };
   /** Host bearer, read from the host record's secrets.env. Swapped in for the
    *  caller's local bearer before forwarding; never observable by the caller. */
@@ -327,6 +331,7 @@ export function classifyRoute(input: {
           label: attach.host.label,
           overlay_address: attach.host.overlay_address,
           protocol_version: attach.host.protocol_version,
+          proxy_port: attach.host.proxy_port,
         },
         bearer,
       };

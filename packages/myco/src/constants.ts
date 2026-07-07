@@ -577,6 +577,40 @@ export const HOST_PROTOCOL_VERSION = 1;
 /** Oldest host protocol a member still talks to (inclusive window with HOST_PROTOCOL_VERSION). */
 export const HOST_MIN_COMPAT_VERSION = 1;
 
+/**
+ * Request header carrying the member's Team-Host protocol version on every
+ * proxied request. Rides alongside the tenancy headers so the version travels
+ * without the proxy ever parsing the (opaque) request body. The host's
+ * transport gate validates it and, on mismatch, replies 409
+ * `protocol_version_unsupported` echoing this header with its own version.
+ */
+export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
+
+/**
+ * Member→host proxy timeouts (the host-proxy forwarder, `daemon/host-proxy.ts`).
+ * These bound the INNER overlay hop and must stay shorter than the local
+ * caller's own end-to-end timeout (`DAEMON_CLIENT_TIMEOUT_MS`) for the buffered
+ * class, so the caller sees a clean proxy error rather than its own abort.
+ */
+/** Overlay dial (connect) timeout (ms) — fast dead-peer detection. */
+export const HOST_PROXY_CONNECT_TIMEOUT_MS = 3000;
+/** Response-headers timeout (ms) — bounds connect+headers so a dial never hangs. */
+export const HOST_PROXY_HEADERS_TIMEOUT_MS = 10_000;
+/** Response-body timeout (ms) for the buffered (non-`/mcp`) response class. */
+export const HOST_PROXY_BODY_TIMEOUT_MS = 30_000;
+/**
+ * Idle-read timeout (ms) for a held `/mcp` stream. A streamed tool result may
+ * legitimately run long, so there is NO fixed body timeout — this fires only on
+ * a truly stalled stream (no bytes for this long); it resets on every chunk.
+ */
+export const HOST_PROXY_MCP_IDLE_TIMEOUT_MS = 120_000;
+/**
+ * Max bytes the proxy will buffer when it MUST read a request body: the collect
+ * routes (append to the local collector buffer before forwarding) and the one
+ * `/mcp` tool-name peek. Mirrors the daemon's own 8 MB inbound cap.
+ */
+export const HOST_PROXY_MAX_BUFFERED_BODY_BYTES = 8 * 1024 * 1024;
+
 // --- HTTP response flush ---
 /** Delay before initiating shutdown — allows the HTTP response to flush. */
 export const RESTART_RESPONSE_FLUSH_MS = 500;

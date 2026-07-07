@@ -14,6 +14,7 @@ import {
   REQUEST_CONTEXT_AUTH_ENV,
   UnauthorizedRequestContextError,
   UnknownRequestContextError,
+  enforceUrlTenancyAuth,
   requestContextFromHttpHeaders,
   requestContextFromTenancyIds,
   resolveInboundProjectId,
@@ -21,7 +22,7 @@ import {
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
 import { classifyRoute, refusalJson, type RefusalPayload } from '../host/routing.js';
-import { handleAttachedRequest } from './host-proxy.js';
+import { handleAttachedRequest, proxyLoggerFrom } from './host-proxy.js';
 import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
 import { type DaemonState } from './service-state.js';
@@ -410,7 +411,18 @@ export class DaemonServer {
           return;
         }
         if (decision.kind === 'remote') {
-          await handleAttachedRequest(req, res, decision.target, decision.classification);
+          // URL-tenancy resource routes assert the (Grove, project) in the path,
+          // so the daemon bearer is required unconditionally — the same gate the
+          // local resolver (requestContextFromTenancyIds) runs, applied here
+          // BEFORE any proxy dial so an attached resource route can't skip it
+          // (closes the URL-route auth deviation Task 1.2 documented). Throws
+          // UnauthorizedRequestContextError → the existing catch maps it to 401.
+          if (match.params.projectId) {
+            enforceUrlTenancyAuth(req.headers, this.authToken);
+          }
+          await handleAttachedRequest(req, res, decision.target, decision.classification, {
+            logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
+          });
           return;
         }
 
