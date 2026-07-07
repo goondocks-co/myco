@@ -152,6 +152,8 @@ const CONFIG = 'Config administration';
 const INTEL_CONFIG = 'Intelligence config';
 const COLLECTION = 'Collection';
 const HOST_ADMIN = 'Host administration';
+const BACKUP = 'Backup and restore';
+const GROVE_ADMIN = 'Grove administration';
 
 /**
  * The stamp table — every rule here is a route whose attached-project behavior
@@ -179,6 +181,25 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', pattern: '/api/git/status', stamp: 'degrade', capability: GIT },
   { method: 'GET', pattern: '/api/release-provenance/:namespace/:recordId', stamp: 'degrade', capability: GIT },
   { method: 'POST', pattern: '/api/maintenance/release-provenance/reconcile', stamp: 'degrade', capability: GIT },
+
+  // --- degrade: backup/restore of the Grove DB (§1c). The host owns the DB;
+  //     a member does not back up a DB it doesn't hold, and restore is a
+  //     host-operator action. Only the mutation trio degrades — the GET reads
+  //     (/api/backups, /api/restore/status) stay localhost-only below. ---
+  { method: 'POST', pattern: '/api/backup', stamp: 'degrade', capability: BACKUP },
+  { method: 'POST', pattern: '/api/restore', stamp: 'degrade', capability: BACKUP },
+  { method: 'POST', pattern: '/api/restore/preview', stamp: 'degrade', capability: BACKUP },
+
+  // --- degrade: Grove/project lifecycle mutations on an attached Grove (§1f).
+  //     Rename/delete/move/archive of a hosted Grove or its projects is
+  //     host-authoritative; a member cannot mutate the host's Grove. (Creating
+  //     a *local* Grove — POST /api/groves — stays localhost-only below.) ---
+  { method: 'PATCH', pattern: '/api/groves/:id', stamp: 'degrade', capability: GROVE_ADMIN },
+  { method: 'DELETE', pattern: '/api/groves/:id', stamp: 'degrade', capability: GROVE_ADMIN },
+  { method: 'POST', pattern: '/api/groves/:id/projects/:projectId', stamp: 'degrade', capability: GROVE_ADMIN },
+  { method: 'POST', pattern: '/api/groves/:id/projects/:projectId/archive', stamp: 'degrade', capability: GROVE_ADMIN },
+  { method: 'POST', pattern: '/api/groves/:id/projects/:projectId/unarchive', stamp: 'degrade', capability: GROVE_ADMIN },
+  { method: 'DELETE', pattern: '/api/groves/:id/projects/:projectId', stamp: 'degrade', capability: GROVE_ADMIN },
 
   // --- config-lock: writes to host-authoritative shared config (§1c, §6) ---
   { method: 'PUT', pattern: '/api/grove-config', stamp: 'config-lock', capability: CONFIG },

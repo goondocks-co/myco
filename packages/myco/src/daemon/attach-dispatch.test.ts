@@ -39,6 +39,8 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
   let dbOpens: number;
   let sessionsHandlerCalls: number;
   let gitHandlerCalls: number;
+  let archiveHandlerCalls: number;
+  let writeHandlerCalls: number;
   let savedTeamHome: string | undefined;
   let savedAuth: string | undefined;
   let base: string;
@@ -53,6 +55,8 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
     dbOpens = 0;
     sessionsHandlerCalls = 0;
     gitHandlerCalls = 0;
+    archiveHandlerCalls = 0;
+    writeHandlerCalls = 0;
     runtimeCache = new GroveRuntimeCache();
     const origGetDatabase = runtimeCache.getDatabase.bind(runtimeCache);
     (runtimeCache as unknown as { getDatabase: (p: string) => unknown }).getDatabase = (p: string) => {
@@ -72,6 +76,15 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
     });
     server.registerRoute('GET', '/api/git/status', async () => {
       gitHandlerCalls += 1;
+      return { body: { ok: true } };
+    });
+    // Grove-lifecycle route: grove param is named `:id`, project is `:projectId`.
+    server.registerRoute('POST', '/api/groves/:id/projects/:projectId/archive', async () => {
+      archiveHandlerCalls += 1;
+      return { body: { ok: true } };
+    });
+    server.registerRoute('POST', '/api/test-write', async () => {
+      writeHandlerCalls += 1;
       return { body: { ok: true } };
     });
 
@@ -132,5 +145,41 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).ok).toBe(true);
     expect(sessionsHandlerCalls).toBe(1);
+  });
+
+  test('attach classification from the URL project param alone (no header) → degrade', async () => {
+    // The grove-lifecycle route names the grove param `:id`, so the project is
+    // recognized purely from the URL `:projectId` — no x-myco-project-id header.
+    const projectId = attach();
+    const res = await fetch(
+      `${base}/api/groves/grove_0123456789abcdef0123456789abcdef/projects/${projectId}/archive`,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
+    );
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('capability_unavailable_hosted');
+    expect(body.capability).toBe('Grove administration');
+    expect(archiveHandlerCalls).toBe(0);
+    expect(dbOpens).toBe(0);
+  });
+
+  test('auth runs before the body read: oversized body + wrong bearer → 401, not 413', async () => {
+    // Ordering change vs today (chosen, not accidental): the pre-parse runs the
+    // context-switch bearer gate BEFORE readBody, so an unauthorized write with
+    // an over-limit body is rejected 401 rather than 413. The handler never runs.
+    const unattached = createProjectId();
+    const oversized = 'x'.repeat(8 * 1024 * 1024 + 1024);
+    const res = await fetch(`${base}/api/test-write`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-project-id': unattached,
+        'x-myco-auth': 'wrong-bearer',
+      },
+      body: oversized,
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe('unauthorized_context_switch');
+    expect(writeHandlerCalls).toBe(0);
   });
 });

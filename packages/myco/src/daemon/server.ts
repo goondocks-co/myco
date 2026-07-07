@@ -671,17 +671,20 @@ export class DaemonServer {
 
   /**
    * Effective project id for the Team Host routing chokepoint, resolved without
-   * any Grove/DB lookup. URL-tenancy routes (`/api/g/:groveId/p/:projectId/...`)
-   * carry the id in the path; everything else goes through the header/manifest
-   * pre-parse (which also runs the local bearer gate exactly as the full
-   * resolver does). A malformed id resolves to null so the request falls through
-   * to today's local resolver, which reports the error exactly as before.
+   * any Grove/DB lookup. Any route that names the project in the path identifies
+   * the attach target directly — the resource routes (`:projectId` alongside
+   * `:groveId`) and the grove-lifecycle routes (`:projectId` alongside `:id`),
+   * so we key on `params.projectId` regardless of the grove param's name.
+   * Everything else goes through the header/manifest pre-parse (which also runs
+   * the local bearer gate exactly as the full resolver does). A malformed id
+   * resolves to null so the request falls through to today's local resolver,
+   * which reports the error exactly as before.
    */
   private inboundProjectId(
     params: Record<string, string>,
     headers: http.IncomingMessage['headers'],
   ): GroveProjectId | null {
-    if (params.groveId && params.projectId) {
+    if (params.projectId) {
       return isGroveEraId(params.projectId, 'project') ? (params.projectId as GroveProjectId) : null;
     }
     return resolveInboundProjectId(headers, this.vaultDir, { expectedAuthToken: this.authToken }).projectId;
