@@ -7,11 +7,14 @@ import {
   ForeignGroveError,
   isCallerTenancy,
   requestContextFromHttpHeaders,
+  resolveInboundProjectId,
   tryResolveRequestContextForVault,
   UnauthorizedRequestContextError,
   UnknownRequestContextError,
   type MycoRequestContext,
 } from '../grove/request-context.js';
+import { classifyRoute, refusalMcpBody } from '../host/routing.js';
+import { handleAttachedRequest } from '../daemon/host-proxy.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
 
@@ -129,6 +132,39 @@ export function createStreamableMcpHttpHandler(
 ): StreamableMcpHttpHandler {
   const client = options.client ?? new DaemonClient(vaultDir);
   return async (req, res) => {
+    // Team Host chokepoint 2: the raw /mcp route bypasses route dispatch and
+    // resolves its own context, so the attach short-circuit lives here too, as
+    // per-tool-call tenancy. It runs BEFORE resolveRequestContextOrLegacy and
+    // before any local Grove/DB resolution — an attached project must never open
+    // a local Grove DB. A non-attached project (the common case) falls through
+    // after a single empty-set registry probe.
+    try {
+      const { projectId } = resolveInboundProjectId(req.headers, vaultDir, {
+        expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
+      });
+      const decision = classifyRoute({ method: req.method ?? 'POST', pathname: '/mcp', projectId });
+      if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
+        res.statusCode = decision.refusal.status;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(refusalMcpBody(decision.refusal));
+        return;
+      }
+      if (decision.kind === 'remote') {
+        await handleAttachedRequest(req, res, decision.target, decision.classification);
+        return;
+      }
+    } catch (err) {
+      // enforceContextSwitchAuth rejected the local bearer — same 401
+      // `unauthorized_context_switch` contract the local resolution path returns.
+      if (err instanceof UnauthorizedRequestContextError) {
+        res.statusCode = 401;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: err.message }));
+        return;
+      }
+      throw err;
+    }
+
     let resolved: ReturnType<typeof resolveRequestContextOrLegacy>;
     try {
       resolved = resolveRequestContextOrLegacy(req, vaultDir);

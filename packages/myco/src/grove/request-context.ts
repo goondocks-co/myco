@@ -6,6 +6,7 @@ import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-
 import {
   assertGroveProjectId,
   GLOBAL_SCOPE,
+  isGroveEraId,
   projectScope,
   type GroveProjectId,
   type ProjectScope,
@@ -316,6 +317,53 @@ export function requestContextFromHttpHeaders(
   }
 
   return resolveManifestRequestContext(fallback, 'headers', manifest, 'synthesized', enforceGroveOwnership) ?? fallback;
+}
+
+/**
+ * Cheap inbound tenancy pre-parse for the Team Host routing chokepoint.
+ *
+ * Yields the effective project id from an inbound HTTP request WITHOUT touching
+ * the Grove registry or computing any DB path — the attach decision must run
+ * before the full resolver (`requestContextFromHttpHeaders`), which eagerly
+ * computes `databasePath` and throws `UnknownRequestContextError` for a Grove
+ * that has no local record (exactly what a hosted Grove is).
+ *
+ * The local bearer gate runs exactly as today: {@link enforceContextSwitchAuth}
+ * fires here for both local and remote requests, so the local daemon still
+ * authenticates the local caller before it proxies. On the local branch the full
+ * resolver re-runs the gate harmlessly (idempotent, no side effects).
+ *
+ * Resolution order:
+ *   1. `x-myco-project-id` header — the common capture/MCP case; zero disk I/O.
+ *   2. else `project.toml` at `x-myco-project-root` — a manifest read, NOT a
+ *      Grove-registry/DB resolution.
+ *   3. else null — a request with no project/root header is the daemon anchor /
+ *      no-tenancy path, which is never attached; skip even the manifest read.
+ *
+ * A header/manifest id that is not a well-formed `proj_<32hex>` resolves to null
+ * (it cannot be an attach key) rather than throwing, so a malformed id falls
+ * through to today's local resolver, which reports the error exactly as before.
+ */
+export function resolveInboundProjectId(
+  headers: IncomingHttpHeaders,
+  fallbackVaultDir: string,
+  options: { expectedAuthToken: string | null },
+): { projectId: GroveProjectId | null } {
+  enforceContextSwitchAuth(headers, options.expectedAuthToken ?? null);
+
+  const headerProjectId = readHeader(headers, REQUEST_CONTEXT_HEADERS.projectId);
+  if (headerProjectId) {
+    return { projectId: isGroveEraId(headerProjectId, 'project') ? (headerProjectId as GroveProjectId) : null };
+  }
+
+  const projectRoot = readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot);
+  if (!projectRoot) return { projectId: null };
+
+  const manifest = readManifest(resolveProjectVaultDir(path.resolve(projectRoot)));
+  const manifestId = manifest?.project?.id;
+  return {
+    projectId: manifestId && isGroveEraId(manifestId, 'project') ? (manifestId as GroveProjectId) : null,
+  };
 }
 
 /**

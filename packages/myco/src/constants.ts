@@ -563,6 +563,20 @@ export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
 /** Secrets key for the host bearer token in secrets.env. Never stored in the registry record itself. */
 export const HOST_BEARER_SECRET = 'MYCO_HOST_BEARER';
 
+/**
+ * Wire protocol for member-daemon ↔ host-daemon overlay traffic. Bump on any
+ * breaking change to the proxied request/response contract or tenancy headers.
+ *
+ * Distinct from {@link SYNC_PROTOCOL_VERSION}: team-sync (D1 replica) and
+ * team-host (live daemon overlay) are independent wire contracts. The pair
+ * `[HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION]` is the inclusive window a
+ * member accepts from a host, mirroring the sync
+ * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]` discipline.
+ */
+export const HOST_PROTOCOL_VERSION = 1;
+/** Oldest host protocol a member still talks to (inclusive window with HOST_PROTOCOL_VERSION). */
+export const HOST_MIN_COMPAT_VERSION = 1;
+
 // --- HTTP response flush ---
 /** Delay before initiating shutdown — allows the HTTP response to flush. */
 export const RESTART_RESPONSE_FLUSH_MS = 500;

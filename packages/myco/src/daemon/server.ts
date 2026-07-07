@@ -16,8 +16,12 @@ import {
   UnknownRequestContextError,
   requestContextFromHttpHeaders,
   requestContextFromTenancyIds,
+  resolveInboundProjectId,
   type MycoRequestContext,
 } from '../grove/request-context.js';
+import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
+import { classifyRoute, refusalJson, type RefusalPayload } from '../host/routing.js';
+import { handleAttachedRequest } from './host-proxy.js';
 import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
 import { type DaemonState } from './service-state.js';
@@ -389,6 +393,27 @@ export class DaemonServer {
       this.onRequest?.();
       const versionHeader = { 'X-Myco-Api-Version': this.version };
       try {
+        // Team Host chokepoint: an attached project is served by a remote host
+        // daemon. Resolve tenancy cheaply and route BEFORE the body is read and
+        // BEFORE any local Grove/DB resolution — the proxy pipes the raw request
+        // stream, and an attached project must never open a local Grove DB. A
+        // non-attached project (the common case) returns `local` after a single
+        // empty-set registry probe, so the path below is byte-identical.
+        const inboundProjectId = this.inboundProjectId(match.params, req.headers);
+        const decision = classifyRoute({
+          method: req.method!,
+          pathname: match.pathname,
+          projectId: inboundProjectId,
+        });
+        if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
+          this.writeRefusal(res, decision.refusal, versionHeader);
+          return;
+        }
+        if (decision.kind === 'remote') {
+          await handleAttachedRequest(req, res, decision.target, decision.classification);
+          return;
+        }
+
         const needsBody = isWriteMethod(req.method);
         const body = needsBody ? await readBody(req) : undefined;
         const requestContext = this.resolveRouteRequestContext(match.params, req.headers);
@@ -642,6 +667,40 @@ export class DaemonServer {
       // then open) a Grove served by the other daemon variant.
       enforceGroveOwnership: true,
     });
+  }
+
+  /**
+   * Effective project id for the Team Host routing chokepoint, resolved without
+   * any Grove/DB lookup. URL-tenancy routes (`/api/g/:groveId/p/:projectId/...`)
+   * carry the id in the path; everything else goes through the header/manifest
+   * pre-parse (which also runs the local bearer gate exactly as the full
+   * resolver does). A malformed id resolves to null so the request falls through
+   * to today's local resolver, which reports the error exactly as before.
+   */
+  private inboundProjectId(
+    params: Record<string, string>,
+    headers: http.IncomingMessage['headers'],
+  ): GroveProjectId | null {
+    if (params.groveId && params.projectId) {
+      return isGroveEraId(params.projectId, 'project') ? (params.projectId as GroveProjectId) : null;
+    }
+    return resolveInboundProjectId(headers, this.vaultDir, { expectedAuthToken: this.authToken }).projectId;
+  }
+
+  /**
+   * The single writer for a Team Host degradation refusal on a router route
+   * (`classifyRoute` → `degraded` / `config_locked`). One uniform payload,
+   * serialized by `refusalJson`; the `/mcp` chokepoint renders the same payload
+   * through `refusalMcpBody`.
+   */
+  private writeRefusal(
+    res: http.ServerResponse,
+    payload: RefusalPayload,
+    versionHeader: Record<string, string>,
+  ): void {
+    const { status, body } = refusalJson(payload);
+    res.writeHead(status, { 'Content-Type': 'application/json', ...versionHeader });
+    res.end(JSON.stringify(body));
   }
 
   private databaseForRequestContext(context: MycoRequestContext): Database | null {

@@ -40,6 +40,23 @@ if (process.env.MYCO_TEAM_LEGACY_HOMES === undefined) {
 }
 
 // ---------------------------------------------------------------------------
+// Hermetic team home (~/.myco-team)
+// ---------------------------------------------------------------------------
+// The Team Host routing chokepoint reads the machine-global host/attach
+// registry (~/.myco-team/hosts) on the daemon's inbound path, so any daemon
+// test now transitively reads the developer's real team home. Same hazard
+// class as the MYCO_HOME sandbox above — point every test process at a
+// per-run sandbox instead. An explicit value is honored so a debugging run
+// can target a fixture team home (the registry/routing tests set it per-test).
+if (!process.env.MYCO_TEAM_HOME) {
+  const sandboxTeamHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-team-home-'));
+  process.env.MYCO_TEAM_HOME = sandboxTeamHome;
+  process.on('exit', () => {
+    try { fs.rmSync(sandboxTeamHome, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Watchdog diagnostics
 // ---------------------------------------------------------------------------
 // Hangs in CI used to be opaque: the runner emitted a single
