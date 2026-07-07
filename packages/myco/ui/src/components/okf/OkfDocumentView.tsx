@@ -23,11 +23,16 @@ export function resolveInAppTarget(href: string | undefined, fromPath: string): 
   if (!href) return null;
   const trimmed = href.trim();
   if (trimmed === '' || trimmed.startsWith('#') || EXTERNAL_LINK_SCHEME_PATTERN.test(trimmed)) return null;
-  if (trimmed.startsWith('/')) return trimmed.slice(1);
+  // Strip a same-doc/section `#anchor` fragment before resolving — an OKF
+  // page body may link "/a/b.md#section" or "b.md#section", and the anchor
+  // is meaningless to the bundle-relative page path this resolves to.
+  const withoutFragment = trimmed.split('#')[0];
+  if (withoutFragment === '') return null;
+  if (withoutFragment.startsWith('/')) return withoutFragment.slice(1);
 
   const fromDir = fromPath.includes('/') ? fromPath.slice(0, fromPath.lastIndexOf('/')) : '';
   const segments = fromDir === '' ? [] : fromDir.split('/');
-  for (const piece of trimmed.split('/')) {
+  for (const piece of withoutFragment.split('/')) {
     if (piece === '' || piece === '.') continue;
     if (piece === '..') segments.pop();
     else segments.push(piece);

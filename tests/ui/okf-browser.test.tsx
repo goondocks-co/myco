@@ -144,6 +144,19 @@ describe('OkfBrowser — list grouped by section/type', () => {
     expect(screen.getByText('How billing works.')).toBeInTheDocument();
     expect(screen.getByText('Onboarding steps.')).toBeInTheDocument();
   });
+
+  it('exposes an aria-label naming each page row (Task 5.2 minor)', async () => {
+    mockApi();
+    renderBrowser();
+
+    await waitFor(() => {
+      expect(screen.getByText('Authentication')).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('button', { name: 'OKF page: concepts/auth.md' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'OKF page: concepts/billing.md' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'OKF page: guides/getting-started.md' })).toBeInTheDocument();
+  });
 });
 
 describe('OkfBrowser — selecting a page', () => {
@@ -184,5 +197,40 @@ describe('OkfBrowser — selecting a page', () => {
     await waitFor(() => {
       expect(screen.getByText('Billing body content.')).toBeInTheDocument();
     });
+  });
+});
+
+describe('resolveInAppTarget (Task 5.2 minor — anchor-fragment stripping)', () => {
+  it('strips a #anchor fragment from a sibling-relative link before resolving', async () => {
+    const { resolveInAppTarget } = await import('../../packages/myco/ui/src/components/okf/OkfDocumentView');
+    expect(resolveInAppTarget('billing.md#pricing', 'concepts/auth.md')).toBe('concepts/billing.md');
+  });
+
+  it('strips a #anchor fragment from an absolute bundle-relative link before resolving', async () => {
+    const { resolveInAppTarget } = await import('../../packages/myco/ui/src/components/okf/OkfDocumentView');
+    expect(resolveInAppTarget('/concepts/billing.md#pricing', 'concepts/auth.md')).toBe('concepts/billing.md');
+  });
+
+  it('resolves a plain sibling-relative link (no fragment)', async () => {
+    const { resolveInAppTarget } = await import('../../packages/myco/ui/src/components/okf/OkfDocumentView');
+    expect(resolveInAppTarget('billing.md', 'concepts/auth.md')).toBe('concepts/billing.md');
+  });
+
+  it('resolves a ../ parent-relative link', async () => {
+    const { resolveInAppTarget } = await import('../../packages/myco/ui/src/components/okf/OkfDocumentView');
+    expect(resolveInAppTarget('../guides/setup.md', 'concepts/auth.md')).toBe('guides/setup.md');
+  });
+
+  it('resolves an absolute /-rooted bundle-relative link', async () => {
+    const { resolveInAppTarget } = await import('../../packages/myco/ui/src/components/okf/OkfDocumentView');
+    expect(resolveInAppTarget('/foo.md', 'concepts/auth.md')).toBe('foo.md');
+  });
+
+  it('returns null for a pure same-doc anchor, external scheme, or empty href', async () => {
+    const { resolveInAppTarget } = await import('../../packages/myco/ui/src/components/okf/OkfDocumentView');
+    expect(resolveInAppTarget('#section', 'concepts/auth.md')).toBeNull();
+    expect(resolveInAppTarget('https://example.com/x', 'concepts/auth.md')).toBeNull();
+    expect(resolveInAppTarget('', 'concepts/auth.md')).toBeNull();
+    expect(resolveInAppTarget(undefined, 'concepts/auth.md')).toBeNull();
   });
 });

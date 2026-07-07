@@ -68,6 +68,7 @@ function PageRow({
         selected && 'bg-primary/5 shadow-[inset_3px_0_0_var(--primary)]',
       )}
       aria-current={selected}
+      aria-label={`OKF page: ${page.path}`}
       data-testid={`okf-page-row-${page.path}`}
     >
       <div className="min-w-0">

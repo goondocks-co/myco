@@ -1,19 +1,24 @@
 // @vitest-environment jsdom
 
 /**
- * OKF panel components — OkfStatusPanel, OkfActionsPanel, OkfSourcesPanel,
- * OkfDiscoveryPanel, OkfValidationPanel. These are pure/presentational
- * (props in, no data hooks besides the mutation objects passed by the
- * caller), so they render directly without mocking `lib/api`.
+ * OKF panel components — OkfStatusPanel, OkfActionsPanel, OkfDiscoveryPanel.
+ * These are pure/presentational (props in, no data hooks besides the
+ * mutation objects passed by the caller), so they render directly without
+ * mocking `lib/api`.
  *
- * Covers: validation slideout opens with diagnostics; sources panel
- * warnings render; component-consistency — panels use Panel/Surface/
- * MetricCard/Button/Switch primitives, asserted via their stable class/
- * testid conventions (mirrors tests/ui/metric-card.test.tsx).
+ * OkfSourcesPanel and OkfValidationPanel were deleted in Task 5.2 — the
+ * browser (OkfBrowser, Task 5.1) already groups pages by type, and the
+ * validation/publish-block surface duplicated OkfActionsPanel's maintain-error
+ * surface (Task 4.1); the Maintenance strip on the OKF page is now the single
+ * publish-block surface.
+ *
+ * Covers: component-consistency — panels use Panel/Surface/MetricCard/
+ * Button/Switch primitives, asserted via their stable class/testid
+ * conventions (mirrors tests/ui/metric-card.test.tsx).
  */
 
 import { describe, expect, it, mock } from 'bun:test';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { OkfStatusResponse } from '../../packages/myco/ui/src/hooks/use-okf';
 
@@ -32,9 +37,7 @@ mock.module('../../packages/myco/ui/src/lib/api', () => ({
 
 const { OkfStatusPanel } = await import('../../packages/myco/ui/src/components/okf/OkfStatusPanel');
 const { OkfActionsPanel } = await import('../../packages/myco/ui/src/components/okf/OkfActionsPanel');
-const { OkfSourcesPanel } = await import('../../packages/myco/ui/src/components/okf/OkfSourcesPanel');
 const { OkfDiscoveryPanel } = await import('../../packages/myco/ui/src/components/okf/OkfDiscoveryPanel');
-const { OkfValidationPanel } = await import('../../packages/myco/ui/src/components/okf/OkfValidationPanel');
 
 const BASE_STATUS: OkfStatusResponse = {
   outputRoot: '/tmp/project-a/docs/okf',
@@ -72,7 +75,7 @@ describe('OkfStatusPanel', () => {
   it('renders MetricCard tiles using the MetricCard primitive (component-consistency)', () => {
     wrap(<OkfStatusPanel status={BASE_STATUS} />);
     expect(screen.getByText('Generated at')).toBeInTheDocument();
-    expect(screen.getByText('Concepts')).toBeInTheDocument();
+    expect(screen.getByText('Pages')).toBeInTheDocument();
     expect(screen.getByText('Generation')).toBeInTheDocument();
     expect(screen.getByText('Output path')).toBeInTheDocument();
     // MetricCard's eyebrow uses this stable class (metric-card.test.tsx pins it).
@@ -121,18 +124,48 @@ describe('OkfActionsPanel — component-consistency + disabled states', () => {
   });
 });
 
-describe('OkfSourcesPanel', () => {
-  it('renders a row per OKF document type with its count', () => {
-    wrap(<OkfSourcesPanel status={BASE_STATUS} />);
-    expect(screen.getByText('decision')).toBeInTheDocument();
-    expect(screen.getByText('file')).toBeInTheDocument();
-    expect(screen.getByText('guide')).toBeInTheDocument();
-    expect(screen.getByText('10')).toBeInTheDocument();
+describe('OkfActionsPanel — load-time publish-block (persisted status, no maintain click)', () => {
+  it('renders the block from status.publishEligibility alone when there is no mutation error', () => {
+    const status = {
+      ...BASE_STATUS,
+      publishEligibility: {
+        ok: false,
+        findings: [{ code: 'secret_like_content', path: 'a.md', excerpt: 'x' }],
+      },
+    };
+    wrap(<OkfActionsPanel status={status} maintain={fakeMutation()} validate={fakeMutation()} />);
+    expect(screen.getByTestId('okf-publish-eligibility-block')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /acknowledge & publish/i })).toBeInTheDocument();
   });
 
-  it('renders an empty state when there are no published pages', () => {
-    wrap(<OkfSourcesPanel status={{ ...BASE_STATUS, byType: null }} />);
-    expect(screen.getByText('No published pages yet.')).toBeInTheDocument();
+  it('does not render the load-time block when publishEligibility.ok is true', () => {
+    wrap(<OkfActionsPanel status={BASE_STATUS} maintain={fakeMutation()} validate={fakeMutation()} />);
+    expect(screen.queryByTestId('okf-publish-eligibility-block')).toBeNull();
+  });
+
+  it('defers to the click-driven maintain-error block instead of double-rendering when both are present', () => {
+    const status = {
+      ...BASE_STATUS,
+      publishEligibility: {
+        ok: false,
+        findings: [{ code: 'secret_like_content', path: 'a.md', excerpt: 'x' }],
+      },
+    };
+    const maintainError = {
+      message: 'boom',
+      body: {
+        error: { code: 'not_implemented', message: 'boom' },
+      },
+    };
+    wrap(
+      <OkfActionsPanel
+        status={status}
+        maintain={{ mutate: () => {}, isPending: false, error: maintainError } as any}
+        validate={fakeMutation()}
+      />,
+    );
+    expect(screen.getByTestId('okf-maintain-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('okf-publish-eligibility-block')).toBeNull();
   });
 });
 
@@ -156,41 +189,5 @@ describe('OkfDiscoveryPanel', () => {
     wrap(<OkfDiscoveryPanel status={BASE_STATUS} />);
     const link = screen.getByRole('link', { name: /symbionts/i });
     expect(link.getAttribute('href')).toBe('/symbionts');
-  });
-});
-
-describe('OkfValidationPanel — diagnostics slideout', () => {
-  it('opens the diagnostics slideout with validation + findings when "View diagnostics" is clicked', () => {
-    const status: OkfStatusResponse = {
-      ...BASE_STATUS,
-      publishEligibility: {
-        ok: false,
-        findings: [{ code: 'secret_like_content', path: 'docs/okf/concepts/foo.md', excerpt: 'sk-abc...' }],
-      },
-    };
-    wrap(<OkfValidationPanel status={status} maintain={fakeMutation()} />);
-
-    expect(screen.queryByTestId('okf-validation-panel')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /view diagnostics/i }));
-    expect(screen.getByTestId('okf-validation-panel')).toBeInTheDocument();
-    expect(screen.getByText('secret_like_content')).toBeInTheDocument();
-    expect(screen.getByText('docs/okf/concepts/foo.md')).toBeInTheDocument();
-  });
-
-  it('renders the publish-eligibility block when blocked', () => {
-    const status: OkfStatusResponse = {
-      ...BASE_STATUS,
-      publishEligibility: {
-        ok: false,
-        findings: [{ code: 'secret_like_content', path: 'a.md', excerpt: 'x' }],
-      },
-    };
-    wrap(<OkfValidationPanel status={status} maintain={fakeMutation()} />);
-    expect(screen.getByTestId('okf-publish-eligibility-block')).toBeInTheDocument();
-  });
-
-  it('does not render the publish-eligibility block when ok', () => {
-    wrap(<OkfValidationPanel status={BASE_STATUS} maintain={fakeMutation()} />);
-    expect(screen.queryByTestId('okf-publish-eligibility-block')).toBeNull();
   });
 });

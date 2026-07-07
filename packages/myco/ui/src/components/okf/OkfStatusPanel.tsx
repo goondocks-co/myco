@@ -43,7 +43,7 @@ export function OkfStatusPanel({ status }: OkfStatusPanelProps) {
           value={status.generatedAt ? formatTimeAgo(status.generatedAt) : 'Never'}
         />
         <MetricCard
-          label="Concepts"
+          label="Pages"
           value={status.conceptCount ?? '—'}
         />
         <MetricCard

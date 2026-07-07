@@ -23,12 +23,23 @@ export interface OkfActionsPanelProps {
  * the daemon and none is planned; Copy path ships instead. One-shot export
  * is API/CLI-only and is not surfaced as a UI action here — the spec's
  * Controls list for this page omits it.
+ *
+ * This is also the SINGLE publish-block surface on the OKF page, fed from
+ * two sources: a click-driven 422 on the mutation just attempted
+ * (`maintainError`, above), and a load-time signal from `status` — a PRIOR
+ * run can leave the bundle blocked (`status.publishEligibility.ok ===
+ * false`), which must be visible on a plain page load/reload, not only
+ * after a fresh click, or a blocked bundle silently reads as fine until the
+ * next Maintain attempt. When a click-driven error is present it takes
+ * priority (freshest); the load-time block only renders when there is no
+ * active mutation error, so the two never double-render.
  */
 export function OkfActionsPanel({ status, maintain, validate }: OkfActionsPanelProps) {
   const [copied, setCopied] = useState(false);
   const disabled = !status.enabled;
   const busy = maintain.isPending || validate.isPending;
   const maintainError = parseOkfMaintainError(maintain.error);
+  const loadPublishBlocked = !maintainError && !status.publishEligibility.ok;
 
   async function copyPath() {
     try {
@@ -42,7 +53,7 @@ export function OkfActionsPanel({ status, maintain, validate }: OkfActionsPanelP
   }
 
   return (
-    <Panel eyebrow="Actions" title="Maintenance">
+    <Panel eyebrow="Actions" title="Maintain & validate">
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="default"
@@ -113,6 +124,35 @@ export function OkfActionsPanel({ status, maintain, validate }: OkfActionsPanelP
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {loadPublishBlocked && (
+        <div
+          className="mt-3 flex flex-col gap-2 rounded-md border border-ochre/30 bg-ochre/5 p-3"
+          data-testid="okf-publish-eligibility-block"
+        >
+          <div className="flex items-center gap-1.5">
+            <StatusDot tone="ochre" />
+            <span className="text-sm font-medium text-on-surface">
+              Publish blocked — {status.publishEligibility.findings.length} finding
+              {status.publishEligibility.findings.length === 1 ? '' : 's'} need acknowledgement
+            </span>
+          </div>
+          <p className="text-xs text-on-surface-variant">
+            A previous run left this bundle blocked from publishing. Review the findings, then
+            acknowledge to allow it to publish.
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="self-start"
+            onClick={() => maintain.mutate({ acknowledgePublish: true })}
+            disabled={maintain.isPending}
+          >
+            <CheckCircle2 className="h-4 w-4 mr-1.5" />
+            {maintain.isPending ? 'Acknowledging…' : 'Acknowledge & publish'}
+          </Button>
         </div>
       )}
     </Panel>
