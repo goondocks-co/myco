@@ -167,3 +167,78 @@ describe('OkfBundle.beginStagedGeneration', () => {
     expect(manifest()?.bundle_generation).toBe(1);
   });
 });
+
+describe('OkfBundle.beginStagedGeneration — incremental carry-forward (Task 3.3)', () => {
+  it('a run that re-stages only a subset carries forward the untouched pages, including a human-authored one', async () => {
+    const outputRoot = okfDir();
+    const bundle = makeBundle();
+
+    // Publish A, B, C.
+    const first = await bundle.beginStagedGeneration({ mode: 'published' });
+    first.stageDocument(contentDoc('pages/alpha'));
+    first.stageDocument(contentDoc('pages/beta'));
+    first.stageDocument(contentDoc('pages/gamma'));
+    await first.finalize({ inputsHash: 'gen-1' });
+
+    const alphaBefore = fs.readFileSync(path.join(outputRoot, 'pages/alpha.md'), 'utf8');
+    const gammaBefore = fs.readFileSync(path.join(outputRoot, 'pages/gamma.md'), 'utf8');
+
+    // A human drops a page directly into the published tree — Myco never wrote it.
+    const humanRaw =
+      '---\ntype: note\ntitle: Human\ndescription: Written by a person.\ntimestamp: 2026-07-05T00:00:00Z\n---\n\nHand-authored content.\n';
+    fs.writeFileSync(path.join(outputRoot, 'pages/human.md'), humanRaw);
+
+    // Second (incremental) run re-stages ONLY beta, refreshed — mirrors an
+    // okf-synthesize run that drains its plan across multiple runs and
+    // deliberately leaves untouched pages "as-is".
+    const second = await bundle.beginStagedGeneration({ mode: 'published' });
+    second.stageDocument({
+      path: 'pages/beta.md',
+      frontmatter: { type: 'note', title: 'pages/beta', description: 'Refreshed beta.', timestamp: '2026-07-05T00:00:00Z' },
+      body: 'Refreshed body of pages/beta.',
+    });
+    const result = await second.finalize({ inputsHash: 'gen-2' });
+
+    // Untouched pages survive with their ORIGINAL content — nothing this run
+    // didn't write was dropped by finalize's atomic-replace.
+    expect(fs.readFileSync(path.join(outputRoot, 'pages/alpha.md'), 'utf8')).toBe(alphaBefore);
+    expect(fs.readFileSync(path.join(outputRoot, 'pages/gamma.md'), 'utf8')).toBe(gammaBefore);
+    expect(fs.readFileSync(path.join(outputRoot, 'pages/human.md'), 'utf8')).toBe(humanRaw);
+
+    // Beta got the refresh.
+    const betaAfter = fs.readFileSync(path.join(outputRoot, 'pages/beta.md'), 'utf8');
+    expect(betaAfter).toContain('Refreshed body of pages/beta.');
+
+    // Every page — carried-forward AND freshly staged — is counted, indexed,
+    // and the tree still passes strict validation.
+    expect(result.conceptCount).toBe(4);
+    const pagesIndex = fs.readFileSync(path.join(outputRoot, 'pages/index.md'), 'utf8');
+    expect(pagesIndex).toContain('alpha.md');
+    expect(pagesIndex).toContain('beta.md');
+    expect(pagesIndex).toContain('gamma.md');
+    expect(pagesIndex).toContain('human.md');
+    expect(validateBundleTree(outputRoot, 'strict').ok).toBe(true);
+    expect(manifest()?.bundle_generation).toBe(2);
+  });
+
+  it('seeds lazily: a session opened but never staged never touches the staging dir, and abort leaves the bundle untouched', async () => {
+    const first = await makeBundle().beginStagedGeneration({ mode: 'published' });
+    first.stageDocument(contentDoc('pages/alpha'));
+    await first.finalize({ inputsHash: 'gen-1' });
+    const alphaPath = path.join(okfDir(), 'pages/alpha.md');
+    const alphaBytes = fs.readFileSync(alphaPath, 'utf8');
+
+    const stagingRoot = new ProjectVault(projectRoot).okfStagingDir();
+    const before = fs.readdirSync(stagingRoot);
+
+    // Open a session but never call stageDocument or finalize — the no-op-run
+    // contract (Task 1.5) depends on the seed-copy staying inside the lazy
+    // ensureStaging() path, never running at session-open time.
+    const idle = await makeBundle().beginStagedGeneration({ mode: 'published' });
+    expect(fs.readdirSync(stagingRoot)).toEqual(before);
+    idle.abort();
+
+    expect(fs.readFileSync(alphaPath, 'utf8')).toBe(alphaBytes);
+    expect(manifest()?.bundle_generation).toBe(1);
+  });
+});

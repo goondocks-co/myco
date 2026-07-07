@@ -105,10 +105,13 @@ export interface OkfBundleStatus {
 /**
  * Open staged-generation session — the single write transaction for an OKF
  * document bundle. `beginStagedGeneration` acquires the lock ONCE and opens a
- * staging dir; `stageDocument` writes one document into it; `finalize`
- * generates indexes, validates `strict`, atomically swaps the staged tree into
- * place, writes the manifest, and releases the lock; `abort` rolls back the
- * staging dir and releases the lock without touching the published bundle.
+ * staging dir seeded with every currently-published content page (so a run
+ * that only touches a subset of pages carries the rest forward); `stageDocument`
+ * writes one document into it, overwriting its seeded copy if any; `finalize`
+ * generates indexes over the full carried-forward + freshly-staged set,
+ * validates `strict`, atomically swaps the staged tree into place, writes the
+ * manifest, and releases the lock; `abort` rolls back the staging dir and
+ * releases the lock without touching the published bundle.
  */
 export interface StagedGeneration {
   stageDocument(doc: OkfDocument): void;
@@ -467,21 +470,27 @@ export class OkfBundle {
    * Managed maintain: open a staged session (acquires the lock + runs crash
    * recovery under it), gather inputs, short-circuit an unchanged run, then
    * render the OKF documents and publish them through the one staged
-   * transaction.
+   * transaction. Full rebuild, not incremental — `renderDocuments` derives
+   * the complete desired page set from current vault state every run, so
+   * this deliberately does NOT carry the previously-published tree forward:
+   * a page whose source no longer exists in the vault must not survive.
    */
   private async runManagedMaintain(
     input: OkfBundleWriteInput,
     outputRoot: string,
   ): Promise<OkfBundleWriteResult> {
-    const session = await this.openStagedSession({
-      mode: input.mode,
-      outputRoot: input.outputRoot,
-      allowExternalOutput: input.allowExternalOutput,
-      overwrite: input.overwrite,
-      acknowledgePublish: input.acknowledgePublish,
-      dryRun: input.dryRun,
-      generatedByRunId: input.generatedByRunId,
-    });
+    const session = await this.openStagedSession(
+      {
+        mode: input.mode,
+        outputRoot: input.outputRoot,
+        allowExternalOutput: input.allowExternalOutput,
+        overwrite: input.overwrite,
+        acknowledgePublish: input.acknowledgePublish,
+        dryRun: input.dryRun,
+        generatedByRunId: input.generatedByRunId,
+      },
+      false,
+    );
     try {
       const gathered = gather(
         {
@@ -527,9 +536,15 @@ export class OkfBundle {
   // Open staged generation — the single document-bundle write transaction
   // -------------------------------------------------------------------
 
-  /** Public entry: open a staged session for a caller (Phase 2 synthesis) to drive. */
+  /**
+   * Public entry: open a staged session for a caller (Phase 2 synthesis) to
+   * drive. Carries forward every currently-published content page into the
+   * new staging dir (lazily, on the first write) — the synthesis plan caps a
+   * run at ~30 pages and drains across runs, so a page this run doesn't touch
+   * must survive finalize's atomic-replace, not disappear with it.
+   */
   async beginStagedGeneration(input: BeginStagedGenerationInput): Promise<StagedGeneration> {
-    return this.openStagedSession(input);
+    return this.openStagedSession(input, true);
   }
 
   /**
@@ -583,7 +598,10 @@ export class OkfBundle {
     return this.deps.vault.readOkfOwnership();
   }
 
-  private async openStagedSession(input: BeginStagedGenerationInput): Promise<StagedSession> {
+  private async openStagedSession(
+    input: BeginStagedGenerationInput,
+    carryForward: boolean,
+  ): Promise<StagedSession> {
     const resolved = this.resolve({
       mode: input.mode,
       outputRoot: input.outputRoot,
@@ -610,6 +628,10 @@ export class OkfBundle {
     let stagingDir: string | null = null;
     let manifest: OkfPrivateManifest | null = null;
     const docs: OkfDocument[] = [];
+    // Populated by seedStagingFromPublished when carryForward is set — pages
+    // this run's stageDocument calls never touch, reconstructed from the
+    // staging copy so finalize's index/count/collision pass sees them too.
+    const carriedForwardDocs = new Map<string, OkfDocument>();
 
     const release = (): void => {
       if (released) return;
@@ -639,6 +661,7 @@ export class OkfBundle {
       if (stagingDir) return stagingDir;
       this.sweepStale(manifest, warnings);
       stagingDir = this.freshStagingDir();
+      if (carryForward) this.seedStagingFromPublished(stagingDir, outputRoot, carriedForwardDocs);
       return stagingDir;
     };
 
@@ -647,7 +670,17 @@ export class OkfBundle {
       const inputsHash = opts?.inputsHash ?? '';
       try {
         const nextGeneration = (manifest?.bundle_generation ?? 0) + 1;
-        const { pageCount, byType } = this.materializeStagedTree(dir, docs, {
+        // Carried-forward pages this run never staged still need to reach
+        // generateIndexes/byTypeOf/the collision guard below — those only see
+        // what `docs` collected via stageDocument, not what's physically
+        // sitting in the staging dir. A path this run DID stage wins over its
+        // (now stale) seeded copy.
+        const stagedPaths = new Set(docs.map((d) => d.path));
+        const contentDocs =
+          carriedForwardDocs.size === 0
+            ? docs
+            : [...docs, ...[...carriedForwardDocs.values()].filter((d) => !stagedPaths.has(d.path))];
+        const { pageCount, byType } = this.materializeStagedTree(dir, contentDocs, {
           generatedAt,
           inputsHash,
           mode: input.mode,
@@ -1844,6 +1877,63 @@ export class OkfBundle {
     const dir = path.join(root, name);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
+  }
+
+  /**
+   * Copy every currently-published content page into a fresh staging dir so
+   * an incremental run that only re-stages a SUBSET of pages doesn't drop the
+   * rest at finalize's atomic-replace — the synthesis plan caps a run at ~30
+   * pages and drains across runs, leaving untouched pages as-is. A no-op when
+   * nothing is published yet at `outputRoot` (first run) or the root doesn't
+   * carry a Myco marker for this project (never adopt a foreign tree's pages
+   * via `overwrite`). Reserved index/log files are skipped —
+   * `materializeStagedTree` always regenerates them from the full
+   * content-doc set.
+   *
+   * Parses each copied page into `carried` (bundle-relative path →
+   * OkfDocument) so `finalize` can fold it into the content-doc list
+   * `generateIndexes`/`byTypeOf`/the collision guard see — those only see
+   * what THIS run's `stageDocument` calls pushed, not what's physically
+   * sitting in the staging dir. A page that fails to parse is still copied to
+   * disk (never lost) but absent from `carried` — the same best-effort the
+   * reconstruct-and-re-render concept-mutation path (`reconstructConceptSet`)
+   * already accepts.
+   */
+  private seedStagingFromPublished(stagingDir: string, outputRoot: string, carried: Map<string, OkfDocument>): void {
+    if (!this.markerExists(outputRoot)) return;
+    const walk = (relDir: string): void => {
+      for (const name of this.safeReaddir(relDir === '' ? outputRoot : path.join(outputRoot, relDir))) {
+        const rel = relDir === '' ? name : `${relDir}/${name}`;
+        const abs = path.join(outputRoot, rel);
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(abs);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          walk(rel);
+          continue;
+        }
+        if (!name.endsWith('.md') || RESERVED_BASENAMES.has(name)) continue;
+        let raw: string;
+        try {
+          raw = fs.readFileSync(abs, 'utf8');
+        } catch {
+          continue; // unreadable — nothing to carry forward
+        }
+        const dest = path.join(stagingDir, rel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, raw);
+        try {
+          const { frontmatter, body } = parseConceptDoc(raw);
+          carried.set(rel, { path: rel, frontmatter: frontmatter as OkfDocument['frontmatter'], body });
+        } catch {
+          /* unparseable — file is still carried forward on disk, just absent from generated indexes */
+        }
+      }
+    };
+    walk('');
   }
 
   private assertOutputWritable(outputRoot: string, overwrite: boolean): void {

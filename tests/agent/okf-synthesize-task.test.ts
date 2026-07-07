@@ -311,7 +311,7 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
     ].join('\n');
   }
 
-  it('refine-not-clobber: a foreign page is rejected untouched, a hand-edited Myco page is augmented, and siblings link via okf_list_pages', async () => {
+  it('refine-not-clobber: a foreign page is rejected untouched AND carried forward, a hand-edited Myco page is augmented, and siblings link via okf_list_pages', async () => {
     // --- Seed a published bundle with one Myco page. ---
     const seedBundle = publishedBundle();
     const seed = await seedBundle.beginStagedGeneration({ mode: 'published' });
@@ -422,12 +422,13 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
     expect(beta?.raw).toContain('[Alpha](alpha.md)');
 
     // The foreign page was never staged (the tool rejected the write before
-    // touching anything) — full-bundle republish drops any page outside this
-    // run's plan, Myco-owned or not, which is a separate, pre-existing
-    // property of staged-generation publish, not something this guard papers
-    // over. What this test guarantees is narrower and load-bearing: the write
-    // itself never overwrote the human's page with synthesized content.
-    expect(bundle.listPages().map((p) => p.path)).not.toContain('concepts/human-notes.md');
+    // touching anything), but staging carries forward every currently-
+    // published page this run doesn't touch (Task 3.3) — the human's page
+    // survives finalize's atomic-replace with its content untouched, exactly
+    // as if it had never been targeted by the plan at all.
+    expect(bundle.listPages().map((p) => p.path)).toContain('concepts/human-notes.md');
+    const humanNotes = bundle.readPage('concepts/human-notes.md');
+    expect(humanNotes?.raw).toContain('These are notes a human wrote directly; Myco never published this page.');
   });
 
   it('okf_write_page falls back to appending the current content when a refine drops it entirely (structural backstop)', async () => {
