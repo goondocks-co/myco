@@ -195,6 +195,74 @@ export function parseOkfMaintainError(error: unknown): OkfMaintainErrorInfo | nu
   return { code, message, findings, validationHint };
 }
 
+/* ---------- Document pages (knowledge browser, Task 5.1) ---------- */
+
+/**
+ * One published OKF document page's frontmatter fields, as returned by
+ * `GET /api/okf/pages` (list) — no `body`. Mirrors
+ * `OkfBundle.listPages()` (packages/myco/src/okf/bundle.ts:1578).
+ */
+export interface OkfPageSummary {
+  path: string;
+  type: string;
+  title?: string;
+  description?: string;
+  timestamp?: string;
+}
+
+export interface OkfPagesListResponse {
+  ok: boolean;
+  pages: OkfPageSummary[];
+}
+
+/**
+ * One page's frontmatter fields plus its markdown body, as returned by
+ * `GET /api/okf/pages/*` (get). Mirrors `OkfBundle.getPage()`
+ * (packages/myco/src/okf/bundle.ts:1648). `body` is markdown source — the
+ * detail view renders it client-side, it is not pre-rendered HTML.
+ */
+export interface OkfPageDetail extends OkfPageSummary {
+  body: string;
+}
+
+/**
+ * `page` is `null` (not a 404) when the bundle-relative path doesn't
+ * resolve to a readable page — same "missing/unsafe/unparseable is
+ * reported as not found" posture `getPage` uses everywhere else.
+ */
+export interface OkfPageGetResponse {
+  ok: boolean;
+  page: OkfPageDetail | null;
+}
+
+const OKF_PAGES_BASE_KEY = ['okf-pages'] as const;
+
+/** GET /api/okf/pages — every published page, for the knowledge browser's grouped list. */
+export function useOkfDocuments(): UseQueryResult<OkfPagesListResponse> {
+  const queryKey = useProjectScopedQueryKey(OKF_PAGES_BASE_KEY);
+  return useQuery({
+    queryKey,
+    queryFn: ({ signal }) => fetchJson<OkfPagesListResponse>('/okf/pages', { signal }),
+  });
+}
+
+/**
+ * GET /api/okf/pages/* — one page's parsed frontmatter + markdown body, by
+ * bundle-relative path. `encodeURIComponent` on the whole path (slashes
+ * included) mirrors `useCanopyEntry`'s wildcard-route convention
+ * (use-canopy.ts) — the daemon's prefix router captures the raw pathname
+ * tail and `decodeURIComponent`s it once, so an encoded `/` round-trips.
+ */
+export function useOkfDocument(path: string | undefined): UseQueryResult<OkfPageGetResponse> {
+  const queryKey = useProjectScopedQueryKey(['okf-page', path]);
+  return useQuery({
+    queryKey,
+    queryFn: ({ signal }) =>
+      fetchJson<OkfPageGetResponse>(`/okf/pages/${encodeURIComponent(path ?? '')}`, { signal }),
+    enabled: typeof path === 'string' && path.length > 0,
+  });
+}
+
 /* ---------- Mutations ---------- */
 
 /**

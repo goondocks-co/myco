@@ -36,6 +36,7 @@ import { OkfActionsPanel } from '../components/okf/OkfActionsPanel';
 import { OkfSourcesPanel } from '../components/okf/OkfSourcesPanel';
 import { OkfDiscoveryPanel } from '../components/okf/OkfDiscoveryPanel';
 import { OkfValidationPanel } from '../components/okf/OkfValidationPanel';
+import { OkfBrowser } from '../components/okf/OkfBrowser';
 import { useOkfMaintain, useOkfStatus, useOkfValidate, useInvalidateOkfStatus } from '../hooks/use-okf';
 import { useActiveProjectSelection } from '../hooks/use-project-selection';
 import { useScopedConfig } from '../hooks/use-scoped-config';
@@ -113,6 +114,12 @@ export default function Okf() {
         <>
           <OkfStatusPanel status={status} />
           <OkfActionsPanel status={status} maintain={maintain} validate={validate} />
+
+          <Panel eyebrow="Bundle" title="Knowledge" padded={false}>
+            <div className="px-5 py-4">
+              <OkfBrowser />
+            </div>
+          </Panel>
           <OkfSourcesPanel status={status} />
           <OkfDiscoveryPanel status={status} />
           <OkfValidationPanel status={status} maintain={maintain} />
