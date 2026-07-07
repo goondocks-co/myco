@@ -559,6 +559,10 @@ export const COLLECTIVE_MCP_TOKEN_SECRET = 'MYCO_COLLECTIVE_MCP_TOKEN';
 /** Timeout for wrangler CLI commands (ms). */
 export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
 
+// --- Team Host ---
+/** Secrets key for the host bearer token in secrets.env. Never stored in the registry record itself. */
+export const HOST_BEARER_SECRET = 'MYCO_HOST_BEARER';
+
 // --- HTTP response flush ---
 /** Delay before initiating shutdown — allows the HTTP response to flush. */
 export const RESTART_RESPONSE_FLUSH_MS = 500;

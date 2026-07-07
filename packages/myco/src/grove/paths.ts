@@ -201,6 +201,31 @@ export function resolveTeamSecretsPath(teamId: string): string {
   return path.join(resolveTeamDir(teamId), 'secrets.env');
 }
 
+export const HOSTS_DIRNAME = 'hosts';
+
+/**
+ * Sibling of `resolveTeamsDir` under the same machine-global team home
+ * (`~/.myco-team`) — Team Host reuses that home rather than minting a new
+ * one, since both are machine-global "who is this machine connected to"
+ * registries.
+ */
+export function resolveHostsDir(): string {
+  return path.join(resolveTeamsHome(), HOSTS_DIRNAME);
+}
+
+export function resolveHostDir(hostId: string): string {
+  assertGroveEraId(hostId, 'host');
+  return path.join(resolveHostsDir(), hostId);
+}
+
+export function resolveHostConfigPath(hostId: string): string {
+  return path.join(resolveHostDir(hostId), 'host.json');
+}
+
+export function resolveHostSecretsPath(hostId: string): string {
+  return path.join(resolveHostDir(hostId), 'secrets.env');
+}
+
 export function resolveGroveMetadataPath(groveId: string, mycoHome = resolveMycoHome()): string {
   return path.join(resolveGroveDir(groveId, mycoHome), GROVE_METADATA_FILENAME);
 }

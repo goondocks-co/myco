@@ -31,6 +31,7 @@ export const GROVE_ID_PREFIXES = {
   log_entry: 'log',
   canopy_map: 'cmap',
   team: 'team',
+  host: 'host',
 } as const;
 
 export type GroveIdKind = keyof typeof GROVE_ID_PREFIXES;
@@ -68,6 +69,17 @@ export function createTeamId(): string {
 export function assertTeamId(value: unknown): string {
   if (typeof value !== 'string' || !isGroveEraId(value, 'team')) {
     throw new Error(`Invalid team id: expected team_<32 hex chars>, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+export function createHostId(): string {
+  return createGroveEraId('host');
+}
+
+export function assertHostId(value: unknown): string {
+  if (typeof value !== 'string' || !isGroveEraId(value, 'host')) {
+    throw new Error(`Invalid host id: expected host_<32 hex chars>, got ${JSON.stringify(value)}`);
   }
   return value;
 }
