@@ -55,6 +55,8 @@ import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
+import { ProjectVault } from '@myco/vault/project-vault.js';
+import { okfSynthesizeDue } from '@myco/okf/schedule.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
 
@@ -435,12 +437,20 @@ export function buildPreConditions(
         taskAgentMap.get(SKILL_SURVEY_TASK),
         scope.requestContext,
       ).eligible,
-    // Stub gate: reports "never due", so an enabled okf-synthesize schedule
-    // performs no work. Task 2.4 replaces this with real meaningful-change
-    // detection (a source fingerprint diffed against the last published
-    // bundle). Registered now so the okf-synthesize YAML validates and the
-    // schema↔registry membership test passes.
-    'okf-synthesize-due': () => false,
+    'okf-synthesize-due': (scope) => {
+      const config = resolveProjectConfig(scope);
+      if (!config) return false;
+      const vault = new ProjectVault(scope.projectRoot);
+      return okfSynthesizeDue(
+        toProjectScope(scope.projectId),
+        config,
+        scope.projectRoot,
+        scope.projectId,
+        scope.requestContext.machineId,
+        vault.readOkfManifest(),
+        vault.readOkfPlan(),
+      );
+    },
   };
 }
 

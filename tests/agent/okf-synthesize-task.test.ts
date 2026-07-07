@@ -19,11 +19,12 @@
  * Uses the grove-DB fixture pattern from tests/agent/okf-tools.test.ts.
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { openDatabase, withDatabase, closeDatabase, initDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
@@ -37,11 +38,13 @@ import {
   projectScopeFromRequestContext,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
-import { assertGroveProjectId } from '@myco/grove/ids.js';
+import { assertGroveProjectId, createProjectId, projectScope, type ProjectScope } from '@myco/grove/ids.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle } from '@myco/okf/bundle.js';
 import { readPlan } from '@myco/okf/synthesis/plan.js';
+import { okfSynthesizeDue, computeOkfProbeFingerprint } from '@myco/okf/schedule.js';
 import { createOkfTools } from '@myco/agent/tools/okf-tools.js';
 import { loadAgentTasks } from '@myco/agent/loader.js';
 import { executeMapPhase } from '@myco/agent/map-phase.js';
@@ -51,6 +54,7 @@ import { hasOkfSynthesisSession } from '@myco/agent/tools/okf-staging.js';
 import { OKF_SYNTHESIZE_TASK } from '@myco/agent/instruction-builders.js';
 import type { PhaseDefinition } from '@myco/agent/types.js';
 import type { VaultToolDeps } from '@myco/agent/tools/types.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';
 
 const PROJECT_ID = 'proj_ffffffffffffffffffffffffffffffff';
@@ -229,6 +233,14 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
       expect(beginSpy).toHaveBeenCalledTimes(1);
       expect(hasOkfSynthesisSession(deps.runId)).toBe(false);
 
+      // --- Task 2.4: finalize recorded the okf-synthesize-due baseline ---
+      const publishedManifest = new ProjectVault(projectRoot).readOkfManifest();
+      expect(publishedManifest?.probe_fingerprint).toBeTruthy();
+      expect(publishedManifest?.last_run_ref).not.toBeNull();
+      // projectRoot here is a plain temp dir, not a git repo — headSha degrades to null, never throws.
+      expect(publishedManifest?.last_run_ref?.headSha).toBeNull();
+      expect(publishedManifest?.last_run_ref?.maxVaultUpdatedAt).toBeGreaterThan(0);
+
       // --- published bundle: 3 pages + generated indexes, passes strict ---
       const bundle = publishedBundle();
       const status = bundle.status();
@@ -276,5 +288,223 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
     const bundle = publishedBundle();
     const next = await bundle.beginStagedGeneration({ mode: 'published', generatedByRunId: 'run-after-abort' });
     next.abort();
+  });
+});
+
+/**
+ * `okfSynthesizeDue` (Task 2.4) takes plain values (scope/config/manifest/
+ * plan), not a live Grove/registry-backed scope — a lighter in-memory-db
+ * fixture (mirroring `tests/okf/synthesis/sources.test.ts`) is enough, no
+ * grove registration or MYCO_HOME needed.
+ */
+describe('okfSynthesizeDue precondition (Task 2.4)', () => {
+  const DUE_AGENT = 'claude-code';
+  const MACHINE_ID = 'machine-a';
+  let dueProjectRoot: string;
+  let dueProjectId: string;
+  let dueScope: ProjectScope;
+
+  beforeAll(() => setupTestDb());
+  afterAll(() => teardownTestDb());
+
+  beforeEach(() => {
+    cleanTestDb();
+    registerAgent({ id: DUE_AGENT, name: 'Myco Agent', created_at: 1_783_000_000 });
+    dueProjectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'okf-due-')));
+    dueProjectId = createProjectId();
+    dueScope = projectScope(dueProjectId as ReturnType<typeof createProjectId>);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dueProjectRoot, { recursive: true, force: true });
+  });
+
+  // Canopy disabled so the vault fingerprint only depends on the spore
+  // aggregate — keeps the "meaningful change" expectations legible.
+  function dueConfig(): MycoConfig {
+    return MycoConfigSchema.parse({
+      version: 3,
+      okf: { enabled: true },
+      cortex: { canopy: { enabled: false } },
+    });
+  }
+
+  function git(args: string[]): void {
+    execFileSync('git', args, { cwd: dueProjectRoot, stdio: 'ignore' });
+  }
+  function gitOutput(args: string[]): string {
+    return execFileSync('git', args, { cwd: dueProjectRoot, encoding: 'utf8' }).trim();
+  }
+  function initGitRepo(): void {
+    git(['init', '-q']);
+    git(['config', 'user.email', 'test@example.com']);
+    git(['config', 'user.name', 'Test']);
+  }
+  function commitAll(message: string): string {
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', message]);
+    return gitOutput(['rev-parse', 'HEAD']);
+  }
+  function writeDueFile(rel: string, content: string): void {
+    const abs = path.join(dueProjectRoot, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+
+  /** Seed exactly one active spore and return the fingerprint it produces (canopy disabled throughout this suite). */
+  function seedBaselineFingerprint(): string {
+    insertSpore({
+      id: 'gotcha-1',
+      project_id: dueProjectId,
+      agent_id: DUE_AGENT,
+      observation_type: 'gotcha',
+      content: 'Baseline gotcha, present before any of these tests run.',
+      importance: 5,
+      created_at: 1_783_000_000,
+      updated_at: 1_783_000_000,
+      machine_id: MACHINE_ID,
+    });
+    return computeOkfProbeFingerprint({
+      sporeCount: 1,
+      maxSporeUpdate: 1_783_000_000,
+      canopyCount: 0,
+      maxCanopyUpdate: 0,
+      conceptCount: 0,
+      mapHash: null,
+      include: { spores: true, canopy: false, concepts: false, guides: false },
+      sporeStatus: 'active',
+    });
+  }
+
+  function writePublishedManifest(
+    vault: ProjectVault,
+    fingerprint: string,
+    lastRunRef: { headSha: string | null; maxVaultUpdatedAt: number } | null = null,
+  ): void {
+    vault.writeOkfManifest({
+      bundle_generation: 1,
+      inputs_hash: '',
+      output_root: path.join(dueProjectRoot, 'okf'),
+      last_result: 'published',
+      generated_at: new Date().toISOString(),
+      acknowledged_findings: [],
+      probe_fingerprint: fingerprint,
+      last_run_ref: lastRunRef,
+    });
+  }
+
+  it('due=true when no bundle has been published yet', () => {
+    const due = okfSynthesizeDue(dueScope, dueConfig(), dueProjectRoot, dueProjectId, MACHINE_ID, null, null);
+    expect(due).toBe(true);
+  });
+
+  it('due=false when nothing maps to a page (vault unchanged, no plan tracked)', () => {
+    const fingerprint = seedBaselineFingerprint();
+    const vault = new ProjectVault(dueProjectRoot);
+    writePublishedManifest(vault, fingerprint);
+
+    const due = okfSynthesizeDue(
+      dueScope, dueConfig(), dueProjectRoot, dueProjectId, MACHINE_ID,
+      vault.readOkfManifest(), null,
+    );
+    expect(due).toBe(false);
+  });
+
+  it("due=false on a docs-only commit that touches no planned page's sourceRefs", () => {
+    writeDueFile('src/foo.ts', 'export const x = 1;\n');
+    initGitRepo();
+    const baseSha = commitAll('initial');
+
+    const fingerprint = seedBaselineFingerprint();
+    const vault = new ProjectVault(dueProjectRoot);
+    // last_run_ref.headSha = the commit this project was published at.
+    writePublishedManifest(vault, fingerprint, { headSha: baseSha, maxVaultUpdatedAt: 1_783_000_000 });
+    vault.writeOkfPlan({
+      generatedAt: new Date().toISOString(),
+      sinceRef: baseSha,
+      pages: [{ path: 'concepts/foo', type: 'concept', title: 'Foo', rationale: 'r', sourceRefs: ['src/foo.ts'] }],
+    });
+
+    writeDueFile('docs/readme.md', '# hi\n');
+    commitAll('docs only');
+
+    const due = okfSynthesizeDue(
+      dueScope, dueConfig(), dueProjectRoot, dueProjectId, MACHINE_ID,
+      vault.readOkfManifest(), vault.readOkfPlan(),
+    );
+    expect(due).toBe(false);
+  });
+
+  it('due=true on a new spore (vault knowledge changed since the last publish)', () => {
+    const fingerprint = seedBaselineFingerprint();
+    const vault = new ProjectVault(dueProjectRoot);
+    writePublishedManifest(vault, fingerprint);
+
+    insertSpore({
+      id: 'gotcha-2',
+      project_id: dueProjectId,
+      agent_id: DUE_AGENT,
+      observation_type: 'gotcha',
+      content: 'A new gotcha discovered since the last publish.',
+      importance: 5,
+      created_at: 1_783_000_500,
+      updated_at: 1_783_000_500,
+      machine_id: MACHINE_ID,
+    });
+
+    const due = okfSynthesizeDue(
+      dueScope, dueConfig(), dueProjectRoot, dueProjectId, MACHINE_ID,
+      vault.readOkfManifest(), null,
+    );
+    expect(due).toBe(true);
+  });
+
+  it('due=true on a commit under a tracked sourceRef', () => {
+    writeDueFile('src/foo.ts', 'export const x = 1;\n');
+    initGitRepo();
+    const baseSha = commitAll('initial');
+
+    const fingerprint = seedBaselineFingerprint();
+    const vault = new ProjectVault(dueProjectRoot);
+    writePublishedManifest(vault, fingerprint, { headSha: baseSha, maxVaultUpdatedAt: 1_783_000_000 });
+    vault.writeOkfPlan({
+      generatedAt: new Date().toISOString(),
+      sinceRef: baseSha,
+      pages: [{ path: 'concepts/foo', type: 'concept', title: 'Foo', rationale: 'r', sourceRefs: ['src/foo.ts'] }],
+    });
+
+    writeDueFile('src/foo.ts', 'export const x = 2;\n');
+    commitAll('touch tracked source');
+
+    const due = okfSynthesizeDue(
+      dueScope, dueConfig(), dueProjectRoot, dueProjectId, MACHINE_ID,
+      vault.readOkfManifest(), vault.readOkfPlan(),
+    );
+    expect(due).toBe(true);
+  });
+
+  it('a non-git project does not throw and stays gated on the vault signal alone', () => {
+    const fingerprint = seedBaselineFingerprint();
+    const vault = new ProjectVault(dueProjectRoot);
+    // A headSha is recorded (e.g. copied from another machine's publish) but
+    // this project has no .git at all — the git call inside okfSynthesizeDue
+    // must fail closed to "no repo signal", not throw.
+    writePublishedManifest(vault, fingerprint, { headSha: 'deadbeef', maxVaultUpdatedAt: 1_783_000_000 });
+    vault.writeOkfPlan({
+      generatedAt: new Date().toISOString(),
+      sinceRef: 'deadbeef',
+      pages: [{ path: 'concepts/foo', type: 'concept', title: 'Foo', rationale: 'r', sourceRefs: ['src/foo.ts'] }],
+    });
+
+    expect(() => okfSynthesizeDue(
+      dueScope, dueConfig(), dueProjectRoot, dueProjectId, MACHINE_ID,
+      vault.readOkfManifest(), vault.readOkfPlan(),
+    )).not.toThrow();
+
+    const due = okfSynthesizeDue(
+      dueScope, dueConfig(), dueProjectRoot, dueProjectId, MACHINE_ID,
+      vault.readOkfManifest(), vault.readOkfPlan(),
+    );
+    expect(due).toBe(false);
   });
 });

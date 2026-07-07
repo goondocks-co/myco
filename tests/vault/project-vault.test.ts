@@ -229,7 +229,7 @@ describe('OKF private control state — .myco/okf/*', () => {
     expect(fs.existsSync(path.join(projectRoot, '.myco/.gitignore'))).toBe(false);
   });
 
-  it('manifest round-trips including acknowledged_findings and probe_fingerprint', () => {
+  it('manifest round-trips including acknowledged_findings, probe_fingerprint, and last_run_ref', () => {
     const manifest = {
       bundle_generation: 3,
       inputs_hash: 'abc123',
@@ -238,12 +238,40 @@ describe('OKF private control state — .myco/okf/*', () => {
       generated_at: '2026-07-05T12:00:00Z',
       acknowledged_findings: [{ code: 'likely_secret', path: 'spores/decisions/d1.md' }],
       probe_fingerprint: 'fp-1',
+      last_run_ref: { headSha: 'deadbeef', maxVaultUpdatedAt: 1_783_000_000 },
     };
     vault.writeOkfManifest(manifest);
     expect(vault.readOkfManifest()).toEqual(manifest);
     // Gitignore-first discipline held for the manifest write too.
     const gitignore = fs.readFileSync(path.join(projectRoot, '.myco/.gitignore'), 'utf-8');
     expect(gitignore).toContain('okf/');
+  });
+
+  it('a manifest predating last_run_ref (key entirely absent) reads clean, not corrupt', () => {
+    // Mirrors a real manifest published before Task 2.4 added last_run_ref:
+    // generation + probe_fingerprint + acknowledged_findings present, the
+    // last_run_ref key never written at all (not even as null). Must be
+    // treated as valid — rejecting it would reset bundle_generation and
+    // acknowledged_findings on the project's next okf-synthesize publish.
+    vault.okfStateDir();
+    fs.writeFileSync(
+      vault.okfManifestPath(),
+      JSON.stringify({
+        bundle_generation: 2,
+        inputs_hash: 'abc123',
+        output_root: path.join(projectRoot, 'okf'),
+        last_result: 'published',
+        generated_at: '2026-07-05T12:00:00Z',
+        acknowledged_findings: [{ code: 'likely_secret', path: 'spores/decisions/d1.md' }],
+        probe_fingerprint: 'fp-1',
+        // last_run_ref intentionally omitted.
+      }),
+    );
+    const manifest = vault.readOkfManifest();
+    expect(manifest).not.toBeNull();
+    expect(manifest?.bundle_generation).toBe(2);
+    expect(manifest?.acknowledged_findings).toHaveLength(1);
+    expect(manifest?.last_run_ref).toBeNull();
   });
 
   it('corrupt manifest returns null without throwing', () => {
@@ -273,6 +301,7 @@ describe('OKF private control state — .myco/okf/*', () => {
         last_result: null,
         generated_at: null,
         probe_fingerprint: null,
+        last_run_ref: null,
       }),
     );
     expect(vault.readOkfManifest()).toBeNull();
@@ -287,6 +316,22 @@ describe('OKF private control state — .myco/okf/*', () => {
         generated_at: null,
         acknowledged_findings: [],
         probe_fingerprint: null,
+        last_run_ref: null,
+      }),
+    );
+    expect(vault.readOkfManifest()).toBeNull();
+    // A shape-invalid last_run_ref (headSha wrong type, maxVaultUpdatedAt missing).
+    fs.writeFileSync(
+      vault.okfManifestPath(),
+      JSON.stringify({
+        bundle_generation: 1,
+        inputs_hash: null,
+        output_root: '/x',
+        last_result: null,
+        generated_at: null,
+        acknowledged_findings: [],
+        probe_fingerprint: null,
+        last_run_ref: { headSha: 123 },
       }),
     );
     expect(vault.readOkfManifest()).toBeNull();

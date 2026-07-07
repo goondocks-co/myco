@@ -53,6 +53,8 @@ import {
   OKF_SYNTHESIZE_TASK,
 } from './instruction-builders.js';
 import { finalizeOkfSynthesisSession, abortOkfSynthesisSession } from './tools/okf-staging.js';
+import { computeOkfSynthesizeSnapshot, type OkfSynthesizeSnapshot } from '@myco/okf/schedule.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
@@ -1076,9 +1078,38 @@ export async function finalizeOkfSynthesize(args: {
   requestContext?: RunOptions['requestContext'];
   vaultDir?: string;
 }): Promise<void> {
+  const snapshot = resolveOkfSynthesizeSnapshot(args);
   await finalizeOkfSynthesisSession(args.runId, {
     logSummary: 'Synthesized OKF wiki pages.',
+    probeFingerprint: snapshot?.probeFingerprint ?? null,
+    lastRunRef: snapshot?.lastRunRef ?? null,
   });
+}
+
+/**
+ * Best-effort `okf-synthesize-due` baseline (Task 2.4) for the manifest
+ * `finalize` writes at publish time. Returns null when the request context/
+ * vaultDir needed to resolve config+scope is unavailable, or on any failure
+ * computing it — the publish itself must never be blocked by a scheduling
+ * bookkeeping computation; a null snapshot just means the manifest's
+ * `probe_fingerprint`/`last_run_ref` reset to null, and the next
+ * `okfSynthesizeDue` check fails open to "due" (harmless).
+ */
+function resolveOkfSynthesizeSnapshot(args: {
+  requestContext?: RunOptions['requestContext'];
+  vaultDir?: string;
+}): OkfSynthesizeSnapshot | null {
+  try {
+    if (!args.vaultDir || !args.requestContext) return null;
+    const projectId = requireProjectId(args.requestContext, 'okf-synthesize finalize');
+    const projectRoot = args.requestContext.projectRoot ?? resolveProjectRoot(args.vaultDir);
+    const machineId = args.requestContext.machineId;
+    const config = loadMergedConfig(args.vaultDir, { groveId: args.requestContext.groveId ?? undefined });
+    const scope = projectScopeFromRequestContext(args.requestContext);
+    return computeOkfSynthesizeSnapshot(scope, config, projectRoot, projectId, machineId);
+  } catch {
+    return null;
+  }
 }
 
 function fallbackInstructionHash(instruction: string | undefined): string {

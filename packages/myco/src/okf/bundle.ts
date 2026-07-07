@@ -114,6 +114,8 @@ export interface StagedGeneration {
   finalize(opts?: {
     inputsHash?: string;
     probeFingerprint?: string | null;
+    /** Task 2.4's `okf-synthesize-due` baseline — recorded on the manifest verbatim (omitted ⇒ reset to null, mirrors `probeFingerprint`). */
+    lastRunRef?: { headSha: string | null; maxVaultUpdatedAt: number } | null;
     logSummary?: string;
   }): Promise<OkfBundleWriteResult>;
   abort(): void;
@@ -650,6 +652,12 @@ export class OkfBundle {
           generated_at: generatedAt,
           acknowledged_findings: ackSet,
           probe_fingerprint: opts?.probeFingerprint ?? null,
+          // Preserve the prior manifest's baseline when this caller doesn't
+          // provide one — the legacy `runManagedMaintain` path (still reachable
+          // via `.maintain()`/"Maintain Now") never passes `lastRunRef`, and a
+          // successful legacy publish must not silently erase the
+          // `okf-synthesize-due` baseline a prior synthesize run recorded.
+          last_run_ref: opts?.lastRunRef ?? manifest?.last_run_ref ?? null,
         });
         if (cleanupPending) {
           warnings.push({ code: 'cleanup_pending', message: 'bundle published but a stale backup could not be removed; it will be swept next run.' });
@@ -1081,6 +1089,7 @@ export class OkfBundle {
       generated_at: null,
       acknowledged_findings: [],
       probe_fingerprint: null,
+      last_run_ref: null,
     };
     this.deps.vault.writeOkfManifest({ ...base, last_result: lastResult });
   }
@@ -1575,6 +1584,7 @@ export class OkfBundle {
           generated_at: generatedAt,
           acknowledged_findings: acknowledged,
           probe_fingerprint: manifest?.probe_fingerprint ?? null,
+          last_run_ref: manifest?.last_run_ref ?? null,
         });
         return nextGeneration;
       } finally {

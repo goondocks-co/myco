@@ -346,7 +346,11 @@ export class ProjectVault {
    * warns to stderr); never creates directories or the gitignore. Callers can
    * trust a non-null return to satisfy the full {@link OkfPrivateManifest}
    * shape — arithmetic on `bundle_generation` and iteration of
-   * `acknowledged_findings` are safe without re-checking.
+   * `acknowledged_findings` are safe without re-checking. A manifest written
+   * before `last_run_ref` (Task 2.4) existed is NOT corrupt — the key is
+   * simply absent on disk; this normalizes it to `null` rather than
+   * rejecting the whole manifest (which would silently reset
+   * `bundle_generation`/`acknowledged_findings` on the next publish).
    */
   readOkfManifest(): OkfPrivateManifest | null {
     const manifestPath = this.okfManifestPath();
@@ -361,7 +365,10 @@ export class ProjectVault {
       if (!isOkfPrivateManifest(parsed)) {
         throw new Error('manifest does not match the OkfPrivateManifest shape');
       }
-      return parsed;
+      // last_run_ref (Task 2.4) postdates every manifest published before it
+      // landed — normalize an absent key to null so callers always see the
+      // full OkfPrivateManifest shape, never a bare `undefined`.
+      return { ...parsed, last_run_ref: parsed.last_run_ref ?? null };
     } catch (err) {
       console.warn(
         `[myco] corrupt OKF manifest at ${this.rel(manifestPath)}: ${err instanceof Error ? err.message : String(err)}`,
@@ -501,6 +508,19 @@ export interface OkfPrivateManifest {
    * compares against it.
    */
   probe_fingerprint: string | null;
+  /**
+   * The `okf-synthesize-due` precondition's durable baseline (Task 2.4),
+   * written by `okf-synthesize`'s finalize at publish time. `headSha` is the
+   * git commit HEAD was at for that publish — a later `git log
+   * <headSha>..HEAD --name-status` diffs against it to detect a change under
+   * a planned page's `sourceRefs`. `maxVaultUpdatedAt` is `MAX(spore/canopy
+   * updated_at)` at that same publish, recorded for parity/debugging; the
+   * live "vault knowledge changed" decision runs through `probe_fingerprint`
+   * above (a superset check — any change to a MAX update necessarily
+   * changes the fingerprint too). Null until the first `okf-synthesize`
+   * publish, or on a manifest predating this field.
+   */
+  last_run_ref: { headSha: string | null; maxVaultUpdatedAt: number } | null;
 }
 
 const OKF_LAST_RESULTS = new Set(['published', 'rolled_back', 'rollback_failed', 'cleanup_pending']);
@@ -520,6 +540,14 @@ function isOkfPrivateManifest(value: unknown): value is OkfPrivateManifest {
   if (m.last_result !== null && !OKF_LAST_RESULTS.has(m.last_result as string)) return false;
   if (typeof m.generated_at !== 'string' && m.generated_at !== null) return false;
   if (typeof m.probe_fingerprint !== 'string' && m.probe_fingerprint !== null) return false;
+  // Absent key (a manifest written before Task 2.4 added this field) is
+  // valid — only shape-validate when the field is actually present.
+  if (m.last_run_ref !== undefined && m.last_run_ref !== null) {
+    if (typeof m.last_run_ref !== 'object' || Array.isArray(m.last_run_ref)) return false;
+    const ref = m.last_run_ref as Record<string, unknown>;
+    if (typeof ref.headSha !== 'string' && ref.headSha !== null) return false;
+    if (typeof ref.maxVaultUpdatedAt !== 'number' || !Number.isFinite(ref.maxVaultUpdatedAt)) return false;
+  }
   if (!Array.isArray(m.acknowledged_findings)) return false;
   return m.acknowledged_findings.every((f) => {
     if (f === null || typeof f !== 'object') return false;
