@@ -22,7 +22,8 @@ import {
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
 import { classifyRoute, refusalJson, type RefusalPayload } from '../host/routing.js';
-import { handleAttachedRequest, proxyLoggerFrom } from './host-proxy.js';
+import { defaultDial, handleAttachedRequest, proxyLoggerFrom } from './host-proxy.js';
+import { handleAttachedConfigRequest } from './attached-config.js';
 import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
 import { type DaemonState } from './service-state.js';
@@ -421,6 +422,19 @@ export class DaemonServer {
             enforceUrlTenancyAuth(req.headers, this.authToken);
           }
           await handleAttachedRequest(req, res, decision.target, decision.classification, {
+            logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
+          });
+          return;
+        }
+        if (decision.kind === 'config_carve') {
+          // An attached project's config is carved by tier, member-side: machine/
+          // project/personal resolve from the member's own disk, the grove tier is
+          // host-sourced, and a personal override of a grove-tier leaf is refused
+          // (routing-layer §6.3). Neither a proxy nor the local resolver is correct
+          // here (§6.3, §1.1) — the member assembles. The scoped PUT needs its body.
+          const carveBody = isWriteMethod(req.method) ? await readBody(req) : undefined;
+          await handleAttachedConfigRequest(req, res, match.pathname, decision.target, carveBody, {
+            dial: defaultDial,
             logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
           });
           return;

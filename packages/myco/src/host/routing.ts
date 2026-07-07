@@ -19,6 +19,13 @@
  *                 in v1 (Canopy, git provenance).
  *   - `config-lock` → central refusal: a write to host-authoritative shared
  *                 config; the host is config-authoritative for attached projects.
+ *   - `config-carve` → member-side per-tier config handling (routing-layer §6.3):
+ *                 machine/project/personal tiers resolve from the member's own
+ *                 disk, the grove tier is host-sourced, and a personal override of
+ *                 a grove-tier (shared-capability) leaf is refused. Neither a plain
+ *                 proxy (which would resolve the member's machine tier from the
+ *                 host) nor a plain local read (an attached project has no local
+ *                 Grove row to resolve against) is correct; the member assembles.
  *   - `localhost-only` → served locally (operator control plane / local-install
  *                 management); never crosses the overlay.
  *
@@ -37,10 +44,11 @@
  */
 import { HOST_BEARER_SECRET } from '../constants.js';
 import type { GroveProjectId } from '../grove/ids.js';
+import { scopePolicyForPath } from '../config/scope.js';
 import { readHostSecrets, resolveAttach } from './registry.js';
 
 /** The scope-map stamp a route carries. See the module docstring. */
-export type RouteStamp = 'serve' | 'collect' | 'degrade' | 'config-lock' | 'localhost-only';
+export type RouteStamp = 'serve' | 'collect' | 'degrade' | 'config-lock' | 'config-carve' | 'localhost-only';
 
 /** The capability + stamp for a matched route, handed to the proxy so it can
  *  key the collector contract / flush ordering without re-classifying. */
@@ -86,7 +94,8 @@ export type RouteDecision =
   | { kind: 'local' }
   | { kind: 'remote'; target: RemoteTarget; classification: RouteClassification }
   | { kind: 'degraded'; refusal: RefusalPayload }
-  | { kind: 'config_locked'; refusal: RefusalPayload };
+  | { kind: 'config_locked'; refusal: RefusalPayload }
+  | { kind: 'config_carve'; target: RemoteTarget; classification: RouteClassification };
 
 /**
  * Refusal for a capability that is unavailable for hosted (attached) projects.
@@ -117,6 +126,42 @@ export function configHostAuthoritative(capability: string): RefusalPayload {
       'This project is served by a host. Shared configuration is managed on the host; edit it there.',
     retryable: false,
   };
+}
+
+/**
+ * The refinement of Task 1.2's coarse `PUT /api/config/scoped` config-lock
+ * (routing-layer §6.2/§6.3). A scoped-config write to an attached project may
+ * carry `scope: 'project' | 'local'`; neither scope writes the grove tier
+ * directly, so the whole-route lock was too broad — machine/project/personal
+ * writes resolve locally and must proceed. The one write this surface CAN still
+ * make against host-authoritative config is a **personal (local.yaml) override
+ * of a grove-homed shared-capability leaf** (e.g. `skills`, `vault_evolution`,
+ * `agent`, `maintenance`, whose `overridableBy` includes `local`). That crosses
+ * the shared/host boundary and is refused; everything else proceeds locally.
+ *
+ * Discrimination is registry-driven: a leaf whose canonical home tier is
+ * `grove` is shared/host-authoritative. Reuses the SAME `SCOPE_REGISTRY` that
+ * drives the tier merge and the scoped-write scope gate, so the lock cannot
+ * drift from the tier model. `paths` are the value-INTRODUCING leaves only
+ * (patch leaves + addToList paths); clears/removeFromList stay exempt exactly
+ * as the scope gate leaves them exempt, so stale residue remains deletable.
+ *
+ * Returns the `config_host_authoritative` refusal when any path is grove-homed,
+ * else `null` (the write proceeds locally). An unknown path (registry throws)
+ * is NOT grove-homed here — the existing scoped-write scope gate already fails
+ * such a path closed with a 400, so this gate need not double-refuse it.
+ */
+export function groveTierWriteRefusal(paths: string[]): RefusalPayload | null {
+  for (const p of paths) {
+    let home: string | undefined;
+    try {
+      home = scopePolicyForPath(p).home;
+    } catch {
+      continue;
+    }
+    if (home === 'grove') return configHostAuthoritative(CONFIG);
+  }
+  return null;
 }
 
 /** Serialize a refusal for a router route: `{ status, body }`. */
@@ -208,12 +253,22 @@ const ROUTE_RULES: RouteRule[] = [
   // --- config-lock: writes to host-authoritative shared config (§1c, §6) ---
   { method: 'PUT', pattern: '/api/grove-config', stamp: 'config-lock', capability: CONFIG },
   { method: 'PUT', pattern: '/api/backup/config', stamp: 'config-lock', capability: CONFIG },
-  { method: 'PUT', pattern: '/api/config/scoped', stamp: 'config-lock', capability: CONFIG },
   { method: 'POST', pattern: '/api/agent/tasks', stamp: 'config-lock', capability: INTEL_CONFIG },
   { method: 'PUT', pattern: '/api/agent/tasks/:id', stamp: 'config-lock', capability: INTEL_CONFIG },
   { method: 'POST', pattern: '/api/agent/tasks/:id/copy', stamp: 'config-lock', capability: INTEL_CONFIG },
   { method: 'DELETE', pattern: '/api/agent/tasks/:id', stamp: 'config-lock', capability: INTEL_CONFIG },
   { method: 'PUT', pattern: '/api/agent/tasks/:id/config', stamp: 'config-lock', capability: INTEL_CONFIG },
+
+  // --- config-carve: per-tier member-side config (routing-layer §6.3). The
+  //     member assembles/serves these from its own machine/project/personal
+  //     tiers, host-sourcing only the grove tier — a plain proxy would resolve
+  //     the member's machine tier from the HOST (guardrail 3), and a plain local
+  //     read has no local Grove row to resolve against. The scoped WRITE proceeds
+  //     locally unless it overrides a grove-homed (shared-capability) leaf. ---
+  { method: 'GET', pattern: '/api/config', stamp: 'config-carve', capability: CONFIG },
+  { method: 'GET', pattern: '/api/config/merged', stamp: 'config-carve', capability: CONFIG },
+  { method: 'GET', pattern: '/api/config/local', stamp: 'config-carve', capability: CONFIG },
+  { method: 'PUT', pattern: '/api/config/scoped', stamp: 'config-carve', capability: CONFIG },
 
   // --- localhost-only: operator control plane / local-install management (§1d, §1e).
   //     Served on whichever daemon received the request; never crosses the overlay. ---
@@ -237,7 +292,6 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', pattern: '/api/machine-config', stamp: 'localhost-only', capability: CONFIG },
   { method: 'PUT', pattern: '/api/machine-config', stamp: 'localhost-only', capability: CONFIG },
   { method: 'GET', pattern: '/api/config/plan-dirs', stamp: 'localhost-only', capability: CONFIG },
-  { method: 'GET', pattern: '/api/config/local', stamp: 'localhost-only', capability: CONFIG },
   { method: 'GET', pattern: '/api/providers/secrets', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'PUT', pattern: '/api/providers/secrets/:provider', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'DELETE', pattern: '/api/providers/secrets/:provider', stamp: 'localhost-only', capability: HOST_ADMIN },
@@ -320,22 +374,33 @@ export function classifyRoute(input: {
       return { kind: 'config_locked', refusal: configHostAuthoritative(classification.capability) };
     case 'localhost-only':
       return { kind: 'local' };
+    case 'config-carve':
+      return { kind: 'config_carve', target: remoteTargetFor(input.projectId, attach), classification };
     case 'serve':
-    case 'collect': {
-      const bearer = readHostSecrets(attach.host.host_id)[HOST_BEARER_SECRET] ?? '';
-      const target: RemoteTarget = {
-        projectId: input.projectId,
-        groveId: attach.ref.grove_id,
-        host: {
-          host_id: attach.host.host_id,
-          label: attach.host.label,
-          overlay_address: attach.host.overlay_address,
-          protocol_version: attach.host.protocol_version,
-          proxy_port: attach.host.proxy_port,
-        },
-        bearer,
-      };
-      return { kind: 'remote', target, classification };
-    }
+    case 'collect':
+      return { kind: 'remote', target: remoteTargetFor(input.projectId, attach), classification };
   }
+}
+
+/** Assemble the {@link RemoteTarget} a host round-trip needs from the attach
+ *  record, reading the host bearer from the host record's secrets.env. Shared by
+ *  the `remote` (proxy) and `config_carve` (member-assembled merged read, which
+ *  host-sources only the grove tier) decisions. */
+function remoteTargetFor(
+  projectId: GroveProjectId,
+  attach: { host: { host_id: string; label: string; overlay_address: string; protocol_version: number; proxy_port?: number }; ref: { grove_id: string } },
+): RemoteTarget {
+  const bearer = readHostSecrets(attach.host.host_id)[HOST_BEARER_SECRET] ?? '';
+  return {
+    projectId,
+    groveId: attach.ref.grove_id,
+    host: {
+      host_id: attach.host.host_id,
+      label: attach.host.label,
+      overlay_address: attach.host.overlay_address,
+      protocol_version: attach.host.protocol_version,
+      proxy_port: attach.host.proxy_port,
+    },
+    bearer,
+  };
 }

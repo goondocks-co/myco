@@ -179,6 +179,9 @@ describe('classifyRoute', () => {
     expect(classifyRoute({ method: 'GET', pathname: '/api/agent/tasks', projectId }).kind).toBe('remote');
     expect(classifyRoute({ method: 'POST', pathname: '/api/agent/tasks', projectId }).kind).toBe('config_locked');
   });
+
+  // config-carve routing + the groveTierWriteRefusal gate are covered in the
+  // canonical tree (tests/host/attached-config-routing.test.ts, run by npm test).
 });
 
 describe('classifyRouteStamp — scope-map coverage spot-checks', () => {
@@ -209,8 +212,12 @@ describe('classifyRouteStamp — scope-map coverage spot-checks', () => {
     ['POST', '/api/groves', 'localhost-only'],
     ['POST', '/api/groves/grove_0123456789abcdef0123456789abcdef/default', 'localhost-only'],
     ['PUT', '/api/grove-config', 'config-lock'],
-    ['PUT', '/api/config/scoped', 'config-lock'],
     ['DELETE', '/api/agent/tasks/task_0123456789abcdef0123456789abcdef', 'config-lock'],
+    // config carve: the per-tier member-side config surfaces (routing-layer §6.3).
+    ['GET', '/api/config', 'config-carve'],
+    ['GET', '/api/config/merged', 'config-carve'],
+    ['GET', '/api/config/local', 'config-carve'],
+    ['PUT', '/api/config/scoped', 'config-carve'],
     ['GET', '/api/logs/stream', 'localhost-only'],
     ['PUT', '/api/machine-config', 'localhost-only'],
     ['GET', '/api/providers/secrets', 'localhost-only'],
