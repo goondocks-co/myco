@@ -208,7 +208,7 @@ async function dispatch(ctx: BundleContext, cmd: OkfCliCommand): Promise<unknown
         dryRun: result.dryRun,
         unchanged: result.unchanged ?? false,
         conceptCount: result.conceptCount,
-        counts: result.counts,
+        byType: result.byType,
         warnings: result.warnings,
         publishEligibility: result.publishEligibility,
         validation: {

@@ -29,10 +29,10 @@ mock.module('@myco/okf/bundle.js', () => ({
       constructed.push(deps);
     }
     maintain(input: unknown) {
-      return stub.maintain?.(input) ?? Promise.resolve({ outputRoot: 'okf', conceptCount: 0, counts: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0 } });
+      return stub.maintain?.(input) ?? Promise.resolve({ outputRoot: 'okf', conceptCount: 0, byType: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0 } });
     }
     status() {
-      return stub.status?.() ?? { outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, counts: null, conceptCount: null, stale: false, publishAcknowledged: true };
+      return stub.status?.() ?? { outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, conceptCount: null, stale: false, publishAcknowledged: true };
     }
     validate(root?: string) {
       return stub.validate?.(root) ?? { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0, issues: [] };
@@ -110,7 +110,7 @@ describe('OKF API handlers', () => {
     let received: unknown;
     stub.maintain = (input) => {
       received = input;
-      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), conceptCount: 1, counts: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 1, conceptsChecked: 1 } });
+      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), conceptCount: 1, byType: {}, warnings: [], validation: { ok: true, level: 'myco_strict', filesChecked: 1, conceptsChecked: 1 } });
     };
     const res = await handleOkfMaintain(req({ body: { sporeStatus: 'all', dryRun: true } }), principalFor(ctxFor()));
     expect(res.status).toBe(200);
@@ -135,7 +135,7 @@ describe('OKF API handlers', () => {
   });
 
   it('status aggregates capability + config fields and never writes', async () => {
-    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, counts: null, conceptCount: null, stale: false, publishAcknowledged: true });
+    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, conceptCount: null, stale: false, publishAcknowledged: true });
     const snapshot = JSON.stringify(fs.readdirSync(vaultDir));
     const res = await handleOkfStatus(req(), principalFor(ctxFor()));
     expect(res.status).toBe(200);
@@ -205,14 +205,14 @@ describe('OKF API handlers', () => {
   });
 
   it('status emits the frozen Plan-7 aggregation shape exactly', async () => {
-    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 3, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'published', counts: { spores: 1, canopy: 0, concepts: 1, guides: 1 }, conceptCount: 3, stale: false, publishAcknowledged: true });
+    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 3, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'published', byType: { decision: 2, guide: 1 }, conceptCount: 3, stale: false, publishAcknowledged: true });
     stub.validate = () => ({ ok: true, level: 'myco_strict', filesChecked: 4, conceptsChecked: 3, issues: [] });
     // A published bundle on disk for the scanner to read (clean → no findings).
     fs.mkdirSync(path.join(projectRoot, 'okf'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, 'okf/note.md'), '---\ntype: Note\n---\n\nBody.\n');
     const res = await handleOkfStatus(req(), principalFor(ctxFor()));
     const body = res.body as Record<string, unknown>;
-    for (const key of ['outputRoot', 'bundleExists', 'bundleGeneration', 'inputsHash', 'generatedAt', 'lastResult', 'counts', 'conceptCount', 'stale', 'publishAcknowledged', 'enabled', 'outputPath', 'validation', 'agentsPointer', 'publishEligibility', 'lastRun']) {
+    for (const key of ['outputRoot', 'bundleExists', 'bundleGeneration', 'inputsHash', 'generatedAt', 'lastResult', 'byType', 'conceptCount', 'stale', 'publishAcknowledged', 'enabled', 'outputPath', 'validation', 'agentsPointer', 'publishEligibility', 'lastRun']) {
       expect(body).toHaveProperty(key);
     }
     expect(body.lastRun).toBeNull();

@@ -22,6 +22,7 @@ import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle, OkfError, type OkfBundleDeps } from '@myco/okf/bundle.js';
 import type { OkfBundleWriteInput } from '@myco/okf/types.js';
 import { assertSafeConceptId, conceptPathForId, OkfPathError } from '@myco/okf/paths.js';
+import { fixtureRenderDocuments } from '../helpers/okf-fixture.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
 const AGENT_ID = 'claude-code';
@@ -61,6 +62,7 @@ function makeBundle(cfg: MycoConfig = config(), now = () => new Date('2026-07-05
     machineId: MACHINE_ID,
     config: cfg,
     now,
+    renderDocuments: fixtureRenderDocuments,
   };
   return new OkfBundle(deps);
 }
@@ -128,19 +130,14 @@ describe('conceptPathForId — traversal rejection', () => {
 // ---------------------------------------------------------------------------
 
 describe('OkfBundle — path traversal is rejected end-to-end', () => {
-  // Phase 2: renderDocuments is stubbed (Task 0.1); each test below bootstraps
-  // a real published bundle via maintain(), which now throws not_implemented.
-  // The underlying protection (assertSafeConceptId/conceptPathForId) stays
-  // covered by the unit tests above; only this end-to-end integration layer
-  // is blocked until Task 1.5 restores real content generation.
-  it.skip('getConcept returns null for a traversal id (never reads outside the bundle)', async () => {
+  it('getConcept returns null for a traversal id (never reads outside the bundle)', async () => {
     const bundle = makeBundle();
     await bundle.maintain(baseInput());
 
     expect(bundle.getConcept('../../../../etc/passwd')).toBeNull();
   });
 
-  it.skip('saveConcept rejects a traversal id with deterministic_path_not_editable and creates no file at the escape target', async () => {
+  it('saveConcept rejects a traversal id with deterministic_path_not_editable and creates no file at the escape target', async () => {
     const bundle = makeBundle();
     await bundle.maintain(baseInput());
 
@@ -172,7 +169,7 @@ describe('OkfBundle — path traversal is rejected end-to-end', () => {
     }
   });
 
-  it.skip('saveConcept rejects a simple ../../ escape under concepts/ the same way', async () => {
+  it('saveConcept rejects a simple ../../ escape under concepts/ the same way', async () => {
     const bundle = makeBundle();
     await bundle.maintain(baseInput());
 

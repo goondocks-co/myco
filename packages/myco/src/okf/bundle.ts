@@ -11,10 +11,10 @@ import { resolveOutputRoot, type OutputClass } from './output-root.js';
 import { gather, type OkfGatherResult } from './gather.js';
 import { computeOkfProbeFingerprint } from './schedule.js';
 import { mycoProjectRef, runRef } from './privacy.js';
-import { assertSafeConceptId, conceptPathForId, detectCollisions } from './paths.js';
+import { assertSafeConceptId, conceptPathForId, detectCollisions, OkfPathError } from './paths.js';
 import { parseConceptDoc, serializeConceptDoc } from './frontmatter.js';
-import { renderConcept, renderRootIndex, renderRootLog, type OkfLogEntry } from './serialize.js';
-import { generateDirectoryIndexes } from './indexes.js';
+import { renderConcept, renderOkfDocument, renderRootIndex, renderRootLog, type OkfLogEntry } from './serialize.js';
+import { generateDirectoryIndexes, generateIndexes } from './indexes.js';
 import { validateBundleTree, validateConceptSource } from './validate.js';
 import { scanStagedBundle } from './publish-eligibility.js';
 import {
@@ -26,7 +26,7 @@ import {
   type OkfBundleWriteInput,
   type OkfBundleWriteResult,
   type OkfConcept,
-  type OkfIncludeKind,
+  type OkfDocument,
   type OkfMaintainWarning,
   type OkfValidationReport,
 } from './types.js';
@@ -70,6 +70,12 @@ export interface OkfBundleDeps {
   fsOps?: OkfFsOps;
   /** Lock acquisition tuning; defaults to 30s timeout / 100ms retry. */
   lockOptions?: { timeoutMs?: number; retryMs?: number };
+  /**
+   * Render seam: turns gathered vault rows into the bundle's OKF documents.
+   * The real agent-synthesis pipeline is Phase 2; until then the production
+   * default throws `not_implemented` and tests inject a fixture.
+   */
+  renderDocuments?: (gathered: OkfGatherResult) => OkfDocument[] | Promise<OkfDocument[]>;
 }
 
 export interface OkfBundleStatus {
@@ -79,10 +85,51 @@ export interface OkfBundleStatus {
   inputsHash: string | null;
   generatedAt: string | null;
   lastResult: OkfPrivateManifest['last_result'];
-  counts: Record<OkfIncludeKind, number> | null;
+  /** Content-document counts grouped by OKF frontmatter `type` (replaces per-include-kind `counts`). */
+  byType: Record<string, number> | null;
   conceptCount: number | null;
   stale: boolean;
   publishAcknowledged: boolean;
+}
+
+/**
+ * Open staged-generation session — the single write transaction for an OKF
+ * document bundle. `beginStagedGeneration` acquires the lock ONCE and opens a
+ * staging dir; `stageDocument` writes one document into it; `finalize`
+ * generates indexes, validates `strict`, atomically swaps the staged tree into
+ * place, writes the manifest, and releases the lock; `abort` rolls back the
+ * staging dir and releases the lock without touching the published bundle.
+ */
+export interface StagedGeneration {
+  stageDocument(doc: OkfDocument): void;
+  finalize(opts?: {
+    inputsHash?: string;
+    probeFingerprint?: string | null;
+    logSummary?: string;
+  }): Promise<OkfBundleWriteResult>;
+  abort(): void;
+}
+
+export interface BeginStagedGenerationInput {
+  mode: OkfBundleMode;
+  outputRoot?: string;
+  allowExternalOutput?: boolean;
+  overwrite?: boolean;
+  acknowledgePublish?: boolean;
+  dryRun?: boolean;
+  generatedByRunId?: string | null;
+  /** Warnings gathered before the session opened (forwarded into the result + marker). */
+  gatherWarnings?: OkfMaintainWarning[];
+}
+
+/** Internal richer session — `runManagedMaintain` needs the reconciled manifest + gather-warning sink. */
+interface StagedSession extends StagedGeneration {
+  readonly outputRoot: string;
+  readonly generatedAt: string;
+  /** The reconciled manifest (post crash-recovery), for the unchanged short-circuit. */
+  readonly manifest: OkfPrivateManifest | null;
+  bundleExists(): boolean;
+  addWarnings(extra: OkfMaintainWarning[]): void;
 }
 
 export interface OkfConceptProvenance {
@@ -135,7 +182,6 @@ const RENAME_RETRY_MS = 100;
 const RENDER_YIELD_EVERY = 64;
 
 const RESERVED_BASENAMES = new Set<string>(OKF_RESERVED_FILES);
-const INCLUDE_KINDS: OkfIncludeKind[] = ['spores', 'canopy', 'concepts', 'guides'];
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -218,135 +264,228 @@ export class OkfBundle {
       return this.externalExport(input, resolved.absPath);
     }
 
-    const lock = await this.acquireLock();
-    try {
-      return await this.runManagedMaintain(input, resolved.absPath, resolved.klass);
-    } finally {
-      this.releaseLock(lock);
-    }
+    // The managed path takes the lock ONCE — inside the staged session opened
+    // by runManagedMaintain — not here. Acquiring it here too would deadlock.
+    return this.runManagedMaintain(input, resolved.absPath);
   }
 
+  /**
+   * Managed maintain: open a staged session (acquires the lock + runs crash
+   * recovery under it), gather inputs, short-circuit an unchanged run, then
+   * render the OKF documents and publish them through the one staged
+   * transaction.
+   */
   private async runManagedMaintain(
     input: OkfBundleWriteInput,
     outputRoot: string,
-    klass: OutputClass,
   ): Promise<OkfBundleWriteResult> {
-    const isPublished = klass === 'published_default';
-    const generatedAt = this.now().toISOString();
-    const warnings: OkfMaintainWarning[] = [];
-
-    let manifest = this.deps.vault.readOkfManifest();
-    manifest = this.reconcileManifestForRoot(manifest, outputRoot, warnings);
-    // Restore a crash-orphaned bundle BEFORE recoverFromCrash reads the marker
-    // and BEFORE sweepStale would delete the sole surviving backup copy.
-    this.recoverOrphanedBundle(outputRoot, warnings);
-    manifest = this.recoverFromCrash(manifest, outputRoot, warnings);
-
-    this.assertOutputWritable(outputRoot, input.overwrite ?? false);
-
-    const gathered = gather(
-      {
-        projectRoot: this.deps.projectRoot,
-        scope: this.deps.scope,
-        projectId: this.deps.projectId,
-        machineId: this.deps.machineId,
-        config: this.deps.config,
-        outputRoot,
-      },
-      {
-        include: this.effectiveInclude(input.include),
-        sporeStatus: input.sporeStatus,
-        includeUndescribedCanopy: input.includeUndescribedCanopy ?? false,
-      },
-    );
-    warnings.push(...gathered.warnings);
-
-    const bundleExists = this.markerExists(outputRoot);
-    if (!input.dryRun && bundleExists && manifest?.inputs_hash === gathered.inputsHash) {
-      return this.unchangedResult(outputRoot, manifest, gathered);
-    }
-
-    this.sweepStale(manifest, warnings);
-
-    const nextGeneration = (manifest?.bundle_generation ?? 0) + 1;
-    const stagingDir = this.freshStagingDir();
+    const session = await this.openStagedSession({
+      mode: input.mode,
+      outputRoot: input.outputRoot,
+      allowExternalOutput: input.allowExternalOutput,
+      overwrite: input.overwrite,
+      acknowledgePublish: input.acknowledgePublish,
+      dryRun: input.dryRun,
+      generatedByRunId: input.generatedByRunId,
+    });
     try {
-      const concepts = await this.renderDocuments(gathered);
-      this.assertCitationsResolve(concepts);
-      const counts = this.countByKind(concepts);
-      await this.writeConceptTree(stagingDir, concepts);
-      this.writeRootFiles(stagingDir, concepts, {
-        generatedAt,
+      const gathered = gather(
+        {
+          projectRoot: this.deps.projectRoot,
+          scope: this.deps.scope,
+          projectId: this.deps.projectId,
+          machineId: this.deps.machineId,
+          config: this.deps.config,
+          outputRoot,
+        },
+        {
+          include: this.effectiveInclude(input.include),
+          sporeStatus: input.sporeStatus,
+          includeUndescribedCanopy: input.includeUndescribedCanopy ?? false,
+        },
+      );
+      session.addWarnings(gathered.warnings);
+
+      // Unchanged short-circuit — BEFORE the session sweeps or stages anything,
+      // so a no-op run leaves stale backups in place for the next real run to
+      // sweep. Forwards only gather warnings, matching the pre-seam contract.
+      if (!input.dryRun && session.bundleExists() && session.manifest?.inputs_hash === gathered.inputsHash) {
+        session.abort();
+        return this.unchangedResult(outputRoot, session.manifest, gathered);
+      }
+
+      const docs = await this.renderDocuments(gathered);
+      for (const doc of docs) session.stageDocument(doc);
+      return await session.finalize({
         inputsHash: gathered.inputsHash,
-        mode: input.mode,
-        priorLog: this.readRootLog(outputRoot),
-        prependLogLine: `Regenerated ${concepts.length} concepts (${counts.spores} spores, ${counts.canopy} canopy, ${counts.concepts} concepts, ${counts.guides} guides).`,
-        counts,
-        conceptCount: concepts.length,
-        bundleGeneration: nextGeneration,
-        generatedByRunRef: runRef(input.generatedByRunId) ?? null,
-        warnings,
+        probeFingerprint: this.computeProbeFingerprint(gathered, input),
+        logSummary: `Regenerated ${docs.length} page${docs.length === 1 ? '' : 's'}.`,
       });
-
-      const findings = scanStagedBundle(stagingDir);
-      const publishEligibility = {
-        ok: findings.length === 0,
-        findings: findings.map((f) => ({ code: f.code, path: f.path, excerpt: f.excerpt })),
-      };
-
-      if (isPublished && !input.dryRun) {
-        const acknowledged = manifest?.acknowledged_findings ?? [];
-        const unacked = findings.filter((f) => !this.findingAcknowledged(f, acknowledged));
-        if (unacked.length > 0 && !input.acknowledgePublish) {
-          throw new OkfError('okf_publish_not_acknowledged', 'publish blocked by unacknowledged findings', {
-            findings: unacked,
-          });
-        }
-      }
-
-      const validation = validateBundleTree(stagingDir, 'myco_strict', { mode: input.mode });
-      if (!validation.ok) {
-        throw new OkfError('okf_validation_failed', 'generated bundle failed myco_strict validation', {
-          validation,
-        });
-      }
-
-      const result: OkfBundleWriteResult = {
-        outputRoot,
-        dryRun: input.dryRun ?? false,
-        generatedAt,
-        conceptCount: concepts.length,
-        counts,
-        warnings,
-        validation,
-        inputsHash: gathered.inputsHash,
-        unchanged: false,
-        publishEligibility,
-      };
-
-      if (input.dryRun) return result;
-
-      this.assertSameFilesystem(stagingDir, outputRoot);
-      const cleanupPending = this.atomicReplace(stagingDir, outputRoot, nextGeneration, manifest);
-
-      const ackSet = this.mergeAcknowledgements(manifest, findings, isPublished, input.acknowledgePublish ?? false);
-      this.deps.vault.writeOkfManifest({
-        bundle_generation: nextGeneration,
-        inputs_hash: gathered.inputsHash,
-        output_root: outputRoot,
-        last_result: cleanupPending ? 'cleanup_pending' : 'published',
-        generated_at: generatedAt,
-        acknowledged_findings: ackSet,
-        probe_fingerprint: this.computeProbeFingerprint(gathered, input),
-      });
-      if (cleanupPending) {
-        warnings.push({ code: 'cleanup_pending', message: 'bundle published but a stale backup could not be removed; it will be swept next run.' });
-      }
-      return result;
-    } finally {
-      // Dry-run and error paths must not leave staging behind.
-      this.safeRm(stagingDir);
+    } catch (err) {
+      // Release the lock + drop staging on any pre-finalize failure. Idempotent:
+      // finalize() already releases in its own finally on a mid-publish throw.
+      session.abort();
+      throw err;
     }
+  }
+
+  // -------------------------------------------------------------------
+  // Open staged generation — the single document-bundle write transaction
+  // -------------------------------------------------------------------
+
+  /** Public entry: open a staged session for a caller (Phase 2 synthesis) to drive. */
+  async beginStagedGeneration(input: BeginStagedGenerationInput): Promise<StagedGeneration> {
+    return this.openStagedSession(input);
+  }
+
+  private async openStagedSession(input: BeginStagedGenerationInput): Promise<StagedSession> {
+    const resolved = this.resolve({
+      mode: input.mode,
+      outputRoot: input.outputRoot,
+      allowExternalOutput: input.allowExternalOutput,
+    });
+    if (resolved.klass === 'external_export') {
+      throw new OkfError(
+        'okf_maintain_failed',
+        'staged generation does not support external export; use maintain() for an external --out',
+      );
+    }
+    // Fail-closed capability gate — structural, mirrors maintain(); dry-run previews bypass it.
+    if (!input.dryRun && !capabilityEnabled(this.deps.config, 'okf')) {
+      throw new OkfError('okf_disabled', 'OKF capability is disabled for this project');
+    }
+
+    const outputRoot = resolved.absPath;
+    const isPublished = resolved.klass === 'published_default';
+    const generatedAt = this.now().toISOString();
+    const warnings: OkfMaintainWarning[] = [...(input.gatherWarnings ?? [])];
+
+    const lock = await this.acquireLock();
+    let released = false;
+    let stagingDir: string | null = null;
+    let manifest: OkfPrivateManifest | null = null;
+    const docs: OkfDocument[] = [];
+
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      if (stagingDir) this.safeRm(stagingDir);
+      this.releaseLock(lock);
+    };
+
+    try {
+      // Recovery + reconcile + write-guard — under the lock, before any write.
+      manifest = this.deps.vault.readOkfManifest();
+      manifest = this.reconcileManifestForRoot(manifest, outputRoot, warnings);
+      // Restore a crash-orphaned bundle BEFORE recoverFromCrash reads the marker
+      // and BEFORE sweepStale would delete the sole surviving backup copy.
+      this.recoverOrphanedBundle(outputRoot, warnings);
+      manifest = this.recoverFromCrash(manifest, outputRoot, warnings);
+      this.assertOutputWritable(outputRoot, input.overwrite ?? false);
+    } catch (err) {
+      release();
+      throw err;
+    }
+
+    // Sweep stale backups/staging + open a fresh staging dir on the first stage.
+    // Deferring past the caller's short-circuit keeps sweepStale off no-op runs.
+    const ensureStaging = (): string => {
+      if (stagingDir) return stagingDir;
+      this.sweepStale(manifest, warnings);
+      stagingDir = this.freshStagingDir();
+      return stagingDir;
+    };
+
+    const finalize: StagedGeneration['finalize'] = async (opts) => {
+      const dir = ensureStaging();
+      const inputsHash = opts?.inputsHash ?? '';
+      try {
+        const nextGeneration = (manifest?.bundle_generation ?? 0) + 1;
+        const { pageCount, byType } = this.materializeStagedTree(dir, docs, {
+          generatedAt,
+          inputsHash,
+          mode: input.mode,
+          priorLog: input.mode === 'published' ? this.readRootLog(outputRoot) : null,
+          logSummary: opts?.logSummary ?? `Published ${docs.length} page${docs.length === 1 ? '' : 's'}.`,
+          generatedByRunRef: runRef(input.generatedByRunId) ?? null,
+          bundleGeneration: nextGeneration,
+          warnings,
+        });
+
+        const findings = scanStagedBundle(dir);
+        const publishEligibility = {
+          ok: findings.length === 0,
+          findings: findings.map((f) => ({ code: f.code, path: f.path, excerpt: f.excerpt })),
+        };
+
+        if (isPublished && !input.dryRun) {
+          const acknowledged = manifest?.acknowledged_findings ?? [];
+          const unacked = findings.filter((f) => !this.findingAcknowledged(f, acknowledged));
+          if (unacked.length > 0 && !input.acknowledgePublish) {
+            throw new OkfError('okf_publish_not_acknowledged', 'publish blocked by unacknowledged findings', {
+              findings: unacked,
+            });
+          }
+        }
+
+        const validation = validateBundleTree(dir, 'strict', { mode: input.mode });
+        if (!validation.ok) {
+          throw new OkfError('okf_validation_failed', 'generated bundle failed strict validation', { validation });
+        }
+
+        const result: OkfBundleWriteResult = {
+          outputRoot,
+          dryRun: input.dryRun ?? false,
+          generatedAt,
+          conceptCount: pageCount,
+          byType,
+          warnings,
+          validation,
+          inputsHash,
+          unchanged: false,
+          publishEligibility,
+        };
+        if (input.dryRun) return result;
+
+        this.assertSameFilesystem(dir, outputRoot);
+        const cleanupPending = this.atomicReplace(dir, outputRoot, nextGeneration, manifest);
+
+        const ackSet = this.mergeAcknowledgements(manifest, findings, isPublished, input.acknowledgePublish ?? false);
+        this.deps.vault.writeOkfManifest({
+          bundle_generation: nextGeneration,
+          inputs_hash: inputsHash,
+          output_root: outputRoot,
+          last_result: cleanupPending ? 'cleanup_pending' : 'published',
+          generated_at: generatedAt,
+          acknowledged_findings: ackSet,
+          probe_fingerprint: opts?.probeFingerprint ?? null,
+        });
+        if (cleanupPending) {
+          warnings.push({ code: 'cleanup_pending', message: 'bundle published but a stale backup could not be removed; it will be swept next run.' });
+        }
+        return result;
+      } finally {
+        // Success renamed staging into place (safeRm no-ops); dry-run/error clean it.
+        release();
+      }
+    };
+
+    return {
+      outputRoot,
+      generatedAt,
+      manifest,
+      bundleExists: () => this.markerExists(outputRoot),
+      addWarnings: (extra: OkfMaintainWarning[]) => {
+        warnings.push(...extra);
+      },
+      stageDocument: (doc: OkfDocument) => {
+        const dir = ensureStaging();
+        docs.push(doc);
+        this.writeStagedDoc(dir, doc);
+      },
+      finalize,
+      abort: () => release(),
+    };
   }
 
   // -------------------------------------------------------------------
@@ -380,27 +519,23 @@ export class OkfBundle {
 
     const stagingDir = this.freshStagingDir();
     try {
-      const concepts = await this.renderDocuments(gathered);
-      this.assertCitationsResolve(concepts);
-      const counts = this.countByKind(concepts);
-      await this.writeConceptTree(stagingDir, concepts);
-      this.writeRootFiles(stagingDir, concepts, {
+      const docs = await this.renderDocuments(gathered);
+      for (const doc of docs) this.writeStagedDoc(stagingDir, doc);
+      const { pageCount, byType } = this.materializeStagedTree(stagingDir, docs, {
         generatedAt,
         inputsHash: gathered.inputsHash,
         mode: input.mode,
         priorLog: null,
-        prependLogLine: `One-shot export of ${concepts.length} concepts.`,
-        counts,
-        conceptCount: concepts.length,
-        bundleGeneration: 0,
+        logSummary: `One-shot export of ${docs.length} page${docs.length === 1 ? '' : 's'}.`,
         generatedByRunRef: runRef(input.generatedByRunId) ?? null,
+        bundleGeneration: 0,
         warnings,
       });
 
       const findings = scanStagedBundle(stagingDir);
-      const validation = validateBundleTree(stagingDir, 'myco_strict', { mode: input.mode });
+      const validation = validateBundleTree(stagingDir, 'strict', { mode: input.mode });
       if (!validation.ok) {
-        throw new OkfError('okf_validation_failed', 'generated bundle failed myco_strict validation', { validation });
+        throw new OkfError('okf_validation_failed', 'generated bundle failed strict validation', { validation });
       }
 
       if (!(input.dryRun ?? false)) {
@@ -414,8 +549,8 @@ export class OkfBundle {
         outputRoot,
         dryRun: input.dryRun ?? false,
         generatedAt,
-        conceptCount: concepts.length,
-        counts,
+        conceptCount: pageCount,
+        byType,
         warnings,
         validation,
         inputsHash: gathered.inputsHash,
@@ -431,7 +566,7 @@ export class OkfBundle {
   }
 
   // -------------------------------------------------------------------
-  // Projection + rendering
+  // Document rendering + staged-tree materialization
   // -------------------------------------------------------------------
 
   /** The sporeStatus the config-driven scheduled maintain will use. */
@@ -452,35 +587,129 @@ export class OkfBundle {
   }
 
   /**
-   * Render seam: turns gathered vault rows into the bundle's documents.
-   * Phase 1's Myco-shaped projectors (canopy/spores/concepts/guides) are gone
-   * — Task 1.5 fills this in with the agent-synthesis pipeline that produces
-   * a portable OKF wiki from `gathered`, at which point this seam's return
-   * type becomes `OkfDocument[]` and its call sites move off `OkfConcept`.
+   * Render seam: turns gathered vault rows into the bundle's OKF documents.
+   * The agent-synthesis pipeline that fills this is Phase 2; until then the
+   * production default throws `not_implemented`, and callers (tests, and later
+   * the synthesis task) inject a `renderDocuments` via {@link OkfBundleDeps}.
    */
-  private async renderDocuments(gathered: OkfGatherResult): Promise<OkfConcept[]> {
+  private async renderDocuments(gathered: OkfGatherResult): Promise<OkfDocument[]> {
+    if (this.deps.renderDocuments) return this.deps.renderDocuments(gathered);
     throw new OkfError('not_implemented', 'OKF document synthesis is not yet implemented (Phase 2)');
   }
 
   /**
-   * Cross-namespace citation resolution (Plan 2 carried obligation): a
-   * concept's declared `source_concepts` targeting spores/canopy/guides must
-   * resolve against the full concept universe, not just the concepts/
-   * namespace.
+   * Write one staged document. The index/content discriminator is EMPTY
+   * FRONTMATTER, not the basename: `generateIndexes` emits index docs with
+   * `frontmatter: {}`, and content docs always carry the four-key floor.
+   *
+   * - Empty frontmatter → a plain-markdown index/log with no `---` block. It
+   *   must NOT route through `renderOkfDocument` (which demands the four-key
+   *   floor an index lacks). Its path is traversal-checked, and its basename
+   *   MUST be reserved (`index.md`/`log.md`) — an empty-frontmatter doc at any
+   *   other path is a malformed content doc, rejected rather than written
+   *   frontmatter-less.
+   * - Non-empty frontmatter → a content doc through `renderOkfDocument`, which
+   *   enforces the four-key floor AND rejects the reserved `index.md`/`log.md`
+   *   basenames. Dispatching by basename instead would let a content doc named
+   *   `index.md` be written frontmatter-less and then silently clobbered by the
+   *   generated index at the same path — silent page loss the collision guard
+   *   (content paths only) never sees.
    */
-  private assertCitationsResolve(concepts: OkfConcept[]): void {
-    const ids = new Set(concepts.map((c) => c.id));
-    const dangling: string[] = [];
-    for (const concept of concepts) {
-      const sourceConcepts = concept.frontmatter.source_concepts;
-      if (!Array.isArray(sourceConcepts)) continue;
-      for (const target of sourceConcepts) {
-        if (typeof target === 'string' && !ids.has(target)) dangling.push(`${concept.id} → ${target}`);
+  private writeStagedDoc(stagingDir: string, doc: OkfDocument): void {
+    let relPath: string;
+    let content: string;
+    if (Object.keys(doc.frontmatter).length === 0) {
+      assertSafeConceptId(doc.path);
+      if (!RESERVED_BASENAMES.has(path.posix.basename(doc.path))) {
+        throw new OkfPathError(
+          `empty_frontmatter_nonindex: ${JSON.stringify(doc.path)} has empty frontmatter but is not a reserved index/log file`,
+        );
       }
+      relPath = doc.path;
+      const body = doc.body.replace(/\r\n/g, '\n').replace(/\n+$/, '');
+      content = body === '' ? '' : `${body}\n`;
+    } else {
+      ({ path: relPath, content } = renderOkfDocument(doc));
     }
-    if (dangling.length > 0) {
-      throw new OkfError('okf_validation_failed', `dangling source_concepts citations: ${dangling.join('; ')}`);
+    const abs = path.join(stagingDir, relPath);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+
+  /**
+   * Finish a staged tree whose content documents are already on disk: run the
+   * collision guard, generate + write the directory indexes (plain markdown),
+   * write the root log and the marker sidecar. Returns the flat page count +
+   * per-type breakdown derived from the staged document set.
+   */
+  private materializeStagedTree(
+    stagingDir: string,
+    contentDocs: OkfDocument[],
+    opts: {
+      generatedAt: string;
+      inputsHash: string;
+      mode: OkfBundleMode;
+      priorLog: string | null;
+      logSummary: string;
+      generatedByRunRef: string | null;
+      bundleGeneration: number;
+      warnings: OkfMaintainWarning[];
+    },
+  ): { pageCount: number; byType: Record<string, number> } {
+    // Collision guard reinstated from the deleted projectAllConcepts: two
+    // document paths that collide after case-fold would clobber on a
+    // case-insensitive filesystem. Same guard mutateConcepts runs, now on the
+    // render-seam path too.
+    const collisions = detectCollisions(contentDocs.map((d) => d.path.replace(/\.md$/, '')));
+    if (collisions.length > 0) {
+      throw new OkfError('concept_path_collision', `document path collision: ${[...new Set(collisions)].join(', ')}`);
     }
+
+    // Deterministic directory indexes (empty frontmatter → plain markdown).
+    for (const index of generateIndexes(contentDocs)) this.writeStagedDoc(stagingDir, index);
+
+    const byType = this.byTypeOf(contentDocs);
+    const pageCount = contentDocs.length;
+
+    // Root log: prepend a dated entry (published) / rebuild snapshot (local).
+    const priorEntries = opts.mode === 'published' ? this.parseLogEntries(opts.priorLog) : [];
+    const date = opts.generatedAt.slice(0, 10);
+    const entries: OkfLogEntry[] = [{ date, lines: [opts.logSummary] }, ...priorEntries];
+    fs.writeFileSync(path.join(stagingDir, 'log.md'), renderRootLog(entries));
+
+    // Marker / sidecar — ONE file carrying the full payload.
+    fs.writeFileSync(
+      path.join(stagingDir, OKF_MARKER_FILENAME),
+      `${JSON.stringify(
+        {
+          generator: 'myco',
+          okf_version: OKF_VERSION,
+          project_ref: mycoProjectRef(this.deps.projectId),
+          generated_at: opts.generatedAt,
+          bundle_generation: opts.bundleGeneration,
+          inputs_hash: opts.inputsHash,
+          concept_count: pageCount,
+          by_type: byType,
+          generated_by_run_ref: opts.generatedByRunRef ?? undefined,
+          warnings: opts.warnings.map((w) => ({ code: w.code, message: w.message, path: w.path })),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    return { pageCount, byType };
+  }
+
+  /** Group documents by (non-empty) OKF frontmatter `type`; unknown/blank → 'unknown'. */
+  private byTypeOf(docs: ReadonlyArray<{ frontmatter: { type?: unknown } }>): Record<string, number> {
+    const byType: Record<string, number> = {};
+    for (const doc of docs) {
+      const raw = doc.frontmatter.type;
+      const type = typeof raw === 'string' && raw.trim() !== '' ? raw : 'unknown';
+      byType[type] = (byType[type] ?? 0) + 1;
+    }
+    return byType;
   }
 
   private async writeConceptTree(stagingDir: string, concepts: OkfConcept[]): Promise<void> {
@@ -493,6 +722,12 @@ export class OkfBundle {
     }
   }
 
+  /**
+   * Root-file writer for the concept-mutation path (`mutateConcepts`), which
+   * still rebuilds the `OkfConcept` tree + frontmatter root index validated at
+   * `myco_strict`. The Myco-shaped per-include-kind counts are gone: section
+   * summaries and the marker's `by_type` are derived from the concept set.
+   */
   private writeRootFiles(
     stagingDir: string,
     concepts: OkfConcept[],
@@ -502,8 +737,6 @@ export class OkfBundle {
       mode: OkfBundleMode;
       priorLog: string | null;
       prependLogLine: string;
-      counts: Record<OkfIncludeKind, number>;
-      conceptCount: number;
       bundleGeneration: number;
       generatedByRunRef: string | null;
       warnings: OkfMaintainWarning[];
@@ -518,11 +751,16 @@ export class OkfBundle {
       fs.writeFileSync(abs, content);
     }
 
-    // Root index with frontmatter + section summaries.
-    const sections = INCLUDE_KINDS.filter((kind) => opts.counts[kind] > 0).map((kind) => ({
-      dir: kind,
-      summary: `${opts.counts[kind]} ${kind === 'spores' ? 'spore' : kind === 'canopy' ? 'canopy' : kind === 'guides' ? 'guide' : 'concept'} concept${opts.counts[kind] === 1 ? '' : 's'}.`,
-    }));
+    // Root index with frontmatter + section summaries (one per top-level dir).
+    const perDir = new Map<string, number>();
+    for (const concept of concepts) {
+      const top = concept.id.split('/', 1)[0];
+      perDir.set(top, (perDir.get(top) ?? 0) + 1);
+    }
+    const sections = [...perDir.keys()].sort().map((dir) => {
+      const n = perDir.get(dir)!;
+      return { dir, summary: `${n} concept${n === 1 ? '' : 's'}.` };
+    });
     fs.writeFileSync(
       path.join(stagingDir, 'index.md'),
       renderRootIndex({
@@ -553,8 +791,8 @@ export class OkfBundle {
           generated_at: opts.generatedAt,
           bundle_generation: opts.bundleGeneration,
           inputs_hash: opts.inputsHash,
-          concept_count: opts.conceptCount,
-          counts: opts.counts,
+          concept_count: concepts.length,
+          by_type: this.byTypeOf(concepts),
           warnings: opts.warnings.map((w) => ({ code: w.code, message: w.message, path: w.path })),
         },
         null,
@@ -831,6 +1069,10 @@ export class OkfBundle {
       }
     }
 
+    // Flat page count + per-type breakdown are derived from the published tree,
+    // not the marker — the tree is the truth after any concept-mutation edit.
+    const stats = bundleExists ? this.derivePageStats(outputRoot) : null;
+
     return {
       outputRoot,
       bundleExists,
@@ -838,8 +1080,8 @@ export class OkfBundle {
       inputsHash: manifest?.inputs_hash ?? null,
       generatedAt: manifest?.generated_at ?? null,
       lastResult: manifest?.last_result ?? null,
-      counts: (marker?.counts as Record<OkfIncludeKind, number> | undefined) ?? null,
-      conceptCount: (marker?.concept_count as number | undefined) ?? null,
+      byType: stats?.byType ?? null,
+      conceptCount: stats?.pageCount ?? null,
       stale,
       publishAcknowledged: this.derivePublishAcknowledged(manifest, outputRoot),
     };
@@ -847,7 +1089,45 @@ export class OkfBundle {
 
   validate(outputRoot?: string): OkfValidationReport {
     const root = outputRoot ?? this.resolve({ mode: 'published' }).absPath;
-    return validateBundleTree(root, 'myco_strict');
+    return validateBundleTree(root, 'strict');
+  }
+
+  /**
+   * Flat page count + per-OKF-type breakdown of a published tree, walking every
+   * non-reserved `.md` (excluding `index.md`/`log.md`). Derived from disk so it
+   * stays true after a concept-mutation edit the marker doesn't reflect.
+   */
+  private derivePageStats(outputRoot: string): { pageCount: number; byType: Record<string, number> } {
+    const byType: Record<string, number> = {};
+    let pageCount = 0;
+    const walk = (relDir: string): void => {
+      for (const name of this.safeReaddir(relDir === '' ? outputRoot : path.join(outputRoot, relDir)).sort()) {
+        const rel = relDir === '' ? name : `${relDir}/${name}`;
+        const abs = path.join(outputRoot, rel);
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(abs);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          walk(rel);
+          continue;
+        }
+        if (!name.endsWith('.md') || RESERVED_BASENAMES.has(name)) continue;
+        pageCount += 1;
+        try {
+          const { frontmatter } = parseConceptDoc(fs.readFileSync(abs, 'utf8'));
+          const raw = frontmatter.type;
+          const type = typeof raw === 'string' && raw.trim() !== '' ? raw : 'unknown';
+          byType[type] = (byType[type] ?? 0) + 1;
+        } catch {
+          byType.unknown = (byType.unknown ?? 0) + 1;
+        }
+      }
+    };
+    walk('');
+    return { pageCount, byType };
   }
 
   listConcepts(): OkfConceptSummary[] {
@@ -995,7 +1275,6 @@ export class OkfBundle {
       const generatedAt = this.now().toISOString();
       const existing = this.reconstructConceptSet(outputRoot);
       const { concepts, logLine } = mutate(existing, generatedAt, 'published');
-      this.assertCitationsResolve(concepts);
       const collisions = detectCollisions(concepts.map((c) => c.id));
       if (collisions.length > 0) {
         throw new OkfError('concept_path_collision', `concept id collision: ${[...new Set(collisions)].join(', ')}`);
@@ -1004,7 +1283,6 @@ export class OkfBundle {
       this.sweepStale(manifest, []);
       const stagingDir = this.freshStagingDir();
       try {
-        const counts = this.countByKind(concepts);
         const nextGeneration = (manifest?.bundle_generation ?? 0) + 1;
         await this.writeConceptTree(stagingDir, concepts);
         this.writeRootFiles(stagingDir, concepts, {
@@ -1013,8 +1291,6 @@ export class OkfBundle {
           mode: 'published',
           priorLog: this.readRootLog(outputRoot),
           prependLogLine: logLine,
-          counts,
-          conceptCount: concepts.length,
           bundleGeneration: nextGeneration,
           generatedByRunRef: null,
           warnings: [],
@@ -1147,16 +1423,15 @@ export class OkfBundle {
     manifest: OkfPrivateManifest,
     gathered: OkfGatherResult,
   ): OkfBundleWriteResult {
-    const marker = this.readMarker(outputRoot);
-    const counts = (marker?.counts as Record<OkfIncludeKind, number> | undefined) ?? this.zeroCounts();
+    const stats = this.derivePageStats(outputRoot);
     return {
       outputRoot,
       dryRun: false,
       generatedAt: manifest.generated_at ?? this.now().toISOString(),
-      conceptCount: (marker?.concept_count as number | undefined) ?? 0,
-      counts,
+      conceptCount: stats.pageCount,
+      byType: stats.byType,
       warnings: gathered.warnings,
-      validation: { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0, issues: [] },
+      validation: { ok: true, level: 'strict', filesChecked: 0, conceptsChecked: 0, issues: [] },
       inputsHash: gathered.inputsHash,
       unchanged: true,
     };
@@ -1168,19 +1443,6 @@ export class OkfBundle {
     const findings = scanStagedBundle(outputRoot);
     const ack = manifest.acknowledged_findings;
     return findings.every((f) => this.findingAcknowledged(f, ack));
-  }
-
-  private countByKind(concepts: OkfConcept[]): Record<OkfIncludeKind, number> {
-    const counts = this.zeroCounts();
-    for (const c of concepts) {
-      const kind = c.id.split('/', 1)[0] as OkfIncludeKind;
-      if (kind === 'spores' || kind === 'canopy' || kind === 'concepts' || kind === 'guides') counts[kind] += 1;
-    }
-    return counts;
-  }
-
-  private zeroCounts(): Record<OkfIncludeKind, number> {
-    return { spores: 0, canopy: 0, concepts: 0, guides: 0 };
   }
 
   private freshStagingDir(): string {

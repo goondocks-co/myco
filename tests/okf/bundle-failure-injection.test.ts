@@ -8,7 +8,9 @@ import { createProjectId, projectScope } from '@myco/grove/ids.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle, type OkfBundleDeps, type OkfFsOps } from '@myco/okf/bundle.js';
-import type { OkfBundleWriteInput } from '@myco/okf/types.js';
+import type { OkfBundleWriteInput, OkfDocument } from '@myco/okf/types.js';
+import type { OkfGatherResult } from '@myco/okf/gather.js';
+import { fixtureRenderDocuments, invalidFixtureRenderDocuments } from '../helpers/okf-fixture.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
 const AGENT_ID = 'claude-code';
@@ -43,7 +45,10 @@ function realFsOps(): OkfFsOps {
   };
 }
 
-function makeBundle(fsOps?: OkfFsOps): OkfBundle {
+function makeBundle(
+  fsOps?: OkfFsOps,
+  renderDocuments: (g: OkfGatherResult) => OkfDocument[] = fixtureRenderDocuments,
+): OkfBundle {
   const deps: OkfBundleDeps = {
     projectRoot,
     vault: new ProjectVault(projectRoot),
@@ -53,6 +58,7 @@ function makeBundle(fsOps?: OkfFsOps): OkfBundle {
     config: config(),
     now: () => new Date('2026-07-05T12:00:00Z'),
     fsOps,
+    renderDocuments,
   };
   return new OkfBundle(deps);
 }
@@ -109,10 +115,7 @@ function injectable(hooks: {
 }
 
 describe('OkfBundle failure injection', () => {
-  // Phase 2: renderDocuments is stubbed (Task 0.1); every test below bootstraps
-  // its fixture with a real maintain() run, which now throws not_implemented.
-  // Task 1.5 (deeper bundle seam) restores real content so these can unskip.
-  it.skip('final-rename failure rolls back and leaves the previous bundle intact', async () => {
+  it('final-rename failure rolls back and leaves the previous bundle intact', async () => {
     seedSpore('decision-1', 'First decision.');
     await makeBundle().maintain(baseInput());
     expect(manifest()?.bundle_generation).toBe(1);
@@ -141,7 +144,7 @@ describe('OkfBundle failure injection', () => {
     expect(fs.existsSync(path.join(okfDir(), 'spores/decisions/decision-2.md'))).toBe(false);
   });
 
-  it.skip('backup-rename failure leaves the previous bundle intact (nothing moved yet)', async () => {
+  it('backup-rename failure leaves the previous bundle intact (nothing moved yet)', async () => {
     seedSpore('decision-1', 'First decision.');
     await makeBundle().maintain(baseInput());
     const conceptPath = path.join(okfDir(), 'spores/decisions/decision-1.md');
@@ -170,7 +173,7 @@ describe('OkfBundle failure injection', () => {
     expect(fs.existsSync(path.join(okfDir(), 'spores/decisions/decision-2.md'))).toBe(false);
   });
 
-  it.skip('rollback failure records rollback_failed and throws atomic_replace_failed', async () => {
+  it('rollback failure records rollback_failed and throws atomic_replace_failed', async () => {
     seedSpore('decision-1', 'First decision.');
     await makeBundle().maintain(baseInput());
 
@@ -195,7 +198,7 @@ describe('OkfBundle failure injection', () => {
     expect(manifest()?.last_result).toBe('rollback_failed');
   });
 
-  it.skip('first-publish final-rename failure yields a clean no-bundle state', async () => {
+  it('first-publish final-rename failure yields a clean no-bundle state', async () => {
     seedSpore('decision-1', 'A decision.');
     const bundle = makeBundle(
       injectable({
@@ -214,7 +217,7 @@ describe('OkfBundle failure injection', () => {
     expect(fs.existsSync(path.join(okfDir(), 'index.md'))).toBe(false);
   });
 
-  it.skip('backup-cleanup failure records cleanup_pending and the next run sweeps it', async () => {
+  it('backup-cleanup failure records cleanup_pending and the next run sweeps it', async () => {
     seedSpore('decision-1', 'First decision.');
     await makeBundle().maintain(baseInput());
 
@@ -239,7 +242,7 @@ describe('OkfBundle failure injection', () => {
     expect(fs.readdirSync(stateDir).some((n) => n.startsWith('backup-'))).toBe(false);
   });
 
-  it.skip('retries a rename on EBUSY and then succeeds (Windows-style transient lock)', async () => {
+  it('retries a rename on EBUSY and then succeeds (Windows-style transient lock)', async () => {
     seedSpore('decision-1', 'A decision.');
     let failsLeft = 1;
     const bundle = makeBundle(
@@ -260,24 +263,24 @@ describe('OkfBundle failure injection', () => {
     expect(fs.existsSync(path.join(okfDir(), 'index.md'))).toBe(true);
   });
 
-  it.skip('validation failure keeps the previous bundle intact and does not increment generation', async () => {
+  it('validation failure keeps the previous bundle intact and does not increment generation', async () => {
     seedSpore('decision-1', 'A good decision.');
     await makeBundle().maintain(baseInput());
     expect(manifest()?.bundle_generation).toBe(1);
 
-    // A bare agent-authored concept passes adoption (type present) but fails
-    // myco_strict (missing recommended fields) after staging.
-    const conceptsDir = path.join(okfDir(), 'concepts');
-    fs.mkdirSync(conceptsDir, { recursive: true });
-    fs.writeFileSync(path.join(conceptsDir, 'bare.md'), '---\ntype: Note\n---\n\nBare.\n');
-
-    await expect(makeBundle().maintain(baseInput())).rejects.toMatchObject({ code: 'okf_validation_failed' });
-    // Generation unchanged; the good spore concept is still present.
+    // A run whose rendered document fails strict validation (structure-breaking
+    // frontmatter) must reject at finalize, AFTER staging but BEFORE the swap.
+    // A new spore forces a changed (non-short-circuited) run.
+    seedSpore('decision-2', 'Second decision forces a real run.');
+    await expect(makeBundle(undefined, invalidFixtureRenderDocuments).maintain(baseInput())).rejects.toMatchObject({
+      code: 'okf_validation_failed',
+    });
+    // Generation unchanged; the good prior bundle is still present.
     expect(manifest()?.bundle_generation).toBe(1);
     expect(fs.existsSync(path.join(okfDir(), 'spores/decisions/decision-1.md'))).toBe(true);
   });
 
-  it.skip('adopts a crashed marker generation greater than the manifest on the next run', async () => {
+  it('adopts a crashed marker generation greater than the manifest on the next run', async () => {
     seedSpore('decision-1', 'A decision.');
     await makeBundle().maintain(baseInput());
 

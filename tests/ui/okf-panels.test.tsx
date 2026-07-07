@@ -43,7 +43,7 @@ const BASE_STATUS: OkfStatusResponse = {
   inputsHash: 'abc123',
   generatedAt: '2026-07-01T00:00:00.000Z',
   lastResult: 'published',
-  counts: { spores: 10, canopy: 5, concepts: 2, guides: 1 },
+  byType: { decision: 10, file: 5, guide: 1 },
   conceptCount: 18,
   stale: false,
   publishAcknowledged: true,
@@ -122,19 +122,17 @@ describe('OkfActionsPanel — component-consistency + disabled states', () => {
 });
 
 describe('OkfSourcesPanel', () => {
-  it('renders a count row per include kind', () => {
+  it('renders a row per OKF document type with its count', () => {
     wrap(<OkfSourcesPanel status={BASE_STATUS} />);
-    expect(screen.getByText('Spores')).toBeInTheDocument();
-    expect(screen.getByText('Canopy')).toBeInTheDocument();
-    expect(screen.getByText('Concepts')).toBeInTheDocument();
-    expect(screen.getByText('Guides')).toBeInTheDocument();
+    expect(screen.getByText('decision')).toBeInTheDocument();
+    expect(screen.getByText('file')).toBeInTheDocument();
+    expect(screen.getByText('guide')).toBeInTheDocument();
     expect(screen.getByText('10')).toBeInTheDocument();
   });
 
-  it('renders an em dash for every kind when counts are null', () => {
-    wrap(<OkfSourcesPanel status={{ ...BASE_STATUS, counts: null }} />);
-    // One em dash per include kind (spores, canopy, concepts, guides).
-    expect(screen.getAllByText('—')).toHaveLength(4);
+  it('renders an empty state when there are no published pages', () => {
+    wrap(<OkfSourcesPanel status={{ ...BASE_STATUS, byType: null }} />);
+    expect(screen.getByText('No published pages yet.')).toBeInTheDocument();
   });
 });
 

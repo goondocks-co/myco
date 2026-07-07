@@ -151,8 +151,10 @@ export interface OkfBundleWriteResult {
   outputRoot: string;
   dryRun: boolean;
   generatedAt: string;
+  /** Flat page count — total content documents in the published tree. */
   conceptCount: number;
-  counts: Record<OkfIncludeKind, number>;
+  /** Content-document counts grouped by OKF frontmatter `type` (replaces the Myco per-include-kind `counts`). */
+  byType: Record<string, number>;
   warnings: OkfMaintainWarning[];
   validation: OkfValidationReport;
   inputsHash: string;

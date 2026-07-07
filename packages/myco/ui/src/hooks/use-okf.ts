@@ -49,7 +49,7 @@ export interface OkfStatusResponse {
   inputsHash: string | null;
   generatedAt: string | null;
   lastResult: string | null;
-  counts: Record<OkfIncludeKind, number> | null;
+  byType: Record<string, number> | null;
   conceptCount: number | null;
   stale: boolean;
   publishAcknowledged: boolean;

@@ -10,6 +10,7 @@ import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle, type OkfBundleDeps } from '@myco/okf/bundle.js';
 import type { OkfBundleWriteInput } from '@myco/okf/types.js';
+import { fixtureRenderDocuments } from '../helpers/okf-fixture.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
 const AGENT_ID = 'claude-code';
@@ -43,6 +44,7 @@ function makeBundle(lockOptions?: { timeoutMs?: number; retryMs?: number }): Okf
     config: config(),
     now: () => new Date('2026-07-05T12:00:00Z'),
     lockOptions,
+    renderDocuments: fixtureRenderDocuments,
   };
   return new OkfBundle(deps);
 }
@@ -104,15 +106,13 @@ describe('OkfBundle locking', () => {
     }
   });
 
-  // Phase 2: renderDocuments is stubbed (Task 0.1); this exercises full projection.
-  it.skip('completes once the lock is released', async () => {
+  it('completes once the lock is released', async () => {
     seedSpore('decision-1', 'A decision.');
     const result = await makeBundle().maintain(baseInput());
     expect(result.unchanged).toBe(false);
   });
 
-  // Phase 2: renderDocuments is stubbed (Task 0.1); this exercises full projection.
-  it.skip('leaks no net exit listeners across repeated maintains', async () => {
+  it('leaks no net exit listeners across repeated maintains', async () => {
     seedSpore('decision-1', 'A decision.');
     const before = process.listeners('exit').length;
     await makeBundle().maintain(baseInput());
@@ -125,8 +125,13 @@ describe('OkfBundle locking', () => {
 });
 
 describe('OkfBundle concept mutation', () => {
-  // Phase 2: renderDocuments is stubbed (Task 0.1); each test below bootstraps
-  // its fixture with a real maintain() run, which now throws not_implemented.
+  // Task 3.2/4.2: the per-page concept-mutation path (saveConcept/supersede) is
+  // NOT yet reworked to the OKF document model. maintain() now publishes six-key
+  // OKF documents (validated `strict`), but mutateConcepts still reconstructs +
+  // re-renders the legacy `OkfConcept` tree at `myco_strict` — which the
+  // document-model tree fails (no myco_id/tags/source-identity). These stay
+  // skipped until okf_write_page (3.2) + the MCP save surface (4.2) rebuild this
+  // path on the document model; the staging/publish seam (Task 1.5) is complete.
   it.skip('saveConcept adds a concept, bumps the generation, and leaves other files byte-identical', async () => {
     seedSpore('decision-1', 'A decision.');
     const bundle = makeBundle();
