@@ -560,8 +560,18 @@ export const COLLECTIVE_MCP_TOKEN_SECRET = 'MYCO_COLLECTIVE_MCP_TOKEN';
 export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
 
 // --- Team Host ---
-/** Secrets key for the host bearer token in secrets.env. Never stored in the registry record itself. */
+/** Secrets key for the host bearer token in secrets.env. Never stored in the registry record itself.
+ *  MEMBER-side name: the bearer a member received at enrollment and presents to the host, stored in
+ *  the host record's `secrets.env` under the machine-global hosts registry. */
 export const HOST_BEARER_SECRET = 'MYCO_HOST_BEARER';
+/**
+ * HOST-side name for the same bearer, stored machine-scoped in `~/.myco/secrets.env`.
+ * The host mints it when host-serve is enabled; every request arriving on the overlay
+ * listener must present it as `Authorization: Bearer <value>`. Task 2.4's enrollment
+ * hands this value to a joining member, who then stores it under {@link HOST_BEARER_SECRET}.
+ * Distinct key + storage location, one shared value — the single flat-trust host bearer (spec §8/§9).
+ */
+export const HOST_SERVE_BEARER_SECRET = 'MYCO_HOST_SERVE_BEARER';
 
 /**
  * Wire protocol for member-daemon ↔ host-daemon overlay traffic. Bump on any

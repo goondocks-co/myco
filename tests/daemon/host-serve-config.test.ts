@@ -1,0 +1,119 @@
+/**
+ * Team Host — host-serve enablement resolution (Task 2.3). The machine-tier
+ * `daemon.host_serve` opt-in resolves to a `HostServeRuntime` (bind address +
+ * minted bearer) or `null` (host serving off), never throwing: an enabled-but-
+ * misconfigured host yields `null` + one log, never a crash and never a wildcard
+ * bind.
+ */
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import {
+  isBindableOverlayAddress,
+  resolveHostServeBearer,
+  resolveHostServeConfig,
+} from '@myco/daemon/host-serve';
+import { MachineConfigSchema, type MachineConfig } from '@myco/config/schema';
+import { readSecrets } from '@myco/config/secrets';
+import { HOST_SERVE_BEARER_SECRET } from '@myco/constants';
+
+function machineConfig(hostServe?: { enabled?: boolean; overlay_address?: string | null }): MachineConfig {
+  return MachineConfigSchema.parse(
+    hostServe ? { daemon: { host_serve: hostServe } } : {},
+  );
+}
+
+describe('isBindableOverlayAddress', () => {
+  test('rejects wildcards, empties, and URLs', () => {
+    for (const bad of ['0.0.0.0', '::', '0:0:0:0:0:0:0:0', '*', '[::]', '', '   ', 'http://100.64.0.1']) {
+      expect(isBindableOverlayAddress(bad)).toBe(false);
+    }
+    expect(isBindableOverlayAddress(null)).toBe(false);
+    expect(isBindableOverlayAddress(undefined)).toBe(false);
+  });
+
+  test('accepts a concrete overlay/loopback IP', () => {
+    expect(isBindableOverlayAddress('100.64.0.5')).toBe(true);
+    expect(isBindableOverlayAddress('127.0.0.1')).toBe(true);
+  });
+});
+
+describe('resolveHostServeConfig', () => {
+  let home: string;
+  let warnings: Array<{ kind: string; message: string }>;
+  const logger = {
+    info: () => {},
+    warn: (kind: string, message: string) => { warnings.push({ kind, message }); },
+  };
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hs-cfg-'));
+    warnings = [];
+  });
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  test('disabled → null, no warning', () => {
+    const rt = resolveHostServeConfig({ machineConfig: machineConfig(), mycoHome: home, logger });
+    expect(rt).toBeNull();
+    expect(warnings).toHaveLength(0);
+  });
+
+  test('enabled but no overlay_address → null + one warning, no bearer minted', () => {
+    const rt = resolveHostServeConfig({
+      machineConfig: machineConfig({ enabled: true, overlay_address: null }),
+      mycoHome: home,
+      logger,
+    });
+    expect(rt).toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(readSecrets(home)[HOST_SERVE_BEARER_SECRET]).toBeUndefined();
+  });
+
+  test('enabled with a wildcard 0.0.0.0 → null (never a wildcard bind) + one warning', () => {
+    const rt = resolveHostServeConfig({
+      machineConfig: machineConfig({ enabled: true, overlay_address: '0.0.0.0' }),
+      mycoHome: home,
+      logger,
+    });
+    expect(rt).toBeNull();
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('enabled with a valid overlay IP → runtime with a minted, persisted, stable bearer', () => {
+    const rt = resolveHostServeConfig({
+      machineConfig: machineConfig({ enabled: true, overlay_address: '100.64.0.5' }),
+      mycoHome: home,
+      logger,
+    });
+    expect(rt).not.toBeNull();
+    expect(rt!.overlayAddress).toBe('100.64.0.5');
+    expect(rt!.bearer).toMatch(/^[0-9a-f]{64}$/);
+    expect(warnings).toHaveLength(0);
+
+    // Bearer is persisted machine-scoped and stable across a re-resolve.
+    expect(readSecrets(home)[HOST_SERVE_BEARER_SECRET]).toBe(rt!.bearer);
+    const again = resolveHostServeConfig({
+      machineConfig: machineConfig({ enabled: true, overlay_address: '100.64.0.5' }),
+      mycoHome: home,
+      logger,
+    });
+    expect(again!.bearer).toBe(rt!.bearer);
+  });
+});
+
+describe('resolveHostServeBearer', () => {
+  let home: string;
+  beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hs-bearer-')); });
+  afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
+
+  test('mints + persists on first use, returns the same value thereafter', () => {
+    const first = resolveHostServeBearer(home);
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(resolveHostServeBearer(home)).toBe(first);
+    expect(readSecrets(home)[HOST_SERVE_BEARER_SECRET]).toBe(first);
+  });
+});

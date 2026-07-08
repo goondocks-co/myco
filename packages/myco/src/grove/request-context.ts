@@ -487,8 +487,12 @@ function enforceContextSwitchAuth(
  * but kept local so this module has no Node-vs-Workers dependency
  * differences. Both inputs are length-padded to the longer of the two
  * before XOR, so a length mismatch still walks the whole comparison.
+ *
+ * Exported so the Team Host transport-boundary gate (`daemon/host-serve.ts`)
+ * compares the overlay bearer with the SAME constant-time primitive the daemon
+ * token gate uses — one comparison discipline for every daemon-issued secret.
  */
-function timingSafeStringEqual(a: string, b: string): boolean {
+export function timingSafeStringEqual(a: string, b: string): boolean {
   const length = Math.max(a.length, b.length);
   let mismatch = a.length ^ b.length;
   for (let i = 0; i < length; i += 1) {

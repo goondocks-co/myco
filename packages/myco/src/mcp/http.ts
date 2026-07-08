@@ -15,6 +15,7 @@ import {
 } from '../grove/request-context.js';
 import { classifyRoute, refusalMcpBody } from '../host/routing.js';
 import { handleAttachedRequest, proxyLoggerFrom } from '../daemon/host-proxy.js';
+import { isOverlayRequest } from '../daemon/host-serve.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
@@ -139,33 +140,42 @@ export function createStreamableMcpHttpHandler(
     // before any local Grove/DB resolution — an attached project must never open
     // a local Grove DB. A non-attached project (the common case) falls through
     // after a single empty-set registry probe.
-    try {
-      const { projectId } = resolveInboundProjectId(req.headers, vaultDir, {
-        expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
-      });
-      const decision = classifyRoute({ method: req.method ?? 'POST', pathname: '/mcp', projectId });
-      if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
-        res.statusCode = decision.refusal.status;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(refusalMcpBody(decision.refusal));
-        return;
-      }
-      if (decision.kind === 'remote') {
-        await handleAttachedRequest(req, res, decision.target, decision.classification, {
-          logger: options.logger ? proxyLoggerFrom(options.logger, LOG_KINDS.SERVER_ERROR) : undefined,
+    //
+    // A request that ARRIVED on this daemon's overlay listener has already been
+    // routed to its host (this daemon); it is served LOCALLY and must never be
+    // re-classified/re-proxied — skipping attach classification for overlay
+    // requests makes a circular proxy structurally impossible (mirrors the router
+    // chokepoint in daemon/server.ts). handleOverlayRequest already validated the
+    // host bearer and stamped the local bearer, so the resolution below succeeds.
+    if (!isOverlayRequest(req)) {
+      try {
+        const { projectId } = resolveInboundProjectId(req.headers, vaultDir, {
+          expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
         });
-        return;
+        const decision = classifyRoute({ method: req.method ?? 'POST', pathname: '/mcp', projectId });
+        if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
+          res.statusCode = decision.refusal.status;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(refusalMcpBody(decision.refusal));
+          return;
+        }
+        if (decision.kind === 'remote') {
+          await handleAttachedRequest(req, res, decision.target, decision.classification, {
+            logger: options.logger ? proxyLoggerFrom(options.logger, LOG_KINDS.SERVER_ERROR) : undefined,
+          });
+          return;
+        }
+      } catch (err) {
+        // enforceContextSwitchAuth rejected the local bearer — same 401
+        // `unauthorized_context_switch` contract the local resolution path returns.
+        if (err instanceof UnauthorizedRequestContextError) {
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: err.message }));
+          return;
+        }
+        throw err;
       }
-    } catch (err) {
-      // enforceContextSwitchAuth rejected the local bearer — same 401
-      // `unauthorized_context_switch` contract the local resolution path returns.
-      if (err instanceof UnauthorizedRequestContextError) {
-        res.statusCode = 401;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: err.message }));
-        return;
-      }
-      throw err;
     }
 
     let resolved: ReturnType<typeof resolveRequestContextOrLegacy>;

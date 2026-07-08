@@ -39,6 +39,11 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   'daemon.log_retention_days': { home: 'machine', overridableBy: [] },
   'daemon.update_channel': { home: 'machine', overridableBy: [] },
   'daemon.check_interval_hours': { home: 'machine', overridableBy: [] },
+  // Team Host serve opt-in — machine-locked (nobody-shares-it): a machine either
+  // hosts or it does not, and the overlay address is a machine-specific network
+  // fact, never git-shared nor resolved cross-machine. Longest-prefix covers both
+  // `daemon.host_serve.enabled` and `daemon.host_serve.overlay_address`.
+  'daemon.host_serve': { home: 'machine', overridableBy: [] },
   // Legacy `update.channel` leaf. Runtime reads/writes machine
   // `daemon.update_channel` exclusively, and the loader lifts any legacy
   // `update.channel` from myco.yaml or local.yaml to machine once, then strips

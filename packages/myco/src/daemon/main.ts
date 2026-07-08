@@ -7,10 +7,11 @@
  */
 
 import { DaemonServer } from './server.js';
+import { resolveHostServeConfig } from './host-serve.js';
 import type { RouteRequest } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger, type Logger } from './logger.js';
-import { loadMergedConfig, setTierParseFailureListener } from '../config/loader.js';
+import { loadMachineConfig, loadMergedConfig, setTierParseFailureListener } from '../config/loader.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
@@ -1182,6 +1183,16 @@ export async function main(): Promise<void> {
   // providers.
   const inflightRuns = new InflightRunRegistry();
 
+  // Team Host: resolve this machine's opt-in to serving its Grove(s) over the
+  // overlay (Task 2.3). Read from the machine tier directly — host-serve is a
+  // per-machine daemon mechanic, never project/grove-overridable. Returns null
+  // (host serving off) when disabled or misconfigured, always with a clear log.
+  const hostServe = resolveHostServeConfig({
+    machineConfig: loadMachineConfig(mycoHome),
+    mycoHome,
+    logger,
+  });
+
   const server = new DaemonServer({
     vaultDir: bootstrapVaultDir,
     logger,
@@ -1189,6 +1200,7 @@ export async function main(): Promise<void> {
     uiDir: uiDir ?? undefined,
     uiDevProxyTarget: uiDevProxyTarget ?? undefined,
     runtimeCache,
+    hostServe,
     // Don't record activity on every HTTP request — UI polling (every 3-10s)
     // would prevent the PowerManager from ever reaching 'idle' state, blocking
     // all idle-only scheduled tasks (skill-survey, skill-generate, skill-evolve).
