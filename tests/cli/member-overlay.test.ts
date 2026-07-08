@@ -306,6 +306,54 @@ describe('member overlay — multi-host join / leave', () => {
     expect(readHostRegistry()).toHaveLength(1);
   });
 
+  // --- R1: proxy_port, not overlay_address, is the dial disambiguator -------
+
+  test('two hosts at the SAME overlay_address route by their DISTINCT proxy_ports (proxy_port is the disambiguator)', async () => {
+    // The real collision: each host is its own tailnet, both handing out
+    // 100.64.0.1, so the overlay_address is IDENTICAL. Only the per-host persisted
+    // proxy_port can select the right tailnet's tailscaled for the dial. A future
+    // refactor that wrongly keyed routing on overlay_address would break here.
+    const idA = hostId();
+    const idB = hostId();
+    const sameAddress = '100.64.0.1:7433';
+    const projA = createProjectId();
+    const projB = createProjectId();
+
+    await joinHost(
+      { hostRef: idA, key: 'keyA', serverUrl: 'https://a:8080' },
+      deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', sameAddress, [{ grove_id: createGroveId(), project_id: projA }]) }),
+    );
+    await joinHost(
+      { hostRef: idB, key: 'keyB', serverUrl: 'https://b:8080' },
+      deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', sameAddress, [{ grove_id: createGroveId(), project_id: projB }]) }),
+    );
+
+    // Identical overlay_address, DISTINCT persisted proxy_ports.
+    expect(getHost(idA)!.overlay_address).toBe(sameAddress);
+    expect(getHost(idB)!.overlay_address).toBe(sameAddress);
+    expect(getHost(idA)!.proxy_port).toBe(MEMBER_OVERLAY_PROXY_PORT_BASE);
+    expect(getHost(idB)!.proxy_port).toBe(MEMBER_OVERLAY_PROXY_PORT_BASE + 1);
+
+    // The proxy dials `CONNECT <overlay_address> via localhost:<proxy_port>`. With
+    // the address identical, proxy_port ALONE selects the right host — assert each
+    // project resolves to ITS host's proxy_port (and bearer), same address.
+    const routeHostFor = (project: string) => {
+      const d = classifyRoute({ method: 'GET', pathname: '/api/spores', projectId: project as never });
+      if (d.kind !== 'remote') throw new Error(`expected remote route, got ${d.kind}`);
+      return { host: d.target.host, bearer: d.target.bearer };
+    };
+    const a = routeHostFor(projA);
+    const b = routeHostFor(projB);
+    expect(a.host.overlay_address).toBe(sameAddress);
+    expect(b.host.overlay_address).toBe(sameAddress);
+    expect(a.host.proxy_port).toBe(MEMBER_OVERLAY_PROXY_PORT_BASE);
+    expect(b.host.proxy_port).toBe(MEMBER_OVERLAY_PROXY_PORT_BASE + 1);
+    expect(a.host.proxy_port).not.toBe(b.host.proxy_port);
+    // Per-host bearer follows the record too, not the shared address.
+    expect(a.bearer).toBe('bearer-A');
+    expect(b.bearer).toBe('bearer-B');
+  });
+
   // --- idempotency ---------------------------------------------------------
 
   test('re-join converges: no duplicate, projects preserved, proxy_port persisted, single-use key not re-`up`ed', async () => {
