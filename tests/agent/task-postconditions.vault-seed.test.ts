@@ -7,7 +7,7 @@ import { insertRunEvent } from '@myco/db/queries/agent-run-events.js';
 import { insertTurn } from '@myco/db/queries/turns.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { epochSeconds } from '@myco/constants.js';
-import { validateTaskPostconditions } from './task-postconditions.js';
+import { validateTaskPostconditions } from '@myco/agent/task-postconditions.js';
 
 /**
  * Run-end validator coverage for vault-seed's skip-XOR-seed contract.

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { resolvePhaseExecution } from './phase-resolver.js';
-import type { EffectiveConfig, PhaseDefinition } from './types.js';
+import { resolvePhaseExecution } from '@myco/agent/phase-resolver.js';
+import type { EffectiveConfig, PhaseDefinition } from '@myco/agent/types.js';
 
 /**
  * Regression guard for the reasoningLevel plumbing gap this plan closes:

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { aggregateUsage } from './executor-state.js';
-import { analyzeRuntimeTokenBudget } from './run-accounting.js';
-import type { RuntimeUsage } from './types.js';
+import { aggregateUsage } from '@myco/agent/executor-state.js';
+import { analyzeRuntimeTokenBudget } from '@myco/agent/run-accounting.js';
+import type { RuntimeUsage } from '@myco/agent/types.js';
 
 describe('aggregateUsage requestUsageEntries merging', () => {
   test('concatenates entries across phases rather than dropping or overwriting them', () => {

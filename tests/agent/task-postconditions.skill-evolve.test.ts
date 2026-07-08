@@ -7,7 +7,7 @@ import { insertRunEvent } from '@myco/db/queries/agent-run-events.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { epochSeconds } from '@myco/constants.js';
-import { validateTaskPostconditions } from './task-postconditions.js';
+import { validateTaskPostconditions } from '@myco/agent/task-postconditions.js';
 import {
   SKILL_EVOLVE_ASSESS_PHASE_NAME,
   SKILL_EVOLVE_ASSESS_REPORT_ACTION,
@@ -16,7 +16,7 @@ import {
   SKILL_EVOLVE_INVENTORY_REPORT_ACTION,
   SKILL_EVOLVE_INVENTORY_STATE_KEY,
   SKILL_EVOLVE_TASK_NAME,
-} from './skill-evolve-output.js';
+} from '@myco/agent/skill-evolve-output.js';
 
 /**
  * Run-end validator coverage for skill-evolve. `validateSkillEvolveRun`

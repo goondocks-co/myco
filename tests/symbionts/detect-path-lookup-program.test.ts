@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { pathLookupProgram } from './detect.js';
+import { pathLookupProgram } from '@myco/symbionts/detect.js';
 
 describe('pathLookupProgram', () => {
   test('uses `where` on Windows', () => {

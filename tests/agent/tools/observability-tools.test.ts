@@ -8,8 +8,8 @@ import { listReports } from '@myco/db/queries/reports.js';
 import { epochSeconds } from '@myco/constants.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
-import { createObservabilityTools } from './observability-tools.js';
-import type { VaultToolDeps } from './types.js';
+import { createObservabilityTools } from '@myco/agent/tools/observability-tools.js';
+import type { VaultToolDeps } from '@myco/agent/tools/types.js';
 
 /**
  * Coverage for vault_report's server-side spores_created stamping. Drives

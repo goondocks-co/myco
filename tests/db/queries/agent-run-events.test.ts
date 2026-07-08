@@ -8,7 +8,7 @@ import {
   countPhaseToolCallsByOutcome,
   countRunToolCallsByOutcome,
   insertRunEvent,
-} from './agent-run-events.js';
+} from '@myco/db/queries/agent-run-events.js';
 
 describe('countRunToolCallsByOutcome', () => {
   let db: Database;
