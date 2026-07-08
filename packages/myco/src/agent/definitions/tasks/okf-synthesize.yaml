@@ -158,6 +158,7 @@ phases:
         - okf_read_sources
         - okf_read_page
         - okf_list_pages
+        - okf_list_planned_pages
       prompt: |
         Synthesize this one OKF wiki page and stage it by calling
         `okf_write_page`. The harness pins path, type, and title from the plan —
@@ -174,15 +175,21 @@ phases:
         this path isn't one Myco published, the write may be rejected — that's
         expected, not an error to retry.
 
-        Call `okf_list_pages` to see this run's sibling pages and weave in a
-        few links where they genuinely help a reader. Use ABSOLUTE
-        bundle-relative link targets — a leading slash rooted at the bundle,
-        e.g. `[Beta](/concepts/beta.md)` — and link ONLY to pages that appear
-        in `okf_list_pages` (this run's siblings); do not invent links to
-        concepts that aren't in the bundle. Link targets are normalized
-        deterministically after this phase (relative links are rewritten to
-        absolute and unresolvable links are dropped to plain text), so don't
-        stall over one link you can't confirm.
+        Cross-link this page to its siblings so a reader can move between
+        related concepts. Call `okf_list_planned_pages` to see EVERY page this
+        run will produce — that is the full sibling set to link against.
+        (`okf_list_pages` shows only ALREADY-published pages, which is empty on
+        a first run, so don't rely on it for the sibling list.) Weave in a
+        handful — aim for two to four — inline links to the pages most related
+        to this one, wherever the prose naturally references another concept.
+        Use ABSOLUTE bundle-relative link targets — a leading slash rooted at
+        the bundle, e.g. `[Lineage edges](/concepts/lineage-edges.md)` — and
+        link ONLY to paths that appear in `okf_list_planned_pages` (or
+        `okf_list_pages`); do not invent links to concepts that aren't planned.
+        Link targets are normalized deterministically after this phase
+        (relative links are rewritten to absolute, and any link whose page
+        didn't end up in the bundle is dropped to plain text), so link freely
+        among the planned pages without stalling to confirm each one.
 
         Write clear, accurate prose grounded in the source material — do not
         invent facts.
