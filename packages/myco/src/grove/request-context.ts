@@ -202,6 +202,34 @@ export interface MycoRequestContext {
    * Grove registry (`'daemon'`). See {@link TenancySource}.
    */
   tenancySource: TenancySource;
+  /**
+   * True when this request arrived on the daemon's OVERLAY listener — i.e.
+   * the run is being host-served for a remote member over the Team Host
+   * overlay (see `isOverlayRequest`, `daemon/host-serve.ts`). Stamped at the
+   * transport boundary (`daemon/server.ts`) from the spoofing-proof overlay
+   * mark, then carried untouched to the executor's tool surface.
+   *
+   * Residency constraint: on a host-served run the host holds the Grove DB
+   * but NOT the member's working tree, so committed-file publishes (skills/
+   * OKF) and project-tree reads must not touch a tree the host lacks. Read
+   * this through {@link isHostServedRequest}. Absent/false for every local
+   * (non-overlay) run — behavior there is byte-identical to today.
+   */
+  hostServed?: boolean;
+}
+
+/**
+ * True when the request is being host-served for a remote member over the
+ * Team Host overlay (see {@link MycoRequestContext.hostServed}). The single
+ * predicate for the residency write/read gate: committed-file publishes and
+ * project-tree reads consult this so the host never writes or reads a member
+ * working tree it lacks. Coerces the optional flag so an unstamped context
+ * (every local run, daemon sweep, and test fixture) is treated as local.
+ */
+export function isHostServedRequest(
+  context: { hostServed?: boolean } | undefined | null,
+): boolean {
+  return context?.hostServed === true;
 }
 
 /** True iff the request is bound to a Grove (vs a legacy project-local vault). */

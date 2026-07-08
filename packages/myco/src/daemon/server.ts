@@ -744,7 +744,15 @@ export class DaemonServer {
 
         const needsBody = isWriteMethod(req.method);
         const body = needsBody ? await readBody(req) : undefined;
-        const requestContext = this.resolveRouteRequestContext(match.params, req.headers);
+        // Stamp overlay-origin onto the resolved context from the spoofing-proof
+        // overlay mark (a WeakSet keyed on the request object, not a header). A
+        // host-served-for-a-member run carries this to the executor's tool surface
+        // so committed-file publishes / project-tree reads never touch a member
+        // working tree the host lacks. False for every local (loopback) request.
+        const requestContext = {
+          ...this.resolveRouteRequestContext(match.params, req.headers),
+          hostServed: isOverlayRequest(req),
+        };
         // Long-running ops (move, vacuum) take a per-project pause in
         // `projects.toml`; while set, every writer for that project must
         // be refused. Reads stay open so the UI can still surface "this
