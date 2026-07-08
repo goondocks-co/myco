@@ -201,6 +201,7 @@ import { captureBatchImages } from './capture-images.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
 import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
+import { createEventReplayDrainQueue } from '../capture/event-replay-drain.js';
 import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
@@ -1202,6 +1203,15 @@ export async function main(): Promise<void> {
   // pending bytes flush before a terminal mining-trigger route, and its
   // `pendingCount` inhibits deep sleep while a drain is outstanding.
   const transcriptDrain = createTranscriptDrainQueue({ machineId, logger });
+
+  // Team Host: the MEMBER-side attach-aware live-event replay drain (capture-push
+  // C5). When a host is unreachable the collect proxy buffers live capture events
+  // to the DB-free collector buffer; this drain enumerates the attach registry and
+  // re-forwards those buffered events over each host's proxy on reconnect. Its
+  // `pendingCount` inhibits deep sleep while capture is un-shipped, mirroring the
+  // transcript drain. Distinct from the LOCAL buffer reconciler, which enumerates
+  // local Groves only and never sees an attached project's buffer.
+  const eventReplayDrain = createEventReplayDrainQueue({ machineId, logger });
 
   const server = new DaemonServer({
     vaultDir: bootstrapVaultDir,
@@ -2538,6 +2548,23 @@ export async function main(): Promise<void> {
     hold: { pending: () => transcriptDrain.pendingCount() },
     fn: async () => {
       await transcriptDrain.drainAll();
+    },
+  });
+
+  // Team Host attach-aware live-event replay drain (capture-push C5). Re-forwards
+  // an attached project's buffered live capture events to its host when the host
+  // is reachable — retry-on-tick IS the reconnect trigger, so a host that was down
+  // at capture time converges on the next tick. Runs PARALLEL to the local buffer
+  // reconciler's drain (`CAPTURE_BUFFER_DRAIN`), which is listGroves-scoped and
+  // never touches an attached buffer, so there is no double-forward. `hold.pending`
+  // keeps the machine awake while capture is un-shipped.
+  jobRunner.register({
+    name: 'team-host-event-replay-drain',
+    runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
+    hold: { pending: () => eventReplayDrain.pendingCount() },
+    fn: async () => {
+      await eventReplayDrain.drainAll();
     },
   });
 

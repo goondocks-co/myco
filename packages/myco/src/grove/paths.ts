@@ -334,6 +334,23 @@ export function resolveMemberTranscriptDrainDir(): string {
   return path.join(resolveMemberOverlayDir(), MEMBER_TRANSCRIPT_DRAIN_DIRNAME);
 }
 
+export const MEMBER_EVENT_REPLAY_DRAIN_DIRNAME = 'event-replay-drain';
+
+/**
+ * MEMBER-side durable high-water home for the attach-aware live-event replay
+ * drain (capture-push §7 task 5, plan C5). One JSON entry per `(host_id,
+ * session_id)` carrying the count of collect-buffer records the host has already
+ * acked, so a reconnect resends only un-shipped events and a restart resumes at
+ * the same high-water. Machine-scoped under the member overlay home — NOT a
+ * Grove-DB table: an attached project has no local Grove DB (§4), so this is the
+ * sibling of {@link resolveMemberTranscriptDrainDir} for the DB-free collector
+ * buffer (`capture/buffer.ts`). Tests point `MYCO_TEAM_HOME` at a tmpdir for
+ * hermetic disk.
+ */
+export function resolveMemberEventReplayDrainDir(): string {
+  return path.join(resolveMemberOverlayDir(), MEMBER_EVENT_REPLAY_DRAIN_DIRNAME);
+}
+
 /**
  * A short, deterministic per-host tag (10 hex chars of a hash of the host_id).
  * Used to key a host's tailscaled socket + LaunchAgent label. A hash rather than

@@ -42,6 +42,7 @@ import {
   HOST_PROXY_MCP_IDLE_TIMEOUT_MS,
 } from '../constants.js';
 import { EventBuffer } from '../capture/buffer.js';
+import { stampCollectRoute } from '../capture/collect-buffer-route.js';
 import { resolveProjectBufferDir } from '../grove/paths.js';
 import { REQUEST_CONTEXT_AUTH_HEADER, REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import { TOOL_CORTEX, TOOL_SEARCH } from '../tools/definitions.js';
@@ -520,7 +521,13 @@ async function handleCollectRoute(
   const sessionId = resolveSessionId(event, req);
   if (event && sessionId) {
     try {
-      d.bufferAppend(target, sessionId, event);
+      // Stamp the origin route onto the buffered copy so the attach-aware replay
+      // drain (capture-push C5) re-forwards each body to the SAME host route it
+      // was captured on — the collector buffer holds bodies from all five collect
+      // routes and only `/events` bodies carry a `type` (`collect-buffer-route.ts`).
+      // The live forward below still sends the original bytes; only the durable
+      // copy carries the stamp, and the drain strips it before forwarding.
+      d.bufferAppend(target, sessionId, stampCollectRoute(event, pathname));
     } catch (err) {
       // A failed buffer append must not hard-fail the agent. We still synthesize
       // the buffered ack rather than a fallback-tripping response: tripping the
