@@ -345,7 +345,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "fs_read",
           "code_grep"
         ],
-        "maxTurns": 10,
+        "maxTurns": 12,
         "required": true,
         "dependsOn": [],
         "readOnly": true,

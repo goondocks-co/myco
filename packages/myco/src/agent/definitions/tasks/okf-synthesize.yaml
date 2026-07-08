@@ -90,7 +90,10 @@ prompt: >-
 phases:
   - name: explore
     dependsOn: []
-    maxTurns: 10
+    # 12: a first-run full-wiki survey (empty row tables — e.g. right after
+    # enabling OKF) needs a couple more turns than an incremental refresh;
+    # 10 was marginal and intermittently starved it.
+    maxTurns: 12
     required: true
     readOnly: true
     purpose: >-
