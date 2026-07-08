@@ -1,0 +1,47 @@
+{
+  "generator": "myco",
+  "okf_version": "0.1",
+  "project_ref": "project-hash-40ac21e16cc6afdc",
+  "generated_at": "2026-07-08T16:20:12.234Z",
+  "bundle_generation": 3,
+  "inputs_hash": "",
+  "concept_count": 9,
+  "by_type": {
+    "Architecture": 2,
+    "Subsystem": 6,
+    "Overview": 1
+  },
+  "generated_by_run_ref": "run-hash-1fe1be85ccefcde1",
+  "warnings": [
+    {
+      "code": "body_link_downgraded",
+      "message": "dropped a dead body link to \"/architecture/agent-harness.md\" (no such page); kept the link text",
+      "path": "architecture/session-capture-flow.md"
+    },
+    {
+      "code": "body_link_downgraded",
+      "message": "dropped a dead body link to \"/architecture/agent-harness.md\" (no such page); kept the link text",
+      "path": "architecture/session-capture-flow.md"
+    },
+    {
+      "code": "body_link_downgraded",
+      "message": "dropped a dead body link to \"/architecture/agent-harness.md\" (no such page); kept the link text",
+      "path": "subsystems/okf-publishing.md"
+    },
+    {
+      "code": "body_link_downgraded",
+      "message": "dropped a dead body link to \"/architecture/agent-harness.md\" (no such page); kept the link text",
+      "path": "subsystems/okf-publishing.md"
+    },
+    {
+      "code": "body_link_downgraded",
+      "message": "dropped a dead body link to \"/architecture/agent-harness.md\" (no such page); kept the link text",
+      "path": "subsystems/okf-publishing.md"
+    },
+    {
+      "code": "body_link_downgraded",
+      "message": "dropped a dead body link to \"/architecture/agent-harness.md\" (no such page); kept the link text",
+      "path": "subsystems/cortex.md"
+    }
+  ]
+}

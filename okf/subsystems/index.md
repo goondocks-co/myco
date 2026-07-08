@@ -1,0 +1,8 @@
+# Subsystem
+
+* [Canopy: Code-Intelligence Pipeline](canopy.md) - How Canopy turns raw files into a searchable, per-file knowledge index (scan → describe → embed → map), and the three-root-cause pending-count bug family every maintainer of its count logic should know.
+* [Cortex — Session-Start Guidance](cortex.md) - How Cortex generates and injects session-start guidance — stored instructions, digest excerpts, and the config/feature-gating decisions behind them.
+* [OKF Publishing](okf-publishing.md) - The packages/myco/src/okf/ pipeline that derives, serializes, validates, and atomically publishes this very bundle — its path-traversal security fix, its approved deviations from the canonical OKF v0.1 spec, and the Phase 8.4 rule that synthesis must consume pre-computed vault intelligence instead of re-exploring the codebase.
+* [Skill Lifecycle: Candidates to Records](skill-lifecycle.md) - How Myco skills move from candidate through skill_records to a live SKILL.md via vault_write_skill's joint quality gate, and the ceiling/floor deadlock bug that taught the pipeline to batch its failures.
+* [Team Sync: Outbox to Cloudflare Worker to D1](team-sync.md) - How local outbox rows travel through the Cloudflare Worker into D1, and the team_id immutability fix that closed a tenancy-leak class of bugs.
+* [Vault Intelligence: Spores, Digest, Wisdom](vault-intelligence.md) - How Myco turns raw session activity into durable knowledge: the spore lifecycle (active/superseded/consolidated/obsolete), tiered digest extracts, wisdom synthesis, and release-state provenance — the substrate this synthesis run itself consumes.
