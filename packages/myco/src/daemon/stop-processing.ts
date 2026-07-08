@@ -56,7 +56,8 @@ import type { PlanWatchConfig } from './plan-capture.js';
 import { stripPlanTagEnvelopes } from '@myco/plans/tag-envelopes.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 import { materializeSessionMycoToolCalls } from '@myco/db/queries/myco-tool-usage.js';
-import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
+import { filesystemRootFromRequestContext, isHostServedRequest, rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
+import { hostSubstitutedTranscriptPath } from '@myco/host/routed-transcript.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
@@ -821,7 +822,30 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Normalize nullish hook fields to undefined so downstream processStopEvent
     // keeps its existing `string | undefined` contract (the schema accepts
     // `nullish()` for robustness against ephemeral sub-invocation Stop events).
-    const normalizedTranscriptPath = hookTranscriptPath ?? undefined;
+    //
+    // Team Host — C4: substitute the member-local transcript_path with the
+    // host-materialized file for a routed (host-served) session, so the Stop mine
+    // AND the DB `transcript_path` stamp (which the DB-fed SessionEnd trigger in
+    // handleUnregister later reads) resolve to a file that exists on THIS host.
+    // The capture-admission gate + ephemeral-sub guard above still ran on the
+    // member path (preserving today's admission semantics); only the mine/stamp
+    // below use the host path. A local request is untouched. A routed session
+    // whose bytes haven't drained yet degrades to no path — the stamp site guards
+    // on a truthy path, so no bogus member path is stamped, and a later mining
+    // trigger (the next per-turn Stop / boot reconcile) re-stamps once the bytes
+    // land, at which point re-enrich (C6) can repair (§5.3 / C4).
+    const transcriptSubstitution = hostSubstitutedTranscriptPath({
+      hostServed: isHostServedRequest(req.requestContext),
+      machineId: requestMachineId,
+      sessionId,
+      memberTranscriptPath: hookTranscriptPath ?? undefined,
+    });
+    if (transcriptSubstitution.action === 'degraded-missing') {
+      logger.warn(LOG_KINDS.HOOKS_STOP, 'Routed transcript not materialized on host at Stop — deferring mine to replay/re-enrich', {
+        session_id: sessionId,
+      });
+    }
+    const normalizedTranscriptPath = transcriptSubstitution.transcriptPath;
     const normalizedAssistantMessage = lastAssistantMessage ?? undefined;
     const run = () => processStopEvent(
       sessionId,

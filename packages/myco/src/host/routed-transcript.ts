@@ -32,7 +32,7 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
-import { resolveRoutedTranscriptPath } from '../grove/paths.js';
+import { assertSafeCaptureSegment, resolveRoutedTranscriptPath, resolveRoutedTranscriptsDir } from '../grove/paths.js';
 import type { RouteRequest, RouteResponse } from '../daemon/router.js';
 
 /**
@@ -196,4 +196,113 @@ export function createRoutedTranscriptHandler(
     // append or replay — both leave the requested bytes durably present.
     return { status: 200, body: { ok: true, action: result.action, size: result.size } };
   };
+}
+
+// ---------------------------------------------------------------------------
+// C4 — host-side transcript_path substitution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the CURRENT host-materialized transcript file for a routed session
+ * (plan C4). C2 appends the member's pushed bytes to
+ * `<routed-transcripts>/<machine>/<session>/<tid>.jsonl`; `<tid>` rotates on the
+ * member file's inode change (C3), so a session dir may hold several sibling
+ * files. The live one is the MOST-RECENTLY-MODIFIED: rotation appends a fresh
+ * sibling and only the live file keeps growing (a replay is a no-op that never
+ * writes — see {@link createFsRoutedTranscriptStore} — so it cannot bump an old
+ * file's mtime). Returns null when nothing is materialized yet (dir missing or no
+ * `.jsonl`), so the caller degrades rather than resolve a path that does not
+ * exist on this host.
+ *
+ * The `<machine>/<session>` segments are wire-supplied (tenancy header + event
+ * body); they funnel through {@link assertSafeCaptureSegment} (a malformed id
+ * resolves to null, never an escaped path) — defense in depth alongside the
+ * materializer's own guard.
+ */
+export function resolveRoutedTranscriptPathForSession(
+  machineId: string,
+  sessionId: string,
+): string | null {
+  let dir: string;
+  try {
+    dir = path.join(
+      resolveRoutedTranscriptsDir(),
+      assertSafeCaptureSegment(machineId, 'machine_id'),
+      assertSafeCaptureSegment(sessionId, 'session_id'),
+    );
+  } catch {
+    return null; // hostile/malformed id — never resolve a path
+  }
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null; // session dir absent — bytes not drained yet
+  }
+  let newest: { filePath: string; mtimeMs: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    const filePath = path.join(dir, entry.name);
+    let mtimeMs: number;
+    try {
+      mtimeMs = fs.statSync(filePath).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (!newest || mtimeMs > newest.mtimeMs) newest = { filePath, mtimeMs };
+  }
+  return newest?.filePath ?? null;
+}
+
+/** The outcome of a C4 substitution attempt (see {@link hostSubstitutedTranscriptPath}). */
+export type TranscriptSubstitutionAction = 'unchanged' | 'substituted' | 'degraded-missing';
+
+export interface TranscriptSubstitution {
+  /**
+   * The path the host should mine/stamp: the member path UNCHANGED for a local
+   * request or an event with no path; the host-materialized file for a routed
+   * request; `undefined` when the request is routed but nothing is materialized
+   * yet (degrade — the caller must NOT stamp/mine the bogus member path).
+   */
+  transcriptPath: string | undefined;
+  action: TranscriptSubstitutionAction;
+}
+
+/**
+ * Host-side `transcript_path` substitution for routed capture (plan C4,
+ * capture-push §5.3). A routed session's transcript lives on the MEMBER's disk,
+ * so the member-local `transcript_path` in a proxied capture event does not exist
+ * on the HOST; left unrewritten the host miner — and the DB-fed SessionEnd trigger
+ * that later reads the stamped session row — would open a missing file. For a
+ * request that is host-served for a member (`hostServed`, the B1 overlay-origin
+ * signal), resolve `(machineId, sessionId)` → the file C2 materialized and return
+ * it in place of the member path.
+ *
+ * A local (non-host-served) request, or an event that carried no path, is returned
+ * UNTOUCHED — member paths on a local daemon are correct, and over-substitution
+ * must never invent a path where the event had none. When host-served but nothing
+ * is materialized yet (bytes not drained), return `degraded-missing` with NO path:
+ * the ordering guarantee (C1 flushes before the terminal mining routes) makes this
+ * rare, and replay / re-enrich (C6) recovers it — far better than stamping a member
+ * path the host can never open.
+ *
+ * `machineId` is the MEMBER's id, carried verbatim on the proxied request's
+ * `x-myco-machine-id` tenancy header (the same id the C1 drain keys the
+ * materialized tree on); `sessionId` is the event's session id.
+ */
+export function hostSubstitutedTranscriptPath(params: {
+  hostServed: boolean;
+  machineId: string | undefined;
+  sessionId: string;
+  memberTranscriptPath: string | undefined;
+}): TranscriptSubstitution {
+  const { hostServed, machineId, sessionId, memberTranscriptPath } = params;
+  if (!hostServed || !memberTranscriptPath) {
+    return { transcriptPath: memberTranscriptPath, action: 'unchanged' };
+  }
+  const hostPath = machineId
+    ? resolveRoutedTranscriptPathForSession(machineId, sessionId)
+    : null;
+  if (hostPath) return { transcriptPath: hostPath, action: 'substituted' };
+  return { transcriptPath: undefined, action: 'degraded-missing' };
 }

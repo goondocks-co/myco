@@ -37,10 +37,12 @@ import {
 import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
 import {
   filesystemRootFromRequestContext,
+  isHostServedRequest,
   projectScopeFromRequestContext,
   rowProjectIdFromRequestContext,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
+import { hostSubstitutedTranscriptPath } from '@myco/host/routed-transcript.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch, toPromptBatchOrigin, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
@@ -277,6 +279,33 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       ? filesystemRootFromRequestContext(req.requestContext)
       : requestProjectRoot;
     const requestMachineId = req.requestContext?.machineId ?? machineId;
+
+    // Team Host — C4: for a session host-served for a remote member, the event's
+    // `transcript_path` is a MEMBER-local path that does not exist on this host.
+    // Substitute it with the file C2 materialized at
+    // `routed-transcripts/<machine>/<session>/<tid>.jsonl`, resolved from
+    // (machineId, sessionId), BEFORE any ensureSession*/live-mining site below —
+    // so live mid-turn mining reads a file that exists here. A local request is
+    // untouched; a routed session whose bytes haven't drained yet degrades to no
+    // path (no bogus mine — replay/re-enrich recovers). §5.3 / C4.
+    {
+      const memberTranscriptPath = typeof event.transcript_path === 'string' && event.transcript_path.length > 0
+        ? event.transcript_path
+        : undefined;
+      const substitution = hostSubstitutedTranscriptPath({
+        hostServed: isHostServedRequest(req.requestContext),
+        machineId: requestMachineId,
+        sessionId: event.session_id,
+        memberTranscriptPath,
+      });
+      if (substitution.action !== 'unchanged') {
+        event.transcript_path = substitution.transcriptPath;
+        logger.debug(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Routed transcript_path substituted for host-served event', {
+          session_id: event.session_id,
+          action: substitution.action,
+        });
+      }
+    }
 
     logger.debug(LOG_KINDS.HOOKS_EVENT, 'Event received', { type: event.type, session_id: event.session_id });
 
