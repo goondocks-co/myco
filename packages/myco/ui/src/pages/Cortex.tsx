@@ -234,7 +234,6 @@ function useCortexBuilderResult(runId: string | null) {
 export default function Cortex() {
   const location = useLocation();
   const navigate = useNavigate();
-  const projectPath = useProjectPathBuilder();
   const activeTab = resolveActiveTab(location.search);
   const canopySection = resolveCanopySection(location.search);
 
@@ -556,6 +555,7 @@ function InstructionsTab() {
 }
 
 function BuilderTab() {
+  const projectPath = useProjectPathBuilder();
   const builderRunsQuery = useAgentRuns({
     task: 'cortex-prompt-builder',
     limit: CORTEX_BUILDER_HISTORY_LIMIT,
@@ -833,6 +833,7 @@ function BuilderRunDetail({
   isFetching,
   onRefresh,
 }: BuilderRunDetailProps) {
+  const projectPath = useProjectPathBuilder();
   const parsed = useMemo(() => parseBuilderInstruction(runInstruction), [runInstruction]);
   const [copied, setCopied] = useState(false);
 
