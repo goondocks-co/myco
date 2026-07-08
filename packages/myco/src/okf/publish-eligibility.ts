@@ -117,6 +117,22 @@ function representedRepoPath(rawContent: string, relPath: string): string | null
   return null;
 }
 
+/**
+ * Scan an in-memory content set (DB-resident pages) with the same detectors
+ * the on-disk staged-bundle scan applies — one finding stream per page. The
+ * DB-resident write path calls this at finalize, where content becomes
+ * team-visible.
+ */
+export function scanContentSet(
+  docs: ReadonlyArray<{ path: string; content: string }>,
+): PublishFinding[] {
+  const findings: PublishFinding[] = [];
+  for (const doc of docs) {
+    scanText(doc.content, doc.path, findings);
+  }
+  return findings;
+}
+
 /** Recursively scan a staged bundle tree; returns findings in deterministic path order. */
 export function scanStagedBundle(stagingRoot: string): PublishFinding[] {
   const findings: PublishFinding[] = [];

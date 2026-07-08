@@ -11,6 +11,8 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,6 +29,7 @@ export interface LineageInsert {
   source_ids_added?: string;
   content_snapshot: string;
   created_at: number;
+  machine_id?: string;
 }
 
 /** Row shape returned from skill lineage queries (all columns). */
@@ -40,6 +43,8 @@ export interface LineageRow {
   source_ids_added: string;
   content_snapshot: string;
   created_at: number;
+  machine_id: string;
+  synced_at: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +61,8 @@ export const LINEAGE_COLUMNS = [
   'source_ids_added',
   'content_snapshot',
   'created_at',
+  'machine_id',
+  'synced_at',
 ] as const;
 
 const SELECT_COLUMNS = LINEAGE_COLUMNS.join(', ');
@@ -76,6 +83,8 @@ function toLineageRow(row: Record<string, unknown>): LineageRow {
     source_ids_added: (row.source_ids_added as string) ?? '[]',
     content_snapshot: row.content_snapshot as string,
     created_at: row.created_at as number,
+    machine_id: (row.machine_id as string) ?? 'local',
+    synced_at: (row.synced_at as number) ?? null,
   };
 }
 
@@ -84,9 +93,9 @@ function toLineageRow(row: Record<string, unknown>): LineageRow {
 // ---------------------------------------------------------------------------
 
 /**
- * Insert a new skill lineage entry.
- *
- * Lineage is derived data — there is no syncRow call here.
+ * Insert a new skill lineage entry and enqueue it for team sync — lineage
+ * carries the skill's full content history, so it must reach every member's
+ * replica just like the head record.
  * Requires a valid `skill_id` (foreign key to skill_records table).
  */
 export function insertLineage(data: LineageInsert): LineageRow {
@@ -95,10 +104,10 @@ export function insertLineage(data: LineageInsert): LineageRow {
   db.prepare(
     `INSERT INTO skill_lineage (
        id, project_id, skill_id, generation, action, rationale,
-       source_ids_added, content_snapshot, created_at
+       source_ids_added, content_snapshot, created_at, machine_id
      ) VALUES (
        ?, ?, ?, ?, ?, ?,
-       ?, ?, ?
+       ?, ?, ?, ?
      )`,
   ).run(
     data.id,
@@ -110,11 +119,14 @@ export function insertLineage(data: LineageInsert): LineageRow {
     data.source_ids_added ?? '[]',
     data.content_snapshot,
     data.created_at,
+    data.machine_id ?? getTeamMachineId(),
   );
 
-  return toLineageRow(
+  const row = toLineageRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM skill_lineage WHERE id = ?`).get(data.id) as Record<string, unknown>,
   );
+  syncRow('skill_lineage', row);
+  return row;
 }
 
 /**
