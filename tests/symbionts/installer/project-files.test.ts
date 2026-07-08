@@ -22,7 +22,7 @@ import {
   reconcileProjectSkillSymlinks,
   resolveEnabledSkillTargets,
   syncSkillSymlinks,
-} from './project-files.js';
+} from '@myco/symbionts/installer/project-files.js';
 
 const CLAUDE = { home: '.claude', target: '.claude/skills', name: 'claude-code' };
 const CLINE = { home: '.cline', target: '.cline/skills', name: 'cline' };

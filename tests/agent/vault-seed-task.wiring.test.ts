@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { loadAgentTasks, resolveDefinitionsDir } from './loader.js';
-import { PHASE_POSTCONDITION_KINDS } from './phase-postcondition-kinds.js';
-import { computeWaves } from './wave-computation.js';
+import { loadAgentTasks, resolveDefinitionsDir } from '@myco/agent/loader.js';
+import { PHASE_POSTCONDITION_KINDS } from '@myco/agent/phase-postcondition-kinds.js';
+import { computeWaves } from '@myco/agent/wave-computation.js';
 
 /**
  * vault-seed.yaml phase-graph wiring coverage. Asserts each phase binds

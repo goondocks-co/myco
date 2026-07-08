@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { AgentTaskSchema, PhaseDefinitionSchema } from './schemas.js';
+import { AgentTaskSchema, PhaseDefinitionSchema } from '@myco/agent/schemas.js';
 
 /**
  * Coverage for the authored `purpose` field on PhaseDefinitionSchema. The

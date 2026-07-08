@@ -21,7 +21,7 @@ import {
   readSecrets,
   writeSecret,
   relocateLegacyProjectSecrets,
-} from './secrets.js';
+} from '@myco/config/secrets.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {

@@ -4,8 +4,8 @@ import {
   resolveReasoningModel,
   resolveThinkingConfig,
   resolveModelSettings,
-} from './reasoning-levels.js';
-import type { ProviderConfig } from './types.js';
+} from '@myco/agent/reasoning-levels.js';
+import type { ProviderConfig } from '@myco/agent/types.js';
 
 describe('resolveThinkingConfig', () => {
   test('maps low to a fixed small budget by default', () => {

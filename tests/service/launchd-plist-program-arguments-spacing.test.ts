@@ -11,8 +11,8 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { renderLaunchdPlist } from './launchd-plist.js';
-import type { ServiceSpec } from './types.js';
+import { renderLaunchdPlist } from '@myco/service/launchd-plist.js';
+import type { ServiceSpec } from '@myco/service/types.js';
 
 function specWith(overrides: Partial<ServiceSpec>): ServiceSpec {
   return {

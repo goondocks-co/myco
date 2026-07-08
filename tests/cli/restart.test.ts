@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { supervisorStatusHint } from './restart.js';
+import { supervisorStatusHint } from '@myco/cli/restart.js';
 
 const LABEL = 'co.goondocks.myco';
 

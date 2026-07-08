@@ -6,7 +6,7 @@ import { insertRun } from '@myco/db/queries/runs.js';
 import { insertRunEvent } from '@myco/db/queries/agent-run-events.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { epochSeconds } from '@myco/constants.js';
-import { checkPhasePostCondition, type PhasePostConditionInput } from './phase-postconditions.js';
+import { checkPhasePostCondition, type PhasePostConditionInput } from '@myco/agent/phase-postconditions.js';
 
 /**
  * Coverage for the four vault-seed phase postconditions. Each check reads
