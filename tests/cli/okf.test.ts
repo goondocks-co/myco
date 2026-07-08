@@ -145,41 +145,42 @@ describe('myco okf CLI', () => {
     expect((lastJson().error as { code: string }).code).toBe('invalid_input_file');
   });
 
-  // listPages()/getPage() walk the published tree directly (no manifest/
-  // marker dependency) — seed it with a raw file write.
-  it('page list returns published pages with OKF fields, no Myco fields', async () => {
+  // Pages are DB rows — seed through the CLI's own authored-page write path
+  // (the same OkfStore code path every surface shares).
+  async function seedAuthoredPage(): Promise<void> {
+    const md = path.join(projectRoot(), 'example-input.md');
+    fs.writeFileSync(md, '---\ntype: Note\ntitle: Example\ndescription: D.\n---\n\nBody text.\n');
+    await run(['concept', 'save', '--id', 'notes/example', '--input', `@${md}`], vaultDir);
+    expect(process.exitCode).toBe(0);
+    written.length = 0;
+  }
+
+  it('page list returns wiki pages with OKF fields, no Myco fields', async () => {
     writeConfig(true);
     seedGroveDb(() => registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 }));
-    fs.mkdirSync(path.join(projectRoot(), 'okf', 'notes'), { recursive: true });
-    fs.writeFileSync(
-      path.join(projectRoot(), 'okf/notes/example.md'),
-      '---\ntype: Note\ntitle: Example\ndescription: D.\ntimestamp: 2026-07-05\n---\n\nBody.\n',
-    );
+    await seedAuthoredPage();
     await run(['page', 'list'], vaultDir);
     expect(process.exitCode).toBe(0);
     const pages = lastJson().pages as Array<Record<string, unknown>>;
-    expect(pages).toEqual([
-      { path: 'notes/example.md', type: 'Note', title: 'Example', description: 'D.', timestamp: '2026-07-05' },
-    ]);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]).toMatchObject({ path: 'notes/example.md', type: 'Note', title: 'Example', description: 'D.' });
+    expect(typeof pages[0].timestamp).toBe('string');
     expect(pages[0]).not.toHaveProperty('myco_source_kind');
+    expect(pages[0]).not.toHaveProperty('machine_id');
   });
 
-  it('page get returns the parsed page shape with a rendered-markdown body', async () => {
+  it('page get returns the flattened page shape with the markdown body', async () => {
     writeConfig(true);
     seedGroveDb(() => registerAgent({ id: AGENT_ID, name: 'Agent', created_at: 1_783_000_000 }));
-    fs.mkdirSync(path.join(projectRoot(), 'okf', 'notes'), { recursive: true });
-    fs.writeFileSync(
-      path.join(projectRoot(), 'okf/notes/example.md'),
-      '---\ntype: Note\ntitle: Example\ndescription: D.\ntimestamp: 2026-07-05\n---\n\nBody text.\n',
-    );
+    await seedAuthoredPage();
     await run(['page', 'get', 'notes/example'], vaultDir);
     expect(process.exitCode).toBe(0);
-    expect(lastJson().page).toEqual({
+    const page = lastJson().page as Record<string, unknown>;
+    expect(page).toMatchObject({
       path: 'notes/example.md',
       type: 'Note',
       title: 'Example',
       description: 'D.',
-      timestamp: '2026-07-05',
       body: 'Body text.',
     });
   });

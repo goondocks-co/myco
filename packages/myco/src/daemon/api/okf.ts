@@ -1,17 +1,15 @@
 /**
- * Daemon HTTP surface for the OKF capability. Every route is `tenantRoute`-
- * wrapped at registration: the wrapper resolves + authorizes the principal
- * (rejecting missing tenancy with 400 `tenancy-violation`) BEFORE the handler
- * runs, so a handler never trusts "is requestContext present?" as
- * authorization. All routes funnel into the single `OkfBundle` capability;
- * typed `OkfError`s map to the frozen HTTP status set.
+ * OKF daemon API — the HTTP surface over the DB-resident wiki, wrapped in
+ * tenancy authorization. All writes funnel into the single `OkfStore`
+ * capability; reads come from the okf query layer; typed `OkfError`s map to
+ * the frozen HTTP status set.
  *
  *   POST /api/okf/acknowledge
  *   GET  /api/okf/status
  *   POST /api/okf/validate
- *   GET  /api/okf/pages                (list — OKF document pages)
+ *   GET  /api/okf/pages                (list — wiki page heads)
  *   GET  /api/okf/pages/*              (get — prefix route, slash-safe paths)
- *   POST /api/okf/concepts             (save — legacy editorial concept surface)
+ *   POST /api/okf/concepts             (save — editorial authored-page surface)
  *   POST /api/okf/concepts/supersede
  */
 
@@ -25,17 +23,23 @@ import { errorBody } from './error-envelope.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import { ProjectVault } from '@myco/vault/project-vault.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
-import { OkfBundle } from '@myco/okf/bundle.js';
+import { OkfStore } from '@myco/okf/store.js';
 import { OkfError, OKF_ERROR_HTTP_STATUS } from '@myco/okf/errors.js';
-import { scanStagedBundle } from '@myco/okf/publish-eligibility.js';
+import { validateWikiRows } from '@myco/okf/validate.js';
+import { parseConceptDoc } from '@myco/okf/frontmatter.js';
+import {
+  latestOkfGeneration,
+  latestRevisionForPage,
+  listOkfPages,
+  getOkfPageByPath,
+} from '@myco/db/queries/okf.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 
 const PAGES_PREFIX = '/api/okf/pages/';
 
 interface OkfContext {
-  bundle: OkfBundle;
+  store: OkfStore;
   config: MycoConfig;
   projectRoot: string;
   vaultDir: string;
@@ -48,15 +52,13 @@ function contextFor(principal: RequestPrincipal): OkfContext {
   const projectRoot = resolveProjectRoot(vaultDir);
   const config = loadMergedConfig(vaultDir, { groveId: principal.tenancy.groveId });
   const scope = projectScope(principal.tenancy.projectId as GroveProjectId);
-  const bundle = new OkfBundle({
-    projectRoot,
-    vault: new ProjectVault(projectRoot),
+  const store = new OkfStore({
     scope,
     projectId: principal.tenancy.projectId,
     machineId: principal.identity.machineId,
     config,
   });
-  return { bundle, config, projectRoot, vaultDir, scope, machineId: principal.identity.machineId };
+  return { store, config, projectRoot, vaultDir, scope, machineId: principal.identity.machineId };
 }
 
 /** Map a thrown OkfError to its frozen HTTP envelope; rethrow anything else. */
@@ -74,6 +76,33 @@ function asRecord(body: unknown): Record<string, unknown> {
   return body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
 }
 
+/**
+ * The on-disk CLAIMED bundle probe — a plain marker check, never an OkfBundle
+ * construction. True when a user has materialized the wiki into the repo
+ * (e.g. this repository's committed `okf/`); drives claim-conditional UI
+ * affordances (Open in VS Code, the AGENTS.md pointer expectation).
+ */
+function claimedBundleExists(projectRoot: string, outputPath: string): boolean {
+  return fs.existsSync(path.join(projectRoot, outputPath.replace(/\/+$/, ''), 'index.md'));
+}
+
+/** Current wiki rows (active heads + their latest revisions) for validation. */
+function currentWikiRows(ctx: OkfContext): Array<{ path: string; frontmatter: Record<string, unknown>; body: string }> {
+  const rows: Array<{ path: string; frontmatter: Record<string, unknown>; body: string }> = [];
+  for (const head of listOkfPages(ctx.scope, 'active')) {
+    const revision = latestRevisionForPage(head.id);
+    if (!revision) continue;
+    let frontmatter: Record<string, unknown>;
+    try {
+      frontmatter = JSON.parse(revision.frontmatter) as Record<string, unknown>;
+    } catch {
+      frontmatter = { type: head.type };
+    }
+    rows.push({ path: head.path, frontmatter, body: revision.body });
+  }
+  return rows;
+}
+
 // ---------------------------------------------------------------------------
 // Raw handlers — wrapped with tenantRoute at registration.
 // ---------------------------------------------------------------------------
@@ -81,14 +110,15 @@ function asRecord(body: unknown): Record<string, unknown> {
 export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
   try {
-    const status = ctx.bundle.status();
     const enabled = capabilityEnabled(ctx.config, 'okf');
     const outputPath = ctx.config.okf.maintain.output_path;
+    const pages = listOkfPages(ctx.scope, 'active');
+    const published = latestOkfGeneration(ctx.scope, ['published']);
+    const latest = latestOkfGeneration(ctx.scope);
 
     let validation: { ok: boolean; level: string; filesChecked: number; conceptsChecked: number } | null = null;
-    const publishFindings = status.bundleExists ? scanStagedBundle(status.outputRoot) : [];
-    if (status.bundleExists) {
-      const report = ctx.bundle.validate(status.outputRoot);
+    if (pages.length > 0) {
+      const report = validateWikiRows(currentWikiRows(ctx));
       validation = {
         ok: report.ok,
         level: report.level,
@@ -97,8 +127,14 @@ export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrin
       };
     }
 
-    // AGENTS.md pointer state (managed block reflects the reconciler's view).
-    const pointerExpected = enabled && ctx.config.okf.maintain.managed_agents_md_pointer !== false;
+    const byType: Record<string, number> = {};
+    for (const page of pages) byType[page.type] = (byType[page.type] ?? 0) + 1;
+
+    // AGENTS.md pointer state. The pointer is only EXPECTED once a claimed
+    // on-disk bundle exists — a DB-only wiki has nothing in the repo for
+    // other agents to read yet (claim-flow scope).
+    const claimed = claimedBundleExists(ctx.projectRoot, outputPath);
+    const pointerExpected = enabled && claimed && ctx.config.okf.maintain.managed_agents_md_pointer !== false;
     let pointerPresent = false;
     try {
       const agents = fs.readFileSync(path.join(ctx.projectRoot, 'AGENTS.md'), 'utf8');
@@ -107,34 +143,41 @@ export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrin
       pointerPresent = false;
     }
 
-    // Findings that BLOCKED the last synthesis publish (persisted to the
-    // manifest when the ephemeral run aborted) — the synthesis-world source of a
-    // publish block, since a blocked run publishes nothing so the published tree
-    // never gains the offending finding. Fold them into publishEligibility so
-    // the OKF page's load-time block panel lights up on a plain reload.
-    const pendingFindings = status.pendingFindings ?? [];
-    const publishedKeys = new Set(publishFindings.map((f) => `${f.code}::${f.path}`));
+    // A blocked LATEST generation is the one publish-block state: its
+    // findings drive the load-time banner, and acknowledge flips it.
+    const blocked = latest?.status === 'blocked' ? latest : null;
+    let pendingFindings: Array<{ code: string; path: string; hash?: string }> = [];
+    if (blocked) {
+      try {
+        pendingFindings = JSON.parse(blocked.findings) as Array<{ code: string; path: string; hash?: string }>;
+      } catch {
+        pendingFindings = [];
+      }
+    }
 
     return {
       status: 200,
       body: {
-        ...status,
+        outputRoot: path.resolve(ctx.projectRoot, outputPath),
+        bundleExists: pages.length > 0,
+        claimedBundleExists: claimed,
+        bundleGeneration: published?.generation ?? null,
+        inputsHash: published?.inputs_hash || null,
+        generatedAt: published ? new Date(published.updated_at * 1000).toISOString() : null,
+        lastResult: latest ? latest.status : null,
+        byType: pages.length > 0 ? byType : null,
+        pageCount: pages.length > 0 ? pages.length : null,
+        publishAcknowledged: !blocked,
+        pendingFindings,
         enabled,
         outputPath,
         validation,
         agentsPointer: { present: pointerPresent, stale: pointerPresent !== pointerExpected },
         publishEligibility: {
-          // `ok` means "a repo-visible publish is NOT blocked" — every published-
-          // tree finding is acknowledged AND nothing is pending from a blocked
-          // synthesis run. It is NOT "zero findings" (see `findings` for the raw
-          // list). Plan 7 renders `ok` as the publishable state.
-          ok: status.publishAcknowledged && pendingFindings.length === 0,
-          findings: [
-            ...publishFindings.map((f) => ({ code: f.code, path: f.path, excerpt: f.excerpt })),
-            ...pendingFindings
-              .filter((f) => !publishedKeys.has(`${f.code}::${f.path}`))
-              .map((f) => ({ code: f.code, path: f.path, excerpt: '' })),
-          ],
+          // `ok` means "nothing is blocked awaiting acknowledgement" — the
+          // latest generation is published (or nothing has run yet).
+          ok: !blocked,
+          findings: pendingFindings.map((f) => ({ code: f.code, path: f.path, excerpt: '' })),
         },
         lastRun: null, // filled from agent_runs once the okf-synthesize task reports its own run history
       },
@@ -145,43 +188,21 @@ export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrin
 }
 
 /**
- * Acknowledge the findings that blocked the last synthesis publish, draining
- * `manifest.pending_findings` into `acknowledged_findings`. When the blocked
- * run's staged pages were preserved (the orphaned staging), acknowledging
- * publishes them immediately — the content is already synthesized and paid
- * for, so no new run is needed. Returns the refreshed status envelope plus
- * `publishedRecovered` when the orphan shipped.
+ * Acknowledge the latest blocked wiki generation and publish it — the content
+ * is already synthesized as durable rows, so acknowledging means ship, not
+ * run-again. Returns the published generation number, or published:false when
+ * nothing was blocked.
  */
 export async function handleOkfAcknowledge(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
   try {
-    const status = await ctx.bundle.acknowledgePendingFindings();
-    // The publish attempt must not fail the acknowledgement itself: a fresh
-    // blocking finding in the recovered pages re-orphans them (the abort
-    // preserves staging) and surfaces via pending_findings on the next
-    // status read.
-    let publishedRecovered = false;
-    let pageCount: number | undefined;
-    let publishError: string | undefined;
-    try {
-      const published = await ctx.bundle.publishOrphanedStaging({
-        logSummary: 'Published recovered pages after findings acknowledgement.',
-      });
-      if (published) {
-        publishedRecovered = true;
-        pageCount = published.pageCount;
-      }
-    } catch (err) {
-      publishError = err instanceof Error ? err.message : String(err);
-    }
+    const published = ctx.store.acknowledge();
     return {
       status: 200,
       body: {
         ok: true,
-        status,
-        publishedRecovered,
-        ...(pageCount !== undefined ? { pageCount } : {}),
-        ...(publishError !== undefined ? { publishError } : {}),
+        published: published !== null,
+        ...(published ? { generation: published.generation, pageCount: published.page_count } : {}),
       },
     };
   } catch (err) {
@@ -189,24 +210,38 @@ export async function handleOkfAcknowledge(_req: RouteRequest, principal: Reques
   }
 }
 
-export async function handleOkfValidate(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
+export async function handleOkfValidate(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
-  const body = asRecord(req.body);
-  const target = typeof body.path === 'string' ? path.resolve(ctx.projectRoot, body.path) : undefined;
   try {
-    return { status: 200, body: { ok: true, validation: ctx.bundle.validate(target) } };
+    return { status: 200, body: { ok: true, validation: validateWikiRows(currentWikiRows(ctx)) } };
   } catch (err) {
     return okfErrorResponse(err);
   }
 }
 
-/** List published OKF document pages — the document-model read primitive behind the knowledge browser (Task 5.1). */
+/** List wiki page heads — the read primitive behind the UI structure tree. */
 export async function handleOkfPagesList(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
-  return { status: 200, body: { ok: true, pages: ctx.bundle.listPages() } };
+  const pages = listOkfPages(ctx.scope, 'active').map((p) => {
+    let tags: string[];
+    try {
+      tags = JSON.parse(p.tags) as string[];
+    } catch {
+      tags = [];
+    }
+    return {
+      path: p.path,
+      type: p.type,
+      title: p.title,
+      description: p.description,
+      tags,
+      timestamp: new Date(p.updated_at * 1000).toISOString(),
+    };
+  });
+  return { status: 200, body: { ok: true, pages } };
 }
 
-/** Get one published OKF document page's frontmatter fields + rendered-markdown body, by bundle-relative path. */
+/** Get one wiki page's frontmatter fields + markdown body, by bundle-relative path. */
 export async function handleOkfPageGet(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
   if (!req.pathname.startsWith(PAGES_PREFIX)) {
@@ -218,8 +253,23 @@ export async function handleOkfPageGet(req: RouteRequest, principal: RequestPrin
   } catch {
     return { status: 400, body: errorBody('invalid_request', 'undecodable page path') };
   }
-  const page = ctx.bundle.getPage(pagePath);
-  return { status: 200, body: { ok: true, page } };
+  const page = ctx.store.readPage(pagePath);
+  if (!page) return { status: 200, body: { ok: true, page: null } };
+  const fm = page.frontmatter as Record<string, unknown>;
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      page: {
+        path: page.path,
+        type: typeof fm.type === 'string' ? fm.type : 'note',
+        title: typeof fm.title === 'string' ? fm.title : undefined,
+        description: typeof fm.description === 'string' ? fm.description : undefined,
+        timestamp: typeof fm.timestamp === 'string' ? fm.timestamp : undefined,
+        body: page.body,
+      },
+    },
+  };
 }
 
 export async function handleOkfConceptSave(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
@@ -229,13 +279,32 @@ export async function handleOkfConceptSave(req: RouteRequest, principal: Request
     return { status: 400, body: errorBody('invalid_request', 'id and markdown are required') };
   }
   try {
-    const result = await ctx.bundle.saveConcept({
-      id: body.id,
-      markdown: body.markdown,
-      expectedGeneration: typeof body.expectedGeneration === 'number' ? body.expectedGeneration : undefined,
-      provenance: { actor: 'cli' },
+    // Optimistic concurrency: the caller pins the published generation it
+    // read; a mismatch means the wiki moved underneath the edit.
+    if (typeof body.expectedGeneration === 'number') {
+      const current = latestOkfGeneration(ctx.scope, ['published'])?.generation ?? null;
+      if (current !== null && current !== body.expectedGeneration) {
+        throw new OkfError('okf_generation_conflict', `wiki is at generation ${current}, caller expected ${body.expectedGeneration}`);
+      }
+    }
+    const { frontmatter, body: pageBody } = parseConceptDoc(body.markdown);
+    const result = ctx.store.writeAuthoredPage({
+      path: body.id,
+      type: typeof frontmatter.type === 'string' ? frontmatter.type : 'concept',
+      title: typeof frontmatter.title === 'string' ? frontmatter.title : body.id,
+      description: typeof frontmatter.description === 'string' ? frontmatter.description : '',
+      body: pageBody,
+      tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
     });
-    return { status: 200, body: { ok: true, ...result } };
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        status: result.status,
+        generation: result.generation.generation,
+        findings: result.findings,
+      },
+    };
   } catch (err) {
     return okfErrorResponse(err);
   }
@@ -248,12 +317,7 @@ export async function handleOkfConceptSupersede(req: RouteRequest, principal: Re
     return { status: 400, body: errorBody('invalid_request', 'oldId, newId, and reason are required') };
   }
   try {
-    const result = await ctx.bundle.supersedeConcept({
-      oldId: body.oldId,
-      newId: body.newId,
-      reason: body.reason,
-      provenance: { actor: 'cli' },
-    });
+    const result = ctx.store.supersedePage(body.oldId, body.newId, body.reason);
     return { status: 200, body: { ok: true, ...result } };
   } catch (err) {
     return okfErrorResponse(err);
@@ -273,3 +337,6 @@ export function registerOkfRoutes(
   server.registerRoute('POST', '/api/okf/concepts/supersede', tenantRoute(tenant, handleOkfConceptSupersede));
   server.registerRoute('GET', '/api/okf/pages/*', tenantRoute(tenant, handleOkfPageGet));
 }
+
+/** Wildcard route helper — exported for tests that build page paths. */
+export const OKF_PAGES_ROUTE_PREFIX = PAGES_PREFIX;

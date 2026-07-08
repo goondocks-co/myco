@@ -5,10 +5,12 @@ import { assertSafeConceptId, detectCollisions, OkfPathError } from './paths.js'
 import {
   OKF_MARKER_FILENAME,
   type OkfBundleMode,
+  type OkfDocument,
   type OkfValidationIssue,
   type OkfValidationLevel,
   type OkfValidationReport,
 } from './types.js';
+import { renderOkfDocument } from './serialize.js';
 
 /**
  * Bundle validation, as two entirely separate rule-set families sharing one
@@ -383,6 +385,57 @@ export function validateOkfDocumentFile(
  * `mode` only affects `myco_strict` findings; the OKF document-model levels
  * never emit a downgradable code.
  */
+/**
+ * Validate the DB-resident wiki — the row set a generation serves — with the
+ * same per-document rules the on-disk walk applies: each page is rendered to
+ * its OKF-standard document text and checked, paths are safety-checked, and
+ * concept ids are collision-checked after case-fold normalization. Indexes
+ * and the log are render-time artifacts of the row set, so they have no
+ * independent validity to check here.
+ */
+export function validateWikiRows(
+  pages: ReadonlyArray<{ path: string; frontmatter: Record<string, unknown>; body: string }>,
+  level: OkfValidationLevel = 'myco_strict',
+): OkfValidationReport {
+  const issues: OkfValidationIssue[] = [];
+  const conceptIds: string[] = [];
+  let filesChecked = 0;
+
+  for (const page of pages) {
+    filesChecked += 1;
+    let raw: string;
+    try {
+      raw = renderOkfDocument({
+        path: page.path,
+        frontmatter: page.frontmatter as OkfDocument['frontmatter'],
+        body: page.body,
+      }).content;
+    } catch (err) {
+      issues.push(issue('error', 'unrenderable_document', page.path, err instanceof Error ? err.message : String(err)));
+      continue;
+    }
+    issues.push(...validateConceptSource(raw, page.path, level));
+    checkPathSafety(page.path, issues);
+    conceptIds.push(page.path.replace(/\.md$/, ''));
+  }
+
+  if (level === 'myco_strict') {
+    for (const id of new Set(detectCollisions(conceptIds))) {
+      issues.push(
+        issue('error', 'duplicate_concept_id', `${id}.md`, 'concept id collides with another id after case-fold normalization'),
+      );
+    }
+  }
+
+  return {
+    ok: !issues.some((entry) => entry.level === 'error'),
+    level,
+    filesChecked,
+    conceptsChecked: filesChecked,
+    issues,
+  };
+}
+
 export function validateBundleTree(
   root: string,
   level: OkfValidationLevel,

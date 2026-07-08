@@ -351,6 +351,50 @@ export class OkfStore {
   }
 
   /**
+   * Editorial supersede: retire the old page head, recording a final revision
+   * that carries its current body and the supersession reason — auditable
+   * history without content loss. The replacement page must already exist.
+   */
+  supersedePage(oldPath: string, newPath: string, reason: string): { retired: string; replacement: string } {
+    this.assertEnabled();
+    const oldDoc = oldPath.endsWith('.md') ? oldPath : `${oldPath}.md`;
+    const newDoc = newPath.endsWith('.md') ? newPath : `${newPath}.md`;
+    const oldHead = getOkfPageByPath(this.deps.scope, oldDoc);
+    if (!oldHead || oldHead.status !== 'active') {
+      throw new OkfError('okf_maintain_failed', `no active page at ${oldDoc} to supersede`);
+    }
+    const replacement = getOkfPageByPath(this.deps.scope, newDoc);
+    if (!replacement || replacement.status !== 'active') {
+      throw new OkfError('okf_maintain_failed', `replacement page ${newDoc} does not exist — write it first`);
+    }
+    const at = this.epoch();
+    const current = latestRevisionForPage(oldHead.id);
+    const db = getDatabase();
+    db.prepare('BEGIN').run();
+    try {
+      insertOkfPageRevision({
+        id: crypto.randomUUID(),
+        project_id: this.deps.projectId,
+        machine_id: this.deps.machineId,
+        page_id: oldHead.id,
+        page_generation: oldHead.generation + 1,
+        bundle_generation_id: current?.bundle_generation_id ?? '',
+        action: 'authored',
+        rationale: `Superseded by ${newDoc}: ${reason}`,
+        frontmatter: current?.frontmatter ?? JSON.stringify({ type: oldHead.type }),
+        body: current?.body ?? '',
+        created_at: at,
+      });
+      updateOkfPage(oldHead.id, { status: 'retired', generation: oldHead.generation + 1, updated_at: at });
+      db.prepare('COMMIT').run();
+    } catch (err) {
+      db.prepare('ROLLBACK').run();
+      throw err;
+    }
+    return { retired: oldDoc, replacement: newDoc };
+  }
+
+  /**
    * Acknowledge the latest blocked generation's findings and publish it —
    * the content is already synthesized and paid for; acknowledging means
    * ship, not run-again. Returns null when nothing is blocked.

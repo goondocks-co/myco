@@ -1,20 +1,26 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import { ProjectVault } from '@myco/vault/project-vault.js';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import {
   projectScopeFromRequestContext,
   requestContextFromEnvironment,
 } from '@myco/grove/request-context.js';
-import { OkfBundle } from '@myco/okf/bundle.js';
+import { OkfStore } from '@myco/okf/store.js';
 import { OkfError, OKF_ERROR_HTTP_STATUS } from '@myco/okf/errors.js';
+import { validateWikiRows } from '@myco/okf/validate.js';
+import { parseConceptDoc } from '@myco/okf/frontmatter.js';
+import {
+  latestOkfGeneration,
+  latestRevisionForPage,
+  listOkfPages,
+} from '@myco/db/queries/okf.js';
 import { initVaultDb } from './shared.js';
 
 /**
- * `myco okf …` — thin CLI over the OkfBundle capability. Parsing is a pure,
- * non-exiting function (`parseOkfCommand`) so Plan 8's docs anti-drift test can
- * import it; `run` owns DB init, capability construction, and the JSON envelope.
+ * `myco okf …` — thin CLI over the DB-resident wiki: reads via the okf query
+ * layer, writes via the single `OkfStore` capability (the same code path the
+ * daemon API and MCP surface use). Parsing is a pure, non-exiting function
+ * (`parseOkfCommand`) so the docs anti-drift test can import it; `run` owns
+ * DB init, store construction, and the JSON envelope.
  *
  * Exit codes: 0 success; 1 user error (bad args / OkfError with a 4xx code);
  * 2 runtime error (OkfError with a 5xx code, or any non-OkfError). `run` sets
@@ -105,40 +111,57 @@ export function parseOkfCommand(argv: string[]): ParseResult {
   }
 }
 
-interface BundleContext {
-  bundle: OkfBundle;
+interface StoreContext {
+  store: OkfStore;
   scope: ReturnType<typeof projectScopeFromRequestContext>;
-  projectRoot: string;
-  machineId: string;
 }
 
-function buildBundle(vaultDir: string): BundleContext {
+function buildStore(vaultDir: string): StoreContext {
   const requestContext = requestContextFromEnvironment(process.env, vaultDir, { launchContextTenancy: true });
   const scope = projectScopeFromRequestContext(requestContext);
-  const projectRoot = resolveProjectRoot(vaultDir);
   const config = loadMergedConfig(vaultDir, { groveId: requestContext.groveId ?? undefined });
-  const bundle = new OkfBundle({
-    projectRoot,
-    vault: new ProjectVault(projectRoot),
+  const store = new OkfStore({
     scope,
-    projectId: requestContext.projectId ?? '',
+    projectId: requestContext.projectId ?? null,
     machineId: requestContext.machineId,
     config,
   });
-  return { bundle, scope, projectRoot, machineId: requestContext.machineId };
+  return { store, scope };
 }
 
-async function dispatch(ctx: BundleContext, cmd: OkfCliCommand): Promise<unknown> {
-  const { bundle, projectRoot } = ctx;
-  switch (cmd.kind) {
-    case 'validate': {
-      // A CLI-supplied path is relative to the project root, not the process cwd.
-      const target = cmd.path ? path.resolve(projectRoot, cmd.path) : undefined;
-      const report = bundle.validate(target);
-      return { ok: true, validation: report };
+function currentWikiRows(ctx: StoreContext): Array<{ path: string; frontmatter: Record<string, unknown>; body: string }> {
+  return listOkfPages(ctx.scope, 'active').map((head) => {
+    const revision = latestRevisionForPage(head.id);
+    let frontmatter: Record<string, unknown>;
+    try {
+      frontmatter = JSON.parse(revision?.frontmatter ?? '{}') as Record<string, unknown>;
+    } catch {
+      frontmatter = { type: head.type };
     }
-    case 'status':
-      return { ok: true, status: bundle.status() };
+    return { path: head.path, frontmatter, body: revision?.body ?? '' };
+  });
+}
+
+async function dispatch(ctx: StoreContext, cmd: OkfCliCommand): Promise<unknown> {
+  const { store, scope } = ctx;
+  switch (cmd.kind) {
+    case 'validate':
+      return { ok: true, validation: validateWikiRows(currentWikiRows(ctx)) };
+    case 'status': {
+      const pages = listOkfPages(scope, 'active');
+      const published = latestOkfGeneration(scope, ['published']);
+      const latest = latestOkfGeneration(scope);
+      return {
+        ok: true,
+        status: {
+          bundleExists: pages.length > 0,
+          bundleGeneration: published?.generation ?? null,
+          pageCount: pages.length,
+          lastResult: latest?.status ?? null,
+          generatedAt: published ? new Date(published.updated_at * 1000).toISOString() : null,
+        },
+      };
+    }
     case 'concept-save': {
       let markdown: string;
       try {
@@ -146,27 +169,54 @@ async function dispatch(ctx: BundleContext, cmd: OkfCliCommand): Promise<unknown
       } catch (err) {
         throw new OkfCliUserError('invalid_input_file', `cannot read --input file ${JSON.stringify(cmd.inputFile)}: ${(err as Error).message}`);
       }
-      const result = await bundle.saveConcept({
-        id: cmd.id,
-        markdown,
-        expectedGeneration: cmd.expectedGeneration,
-        provenance: { actor: 'cli' },
+      if (typeof cmd.expectedGeneration === 'number') {
+        const current = latestOkfGeneration(scope, ['published'])?.generation ?? null;
+        if (current !== null && current !== cmd.expectedGeneration) {
+          throw new OkfError('okf_generation_conflict', `wiki is at generation ${current}, caller expected ${cmd.expectedGeneration}`);
+        }
+      }
+      const { frontmatter, body } = parseConceptDoc(markdown);
+      const result = store.writeAuthoredPage({
+        path: cmd.id,
+        type: typeof frontmatter.type === 'string' ? frontmatter.type : 'concept',
+        title: typeof frontmatter.title === 'string' ? frontmatter.title : cmd.id,
+        description: typeof frontmatter.description === 'string' ? frontmatter.description : '',
+        body,
+        tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
       });
-      return { ok: true, id: result.id, bundleGeneration: result.bundleGeneration };
+      return { ok: true, id: cmd.id, status: result.status, bundleGeneration: result.generation.generation };
     }
     case 'concept-supersede': {
-      const result = await bundle.supersedeConcept({
-        oldId: cmd.oldId,
-        newId: cmd.newId,
-        reason: cmd.reason,
-        provenance: { actor: 'cli' },
-      });
-      return { ok: true, oldId: result.oldId, newId: result.newId, bundleGeneration: result.bundleGeneration };
+      const result = store.supersedePage(cmd.oldId, cmd.newId, cmd.reason);
+      return { ok: true, oldId: result.retired, newId: result.replacement };
     }
     case 'page-list':
-      return { ok: true, pages: bundle.listPages() };
-    case 'page-get':
-      return { ok: true, page: bundle.getPage(cmd.path) };
+      return {
+        ok: true,
+        pages: listOkfPages(scope, 'active').map((p) => ({
+          path: p.path,
+          type: p.type,
+          title: p.title,
+          description: p.description,
+          timestamp: new Date(p.updated_at * 1000).toISOString(),
+        })),
+      };
+    case 'page-get': {
+      const page = store.readPage(cmd.path);
+      if (!page) return { ok: true, page: null };
+      const fm = page.frontmatter as Record<string, unknown>;
+      return {
+        ok: true,
+        page: {
+          path: page.path,
+          type: typeof fm.type === 'string' ? fm.type : 'note',
+          title: typeof fm.title === 'string' ? fm.title : undefined,
+          description: typeof fm.description === 'string' ? fm.description : undefined,
+          timestamp: typeof fm.timestamp === 'string' ? fm.timestamp : undefined,
+          body: page.body,
+        },
+      };
+    }
   }
 }
 
@@ -180,7 +230,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   const cleanup = await initVaultDb(vaultDir);
   try {
-    const result = await dispatch(buildBundle(vaultDir), parsed.cmd);
+    const result = await dispatch(buildStore(vaultDir), parsed.cmd);
     console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     if (err instanceof OkfCliUserError) {
