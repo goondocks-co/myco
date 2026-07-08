@@ -146,16 +146,44 @@ export async function handleOkfStatus(_req: RouteRequest, principal: RequestPrin
 
 /**
  * Acknowledge the findings that blocked the last synthesis publish, draining
- * `manifest.pending_findings` into `acknowledged_findings` so the next
- * `okf-synthesize` run publishes. The non-`maintain` replacement for the dead
- * `maintain({acknowledgePublish:true})` acknowledge path (§B); returns the
- * refreshed status envelope (pending now empty).
+ * `manifest.pending_findings` into `acknowledged_findings`. When the blocked
+ * run's staged pages were preserved (the orphaned staging), acknowledging
+ * publishes them immediately — the content is already synthesized and paid
+ * for, so no new run is needed. Returns the refreshed status envelope plus
+ * `publishedRecovered` when the orphan shipped.
  */
 export async function handleOkfAcknowledge(_req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
   try {
     const status = await ctx.bundle.acknowledgePendingFindings();
-    return { status: 200, body: { ok: true, status } };
+    // The publish attempt must not fail the acknowledgement itself: a fresh
+    // blocking finding in the recovered pages re-orphans them (the abort
+    // preserves staging) and surfaces via pending_findings on the next
+    // status read.
+    let publishedRecovered = false;
+    let pageCount: number | undefined;
+    let publishError: string | undefined;
+    try {
+      const published = await ctx.bundle.publishOrphanedStaging({
+        logSummary: 'Published recovered pages after findings acknowledgement.',
+      });
+      if (published) {
+        publishedRecovered = true;
+        pageCount = published.pageCount;
+      }
+    } catch (err) {
+      publishError = err instanceof Error ? err.message : String(err);
+    }
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        status,
+        publishedRecovered,
+        ...(pageCount !== undefined ? { pageCount } : {}),
+        ...(publishError !== undefined ? { publishError } : {}),
+      },
+    };
   } catch (err) {
     return okfErrorResponse(err);
   }

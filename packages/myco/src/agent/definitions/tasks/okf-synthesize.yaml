@@ -278,8 +278,11 @@ phases:
         summaries for the modules this page covers (`vault_search_canopy`),
         the spores behind its decisions (`vault_spores`,
         `vault_search_semantic`/`vault_search_fts`), and for a guide page the
-        skill bodies listed in `okf_read_sources`' vault.skills (`fs_read`
-        their paths). Then SPOT-VERIFY the concrete
+        skill bodies listed in the vault orientation's skills slice (`fs_read`
+        their paths). If you need the code's structural map, call
+        `okf_read_sources` with kind "map" — the cheap Canopy-map slice; the
+        full orientation is for the explore phase, not per-page work. Then
+        SPOT-VERIFY the concrete
         claims you make — `fs_read` the key module or `code_grep` the pattern
         you are about to name — but do NOT re-explore the codebase; a couple
         of verification reads is the ceiling. Name the concrete files and

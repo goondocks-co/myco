@@ -73,6 +73,13 @@ export async function finalizeOkfSynthesisSession(
   if (!session) return null;
   try {
     return await session.staged.finalize(opts);
+  } catch (err) {
+    // A failed publish (blocked findings, validation) already released the
+    // lock and dropped the staging tree in finalize's own finally — preserve
+    // re-renders the staged docs as the orphaned staging so the synthesis
+    // spend survives for the next generation or an acknowledge-publish.
+    session.staged.abort({ preserveStaging: true });
+    throw err;
   } finally {
     SESSIONS.delete(runId);
   }
@@ -82,12 +89,14 @@ export async function finalizeOkfSynthesisSession(
  * Abort the run's staged generation and drop it, releasing the lock without
  * touching the published bundle. Safe no-op when no session is open — the
  * executor's failure cleanup calls this unconditionally for okf-synthesize.
+ * `preserveStaging` keeps the staged pages as the orphaned staging so the
+ * next generation publishes them without re-synthesis.
  */
-export function abortOkfSynthesisSession(runId: string): void {
+export function abortOkfSynthesisSession(runId: string, opts?: { preserveStaging?: boolean }): void {
   const session = SESSIONS.get(runId);
   if (!session) return;
   try {
-    session.staged.abort();
+    session.staged.abort(opts);
   } finally {
     SESSIONS.delete(runId);
   }

@@ -112,8 +112,26 @@ export interface StagedGeneration {
     lastRunRef?: { headSha: string | null; maxVaultUpdatedAt: number } | null;
     logSummary?: string;
   }): Promise<OkfBundleWriteResult>;
-  abort(): void;
+  /**
+   * Release the session without publishing. `preserveStaging` keeps the pages
+   * this session staged (fresh docs only, never carried copies) as the
+   * orphaned staging so a later generation can publish them without
+   * re-synthesizing — staged content is costly and must survive a run failure.
+   */
+  abort(opts?: { preserveStaging?: boolean }): void;
 }
+
+/** The preserved staging of a failed synthesis run, awaiting consumption by the next generation. */
+export interface OkfOrphanedStaging {
+  /** Run that staged these pages, or null when unknown. */
+  runId: string | null;
+  createdAt: string;
+  /** Bundle-relative `.md` paths of the preserved pages. */
+  paths: string[];
+}
+
+/** Orphaned staging older than this is stale — discarded at read time, never seeded. */
+const ORPHAN_STAGING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface BeginStagedGenerationInput {
   mode: OkfBundleMode;
@@ -367,6 +385,10 @@ export class OkfBundle {
       this.sweepStale(manifest, warnings);
       stagingDir = this.freshStagingDir();
       if (carryForward) this.seedStagingFromPublished(stagingDir, outputRoot, carriedForwardDocs, carriedForwardPaths);
+      // A prior failed run's preserved pages join this generation as fresh
+      // docs (fingerprinted, indexed, validated like any staged page). A page
+      // this run re-stages at the same path wins over its recovered copy.
+      this.seedStagingFromOrphan(stagingDir, docs, warnings);
       return stagingDir;
     };
 
@@ -516,10 +538,25 @@ export class OkfBundle {
         // after its write succeeds — writeStagedDoc rejects an invalid doc
         // (reserved basename, unsafe path) by throwing.
         this.writeStagedDoc(dir, sanitized);
+        // Last write wins per path: a re-staged page (or one seeded from the
+        // orphaned staging) must appear ONCE in the staged set, or the
+        // collision guard would sink the publish over a self-collision.
+        const prior = docs.findIndex((d) => d.path === sanitized.path);
+        if (prior >= 0) docs.splice(prior, 1);
         docs.push(sanitized);
       },
       finalize,
-      abort: () => release(),
+      abort: (opts) => {
+        if (opts?.preserveStaging && docs.length > 0) {
+          try {
+            this.preserveOrphanedStaging(docs, input.generatedByRunId ?? null);
+          } catch {
+            // Preservation is best-effort — releasing the lock must never be
+            // blocked by a failed orphan write.
+          }
+        }
+        release();
+      },
     };
   }
 
@@ -559,8 +596,8 @@ export class OkfBundle {
       ...doc,
       frontmatter: {
         ...fm,
-        title: sanitizePublishedText(fm.title),
-        description: sanitizePublishedText(fm.description),
+        ...(fm.title !== undefined ? { title: sanitizePublishedText(fm.title) } : {}),
+        ...(fm.description !== undefined ? { description: sanitizePublishedText(fm.description) } : {}),
         ...(fm.tags ? { tags: fm.tags.map((t) => sanitizePublishedText(t)) } : {}),
       },
       body: sanitizePublishedText(doc.body),
@@ -1694,6 +1731,129 @@ export class OkfBundle {
    * reconstruct-and-re-render concept-mutation path (`reconstructConceptSet`)
    * already accepts.
    */
+  /**
+   * Preserve a failing session's freshly staged pages (never carried copies —
+   * those live in the published tree) as the orphaned staging: one slot, a
+   * newer failure replaces an older orphan. Docs are re-rendered from the
+   * in-memory staged set, so the orphan holds exactly what stageDocument
+   * accepted — sanitized, validated content documents.
+   */
+  private preserveOrphanedStaging(docs: OkfDocument[], runId: string | null): void {
+    const orphanDir = this.deps.vault.okfOrphanDir();
+    this.safeRm(orphanDir);
+    fs.mkdirSync(orphanDir, { recursive: true });
+    for (const doc of docs) this.writeStagedDoc(orphanDir, doc);
+    this.deps.vault.okfStateDir();
+    const manifest: OkfOrphanedStaging = {
+      runId,
+      createdAt: this.now().toISOString(),
+      paths: docs.map((d) => d.path),
+    };
+    fs.writeFileSync(this.deps.vault.okfOrphanManifestPath(), `${JSON.stringify(manifest, null, 2)}\n`);
+  }
+
+  /**
+   * The preserved staging awaiting consumption, or null when none exists.
+   * A stale orphan (older than {@link ORPHAN_STAGING_TTL_MS}) or one whose
+   * manifest/tree is missing or malformed is discarded here, at the single
+   * read chokepoint — callers never see an orphan that cannot be seeded.
+   */
+  orphanedStaging(): OkfOrphanedStaging | null {
+    const manifestPath = this.deps.vault.okfOrphanManifestPath();
+    const orphanDir = this.deps.vault.okfOrphanDir();
+    let raw: string;
+    try {
+      raw = fs.readFileSync(manifestPath, 'utf8');
+    } catch {
+      // Manifest gone: sweep any headless tree so it can't linger forever.
+      this.safeRm(orphanDir);
+      return null;
+    }
+    let parsed: OkfOrphanedStaging;
+    try {
+      const candidate = JSON.parse(raw) as OkfOrphanedStaging;
+      if (typeof candidate.createdAt !== 'string' || !Array.isArray(candidate.paths)) throw new Error('bad shape');
+      parsed = candidate;
+    } catch {
+      this.discardOrphanedStaging();
+      return null;
+    }
+    const age = this.now().getTime() - Date.parse(parsed.createdAt);
+    if (!fs.existsSync(orphanDir) || Number.isNaN(age) || age > ORPHAN_STAGING_TTL_MS) {
+      this.discardOrphanedStaging();
+      return null;
+    }
+    return parsed;
+  }
+
+  private discardOrphanedStaging(): void {
+    this.safeRm(this.deps.vault.okfOrphanDir());
+    this.safeRm(this.deps.vault.okfOrphanManifestPath());
+  }
+
+  /**
+   * Seed a fresh staging dir from the orphaned staging, recording each
+   * recovered page as a FRESH doc (fingerprinted, indexed, and validated like
+   * any page this run stages). The orphan is consumed: once its pages join a
+   * generation they either publish with it or re-orphan if that generation
+   * also aborts with preserve.
+   */
+  private seedStagingFromOrphan(stagingDir: string, docs: OkfDocument[], warnings: OkfMaintainWarning[]): void {
+    const orphan = this.orphanedStaging();
+    if (!orphan) return;
+    const orphanDir = this.deps.vault.okfOrphanDir();
+    let recovered = 0;
+    for (const rel of orphan.paths) {
+      const abs = path.join(orphanDir, rel);
+      let rawDoc: string;
+      try {
+        rawDoc = fs.readFileSync(abs, 'utf8');
+      } catch {
+        continue;
+      }
+      let parsedDoc: OkfDocument;
+      try {
+        const { frontmatter, body } = parseConceptDoc(rawDoc);
+        parsedDoc = { path: rel, frontmatter: frontmatter as OkfDocument['frontmatter'], body };
+      } catch {
+        continue; // unparseable — drop rather than sink the generation
+      }
+      const dest = path.join(stagingDir, rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, rawDoc);
+      if (!docs.some((d) => d.path === rel)) docs.push(parsedDoc);
+      recovered += 1;
+    }
+    this.discardOrphanedStaging();
+    if (recovered > 0) {
+      warnings.push({
+        code: 'recovered_staged_pages',
+        message: `recovered ${recovered} staged page${recovered === 1 ? '' : 's'} from a prior failed run into this generation.`,
+      });
+    }
+  }
+
+  /**
+   * Publish the orphaned staging as its own generation — no agent run, no
+   * re-synthesis. Returns null when no orphan is pending. Used after findings
+   * acknowledgement: the blocked content is already staged and paid for, so
+   * acknowledging publishes it directly.
+   */
+  async publishOrphanedStaging(opts?: { logSummary?: string }): Promise<OkfBundleWriteResult | null> {
+    const orphan = this.orphanedStaging();
+    if (!orphan) return null;
+    const staged = await this.beginStagedGeneration({ mode: 'published', generatedByRunId: orphan.runId ?? undefined });
+    try {
+      return await staged.finalize({
+        inputsHash: `recovered-${orphan.runId ?? 'unknown'}`,
+        logSummary: opts?.logSummary ?? 'Published pages recovered from a failed synthesis run.',
+      });
+    } catch (err) {
+      staged.abort({ preserveStaging: true });
+      throw err;
+    }
+  }
+
   private seedStagingFromPublished(
     stagingDir: string,
     outputRoot: string,

@@ -348,15 +348,22 @@ describe('OKF Iteration 2 — full-flow smoke (conformance + privacy + naive-blo
       frontmatter: { type: 'gotcha', title: 'Leak Attempt', description: 'Simulates a prompt-hygiene failure.', timestamp: new Date().toISOString() },
       body: `A model that ignored prompt hygiene might write the raw path: ${SEEDED_ABS_PATH}`,
     });
-    await expect(leakStaged.finalize({ inputsHash: 'leak-attempt' })).rejects.toMatchObject({
-      code: 'okf_publish_not_acknowledged',
-      details: {
-        findings: expect.arrayContaining([
-          expect.objectContaining({ code: 'absolute_local_path', path: 'gotchas/leak-attempt.md' }),
-          expect.objectContaining({ code: 'raw_session_identifier', path: 'gotchas/leak-attempt.md' }),
-        ]),
-      },
-    });
+    // The session UUID inside the leaked path is REWRITTEN at stage time
+    // (structural sanitization — no raw_session_identifier finding fires);
+    // the absolute local path is deliberately NOT auto-scrubbed and blocks
+    // the publish for human inspection.
+    let leakError: unknown;
+    try {
+      await leakStaged.finalize({ inputsHash: 'leak-attempt' });
+    } catch (err) {
+      leakError = err;
+    }
+    if (!(leakError instanceof OkfError)) throw new Error(`expected OkfError, got ${String(leakError)}`);
+    expect(leakError.code).toBe('okf_publish_not_acknowledged');
+    const leakFindings = (leakError.details as { findings: Array<{ code: string; path: string }> }).findings;
+    expect(leakFindings.some((f) => f.code === 'absolute_local_path' && f.path === 'gotchas/leak-attempt.md')).toBe(true);
+    expect(leakFindings.some((f) => f.code === 'raw_session_identifier')).toBe(false);
+
     // Blocked, not published — the failed finalize wiped the staging dir and
     // released the lock; the previously published (clean) bundle is untouched.
     expect(openBundle().status().bundleGeneration).toBe(1);

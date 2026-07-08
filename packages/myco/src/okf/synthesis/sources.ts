@@ -298,3 +298,13 @@ export function gatherSources(scope: OkfSourceScope): OkfSourceSet {
     vault: gatherVault(scope),
   };
 }
+
+/**
+ * Just the Canopy map — the cheap structural-orientation slice for callers
+ * (per-page synthesis items) that don't need the full source orientation.
+ * Null when Canopy is disabled or no map has been generated.
+ */
+export function gatherCanopyMap(scope: OkfSourceScope): string | null {
+  if (!capabilityEnabled(scope.config, 'canopy')) return null;
+  return readCanopyMap(scope.projectId, scope.machineId)?.content ?? null;
+}

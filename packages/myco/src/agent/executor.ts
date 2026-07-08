@@ -54,6 +54,8 @@ import {
 } from './instruction-builders.js';
 import { finalizeOkfSynthesisSession, abortOkfSynthesisSession } from './tools/okf-staging.js';
 import { computeOkfSynthesizeSnapshot, type OkfSynthesizeSnapshot } from '@myco/okf/schedule.js';
+import { OkfBundle } from '@myco/okf/bundle.js';
+import { ProjectVault } from '@myco/vault/project-vault.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { resolveCost } from './cost/index.js';
 import {
@@ -876,8 +878,9 @@ export async function runAgent(
  * okf-synthesize: the synthesize map phase may have opened a staged
  * generation (taking the OKF lifecycle lock) on the first okf_write_page.
  * A failed run never reaches finalizeOkfSynthesize, so abort here to publish
- * nothing and release the lock. Safe no-op when no session was opened (empty
- * plan, or a failure before the first page write).
+ * nothing and release the lock — preserving the staged pages as the orphaned
+ * staging for the next generation to publish. Safe no-op when no session was
+ * opened (empty plan, or a failure before the first page write).
  *
  * skill-generate: the draft phase stages SKILL.md + manifest to
  * .myco/staging/skills/<candidate_id>/ via vault_stage_skill. If the
@@ -893,7 +896,10 @@ export async function cleanupOnTaskFailure(args: {
   runContext: RunOptions['runContext'];
 }): Promise<void> {
   if (args.taskName === OKF_SYNTHESIZE_TASK) {
-    if (args.runId) abortOkfSynthesisSession(args.runId);
+    // Staged pages are costly (real synthesis spend) — a run failure preserves
+    // them as the orphaned staging so the next run or an acknowledge publishes
+    // them without re-synthesizing.
+    if (args.runId) abortOkfSynthesisSession(args.runId, { preserveStaging: true });
     return;
   }
 
@@ -1069,8 +1075,10 @@ function finalizeCanopyMap(args: {
  * staged each page into the run's single staged generation (opened lazily on
  * the first `okf_write_page`, under one lock). This publishes that staging tree
  * atomically and drops the registry entry. Returns without publishing when no
- * page was ever staged — an empty plan or an all-skipped synthesize phase — in
- * which case the previously published bundle is left untouched.
+ * page was ever staged — an empty plan or an all-skipped synthesize phase —
+ * UNLESS a prior failed run's orphaned staging is pending: a run whose plan
+ * was fully covered by recovered pages stages nothing itself, and the orphan
+ * must still publish rather than sit consumed-but-unshipped.
  */
 export async function finalizeOkfSynthesize(args: {
   agentId: string;
@@ -1079,11 +1087,42 @@ export async function finalizeOkfSynthesize(args: {
   vaultDir?: string;
 }): Promise<void> {
   const snapshot = resolveOkfSynthesizeSnapshot(args);
-  await finalizeOkfSynthesisSession(args.runId, {
+  const published = await finalizeOkfSynthesisSession(args.runId, {
     logSummary: 'Synthesized OKF wiki pages.',
     probeFingerprint: snapshot?.probeFingerprint ?? null,
     lastRunRef: snapshot?.lastRunRef ?? null,
   });
+  if (published !== null) return;
+  const bundle = resolveOkfBundle(args);
+  if (!bundle) return;
+  await bundle.publishOrphanedStaging({ logSummary: 'Published pages recovered from a prior failed synthesis run.' });
+}
+
+/**
+ * Build the OkfBundle for a run's request context, or null when the context/
+ * vaultDir needed to resolve it is unavailable. Mirrors the harness tools'
+ * fail-closed construction (okf-tools.ts buildBundle).
+ */
+function resolveOkfBundle(args: {
+  requestContext?: RunOptions['requestContext'];
+  vaultDir?: string;
+}): OkfBundle | null {
+  try {
+    if (!args.vaultDir || !args.requestContext) return null;
+    const projectId = requireProjectId(args.requestContext, 'okf-synthesize finalize');
+    const projectRoot = args.requestContext.projectRoot ?? resolveProjectRoot(args.vaultDir);
+    const config = loadMergedConfig(args.vaultDir, { groveId: args.requestContext.groveId ?? undefined });
+    return new OkfBundle({
+      projectRoot,
+      vault: new ProjectVault(projectRoot),
+      scope: projectScopeFromRequestContext(args.requestContext),
+      projectId,
+      machineId: args.requestContext.machineId,
+      config,
+    });
+  } catch {
+    return null;
+  }
 }
 
 /**

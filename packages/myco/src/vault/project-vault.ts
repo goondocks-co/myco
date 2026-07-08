@@ -332,6 +332,20 @@ export class ProjectVault {
     return path.join(this.vaultDir, 'okf', 'bundle');
   }
 
+  /**
+   * `.myco/okf/orphan` — staged pages preserved from a failed synthesis run,
+   * consumed by the next staged generation. Path only; creates nothing. Lives
+   * OUTSIDE `okf/staging` so the stale-staging sweep never deletes it.
+   */
+  okfOrphanDir(): string {
+    return path.join(this.vaultDir, 'okf', 'orphan');
+  }
+
+  /** `.myco/okf/state/orphan.json` — the preserved staging's manifest. Path only; creates nothing. */
+  okfOrphanManifestPath(): string {
+    return path.join(this.vaultDir, 'okf', 'state', 'orphan.json');
+  }
+
   /** `.myco/okf/state/lock`. Path only; callers create the state dir first. */
   okfLockPath(): string {
     return path.join(this.vaultDir, 'okf', 'state', 'lock');

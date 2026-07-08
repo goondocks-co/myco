@@ -200,6 +200,100 @@ describe('OkfBundle.beginStagedGeneration', () => {
   });
 });
 
+describe('OkfBundle — orphaned staging (resume-from-staging)', () => {
+  function makeBundleAt(nowIso: string): OkfBundle {
+    return new OkfBundle({
+      projectRoot,
+      vault: new ProjectVault(projectRoot),
+      scope: projectScope(projectId as ReturnType<typeof createProjectId>),
+      projectId,
+      machineId: MACHINE_ID,
+      config: config(),
+      now: () => new Date(nowIso),
+    });
+  }
+
+  it('abort with preserveStaging keeps the staged pages; the next generation publishes them without restaging', async () => {
+    const first = await makeBundle().beginStagedGeneration({ mode: 'published', generatedByRunId: 'run-fail-1' });
+    first.stageDocument(contentDoc('pages/alpha'));
+    first.stageDocument(contentDoc('pages/beta'));
+    first.abort({ preserveStaging: true });
+
+    const vault = new ProjectVault(projectRoot);
+    const orphan = makeBundle().orphanedStaging();
+    expect(orphan?.runId).toBe('run-fail-1');
+    expect(orphan?.paths.sort()).toEqual(['pages/alpha.md', 'pages/beta.md']);
+    expect(fs.existsSync(path.join(vault.okfOrphanDir(), 'pages/alpha.md'))).toBe(true);
+    // Nothing published yet.
+    expect(fs.existsSync(path.join(okfDir(), 'pages/alpha.md'))).toBe(false);
+
+    // A completion generation that stages nothing itself publishes the recovered pages.
+    const second = await makeBundle().beginStagedGeneration({ mode: 'published' });
+    const result = await second.finalize({ inputsHash: 'completion' });
+    expect(result.pageCount).toBe(2);
+    expect(fs.readFileSync(path.join(okfDir(), 'pages/alpha.md'), 'utf8')).toContain('Body of pages/alpha');
+    expect(result.warnings.some((w) => w.code === 'recovered_staged_pages')).toBe(true);
+    // The orphan is consumed.
+    expect(makeBundle().orphanedStaging()).toBeNull();
+    expect(fs.existsSync(vault.okfOrphanDir())).toBe(false);
+  });
+
+  it('a page re-staged fresh wins over its recovered copy — no self-collision, fresh body published', async () => {
+    const first = await makeBundle().beginStagedGeneration({ mode: 'published' });
+    first.stageDocument(contentDoc('pages/alpha'));
+    first.abort({ preserveStaging: true });
+
+    const second = await makeBundle().beginStagedGeneration({ mode: 'published' });
+    const fresh = contentDoc('pages/alpha');
+    fresh.body = 'Refreshed body.';
+    second.stageDocument(fresh);
+    const result = await second.finalize({ inputsHash: 'refresh' });
+    expect(result.pageCount).toBe(1);
+    expect(fs.readFileSync(path.join(okfDir(), 'pages/alpha.md'), 'utf8')).toContain('Refreshed body.');
+  });
+
+  it('a stale orphan (past TTL) is discarded at read time, never seeded', async () => {
+    const first = await makeBundleAt('2026-07-05T12:00:00Z').beginStagedGeneration({ mode: 'published' });
+    first.stageDocument(contentDoc('pages/old'));
+    first.abort({ preserveStaging: true });
+
+    const later = makeBundleAt('2026-07-20T12:00:00Z');
+    expect(later.orphanedStaging()).toBeNull();
+    expect(fs.existsSync(new ProjectVault(projectRoot).okfOrphanDir())).toBe(false);
+
+    const staged = await later.beginStagedGeneration({ mode: 'published' });
+    staged.stageDocument(contentDoc('pages/new'));
+    const result = await staged.finalize({ inputsHash: 'post-ttl' });
+    expect(result.pageCount).toBe(1);
+    expect(fs.existsSync(path.join(okfDir(), 'pages/old.md'))).toBe(false);
+  });
+
+  it('a blocked publish preserves via abort even after finalize released; acknowledge then publishOrphanedStaging ships it', async () => {
+    const staged = await makeBundle().beginStagedGeneration({ mode: 'published', generatedByRunId: 'run-blocked' });
+    const doc = contentDoc('pages/flagged');
+    // The raw-id KEY pattern blocks and is deliberately NOT sanitized.
+    doc.body = 'The hook posts session_id: abc to the daemon.';
+    staged.stageDocument(doc);
+    await expect(staged.finalize({ inputsHash: 'blocked' })).rejects.toThrow(/unacknowledged/);
+    // Mirror the wiring in finalizeOkfSynthesisSession's catch.
+    staged.abort({ preserveStaging: true });
+
+    const bundle = makeBundle();
+    expect(bundle.orphanedStaging()?.paths).toEqual(['pages/flagged.md']);
+    expect(fs.existsSync(path.join(okfDir(), 'pages/flagged.md'))).toBe(false);
+
+    await bundle.acknowledgePendingFindings();
+    const published = await bundle.publishOrphanedStaging();
+    expect(published?.pageCount).toBe(1);
+    expect(fs.readFileSync(path.join(okfDir(), 'pages/flagged.md'), 'utf8')).toContain('session_id: abc');
+    expect(makeBundle().orphanedStaging()).toBeNull();
+  });
+
+  it('publishOrphanedStaging is a null no-op when nothing is preserved', async () => {
+    expect(await makeBundle().publishOrphanedStaging()).toBeNull();
+  });
+});
+
 describe('OkfBundle.beginStagedGeneration — incremental carry-forward (Task 3.3)', () => {
   it('a run that re-stages only a subset carries forward the untouched pages, including a human-authored one', async () => {
     const outputRoot = okfDir();

@@ -30,7 +30,7 @@ import { loadMergedConfig } from '@myco/config/loader.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle } from '@myco/okf/bundle.js';
 import { OkfError } from '@myco/okf/errors.js';
-import { gatherSources } from '@myco/okf/synthesis/sources.js';
+import { gatherSources, gatherCanopyMap } from '@myco/okf/synthesis/sources.js';
 import { validateWikiPlan, writePlan, readPlan, type WikiPlan } from '@myco/okf/synthesis/plan.js';
 import { isHandEdited } from '@myco/okf/ownership.js';
 import { renderOkfDocument } from '@myco/okf/serialize.js';
@@ -216,9 +216,9 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   const okfReadSources = tool(
     'okf_read_sources',
-    'Read a BOUNDED orientation to this project\'s OKF sources — NOT a full dump: the Canopy map (the structural guide), a top-level repo-tree summary (directories + file counts, plus root files), git diff context, and a capped sample of citable vault refs (spores, decisions, Canopy files) as id+title+type — never full bodies. This is a STARTING POINT: explore the real code and vault from here with fs_tree/fs_list/fs_read, code_grep, vault_search_canopy, and vault_search_semantic/vault_search_fts. Pass kind to fetch one slice (repo|git|vault); omit for all. Read-only.',
+    'Read a BOUNDED orientation to this project\'s OKF sources — NOT a full dump: the Canopy map (the structural guide), a top-level repo-tree summary (directories + file counts, plus root files), git diff context, and a capped sample of citable vault refs (spores, decisions, Canopy files) as id+title+type — never full bodies. This is a STARTING POINT: explore the real code and vault from here with fs_tree/fs_list/fs_read, code_grep, vault_search_canopy, and vault_search_semantic/vault_search_fts. Pass kind to fetch one slice: "map" is the cheap per-page choice (just the Canopy map), "repo"/"git"/"vault" are the full slices; omit for all. Read-only.',
     {
-      kind: z.enum(['all', 'repo', 'git', 'vault']).optional().describe('Which source slice to return (default all).'),
+      kind: z.enum(['all', 'repo', 'git', 'vault', 'map']).optional().describe('Which source slice to return (default all). "map" returns only the Canopy map — the cheap structural orientation.'),
     },
     async (args) => {
       const bundle = buildBundle(deps);
@@ -229,14 +229,18 @@ export function createOkfTools(deps: VaultToolDeps) {
         const config = loadMergedConfig(deps.vaultDir!, { groveId: deps.requestContext.groveId ?? undefined });
         const scope = projectScopeFromVaultToolDeps(deps);
         const machineId = deps.machineId ?? deps.requestContext.machineId;
-        const gathered = gatherSources({
+        const sourceScope = {
           projectRoot: deps.projectRoot,
           scope,
           projectId: projectId ?? '',
           machineId,
           config,
           outputRoot: status.outputRoot,
-        });
+        };
+        if (args.kind === 'map') {
+          return textResult({ canopyMap: gatherCanopyMap(sourceScope) });
+        }
+        const gathered = gatherSources(sourceScope);
         const kind = args.kind ?? 'all';
         const out: Record<string, unknown> = {};
         if (kind === 'all' || kind === 'repo') out.repoTree = gathered.repoTree;
@@ -352,14 +356,25 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   const okfListPlannedPages = tool(
     'okf_list_planned_pages',
-    'Read back the persisted wiki page-plan (.myco/okf/state/plan.json) as {pages}. The map-synthesize phase\'s SOURCE tool — returns the pages okf_write_plan persisted, or an empty list when no plan exists. Read-only.',
+    'Read back the persisted wiki page-plan (.myco/okf/state/plan.json) as {pages}. The map-synthesize phase\'s SOURCE tool — returns the pages okf_write_plan persisted, or an empty list when no plan exists. Pages already covered by a prior failed run\'s recovered staging are excluded (they publish with this run without re-synthesis) and listed under {recovered}. Read-only.',
     {},
     async () => {
       if (!deps.projectRoot) return textResult({ error: MISSING_DEPS_ERROR, pages: [] });
       try {
         const vault = new ProjectVault(deps.projectRoot);
         const plan = readPlan(vault);
-        return textResult({ pages: plan?.pages ?? [] });
+        const pages = plan?.pages ?? [];
+        // Recovered pages are already staged and paid for — synthesizing them
+        // again would spend real tokens re-producing content that will be
+        // seeded into this run's generation anyway.
+        const bundle = buildBundle(deps);
+        const orphanPaths = new Set(
+          (bundle?.orphanedStaging()?.paths ?? []).map((p) => p.replace(/\.md$/, '')),
+        );
+        if (orphanPaths.size === 0) return textResult({ pages });
+        const remaining = pages.filter((p) => !orphanPaths.has(p.path.replace(/\.md$/, '')));
+        const recovered = pages.filter((p) => orphanPaths.has(p.path.replace(/\.md$/, ''))).map((p) => p.path);
+        return textResult({ pages: remaining, recovered });
       } catch (err) {
         return textResult({ error: err instanceof Error ? err.message : String(err), pages: [] });
       }
