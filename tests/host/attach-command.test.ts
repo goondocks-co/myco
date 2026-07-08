@@ -25,6 +25,7 @@ import {
 } from '@myco/grove/registry.js';
 import { getHost, resolveAttach, upsertHost, type HostRecord } from '@myco/host/registry.js';
 import { attachCommand, detachCommand } from '@myco/host/attach-command.js';
+import { createFsDrainStore } from '@myco/capture/transcript-drain.js';
 
 let home: string;
 let teamHome: string;
@@ -133,6 +134,33 @@ describe('attach/detach command', () => {
     expect(result.detachedFromHostId).toBe(host.host_id);
     expect(resolveAttach(projectId)).toBeNull();
     expect(getHost(host.host_id)?.projects).toEqual([]);
+  });
+
+  test('detach purges the project transcript-drain queue entries for that host (capture-push §5.2)', () => {
+    const host = makeHost();
+    upsertHost(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachCommand({ projectPath: root, hostId: host.host_id, groveId: createGroveId(), mycoHome: home });
+
+    // Seed a durable drain entry for this project on this host (as the drain
+    // would after shipping a delta), then assert detach clears it.
+    const store = createFsDrainStore();
+    store.put({
+      host_id: host.host_id,
+      session_id: 'sess-detach',
+      transcript_id: 'tx_00000000000000000000000000000001',
+      project_id: projectId,
+      grove_id: createGroveId(),
+      transcript_path: '/m/s.jsonl',
+      acked_offset: 12,
+      updated_at: new Date().toISOString(),
+    });
+    expect(store.listForHost(host.host_id)).toHaveLength(1);
+
+    detachCommand({ projectPath: root, mycoHome: home });
+
+    expect(store.listForHost(host.host_id)).toHaveLength(0);
   });
 
   test('re-attach to the same host converges (idempotent, single ref)', () => {
