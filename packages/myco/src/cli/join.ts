@@ -27,21 +27,25 @@ function parseFlags(args: string[]): { positionals: string[]; flags: Map<string,
   return { positionals, flags };
 }
 
-const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> [--server-url <headscale-url>]
+const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> --server-url <headscale-url> --overlay-address <100.64.x.y:port>
 
 Enrolls THIS machine with a Team Host: it provisions a userspace tailscaled as a
-per-user service (NO root), joins the host's overlay with the single-use key,
-then records the host so attached projects route to it. Re-running converges.
+per-user service (NO root), joins the host's overlay with the single-use key, then
+enrolls with the host daemon over the overlay to receive the shared bearer, and
+records the host so attached projects route to it. Re-running converges.
 
 Options:
   --key <k>              REQUIRED. The single-use pre-auth key the host operator minted.
   --server-url <url>     Headscale control-plane URL (required unless already on the overlay).
+  --overlay-address <100.64.x.y:port>
+                         REQUIRED. The host daemon's overlay address to dial for enrollment.
+                         A NON-SECRET the operator shares alongside the one-time key; the
+                         secret bearer is fetched over the overlay, never handed out-of-band.
   --hostname <name>      This member's node name on the tailnet (default: this machine's hostname).
 
-Until the host enrollment endpoint ships, pass the host's overlay address + bearer
-manually (obtain them from the host operator):
-  --overlay-address <100.64.x.y:port>   The host daemon's overlay address.
-  --bearer <serve-bearer>               The shared host serve-bearer.
+Manual bridge (skip the automatic overlay handshake — a host without the enrollment
+endpoint, or debugging): pass the bearer explicitly and it is used as-is:
+  --bearer <serve-bearer>   The shared host serve-bearer (selects the manual bridge).
   --host-id <id>  --label <name>  --protocol-version <n>   (optional overrides)
 `;
 

@@ -42,14 +42,19 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { Socket } from 'node:net';
 
 import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager, ServiceSpec } from '@myco/service/types.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
+import { connectViaHttpProxy } from '@myco/daemon/host-proxy.js';
 
 import {
   HOST_BEARER_SECRET,
+  HOST_ENROLL_ROUTE,
+  HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
+  HOST_PROXY_HEADERS_TIMEOUT_MS,
   MEMBER_OVERLAY_PROXY_PORT_BASE,
 } from '../constants.js';
 import {
@@ -125,8 +130,15 @@ export interface EnrollmentContext {
   memberHostname: string;
   /** This member's own resolved 100.64 overlay IP on THIS host's tailnet (post-join). */
   memberOverlayIp: string;
-  // --- pre-2.4 manual bridge (see stubEnrollmentClient) ---
+  /** The host's overlay address to dial for enrollment (`100.64.x.y:<daemon-port>`) —
+   *  a NON-SECRET the operator hands the joiner alongside the one-time key. The real
+   *  client CONNECTs here through the local proxy; the SECRET bearer comes back in the
+   *  response (never handed out-of-band). Same field the manual bridge reuses. */
   overlayAddress?: string;
+  /** THIS host's local HTTP-CONNECT proxy port — the tunnel the real enroll client
+   *  dials through (the same `proxy_port` the routing proxy later uses). */
+  proxyPort?: number;
+  // --- manual bridge (see stubEnrollmentClient) ---
   bearer?: string;
   protocolVersion?: number;
   label?: string;
@@ -138,27 +150,23 @@ export interface EnrollmentClient {
 }
 
 /**
- * Default enrollment client — a STUB until Task 2.4 builds the host enrollment
- * endpoint.
+ * The MANUAL enrollment bridge (test seam + escape hatch). `join` selects it only
+ * when the operator passes `--bearer` explicitly — i.e. they already hold the shared
+ * bearer and want to skip the automatic overlay handshake (a host without the
+ * enrollment endpoint, or debugging). The operator supplies `--overlay-address` and
+ * `--bearer` (and optionally `--label`/`--protocol-version`) and this assembles the
+ * enrollment from them. Missing either is a hard, explanatory failure rather than a
+ * fabricated record — no credential is ever invented.
  *
- * TODO(2.4): replace the body below with the real overlay call — POST to the
- * host's enrollment endpoint (spec §8), which admits the member and returns
- * `{host_id, label, overlay_address, protocol_version, bearer}`. The member is
- * already on the overlay at this point (join happened first), so the call rides
- * the local proxy exactly like any other host request.
- *
- * Until then, `join` stays USABLE and testable via a manual bridge: the operator
- * supplies `--overlay-address` and `--bearer` (and optionally `--label`,
- * `--protocol-version`) and this stub assembles the enrollment from them. Missing
- * both is a hard, explanatory failure rather than a fabricated record — no
- * credential is ever invented.
+ * The DEFAULT path is {@link realEnrollmentClient}, which fetches the bearer over the
+ * overlay (spec §8), so the operator never has to hand the secret bearer out-of-band.
  */
 export const stubEnrollmentClient: EnrollmentClient = {
   async enroll(ctx: EnrollmentContext): Promise<HostEnrollment> {
     if (!ctx.overlayAddress || !ctx.bearer) {
       throw new Error(
-        'Automatic host enrollment is not available yet (Task 2.4 delivers the host enrollment endpoint). '
-        + 'For now, obtain the host overlay address + serve-bearer from the host operator and pass them explicitly:\n'
+        'The manual enrollment bridge requires BOTH --overlay-address and --bearer. '
+        + 'Omit --bearer to enroll automatically over the overlay (the default), or pass both:\n'
         + '  myco join <host> --key <one-time-key> --server-url <headscale-url> '
         + '--overlay-address <100.64.x.y:port> --bearer <serve-bearer>',
       );
@@ -172,6 +180,129 @@ export const stubEnrollmentClient: EnrollmentClient = {
     };
   },
 };
+
+/** The wire response the host enrollment endpoint returns (mirrors the host-side
+ *  `buildHostEnrollmentPayload`). host_id/label may be empty on a host enabled before
+ *  Task 2.4 wrote them, so the client falls back to what it already knows. */
+interface HostEnrollmentResponse {
+  host_id?: string;
+  label?: string;
+  overlay_address?: string;
+  protocol_version?: number;
+  bearer?: string;
+  projects?: AttachRef[];
+}
+
+/** How the real client puts an enrollment request on the wire. Injectable so tests
+ *  can drive a fixture host without a live CONNECT proxy. Returns the raw status +
+ *  body so the client owns parsing + the version-skew (409) mapping. */
+export type EnrollmentTransport = (input: {
+  overlayAddress: string;
+  proxyPort: number;
+  path: string;
+  headers: Record<string, string>;
+  body: string;
+}) => Promise<{ status: number; body: string }>;
+
+/**
+ * The real overlay enrollment transport: a POST tunneled through THIS host's local
+ * userspace-tailscaled HTTP CONNECT proxy (`127.0.0.1:<proxyPort>`) to the host's
+ * overlay address — the SAME dial as the routing proxy (`daemon/host-proxy.ts`),
+ * reusing its {@link connectViaHttpProxy} primitive via an `http.Agent`. The CONNECT
+ * MUST happen inside `agent.createConnection` (not a bare `http.request` CONNECT,
+ * which Bun's http path mishandles). Node sets the Host header from the request's
+ * host:port, matching the host's overlay CSRF allowlist.
+ */
+export const connectProxyEnrollTransport: EnrollmentTransport = ({ overlayAddress, proxyPort, path: reqPath, headers, body }) => {
+  const { host, port } = splitOverlayAddress(overlayAddress);
+  if (!host || !port) return Promise.reject(new Error(`Invalid host overlay address for enrollment: ${JSON.stringify(overlayAddress)}`));
+  return new Promise((resolve, reject) => {
+    import('node:http').then((http) => {
+      const agent = new http.Agent();
+      // The Agent contract: produce a connected socket for (host, port). We produce
+      // a CONNECT-tunneled one via the shared proxy primitive (same as defaultDial).
+      (agent as unknown as {
+        createConnection: (o: { host?: string; port?: number }, cb: (e: Error | null, s?: Socket) => void) => void;
+      }).createConnection = (o, cb) => connectViaHttpProxy(proxyPort, o.host ?? host, o.port ?? port, cb);
+
+      const req = http.request(
+        { host, port, path: reqPath, method: 'POST', headers, agent, timeout: HOST_PROXY_HEADERS_TIMEOUT_MS },
+        (resp) => {
+          const chunks: Buffer[] = [];
+          resp.on('data', (c: Buffer) => chunks.push(c));
+          resp.on('end', () => resolve({ status: resp.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }));
+        },
+      );
+      req.once('error', reject);
+      req.once('timeout', () => { req.destroy(); reject(new Error(`Enrollment request to ${host}:${port} via 127.0.0.1:${proxyPort} timed out.`)); });
+      req.end(body);
+    }).catch(reject);
+  });
+};
+
+/**
+ * The real enrollment client (Task 2.4) — the DEFAULT `join` path. The member is
+ * already on the overlay, so this POSTs to the host's enrollment endpoint
+ * ({@link HOST_ENROLL_ROUTE}) through the local proxy and returns the parsed
+ * {@link HostEnrollment}. Enrollment is the ONE bearer-exempt overlay route (a member
+ * obtains the bearer HERE); overlay membership is its trust boundary (spec §8/§9).
+ *
+ * The version header rides along so the host's version gate can reject a skewed
+ * member at join (409 → a loud, non-retryable error) rather than after it stores a
+ * bearer it can't use. host_id/label fall back to what the member already knows when
+ * the host doesn't self-report them.
+ */
+export function createEnrollmentClient(transport: EnrollmentTransport = connectProxyEnrollTransport): EnrollmentClient {
+  return {
+    async enroll(ctx: EnrollmentContext): Promise<HostEnrollment> {
+      if (!ctx.overlayAddress?.trim()) {
+        throw new Error(
+          'Automatic enrollment needs the host overlay address to dial. Pass it (a non-secret the operator '
+          + 'shares with the one-time key):\n  myco join <host> --key <one-time-key> --server-url <headscale-url> '
+          + '--overlay-address <100.64.x.y:port>',
+        );
+      }
+      if (ctx.proxyPort === undefined) {
+        throw new Error('Internal: enrollment requires the local proxy port (proxy_port) to dial the host over the overlay.');
+      }
+      const body = JSON.stringify({ member_hostname: ctx.memberHostname, member_overlay_ip: ctx.memberOverlayIp });
+      const { status, body: responseBody } = await transport({
+        overlayAddress: ctx.overlayAddress.trim(),
+        proxyPort: ctx.proxyPort,
+        path: HOST_ENROLL_ROUTE,
+        headers: { 'content-type': 'application/json', [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION) },
+        body,
+      });
+      if (status === 409) {
+        throw new Error(
+          `The host rejected enrollment with a protocol-version mismatch (409). This member speaks Team-Host `
+          + `protocol v${HOST_PROTOCOL_VERSION}; run \`myco update\` so both sides match, then retry.`,
+        );
+      }
+      if (status !== 200) {
+        throw new Error(`Host enrollment failed (HTTP ${status}): ${responseBody.slice(0, 300)}`);
+      }
+      let parsed: HostEnrollmentResponse;
+      try { parsed = JSON.parse(responseBody) as HostEnrollmentResponse; }
+      catch { throw new Error(`Host enrollment returned an unparseable response: ${responseBody.slice(0, 200)}`); }
+      if (!parsed.bearer || !parsed.overlay_address) {
+        throw new Error('Host enrollment response is missing the bearer or overlay_address — cannot complete join.');
+      }
+      return {
+        host_id: parsed.host_id || ctx.hostId,
+        label: parsed.label || ctx.label || ctx.hostRef,
+        overlay_address: parsed.overlay_address,
+        protocol_version: parsed.protocol_version ?? ctx.protocolVersion ?? HOST_PROTOCOL_VERSION,
+        bearer: parsed.bearer,
+        projects: parsed.projects,
+      };
+    },
+  };
+}
+
+/** The default (real) enrollment client used by `join` unless `--bearer` selects the
+ *  manual bridge or a test injects its own client. */
+export const realEnrollmentClient: EnrollmentClient = createEnrollmentClient();
 
 // ---------------------------------------------------------------------------
 // Options / deps / result
@@ -253,7 +384,10 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
   const platform = deps.platform ?? process.platform;
   const target = resolveOverlayTarget(platform, deps.arch ?? process.arch);
   const serviceManager = deps.serviceManager ?? getServiceManager({ platform });
-  const enrollmentClient = deps.enrollmentClient ?? stubEnrollmentClient;
+  // Default to the REAL client (fetches the bearer over the overlay). An explicit
+  // --bearer means the operator already holds it and wants the manual bridge (no
+  // HTTP handshake); tests inject their own client via deps.
+  const enrollmentClient = deps.enrollmentClient ?? (options.bearer?.trim() ? stubEnrollmentClient : realEnrollmentClient);
   const hostname = sanitizeHostname(options.hostname ?? os.hostname());
 
   // Canonical per-host key: everything about THIS host's tailscaled instance
@@ -350,6 +484,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     memberHostname: hostname,
     memberOverlayIp,
     overlayAddress: options.overlayAddress?.trim(),
+    proxyPort,
     bearer: options.bearer?.trim(),
     protocolVersion: options.protocolVersion,
     label: options.label?.trim(),

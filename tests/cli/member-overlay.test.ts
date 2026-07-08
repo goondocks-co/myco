@@ -414,15 +414,15 @@ describe('member overlay — multi-host join / leave', () => {
     )).rejects.toThrow(/socket .* did not appear/);
   });
 
-  // --- the Task 2.4 enrollment seam (stub) ---------------------------------
+  // --- the Task 2.4 enrollment seam (manual bridge) ------------------------
 
-  test('the default enrollment stub throws a clear TODO(2.4) error without the manual bridge flags', async () => {
+  test('the manual enrollment bridge errors clearly without both --overlay-address and --bearer', async () => {
     await expect(stubEnrollmentClient.enroll({
       hostId: hostId(), hostRef: 'x', oneTimeKey: 'k', memberHostname: 'm', memberOverlayIp: '100.64.0.5',
-    })).rejects.toThrow(/enrollment is not available yet/);
+    })).rejects.toThrow(/manual enrollment bridge requires/);
   });
 
-  test('join works today via the manual enrollment bridge (--overlay-address / --bearer)', async () => {
+  test('join works via the manual enrollment bridge (--overlay-address / --bearer)', async () => {
     const id = hostId();
     const result = await joinHost(
       { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080', overlayAddress: '100.64.0.1:7433', bearer: 'manual-bearer' },

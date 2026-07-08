@@ -149,8 +149,12 @@ export function parseOverlayAddress(overlayAddress: string): { host: string; por
 }
 
 /** Tunnel a socket through the local userspace-tailscaled HTTP CONNECT proxy
- *  (`--outbound-http-proxy-listen`, recorded as `HostRecord.proxy_port`). */
-function connectViaHttpProxy(
+ *  (`--outbound-http-proxy-listen`, recorded as `HostRecord.proxy_port`). Exported
+ *  so the member enrollment client (`host/member-overlay.ts`) dials the host through
+ *  the SAME proven primitive — one CONNECT mechanism for routing and enrollment.
+ *  MUST be driven from inside an `http.Agent.createConnection` (as {@link defaultDial}
+ *  does): a bare `http.request({method:'CONNECT'})` is mishandled by Bun's http path. */
+export function connectViaHttpProxy(
   proxyPort: number,
   targetHost: string,
   targetPort: number,
