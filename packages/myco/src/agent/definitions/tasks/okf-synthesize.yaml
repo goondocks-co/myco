@@ -65,9 +65,18 @@ schedule:
     - sleep
   preCondition: okf-synthesize-due
 prompt: >-
-  Synthesize this project's OKF knowledge wiki. Survey the source material and
-  the already-published pages, plan a focused set of pages, then write each one.
-  Publication is automatic once the run succeeds — never try to publish by hand.
+  You generate and maintain an OKF v0.1-compliant knowledge wiki OF THIS
+  codebase, published to the `okf/` bundle. Ground your output format in the
+  spec: call `okf_read_spec` to fetch and read the authoritative OKF v0.1
+  specification, and follow it exactly — if that fetch fails, the essential OKF
+  rules are restated in your phase prompts, so follow those. Explore the
+  codebase with your tools — start from the Canopy map, then targeted
+  `fs_tree`/`fs_list`/`fs_read`, `code_grep`, and `vault_search_canopy` — to
+  understand its real architecture, subsystems, key modules, and execution
+  flow. Plan a focused, code-grounded page set; synthesize or refine each page
+  to be genuinely useful and OKF-spec-compliant; enrich with the vault's
+  decisions, gotchas, and wisdom that go BEYOND the code. Publication is
+  automatic once the run succeeds — never try to publish by hand.
 phases:
   - name: explore
     dependsOn: []
@@ -80,6 +89,7 @@ phases:
       decide what the wiki should cover this run.
     tools:
       - okf_read_sources
+      - okf_read_spec
       - okf_list_pages
       - okf_read_page
       - fs_tree
@@ -96,6 +106,12 @@ phases:
       flow, and the domain concepts and decisions behind them. This is a
       CODE-GROUNDED wiki OF THE PROJECT — not a glossary of ideas and not a
       restatement of docs that already exist.
+
+      GROUND YOUR FORMAT IN THE OKF SPEC FIRST. Call `okf_read_spec` to fetch
+      and read the authoritative OKF v0.1 specification so the pages you plan
+      fit the format (frontmatter, folder indexes, cross-links, log,
+      citations). If that fetch fails, follow the essential OKF rules restated
+      in the synthesize step — do not block on it.
 
       EXPLORE THIS REPO LIKE A CODING AGENT. `okf_read_sources` gives you a
       bounded ORIENTATION (the Canopy map, a top-level repo-tree summary, git
@@ -219,6 +235,7 @@ phases:
     item:
       readTools:
         - okf_read_sources
+        - okf_read_spec
         - okf_read_page
         - okf_list_pages
         - okf_list_planned_pages
@@ -235,6 +252,18 @@ phases:
         you supply `description` (a one-line summary) and `body` (the full page
         markdown, no frontmatter). You MUST emit the tool call; a text-only
         response is discarded.
+
+        GROUND THE FORMAT IN THE OKF SPEC. Call `okf_read_spec` for the
+        authoritative OKF v0.1 rules. If that fetch fails, follow these
+        ESSENTIAL OKF v0.1 rules instead: (1) frontmatter is a four-key floor —
+        `type`, `title`, `description`, `timestamp` in that canonical order
+        (the harness writes the frontmatter from the plan + your `description`,
+        so just supply a clean one-line description and a body with NO
+        frontmatter); (2) every per-folder `index.md` is headerless and groups
+        entries by type (generated for you — do not author index pages); (3)
+        cross-links are ABSOLUTE bundle-relative (leading slash); (4) the bundle
+        carries a `log.md` (generated for you); (5) end the body with a
+        `# Citations` section. Write valid, readable OKF markdown for the body.
 
         READ THE REAL CODE THIS PAGE COVERS BEFORE YOU WRITE IT. `okf_read_sources`
         gives you the bounded orientation + citable ids, not the code inline.

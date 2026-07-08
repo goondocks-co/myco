@@ -1,9 +1,10 @@
 /**
  * OKF synthesis harness tools.
  *
- * 7 tools driving the `okf-synthesize` task's explore → plan → map-synthesize
+ * 8 tools driving the `okf-synthesize` task's explore → plan → map-synthesize
  * pipeline:
- *   - okf_read_sources     — reduced, citable source material (Task 2.1).
+ *   - okf_read_sources     — bounded, citable source ORIENTATION (Task 2.1/8.3).
+ *   - okf_read_spec        — fetch the authoritative OKF v0.1 spec (format authority).
  *   - okf_list_pages       — currently-published document pages.
  *   - okf_read_page        — one published page's raw markdown.
  *   - okf_write_plan       — persist the capped wiki page-plan (Task 2.2).
@@ -85,6 +86,67 @@ const MISSING_DEPS_ERROR = 'okf tools require projectRoot, vaultDir, and request
  */
 const OKF_SOURCE_GUIDANCE =
   'This is a bounded ORIENTATION, not the full corpus. Use the Canopy map + repo-tree summary to get the project\'s shape, then EXPLORE the real code and vault with this phase\'s tools: fs_tree/fs_list to walk the structure, fs_read to read the actual source of the modules a page covers, code_grep to find code by pattern, vault_search_canopy to find files by what they do, and vault_search_semantic/vault_search_fts for the decisions, gotchas, and rationale behind the code. Ground each page in files you actually read and cite them.';
+
+// ---------------------------------------------------------------------------
+// OKF spec fetch (provider-agnostic format authority)
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical raw URL for the authoritative OKF v0.1 spec. Fetched server-side by
+ * `okf_read_spec` (below) so the synthesis agent grounds its output format in
+ * the real spec regardless of which model provider is configured — NO vendored
+ * static copy (it would drift from canonical), and NO provider-specific
+ * built-in WebFetch (it would break OKF synthesis for non-Claude providers).
+ * Human URL: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
+ */
+const OKF_SPEC_URL = 'https://raw.githubusercontent.com/GoogleCloudPlatform/knowledge-catalog/main/okf/SPEC.md';
+/** Day-scoped in-memory cache so repeated reads in one run (and across nearby runs) don't refetch. */
+const OKF_SPEC_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+/** Abort the fetch if the endpoint hangs — the agent must degrade to prompt-encoded essentials, not stall the phase. */
+const OKF_SPEC_FETCH_TIMEOUT_MS = 15_000;
+/** Guard against an unexpectedly huge response body blowing the tool result. */
+const OKF_SPEC_MAX_BYTES = 512_000;
+
+let okfSpecCache: { text: string; fetchedAt: number } | null = null;
+
+/**
+ * Clear the module-level OKF spec cache. Test-only — lets a hermetic test drive
+ * `okf_read_spec` with a mocked `fetch` without a prior test's cached body
+ * bleeding through. Never called in production.
+ */
+export function __clearOkfSpecCacheForTests(): void {
+  okfSpecCache = null;
+}
+
+type OkfSpecFetch =
+  | { ok: true; spec: string; cached: boolean; url: string }
+  | { ok: false; error: string; url: string };
+
+/** Server-side HTTP GET of the canonical OKF spec with a day cache and a hard timeout. Never throws. */
+async function fetchOkfSpec(): Promise<OkfSpecFetch> {
+  const now = epochSeconds() * 1000;
+  if (okfSpecCache && now - okfSpecCache.fetchedAt < OKF_SPEC_CACHE_TTL_MS) {
+    return { ok: true, spec: okfSpecCache.text, cached: true, url: OKF_SPEC_URL };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OKF_SPEC_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(OKF_SPEC_URL, { signal: controller.signal, redirect: 'follow' });
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status} ${res.statusText}`.trim(), url: OKF_SPEC_URL };
+    }
+    let text = await res.text();
+    if (text.length > OKF_SPEC_MAX_BYTES) {
+      text = `${text.slice(0, OKF_SPEC_MAX_BYTES)}\n\n... [OKF spec truncated at ${OKF_SPEC_MAX_BYTES} bytes]`;
+    }
+    okfSpecCache = { text, fetchedAt: now };
+    return { ok: true, spec: text, cached: false, url: OKF_SPEC_URL };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), url: OKF_SPEC_URL };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function okfErrorResult(err: unknown): { content: Array<{ type: 'text'; text: string }> } {
   if (err instanceof OkfError) {
@@ -187,6 +249,25 @@ export function createOkfTools(deps: VaultToolDeps) {
       }
     },
     { annotations: { readOnlyHint: true } },
+  );
+
+  const okfReadSpec = tool(
+    'okf_read_spec',
+    'Fetch and return the authoritative OKF v0.1 specification so you can ground your output format EXACTLY — frontmatter keys/order, per-folder indexes, cross-link form, log, citations. Server-side HTTP GET of the canonical raw URL with a short in-memory cache; a Myco harness tool that works the same for every model provider (no provider-specific built-in). Returns {ok:true, spec} on success, or {ok:false, error} on a fetch failure — in which case fall back to the essential OKF rules in your phase prompt. Read-only.',
+    {},
+    async () => {
+      const result = await fetchOkfSpec();
+      if (!result.ok) {
+        return textResult({
+          ok: false,
+          error: `could not fetch OKF spec: ${result.error}`,
+          url: result.url,
+          guidance: 'Fetch failed — follow the essential OKF v0.1 rules stated in your phase prompt instead.',
+        });
+      }
+      return textResult({ ok: true, url: result.url, cached: result.cached, spec: result.spec });
+    },
+    { annotations: { readOnlyHint: true, openWorldHint: true } },
   );
 
   const okfListPages = tool(
@@ -390,6 +471,7 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   return [
     okfReadSources,
+    okfReadSpec,
     okfListPages,
     okfReadPage,
     okfWritePlan,
