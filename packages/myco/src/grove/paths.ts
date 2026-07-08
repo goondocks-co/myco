@@ -243,6 +243,56 @@ export function resolveHostSecretsPath(hostId: string): string {
   return path.join(resolveHostDir(hostId), 'secrets.env');
 }
 
+export const MEMBER_OVERLAY_DIRNAME = 'member';
+
+/**
+ * MEMBER-side overlay home — this machine acting as a Team Host MEMBER (it has
+ * joined one or more hosts via `myco join`, Task 2.2). Holds the provisioned
+ * Tailscale binaries (`bin/`), the userspace-tailscaled state dir + logs, under
+ * the same machine-global team home (`~/.myco-team`) as `teams/`, `hosts/`, and
+ * the host-side `host/`.
+ *
+ * A member runs ONE userspace tailscaled for ALL joined hosts (the overlay is a
+ * single tailnet), so this dir is machine-global, not per-host — mirroring how a
+ * machine's several daemon homes share one team registry.
+ *
+ * NOTE: the tailscaled UNIX socket does NOT live here — see
+ * {@link resolveMemberTailscaledSocketPath} for why it must stay short.
+ */
+export function resolveMemberOverlayDir(): string {
+  return path.join(resolveTeamsHome(), MEMBER_OVERLAY_DIRNAME);
+}
+
+/** Where the member's Tailscale client + daemon binaries land. */
+export function resolveMemberBinDir(): string {
+  return path.join(resolveMemberOverlayDir(), 'bin');
+}
+
+/** The member userspace-tailscaled `--statedir` (node identity/state). May be
+ *  arbitrarily deep — only the SOCKET path is length-constrained. */
+export function resolveMemberTailscaledStateDir(): string {
+  return path.join(resolveMemberOverlayDir(), 'tailscaled-state');
+}
+
+/**
+ * The member userspace-tailscaled `--socket` path. Deliberately HOME-anchored and
+ * SHORT — NOT under {@link resolveMemberOverlayDir} — because macOS caps an
+ * `AF_UNIX` `sun_path` at 104 bytes and MYCO_TEAM_HOME can be overridden to a deep
+ * path (the scratchpad/test case, proven to overflow in the live spike §0.1b).
+ * A path derived from the team home would silently break `bind()`; a short,
+ * fixed one under `~/.myco-ts/` cannot.
+ *
+ * A pathologically long home (unusual, but possible) falls back to a `/tmp`-based
+ * path that is always short. Both the tailscaled LaunchAgent and the `tailscale
+ * --socket=<…>` CLI calls resolve through here, so they always agree.
+ */
+export function resolveMemberTailscaledSocketPath(): string {
+  const preferred = path.join(resolveHomeDir(), '.myco-ts', 'td.sock');
+  if (Buffer.byteLength(preferred) < 100) return preferred;
+  const uid = process.getuid?.() ?? 0;
+  return path.join('/tmp', `myco-td-${uid}.sock`);
+}
+
 export function resolveGroveMetadataPath(groveId: string, mycoHome = resolveMycoHome()): string {
   return path.join(resolveGroveDir(groveId, mycoHome), GROVE_METADATA_FILENAME);
 }

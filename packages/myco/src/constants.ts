@@ -597,6 +597,20 @@ export const HOST_MIN_COMPAT_VERSION = 1;
 export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
 
 /**
+ * Local HTTP-CONNECT proxy port the member's userspace tailscaled exposes
+ * (`--outbound-http-proxy-listen=localhost:<port>`), recorded on every
+ * {@link HostRecord} as `proxy_port` and dialed by `daemon/host-proxy.ts`'s
+ * CONNECT tunnel (`connectViaHttpProxy`). The mechanism is HTTP-CONNECT, NOT
+ * SOCKS5 — chosen to MATCH what Task 1.3's proxy actually dials (a member runs
+ * ONE tailscaled, so one listener serves every joined host).
+ *
+ * High + uncommon to avoid colliding with a developer's own local proxy; the
+ * listener is localhost-bound and member-initiated. A later config knob can
+ * override it, recording the chosen value per host record.
+ */
+export const MEMBER_OVERLAY_PROXY_PORT = 41080;
+
+/**
  * Member→host proxy timeouts (the host-proxy forwarder, `daemon/host-proxy.ts`).
  * These bound the INNER overlay hop and must stay shorter than the local
  * caller's own end-to-end timeout (`DAEMON_CLIENT_TIMEOUT_MS`) for the buffered
