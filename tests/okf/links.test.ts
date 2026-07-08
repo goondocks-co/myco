@@ -77,7 +77,6 @@ describe('normalizeBodyLinks', () => {
   });
 
   it('clamps a `..` chain that escapes the bundle root instead of escaping it', () => {
-    // Matches OkfDocumentView.resolveInAppTarget's pop-on-empty posture.
     expect(normalizeBodyLinks('[A](../../../concepts/alpha.md)', 'glossary.md', PAGES).body).toBe(
       '[A](/concepts/alpha.md)',
     );

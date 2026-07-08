@@ -68,15 +68,6 @@ export interface OkfStatusResponse {
   lastRun: { status: string; finishedAt: string | null } | null;
 }
 
-export interface OkfValidateBody {
-  path?: string;
-}
-
-export interface OkfValidateResponse {
-  ok: boolean;
-  validation: OkfValidationSummary;
-}
-
 /* ---------- Query keys ---------- */
 
 const OKF_STATUS_BASE_KEY = ['okf-status'] as const;
@@ -127,12 +118,11 @@ export function useInvalidateOkfStatus(): () => void {
   }, [qc]);
 }
 
-/* ---------- Document pages (knowledge browser, Task 5.1) ---------- */
+/* ---------- Document pages ---------- */
 
 /**
  * One published OKF document page's frontmatter fields, as returned by
- * `GET /api/okf/pages` (list) — no `body`. Mirrors
- * `OkfBundle.listPages()` (packages/myco/src/okf/bundle.ts:1578).
+ * `GET /api/okf/pages` (list) — no `body`. Mirrors `OkfBundle.listPages()`.
  */
 export interface OkfPageSummary {
   path: string;
@@ -147,29 +137,9 @@ export interface OkfPagesListResponse {
   pages: OkfPageSummary[];
 }
 
-/**
- * One page's frontmatter fields plus its markdown body, as returned by
- * `GET /api/okf/pages/*` (get). Mirrors `OkfBundle.getPage()`
- * (packages/myco/src/okf/bundle.ts:1648). `body` is markdown source — the
- * detail view renders it client-side, it is not pre-rendered HTML.
- */
-export interface OkfPageDetail extends OkfPageSummary {
-  body: string;
-}
-
-/**
- * `page` is `null` (not a 404) when the bundle-relative path doesn't
- * resolve to a readable page — same "missing/unsafe/unparseable is
- * reported as not found" posture `getPage` uses everywhere else.
- */
-export interface OkfPageGetResponse {
-  ok: boolean;
-  page: OkfPageDetail | null;
-}
-
 const OKF_PAGES_BASE_KEY = ['okf-pages'] as const;
 
-/** GET /api/okf/pages — every published page, for the knowledge browser's grouped list. */
+/** GET /api/okf/pages — every published page, for the structure tree. */
 export function useOkfDocuments(): UseQueryResult<OkfPagesListResponse> {
   const queryKey = useProjectScopedQueryKey(OKF_PAGES_BASE_KEY);
   return useQuery({
@@ -178,43 +148,25 @@ export function useOkfDocuments(): UseQueryResult<OkfPagesListResponse> {
   });
 }
 
-/**
- * GET /api/okf/pages/* — one page's parsed frontmatter + markdown body, by
- * bundle-relative path. `encodeURIComponent` on the whole path (slashes
- * included) mirrors `useCanopyEntry`'s wildcard-route convention
- * (use-canopy.ts) — the daemon's prefix router captures the raw pathname
- * tail and `decodeURIComponent`s it once, so an encoded `/` round-trips.
- */
-export function useOkfDocument(path: string | undefined): UseQueryResult<OkfPageGetResponse> {
-  const queryKey = useProjectScopedQueryKey(['okf-page', path]);
-  return useQuery({
-    queryKey,
-    queryFn: ({ signal }) =>
-      fetchJson<OkfPageGetResponse>(`/okf/pages/${encodeURIComponent(path ?? '')}`, { signal }),
-    enabled: typeof path === 'string' && path.length > 0,
-  });
-}
-
 /* ---------- Mutations ---------- */
 
 export interface OkfAcknowledgeResponse {
   ok: boolean;
-  /**
-   * The raw `OkfBundleStatus` from `bundle.acknowledgePendingFindings()` —
-   * NOT the enriched `OkfStatusResponse` shape (`handleOkfStatus` layers
-   * enabled/outputPath/validation/agentsPointer/publishEligibility/lastRun on
-   * top of it). Unused here — the status-query invalidation below refetches
-   * the enriched shape instead of trusting this narrower one.
-   */
+  /** Raw `OkfBundleStatus` from the acknowledge — the invalidation refetches the enriched status instead of trusting this narrower shape. */
   status: unknown;
+  /** True when the blocked run's preserved pages were published as part of the acknowledge. */
+  publishedRecovered: boolean;
+  pageCount?: number;
+  /** Set when the recovered pages could not publish (they stay preserved; pending findings re-surface). */
+  publishError?: string;
 }
 
 /**
  * POST /api/okf/acknowledge. Drains `manifest.pending_findings` into
- * `acknowledged_findings` so the next `okf-synthesize` run publishes — the
- * synthesis-world replacement for the dead `maintain({acknowledgePublish:
- * true})` path. Invalidates the status query on success so the publish-block
- * clears once the refreshed status reports `publishEligibility.ok`.
+ * `acknowledged_findings` AND publishes the blocked run's preserved pages when
+ * they exist — acknowledge means ship, not run-again. Invalidates status and
+ * pages so the publish-block clears and the structure tree reflects the newly
+ * published pages.
  */
 export function useOkfAcknowledge() {
   const qc = useQueryClient();
@@ -224,20 +176,7 @@ export function useOkfAcknowledge() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey });
       void qc.invalidateQueries({ queryKey: OKF_STATUS_BASE_KEY });
-    },
-  });
-}
-
-/** POST /api/okf/validate. Invalidates status so the validation summary refreshes. */
-export function useOkfValidate() {
-  const qc = useQueryClient();
-  const queryKey = useProjectScopedQueryKey(OKF_STATUS_BASE_KEY);
-  return useMutation({
-    mutationFn: (body?: OkfValidateBody) =>
-      postJson<OkfValidateResponse>('/okf/validate', body ?? {}),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey });
-      void qc.invalidateQueries({ queryKey: OKF_STATUS_BASE_KEY });
+      void qc.invalidateQueries({ queryKey: OKF_PAGES_BASE_KEY });
     },
   });
 }

@@ -11,11 +11,7 @@ interface MarkdownContentProps {
    * a `line-clamp-N` container.
    */
   compact?: boolean;
-  /**
-   * Per-tag component overrides, passed straight through to ReactMarkdown.
-   * The OKF document view (OkfDocumentView) uses this to rewrite bundle-relative
-   * links to in-app navigation instead of a broken href.
-   */
+  /** Per-tag component overrides, passed straight through to ReactMarkdown. */
   components?: Components;
 }
 
