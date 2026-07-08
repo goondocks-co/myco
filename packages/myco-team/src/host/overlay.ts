@@ -30,11 +30,9 @@ import type { ServiceManager } from '@myco/service/types.js';
 import {
   provisionOverlayBinaries,
   realFetcher,
-  resolveHostBinDir,
   resolveOverlayTarget,
   type BinaryFetcher,
   type CommandRunner,
-  type ProvisionedBinaries,
 } from './binaries.js';
 import { headscaleLayout, mintPreauthKey, renderHeadscaleConfig } from './headscale-config.js';
 import { realRunner } from './run.js';
@@ -48,7 +46,6 @@ import {
   isSystemServiceInstalled,
   uninstallSystemService,
   uninstallTailscaledDaemon,
-  systemUnitPath,
   HEADSCALE_SERVICE_LABEL,
   type SystemServiceContext,
 } from './system-service.js';
@@ -392,5 +389,3 @@ function sanitizeHostname(name: string): string {
 
 /** Expose the tailscaled system-daemon labels for callers/tests. */
 export { TAILSCALED_MACOS_LABEL, TAILSCALED_LINUX_LABEL };
-/** Re-export for callers that need to resolve where a unit landed. */
-export { systemUnitPath, resolveHostBinDir };

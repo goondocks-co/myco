@@ -107,6 +107,26 @@ describe('provisionOverlayBinaries', () => {
     expect(result.tailscaleVersion).toBe(TAILSCALE_VERSION);
   });
 
+  it('skips the binary download on re-run when the on-disk copy already matches (idempotent)', async () => {
+    fs.writeFileSync(path.join(brewDir, 'tailscale'), 'ts', { mode: 0o755 });
+    fs.writeFileSync(path.join(brewDir, 'tailscaled'), 'tsd', { mode: 0o755 });
+    let binaryHits = 0;
+    const url = headscaleAssetUrl(target);
+    const checksumsUrl = `https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/checksums.txt`;
+    const fetcher: BinaryFetcher = {
+      async download(u: string): Promise<Uint8Array> {
+        if (u === url) { binaryHits += 1; return headscaleBytes; }
+        if (u === checksumsUrl) return checksums(headscaleAssetName(target), sha256(headscaleBytes));
+        throw new Error(`404 ${u}`);
+      },
+    };
+    const opts = { target, fetcher, runner: darwinRunner(), binDir, brewBinDirs: [brewDir] };
+    await provisionOverlayBinaries(opts);
+    await provisionOverlayBinaries(opts);
+    // First run downloads the binary; the second reuses the verified on-disk copy.
+    expect(binaryHits).toBe(1);
+  });
+
   it('REJECTS a checksum mismatch and never places the binary', async () => {
     fs.writeFileSync(path.join(brewDir, 'tailscale'), 'ts', { mode: 0o755 });
     fs.writeFileSync(path.join(brewDir, 'tailscaled'), 'tsd', { mode: 0o755 });

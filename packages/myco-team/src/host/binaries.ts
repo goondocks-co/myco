@@ -199,10 +199,11 @@ async function provisionHeadscale(
   const dest = path.join(binDir, 'headscale');
   const assetName = headscaleAssetName(target);
 
-  // Idempotent: an already-verified binary is reused. We re-verify against the
-  // freshly downloaded checksums so a truncated prior copy (the spike flake) is
-  // never trusted just because the file exists.
-  const bytes = await downloadCapped(fetcher, headscaleAssetUrl(target), assetName);
+  // The checksums file is tiny — always fetch it and use it as the source of
+  // truth. An already-present binary whose bytes match the expected digest is
+  // NEVER re-downloaded (checks already-done); a truncated prior copy (the spike
+  // flake) fails the digest and gets re-fetched, so a stale partial is never
+  // trusted just because the file exists.
   const checksumsText = new TextDecoder().decode(
     await downloadCapped(fetcher, headscaleChecksumsUrl(), 'checksums.txt'),
   );
@@ -210,6 +211,14 @@ async function provisionHeadscale(
   if (!expected) {
     throw new Error(`Headscale checksums.txt has no entry for ${assetName} — refusing to install an unverified control-plane binary.`);
   }
+
+  if (fs.existsSync(dest) && sha256(fs.readFileSync(dest)).toLowerCase() === expected.toLowerCase()) {
+    verifyLanded(dest);
+    log(`headscale ${HEADSCALE_VERSION} already provisioned at ${dest} (checksum match) — skipping download.`);
+    return dest;
+  }
+
+  const bytes = await downloadCapped(fetcher, headscaleAssetUrl(target), assetName);
   const actual = sha256(bytes);
   if (actual.toLowerCase() !== expected.toLowerCase()) {
     throw new Error(`Headscale ${assetName} checksum mismatch (expected ${expected}, got ${actual}) — refusing to install.`);
