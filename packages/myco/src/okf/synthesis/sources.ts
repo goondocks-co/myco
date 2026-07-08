@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { listSpores } from '@myco/db/queries/spores.js';
+import { listSkillRecords } from '@myco/db/queries/skill-records.js';
 import { listFullCanopyEntries } from '@myco/db/queries/canopy.js';
 import { readCanopyMap } from '@myco/canopy/map/store.js';
 import { walkProject } from '@myco/canopy/scanner/walk.js';
@@ -32,13 +33,19 @@ import type { ProjectScope } from '@myco/grove/ids.js';
  */
 /** Active spores sampled into the orientation (split into spores + decisions). */
 const SPORE_ORIENTATION_LIMIT = 60;
+/** Active skill records sampled into the orientation (guide material). */
+const SKILL_ORIENTATION_LIMIT = 40;
 /** Described Canopy files sampled into the orientation index. */
 const CANOPY_ORIENTATION_LIMIT = 80;
 /** Repo-root files surfaced in the tree orientation (root files are few; drill deeper with fs_tree/fs_list). */
 const ROOT_FILE_LIMIT = 100;
 
 /** Directory segments excluded from the repo tree regardless of git-tracked status. */
-const ALWAYS_EXCLUDED_SEGMENTS = new Set(['.git', 'node_modules']);
+const ALWAYS_EXCLUDED_SEGMENTS = new Set([
+  '.git', 'node_modules',
+  // Agent/tool configuration dirs — harness plumbing, not project knowledge.
+  '.agents', '.myco', '.claude', '.klein', '.codex', '.cursor',
+]);
 
 /** One top-level directory in the repo-tree orientation, with its recursive tracked-file count. */
 export interface OkfTopLevelDir {
@@ -92,6 +99,14 @@ export type SporeRef = OkfVaultRef;
 export type CanopyRef = OkfVaultRef;
 export type DecisionRef = OkfVaultRef;
 
+/** An active skill record reduced to a citable summary — the repeatable procedures the wiki's guide pages draw on. */
+export interface SkillRef extends OkfVaultRef {
+  /** One-line skill description. */
+  description: string;
+  /** Repo-relative SKILL.md path — read the full procedure with fs_read. */
+  path: string;
+}
+
 export interface OkfSourceVault {
   /** Non-decision spores (gotchas, wisdom, discoveries, patterns, ...) — a capped orientation sample. */
   spores: SporeRef[];
@@ -101,6 +116,8 @@ export interface OkfSourceVault {
   canopyEntries: CanopyRef[];
   /** Decision-type spores, called out separately — they carry rationale synthesis draws on directly. */
   decisions: DecisionRef[];
+  /** Active skill records — repeatable project procedures (guide material); read a body with fs_read on its path. */
+  skills: SkillRef[];
   /** True when the spore/decision sample hit SPORE_ORIENTATION_LIMIT — find the rest with vault_search_semantic/fts. */
   sporesTruncated: boolean;
   /** True when the Canopy-entry sample hit CANOPY_ORIENTATION_LIMIT — find the rest with vault_search_canopy. */
@@ -247,11 +264,21 @@ function gatherVault(scope: OkfSourceScope): OkfSourceVault {
     }));
   }
 
+  const skillRecords = listSkillRecords({ scope: scope.scope, status: 'active', limit: SKILL_ORIENTATION_LIMIT });
+  const skills: SkillRef[] = skillRecords.map((record) => ({
+    id: record.id,
+    title: record.display_name || record.name,
+    type: 'skill',
+    description: record.description,
+    path: record.path,
+  }));
+
   return {
     spores: sporeRefs,
     canopyMap,
     canopyEntries,
     decisions: decisionRefs,
+    skills,
     sporesTruncated: spores.length >= SPORE_ORIENTATION_LIMIT,
     canopyEntriesTruncated,
   };

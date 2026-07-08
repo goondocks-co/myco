@@ -1,24 +1,25 @@
 # =============================================================================
 # Built-in Task: OKF Synthesize
 # =============================================================================
-# Synthesizes the project's Open Knowledge Format wiki from source material
-# (repo tree, git diff context, and vault knowledge) through three phases:
+# Publishes the project intelligence Myco has ALREADY computed — the digest,
+# the Canopy map and per-file summaries, spores (decisions/gotchas/wisdom),
+# skills, and session/plan history — into the portable OKF wiki at okf/,
+# through three phases:
 #
-#   explore  → read-only survey that EXPLORES the repo like a coding agent:
-#              okf_read_sources gives a bounded orientation (Canopy map +
-#              top-level tree + capped vault refs), then fs_tree/fs_list/fs_read
-#              + code_grep + vault_search_canopy/semantic/fts read the real code
-#              and the decisions behind it; emits a synthesis brief naming the
-#              pages the wiki should hold.
+#   explore  → read-only survey that CONSUMES Myco's intelligence: the digest
+#              for orientation, the Canopy map (via okf_read_sources) for the
+#              code's structure, spores/skills/sessions for decisions and
+#              procedures, Canopy search for module-level truth, with
+#              fs_read/code_grep for targeted spot-verification only; emits a
+#              synthesis brief naming the pages the wiki should hold.
 #   plan     → turns that brief into a capped, auditable page-plan and persists
 #              it via okf_write_plan (.myco/okf/state/plan.json).
 #   synthesize (map) → one page per planned entry. The map SOURCE reads the
 #              persisted plan back (okf_list_planned_pages); the map SINK stages
 #              each page (okf_write_page) into ONE staged generation. The item
-#              surface also carries the same code/vault exploration tools (so a
-#              page author reads the REAL modules it covers), okf_list_pages
-#              (sibling awareness, for cross-links) and okf_read_page
-#              (read-current-before-refine).
+#              surface carries the same intelligence + spot-verification tools,
+#              okf_list_planned_pages (sibling awareness, for cross-links) and
+#              okf_read_page (read-current-before-refine).
 #
 # THE PLAN→MAP HANDOFF: a map-phase source is called by harness code with only
 # {params} — it cannot receive the plan phase's in-memory output. The plan
@@ -34,6 +35,12 @@
 # either because the model's refine already carries it forward, or (fallback)
 # by appending it verbatim. See okf/ownership.ts's isHandEdited.
 #
+# COST SHAPE: this task consumes pre-computed intelligence instead of
+# re-exploring the repo, so its budgets are deliberately tight (default
+# reasoning, explore 10 turns, 6 turns/page). The hard cost ceiling is
+# structural: run/phase/per-item turn caps × the MAX_PLANNED_PAGES page cap.
+# Widening any of these is a cost decision, not a tuning knob.
+#
 # Schedule is opt-in (enabled: false); flip per project via myco.yaml under
 # `agent.tasks['okf-synthesize'].schedule.enabled`. The okf capability gates it.
 # =============================================================================
@@ -41,64 +48,67 @@
 name: okf-synthesize
 displayName: OKF Synthesize
 description: >-
-  Synthesize the project's Open Knowledge Format wiki from repo, git, and vault
-  source material: survey sources, plan a capped page set, then write one page
-  per plan entry and publish the bundle atomically.
+  Publish the project intelligence Myco has already computed (digest, Canopy,
+  spores, skills) as the project's Open Knowledge Format wiki: survey that
+  intelligence, plan a capped page set, then write one page per plan entry and
+  publish the bundle atomically.
 agent: myco-agent
 isDefault: false
 reasoningLevel: default
 maxTurns: 30
-# 1h wall clock for the whole run. The synthesize map phase runs its pages
-# SEQUENTIALLY at up to perItemTimeoutSeconds each (now 240s, since each page
-# author does real code/vault exploration), so the run budget has to cover
-# explore + plan + N page items without the run-level abort cutting the map
-# phase short mid-plan.
+# 1h wall clock for the whole run — a backstop, not a cost driver (cost is
+# capped by turns × pages). The synthesize map phase runs its pages
+# SEQUENTIALLY at up to perItemTimeoutSeconds each, so the run budget has to
+# cover explore + plan + N page items without the run-level abort cutting the
+# map phase short mid-plan.
 timeoutSeconds: 3600
 schedule:
   enabled: false
-  # 6h. Synthesis is expensive (cloud reasoning over the whole source corpus);
-  # the okf-synthesize-due precondition is the real gate on whether a run does
-  # any work, so the interval only bounds how often that gate is checked.
+  # 6h. The okf-synthesize-due precondition is the real gate on whether a run
+  # does any work, so the interval only bounds how often that gate is checked.
   intervalSeconds: 21600
   runIn:
     - idle
     - sleep
   preCondition: okf-synthesize-due
 prompt: >-
-  You generate and maintain an OKF v0.1-compliant knowledge wiki OF THIS
-  codebase, published to the `okf/` bundle. Ground your output format in the
-  spec: call `okf_read_spec` to fetch and read the authoritative OKF v0.1
-  specification, and follow it exactly — if that fetch fails, the essential OKF
-  rules are restated in your phase prompts, so follow those. Explore the
-  codebase with your tools — start from the Canopy map, then targeted
-  `fs_tree`/`fs_list`/`fs_read`, `code_grep`, and `vault_search_canopy` — to
-  understand its real architecture, subsystems, key modules, and execution
-  flow. Plan a focused, code-grounded page set; synthesize or refine each page
-  to be genuinely useful and OKF-spec-compliant; enrich with the vault's
-  decisions, gotchas, and wisdom that go BEYOND the code. Publication is
-  automatic once the run succeeds — never try to publish by hand.
+  You publish the project intelligence Myco has ALREADY computed as an OKF
+  v0.1-compliant knowledge wiki OF THIS codebase, in the `okf/` bundle. Myco
+  has already done the expensive understanding: the digest is the project
+  orientation, the Canopy map and per-file summaries are the code's structure,
+  spores hold the decisions/gotchas/trade-offs behind it, skill records hold
+  the repeatable procedures, sessions/plans hold recent work. Your job is to
+  SYNTHESIZE and TRANSLATE that intelligence into a portable wiki — not to
+  re-investigate the codebase from scratch. Use `fs_read`/`code_grep` only to
+  spot-verify concrete claims (a file exists, a module does what a summary
+  says), never to survey. Ground your output format in the spec: call
+  `okf_read_spec` once and follow it exactly — if that fetch fails, the
+  essential OKF rules are restated in your phase prompts. Plan a focused,
+  code-grounded page set; synthesize or refine each page to be genuinely
+  useful. Publication is automatic once the run succeeds — never try to
+  publish by hand.
 phases:
   - name: explore
     dependsOn: []
-    reasoningLevel: high
-    maxTurns: 20
+    maxTurns: 10
     required: true
     readOnly: true
     purpose: >-
-      Read-only survey of OKF source material and already-published pages to
-      decide what the wiki should cover this run.
+      Read-only survey of Myco's pre-computed project intelligence and the
+      already-published pages to decide what the wiki should cover this run.
     tools:
       - okf_read_sources
       - okf_read_spec
       - okf_list_pages
       - okf_read_page
-      - fs_tree
-      - fs_list
-      - fs_read
-      - code_grep
+      - vault_read_digest
+      - vault_spores
+      - vault_sessions
       - vault_search_canopy
       - vault_search_semantic
       - vault_search_fts
+      - fs_read
+      - code_grep
     prompt: |
       Survey THIS project so you can plan a wiki that helps a new engineer or
       agent understand it fast: its architecture, how the code is organized,
@@ -107,41 +117,41 @@ phases:
       CODE-GROUNDED wiki OF THE PROJECT — not a glossary of ideas and not a
       restatement of docs that already exist.
 
-      GROUND YOUR FORMAT IN THE OKF SPEC FIRST. Call `okf_read_spec` to fetch
-      and read the authoritative OKF v0.1 specification so the pages you plan
-      fit the format (frontmatter, folder indexes, cross-links, log,
-      citations). If that fetch fails, follow the essential OKF rules restated
-      in the synthesize step — do not block on it.
+      CONSUME MYCO'S INTELLIGENCE — DO NOT RE-EXPLORE THE REPO. Myco has
+      already computed the project understanding; gather the smallest set of
+      it that lets you plan the wiki. Avoid exhaustive searching.
 
-      EXPLORE THIS REPO LIKE A CODING AGENT. `okf_read_sources` gives you a
-      bounded ORIENTATION (the Canopy map, a top-level repo-tree summary, git
-      diff context, and a capped sample of citable vault refs) — it is your
-      starting point, not the whole codebase. Do NOT expect the code inline:
-      read the orientation, then go read the real code and vault yourself.
+      1. ORIENT WITH THE DIGEST. Call `vault_read_digest` (tier 5000) for the
+         computed project orientation: what this project is, its major
+         workstreams, and its architecture as Myco already understands it.
+      2. GET THE CODE'S STRUCTURE FROM THE CANOPY MAP. Call `okf_read_sources`
+         — its orientation leads with the Canopy map (the code-intelligence
+         structural guide) plus a top-level repo-tree summary, git change
+         context, and a capped sample of citable vault refs. The map tells you
+         the major modules/packages, where things live, and what is worth a
+         page. For module-level truth, `vault_search_canopy` returns per-file
+         summaries — use it to flesh out each subsystem you plan to cover.
+      3. PULL THE WHY FROM THE VAULT. `vault_spores` and
+         `vault_search_semantic`/`vault_search_fts` surface the decisions,
+         gotchas, trade-offs, and wisdom behind the code; the orientation's
+         `vault.skills` lists the repeatable procedures (guide material —
+         `fs_read` a skill's path when you need the full procedure);
+         `vault_sessions` shows recent work (what is actively changing and
+         worth documenting well). Weave these INTO code-grounded pages; do NOT
+         build the wiki out of them and do NOT write a page per spore.
+      4. SPOT-VERIFY, DON'T SURVEY. Use `fs_read`/`code_grep` only to confirm
+         a concrete claim you are about to build a page on — never to walk the
+         tree or read the codebase file by file.
 
-      1. START AT THE CANOPY MAP. Call `okf_read_sources` for the structural
-         guide and the top-level repo shape. This tells you the major
-         modules/packages and where things live — your map of the codebase.
-      2. DRILL INTO THE REAL CODE (primary). From the map, walk the actual
-         structure with `fs_tree`/`fs_list`, find code by behavior with
-         `vault_search_canopy` (file-level summaries) and by pattern with
-         `code_grep`, and read the real source of the load-bearing modules with
-         `fs_read`. Work out the main entry points, the major subsystems/areas,
-         how they connect, and the runtime/execution flow — from the code, not
-         from guesswork. This is the backbone of the wiki; most pages should be
-         grounded in real modules/files and name them.
-      3. Git change context (from `okf_read_sources`) — what is actively
-         changing points at the load-bearing parts worth documenting well.
-      4. VAULT KNOWLEDGE as ENRICHMENT, not the base. Use `vault_search_semantic`
-         and `vault_search_fts` (and the orientation's spore/decision refs) to
-         find the *why* and the *pitfalls* behind the code — rationale, gotchas,
-         trade-offs. Weave them INTO the code-grounded pages; do NOT build the
-         wiki out of them and do NOT write a page per spore.
+      GROUND YOUR FORMAT IN THE OKF SPEC. Call `okf_read_spec` once so the
+      pages you plan fit the format (frontmatter, folder indexes, cross-links,
+      log, citations). If that fetch fails, follow the essential OKF rules
+      restated in the synthesize step — do not block on it.
 
       Read the currently-published pages (`okf_list_pages` / `okf_read_page`)
-      and note what the repo already documents (README, docs/, AGENTS.md — read
-      them with `fs_read`). Do NOT duplicate existing docs — give the
-      synthesized, code-grounded structural view they lack, and complement them.
+      and note what the repo already documents (README, docs/, AGENTS.md). Do
+      NOT duplicate existing docs — give the synthesized, code-grounded
+      structural view they lack, and complement them.
 
       Emit a compact synthesis brief as your phase summary:
 
@@ -157,15 +167,15 @@ phases:
       decisions and their rationale), `guides/*` (operational how-tos),
       `reference/*` (glossary, key config). Let the ACTUAL project shape the
       taxonomy. Prefer depth on the load-bearing parts of the system over
-      breadth; never one page per file, never a bare concept glossary. Note
-      which already-published pages should be refreshed versus left as-is. If
-      nothing meaningful has changed since the last synthesis, say so plainly
-      and list no pages.
+      breadth; never one page per file, never a bare concept glossary. Never
+      plan a page named `index` or `log` (any folder) — those files are
+      generated. Note which already-published pages should be refreshed versus
+      left as-is. If nothing meaningful has changed since the last synthesis,
+      say so plainly and list no pages.
 
   - name: plan
     dependsOn: [explore]
-    reasoningLevel: high
-    maxTurns: 10
+    maxTurns: 6
     required: true
     purpose: >-
       Turn the explore brief into a capped, auditable page-plan and persist it
@@ -182,25 +192,27 @@ phases:
       this run. For each page provide:
         - path: bundle-relative, slug-safe (no leading slash, no traversal) —
           group under the section that fits, e.g. `architecture/…`,
-          `subsystems/…`, `concepts/…`, `decisions/…`, `guides/…`, `reference/…`
+          `subsystems/…`, `concepts/…`, `decisions/…`, `guides/…`,
+          `reference/…`. Never a reserved basename: no `index` or `log` page
+          anywhere — those files are generated, and such a plan is rejected.
         - type: a descriptive, project-appropriate OKF document type from the
           palette (e.g. overview, architecture, subsystem, concept, decision,
           guide, reference) — capitalized types like `Architecture` are fine
         - title
         - rationale: why this page belongs (auditable) — for code-grounded
           pages, name the modules/subsystems it covers
-        - sourceRefs: the stable ids from okf_read_sources this page draws on
-          (favor the Canopy code-intelligence ids for architecture/subsystem
-          pages, not just spores)
+        - sourceRefs: the stable ids this page draws on — Canopy
+          code-intelligence ids for architecture/subsystem pages, spore ids
+          for decision pages, skill ids for guide pages
         - openQuestions: gaps to flag for this page; omit when there are none
 
       The plan is the ONLY channel to the synthesis phase — a page not in the
       plan is never written. Keep the plan focused and within the page cap; a
-      runaway plan is rejected and nothing is written. If okf_write_plan returns
-      validation errors, fix them and call it again. If the explore brief found
-      nothing worth writing, write an empty plan (an empty pages array) so the
-      synthesis phase becomes a no-op and the previously published bundle is
-      left untouched.
+      runaway plan is rejected and nothing is written. If okf_write_plan
+      returns validation errors, fix them and call it again. If the explore
+      brief found nothing worth writing, write an empty plan (an empty pages
+      array) so the synthesis phase becomes a no-op and the previously
+      published bundle is left untouched.
 
   - name: synthesize
     dependsOn: [plan]
@@ -209,15 +221,12 @@ phases:
     # skip (not abort): one page that fails to synthesize should not sink the
     # rest of the plan; item failures aren't necessarily systemic.
     onItemError: skip
-    # 12: the page author no longer reads a source dump — it EXPLORES the code
-    # and vault for the page it's writing (fs_read/code_grep/vault_search_* plus
-    # the okf read tools), which is several tool calls before the single
-    # okf_write_page. 5 turns starved that mid-exploration.
-    perItemMaxTurns: 12
-    # 240s/item: real per-page exploration (reading the actual modules a page
-    # covers, searching Canopy/vault) then writing the body takes materially
-    # longer than reading a pre-reduced projection did.
-    perItemTimeoutSeconds: 240
+    # 8: the page author consumes the plan's sourceRefs (Canopy summaries,
+    # spores, skills) plus a couple of spot-verification reads before the
+    # single okf_write_page — a fresh-bundle page needs headroom for the
+    # orientation read and sibling check on top of that.
+    perItemMaxTurns: 8
+    perItemTimeoutSeconds: 180
     required: true
     # maxTurns/tools/prompt are required by PhaseDefinitionSchema but unused
     # under mode: map (per-item budgets and source/item/sink replace them).
@@ -239,13 +248,12 @@ phases:
         - okf_read_page
         - okf_list_pages
         - okf_list_planned_pages
-        - fs_tree
-        - fs_list
-        - fs_read
-        - code_grep
+        - vault_spores
         - vault_search_canopy
         - vault_search_semantic
         - vault_search_fts
+        - fs_read
+        - code_grep
       prompt: |
         Synthesize this one OKF wiki page and stage it by calling
         `okf_write_page`. The harness pins path, type, and title from the plan —
@@ -265,16 +273,19 @@ phases:
         carries a `log.md` (generated for you); (5) end the body with a
         `# Citations` section. Write valid, readable OKF markdown for the body.
 
-        READ THE REAL CODE THIS PAGE COVERS BEFORE YOU WRITE IT. `okf_read_sources`
-        gives you the bounded orientation + citable ids, not the code inline.
-        To write THIS page, go read what it's about: use `vault_search_canopy`
-        and `code_grep` to find the modules/files in scope, `fs_read` to read
-        their actual source, and `fs_tree`/`fs_list` to see how they're
-        organized. Then enrich with the *why* and *pitfalls* using
-        `vault_search_semantic`/`vault_search_fts` (decisions, gotchas,
-        trade-offs behind that code). Name the concrete files and describe the
-        real structure and flow you observed — do NOT invent files or structure
-        you didn't read, and do NOT just restate what existing docs already say.
+        CONSUME THE INTELLIGENCE THIS PAGE IS PLANNED FROM. The plan's source
+        refs point at what Myco already knows: read the Canopy per-file
+        summaries for the modules this page covers (`vault_search_canopy`),
+        the spores behind its decisions (`vault_spores`,
+        `vault_search_semantic`/`vault_search_fts`), and for a guide page the
+        skill bodies listed in `okf_read_sources`' vault.skills (`fs_read`
+        their paths). Then SPOT-VERIFY the concrete
+        claims you make — `fs_read` the key module or `code_grep` the pattern
+        you are about to name — but do NOT re-explore the codebase; a couple
+        of verification reads is the ceiling. Name the concrete files and
+        describe the real structure and flow the intelligence shows — do NOT
+        invent files or structure the sources don't show, and do NOT just
+        restate what existing docs already say.
 
         If a page already exists at this path, call `okf_read_page` FIRST and
         write a REFINED body that carries its current content forward — never
@@ -302,17 +313,18 @@ phases:
 
         Ground the page in the ACTUAL code. For an architecture or subsystem
         page, describe the real structure — the concrete modules/files it
-        covers (the ones you read with fs_read / found via vault_search_canopy),
-        what each does, how they connect, and the execution flow — not generic
-        hand-waving. Enrich with the vault's *why* and *pitfalls* (decisions,
-        gotchas, trade-offs) where they explain the code. Write clear, accurate
-        prose grounded in what you read; do not invent facts, files, or
-        structure the sources don't show.
+        covers, what each does, how they connect, and the execution flow — as
+        the Canopy summaries and your spot-verification reads show it, not
+        generic hand-waving. Enrich with the vault's *why* and *pitfalls*
+        (decisions, gotchas, trade-offs) where they explain the code. Write
+        clear, accurate prose grounded in what you read; do not invent facts,
+        files, or structure the sources don't show.
 
         End the body with a `# Citations` section listing the sources this page
-        draws on — the concrete files you read (`fs_read`/`vault_search_canopy`
-        paths) and the vault ids (spores, decisions) that ground it — so a
-        reader can trace the synthesis. Cite only sources you actually used.
+        draws on — the concrete files you read or verified (`fs_read`/
+        `vault_search_canopy` paths) and the vault ids (spores, decisions,
+        skills) that ground it — so a reader can trace the synthesis. Cite only
+        sources you actually used.
 
         Page: {{ item.title }}
         Path: {{ item.path }}

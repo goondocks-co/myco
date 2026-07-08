@@ -135,6 +135,37 @@ describe('OkfBundle.beginStagedGeneration', () => {
     }
   });
 
+  it('sanitizes UUID-shaped identifiers out of staged content so the publish-eligibility scan stays clean', async () => {
+    const outputRoot = okfDir();
+    const staged = await makeBundle().beginStagedGeneration({ mode: 'published' });
+    const doc = contentDoc('pages/cited');
+    doc.body = 'Grounded in session 4da502f0-b1a9-44c6-949a-4696e80abd31.\n\n# Citations\n- spore wisdom-f583220c\n';
+    staged.stageDocument(doc);
+    const result = await staged.finalize({ inputsHash: 'sanitize-test-hash' });
+
+    expect(result.publishEligibility.ok).toBe(true);
+    const published = fs.readFileSync(path.join(outputRoot, 'pages/cited.md'), 'utf8');
+    expect(published).not.toContain('4da502f0-b1a9-44c6-949a-4696e80abd31');
+    expect(published).toMatch(/id-hash-[0-9a-f]{16}/);
+    expect(published).toContain('wisdom-f583220c');
+  });
+
+  it('a rejected stageDocument does not poison the staged set — finalize still publishes the good pages', async () => {
+    const outputRoot = okfDir();
+    const staged = await makeBundle().beginStagedGeneration({ mode: 'published' });
+    staged.stageDocument(contentDoc('pages/alpha'));
+    expect(() => staged.stageDocument(contentDoc('pages/index'))).toThrow(/reserved_filename/);
+    const result = await staged.finalize({ inputsHash: 'poison-test-hash' });
+
+    expect(result.pageCount).toBe(1);
+    expect(validateBundleTree(outputRoot, 'strict').ok).toBe(true);
+    expect(fs.existsSync(path.join(outputRoot, 'pages/alpha.md'))).toBe(true);
+    // The generated directory index at pages/index.md is plain markdown — the
+    // rejected content doc never landed there.
+    const pagesIndex = fs.readFileSync(path.join(outputRoot, 'pages/index.md'), 'utf8');
+    expect(pagesIndex.startsWith('---\n')).toBe(false);
+  });
+
   it('rejects an empty-frontmatter document that is not a reserved index/log file', async () => {
     const staged = await makeBundle().beginStagedGeneration({ mode: 'published' });
     try {

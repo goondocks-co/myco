@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
+import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { createProjectId, projectScope } from '@myco/grove/ids.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
@@ -77,6 +78,8 @@ describe('gatherSources', () => {
     writeFile('src/index.ts', 'export const x = 1;\n');
     writeFile('README.md', '# root\n');
     writeFile('node_modules/dep/index.js', 'module.exports = {};\n');
+    writeFile('.claude/settings.json', '{}\n');
+    writeFile('.agents/skills/deploy/SKILL.md', '# deploy\n');
     writeFile('okf/index.md', 'stale published bundle\n');
     initGitRepo();
     commitAll('initial');
@@ -101,6 +104,23 @@ describe('gatherSources', () => {
       importance: 5,
       created_at: 1_783_000_100,
       machine_id: MACHINE_ID,
+    });
+    insertSkillRecord({
+      id: 'skill-1',
+      project_id: projectId,
+      agent_id: AGENT_ID,
+      machine_id: MACHINE_ID,
+      name: 'deploy',
+      display_name: 'Deploy Procedure',
+      description: 'How to deploy the service.',
+      status: 'active',
+      generation: 1,
+      candidate_id: null,
+      source_ids: '[]',
+      path: '.agents/skills/deploy/SKILL.md',
+      created_at: 1_783_000_200,
+      updated_at: 1_783_000_200,
+      properties: '{}',
     });
 
     seedCanopyEntry(getDatabase(), {
@@ -144,6 +164,19 @@ describe('gatherSources', () => {
     expect(result.vault.decisions[0].id).toBe('decision-1');
     expect(result.vault.spores.some((s) => s.id === 'decision-1')).toBe(false);
     expect(result.vault.spores.some((s) => s.id === 'gotcha-1')).toBe(true);
+
+    // Active skill records surface as citable guide material with a readable path.
+    expect(result.vault.skills).toHaveLength(1);
+    expect(result.vault.skills[0]).toMatchObject({
+      id: 'skill-1',
+      title: 'Deploy Procedure',
+      type: 'skill',
+      path: '.agents/skills/deploy/SKILL.md',
+    });
+
+    // Agent-config dirs are harness plumbing, excluded from the tree orientation.
+    expect(everyPath.some((p) => p === '.claude' || p.startsWith('.claude'))).toBe(false);
+    expect(everyPath.some((p) => p === '.agents' || p.startsWith('.agents'))).toBe(false);
   });
 
   it('reports changedPaths since sinceRef across a later commit', () => {

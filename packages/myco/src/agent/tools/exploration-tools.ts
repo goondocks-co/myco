@@ -70,7 +70,8 @@ const MAX_GREP_MATCH_CHARS = 200;
 /** Directories skipped by fs_tree and fs_list during recursive walk. */
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', 'coverage',
-  '.myco', '.agents', '.turbo', '.cache', 'out',
+  '.myco', '.agents', '.claude', '.klein', '.codex', '.cursor',
+  '.turbo', '.cache', 'out',
 ]);
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ import { sha256Hex } from '@myco/canopy/hash.js';
 import type { OkfOwnership } from './ownership.js';
 import { OkfError } from './errors.js';
 import { resolveOutputRoot, type OutputClass } from './output-root.js';
-import { mycoProjectRef, runRef } from './privacy.js';
+import { mycoProjectRef, runRef, sanitizePublishedText } from './privacy.js';
 import { assertSafeConceptId, conceptPathForId, detectCollisions, OkfPathError } from './paths.js';
 import { normalizeBodyLinks } from './links.js';
 import { parseConceptDoc, serializeConceptDoc } from './frontmatter.js';
@@ -507,8 +507,16 @@ export class OkfBundle {
     return {
       stageDocument: (doc: OkfDocument) => {
         const dir = ensureStaging();
-        docs.push(doc);
-        this.writeStagedDoc(dir, doc);
+        // Myco-authored content must never publish raw session/run identifiers;
+        // UUID-shaped ids become stable id-hash refs at this single write
+        // chokepoint, so the publish-eligibility scan stays a backstop for
+        // content Myco did not write (hand-edited or carried pages).
+        const sanitized = this.sanitizeStagedDoc(doc);
+        // finalize renders every doc in `docs`, so a doc is recorded only
+        // after its write succeeds — writeStagedDoc rejects an invalid doc
+        // (reserved basename, unsafe path) by throwing.
+        this.writeStagedDoc(dir, sanitized);
+        docs.push(sanitized);
       },
       finalize,
       abort: () => release(),
@@ -537,6 +545,28 @@ export class OkfBundle {
    *   generated index at the same path — silent page loss the collision guard
    *   (content paths only) never sees.
    */
+  /**
+   * Sanitize a freshly staged content document's publishable text: body plus
+   * the free-text frontmatter fields (title, description, tags). Index/log
+   * docs (empty frontmatter) pass through — their content is generated from
+   * already-sanitized frontmatter. Path and type are structural, never
+   * free-form prose, so they are left to validation.
+   */
+  private sanitizeStagedDoc(doc: OkfDocument): OkfDocument {
+    if (Object.keys(doc.frontmatter).length === 0) return doc;
+    const fm = doc.frontmatter;
+    return {
+      ...doc,
+      frontmatter: {
+        ...fm,
+        title: sanitizePublishedText(fm.title),
+        description: sanitizePublishedText(fm.description),
+        ...(fm.tags ? { tags: fm.tags.map((t) => sanitizePublishedText(t)) } : {}),
+      },
+      body: sanitizePublishedText(doc.body),
+    };
+  }
+
   private writeStagedDoc(stagingDir: string, doc: OkfDocument): void {
     let relPath: string;
     let content: string;

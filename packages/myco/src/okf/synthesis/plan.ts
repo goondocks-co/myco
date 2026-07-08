@@ -1,4 +1,5 @@
 import { assertSafeConceptId, OkfPathError } from '../paths.js';
+import { OKF_RESERVED_FILES } from '../types.js';
 
 /**
  * The page-plan model for OKF synthesis: the capped, auditable list of wiki
@@ -15,7 +16,17 @@ import { assertSafeConceptId, OkfPathError } from '../paths.js';
  * runaway (an agent enumerating every file, say) and is rejected before any
  * page is synthesized.
  */
-export const MAX_PLANNED_PAGES = 30;
+export const MAX_PLANNED_PAGES = 20;
+
+/**
+ * Basenames a planned page may never use: the generated bundle files, with and
+ * without the `.md` suffix (plan paths may omit it — the page writer appends
+ * `.md` before staging, so `guides/index` would collide with a generated
+ * `guides/index.md`).
+ */
+const RESERVED_PLAN_BASENAMES = new Set<string>(
+  OKF_RESERVED_FILES.flatMap((f) => [f, f.replace(/\.md$/, '')]),
+);
 
 export interface WikiPagePlan {
   /** Bundle-relative, OKF-slug-safe page path (no leading slash, no traversal). */
@@ -56,6 +67,8 @@ export interface PlanVault {
  *     the same choke point the bundle writer runs a path through (charset per
  *     segment, no traversal, no leading-slash/absolute, no NUL/backslash),
  *   - each page `type` is non-empty,
+ *   - no page path uses a reserved basename (`index`/`log`, with or without
+ *     `.md`) — those files are generated at publish time,
  *   - page paths are unique.
  */
 export function validateWikiPlan(plan: WikiPlan): string[] {
@@ -75,6 +88,12 @@ export function validateWikiPlan(plan: WikiPlan): string[] {
     }
     if (page.type.trim() === '') {
       errors.push(`page ${i} (path ${JSON.stringify(page.path)}) has an empty type`);
+    }
+    const basename = page.path.split('/').pop() ?? '';
+    if (RESERVED_PLAN_BASENAMES.has(basename)) {
+      errors.push(
+        `page ${i} path ${JSON.stringify(page.path)} uses the reserved basename ${JSON.stringify(basename)} — index and log files are generated, plan a content page instead`,
+      );
     }
   });
 

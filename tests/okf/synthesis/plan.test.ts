@@ -75,7 +75,19 @@ describe('validateWikiPlan', () => {
     expect(errors.some((e) => e.includes('empty type'))).toBe(true);
   });
 
-  it('rejects a plan over the MAX_PLANNED_PAGES cap (31 pages)', () => {
+  it('rejects a reserved basename with and without the .md suffix, in any folder', () => {
+    for (const badPath of ['guides/index', 'guides/index.md', 'log', 'log.md', 'a/b/index']) {
+      const errors = validateWikiPlan(plan({ pages: [page({ path: badPath })] }));
+      expect(errors.some((e) => e.includes('reserved basename') && e.includes(badPath))).toBe(true);
+    }
+  });
+
+  it('accepts a page whose name merely contains a reserved word (indexing, log-viewer)', () => {
+    const p = plan({ pages: [page({ path: 'concepts/indexing' }), page({ path: 'subsystems/log-viewer' })] });
+    expect(validateWikiPlan(p)).toEqual([]);
+  });
+
+  it('rejects a plan over the MAX_PLANNED_PAGES cap', () => {
     const pages = Array.from({ length: MAX_PLANNED_PAGES + 1 }, (_, i) => page({ path: `concepts/p-${i}` }));
     const errors = validateWikiPlan(plan({ pages }));
     expect(errors.some((e) => e.includes(String(MAX_PLANNED_PAGES)))).toBe(true);
