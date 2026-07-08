@@ -205,7 +205,7 @@ export function refusalMcpBody(payload: RefusalPayload): string {
   });
 }
 
-interface RouteRule {
+export interface RouteRule {
   method: string;
   pattern: string;
   stamp: RouteStamp;
@@ -220,6 +220,8 @@ const COLLECTION = 'Collection';
 const HOST_ADMIN = 'Host administration';
 const BACKUP = 'Backup and restore';
 const GROVE_ADMIN = 'Grove administration';
+const DB_MAINTENANCE = 'Database maintenance';
+const EMBEDDING_MAINTENANCE = 'Embedding maintenance';
 
 /**
  * The stamp table — every rule here is a route whose attached-project behavior
@@ -256,6 +258,23 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/api/restore', stamp: 'degrade', capability: BACKUP },
   { method: 'POST', pattern: '/api/restore/preview', stamp: 'degrade', capability: BACKUP },
 
+  // --- degrade: heavyweight Grove-DB / embedding MAINTENANCE mutations. The host
+  //     owns the DB and runs the intelligence (design §5.6); host-run maintenance is
+  //     an OPERATOR action, not a member data-plane one. Under v1 flat-trust any
+  //     bearer-holding member could otherwise drive the host to re-embed or vacuum
+  //     (spending the host's embedding-provider budget / CPU) — a resource-exhaustion
+  //     lever. Degrade both sides: the member can't trigger it and the host refuses it
+  //     over the overlay. The READ routes (GET .../status, .../details) stay `serve`
+  //     (host state, read-only) and are in the serve-default manifest below. ---
+  { method: 'POST', pattern: '/api/embedding/rebuild', stamp: 'degrade', capability: EMBEDDING_MAINTENANCE },
+  { method: 'POST', pattern: '/api/embedding/reconcile', stamp: 'degrade', capability: EMBEDDING_MAINTENANCE },
+  { method: 'POST', pattern: '/api/embedding/clean-orphans', stamp: 'degrade', capability: EMBEDDING_MAINTENANCE },
+  { method: 'POST', pattern: '/api/embedding/reembed-stale', stamp: 'degrade', capability: EMBEDDING_MAINTENANCE },
+  { method: 'POST', pattern: '/api/database/optimize', stamp: 'degrade', capability: DB_MAINTENANCE },
+  { method: 'POST', pattern: '/api/database/vacuum', stamp: 'degrade', capability: DB_MAINTENANCE },
+  { method: 'POST', pattern: '/api/database/reindex', stamp: 'degrade', capability: DB_MAINTENANCE },
+  { method: 'POST', pattern: '/api/database/integrity-check', stamp: 'degrade', capability: DB_MAINTENANCE },
+
   // --- degrade: Grove/project lifecycle mutations on an attached Grove (§1f).
   //     Rename/delete/move/archive of a hosted Grove or its projects is
   //     host-authoritative; a member cannot mutate the host's Grove. (Creating
@@ -289,6 +308,10 @@ const ROUTE_RULES: RouteRule[] = [
 
   // --- localhost-only: operator control plane / local-install management (§1d, §1e).
   //     Served on whichever daemon received the request; never crosses the overlay. ---
+  // Readiness of THIS daemon's request pipeline (§1d) — each client probes its own
+  // local daemon (`hooks/client.ts` dials 127.0.0.1/ready); members confirm host
+  // reachability via the raw, bearer-gated /health, never the host's /ready.
+  { method: 'GET', pattern: '/ready', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'GET', pattern: '/api/logs/*', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'GET', pattern: '/api/logs', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/log', stamp: 'localhost-only', capability: HOST_ADMIN },
@@ -312,6 +335,15 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', pattern: '/api/providers/secrets', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'PUT', pattern: '/api/providers/secrets/:provider', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'DELETE', pattern: '/api/providers/secrets/:provider', stamp: 'localhost-only', capability: HOST_ADMIN },
+  // Provider/model CONNECTIVITY — machine-global, never Grove data (PROVIDER_ROUTE_SCOPES
+  // declares the two provider routes 'machine'). Over the overlay these are a host
+  // remote-key VALIDITY ORACLE (a member learns whether the host's stored key is live)
+  // and, on the local-backend path, a host-side SSRF/reachability probe to a
+  // member-supplied base_url. Localhost-only: the member reads its OWN machine-tier
+  // provider posture; the host never answers these over the overlay.
+  { method: 'GET', pattern: '/api/providers', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/providers/test', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'GET', pattern: '/api/models', stamp: 'localhost-only', capability: CONFIG },
   { method: 'POST', pattern: '/api/groves', stamp: 'localhost-only', capability: CONFIG },
   { method: 'POST', pattern: '/api/groves/:id/default', stamp: 'localhost-only', capability: 'Viewing' },
   { method: 'GET', pattern: '/api/restore/status', stamp: 'localhost-only', capability: CONFIG },
@@ -325,6 +357,103 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', pattern: '/api/collective/*', stamp: 'localhost-only', capability: 'collective' },
   { method: 'POST', pattern: '/api/collective/*', stamp: 'localhost-only', capability: 'collective' },
 ];
+
+/**
+ * The serve-default MANIFEST — every registered router route that INTENTIONALLY
+ * uses the `serve` default (not listed in {@link ROUTE_RULES}). `ROUTE_RULES` is
+ * deliberately the "do NOT plainly proxy this" exceptions table; this is its
+ * complement — the genuine knowledge/viewing/host-run-intelligence routes that
+ * SHOULD proxy to the host and serve over the overlay. Together the two sets are
+ * the complete route manifest (the scope-map's 176/176), and the completeness
+ * guard (`tests/meta/route-stamp-completeness.test.ts`) asserts every registered
+ * router route is in exactly one of them — so a NEW route can never silently fall
+ * through to `serve` and become overlay-exposed without a deliberate decision
+ * recorded HERE (serve) or in `ROUTE_RULES` (a non-serve stamp).
+ *
+ * Keyed `"<METHOD> <registered pattern>"`, matching the registration site's
+ * literal method + path exactly (including `:param` / trailing `/*`).
+ */
+export const SERVE_DEFAULT_ROUTES: ReadonlySet<string> = new Set<string>([
+  // Knowledge injection (hook-driven; host-owned Cortex/digest) — scope-map §1b.
+  'POST /context',
+  'POST /context/resume',
+  'POST /context/prompt',
+  'POST /context/subagent',
+  'GET /api/cortex/instructions',
+  'POST /api/cortex/instructions/refresh',
+  'POST /api/cortex/prompt-builder',
+  'GET /api/cortex/prompt-builder/:runId',
+  // Host grove-tier config READ — the one host surface the member's config carve
+  // dials (host-sources the grove tier); read-only, so serve. The PUT is config-lock.
+  'GET /api/grove-config',
+  'GET /api/backup/config',
+  // Knowledge / viewing reads + proxied writes on host-owned Grove data.
+  'GET /api/stats',
+  'GET /api/groves', // §1f: local+attached merge is a known follow-up; read/viewing
+  'GET /api/groves/:id/projects',
+  'GET /api/sessions',
+  'GET /api/sessions/:id',
+  'GET /api/sessions/:id/impact',
+  'POST /api/sessions/:id/complete',
+  'DELETE /api/sessions/:id',
+  'DELETE /api/plans/:id',
+  'PATCH /api/plans/:id',
+  'GET /api/sessions/:id/batches',
+  'GET /api/batches/:id/activities',
+  'GET /api/sessions/:id/attachments',
+  'GET /api/sessions/:id/plans',
+  'GET /api/skill-candidates',
+  'GET /api/skill-candidates/:id',
+  'PUT /api/skill-candidates/:id',
+  'GET /api/skill-records',
+  'GET /api/skill-records/:id',
+  'DELETE /api/skill-candidates/:id',
+  'DELETE /api/skill-records/:id',
+  'GET /api/spores',
+  'GET /api/spores/:id',
+  'GET /api/entities',
+  'GET /api/graph/seeds',
+  'GET /api/graph',
+  'GET /api/graph/:id',
+  'GET /api/digest',
+  'GET /api/digest/revisions',
+  'POST /api/digest/revisions/:id/restore',
+  'GET /api/g/:groveId/p/:projectId/attachments/:filename',
+  'GET /api/attachments/:filename',
+  'GET /api/search',
+  'GET /api/activity',
+  'GET /api/projects/activity',
+  // Intelligence — the host RUNS the brain for members (design §5.6); triggering a
+  // host agent run and reading its audit IS the Team Host data plane, so serve.
+  // (Distinct from the DB/embedding MAINTENANCE mutations degraded above.)
+  'POST /api/agent/run',
+  'GET /api/agent/runs',
+  'GET /api/agent/runs/:id',
+  'POST /api/agent/runs/:id/resume',
+  'GET /api/agent/runs/:id/reports',
+  'GET /api/agent/runs/:id/turns',
+  'GET /api/agent/runs/:id/write-intents',
+  'GET /api/agent/runs/:id/audit',
+  'GET /api/agent/runs/:id/events',
+  // Shared task-def READS (the WRITE CRUD is config-lock above).
+  'GET /api/agent/tasks',
+  'GET /api/agent/tasks/:id',
+  'GET /api/agent/tasks/:id/yaml',
+  'GET /api/agent/tasks/:id/config',
+  // Embedding / database / maintenance READS (state only; the mutations degrade above).
+  'GET /api/embedding/status',
+  'GET /api/embedding/details',
+  'GET /api/database/details',
+  'GET /api/maintenance/summary',
+  'GET /api/groves/:id/maintenance',
+  // Notification records live in the host Grove DB (Viewing) — read + proxied mutate.
+  'GET /api/notifications',
+  'POST /api/notifications',
+  'PATCH /api/notifications/:id',
+  'POST /api/notifications/dismiss-all',
+  'POST /api/notifications/mark-all-read',
+  'GET /api/notifications/unread-count',
+]);
 
 /** Match a concrete request pathname against a route pattern (exact, `:param`,
  *  or trailing `/*` prefix) — the same three shapes `daemon/router.ts` supports. */
@@ -345,10 +474,14 @@ function pathMatches(pattern: string, pathname: string): boolean {
   return pattern === pathname;
 }
 
-/** Look up the stamp for a (method, pathname), honoring the router's
- *  exact > param > prefix precedence so a broad `/*` rule never shadows a
- *  specific one. Returns the default `serve` stamp when no rule matches. */
-export function classifyRouteStamp(method: string, pathname: string): RouteClassification {
+/** The matched {@link ROUTE_RULES} entry for a (method, pathname), honoring the
+ *  router's exact > param > prefix precedence so a broad `/*` rule never shadows a
+ *  specific one — or `undefined` when no explicit rule matches (the caller then
+ *  applies the `serve` default). Exported so the route-stamp completeness guard
+ *  (`tests/meta/route-stamp-completeness.test.ts`) can distinguish an EXPLICIT
+ *  stamp from a serve-default fall-through — the latter is what silently exposes a
+ *  new machine/maintenance route over the overlay. */
+export function matchRouteRule(method: string, pathname: string): RouteRule | undefined {
   const candidates = ROUTE_RULES.filter((rule) => rule.method === method);
   const tiers: ((pattern: string) => boolean)[] = [
     (p) => !p.includes(':') && !p.endsWith('/*'),
@@ -358,10 +491,19 @@ export function classifyRouteStamp(method: string, pathname: string): RouteClass
   for (const inTier of tiers) {
     for (const rule of candidates) {
       if (inTier(rule.pattern) && pathMatches(rule.pattern, pathname)) {
-        return { capability: rule.capability, stamp: rule.stamp };
+        return rule;
       }
     }
   }
+  return undefined;
+}
+
+/** Look up the stamp for a (method, pathname), honoring the router's
+ *  exact > param > prefix precedence so a broad `/*` rule never shadows a
+ *  specific one. Returns the default `serve` stamp when no rule matches. */
+export function classifyRouteStamp(method: string, pathname: string): RouteClassification {
+  const rule = matchRouteRule(method, pathname);
+  if (rule) return { capability: rule.capability, stamp: rule.stamp };
   return { capability: 'Knowledge serving', stamp: 'serve' };
 }
 

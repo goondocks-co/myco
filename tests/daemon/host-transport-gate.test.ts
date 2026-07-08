@@ -284,6 +284,10 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   let groveConfigWriteCalls: number;
   let scopedConfigWriteCalls: number;
   let shutdownCalls: number;
+  let providersListCalls: number;
+  let providerTestCalls: number;
+  let dbVacuumCalls: number;
+  let embeddingStatusCalls: number;
   let secretsFile: string;
 
   beforeEach(async () => {
@@ -298,6 +302,10 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     groveConfigWriteCalls = 0;
     scopedConfigWriteCalls = 0;
     shutdownCalls = 0;
+    providersListCalls = 0;
+    providerTestCalls = 0;
+    dbVacuumCalls = 0;
+    embeddingStatusCalls = 0;
     secretsFile = path.join(tmp, 'secrets.env');
 
     server = new DaemonServer({
@@ -339,6 +347,28 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     server.registerRoute('PUT', '/api/config/scoped', async () => {
       scopedConfigWriteCalls += 1;
       return { body: { ok: true } };
+    });
+    // localhost-only — provider connectivity; over the overlay a host key-validity
+    // oracle + machine-config visibility. Must never run for an overlay caller.
+    server.registerRoute('GET', '/api/providers', async () => {
+      providersListCalls += 1;
+      return { body: { providers: [{ type: 'openai', authConfigured: true }] } };
+    });
+    // localhost-only — the SSRF/reachability lever: the handler would dial a
+    // member-supplied base_url. Proving it never runs proves the probe never fires.
+    server.registerRoute('POST', '/api/providers/test', async () => {
+      providerTestCalls += 1;
+      return { body: { ok: true } };
+    });
+    // degrade — heavyweight Grove-DB maintenance; a member must not drive host vacuum.
+    server.registerRoute('POST', '/api/database/vacuum', async () => {
+      dbVacuumCalls += 1;
+      return { body: { ok: true } };
+    });
+    // serve READ — embedding status stays served over the overlay (host vector state).
+    server.registerRoute('GET', '/api/embedding/status', async () => {
+      embeddingStatusCalls += 1;
+      return { body: { ok: true, from: 'embedding-status' } };
     });
     server.onShutdownRequest(() => { shutdownCalls += 1; });
 
@@ -437,6 +467,45 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     expect(res.status).toBe(404);
     expect((await res.json()).error).toBe('not_found');
     expect(scopedConfigWriteCalls).toBe(0);
+  });
+
+  // --- provider/model connectivity (the Major residual): machine-global, refused ---
+
+  test('GET /api/providers over the overlay → 404 refused (host key-validity oracle closed), handler never runs', async () => {
+    const res = await fetch(`${overlay}/api/providers`, { headers: authed() });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('not_found');
+    expect(providersListCalls).toBe(0);
+  });
+
+  test('POST /api/providers/test over the overlay → 404 refused; the SSRF/reachability probe never fires', async () => {
+    const res = await fetch(`${overlay}/api/providers/test`, {
+      method: 'POST',
+      headers: authed({ 'Content-Type': 'application/json' }),
+      // A member-supplied base_url is the SSRF lever; the handler that would dial it never runs.
+      body: JSON.stringify({ type: 'ollama', base_url: 'http://169.254.169.254/latest/meta-data' }),
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('not_found');
+    expect(providerTestCalls).toBe(0);
+  });
+
+  // --- database/embedding sweep: maintenance mutation degrades, read still serves ---
+
+  test('POST /api/database/vacuum over the overlay → 409 capability_unavailable_hosted, handler never runs', async () => {
+    const res = await fetch(`${overlay}/api/database/vacuum`, { method: 'POST', headers: authed() });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('capability_unavailable_hosted');
+    expect(body.capability).toBe('Database maintenance');
+    expect(dbVacuumCalls).toBe(0);
+  });
+
+  test('GET /api/embedding/status (a serve READ) over the overlay is STILL served (no over-refusal)', async () => {
+    const res = await fetch(`${overlay}/api/embedding/status`, { headers: authed() });
+    expect(res.status).toBe(200);
+    expect((await res.json()).from).toBe('embedding-status');
+    expect(embeddingStatusCalls).toBe(1);
   });
 
   // --- existing exemptions intact (the backstop does not touch raw routes) ---
