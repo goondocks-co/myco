@@ -57,6 +57,7 @@ import type { EmbeddingManager } from './embedding/manager.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { okfSynthesizeDue } from '@myco/okf/schedule.js';
+import { latestOkfGeneration } from '@myco/db/queries/okf.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
 
@@ -440,15 +441,13 @@ export function buildPreConditions(
     'okf-synthesize-due': (scope) => {
       const config = resolveProjectConfig(scope);
       if (!config) return false;
-      const vault = new ProjectVault(scope.projectRoot);
       return okfSynthesizeDue(
         toProjectScope(scope.projectId),
         config,
         scope.projectRoot,
         scope.projectId,
         scope.requestContext.machineId,
-        vault.readOkfManifest(),
-        vault.readOkfPlan(),
+        latestOkfGeneration(toProjectScope(scope.projectId), ['published']),
       );
     },
   };

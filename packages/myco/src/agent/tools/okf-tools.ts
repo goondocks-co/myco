@@ -2,44 +2,43 @@
  * OKF synthesis harness tools.
  *
  * 8 tools driving the `okf-synthesize` task's explore → plan → map-synthesize
- * pipeline:
- *   - okf_read_sources     — bounded, citable source ORIENTATION (Task 2.1/8.3).
+ * pipeline over the DB-resident wiki:
+ *   - okf_read_sources     — bounded, citable source ORIENTATION.
  *   - okf_read_spec        — fetch the authoritative OKF v0.1 spec (format authority).
- *   - okf_list_pages       — currently-published document pages.
- *   - okf_read_page        — one published page's raw markdown.
- *   - okf_write_plan       — persist the capped wiki page-plan (Task 2.2).
- *   - okf_list_planned_pages — the map-phase SOURCE: reads plan.json back.
- *   - okf_write_page       — the map-phase SINK: stages one OkfDocument.
+ *   - okf_list_pages       — current wiki pages (row heads).
+ *   - okf_read_page        — one page's current content (head + latest revision).
+ *   - okf_write_plan       — create the DRAFT wiki generation carrying the plan.
+ *   - okf_list_planned_pages — the map-phase SOURCE: reads the draft's plan back.
+ *   - okf_write_page       — the map-phase SINK: head upsert + revision row.
  *   - okf_report           — pure observability report.
  *
  * THE PLAN→MAP HANDOFF: a map-phase source tool is called by harness code with
  * only `{params}` — it cannot receive a prior phase's in-memory output. The
  * `WikiPlan` reaches the `synthesize` map phase ONLY because `okf_write_plan`
- * persists it to `.myco/okf/state/plan.json` and `okf_list_planned_pages` reads
- * it back (exactly the `canopy_describe_next` persisted-state pattern).
+ * persists it on the draft `okf_generations` row and `okf_list_planned_pages`
+ * reads it back (the `canopy_describe_next` persisted-state pattern).
  *
- * All published-bundle writes go through `OkfBundle`/`StagedGeneration` — this
- * module never touches the published tree directly, mirroring the constrained
- * `myco_okf` MCP surface (packages/myco/src/tools/okf.ts).
+ * All wiki writes go through `OkfStore` — this module never writes okf_* rows
+ * directly, mirroring the constrained `myco_okf` MCP surface
+ * (packages/myco/src/tools/okf.ts). Nothing here touches the filesystem: disk
+ * materialization of the wiki is the user-driven claim flow's concern.
  */
 
+import path from 'node:path';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds } from '@myco/constants.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import { ProjectVault } from '@myco/vault/project-vault.js';
-import { OkfBundle } from '@myco/okf/bundle.js';
 import { OkfError } from '@myco/okf/errors.js';
+import { OkfStore } from '@myco/okf/store.js';
 import { gatherSources, gatherCanopyMap } from '@myco/okf/synthesis/sources.js';
-import { validateWikiPlan, writePlan, readPlan, type WikiPlan } from '@myco/okf/synthesis/plan.js';
-import { isHandEdited } from '@myco/okf/ownership.js';
+import { validateWikiPlan, type WikiPlan } from '@myco/okf/synthesis/plan.js';
 import { renderOkfDocument } from '@myco/okf/serialize.js';
-import { parseConceptDoc } from '@myco/okf/frontmatter.js';
-import type { OkfDocument, OkfFrontmatter } from '@myco/okf/types.js';
+import type { OkfDocument } from '@myco/okf/types.js';
 import { insertReport } from '@myco/db/queries/reports.js';
+import { listOkfPages, listRevisionsForGeneration } from '@myco/db/queries/okf.js';
 import { OKF_REPORT_ACTION } from '../instruction-builders.js';
 import { OKF_TOOL_NAMES } from '../tool-names.js';
-import { openOkfSynthesisSession, hasOkfSynthesisSession } from './okf-staging.js';
 import {
   textResult,
   projectScopeFromVaultToolDeps,
@@ -54,20 +53,18 @@ export { OKF_TOOL_NAMES };
 // ---------------------------------------------------------------------------
 
 /**
- * Build the `OkfBundle` this factory's tools share, or `null` when the
+ * Build the `OkfStore` this factory's tools share, or `null` when the
  * deps required to construct one are absent. `VaultToolDeps` makes
  * `projectRoot`/`vaultDir`/`requestContext` all optional (harness tools are
  * also used outside a Grove-bound run) — every tool below fails closed
  * with a tool-error result rather than guessing a project identity.
  */
-function buildBundle(deps: VaultToolDeps): OkfBundle | null {
-  if (!deps.projectRoot || !deps.vaultDir || !deps.requestContext) return null;
+function buildStore(deps: VaultToolDeps): OkfStore | null {
+  if (!deps.vaultDir || !deps.requestContext) return null;
   const config = loadMergedConfig(deps.vaultDir, { groveId: deps.requestContext.groveId ?? undefined });
   const projectId = rowProjectIdFromVaultToolDeps(deps);
   if (!projectId) return null;
-  return new OkfBundle({
-    projectRoot: deps.projectRoot,
-    vault: new ProjectVault(deps.projectRoot),
+  return new OkfStore({
     scope: projectScopeFromVaultToolDeps(deps),
     projectId,
     machineId: deps.machineId ?? deps.requestContext.machineId,
@@ -180,31 +177,6 @@ function sanitizeFrontmatterLine(text: string): string {
   return out.replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Refine-not-clobber's structural half: `okf_write_page`'s item prompt asks the
- * model to read a hand-edited page first (`okf_read_page`) and write a refined
- * body that carries the human's current content forward — but the tool cannot
- * trust that happened. If `refinedBody` already contains the current page's
- * body verbatim, the refine worked; stage it as-is. If it doesn't (the
- * synthesis missed it, paraphrased it away, or ignored it entirely), append the
- * current body verbatim under a marker so it is never silently dropped — the
- * deterministic backstop behind the prompt-driven refine.
- */
-function augmentPreservingHandEdit(existingRaw: string, refinedBody: string): string {
-  let existingBody: string;
-  try {
-    existingBody = parseConceptDoc(existingRaw).body;
-  } catch {
-    // A hand edit can strip the frontmatter block entirely; fall back to the
-    // raw content itself so there's still something to preserve.
-    existingBody = existingRaw;
-  }
-  const trimmed = existingBody.trim();
-  if (trimmed === '' || refinedBody.replace(/\r\n/g, '\n').includes(trimmed.replace(/\r\n/g, '\n'))) {
-    return refinedBody;
-  }
-  return `${refinedBody}\n\n<!-- okf:preserved-hand-edit -->\n\n${trimmed}\n`;
-}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -221,21 +193,25 @@ export function createOkfTools(deps: VaultToolDeps) {
       kind: z.enum(['all', 'repo', 'git', 'vault', 'map']).optional().describe('Which source slice to return (default all). "map" returns only the Canopy map — the cheap structural orientation.'),
     },
     async (args) => {
-      const bundle = buildBundle(deps);
-      if (!bundle) return textResult({ error: MISSING_DEPS_ERROR });
-      if (!deps.projectRoot || !deps.requestContext) return textResult({ error: MISSING_DEPS_ERROR });
+      if (!deps.projectRoot || !deps.vaultDir || !deps.requestContext) return textResult({ error: MISSING_DEPS_ERROR });
       try {
-        const status = bundle.status();
-        const config = loadMergedConfig(deps.vaultDir!, { groveId: deps.requestContext.groveId ?? undefined });
+        const config = loadMergedConfig(deps.vaultDir, { groveId: deps.requestContext.groveId ?? undefined });
         const scope = projectScopeFromVaultToolDeps(deps);
         const machineId = deps.machineId ?? deps.requestContext.machineId;
+        // A claimed on-disk bundle (e.g. this repo's committed okf/) is still
+        // excluded from the repo-tree orientation; content pages must not
+        // orient on the wiki they are regenerating.
+        const outputRoot = path.resolve(
+          deps.projectRoot,
+          config.okf?.maintain?.output_path ?? 'okf',
+        );
         const sourceScope = {
           projectRoot: deps.projectRoot,
           scope,
           projectId: projectId ?? '',
           machineId,
           config,
-          outputRoot: status.outputRoot,
+          outputRoot,
         };
         if (args.kind === 'map') {
           return textResult({ canopyMap: gatherCanopyMap(sourceScope) });
@@ -276,17 +252,18 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   const okfListPages = tool(
     'okf_list_pages',
-    'List the currently-published OKF document pages (bundle-relative path + type + title) plus the bundle generation. Read-only — never writes.',
+    'List the current OKF wiki pages (bundle-relative path + type + title) plus the latest published wiki generation. Read-only — never writes.',
     {},
     async () => {
-      const bundle = buildBundle(deps);
-      if (!bundle) return textResult({ error: MISSING_DEPS_ERROR });
+      const store = buildStore(deps);
+      if (!store) return textResult({ error: MISSING_DEPS_ERROR });
       try {
-        const status = bundle.status();
+        const published = store.latestPublished();
+        const pages = listOkfPages(projectScopeFromVaultToolDeps(deps), 'active');
         return textResult({
-          bundleExists: status.bundleExists,
-          generation: status.bundleGeneration,
-          pages: bundle.listPages(),
+          bundleExists: pages.length > 0,
+          generation: published?.generation ?? null,
+          pages: pages.map((p) => ({ path: p.path, type: p.type, title: p.title, description: p.description })),
         });
       } catch (err) {
         return okfErrorResult(err);
@@ -297,15 +274,15 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   const okfReadPage = tool(
     'okf_read_page',
-    'Read one published OKF page\'s raw markdown by bundle-relative path (with or without the .md suffix). Returns {page:null} for a missing or unsafe path. Read-only.',
+    'Read one OKF wiki page\'s current content by bundle-relative path (with or without the .md suffix). Returns {page:null} for a missing or unsafe path. Read-only.',
     {
       path: z.string().describe('Bundle-relative page path, e.g. "guides/overview" or "guides/overview.md".'),
     },
     async (args) => {
-      const bundle = buildBundle(deps);
-      if (!bundle) return textResult({ error: MISSING_DEPS_ERROR });
+      const store = buildStore(deps);
+      if (!store) return textResult({ error: MISSING_DEPS_ERROR });
       try {
-        return textResult({ page: bundle.readPage(args.path) });
+        return textResult({ page: store.readPage(args.path) });
       } catch (err) {
         return okfErrorResult(err);
       }
@@ -315,7 +292,7 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   const okfWritePlan = tool(
     'okf_write_plan',
-    'Persist the wiki page-plan for this synthesis run to .myco/okf/state/plan.json — the capped, auditable list of pages the run intends to write. Validated (page cap, slug-safe paths, non-empty types, unique paths) before persisting; a plan with violations is rejected and nothing is written. This is the ONLY way the plan reaches the map-synthesize phase (it reads plan.json back through okf_list_planned_pages).',
+    'Persist the wiki page-plan for this synthesis run as the DRAFT wiki generation — the capped, auditable list of pages the run intends to write. Validated (page cap, slug-safe paths, no reserved basenames, non-empty types, unique paths) before persisting; a plan with violations is rejected and nothing is written. Creating the draft supersedes any prior unpublished generation. This is the ONLY way the plan reaches the map-synthesize phase (it reads the draft back through okf_list_planned_pages).',
     {
       pages: z.array(z.object({
         path: z.string().describe('Bundle-relative, OKF-slug-safe page path (no leading slash, no traversal).'),
@@ -328,9 +305,9 @@ export function createOkfTools(deps: VaultToolDeps) {
       sinceRef: z.string().optional().describe('The git ref this run diffed against; omit for a full-scan run.'),
     },
     async (args) => {
-      if (!deps.projectRoot) return textResult({ ok: false, error: MISSING_DEPS_ERROR });
+      const store = buildStore(deps);
+      if (!store) return textResult({ ok: false, error: MISSING_DEPS_ERROR });
       try {
-        const vault = new ProjectVault(deps.projectRoot);
         const plan: WikiPlan = {
           generatedAt: nowIso(),
           sinceRef: args.sinceRef ?? '',
@@ -343,10 +320,16 @@ export function createOkfTools(deps: VaultToolDeps) {
             ...(p.openQuestions && p.openQuestions.length > 0 ? { openQuestions: p.openQuestions } : {}),
           })),
         };
-        const errors = validateWikiPlan(plan);
-        if (errors.length > 0) return textResult({ ok: false, errors });
-        writePlan(vault, plan);
-        return textResult({ ok: true, pageCount: plan.pages.length });
+        // Dry-run validates without creating rows — the store's plan
+        // validation is reproduced by validateWikiPlan, the same function it
+        // applies internally.
+        if (deps.dryRun) {
+          const errors = validateWikiPlan(plan);
+          if (errors.length > 0) return textResult({ ok: false, errors });
+          return textResult({ ok: true, pageCount: plan.pages.length, dryRun: true });
+        }
+        const draft = store.createDraftGeneration({ runId: runId ?? null, plan });
+        return textResult({ ok: true, pageCount: plan.pages.length, generation: draft.generation });
       } catch (err) {
         return okfErrorResult(err);
       }
@@ -356,25 +339,23 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   const okfListPlannedPages = tool(
     'okf_list_planned_pages',
-    'Read back the persisted wiki page-plan (.myco/okf/state/plan.json) as {pages}. The map-synthesize phase\'s SOURCE tool — returns the pages okf_write_plan persisted, or an empty list when no plan exists. Pages already covered by a prior failed run\'s recovered staging are excluded (they publish with this run without re-synthesis) and listed under {recovered}. Read-only.',
+    'Read back the draft wiki generation\'s page-plan as {pages}. The map-synthesize phase\'s SOURCE tool — returns the pages okf_write_plan persisted, or an empty list when no draft is open. Pages that already carry a revision on this draft (written before an interrupted run resumed) are excluded and listed under {alreadyWritten}. Read-only.',
     {},
     async () => {
-      if (!deps.projectRoot) return textResult({ error: MISSING_DEPS_ERROR, pages: [] });
+      const store = buildStore(deps);
+      if (!store) return textResult({ error: MISSING_DEPS_ERROR, pages: [] });
       try {
-        const vault = new ProjectVault(deps.projectRoot);
-        const plan = readPlan(vault);
-        const pages = plan?.pages ?? [];
-        // Recovered pages are already staged and paid for — synthesizing them
-        // again would spend real tokens re-producing content that will be
-        // seeded into this run's generation anyway.
-        const bundle = buildBundle(deps);
-        const orphanPaths = new Set(
-          (bundle?.orphanedStaging()?.paths ?? []).map((p) => p.replace(/\.md$/, '')),
+        const draft = store.currentDraft();
+        if (!draft) return textResult({ pages: [] });
+        const plan = JSON.parse(draft.plan) as WikiPlan;
+        const pages = plan.pages ?? [];
+        const written = new Set(
+          listRevisionsForGeneration(draft.id).map((rev) => rev.path.replace(/\.md$/, '')),
         );
-        if (orphanPaths.size === 0) return textResult({ pages });
-        const remaining = pages.filter((p) => !orphanPaths.has(p.path.replace(/\.md$/, '')));
-        const recovered = pages.filter((p) => orphanPaths.has(p.path.replace(/\.md$/, ''))).map((p) => p.path);
-        return textResult({ pages: remaining, recovered });
+        if (written.size === 0) return textResult({ pages });
+        const remaining = pages.filter((p) => !written.has(p.path.replace(/\.md$/, '')));
+        const alreadyWritten = pages.filter((p) => written.has(p.path.replace(/\.md$/, ''))).map((p) => p.path);
+        return textResult({ pages: remaining, alreadyWritten });
       } catch (err) {
         return textResult({ error: err instanceof Error ? err.message : String(err), pages: [] });
       }
@@ -384,7 +365,7 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   const okfWritePage = tool(
     'okf_write_page',
-    'Synthesize one OKF page and stage it into this run\'s single staging tree. The map-synthesize phase\'s SINK — the harness pins path/type/title from the plan; you supply description and body. Refine-not-clobber: a page currently published at this path that Myco never fingerprinted (a human-authored page) is REJECTED untouched — {ok:false, reason:"not_myco_owned"}. A page Myco published that a human has since hand-edited is AUGMENTED, not overwritten — your body is staged as-is if it already carries the human\'s current content forward (read it first with okf_read_page), otherwise the current content is appended so it is never silently lost. Returns {ok:true} on stage, {ok:false, reason} when the document is rejected (reserved filename, unsafe path, not Myco-owned). The whole run\'s staged pages publish atomically once, after the map phase.',
+    'Synthesize one OKF page and write it against this run\'s draft wiki generation — a head upsert plus a full-content revision row, in one transaction. The map-synthesize phase\'s SINK — the harness pins path/type/title from the plan; you supply description and body. Identifier sanitization happens at the write; the whole generation publishes (or blocks on findings) once, after the map phase. Returns {ok:true} on write, {ok:false, reason} when the document is rejected (no open draft, reserved filename, unsafe path). Content lives in the database; the repo-visible bundle is materialized later by the user-driven claim flow.',
     {
       path: z.string().describe('Bundle-relative page path (pinned from the plan).'),
       type: z.string().describe('OKF document type (pinned from the plan).'),
@@ -394,71 +375,42 @@ export function createOkfTools(deps: VaultToolDeps) {
       tags: z.array(z.string()).optional().describe('Optional OKF tags.'),
     },
     async (args) => {
-      const bundle = buildBundle(deps);
-      if (!bundle) return textResult({ ok: false, reason: MISSING_DEPS_ERROR });
+      const store = buildStore(deps);
+      if (!store) return textResult({ ok: false, reason: MISSING_DEPS_ERROR });
       try {
         const docPath = args.path.endsWith('.md') ? args.path : `${args.path}.md`;
-        const frontmatter: OkfFrontmatter = {
-          type: args.type.trim() || 'note',
-          // Sanitized to a single line at the write path (primary defense);
-          // the validator's hostile-frontmatter-text check is only a backstop.
-          title: sanitizeFrontmatterLine(args.title),
-          description: sanitizeFrontmatterLine(args.description),
-          timestamp: nowIso(),
-          ...(args.tags && args.tags.length > 0 ? { tags: args.tags } : {}),
-        };
-
-        // Dry-run: validate the render (throws on an invalid path/reserved name)
-        // WITHOUT touching ownership, opening a lock, or staging. A dry-run run
-        // never reaches finalizeOkfSynthesize (the success hook early-returns on
-        // dryRun), so opening a session — or the lock reconcileOwnership below
-        // takes — here would leak the lock.
+        // Dry-run: validate the render (throws on an invalid path/reserved
+        // name) without writing rows. A dry-run run never reaches
+        // finalizeOkfSynthesize, so nothing is published either way.
         if (deps.dryRun) {
-          const previewDoc: OkfDocument = { path: docPath, frontmatter, body: args.body };
+          const previewDoc: OkfDocument = {
+            path: docPath,
+            frontmatter: {
+              type: args.type.trim() || 'note',
+              title: sanitizeFrontmatterLine(args.title),
+              description: sanitizeFrontmatterLine(args.description),
+              timestamp: nowIso(),
+            },
+            body: args.body,
+          };
           renderOkfDocument(previewDoc);
           return textResult({ ok: true, path: docPath, dryRun: true });
         }
 
-        // Refine-not-clobber: a page currently published at docPath that isn't
-        // in ownership was never Myco's to begin with (human-authored) — never
-        // touch it. A page that IS in ownership but no longer matches its
-        // fingerprint was hand-edited by a human after Myco published it —
-        // augment instead of overwriting. A path with no current page (new, or
-        // never published) writes normally; Myco owns it going forward.
-        //
-        // reconcileOwnership() (not a bare read) is load-bearing here: a bundle
-        // published before ownership tracking existed — or one whose ownership
-        // write never landed (crash) — has a missing or stale ownership.json,
-        // which would otherwise read as "every existing page is foreign" and
-        // reject a plain refresh forever. But it takes the OKF lock, and a
-        // staged session already open for THIS run (a prior item in this same
-        // run already wrote successfully) holds that same lock for its entire
-        // lifetime — re-acquiring it here would block until the lock timeout.
-        // Once a session is open, ownership was already reconciled when IT
-        // opened, so a lock-free peek is both safe and sufficient.
-        const ownership = hasOkfSynthesisSession(runId)
-          ? bundle.currentOwnership()
-          : await bundle.reconcileOwnership();
-        const existing = bundle.readPage(docPath);
-        let body = args.body;
-        if (existing && !ownership?.pages[docPath]) {
-          return textResult({ ok: false, reason: 'not_myco_owned', path: docPath });
-        }
-        if (existing && isHandEdited(docPath, existing.raw, ownership)) {
-          body = augmentPreservingHandEdit(existing.raw, args.body);
-        }
-
-        const doc: OkfDocument = { path: docPath, frontmatter, body };
-        const staged = await openOkfSynthesisSession(runId, bundle);
-        staged.stageDocument(doc);
-        return textResult({ ok: true, path: docPath });
+        const written = store.writePage({
+          path: args.path,
+          type: args.type,
+          title: sanitizeFrontmatterLine(args.title),
+          description: sanitizeFrontmatterLine(args.description),
+          body: args.body,
+          tags: args.tags,
+        });
+        return textResult({ ok: true, path: written.path });
       } catch (err) {
         return textResult({ ok: false, reason: err instanceof Error ? err.message : String(err) });
       }
     },
-    // Re-staging the same page path with the same content yields the same
-    // staged state — idempotent, matching the sibling map sink
-    // canopy_describe_write.
+    // Re-writing the same page path upserts the same head — safe to retry.
     { annotations: { idempotentHint: true } },
   );
 

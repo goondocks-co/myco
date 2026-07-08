@@ -52,9 +52,8 @@ import {
   CANOPY_MAP_CONTENT_KEY,
   OKF_SYNTHESIZE_TASK,
 } from './instruction-builders.js';
-import { finalizeOkfSynthesisSession, abortOkfSynthesisSession } from './tools/okf-staging.js';
+import { OkfStore } from '@myco/okf/store.js';
 import { computeOkfSynthesizeSnapshot, type OkfSynthesizeSnapshot } from '@myco/okf/schedule.js';
-import { OkfBundle } from '@myco/okf/bundle.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { resolveCost } from './cost/index.js';
@@ -895,14 +894,9 @@ export async function cleanupOnTaskFailure(args: {
   vaultDir: string | undefined;
   runContext: RunOptions['runContext'];
 }): Promise<void> {
-  if (args.taskName === OKF_SYNTHESIZE_TASK) {
-    // Staged pages are costly (real synthesis spend) — a run failure preserves
-    // them as the orphaned staging so the next run or an acknowledge publishes
-    // them without re-synthesizing.
-    if (args.runId) abortOkfSynthesisSession(args.runId, { preserveStaging: true });
-    return;
-  }
-
+  // okf-synthesize needs NO failure cleanup: wiki pages are database rows,
+  // written durably as the run progresses; a failed run's draft generation
+  // simply persists until the next okf_write_plan supersedes it.
   if (args.taskName !== SKILL_GENERATE_TASK) return;
   if (!args.vaultDir) return;
   const candidateId = args.runContext?.candidate_id;
@@ -1072,13 +1066,12 @@ function finalizeCanopyMap(args: {
 
 /**
  * Publish hook for a successful `okf-synthesize` run. The synthesize map phase
- * staged each page into the run's single staged generation (opened lazily on
- * the first `okf_write_page`, under one lock). This publishes that staging tree
- * atomically and drops the registry entry. Returns without publishing when no
- * page was ever staged — an empty plan or an all-skipped synthesize phase —
- * UNLESS a prior failed run's orphaned staging is pending: a run whose plan
- * was fully covered by recovered pages stages nothing itself, and the orphan
- * must still publish rather than sit consumed-but-unshipped.
+ * wrote each page as durable rows against the run's draft wiki generation;
+ * this finalizes that generation — publish-eligibility scan, link
+ * normalization, then status 'published' (clean) or 'blocked' (findings). A
+ * blocked generation is still a SUCCESSFUL run: the content is durable and an
+ * acknowledge publishes it without re-synthesis. Returns without finalizing
+ * when no draft is open (an empty plan run).
  */
 export async function finalizeOkfSynthesize(args: {
   agentId: string;
@@ -1086,35 +1079,32 @@ export async function finalizeOkfSynthesize(args: {
   requestContext?: RunOptions['requestContext'];
   vaultDir?: string;
 }): Promise<void> {
+  const store = resolveOkfStore(args);
+  if (!store) return;
+  const draft = store.currentDraft();
+  if (!draft) return;
   const snapshot = resolveOkfSynthesizeSnapshot(args);
-  const published = await finalizeOkfSynthesisSession(args.runId, {
+  store.finalizeGeneration(draft.id, {
     logSummary: 'Synthesized OKF wiki pages.',
-    probeFingerprint: snapshot?.probeFingerprint ?? null,
+    inputsHash: snapshot?.probeFingerprint ?? undefined,
     lastRunRef: snapshot?.lastRunRef ?? null,
   });
-  if (published !== null) return;
-  const bundle = resolveOkfBundle(args);
-  if (!bundle) return;
-  await bundle.publishOrphanedStaging({ logSummary: 'Published pages recovered from a prior failed synthesis run.' });
 }
 
 /**
- * Build the OkfBundle for a run's request context, or null when the context/
+ * Build the OkfStore for a run's request context, or null when the context/
  * vaultDir needed to resolve it is unavailable. Mirrors the harness tools'
- * fail-closed construction (okf-tools.ts buildBundle).
+ * fail-closed construction (okf-tools.ts buildStore).
  */
-function resolveOkfBundle(args: {
+function resolveOkfStore(args: {
   requestContext?: RunOptions['requestContext'];
   vaultDir?: string;
-}): OkfBundle | null {
+}): OkfStore | null {
   try {
     if (!args.vaultDir || !args.requestContext) return null;
     const projectId = requireProjectId(args.requestContext, 'okf-synthesize finalize');
-    const projectRoot = args.requestContext.projectRoot ?? resolveProjectRoot(args.vaultDir);
     const config = loadMergedConfig(args.vaultDir, { groveId: args.requestContext.groveId ?? undefined });
-    return new OkfBundle({
-      projectRoot,
-      vault: new ProjectVault(projectRoot),
+    return new OkfStore({
       scope: projectScopeFromRequestContext(args.requestContext),
       projectId,
       machineId: args.requestContext.machineId,

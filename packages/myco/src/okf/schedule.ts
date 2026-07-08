@@ -6,7 +6,6 @@ import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { runGit } from '@myco/utils/git.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
-import type { OkfPrivateManifest } from '@myco/vault/project-vault.js';
 import type { WikiPlan } from './synthesis/plan.js';
 import type { OkfBundleInclude, OkfSporeStatusFilter } from './types.js';
 
@@ -191,17 +190,28 @@ export function okfSynthesizeDue(
   projectRoot: string,
   projectId: string,
   machineId: string,
-  manifest: OkfPrivateManifest | null,
-  plan: WikiPlan | null,
+  /** The latest PUBLISHED wiki generation row, or null when none exists. */
+  published: { inputs_hash: string; last_run_ref: string | null; plan: string } | null,
 ): boolean {
   if (!config) return false;
   if (!capabilityEnabled(config, 'okf')) return false;
-  if (!manifest || manifest.last_result !== 'published') return true;
+  if (!published) return true;
 
   const snapshot = computeOkfSynthesizeSnapshot(scope, config, projectRoot, projectId, machineId);
-  if (!manifest.probe_fingerprint || snapshot.probeFingerprint !== manifest.probe_fingerprint) return true;
+  if (!published.inputs_hash || snapshot.probeFingerprint !== published.inputs_hash) return true;
 
-  const lastHeadSha = manifest.last_run_ref?.headSha ?? null;
+  let lastHeadSha: string | null = null;
+  try {
+    lastHeadSha = (JSON.parse(published.last_run_ref ?? 'null') as { headSha?: string | null } | null)?.headSha ?? null;
+  } catch {
+    lastHeadSha = null;
+  }
+  let plan: WikiPlan | null = null;
+  try {
+    plan = JSON.parse(published.plan) as WikiPlan;
+  } catch {
+    plan = null;
+  }
   if (lastHeadSha && plan && plan.pages.length > 0) {
     const changed = changedPathsSinceRef(projectRoot, lastHeadSha);
     if (changed) {
