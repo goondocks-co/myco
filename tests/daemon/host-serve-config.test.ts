@@ -12,6 +12,7 @@ import path from 'node:path';
 
 import {
   isBindableOverlayAddress,
+  isOverlayRangeAddress,
   resolveHostServeBearer,
   resolveHostServeConfig,
 } from '@myco/daemon/host-serve';
@@ -37,6 +38,33 @@ describe('isBindableOverlayAddress', () => {
   test('accepts a concrete overlay/loopback IP', () => {
     expect(isBindableOverlayAddress('100.64.0.5')).toBe(true);
     expect(isBindableOverlayAddress('127.0.0.1')).toBe(true);
+  });
+});
+
+describe('isOverlayRangeAddress (CGNAT 100.64.0.0/10)', () => {
+  test('accepts addresses inside 100.64.0.0/10', () => {
+    for (const ok of ['100.64.0.0', '100.64.0.5', '100.100.1.1', '100.127.255.255']) {
+      expect(isOverlayRangeAddress(ok)).toBe(true);
+    }
+  });
+
+  test('rejects LAN, public, loopback, wildcard, boundary-adjacent, and IPv6 addresses', () => {
+    for (const bad of [
+      '100.63.255.255', // just below the /10
+      '100.128.0.0',    // just above the /10
+      '192.168.1.5',    // LAN
+      '10.0.0.1',       // LAN
+      '172.16.0.1',     // LAN
+      '8.8.8.8',        // public
+      '127.0.0.1',      // loopback
+      '0.0.0.0',        // wildcard
+      '100.64.0.256',   // malformed octet
+      'fd7a:115c:a1e0::1', // IPv6 (v4-only gate)
+      '100.64.0',       // partial
+    ]) {
+      expect(isOverlayRangeAddress(bad)).toBe(false);
+    }
+    expect(isOverlayRangeAddress(null)).toBe(false);
   });
 });
 
@@ -81,6 +109,20 @@ describe('resolveHostServeConfig', () => {
     });
     expect(rt).toBeNull();
     expect(warnings).toHaveLength(1);
+  });
+
+  test('enabled with a LAN/public address (not CGNAT) → null + one warning, no bearer minted', () => {
+    for (const addr of ['192.168.1.10', '8.8.8.8']) {
+      warnings = [];
+      const rt = resolveHostServeConfig({
+        machineConfig: machineConfig({ enabled: true, overlay_address: addr }),
+        mycoHome: home,
+        logger,
+      });
+      expect(rt).toBeNull();
+      expect(warnings).toHaveLength(1);
+      expect(readSecrets(home)[HOST_SERVE_BEARER_SECRET]).toBeUndefined();
+    }
   });
 
   test('enabled with a valid overlay IP → runtime with a minted, persisted, stable bearer', () => {

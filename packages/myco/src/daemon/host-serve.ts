@@ -113,6 +113,32 @@ export function isBindableOverlayAddress(address: string | null | undefined): bo
 }
 
 /**
+ * True when `address` is within the overlay's private address space — the
+ * Tailscale/Headscale CGNAT range 100.64.0.0/10 (IPv4). The overlay listener must
+ * bind an overlay-interface address ONLY (spec §9): a LAN (192.168/16, 10/8) or
+ * public IP is never a valid overlay bind target, even though the OS would only
+ * actually bind a locally-assigned one. This is the stricter, config-boundary
+ * assertion (enforced in {@link resolveHostServeConfig}, where the untrusted
+ * config value enters) — distinct from {@link isBindableOverlayAddress}, which is
+ * the permissive bind-time wildcard guard (a hermetic fixture must be able to bind
+ * a loopback address, since a test cannot attach a real 100.64/10 TUN interface).
+ *
+ * IPv4-only by design of record (the overlay-design + spike consistently describe
+ * "100.x IPs"). If Task 2.1 ever records the Tailscale IPv6 ULA address instead,
+ * add the `fd7a:115c:a1e0::/48` branch here — the rejection log below names the
+ * required range so that failure is self-explaining.
+ */
+export function isOverlayRangeAddress(address: string | null | undefined): boolean {
+  if (!isBindableOverlayAddress(address)) return false;
+  const v4 = (address as string).trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!v4) return false;
+  const octets = v4.slice(1, 5).map(Number);
+  if (octets.some((o) => o > 255)) return false;
+  // 100.64.0.0/10 → first octet 100, second octet in [64, 127].
+  return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
+}
+
+/**
  * Read the machine-scoped host-serve bearer, minting + persisting a fresh 256-bit
  * one on first use. Stored in `~/.myco/secrets.env` under {@link HOST_SERVE_BEARER_SECRET}
  * (never in any registry/config file), owner-only perms via the secrets helper.
@@ -147,10 +173,10 @@ export function resolveHostServeConfig(options: {
   if (!hostServe?.enabled) return null;
 
   const address = hostServe.overlay_address;
-  if (!isBindableOverlayAddress(address)) {
+  if (!isOverlayRangeAddress(address)) {
     options.logger?.warn(
       LOG_KINDS.HOST_SERVE,
-      'Team Host serve is enabled but overlay_address is absent or not bindable — host serving stays off',
+      'Team Host serve is enabled but overlay_address is absent or not a 100.64/10 (CGNAT) overlay address — host serving stays off',
       { overlay_address: address ?? null },
     );
     return null;
