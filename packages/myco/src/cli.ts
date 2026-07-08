@@ -37,6 +37,8 @@ Commands:
   service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status)
   join <host> --key <k>    Enroll this machine with a Team Host over the overlay
   leave <host>             Detach this machine from a Team Host
+  attach <project> --host <h> --grove <g>   Route a project to a Team Host (going-forward)
+  detach <project>         Clear a project's Team Host mapping (resolves local again)
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
@@ -91,6 +93,25 @@ Options:
 Detach this machine from a Team Host: removes the stored host record + bearer
 (and its attach refs). When no other host remains, the userspace tailscaled
 service is torn down too. Idempotent.
+`,
+  attach: `Usage: myco attach <project> --host <hostId> --grove <groveId>
+
+Records a project's residency mapping so future requests route to the host that
+serves it, instead of a local Grove. Attach-going-forward only: it does NOT
+migrate existing local Grove data (a project that still has local data is refused
+with guidance). Idempotent — re-attaching to the same host converges.
+
+Options:
+  --host <hostId>       The joined host that will serve this project (falls back to the
+                        checkout's project.toml Team Host hint).
+  --grove <groveId>     REQUIRED. The Grove id on the host that serves this project.
+  --project-id <proj_…> Override the project id (default: the checkout's project.toml).
+`,
+  detach: `Usage: myco detach <project>
+
+Clears a project's residency mapping so future requests resolve to a local Grove
+again. Detach-only: removes the mapping going forward, pulls back NO data.
+Idempotent — detaching a project that is not attached is a clean no-op.
 `,
 };
 
@@ -182,6 +203,12 @@ async function main(): Promise<void> {
   // tells users to run exactly `myco join <host>`.
   if (cmd === 'join') return (await import('./cli/join.js')).runJoin(args);
   if (cmd === 'leave') return (await import('./cli/join.js')).runLeave(args);
+
+  // Team Host residency mapping — attach/detach record which host serves a
+  // project (machine-global attach registry, not a project vault), so like
+  // `join`/`leave` they sit above the myco.yaml gate and work from any cwd.
+  if (cmd === 'attach') return (await import('./cli/attach.js')).runAttach(args);
+  if (cmd === 'detach') return (await import('./cli/attach.js')).runDetach(args);
 
   if (cmd === 'doctor') {
     const vaultDir = resolveVaultDir();

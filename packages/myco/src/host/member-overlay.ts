@@ -113,7 +113,8 @@ export interface HostEnrollment {
   /** The shared host serve-bearer, stored under {@link HOST_BEARER_SECRET}. */
   bearer: string;
   /** Projects the host pre-associates at enrollment (usually empty — attach is a
-   *  separate, UI-driven step). Preserved onto the record if present. */
+   *  separate step, done via `myco attach` in v1, a UI in Phase E). Preserved onto
+   *  the record if present. */
   projects?: AttachRef[];
 }
 
