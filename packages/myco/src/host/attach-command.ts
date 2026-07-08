@@ -27,6 +27,7 @@
 import path from 'node:path';
 
 import { loadProjectManifest } from '../config/project-manifest.js';
+import { createFsDrainStore } from '../capture/transcript-drain.js';
 import { isGroveEraId } from '../grove/ids.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '../grove/paths.js';
 import { teamHostHintFromManifest } from './hint.js';
@@ -178,6 +179,12 @@ export function detachCommand(options: DetachOptions): DetachResult {
   if (!existing) return { projectId, detachedFromHostId: null };
 
   detachProject(existing.host.host_id, projectId);
+  // Purge-on-detach (capture-push §5.2): drop this project's un-shipped
+  // transcript-drain entries for the host it was attached to, so a re-attach
+  // starts clean and no stale entry holds the machine awake via `hold.pending`.
+  try {
+    createFsDrainStore().purgeProject(existing.host.host_id, projectId);
+  } catch { /* best-effort machine-scoped cleanup — never block the detach */ }
   return { projectId, detachedFromHostId: existing.host.host_id };
 }
 

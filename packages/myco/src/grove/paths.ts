@@ -319,6 +319,21 @@ export function resolveMemberBinDir(): string {
   return path.join(resolveMemberOverlayDir(), 'bin');
 }
 
+export const MEMBER_TRANSCRIPT_DRAIN_DIRNAME = 'transcript-drain';
+
+/**
+ * MEMBER-side durable work-queue home for the routed transcript-content drain
+ * (capture-push §5.2, plan C1). One JSON entry per `(host_id, session_id,
+ * transcript_id)` carrying the host-acked high-water offset, persisted so the
+ * high-water survives daemon restart. Machine-scoped under the member overlay
+ * home — NOT a Grove-DB table: an attached project has no local Grove DB (§4),
+ * so this is the transcript analog of the DB-free EventBuffer (`capture/buffer.ts`).
+ * Tests point `MYCO_TEAM_HOME` at a tmpdir for hermetic disk.
+ */
+export function resolveMemberTranscriptDrainDir(): string {
+  return path.join(resolveMemberOverlayDir(), MEMBER_TRANSCRIPT_DRAIN_DIRNAME);
+}
+
 /**
  * A short, deterministic per-host tag (10 hex chars of a hash of the host_id).
  * Used to key a host's tailscaled socket + LaunchAgent label. A hash rather than

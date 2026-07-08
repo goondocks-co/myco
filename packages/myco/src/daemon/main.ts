@@ -200,6 +200,7 @@ import { createStopProcessor } from './stop-processing.js';
 import { captureBatchImages } from './capture-images.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
+import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
 import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
@@ -1194,6 +1195,14 @@ export async function main(): Promise<void> {
     logger,
   });
 
+  // Team Host: the MEMBER-side transcript-content drain (capture-push C1). Ships
+  // an attached session's transcript byte-deltas over the overlay to the host
+  // materializer (C2), offset-authoritative + multi-host. Its `proxyDeps()` are
+  // threaded into BOTH dispatch chokepoints (this server + the /mcp handler) so
+  // pending bytes flush before a terminal mining-trigger route, and its
+  // `pendingCount` inhibits deep sleep while a drain is outstanding.
+  const transcriptDrain = createTranscriptDrainQueue({ machineId, logger });
+
   const server = new DaemonServer({
     vaultDir: bootstrapVaultDir,
     logger,
@@ -1202,6 +1211,7 @@ export async function main(): Promise<void> {
     uiDevProxyTarget: uiDevProxyTarget ?? undefined,
     runtimeCache,
     hostServe,
+    hostProxyDeps: transcriptDrain.proxyDeps(),
     // Don't record activity on every HTTP request — UI polling (every 3-10s)
     // would prevent the PowerManager from ever reaching 'idle' state, blocking
     // all idle-only scheduled tasks (skill-survey, skill-generate, skill-evolve).
@@ -1958,6 +1968,11 @@ export async function main(): Promise<void> {
       ? db
       : runtimeCache.getDatabase(databasePath),
     logger,
+    // Chokepoint 2 of the transcript-drain flush wiring (capture-push C1). The
+    // /mcp path is serve-only (never a collect/terminal route), so the flush is
+    // inert here today, but both chokepoints thread the real dep so the
+    // guarantee can never silently regress if /mcp ever carries a flush route.
+    hostProxyDeps: transcriptDrain.proxyDeps(),
   }));
 
   // --- Backup routes ---
@@ -2509,6 +2524,22 @@ export async function main(): Promise<void> {
     server,
   });
   teamSync.registerFlushJob(jobRunner, runtimeCache);
+
+  // Team Host transcript-drain backstop (capture-push C1). The mid-turn drain
+  // rides its own ~3 s throttle (fired from the collect path) and terminal routes
+  // flush synchronously, so this job is the catch-up sweep for anything a throttle
+  // missed (e.g. a host that was unreachable at flush time) and — via `hold.pending`
+  // — the deep-sleep inhibitor so the machine never sleeps on an un-shipped turn
+  // (mirrors team-sync-init's flush-job hold + job-runner's `providesHold`).
+  jobRunner.register({
+    name: 'team-host-transcript-drain',
+    runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
+    hold: { pending: () => transcriptDrain.pendingCount() },
+    fn: async () => {
+      await transcriptDrain.drainAll();
+    },
+  });
 
   // Startup auto-check: fire once in the background immediately after boot
   // so the user doesn't wait for the first idle/sleep tick to discover a

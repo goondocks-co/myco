@@ -127,9 +127,14 @@ export type Dialer = (
 export interface HostProxyDeps {
   dial: Dialer;
   /** Flush the member's pending transcript push-queue before forwarding a
-   *  session-boundary mining-trigger route. No-op default — Phase 2.5's
-   *  transcript collector (capture-push Task 1/4) plugs in here. */
+   *  session-boundary mining-trigger route. No-op default — the transcript drain
+   *  (capture-push C1) plugs in here via `TranscriptDrainQueue.proxyDeps()`. */
   flushBeforeForward: (target: RemoteTarget) => Promise<void>;
+  /** Enqueue trigger: called for every COLLECT event the member forwards to a
+   *  host, so the transcript drain (C1) keys/updates its work-queue entry and
+   *  schedules a mid-turn drain. No-op default; the real impl is the drain queue's
+   *  `noteCollect`. Best-effort — must never throw into the collect ack path. */
+  noteCollectEvent: (target: RemoteTarget, event: Record<string, unknown>) => void;
   /** Append one collect event to the LOCAL collector buffer via the DB-free
    *  resolver (`resolveProjectBufferDir`, keyed on the attach ref's ids) — never
    *  the hook-style `ensureProjectRegistered` path that would materialize a
@@ -213,7 +218,8 @@ export const defaultDial: Dialer = (target, opts) => {
 function defaultDeps(logger?: ProxyLogger): HostProxyDeps {
   return {
     dial: defaultDial,
-    flushBeforeForward: async () => { /* no-op until the transcript collector plugs in */ },
+    flushBeforeForward: async () => { /* no-op until the transcript drain plugs in */ },
+    noteCollectEvent: () => { /* no-op until the transcript drain plugs in */ },
     bufferAppend: (target, sessionId, event) => {
       const bufferDir = resolveProjectBufferDir(target.groveId, target.projectId);
       new EventBuffer(bufferDir, sessionId).append(event);
@@ -432,6 +438,7 @@ export async function handleAttachedRequest(
   const d: HostProxyDeps = {
     dial: deps?.dial ?? base.dial,
     flushBeforeForward: deps?.flushBeforeForward ?? base.flushBeforeForward,
+    noteCollectEvent: deps?.noteCollectEvent ?? base.noteCollectEvent,
     bufferAppend: deps?.bufferAppend ?? base.bufferAppend,
     logger: deps?.logger ?? base.logger,
   };
@@ -534,6 +541,12 @@ async function handleCollectRoute(
       path: pathname,
     });
   }
+
+  // Enqueue trigger for the transcript-content drain (capture-push C1): a collect
+  // event carrying a transcript_path keys/updates the drain queue and schedules a
+  // mid-turn drain of the member-local transcript bytes to the host. Best-effort
+  // (the dep never throws); independent of the buffer append above.
+  if (event) d.noteCollectEvent(target, event);
 
   // Ack the hook now — it is unblocked and holds no reason to buffer (the daemon
   // owns the durable copy).

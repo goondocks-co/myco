@@ -23,7 +23,7 @@ import {
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
 import { classifyRoute, overlayHostStampRefusal, refusalJson, type RefusalPayload } from '../host/routing.js';
-import { defaultDial, handleAttachedRequest, proxyLoggerFrom } from './host-proxy.js';
+import { defaultDial, handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from './host-proxy.js';
 import { handleAttachedConfigRequest } from './attached-config.js';
 import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
@@ -105,6 +105,15 @@ export interface DaemonServerConfig {
    * Resolved by `resolveHostServeConfig` (machine config + bearer) in main.ts.
    */
   hostServe?: HostServeRuntime | null;
+  /**
+   * Capture-side proxy deps threaded into `handleAttachedRequest` for attached
+   * (routed) projects: the transcript-drain queue's `flushBeforeForward` (drain
+   * pending bytes before a terminal mining-trigger route) and `noteCollectEvent`
+   * (enqueue on every collect event). Wired at BOTH dispatch chokepoints
+   * (`daemon/server.ts` here + `mcp/http.ts`) — see capture-push C1. Omitted in
+   * tests that don't exercise routed capture; the proxy's no-op defaults apply.
+   */
+  hostProxyDeps?: Partial<HostProxyDeps>;
 }
 
 export type RawRouteHandler = (
@@ -126,6 +135,9 @@ export class DaemonServer {
    */
   private overlayServer: http.Server | null = null;
   private hostServe: HostServeRuntime | null;
+  /** Capture-side proxy deps (transcript-drain flush + collect enqueue) threaded
+   *  into `handleAttachedRequest` for attached projects. See {@link DaemonServerConfig}. */
+  private hostProxyDeps: Partial<HostProxyDeps>;
   /** The overlay listener's bound port (0 until it binds). Public so tests /
    *  enrollment can read the port the overlay surface is reachable on. */
   overlayPort = 0;
@@ -186,6 +198,7 @@ export class DaemonServer {
     this.runtimeCache = config.runtimeCache ?? new GroveRuntimeCache();
     this.ownsRuntimeCache = config.runtimeCache === undefined;
     this.hostServe = config.hostServe ?? null;
+    this.hostProxyDeps = config.hostProxyDeps ?? {};
     this.version = getPluginVersion();
     this.authToken = mintDaemonAuthToken();
     // Export to env so direct children inherit the bearer without
@@ -723,6 +736,7 @@ export class DaemonServer {
               enforceUrlTenancyAuth(req.headers, this.authToken);
             }
             await handleAttachedRequest(req, res, decision.target, decision.classification, {
+              ...this.hostProxyDeps,
               logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
             });
             return;

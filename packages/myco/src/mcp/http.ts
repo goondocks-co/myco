@@ -14,7 +14,7 @@ import {
   type MycoRequestContext,
 } from '../grove/request-context.js';
 import { classifyRoute, refusalMcpBody } from '../host/routing.js';
-import { handleAttachedRequest, proxyLoggerFrom } from '../daemon/host-proxy.js';
+import { handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from '../daemon/host-proxy.js';
 import { isOverlayRequest } from '../daemon/host-serve.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { createMcpProtocolServer } from './server.js';
@@ -35,6 +35,14 @@ export interface StreamableMcpHttpHandlerOptions {
    * observability gap from issue #288.
    */
   logger?: Logger;
+  /**
+   * Capture-side proxy deps threaded into `handleAttachedRequest` for attached
+   * projects (transcript-drain flush + collect enqueue). This is the SECOND of
+   * the two dispatch chokepoints C1 wires (the first is `daemon/server.ts`) —
+   * both must pass the real dep or the flush-before-terminal-route guarantee
+   * silently never fires for the surface routed through this one.
+   */
+  hostProxyDeps?: Partial<HostProxyDeps>;
 }
 
 /**
@@ -161,6 +169,7 @@ export function createStreamableMcpHttpHandler(
         }
         if (decision.kind === 'remote') {
           await handleAttachedRequest(req, res, decision.target, decision.classification, {
+            ...options.hostProxyDeps,
             logger: options.logger ? proxyLoggerFrom(options.logger, LOG_KINDS.SERVER_ERROR) : undefined,
           });
           return;
