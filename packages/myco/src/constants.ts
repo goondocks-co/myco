@@ -597,18 +597,22 @@ export const HOST_MIN_COMPAT_VERSION = 1;
 export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
 
 /**
- * Local HTTP-CONNECT proxy port the member's userspace tailscaled exposes
- * (`--outbound-http-proxy-listen=localhost:<port>`), recorded on every
- * {@link HostRecord} as `proxy_port` and dialed by `daemon/host-proxy.ts`'s
- * CONNECT tunnel (`connectViaHttpProxy`). The mechanism is HTTP-CONNECT, NOT
- * SOCKS5 — chosen to MATCH what Task 1.3's proxy actually dials (a member runs
- * ONE tailscaled, so one listener serves every joined host).
+ * Base for the local HTTP-CONNECT proxy port each joined host's userspace
+ * tailscaled exposes (`--outbound-http-proxy-listen=localhost:<port>`), recorded
+ * on that host's {@link HostRecord} as `proxy_port` and dialed by
+ * `daemon/host-proxy.ts`'s CONNECT tunnel (`connectViaHttpProxy`). The mechanism
+ * is HTTP-CONNECT, NOT SOCKS5 — chosen to MATCH what Task 1.3's proxy dials.
  *
- * High + uncommon to avoid colliding with a developer's own local proxy; the
- * listener is localhost-bound and member-initiated. A later config knob can
- * override it, recording the chosen value per host record.
+ * MULTI-HOST: a member runs one tailscaled PER host (each host is its own tailnet
+ * that independently hands out `100.64.0.0/10`, so overlay addresses can collide),
+ * so each host's outbound listener needs a DISTINCT port — the `proxy_port` is what
+ * selects the right tailnet's tailscaled for a dial even when `overlay_address`
+ * collides. Ports are allocated from this base (lowest free not already used by
+ * another host record) and PERSISTED on the host record so the proxy's dial stays
+ * stable across restarts. High + uncommon to avoid colliding with a developer's own
+ * local proxy; listeners are localhost-bound and member-initiated.
  */
-export const MEMBER_OVERLAY_PROXY_PORT = 41080;
+export const MEMBER_OVERLAY_PROXY_PORT_BASE = 41080;
 
 /**
  * Member→host proxy timeouts (the host-proxy forwarder, `daemon/host-proxy.ts`).

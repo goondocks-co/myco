@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -248,49 +249,62 @@ export const MEMBER_OVERLAY_DIRNAME = 'member';
 /**
  * MEMBER-side overlay home — this machine acting as a Team Host MEMBER (it has
  * joined one or more hosts via `myco join`, Task 2.2). Holds the provisioned
- * Tailscale binaries (`bin/`), the userspace-tailscaled state dir + logs, under
- * the same machine-global team home (`~/.myco-team`) as `teams/`, `hosts/`, and
- * the host-side `host/`.
+ * Tailscale binaries (`bin/`), shared across every joined host (the CLI + daemon
+ * BINARIES are identical; only the running per-host instances differ). Under the
+ * same machine-global team home (`~/.myco-team`) as `teams/`, `hosts/`, and the
+ * host-side `host/`.
  *
- * A member runs ONE userspace tailscaled for ALL joined hosts (the overlay is a
- * single tailnet), so this dir is machine-global, not per-host — mirroring how a
- * machine's several daemon homes share one team registry.
- *
- * NOTE: the tailscaled UNIX socket does NOT live here — see
- * {@link resolveMemberTailscaledSocketPath} for why it must stay short.
+ * MULTI-HOST: each joined host is its OWN Headscale tailnet (each independently
+ * hands out `100.64.0.0/10` — two hosts can both be `100.64.0.1`), so the member
+ * runs ONE userspace tailscaled PER HOST, each with its own socket + statedir +
+ * outbound-proxy port. The per-host state lives under that host's registry dir
+ * ({@link resolveMemberTailscaledStateDir}); only the shared binaries live here.
  */
 export function resolveMemberOverlayDir(): string {
   return path.join(resolveTeamsHome(), MEMBER_OVERLAY_DIRNAME);
 }
 
-/** Where the member's Tailscale client + daemon binaries land. */
+/** Where the member's Tailscale client + daemon binaries land (shared across hosts). */
 export function resolveMemberBinDir(): string {
   return path.join(resolveMemberOverlayDir(), 'bin');
 }
 
-/** The member userspace-tailscaled `--statedir` (node identity/state). May be
+/**
+ * A short, deterministic per-host tag (10 hex chars of a hash of the host_id).
+ * Used to key a host's tailscaled socket + LaunchAgent label. A hash rather than
+ * the raw host_id keeps the socket path well under the macOS `sun_path` limit
+ * (a raw `host_<32hex>` segment plus a deep-ish home can crowd 104 bytes) and is
+ * format-independent, while staying collision-free for the handful of hosts a
+ * single machine realistically joins.
+ */
+export function memberHostTag(hostId: string): string {
+  return crypto.createHash('sha256').update(hostId).digest('hex').slice(0, 10);
+}
+
+/** A host's userspace-tailscaled `--statedir` (its node identity/state). Lives
+ *  under that host's registry dir so `removeHost` (leave) cleans it too. May be
  *  arbitrarily deep — only the SOCKET path is length-constrained. */
-export function resolveMemberTailscaledStateDir(): string {
-  return path.join(resolveMemberOverlayDir(), 'tailscaled-state');
+export function resolveMemberTailscaledStateDir(hostId: string): string {
+  return path.join(resolveHostDir(hostId), 'tailscaled-state');
 }
 
 /**
- * The member userspace-tailscaled `--socket` path. Deliberately HOME-anchored and
- * SHORT — NOT under {@link resolveMemberOverlayDir} — because macOS caps an
- * `AF_UNIX` `sun_path` at 104 bytes and MYCO_TEAM_HOME can be overridden to a deep
- * path (the scratchpad/test case, proven to overflow in the live spike §0.1b).
- * A path derived from the team home would silently break `bind()`; a short,
- * fixed one under `~/.myco-ts/` cannot.
- *
- * A pathologically long home (unusual, but possible) falls back to a `/tmp`-based
- * path that is always short. Both the tailscaled LaunchAgent and the `tailscale
- * --socket=<…>` CLI calls resolve through here, so they always agree.
+ * A host's userspace-tailscaled `--socket` path. Deliberately HOME-anchored and
+ * SHORT — NOT under the (possibly deep, overridable) `MYCO_TEAM_HOME` — because
+ * macOS caps an `AF_UNIX` `sun_path` at 104 bytes and a team-home-derived path
+ * silently breaks `bind()` (the scratchpad/test case, proven to overflow in the
+ * live spike §0.1b). Per-host now (multi-host): the {@link memberHostTag} segment
+ * distinguishes each host's socket while staying short; a pathologically long
+ * home falls back to a `/tmp` path that is always short. Both the tailscaled
+ * LaunchAgent and the `tailscale --socket=<…>` CLI calls resolve through here for
+ * the SAME host, so they always agree.
  */
-export function resolveMemberTailscaledSocketPath(): string {
-  const preferred = path.join(resolveHomeDir(), '.myco-ts', 'td.sock');
+export function resolveMemberTailscaledSocketPath(hostId: string): string {
+  const tag = memberHostTag(hostId);
+  const preferred = path.join(resolveHomeDir(), '.myco-ts', `${tag}.sock`);
   if (Buffer.byteLength(preferred) < 100) return preferred;
   const uid = process.getuid?.() ?? 0;
-  return path.join('/tmp', `myco-td-${uid}.sock`);
+  return path.join('/tmp', `myco-td-${uid}-${tag}.sock`);
 }
 
 export function resolveGroveMetadataPath(groveId: string, mycoHome = resolveMycoHome()): string {
