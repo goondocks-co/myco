@@ -31,6 +31,7 @@ import { Surface } from '../components/ui/surface';
 import { Button } from '../components/ui/button';
 import { MetricCard } from '../components/ui/metric-card';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
+import { CapabilityIndicator } from '../components/config/CapabilityIndicator';
 import { formatTimeAgo } from '../lib/format';
 import {
   useOkfAcknowledge,
@@ -174,7 +175,11 @@ export default function Okf() {
 
   return (
     <PageContainer>
-      <PageHeader title="OKF" subtitle="Repository-carried Open Knowledge Format wiki" />
+      <PageHeader
+        title="OKF"
+        subtitle="Repository-carried Open Knowledge Format wiki"
+        actions={<CapabilityIndicator capability="okf" />}
+      />
 
       {isLoading && (
         <Surface className="px-4 py-6 text-sm text-on-surface-variant">Loading OKF status…</Surface>
@@ -190,7 +195,8 @@ export default function Okf() {
         <Panel eyebrow="Opt-in" title="OKF is disabled for this project">
           <p className="text-sm text-on-surface-variant">
             OKF publishes a portable, repository-carried knowledge wiki any agent can read and
-            maintain without Myco. Enable it and configure the synthesis scope on the{' '}
+            maintain without Myco. Enable it from the capability indicator above (capabilities are
+            managed per project on the Groves page); advanced knobs live on the{' '}
             <Link to="/settings#okf" className="text-primary hover:underline">
               Settings
             </Link>{' '}

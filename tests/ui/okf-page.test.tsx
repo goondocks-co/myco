@@ -243,6 +243,27 @@ describe('Okf page — status', () => {
     expect(screen.getByTestId('okf-open-in-editor')).toBeInTheDocument();
   });
 
+  it('renders the capability indicator ("OKF on") deep-linking to the Groves capability panel', async () => {
+    mockApiForStatus(ENABLED_VALID_STATUS, PAGES);
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('capability-indicator-okf')).toBeInTheDocument();
+    });
+    const indicator = screen.getByTestId('capability-indicator-okf');
+    expect(indicator).toHaveTextContent('OKF on');
+    expect(indicator.getAttribute('href')).toBe('/groves?capabilities=project-a');
+  });
+
+  it('shows "OKF off" on the indicator when the capability is disabled', async () => {
+    mockApiForStatus(DISABLED_STATUS);
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('capability-indicator-okf')).toHaveTextContent('OKF off');
+    });
+  });
+
   it('carries none of the retired cards: Validate, Copy path, History, Discovery', async () => {
     mockApiForStatus(ENABLED_VALID_STATUS, PAGES);
     renderPage();

@@ -19,6 +19,7 @@ import { Input } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { MarkdownContent } from '../components/ui/markdown-content';
 import { ScopedField } from '../components/config/ScopedField';
+import { CapabilityIndicator } from '../components/config/CapabilityIndicator';
 import { DigestView } from '../components/mycelium/DigestView';
 import { CanopyEntriesPanel } from '../components/canopy/CanopyEntriesPanel';
 import { CanopyMapPanel } from '../components/canopy/CanopyMapPanel';
@@ -270,6 +271,7 @@ export default function Cortex() {
       <PageHeader
         title="Cortex"
         subtitle="Manage session-start context, prompt building, and digest access for connected symbionts."
+        actions={<CapabilityIndicator capability="cortex" />}
       />
 
       <TileTabs

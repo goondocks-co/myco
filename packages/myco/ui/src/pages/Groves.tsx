@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Plus, Search } from 'lucide-react';
-import { useNavigate, NavLink } from 'react-router-dom';
+import { useNavigate, useSearchParams, NavLink } from 'react-router-dom';
 import { useGroves } from '../hooks/use-groves';
 import { useProjectsActivity } from '../hooks/use-maintenance-summary';
 import { formatTimeAgo } from '../lib/format';
@@ -63,6 +63,27 @@ export default function Groves() {
 
   const archiveAwareQuery = useGroves({ includeArchived });
   const groves = archiveAwareQuery.data?.groves ?? [];
+
+  // Deep link from a section page's CapabilityIndicator:
+  // /groves?capabilities=<project_id> opens the capability panel for that
+  // project as soon as the groves list resolves. The param is consumed
+  // (replaced away) so closing the panel doesn't reopen it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const capabilitiesParam = searchParams.get('capabilities');
+  useEffect(() => {
+    if (!capabilitiesParam || groves.length === 0) return;
+    for (const grove of groves) {
+      const project = grove.projects?.find((p) => p.project_id === capabilitiesParam);
+      if (project) {
+        setCapabilityTarget({ grove, project });
+        break;
+      }
+    }
+    setSearchParams((params) => {
+      params.delete('capabilities');
+      return params;
+    }, { replace: true });
+  }, [capabilitiesParam, groves, setSearchParams]);
 
   // Per-project last-activity, so the list sorts most-recently-worked first
   // and stays scannable as auto-registration accumulates projects.
