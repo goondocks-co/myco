@@ -214,8 +214,13 @@ phases:
       runaway plan is rejected and nothing is written. If okf_write_plan
       returns validation errors, fix them and call it again. If the explore
       brief found nothing worth writing, write an empty plan (an empty pages
-      array) so the synthesis phase becomes a no-op and the previously
-      published bundle is left untouched.
+      array) so the synthesis phase becomes a no-op and the current wiki is
+      left untouched.
+
+      THE MOMENT okf_write_plan returns ok:true, you are DONE: reply with one
+      sentence confirming the persisted page count and STOP. Do not re-read
+      pages or sources to double-check — the synthesis phase verifies each
+      page as it writes it.
 
   - name: synthesize
     dependsOn: [plan]
