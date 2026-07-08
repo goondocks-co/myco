@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { MycoConfigSchema } from './schema.js';
+import { MycoConfigSchema } from '@myco/config/schema.js';
 
 describe('ProviderOverrideSchema (via MycoConfigSchema.agent.provider)', () => {
   test('keeps thinking_budget_map and effort_map (Zod v4 default-strips unknown keys otherwise)', () => {

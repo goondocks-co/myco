@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { consumeClaudeMessageStream } from './claude.js';
+import { consumeClaudeMessageStream } from '@myco/agent/harness/claude.js';
 import { analyzeRuntimeTokenBudget } from '@myco/agent/run-accounting.js';
 
 /**

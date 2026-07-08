@@ -8,7 +8,7 @@ import { insertReport } from '@myco/db/queries/reports.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { insertWriteIntent } from '@myco/db/queries/write-intents.js';
 import { epochSeconds } from '@myco/constants.js';
-import { checkPhasePostCondition, type PhasePostConditionInput } from './phase-postconditions.js';
+import { checkPhasePostCondition, type PhasePostConditionInput } from '@myco/agent/phase-postconditions.js';
 import {
   SKILL_EVOLVE_ASSESS_PHASE_NAME,
   SKILL_EVOLVE_ASSESS_REPORT_ACTION,
@@ -16,7 +16,7 @@ import {
   SKILL_EVOLVE_INVENTORY_PHASE_NAME,
   SKILL_EVOLVE_INVENTORY_REPORT_ACTION,
   SKILL_EVOLVE_INVENTORY_STATE_KEY,
-} from './skill-evolve-output.js';
+} from '@myco/agent/skill-evolve-output.js';
 
 /**
  * Coverage for the skill-evolve inventory/assess phase postconditions.

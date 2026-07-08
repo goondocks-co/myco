@@ -9,8 +9,8 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { renderSystemdUnit } from './systemd-unit.js';
-import type { ServiceSpec } from './types.js';
+import { renderSystemdUnit } from '@myco/service/systemd-unit.js';
+import type { ServiceSpec } from '@myco/service/types.js';
 
 function specWith(overrides: Partial<ServiceSpec>): ServiceSpec {
   return {

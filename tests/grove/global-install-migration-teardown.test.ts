@@ -7,9 +7,9 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { migrateProjectToGlobalInstall } from './global-install-migration.js';
-import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { MYCO_HOME_ENV } from './paths.js';
+import { migrateProjectToGlobalInstall } from '@myco/grove/global-install-migration.js';
+import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
+import { MYCO_HOME_ENV } from '@myco/grove/paths.js';
 
 const GEMINI_MYCO_SETTINGS = {
   hooks: {

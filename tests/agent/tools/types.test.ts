@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { stampSporeCountInPayload } from './types.js';
+import { stampSporeCountInPayload } from '@myco/agent/tools/types.js';
 
 describe('stampSporeCountInPayload', () => {
   test('replaces spores_created when present with a different value', () => {
