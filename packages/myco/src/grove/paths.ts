@@ -222,6 +222,23 @@ export function resolveHostConfigPath(hostId: string): string {
   return path.join(resolveHostDir(hostId), 'host.json');
 }
 
+export const HOST_CONTROL_DIRNAME = 'host';
+
+/**
+ * HOST-side control-plane home — this machine acting AS a Team Host. Holds the
+ * provisioned overlay binaries (`bin/`), the generated Headscale config + sqlite
+ * state (`headscale/`), and the host state record (`state.json`). Under the same
+ * machine-global team home (`~/.myco-team`) as `teams/` and `hosts/`.
+ *
+ * Deliberately SINGULAR (`host`) to distinguish it from {@link resolveHostsDir}
+ * (`hosts/`, plural): `host/` is "this machine serving a Grove to others";
+ * `hosts/` is "the hosts this machine has joined as a member". Managed by
+ * `myco-team host enable/disable` (Task 2.1).
+ */
+export function resolveHostControlDir(): string {
+  return path.join(resolveTeamsHome(), HOST_CONTROL_DIRNAME);
+}
+
 export function resolveHostSecretsPath(hostId: string): string {
   return path.join(resolveHostDir(hostId), 'secrets.env');
 }
