@@ -54,6 +54,7 @@ import {
   HOST_ENROLL_ROUTE,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
+  HOST_PROXY_CONNECT_TIMEOUT_MS,
   HOST_PROXY_HEADERS_TIMEOUT_MS,
   MEMBER_OVERLAY_PROXY_PORT_BASE,
 } from '../constants.js';
@@ -667,34 +668,41 @@ export async function defaultResolveMemberOverlayIp(
 }
 
 /**
- * Best-effort reachability probe: HTTP-CONNECT through THIS host's local proxy to
- * the host's overlay address, then a short `/health` GET. Any HTTP response (even
- * a 401 from the host bearer gate) proves the tunnel + host listener are up. Never
- * throws — the live checklist is the authoritative verification.
+ * Best-effort reachability probe: a `/health` GET tunneled through THIS host's
+ * local CONNECT proxy to the host's overlay address. Any HTTP response (even a 401
+ * from the host bearer gate) proves the tunnel + host listener are up. Never throws.
+ *
+ * The CONNECT MUST run inside `http.Agent.createConnection` (reusing Task 1.3's
+ * {@link connectViaHttpProxy}, exactly like {@link connectProxyEnrollTransport} and
+ * `defaultDial`): a bare `http.request({ method: 'CONNECT' })` is mishandled by
+ * Bun's http path (`fetch() URL is invalid`), which under the Bun-compiled daemon
+ * made this probe silently ALWAYS return false instead of actually dialing. An
+ * outer timer bounds the whole attempt, including a CONNECT the proxy never answers.
  */
-async function defaultCheckHostReachable(overlayAddress: string, proxyPort: number): Promise<boolean> {
+export async function defaultCheckHostReachable(overlayAddress: string, proxyPort: number): Promise<boolean> {
   const { host, port } = splitOverlayAddress(overlayAddress);
   if (!host || !port) return false;
   return await new Promise<boolean>((resolve) => {
     let settled = false;
-    const done = (v: boolean) => { if (!settled) { settled = true; resolve(v); } };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (v: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(v);
+    };
+    timer = setTimeout(() => done(false), HOST_PROXY_CONNECT_TIMEOUT_MS);
     import('node:http').then((http) => {
-      const authority = `${host}:${port}`;
-      const connectReq = http.request({ host: '127.0.0.1', port: proxyPort, method: 'CONNECT', path: authority, headers: { host: authority } });
-      const timer = setTimeout(() => { connectReq.destroy(); done(false); }, 2500);
-      connectReq.once('connect', (res, socket) => {
-        clearTimeout(timer);
-        if (res.statusCode !== 200) { socket.destroy(); done(false); return; }
-        const probe = http.request({ host, port, path: '/health', method: 'GET', createConnection: () => socket, timeout: 2500 }, (probeRes) => {
-          probeRes.resume();
-          done(true); // any response proves the host listener is bound
-        });
-        probe.once('error', () => done(false));
-        probe.once('timeout', () => { probe.destroy(); done(false); });
-        probe.end();
+      const agent = new http.Agent();
+      (agent as unknown as {
+        createConnection: (o: { host?: string; port?: number }, cb: (e: Error | null, s?: Socket) => void) => void;
+      }).createConnection = (o, cb) => connectViaHttpProxy(proxyPort, o.host ?? host, o.port ?? port, cb);
+      const probe = http.request({ host, port, path: '/health', method: 'GET', agent }, (probeRes) => {
+        probeRes.resume();
+        done(true); // any response proves the tunnel + host listener are up
       });
-      connectReq.once('error', () => { clearTimeout(timer); done(false); });
-      connectReq.end();
+      probe.once('error', () => done(false));
+      probe.end();
     }).catch(() => done(false));
   });
 }

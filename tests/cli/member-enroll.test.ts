@@ -26,6 +26,7 @@ import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import {
   connectProxyEnrollTransport,
   createEnrollmentClient,
+  defaultCheckHostReachable,
   type EnrollmentContext,
   type EnrollmentTransport,
 } from '@myco/host/member-overlay';
@@ -146,5 +147,26 @@ describe('member enrollment client — end-to-end through the CONNECT proxy', ()
     expect(enrollment.overlay_address).toBe(`127.0.0.1:${server.overlayPort}`);
     expect(enrollment.protocol_version).toBe(1);
     expect(enrollment.host_id).toBe('host_e2e');
+  });
+
+  // --- Task 2.2 reachability probe, fixed for Bun (must CONNECT via http.Agent) ---
+
+  test('the reachability probe tunnels through the proxy and reports the host reachable under Bun', async () => {
+    // Pins the fix: the bare http.request({method:'CONNECT'}) this used to do fails
+    // under Bun (fetch() URL is invalid), so the probe ALWAYS returned false. Now it
+    // genuinely tunnels — a 401 from the overlay bearer gate still proves the listener
+    // is up (any response counts).
+    const reachable = await defaultCheckHostReachable(`127.0.0.1:${server.overlayPort}`, proxyPort);
+    expect(reachable).toBe(true);
+  });
+
+  test('the reachability probe reports false when the host port is closed (contract preserved)', async () => {
+    // A definitely-closed port: bind an ephemeral one, then release it.
+    const deadPort = await new Promise<number>((resolve) => {
+      const s = net.createServer();
+      s.listen(0, '127.0.0.1', () => { const p = (s.address() as net.AddressInfo).port; s.close(() => resolve(p)); });
+    });
+    const reachable = await defaultCheckHostReachable(`127.0.0.1:${deadPort}`, proxyPort);
+    expect(reachable).toBe(false);
   });
 });
