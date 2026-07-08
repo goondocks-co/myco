@@ -69,7 +69,8 @@ export function buildAgentsManagedBlock(opts: { okfPointer: boolean; okfOutputPa
   if (opts.okfPointer) {
     const root = (opts.okfOutputPath ?? 'okf').replace(/\/+$/, '');
     lines.push(
-      `- If \`${root}/index.md\` exists, read it before broad code exploration; it is this repository's Open Knowledge Format (OKF) wiki, synthesized and kept current by Myco. Content pages are plain markdown with a small OKF v0.1 frontmatter header; the per-folder index.md files and log.md are plain headerless markdown — start at \`${root}/index.md\` and follow its links to browse or extend it.`,
+      `- If \`${root}/index.md\` exists, read it before broad code exploration; it is this repository's Open Knowledge Format (OKF) wiki — a synthesized, code-grounded guide to the project (architecture, subsystems, key concepts, decisions), kept current by Myco. Start at \`${root}/index.md\` and follow its links.`,
+      `- Maintaining the OKF wiki does NOT require Myco — it is standard OKF v0.1, so any agent can keep it current by staying consistent with what is there: REFINE an existing page rather than rewriting it (preserve accurate content); every content page keeps a small YAML frontmatter header with \`type\`, \`title\`, \`description\`, and \`timestamp\`; cross-links are absolute bundle-relative — a leading slash rooted at the wiki, e.g. \`/architecture/overview.md\` — and point only at pages that exist; each folder's \`index.md\` is a headerless \`#\`-section-per-type bullet list of \`* [Title](link) - description\` that you update when you add, rename, or remove a page; and \`log.md\` records what each update changed.`,
     );
   }
   return `${AGENTS_MANAGED_START}\n## Myco Managed Guidance\n\n${lines.join('\n')}\n${AGENTS_MANAGED_END}\n`;

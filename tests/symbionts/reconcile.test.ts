@@ -103,7 +103,11 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
 
     const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
     expect(agents).toContain('If `okf/index.md` exists, read it before broad code exploration');
-    expect(agents).toContain('OKF v0.1 frontmatter header');
+    // The pointer carries the non-Myco maintenance contract (Task 8.2): any
+    // agent can maintain the bundle from the OKF format rules alone.
+    expect(agents).toContain('Maintaining the OKF wiki does NOT require Myco');
+    expect(agents).toContain('standard OKF v0.1');
+    expect(agents).toContain('REFINE an existing page');
     expect(agents).not.toContain('guides/maintaining-this-bundle.md');
     // The pointer lives INSIDE the managed block.
     const managed = agents.slice(agents.indexOf('myco:managed:start'), agents.indexOf('myco:managed:end'));
