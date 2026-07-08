@@ -244,6 +244,56 @@ export function resolveHostSecretsPath(hostId: string): string {
   return path.join(resolveHostDir(hostId), 'secrets.env');
 }
 
+export const ROUTED_TRANSCRIPTS_DIRNAME = 'routed-transcripts';
+
+/**
+ * A filesystem-safe capture path segment: non-empty, no separators, no `.`/`..`,
+ * charset `[A-Za-z0-9._-]`. Unlike the Grove/host/project ids, `machine_id` and
+ * `session_id` are NOT brand-shaped era ids (machine_id is `{user}_{hash}`,
+ * session_id is an agent-supplied uuid), so they get this structural guard rather
+ * than {@link assertGroveEraId}. Throws on any value that could escape its
+ * intended directory — the traversal defense for wire-supplied path components.
+ */
+export function assertSafeCaptureSegment(value: string, kind: string): string {
+  if (!value || value === '.' || value === '..' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(`Unsafe ${kind} path segment: ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+/**
+ * HOST-side materialized-transcript cache root — `~/.myco-team/host/routed-transcripts/`.
+ * A routed session's transcript bytes, pushed from the member and appended here so
+ * the host miner has a local file to reconcile (capture-push §5.2). Machine-scoped
+ * (under the host control home, {@link resolveHostControlDir}), NOT per-Grove: the
+ * tree is keyed `<machine_id>/<session_id>/<transcript_id>.jsonl`, a mining cache
+ * the Grove DB is authoritative over once mined.
+ */
+export function resolveRoutedTranscriptsDir(): string {
+  return path.join(resolveHostControlDir(), ROUTED_TRANSCRIPTS_DIRNAME);
+}
+
+/**
+ * The materialized file path for one routed transcript:
+ * `<routed-transcripts>/<machine_id>/<session_id>/<transcript_id>.jsonl`. Every
+ * wire-supplied segment funnels through {@link assertSafeCaptureSegment} before
+ * being joined, so a hostile `machine_id`/`session_id`/`transcript_id` cannot
+ * escape the cache root via `..` or separators (defense in depth alongside the
+ * ingest handler's own validation).
+ */
+export function resolveRoutedTranscriptPath(
+  machineId: string,
+  sessionId: string,
+  transcriptId: string,
+): string {
+  return path.join(
+    resolveRoutedTranscriptsDir(),
+    assertSafeCaptureSegment(machineId, 'machine_id'),
+    assertSafeCaptureSegment(sessionId, 'session_id'),
+    `${assertSafeCaptureSegment(transcriptId, 'transcript_id')}.jsonl`,
+  );
+}
+
 export const MEMBER_OVERLAY_DIRNAME = 'member';
 
 /**

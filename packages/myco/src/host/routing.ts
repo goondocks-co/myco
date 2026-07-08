@@ -237,6 +237,11 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/events/sync-transcript-prompts', stamp: 'collect', capability: COLLECTION },
   { method: 'POST', pattern: '/sessions/register', stamp: 'collect', capability: COLLECTION },
   { method: 'POST', pattern: '/sessions/unregister', stamp: 'collect', capability: COLLECTION },
+  // Routed transcript ingest — the host RECEIVE side of routed capture
+  // (capture-push §5.2, plan C2). The member drains member-local transcript
+  // bytes here; the host materializes them for its miner. Origin-side capture,
+  // so `collect`: served locally on the host, proxied from a member.
+  { method: 'POST', pattern: '/routed-capture/transcript', stamp: 'collect', capability: COLLECTION },
 
   // --- degrade: Code intelligence (Canopy) OFF for hosted projects v1 (§1c, §2) ---
   { method: 'POST', pattern: '/canopy/inject', stamp: 'degrade', capability: CANOPY },

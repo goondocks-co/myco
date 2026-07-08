@@ -199,6 +199,7 @@ import { runPendingMigrationTasks } from './migration-tasks.js';
 import { createStopProcessor } from './stop-processing.js';
 import { captureBatchImages } from './capture-images.js';
 import { createEventDispatcher } from './event-dispatch.js';
+import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
 import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
@@ -1395,6 +1396,15 @@ export async function main(): Promise<void> {
   // --- Stop route ---
 
   server.registerRoute('POST', '/events/stop', stopProcessor.handleStopRoute);
+
+  // --- Routed transcript ingest (Team Host receive side; capture-push §5.2) ---
+  //
+  // A routed session's transcript lives on the MEMBER's disk but the miner runs
+  // on the HOST. The member drains the transcript's append-only bytes here; the
+  // host materializes them to a host-local file the miner reconciles unchanged.
+  // Stamped `collect` in host/routing.ts, so it rides the overlay bearer/version
+  // gate and is served locally on the host (never re-proxied).
+  server.registerRoute('POST', '/routed-capture/transcript', createRoutedTranscriptHandler());
 
   // --- Context injection (cortex brief + semantic spore search) ---
   let teamSync!: ReturnType<typeof initTeamSync>;
