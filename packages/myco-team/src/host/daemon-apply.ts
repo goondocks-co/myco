@@ -31,6 +31,10 @@ export interface HostServeApply {
   enabled: boolean;
   /** The host's 100.64/10 overlay IP when enabling; null clears it (disable). */
   overlayAddress: string | null;
+  /** The host's control-plane id + label, mirrored into `host_serve` so the daemon's
+   *  enrollment endpoint (Task 2.4) can self-report them. Cleared on disable. */
+  hostId?: string | null;
+  label?: string | null;
 }
 
 /**
@@ -52,7 +56,12 @@ export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = r
       ...machine,
       daemon: {
         ...machine.daemon,
-        host_serve: { enabled: apply.enabled, overlay_address: apply.enabled ? apply.overlayAddress : null },
+        host_serve: {
+          enabled: apply.enabled,
+          overlay_address: apply.enabled ? apply.overlayAddress : null,
+          host_id: apply.enabled ? (apply.hostId ?? null) : null,
+          label: apply.enabled ? (apply.label ?? null) : null,
+        },
       },
     },
     mycoHome,

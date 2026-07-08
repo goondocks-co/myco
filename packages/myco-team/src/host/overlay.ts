@@ -213,7 +213,12 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   log(`Host overlay IP: ${overlayAddress}`);
 
   // 6. Wire the daemon: write machine-tier host_serve + restart to bind the listener.
-  writeHostServeConfig({ enabled: true, overlayAddress }, mycoHome);
+  //    Resolve the durable host_id up front (reused for the state record in step 7)
+  //    so the daemon's enrollment endpoint (Task 2.4) can self-report id + label to
+  //    joining members. `hostname` is the host's tailnet node name — the label.
+  const existingState = readHostState();
+  const hostId = existingState?.host_id ?? createHostId();
+  writeHostServeConfig({ enabled: true, overlayAddress, hostId, label: hostname }, mycoHome);
   const restart = await restartDaemonForHostServe(mycoHome, deps.serviceManager ?? getServiceManager());
   log(restart.detail);
   if (!restart.restarted) notes.push(restart.detail);
@@ -223,10 +228,9 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     ? await deps.resolveNodeId(runner, bins.headscaleBin, layout.configPath, hostname)
     : await defaultResolveNodeId(runner, bins.headscaleBin, layout.configPath, hostname);
 
-  const existing = readHostState();
   writeHostState({
-    host_id: existing?.host_id ?? createHostId(),
-    enabled_at: existing?.enabled_at ?? new Date().toISOString(),
+    host_id: hostId,
+    enabled_at: existingState?.enabled_at ?? new Date().toISOString(),
     server_url: options.serverUrl.trim(),
     overlay_address: overlayAddress,
     node_id: nodeId,
@@ -247,7 +251,7 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     : 'Overlay listener not confirmed yet — verify with the live checklist after the daemon settles.');
 
   return {
-    hostId: readHostState()!.host_id,
+    hostId,
     overlayAddress,
     serverUrl: options.serverUrl.trim(),
     headscaleVersion: bins.headscaleVersion,

@@ -52,7 +52,7 @@ describe('writeHostServeConfig', () => {
     writeHostServeConfig({ enabled: true, overlayAddress: '100.64.0.7' }, process.env.MYCO_HOME);
 
     const machine = loadMachineConfig(process.env.MYCO_HOME);
-    expect(machine.daemon.host_serve).toEqual({ enabled: true, overlay_address: '100.64.0.7' });
+    expect(machine.daemon.host_serve).toEqual({ enabled: true, overlay_address: '100.64.0.7', host_id: null, label: null });
 
     // The written address satisfies Task 2.3's downstream gate...
     expect(isOverlayRangeAddress(machine.daemon.host_serve.overlay_address)).toBe(true);
@@ -79,7 +79,7 @@ describe('writeHostServeConfig', () => {
     writeHostServeConfig({ enabled: true, overlayAddress: '100.64.0.7' }, process.env.MYCO_HOME);
     writeHostServeConfig({ enabled: false, overlayAddress: null }, process.env.MYCO_HOME);
     const machine = loadMachineConfig(process.env.MYCO_HOME);
-    expect(machine.daemon.host_serve).toEqual({ enabled: false, overlay_address: null });
+    expect(machine.daemon.host_serve).toEqual({ enabled: false, overlay_address: null, host_id: null, label: null });
     expect(resolveHostServeConfig({ machineConfig: machine, mycoHome: process.env.MYCO_HOME })).toBeNull();
   });
 

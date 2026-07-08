@@ -139,9 +139,11 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(up).toEqual(['sudo', path.join(brewDir, 'tailscale'), 'up',
       '--login-server', 'https://host.example:8080', '--auth-key', 'onetimekeyvalue123', '--hostname', 'testhost']);
 
-    // Daemon wired: machine-tier host_serve written with the 100.64 IP.
+    // Daemon wired: machine-tier host_serve written with the 100.64 IP + the host
+    // id/label the enrollment endpoint self-reports (Task 2.4).
     const machine = loadMachineConfig(process.env.MYCO_HOME);
-    expect(machine.daemon.host_serve).toEqual({ enabled: true, overlay_address: '100.64.0.5' });
+    expect(machine.daemon.host_serve).toMatchObject({ enabled: true, overlay_address: '100.64.0.5', label: 'testhost' });
+    expect(machine.daemon.host_serve.host_id).toMatch(/^host_[0-9a-f]{32}$/);
 
     // Host state recorded with version provenance.
     const state = readHostState()!;
@@ -205,7 +207,7 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(result.errors).toEqual([]);
     // host_serve cleared.
     const machine = loadMachineConfig(process.env.MYCO_HOME);
-    expect(machine.daemon.host_serve).toEqual({ enabled: false, overlay_address: null });
+    expect(machine.daemon.host_serve).toEqual({ enabled: false, overlay_address: null, host_id: null, label: null });
     // Both services torn down.
     expect(calls.some((c) => c.join(' ').includes('uninstall-system-daemon'))).toBe(true);
     expect(calls.some((c) => c.includes('bootout'))).toBe(true);

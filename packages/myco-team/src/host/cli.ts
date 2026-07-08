@@ -6,6 +6,7 @@
  * runner, service manager) default inside the orchestrator; this layer only
  * parses flags and prints.
  */
+import { evictDevice, listDevices, mintSetupKey, rotateBearer } from './devices.js';
 import { hostDisable, hostEnable } from './overlay.js';
 import { readHostState } from './state.js';
 
@@ -30,6 +31,10 @@ Commands:
                                           [--user <headscale-user>] [--key-expiration <dur>]
   disable
   status
+  key mint [--expiration <dur>]        Mint a one-time setup key to hand a joiner.
+  devices list                         List enrolled member devices.
+  devices evict <id>                   Evict a device (immediate overlay cut).
+  bearer rotate                        Rotate the shared host bearer (re-enrolls everyone).
 
 enable stands up the OSS overlay on THIS machine as a Team Host: it provisions the
 pinned headscale + tailscale binaries, supervises both as root services (they
@@ -39,6 +44,9 @@ password. --server-url is the address members dial to reach the control plane.
 
 disable tears both services down and stops serving. status prints the current
 host state.
+
+key/devices/bearer are the operator control plane — they run ONLY here, on the
+host's localhost, and are never reachable by members over the overlay.
 `;
 
 export async function runHostCommand(args: string[]): Promise<void> {
@@ -99,6 +107,63 @@ export async function runHostCommand(args: string[]): Promise<void> {
     console.log(`headscale:     v${state.headscale_version}`);
     console.log(`tailscale:     v${state.tailscale_version}`);
     console.log(`Node ID:       ${state.node_id ?? '(unresolved)'}`);
+    return;
+  }
+
+  // --- operator control plane (localhost only; never overlay-served) ---
+
+  if (subcommand === 'key') {
+    const [action, ...keyRest] = rest;
+    if (action !== 'mint') {
+      console.error('Usage: myco-team host key mint [--expiration <dur>]');
+      process.exit(2);
+    }
+    const flags = parseFlags(keyRest);
+    const key = await mintSetupKey({ expiration: flags.get('expiration') });
+    console.log('One-time setup key (hand this to the joiner — it works once):');
+    console.log(`\n  ${key}\n`);
+    console.log('The joiner runs:  myco join <host> --key <key> --server-url <headscale-url> --overlay-address <host-100.64-ip:port>');
+    return;
+  }
+
+  if (subcommand === 'devices') {
+    const [action, ...devRest] = rest;
+    if (action === 'list') {
+      const devices = await listDevices();
+      if (devices.length === 0) {
+        console.log('No devices enrolled.');
+        return;
+      }
+      console.log('DEVICES');
+      for (const d of devices) {
+        console.log(`  ${d.id.padEnd(6)} ${(d.name || '(unnamed)').padEnd(24)} ${(d.overlay_ip ?? '-').padEnd(18)} ${d.online ? 'online' : 'offline'}  last-seen ${d.last_seen ?? '-'}`);
+      }
+      return;
+    }
+    if (action === 'evict') {
+      const id = devRest.find((a) => !a.startsWith('--'));
+      if (!id) {
+        console.error('Usage: myco-team host devices evict <id>  (see `myco-team host devices list`)');
+        process.exit(2);
+      }
+      await evictDevice(id);
+      console.log(`Evicted device ${id} — its overlay node is cut immediately.`);
+      return;
+    }
+    console.error('Usage: myco-team host devices <list|evict <id>>');
+    process.exit(2);
+  }
+
+  if (subcommand === 'bearer') {
+    const [action] = rest;
+    if (action !== 'rotate') {
+      console.error('Usage: myco-team host bearer rotate');
+      process.exit(2);
+    }
+    const result = await rotateBearer();
+    console.log('Host bearer rotated.');
+    console.log(result.detail);
+    console.log('WARNING: every joined member is now unauthenticated and must re-join with a fresh key (`myco-team host key mint`).');
     return;
   }
 
