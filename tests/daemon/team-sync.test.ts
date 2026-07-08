@@ -560,11 +560,10 @@ describe('team context', () => {
   });
 
   it('returns sync protocol version', () => {
-    // Bumped to 2 in the C1 protocol bump (queue-driven `embed`
-    // SyncRecord operation + additive `/vectors/reindex` shape).
-    // Older daemons still in v1 are accepted by the worker via
-    // the MIN_COMPAT_CLIENT_VERSION window — see C2/C3.
-    expect(getTeamSyncProtocolVersion()).toBe(2);
+    // v3: adds the skill_lineage + okf_* synced record types. Older
+    // daemons are accepted by the worker via the
+    // MIN_COMPAT_CLIENT_VERSION window.
+    expect(getTeamSyncProtocolVersion()).toBe(3);
   });
 
   it('resets to persisted id (not local)', () => {

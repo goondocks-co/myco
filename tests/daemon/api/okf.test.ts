@@ -1,58 +1,26 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+/**
+ * OKF daemon API handlers over the DB-resident wiki — real store, real rows,
+ * no capability stubs: seeds content through OkfStore (the same single writer
+ * the handlers use) and asserts the HTTP envelopes.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { RouteRequest } from '@myco/daemon/router';
 import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context';
-import { assertGroveProjectId } from '@myco/grove/ids';
-import { tenantRoute } from '@myco/daemon/api/route-helpers';
+import { assertGroveProjectId, projectScope, type GroveProjectId } from '@myco/grove/ids';
 import type { RequestPrincipal } from '@myco/daemon/request-principal';
-import { OkfError, OKF_ERROR_HTTP_STATUS } from '@myco/okf/errors';
-
-// --- Stub OkfBundle so the handlers' funnel + error mapping is exercised
-//     without a real DB. OkfError stays real (separate module). ---
-interface StubImpl {
-  acknowledgePendingFindings?: () => Promise<unknown>;
-  status?: () => unknown;
-  validate?: (root?: string) => unknown;
-  saveConcept?: (input: unknown) => Promise<unknown>;
-  supersedeConcept?: (input: unknown) => Promise<unknown>;
-  listPages?: () => unknown;
-  getPage?: (path: string) => unknown;
-}
-let stub: StubImpl = {};
-const constructed: unknown[] = [];
-
-mock.module('@myco/okf/bundle.js', () => ({
-  OkfBundle: class {
-    constructor(deps: unknown) {
-      constructed.push(deps);
-    }
-    status() {
-      return stub.status?.() ?? { outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, pageCount: null, publishAcknowledged: true, pendingFindings: [] };
-    }
-    acknowledgePendingFindings() {
-      return stub.acknowledgePendingFindings?.() ?? Promise.resolve({ outputRoot: '/tmp/x/okf', bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, pageCount: null, publishAcknowledged: true, pendingFindings: [] });
-    }
-    validate(root?: string) {
-      return stub.validate?.(root) ?? { ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0, issues: [] };
-    }
-    saveConcept(input: unknown) {
-      return stub.saveConcept?.(input) ?? Promise.resolve({ id: 'concepts/x', bundleGeneration: 2, validation: { ok: true } });
-    }
-    supersedeConcept(input: unknown) {
-      return stub.supersedeConcept?.(input) ?? Promise.resolve({ oldId: 'concepts/a', newId: 'concepts/b', bundleGeneration: 3 });
-    }
-    listPages() {
-      return stub.listPages?.() ?? [];
-    }
-    getPage(path: string) {
-      return stub.getPage?.(path) ?? null;
-    }
-  },
-}));
-
-const {
+import { openDatabase, withDatabase, closeDatabase, initDatabase } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { resolveGroveDbPath } from '@myco/grove/paths.js';
+import { MycoConfigSchema } from '@myco/config/schema.js';
+import { OkfStore } from '@myco/okf/store.js';
+import { vi } from '../../helpers/vi-shim.js';
+import {
   handleOkfAcknowledge,
   handleOkfStatus,
   handleOkfValidate,
@@ -60,14 +28,19 @@ const {
   handleOkfPageGet,
   handleOkfConceptSave,
   handleOkfConceptSupersede,
-} = await import('@myco/daemon/api/okf.js');
+} from '@myco/daemon/api/okf.js';
 
 const PROJECT_ID = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-const GROVE_ID = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const AGENT_BODY = 'Page body for the API test.';
+
+let rootDir: string;
 let projectRoot: string;
 let vaultDir: string;
+let groveId: string;
+let groveDbPath: string;
+let ctx: MycoRequestContext;
 
-function principalFor(ctx: MycoRequestContext): RequestPrincipal {
+function principal(): RequestPrincipal {
   return {
     identity: { machineId: ctx.machineId, userId: null },
     tenancy: {
@@ -79,189 +52,203 @@ function principalFor(ctx: MycoRequestContext): RequestPrincipal {
   } as RequestPrincipal;
 }
 
-function ctxFor(): MycoRequestContext {
-  return resolveLegacyRequestContext(vaultDir, {
-    projectId: assertGroveProjectId(PROJECT_ID),
-    groveId: GROVE_ID,
-    machineId: 'test-machine',
-    tenancySource: 'caller',
-  });
-}
-
 function req(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return { params: {}, query: {}, body: undefined, pathname: '/api/okf', ...overrides } as RouteRequest;
 }
 
+function store(): OkfStore {
+  return new OkfStore({
+    scope: projectScope(PROJECT_ID as GroveProjectId),
+    projectId: PROJECT_ID,
+    machineId: 'test-machine',
+    config: MycoConfigSchema.parse({ version: 3, okf: { enabled: true } }),
+  });
+}
+
+/** Publish one page through the store (the wiki's canonical write path). */
+function publishPage(pagePath = 'concepts/alpha', body = AGENT_BODY): void {
+  const s = store();
+  const draft = s.createDraftGeneration({
+    runId: 'r1',
+    plan: {
+      generatedAt: '2026-07-08T12:00:00Z',
+      sinceRef: '',
+      pages: [{ path: pagePath, type: 'concept', title: 'Alpha', rationale: 'x', sourceRefs: [] }],
+    },
+  });
+  s.writePage({ path: pagePath, type: 'concept', title: 'Alpha', description: 'About alpha.', body });
+  s.finalizeGeneration(draft.id);
+}
+
 beforeEach(() => {
-  stub = {};
-  constructed.length = 0;
-  projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'okf-api-')));
+  rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'okf-api-')));
+  const home = path.join(rootDir, 'home');
+  projectRoot = path.join(rootDir, 'project');
   vaultDir = path.join(projectRoot, '.myco');
   fs.mkdirSync(vaultDir, { recursive: true });
+  vi.stubEnv('MYCO_HOME', home);
   fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nokf:\n  enabled: true\n');
+
+  const grove = createGrove('Work', home);
+  groveId = grove.id;
+  saveProjectManifest(vaultDir, {
+    project: { id: PROJECT_ID, name: 'okf-api' },
+    grove: { binding_id: 'g', slug: grove.slug, mode: 'local' },
+  });
+  registerProjectInGrove(grove.id, { projectId: PROJECT_ID, projectName: 'okf-api', projectRoot, bindingId: 'g' }, home);
+  groveDbPath = resolveGroveDbPath(grove.id, home);
+  fs.mkdirSync(path.dirname(groveDbPath), { recursive: true });
+  const db = openDatabase(groveDbPath);
+  createSchema(db);
+  withDatabase(db, () => {});
+  db.close();
+  initDatabase(groveDbPath);
+
+  ctx = resolveLegacyRequestContext(vaultDir, {
+    projectId: assertGroveProjectId(PROJECT_ID),
+    groveId: grove.id,
+    machineId: 'test-machine',
+    tenancySource: 'caller',
+  });
 });
 
 afterEach(() => {
-  fs.rmSync(projectRoot, { recursive: true, force: true });
+  vi.unstubAllEnvs();
+  closeDatabase();
+  fs.rmSync(rootDir, { recursive: true, force: true });
 });
 
-describe('OKF API handlers', () => {
-  it('maps a generation conflict to 409', async () => {
-    stub.saveConcept = () => Promise.reject(new OkfError('okf_generation_conflict', 'stale', { currentGeneration: 1 }));
-    const res = await handleOkfConceptSave(req({ body: { id: 'concepts/x', markdown: '---\ntype: X\n---\n' } }), principalFor(ctxFor()));
-    expect(res.status).toBe(409);
-    expect((res.body as { error: { code: string } }).error.code).toBe('okf_generation_conflict');
-    expect((res.body as { details: { currentGeneration: number } }).details.currentGeneration).toBe(1);
-  });
-
-  it('status aggregates capability + config fields and never writes', async () => {
-    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: false, bundleGeneration: null, inputsHash: null, generatedAt: null, lastResult: null, byType: null, pageCount: null, publishAcknowledged: true });
-    const snapshot = JSON.stringify(fs.readdirSync(vaultDir));
-    const res = await handleOkfStatus(req(), principalFor(ctxFor()));
+describe('OKF API — status', () => {
+  it('reports an empty wiki with no generation and eligibility ok', async () => {
+    const res = await handleOkfStatus(req(), principal());
     expect(res.status).toBe(200);
     const body = res.body as Record<string, unknown>;
-    expect(body.enabled).toBe(true);
-    expect(body.outputPath).toBe('okf');
-    expect(body.lastRun).toBeNull();
-    expect((body.agentsPointer as { present: boolean }).present).toBe(false);
-    // No writes happened.
-    expect(JSON.stringify(fs.readdirSync(vaultDir))).toBe(snapshot);
-    expect(fs.existsSync(path.join(projectRoot, 'okf'))).toBe(false);
+    expect(body.bundleExists).toBe(false);
+    expect(body.claimedBundleExists).toBe(false);
+    expect(body.bundleGeneration).toBeNull();
+    expect((body.publishEligibility as { ok: boolean }).ok).toBe(true);
   });
 
-  it('validate delegates and returns the report', async () => {
-    stub.validate = () => ({ ok: false, level: 'myco_strict', filesChecked: 3, conceptsChecked: 2, issues: [{ level: 'error', code: 'x', path: 'a.md', message: 'm' }] });
-    const res = await handleOkfValidate(req({ body: { path: 'okf' } }), principalFor(ctxFor()));
+  it('reports a published wiki with generation, counts, and row validation', async () => {
+    publishPage();
+    const res = await handleOkfStatus(req(), principal());
+    const body = res.body as Record<string, unknown>;
+    expect(body.bundleExists).toBe(true);
+    expect(body.bundleGeneration).toBe(1);
+    expect(body.pageCount).toBe(1);
+    expect((body.byType as Record<string, number>).concept).toBe(1);
+    expect((body.validation as { ok: boolean }).ok).toBe(true);
+    expect(body.lastResult).toBe('published');
+  });
+
+  it('claimedBundleExists reflects an on-disk materialized bundle', async () => {
+    publishPage();
+    fs.mkdirSync(path.join(projectRoot, 'okf'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, 'okf', 'index.md'), '# Index\n');
+    const res = await handleOkfStatus(req(), principal());
+    expect((res.body as Record<string, unknown>).claimedBundleExists).toBe(true);
+  });
+
+  it('surfaces a blocked latest generation as the publish-block with findings', async () => {
+    publishPage('concepts/leaky', 'token ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8 here');
+    const res = await handleOkfStatus(req(), principal());
+    const body = res.body as Record<string, unknown>;
+    expect(body.lastResult).toBe('blocked');
+    expect(body.publishAcknowledged).toBe(false);
+    const eligibility = body.publishEligibility as { ok: boolean; findings: Array<{ code: string }> };
+    expect(eligibility.ok).toBe(false);
+    expect(eligibility.findings.some((f) => f.code === 'likely_secret')).toBe(true);
+  });
+});
+
+describe('OKF API — acknowledge', () => {
+  it('publishes the blocked generation and reports it', async () => {
+    publishPage('concepts/leaky', 'token ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8 here');
+    const res = await handleOkfAcknowledge(req(), principal());
     expect(res.status).toBe(200);
-    expect((res.body as { validation: { ok: boolean } }).validation.ok).toBe(false);
+    const body = res.body as Record<string, unknown>;
+    expect(body.published).toBe(true);
+    expect(body.generation).toBe(1);
+
+    const after = await handleOkfStatus(req(), principal());
+    expect((after.body as Record<string, unknown>).lastResult).toBe('published');
   });
 
-  it('page get resolves a slash-safe path from the prefix route and returns the document-model shape', async () => {
-    let receivedPath: string | undefined;
-    stub.getPage = (p) => {
-      receivedPath = p;
-      return { path: 'notes/my-note.md', type: 'Note', title: 'My Note', description: 'D.', timestamp: '2026-07-05', body: 'Body.' };
-    };
-    const res = await handleOkfPageGet(
-      req({ pathname: '/api/okf/pages/notes/my-note' }),
-      principalFor(ctxFor()),
-    );
-    expect(res.status).toBe(200);
-    expect(receivedPath).toBe('notes/my-note');
-    const page = (res.body as { page: Record<string, unknown> }).page;
-    expect(page.path).toBe('notes/my-note.md');
-    expect(page.body).toBe('Body.');
-    expect(page).not.toHaveProperty('myco_source_kind');
-    expect(page).not.toHaveProperty('raw');
+  it('is a no-op when nothing is blocked', async () => {
+    const res = await handleOkfAcknowledge(req(), principal());
+    expect((res.body as Record<string, unknown>).published).toBe(false);
   });
+});
 
-  it('page get returns page: null for a missing page (never a 404)', async () => {
-    stub.getPage = () => null;
-    const res = await handleOkfPageGet(req({ pathname: '/api/okf/pages/notes/missing' }), principalFor(ctxFor()));
-    expect(res.status).toBe(200);
-    expect((res.body as { page: unknown }).page).toBeNull();
-  });
-
-  it('page list returns OKF-shaped pages with no Myco fields', async () => {
-    stub.listPages = () => [
-      { path: 'notes/a.md', type: 'Note', title: 'A', description: 'D', timestamp: '2026-07-05' },
-    ];
-    const list = await handleOkfPagesList(req(), principalFor(ctxFor()));
-    const pages = (list.body as { pages: Array<Record<string, unknown>> }).pages;
+describe('OKF API — pages', () => {
+  it('lists page heads with OKF fields', async () => {
+    publishPage();
+    const res = await handleOkfPagesList(req(), principal());
+    const pages = (res.body as { pages: Array<Record<string, unknown>> }).pages;
     expect(pages).toHaveLength(1);
-    expect(pages[0]).toEqual({ path: 'notes/a.md', type: 'Note', title: 'A', description: 'D', timestamp: '2026-07-05' });
-    expect(pages[0]).not.toHaveProperty('myco_source_kind');
+    expect(pages[0]).toMatchObject({ path: 'concepts/alpha.md', type: 'concept', title: 'Alpha' });
   });
 
-  it('supersede delegates to the capability', async () => {
-    stub.supersedeConcept = () => Promise.resolve({ oldId: 'concepts/a', newId: 'concepts/b', bundleGeneration: 4 });
-    const sup = await handleOkfConceptSupersede(
-      req({ body: { oldId: 'concepts/a', newId: 'concepts/b', reason: 'r' } }),
-      principalFor(ctxFor()),
+  it('gets one page flattened with its body; null for a missing page', async () => {
+    publishPage();
+    const got = await handleOkfPageGet(req({ pathname: `/api/okf/pages/${encodeURIComponent('concepts/alpha')}` }), principal());
+    const page = (got.body as { page: Record<string, unknown> }).page;
+    expect(page).toMatchObject({ path: 'concepts/alpha.md', type: 'concept', body: AGENT_BODY });
+
+    const missing = await handleOkfPageGet(req({ pathname: `/api/okf/pages/${encodeURIComponent('concepts/nope')}` }), principal());
+    expect((missing.body as { page: unknown }).page).toBeNull();
+  });
+});
+
+describe('OKF API — editorial surface', () => {
+  it('saves an authored concept as its own published generation', async () => {
+    const res = await handleOkfConceptSave(
+      req({ body: { id: 'concepts/manual', markdown: '---\ntype: Concept\ntitle: Manual\ndescription: D.\n---\n\nHand-written.\n' } }),
+      principal(),
     );
-    expect((sup.body as { bundleGeneration: number }).bundleGeneration).toBe(4);
-  });
-
-  it('rejects a save with a missing body field (400)', async () => {
-    const res = await handleOkfConceptSave(req({ body: { id: 'concepts/x' } }), principalFor(ctxFor()));
-    expect(res.status).toBe(400);
-  });
-
-  it('status emits the frozen Plan-7 aggregation shape exactly', async () => {
-    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 3, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'published', byType: { decision: 2, guide: 1 }, pageCount: 3, publishAcknowledged: true, pendingFindings: [] });
-    stub.validate = () => ({ ok: true, level: 'myco_strict', filesChecked: 4, conceptsChecked: 3, issues: [] });
-    // A published bundle on disk for the scanner to read (clean → no findings).
-    fs.mkdirSync(path.join(projectRoot, 'okf'), { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, 'okf/note.md'), '---\ntype: Note\n---\n\nBody.\n');
-    const res = await handleOkfStatus(req(), principalFor(ctxFor()));
-    const body = res.body as Record<string, unknown>;
-    for (const key of ['outputRoot', 'bundleExists', 'bundleGeneration', 'inputsHash', 'generatedAt', 'lastResult', 'byType', 'pageCount', 'publishAcknowledged', 'pendingFindings', 'enabled', 'outputPath', 'validation', 'agentsPointer', 'publishEligibility', 'lastRun']) {
-      expect(body).toHaveProperty(key);
-    }
-    expect(body.lastRun).toBeNull();
-    const validation = body.validation as Record<string, unknown>;
-    expect(Object.keys(validation).sort()).toEqual(['conceptsChecked', 'filesChecked', 'level', 'ok']);
-    const pubElig = body.publishEligibility as { ok: boolean; findings: unknown[] };
-    expect(typeof pubElig.ok).toBe('boolean');
-    expect(Array.isArray(pubElig.findings)).toBe(true);
-    const agentsPointer = body.agentsPointer as Record<string, unknown>;
-    expect(Object.keys(agentsPointer).sort()).toEqual(['present', 'stale']);
-  });
-
-  it('status folds pending_findings into publishEligibility: ok=false and the findings are surfaced', async () => {
-    // A published tree with no findings, but a synthesis run left pending
-    // blocking findings on the manifest — the block must still surface.
-    stub.status = () => ({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 1, inputsHash: 'h', generatedAt: '2026-07-05T00:00:00Z', lastResult: 'publish_blocked', byType: {}, pageCount: 0, publishAcknowledged: true, pendingFindings: [{ code: 'absolute_local_path', path: 'pages/leaky.md', hash: 'abcd1234' }] });
-    stub.validate = () => ({ ok: true, level: 'myco_strict', filesChecked: 0, conceptsChecked: 0, issues: [] });
-    fs.mkdirSync(path.join(projectRoot, 'okf'), { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, 'okf/note.md'), '---\ntype: Note\n---\n\nClean body.\n');
-    const res = await handleOkfStatus(req(), principalFor(ctxFor()));
-    const body = res.body as Record<string, unknown>;
-    const pubElig = body.publishEligibility as { ok: boolean; findings: Array<{ code: string; path: string }> };
-    // publishAcknowledged was true, but a non-empty pending set blocks publish.
-    expect(pubElig.ok).toBe(false);
-    expect(pubElig.findings.some((f) => f.code === 'absolute_local_path' && f.path === 'pages/leaky.md')).toBe(true);
-    expect((body.pendingFindings as unknown[]).length).toBe(1);
-  });
-
-  it('acknowledge delegates to acknowledgePendingFindings and returns the updated status', async () => {
-    let called = false;
-    stub.acknowledgePendingFindings = () => {
-      called = true;
-      return Promise.resolve({ outputRoot: path.join(projectRoot, 'okf'), bundleExists: true, bundleGeneration: 1, inputsHash: 'h', generatedAt: null, lastResult: 'publish_blocked', byType: {}, pageCount: 0, publishAcknowledged: true, pendingFindings: [] });
-    };
-    const res = await handleOkfAcknowledge(req({ body: {} }), principalFor(ctxFor()));
     expect(res.status).toBe(200);
-    expect(called).toBe(true);
-    const body = res.body as { ok: boolean; status: { pendingFindings: unknown[] } };
-    expect(body.ok).toBe(true);
-    expect(body.status.pendingFindings).toEqual([]);
+    const body = res.body as Record<string, unknown>;
+    expect(body.status).toBe('published');
+    expect(store().readPage('concepts/manual')?.body).toBe('Hand-written.');
   });
 
-  it('acknowledge maps a thrown OkfError to its frozen envelope', async () => {
-    stub.acknowledgePendingFindings = () => Promise.reject(new OkfError('okf_disabled', 'off'));
-    const res = await handleOkfAcknowledge(req({ body: {} }), principalFor(ctxFor()));
-    expect(res.status).toBe(OKF_ERROR_HTTP_STATUS.okf_disabled);
-  });
-});
-
-describe('OKF API tenancy', () => {
-  it('rejects a request with no tenancy context with 400 tenancy-violation', async () => {
-    const wrapped = tenantRoute(
-      { machineId: 'm', logger: { debug() {}, info() {}, warn() {}, error() {} } as never },
-      handleOkfStatus,
+  it('maps a generation conflict to 409', async () => {
+    publishPage(); // wiki at generation 1
+    const res = await handleOkfConceptSave(
+      req({ body: { id: 'concepts/manual', markdown: '---\ntype: Concept\n---\n\nBody.\n', expectedGeneration: 99 } }),
+      principal(),
     );
-    const res = await wrapped(req({ requestContext: undefined }));
-    expect(res.status).toBe(400);
-    expect((res.body as { error: { code: string } }).error.code).toBe('tenancy-violation');
+    expect(res.status).toBe(409);
+  });
+
+  it('supersede retires the old page and requires the replacement to exist', async () => {
+    publishPage('concepts/old');
+    const missing = await handleOkfConceptSupersede(
+      req({ body: { oldId: 'concepts/old', newId: 'concepts/new', reason: 'r' } }),
+      principal(),
+    );
+    expect(missing.status).toBe(500);
+
+    await handleOkfConceptSave(
+      req({ body: { id: 'concepts/new', markdown: '---\ntype: Concept\ntitle: New\ndescription: D.\n---\n\nNew body.\n' } }),
+      principal(),
+    );
+    const ok = await handleOkfConceptSupersede(
+      req({ body: { oldId: 'concepts/old', newId: 'concepts/new', reason: 'replaced' } }),
+      principal(),
+    );
+    expect(ok.status).toBe(200);
+    expect(store().readPage('concepts/old')).toBeNull();
+    expect(store().readPage('concepts/new')?.body).toBe('New body.');
   });
 });
 
-describe('OKF API is a thin funnel', () => {
-  it('performs no direct filesystem writes', () => {
-    const src = fs.readFileSync(path.join(__dirname, '../../../packages/myco/src/daemon/api/okf.ts'), 'utf8');
-    expect(src).not.toMatch(/fs\.writeFileSync/);
-    expect(src).not.toMatch(/fs\.mkdirSync/);
-    expect(src).not.toMatch(/fs\.rmSync/);
+describe('OKF API — validate', () => {
+  it('validates the current row set', async () => {
+    publishPage();
+    const res = await handleOkfValidate(req(), principal());
+    const validation = (res.body as { validation: { ok: boolean; conceptsChecked: number } }).validation;
+    expect(validation.ok).toBe(true);
+    expect(validation.conceptsChecked).toBe(1);
   });
 });

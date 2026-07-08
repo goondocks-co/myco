@@ -51,6 +51,8 @@ export interface OkfPendingFinding {
 export interface OkfStatusResponse {
   outputRoot: string;
   bundleExists: boolean;
+  /** True when a user has materialized (claimed) the wiki into the repo — drives Open-in-editor and the AGENTS.md pointer expectation. */
+  claimedBundleExists: boolean;
   bundleGeneration: number | null;
   inputsHash: string | null;
   generatedAt: string | null;
@@ -152,21 +154,17 @@ export function useOkfDocuments(): UseQueryResult<OkfPagesListResponse> {
 
 export interface OkfAcknowledgeResponse {
   ok: boolean;
-  /** Raw `OkfBundleStatus` from the acknowledge — the invalidation refetches the enriched status instead of trusting this narrower shape. */
-  status: unknown;
-  /** True when the blocked run's preserved pages were published as part of the acknowledge. */
-  publishedRecovered: boolean;
+  /** True when a blocked wiki generation was published by this acknowledge. */
+  published: boolean;
+  generation?: number;
   pageCount?: number;
-  /** Set when the recovered pages could not publish (they stay preserved; pending findings re-surface). */
-  publishError?: string;
 }
 
 /**
- * POST /api/okf/acknowledge. Drains `manifest.pending_findings` into
- * `acknowledged_findings` AND publishes the blocked run's preserved pages when
- * they exist — acknowledge means ship, not run-again. Invalidates status and
- * pages so the publish-block clears and the structure tree reflects the newly
- * published pages.
+ * POST /api/okf/acknowledge. Publishes the latest blocked wiki generation —
+ * the content is already synthesized as durable rows, so acknowledge means
+ * ship, not run-again. Invalidates status and pages so the publish-block
+ * clears and the structure tree reflects the newly published pages.
  */
 export function useOkfAcknowledge() {
   const qc = useQueryClient();

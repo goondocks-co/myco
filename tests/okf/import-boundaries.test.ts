@@ -34,7 +34,7 @@ const PURE_CORE = [
   'output-root.ts',
   'publish-eligibility.ts',
 ];
-const CAPABILITY_LAYER = ['bundle.ts', 'synthesis/sources.ts'];
+const CAPABILITY_LAYER = ['store.ts', 'synthesis/sources.ts'];
 
 const DB_CONFIG_VAULT: RegExp[] = [
   /['"]@myco\/(?:db|daemon|config|vault)(?:\/|['"])/,

@@ -4,6 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { resolveGroveDbPath } from '@myco/grove/paths.js';
+import { openDatabase, withDatabase, closeDatabase, initDatabase } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
 import {
   resolveLegacyRequestContext,
   type MycoRequestContext,
@@ -39,7 +42,7 @@ describe('handleMycoOkf list/get — document model', () => {
   let ctx: MycoRequestContext;
   const client = {} as never;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'okf-mcp-pages-')));
     const home = path.join(rootDir, 'home');
     projectRoot = path.join(rootDir, 'project');
@@ -53,6 +56,13 @@ describe('handleMycoOkf list/get — document model', () => {
       grove: { binding_id: 'g', slug: grove.slug, mode: 'local' },
     });
     registerProjectInGrove(grove.id, { projectId: PROJECT_ID, projectName: 'okf-mcp-pages', projectRoot, bindingId: 'g' }, home);
+    const groveDbPath = resolveGroveDbPath(grove.id, home);
+    fs.mkdirSync(path.dirname(groveDbPath), { recursive: true });
+    const db = openDatabase(groveDbPath);
+    createSchema(db);
+    withDatabase(db, () => {});
+    db.close();
+    initDatabase(groveDbPath);
 
     ctx = resolveLegacyRequestContext(vaultDir, {
       projectId: assertGroveProjectId(PROJECT_ID),
@@ -61,36 +71,33 @@ describe('handleMycoOkf list/get — document model', () => {
       tenancySource: 'caller',
     });
 
-    fs.mkdirSync(path.join(projectRoot, 'okf/notes'), { recursive: true });
-    fs.writeFileSync(
-      path.join(projectRoot, 'okf/notes/example.md'),
-      '---\ntype: Note\ntitle: Example\ndescription: D.\ntimestamp: 2026-07-05\n---\n\nBody text.\n',
-    );
+    // Pages are DB rows — seed through the tool's own editorial write path.
+    await handleMycoOkf({
+      op: 'save_concept',
+      concept_id: 'notes/example',
+      markdown: '---\ntype: Note\ntitle: Example\ndescription: D.\n---\n\nBody text.\n',
+    }, client, ctx);
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    closeDatabase();
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
   it('op list returns OKF-shaped pages, no Myco fields', async () => {
     const result = (await handleMycoOkf({ op: 'list' }, client, ctx)) as { pages: Array<Record<string, unknown>> };
-    expect(result.pages).toEqual([
-      { path: 'notes/example.md', type: 'Note', title: 'Example', description: 'D.', timestamp: '2026-07-05' },
-    ]);
+    expect(result.pages).toHaveLength(1);
+    expect(result.pages[0]).toMatchObject({ path: 'notes/example.md', type: 'Note', title: 'Example', description: 'D.' });
     expect(result.pages[0]).not.toHaveProperty('myco_source_kind');
+    expect(result.pages[0]).not.toHaveProperty('machine_id');
   });
 
-  it('op get returns the parsed page shape with a rendered-markdown body', async () => {
-    const result = (await handleMycoOkf({ op: 'get', id: 'notes/example' }, client, ctx)) as { page: Record<string, unknown> };
-    expect(result.page).toEqual({
-      path: 'notes/example.md',
-      type: 'Note',
-      title: 'Example',
-      description: 'D.',
-      timestamp: '2026-07-05',
-      body: 'Body text.',
-    });
+  it('op get returns the page content with frontmatter fields and body', async () => {
+    const result = (await handleMycoOkf({ op: 'get', id: 'notes/example' }, client, ctx)) as { page: { path: string; frontmatter: Record<string, unknown>; body: string } };
+    expect(result.page.path).toBe('notes/example.md');
+    expect(result.page.frontmatter).toMatchObject({ type: 'Note', title: 'Example', description: 'D.' });
+    expect(result.page.body).toBe('Body text.');
   });
 
   it('op get returns page: null for a missing page', async () => {

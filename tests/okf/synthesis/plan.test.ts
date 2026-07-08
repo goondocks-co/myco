@@ -1,28 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { ProjectVault } from '@myco/vault/project-vault.js';
-import {
-  MAX_PLANNED_PAGES,
-  readPlan,
-  validateWikiPlan,
-  writePlan,
-  type WikiPagePlan,
-  type WikiPlan,
-} from '@myco/okf/synthesis/plan.js';
-
-let projectRoot: string;
-let vault: ProjectVault;
-
-beforeEach(() => {
-  projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'okf-plan-')));
-  vault = new ProjectVault(projectRoot);
-});
-
-afterEach(() => {
-  fs.rmSync(projectRoot, { recursive: true, force: true });
-});
+import { describe, expect, it } from 'bun:test';
+import { MAX_PLANNED_PAGES, validateWikiPlan, type WikiPagePlan, type WikiPlan } from '@myco/okf/synthesis/plan.js';
 
 function page(over: Partial<WikiPagePlan> = {}): WikiPagePlan {
   return {
@@ -111,40 +88,5 @@ describe('validateWikiPlan', () => {
     expect(errors.some((e) => e.includes('/absolute'))).toBe(true);
     expect(errors.some((e) => e.includes('empty type'))).toBe(true);
     expect(errors.some((e) => e.includes('duplicate') && e.includes('dup'))).toBe(true);
-  });
-});
-
-describe('writePlan / readPlan', () => {
-  it('round-trips a full plan through .myco/okf/state/plan.json', () => {
-    const p = plan({
-      pages: [
-        page({ path: 'concepts/overview', openQuestions: ['open?'] }),
-        page({ path: 'architecture/data-flow', type: 'overview', sourceRefs: ['canopy-1', 'spore-2'] }),
-      ],
-    });
-    writePlan(vault, p);
-    expect(readPlan(vault)).toEqual(p);
-
-    // Persisted alongside the OKF manifest, with the gitignore-first discipline.
-    const planFile = path.join(projectRoot, '.myco/okf/state/plan.json');
-    expect(fs.existsSync(planFile)).toBe(true);
-    expect(vault.okfPlanPath()).toBe(planFile);
-    const gitignore = fs.readFileSync(path.join(projectRoot, '.myco/.gitignore'), 'utf-8');
-    expect(gitignore).toContain('okf/');
-  });
-
-  it('returns null when no plan has been written, creating nothing', () => {
-    expect(readPlan(vault)).toBeNull();
-    expect(fs.existsSync(path.join(projectRoot, '.myco/okf'))).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, '.myco/.gitignore'))).toBe(false);
-  });
-
-  it('returns null on a corrupt or shape-invalid plan file without throwing', () => {
-    vault.okfStateDir();
-    fs.writeFileSync(vault.okfPlanPath(), '{ not json');
-    expect(readPlan(vault)).toBeNull();
-    // Parses as JSON but violates the WikiPlan shape (generatedAt must be a string).
-    fs.writeFileSync(vault.okfPlanPath(), JSON.stringify({ generatedAt: 5, sinceRef: 'x', pages: [] }));
-    expect(readPlan(vault)).toBeNull();
   });
 });

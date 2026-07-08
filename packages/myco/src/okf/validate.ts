@@ -395,7 +395,7 @@ export function validateOkfDocumentFile(
  */
 export function validateWikiRows(
   pages: ReadonlyArray<{ path: string; frontmatter: Record<string, unknown>; body: string }>,
-  level: OkfValidationLevel = 'myco_strict',
+  level: 'conformance' | 'strict' = 'strict',
 ): OkfValidationReport {
   const issues: OkfValidationIssue[] = [];
   const conceptIds: string[] = [];
@@ -414,17 +414,15 @@ export function validateWikiRows(
       issues.push(issue('error', 'unrenderable_document', page.path, err instanceof Error ? err.message : String(err)));
       continue;
     }
-    issues.push(...validateConceptSource(raw, page.path, level));
+    validateOkfDocumentContent(raw, page.path, level, issues);
     checkPathSafety(page.path, issues);
     conceptIds.push(page.path.replace(/\.md$/, ''));
   }
 
-  if (level === 'myco_strict') {
-    for (const id of new Set(detectCollisions(conceptIds))) {
-      issues.push(
-        issue('error', 'duplicate_concept_id', `${id}.md`, 'concept id collides with another id after case-fold normalization'),
-      );
-    }
+  for (const id of new Set(detectCollisions(conceptIds))) {
+    issues.push(
+      issue('error', 'duplicate_concept_id', `${id}.md`, 'concept id collides with another id after case-fold normalization'),
+    );
   }
 
   return {

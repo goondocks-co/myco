@@ -260,17 +260,19 @@ export default function Okf() {
                     <span className="font-mono text-xs text-on-surface-variant">{chip.label}</span>
                   </div>
                 )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    window.location.href = `vscode://file${status.outputRoot}`;
-                  }}
-                  data-testid="okf-open-in-editor"
-                >
-                  <ExternalLink className="h-4 w-4 mr-1.5" />
-                  Open in VS Code
-                </Button>
+                {status.claimedBundleExists && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      window.location.href = `vscode://file${status.outputRoot}`;
+                    }}
+                    data-testid="okf-open-in-editor"
+                  >
+                    <ExternalLink className="h-4 w-4 mr-1.5" />
+                    Open in VS Code
+                  </Button>
+                )}
               </div>
             }
           >

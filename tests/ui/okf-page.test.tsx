@@ -52,6 +52,7 @@ const SELECTION: ProjectSelection = {
 const DISABLED_STATUS: OkfStatusResponse = {
   outputRoot: '/tmp/project-a/.myco-okf',
   bundleExists: false,
+  claimedBundleExists: false,
   bundleGeneration: null,
   inputsHash: null,
   generatedAt: null,
@@ -71,6 +72,7 @@ const DISABLED_STATUS: OkfStatusResponse = {
 const ENABLED_VALID_STATUS: OkfStatusResponse = {
   outputRoot: '/tmp/project-a/docs/okf',
   bundleExists: true,
+  claimedBundleExists: true,
   bundleGeneration: 3,
   inputsHash: 'abc123',
   generatedAt: '2026-07-01T00:00:00.000Z',
@@ -243,6 +245,16 @@ describe('Okf page — status', () => {
     expect(screen.getByTestId('okf-open-in-editor')).toBeInTheDocument();
   });
 
+  it('hides Open in VS Code when no claimed on-disk bundle exists (DB-only wiki)', async () => {
+    mockApiForStatus({ ...ENABLED_VALID_STATUS, claimedBundleExists: false }, PAGES);
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('okf-status-chip')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('okf-open-in-editor')).toBeNull();
+  });
+
   it('renders the capability indicator ("OKF on") deep-linking to the Groves capability panel', async () => {
     mockApiForStatus(ENABLED_VALID_STATUS, PAGES);
     renderPage();
@@ -328,7 +340,7 @@ describe('Okf page — load-time publish-block', () => {
     postJsonImpl = async (path: string) => {
       if (path === '/okf/acknowledge') {
         acknowledged = true;
-        return { ok: true, status: {}, publishedRecovered: true, pageCount: 1 };
+        return { ok: true, published: true, generation: 3, pageCount: 1 };
       }
       return { ok: true, result: {} };
     };

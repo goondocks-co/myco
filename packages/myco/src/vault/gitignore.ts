@@ -42,12 +42,6 @@ migration/
 # skills. Exists only when the agent is mid-flight.
 staging/
 
-# OKF private control state, staging, and the local-mode bundle
-# (.myco/okf/state, .myco/okf/staging, .myco/okf/bundle). The PUBLISHED
-# repo-visible bundle lives at the project root (default okf/) and is
-# deliberately NOT touched by any gitignore logic.
-okf/
-
 # Per-machine Grove binding. \`project.toml\` itself is committed
 # (portable project + Grove identity); the binding lives here.
 project.local.toml
