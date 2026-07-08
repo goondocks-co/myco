@@ -75,6 +75,7 @@ function commitAll(message: string): void {
 describe('gatherSources', () => {
   it('gathers the repo tree, git context since sinceRef, and vault summaries', () => {
     writeFile('src/index.ts', 'export const x = 1;\n');
+    writeFile('README.md', '# root\n');
     writeFile('node_modules/dep/index.js', 'module.exports = {};\n');
     writeFile('okf/index.md', 'stale published bundle\n');
     initGitRepo();
@@ -118,11 +119,18 @@ describe('gatherSources', () => {
 
     const result = gatherSources(scope({ sinceRef: headSha }));
 
-    const paths = result.repoTree.map((f) => f.path);
-    expect(paths).toContain('src/index.ts');
-    expect(paths.some((p) => p === 'node_modules' || p.startsWith('node_modules/'))).toBe(false);
-    expect(paths.some((p) => p === '.git' || p.startsWith('.git/'))).toBe(false);
-    expect(paths.some((p) => p === 'okf' || p.startsWith('okf/'))).toBe(false);
+    // repoTree is a bounded top-level ORIENTATION, not a full file list:
+    // top-level dirs with recursive counts + repo-root files.
+    const dirNames = result.repoTree.topLevelDirs.map((d) => d.path);
+    expect(dirNames).toContain('src');
+    expect(result.repoTree.topLevelDirs.find((d) => d.path === 'src')?.fileCount).toBeGreaterThanOrEqual(1);
+    expect(result.repoTree.rootFiles).toContain('README.md');
+    expect(result.repoTree.totalFiles).toBeGreaterThanOrEqual(2);
+    // .git / node_modules / the published bundle dir are excluded from both.
+    const everyPath = [...dirNames, ...result.repoTree.rootFiles];
+    expect(everyPath.some((p) => p === 'node_modules' || p.startsWith('node_modules'))).toBe(false);
+    expect(everyPath.some((p) => p === '.git' || p.startsWith('.git'))).toBe(false);
+    expect(everyPath.some((p) => p === 'okf' || p.startsWith('okf'))).toBe(false);
 
     expect(result.gitContext.headSha).toBe(headSha);
     expect(result.gitContext.sinceRef).toBe(headSha);
@@ -170,8 +178,7 @@ describe('gatherSources', () => {
     const result = gatherSources(scope({ sinceRef: 'deadbeef' }));
     expect(result.gitContext.headSha).toBeNull();
     expect(result.gitContext.changedPaths).toBeNull();
-    const paths = result.repoTree.map((f) => f.path);
-    expect(paths).toContain('README.md');
+    expect(result.repoTree.rootFiles).toContain('README.md');
   });
 
   it('an unreachable sinceRef (e.g. a shallow clone) falls back to full-scan without throwing', () => {

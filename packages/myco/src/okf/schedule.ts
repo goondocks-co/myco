@@ -82,9 +82,9 @@ function probeCanopyAggregate(projectId: string): { count: number; maxUpdate: nu
  * git failure (non-git project, git unavailable, shallow clone, unreachable
  * ref) — never throws. A small, self-contained mirror of `synthesis/
  * sources.ts`'s private `gatherGitContext`/`parseNameStatus`: that module's
- * `gatherSources()` also hydrates the full repo tree and every vault row,
- * which this precondition has no use for and shouldn't pay for on every
- * scheduler tick.
+ * `gatherSources()` also walks the repo tree and reads vault rows for the
+ * orientation, which this precondition has no use for and shouldn't pay for on
+ * every scheduler tick.
  */
 function changedPathsSinceRef(projectRoot: string, sinceRef: string): string[] | null {
   try {

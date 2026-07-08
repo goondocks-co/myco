@@ -4,15 +4,21 @@
 # Synthesizes the project's Open Knowledge Format wiki from source material
 # (repo tree, git diff context, and vault knowledge) through three phases:
 #
-#   explore  → read-only survey of sources + already-published pages; emits a
-#              synthesis brief naming the pages the wiki should hold.
+#   explore  → read-only survey that EXPLORES the repo like a coding agent:
+#              okf_read_sources gives a bounded orientation (Canopy map +
+#              top-level tree + capped vault refs), then fs_tree/fs_list/fs_read
+#              + code_grep + vault_search_canopy/semantic/fts read the real code
+#              and the decisions behind it; emits a synthesis brief naming the
+#              pages the wiki should hold.
 #   plan     → turns that brief into a capped, auditable page-plan and persists
 #              it via okf_write_plan (.myco/okf/state/plan.json).
 #   synthesize (map) → one page per planned entry. The map SOURCE reads the
 #              persisted plan back (okf_list_planned_pages); the map SINK stages
 #              each page (okf_write_page) into ONE staged generation. The item
-#              surface also carries okf_list_pages (sibling awareness, for
-#              cross-links) and okf_read_page (read-current-before-refine).
+#              surface also carries the same code/vault exploration tools (so a
+#              page author reads the REAL modules it covers), okf_list_pages
+#              (sibling awareness, for cross-links) and okf_read_page
+#              (read-current-before-refine).
 #
 # THE PLAN→MAP HANDOFF: a map-phase source is called by harness code with only
 # {params} — it cannot receive the plan phase's in-memory output. The plan
@@ -42,7 +48,12 @@ agent: myco-agent
 isDefault: false
 reasoningLevel: default
 maxTurns: 30
-timeoutSeconds: 1800
+# 1h wall clock for the whole run. The synthesize map phase runs its pages
+# SEQUENTIALLY at up to perItemTimeoutSeconds each (now 240s, since each page
+# author does real code/vault exploration), so the run budget has to cover
+# explore + plan + N page items without the run-level abort cutting the map
+# phase short mid-plan.
+timeoutSeconds: 3600
 schedule:
   enabled: false
   # 6h. Synthesis is expensive (cloud reasoning over the whole source corpus);
@@ -61,7 +72,7 @@ phases:
   - name: explore
     dependsOn: []
     reasoningLevel: high
-    maxTurns: 12
+    maxTurns: 20
     required: true
     readOnly: true
     purpose: >-
@@ -71,6 +82,13 @@ phases:
       - okf_read_sources
       - okf_list_pages
       - okf_read_page
+      - fs_tree
+      - fs_list
+      - fs_read
+      - code_grep
+      - vault_search_canopy
+      - vault_search_semantic
+      - vault_search_fts
     prompt: |
       Survey THIS project so you can plan a wiki that helps a new engineer or
       agent understand it fast: its architecture, how the code is organized,
@@ -79,26 +97,35 @@ phases:
       CODE-GROUNDED wiki OF THE PROJECT — not a glossary of ideas and not a
       restatement of docs that already exist.
 
-      Explore the source material with `okf_read_sources`, in priority order:
+      EXPLORE THIS REPO LIKE A CODING AGENT. `okf_read_sources` gives you a
+      bounded ORIENTATION (the Canopy map, a top-level repo-tree summary, git
+      diff context, and a capped sample of citable vault refs) — it is your
+      starting point, not the whole codebase. Do NOT expect the code inline:
+      read the orientation, then go read the real code and vault yourself.
 
-      1. CODE STRUCTURE (primary). The repo file tree plus the Canopy code
-         intelligence (per-file summaries of the actual code) are your map of
-         the codebase. Work out the top-level modules/packages, the main entry
-         points, the major subsystems or areas, and how they connect — the
-         project's real architecture and runtime/execution flow. This is the
-         backbone of the wiki; most pages should be grounded in real code and
-         name the modules/files they cover.
-      2. Git change context — what is actively changing points at the
-         load-bearing parts of the system worth documenting well.
-      3. VAULT KNOWLEDGE as ENRICHMENT, not the base. Spores and decisions carry
-         the *why* and the *pitfalls* behind the code — rationale, gotchas,
+      1. START AT THE CANOPY MAP. Call `okf_read_sources` for the structural
+         guide and the top-level repo shape. This tells you the major
+         modules/packages and where things live — your map of the codebase.
+      2. DRILL INTO THE REAL CODE (primary). From the map, walk the actual
+         structure with `fs_tree`/`fs_list`, find code by behavior with
+         `vault_search_canopy` (file-level summaries) and by pattern with
+         `code_grep`, and read the real source of the load-bearing modules with
+         `fs_read`. Work out the main entry points, the major subsystems/areas,
+         how they connect, and the runtime/execution flow — from the code, not
+         from guesswork. This is the backbone of the wiki; most pages should be
+         grounded in real modules/files and name them.
+      3. Git change context (from `okf_read_sources`) — what is actively
+         changing points at the load-bearing parts worth documenting well.
+      4. VAULT KNOWLEDGE as ENRICHMENT, not the base. Use `vault_search_semantic`
+         and `vault_search_fts` (and the orientation's spore/decision refs) to
+         find the *why* and the *pitfalls* behind the code — rationale, gotchas,
          trade-offs. Weave them INTO the code-grounded pages; do NOT build the
          wiki out of them and do NOT write a page per spore.
 
       Read the currently-published pages (`okf_list_pages` / `okf_read_page`)
-      and note what the repo already documents (README, docs/, AGENTS.md). Do
-      NOT duplicate existing docs — give the synthesized, code-grounded
-      structural view they lack, and complement them.
+      and note what the repo already documents (README, docs/, AGENTS.md — read
+      them with `fs_read`). Do NOT duplicate existing docs — give the
+      synthesized, code-grounded structural view they lack, and complement them.
 
       Emit a compact synthesis brief as your phase summary:
 
@@ -166,13 +193,15 @@ phases:
     # skip (not abort): one page that fails to synthesize should not sink the
     # rest of the plan; item failures aren't necessarily systemic.
     onItemError: skip
-    # 5: three read tools (sources / current page / siblings) plus the write —
-    # bumped from 4 once okf_list_pages joined the item surface for sibling
-    # links (Task 3.2).
-    perItemMaxTurns: 5
-    # 120s/item: cloud reasoning writing a full page body from source material
-    # takes longer than a one-sentence canopy describe.
-    perItemTimeoutSeconds: 120
+    # 12: the page author no longer reads a source dump — it EXPLORES the code
+    # and vault for the page it's writing (fs_read/code_grep/vault_search_* plus
+    # the okf read tools), which is several tool calls before the single
+    # okf_write_page. 5 turns starved that mid-exploration.
+    perItemMaxTurns: 12
+    # 240s/item: real per-page exploration (reading the actual modules a page
+    # covers, searching Canopy/vault) then writing the body takes materially
+    # longer than reading a pre-reduced projection did.
+    perItemTimeoutSeconds: 240
     required: true
     # maxTurns/tools/prompt are required by PhaseDefinitionSchema but unused
     # under mode: map (per-item budgets and source/item/sink replace them).
@@ -193,6 +222,13 @@ phases:
         - okf_read_page
         - okf_list_pages
         - okf_list_planned_pages
+        - fs_tree
+        - fs_list
+        - fs_read
+        - code_grep
+        - vault_search_canopy
+        - vault_search_semantic
+        - vault_search_fts
       prompt: |
         Synthesize this one OKF wiki page and stage it by calling
         `okf_write_page`. The harness pins path, type, and title from the plan —
@@ -200,8 +236,18 @@ phases:
         markdown, no frontmatter). You MUST emit the tool call; a text-only
         response is discarded.
 
-        Read the source material this page draws on with `okf_read_sources`. If
-        a page already exists at this path, call `okf_read_page` FIRST and
+        READ THE REAL CODE THIS PAGE COVERS BEFORE YOU WRITE IT. `okf_read_sources`
+        gives you the bounded orientation + citable ids, not the code inline.
+        To write THIS page, go read what it's about: use `vault_search_canopy`
+        and `code_grep` to find the modules/files in scope, `fs_read` to read
+        their actual source, and `fs_tree`/`fs_list` to see how they're
+        organized. Then enrich with the *why* and *pitfalls* using
+        `vault_search_semantic`/`vault_search_fts` (decisions, gotchas,
+        trade-offs behind that code). Name the concrete files and describe the
+        real structure and flow you observed — do NOT invent files or structure
+        you didn't read, and do NOT just restate what existing docs already say.
+
+        If a page already exists at this path, call `okf_read_page` FIRST and
         write a REFINED body that carries its current content forward — never
         one that silently drops what's there. (`okf_write_page` preserves a
         hand-edited page's current content even if your refine misses it, but
@@ -227,18 +273,17 @@ phases:
 
         Ground the page in the ACTUAL code. For an architecture or subsystem
         page, describe the real structure — the concrete modules/files it
-        covers (from the Canopy code intelligence and the repo file tree), what
-        each does, how they connect, and the execution flow — not generic
+        covers (the ones you read with fs_read / found via vault_search_canopy),
+        what each does, how they connect, and the execution flow — not generic
         hand-waving. Enrich with the vault's *why* and *pitfalls* (decisions,
         gotchas, trade-offs) where they explain the code. Write clear, accurate
-        prose grounded in the source material; do not invent facts, files, or
-        structure the sources don't show, and don't just restate what existing
-        docs already cover.
+        prose grounded in what you read; do not invent facts, files, or
+        structure the sources don't show.
 
         End the body with a `# Citations` section listing the sources this page
-        draws on — the `okf_read_sources` ids (Canopy files, spores, decisions)
-        that ground it — so a reader can trace the synthesis. Cite only sources
-        you actually used.
+        draws on — the concrete files you read (`fs_read`/`vault_search_canopy`
+        paths) and the vault ids (spores, decisions) that ground it — so a
+        reader can trace the synthesis. Cite only sources you actually used.
 
         Page: {{ item.title }}
         Path: {{ item.path }}

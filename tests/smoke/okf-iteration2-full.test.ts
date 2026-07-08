@@ -23,6 +23,8 @@ import { OkfBundle, OkfError } from '@myco/okf/bundle.js';
 import { validateBundleTree } from '@myco/okf/validate.js';
 import { parseOkfDocument } from '@myco/okf/serialize.js';
 import { createOkfTools } from '@myco/agent/tools/okf-tools.js';
+import { createExplorationTools } from '@myco/agent/tools/exploration-tools.js';
+import { createReadTools } from '@myco/agent/tools/read-tools.js';
 import { loadAgentTasks } from '@myco/agent/loader.js';
 import { executeMapPhase } from '@myco/agent/map-phase.js';
 import { finalizeOkfSynthesize } from '@myco/agent/executor.js';
@@ -251,7 +253,10 @@ describe('OKF Iteration 2 — full-flow smoke (conformance + privacy + naive-blo
   });
 
   it('walks enable → synthesize → publish → conformance → privacy mitigation → publish-block → acknowledge', async () => {
-    const tools = createOkfTools(deps);
+    // The synthesize map phase resolves its sink + item.readTools from the full
+    // registry; the explore/synthesize surfaces now carry the code/vault
+    // exploration read tools, so include them alongside the okf tools here.
+    const tools = [...createOkfTools(deps), ...createExplorationTools(deps), ...createReadTools(deps)];
     const readSources = tools.find((t) => t.name === 'okf_read_sources')!;
     const writePlan = tools.find((t) => t.name === 'okf_write_plan')!;
 

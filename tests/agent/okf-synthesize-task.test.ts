@@ -47,6 +47,8 @@ import { readOwnership, isHandEdited } from '@myco/okf/ownership.js';
 import { readPlan } from '@myco/okf/synthesis/plan.js';
 import { okfSynthesizeDue, computeOkfProbeFingerprint } from '@myco/okf/schedule.js';
 import { createOkfTools } from '@myco/agent/tools/okf-tools.js';
+import { createExplorationTools } from '@myco/agent/tools/exploration-tools.js';
+import { createReadTools } from '@myco/agent/tools/read-tools.js';
 import { loadAgentTasks } from '@myco/agent/loader.js';
 import { executeMapPhase } from '@myco/agent/map-phase.js';
 import { computeWaves } from '@myco/agent/executor.js';
@@ -74,6 +76,17 @@ const PLANNED_PAGES = [
 async function invoke(t: { handler: (args: unknown) => Promise<unknown> }, args: Record<string, unknown>): Promise<any> {
   const result = (await t.handler(args)) as { content: Array<{ type: string; text: string }> };
   return JSON.parse(result.content[0].text);
+}
+
+/**
+ * The synthesize map phase resolves its sink + `item.readTools` from the FULL
+ * tool registry (in production, createVaultTools). The explore/synthesize
+ * surfaces now carry the code/vault exploration read tools alongside the okf
+ * tools, so build that same subset here — okf tools + fs/grep exploration +
+ * the vault search read tools — for any test that drives executeMapPhase.
+ */
+function okfSurfaceTools(d: VaultToolDeps) {
+  return [...createOkfTools(d), ...createExplorationTools(d), ...createReadTools(d)];
 }
 
 describe('okf-synthesize task — explore → plan → map-synthesize → publish', () => {
@@ -171,14 +184,18 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
   it('persists the plan, fans out one page per plan entry under ONE lock, and publishes a strict bundle once', async () => {
     const beginSpy = spyOn(OkfBundle.prototype, 'beginStagedGeneration');
     try {
-      const tools = createOkfTools(deps);
+      const tools = okfSurfaceTools(deps);
       const readSources = tools.find((t) => t.name === 'okf_read_sources')!;
       const writePlan = tools.find((t) => t.name === 'okf_write_plan')!;
 
       // --- explore: read-only source survey (no writes) ---
       const sources = await invoke(readSources, {});
       expect(sources.error).toBeUndefined();
-      expect(Array.isArray(sources.repoTree)).toBe(true);
+      // repoTree is a bounded orientation object (not a full file dump), and the
+      // orientation call carries explore-from-here guidance.
+      expect(Array.isArray(sources.repoTree.topLevelDirs)).toBe(true);
+      expect(typeof sources.repoTree.totalFiles).toBe('number');
+      expect(typeof sources.guidance).toBe('string');
 
       // --- plan: persist the capped WikiPlan (the ONLY channel to the map phase) ---
       const planResult = await invoke(writePlan, { pages: PLANNED_PAGES });
@@ -341,7 +358,7 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
     // load-bearing if an assertion throws before finalize drops the session.
     const runId = 'run-okf-synth-refine';
     const refineDeps: VaultToolDeps = { ...deps, runId };
-    const tools = createOkfTools(refineDeps);
+    const tools = okfSurfaceTools(refineDeps);
     const writePlan = tools.find((t) => t.name === 'okf_write_plan')!;
     const planResult = await invoke(writePlan, {
       pages: [
@@ -579,7 +596,7 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
   it('Task 7.5: published body cross-links are all absolute bundle-relative and resolve — 0 dead links', async () => {
     const runId = 'run-okf-synth-links';
     const linkDeps: VaultToolDeps = { ...deps, runId };
-    const tools = createOkfTools(linkDeps);
+    const tools = okfSurfaceTools(linkDeps);
     const writePlan = tools.find((t) => t.name === 'okf_write_plan')!;
     // A root-level glossary + two nested concept pages — mirrors the 6.3 dogfood
     // shape where root pages linked ../concepts/* (escaping the bundle) and to

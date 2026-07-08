@@ -76,6 +76,16 @@ function buildBundle(deps: VaultToolDeps): OkfBundle | null {
 
 const MISSING_DEPS_ERROR = 'okf tools require projectRoot, vaultDir, and requestContext — none available in this run';
 
+/**
+ * Explicit instruction returned alongside the orientation (kind: all) so the
+ * agent treats `okf_read_sources` as a starting point, not the whole corpus.
+ * The bounded orientation only gives the project's shape + citable ids; the
+ * agent is expected to EXPLORE the real code and vault with the phase's other
+ * read tools before writing a page.
+ */
+const OKF_SOURCE_GUIDANCE =
+  'This is a bounded ORIENTATION, not the full corpus. Use the Canopy map + repo-tree summary to get the project\'s shape, then EXPLORE the real code and vault with this phase\'s tools: fs_tree/fs_list to walk the structure, fs_read to read the actual source of the modules a page covers, code_grep to find code by pattern, vault_search_canopy to find files by what they do, and vault_search_semantic/vault_search_fts for the decisions, gotchas, and rationale behind the code. Ground each page in files you actually read and cite them.';
+
 function okfErrorResult(err: unknown): { content: Array<{ type: 'text'; text: string }> } {
   if (err instanceof OkfError) {
     return textResult({ error: err.message, code: err.code });
@@ -144,7 +154,7 @@ export function createOkfTools(deps: VaultToolDeps) {
 
   const okfReadSources = tool(
     'okf_read_sources',
-    'Read the reduced, citable OKF source material this project synthesizes from: the repo file tree, git diff context, and vault knowledge (spores, decisions, canopy) as id+title+type summaries — never full bodies. Pass kind to fetch one slice (repo|git|vault); omit for all. Read-only.',
+    'Read a BOUNDED orientation to this project\'s OKF sources — NOT a full dump: the Canopy map (the structural guide), a top-level repo-tree summary (directories + file counts, plus root files), git diff context, and a capped sample of citable vault refs (spores, decisions, Canopy files) as id+title+type — never full bodies. This is a STARTING POINT: explore the real code and vault from here with fs_tree/fs_list/fs_read, code_grep, vault_search_canopy, and vault_search_semantic/vault_search_fts. Pass kind to fetch one slice (repo|git|vault); omit for all. Read-only.',
     {
       kind: z.enum(['all', 'repo', 'git', 'vault']).optional().describe('Which source slice to return (default all).'),
     },
@@ -170,6 +180,7 @@ export function createOkfTools(deps: VaultToolDeps) {
         if (kind === 'all' || kind === 'repo') out.repoTree = gathered.repoTree;
         if (kind === 'all' || kind === 'git') out.gitContext = gathered.gitContext;
         if (kind === 'all' || kind === 'vault') out.vault = gathered.vault;
+        if (kind === 'all') out.guidance = OKF_SOURCE_GUIDANCE;
         return textResult(out);
       } catch (err) {
         return okfErrorResult(err);
