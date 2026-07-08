@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { teamAdopt, teamCreate, teamDestroy, teamExport, teamImport, teamReindexVectors, teamRotateTokens, teamStatus, teamUpgrade, upgradeWorker, reindexWorkerVectors } from './cli.js';
+import { runHostCommand } from './host/cli.js';
 import { migrateTeamsHomeIfNeeded } from '@myco/team/migrate-home.js';
 import { applyCloudflareAccountId, extractAccountIdFlag, isValidCloudflareAccountId } from '@myco-deploy/index.js';
 
@@ -19,6 +20,7 @@ Commands:
   export --team-id <team_id> [--out <dir-or-file>]
   import <bundle-file>
   adopt --worker-url <url> [--api-key <key>] [--worker-name <name>]
+  host <enable|disable|status>   (Team Host overlay — run \`myco-team host --help\`)
 
 --account-id <id> (any command) selects which Cloudflare account to operate on
 when your wrangler login has access to more than one. Without it, create prompts
@@ -212,6 +214,7 @@ const COMMAND_HANDLERS: Record<string, CommandHandler> = {
     return teamImport(bundlePath ?? '');
   },
   adopt: async (commandArgs) => teamAdopt(parseAdoptArgs(commandArgs)),
+  host: async (commandArgs) => runHostCommand(commandArgs),
 };
 
 if (!command || command === '--help' || command === '-h') {
