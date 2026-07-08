@@ -527,6 +527,14 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
 const HostServeSchema = z.object({
   enabled: z.boolean().default(false),
   overlay_address: z.string().nullable().default(null),
+  /**
+   * The host's control-plane id + label (`myco-team` `HostState`), mirrored here so
+   * the daemon's enrollment endpoint (Task 2.4) can self-report them to a joining
+   * member. Machine-local, non-secret; written by `myco-team host enable`. Nullable
+   * so a host enabled before Task 2.4 still parses (the member falls back to its ref).
+   */
+  host_id: z.string().nullable().default(null),
+  label: z.string().nullable().default(null),
 }).strict();
 
 /**

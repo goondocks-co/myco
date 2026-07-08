@@ -29,6 +29,7 @@ import crypto from 'node:crypto';
 import type http from 'node:http';
 
 import {
+  HOST_ENROLL_ROUTE,
   HOST_MIN_COMPAT_VERSION,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
@@ -55,6 +56,13 @@ export interface HostServeRuntime {
   overlayPort?: number;
   /** The host bearer every overlay request must present (`Authorization: Bearer`). */
   bearer: string;
+  /** The host's control-plane id (`myco-team` `HostState.host_id`), surfaced from
+   *  `host_serve` config so the enrollment endpoint can self-report it. Absent on a
+   *  host enabled before Task 2.4 wrote it — the member falls back to its own ref. */
+  hostId?: string;
+  /** Human-readable host label (the host's tailnet node name). Same provenance +
+   *  fallback as {@link hostId}. */
+  label?: string;
 }
 
 /** A refusal the overlay gate emits before dispatch: status + JSON body, plus
@@ -152,6 +160,20 @@ export function resolveHostServeBearer(mycoHome: string = resolveMycoHome()): st
   return minted;
 }
 
+/**
+ * Rotate the shared host-serve bearer: overwrite the machine-scoped secret with a
+ * fresh 256-bit value and return it. v1's only bearer-revocation lever (spec §8:
+ * "Bearer revocation = rotation-only … rotating re-enrolls everyone"). Because the
+ * daemon reads the bearer once at startup (`resolveHostServeConfig` → `hostServe`),
+ * a rotation is inert until the daemon restarts; the operator CLI restarts it and
+ * warns that every member must re-join. Returns the new bearer for confirmation.
+ */
+export function rotateHostServeBearer(mycoHome: string = resolveMycoHome()): string {
+  const minted = crypto.randomBytes(32).toString('hex');
+  writeSecret(mycoHome, HOST_SERVE_BEARER_SECRET, minted);
+  return minted;
+}
+
 interface HostServeLogger {
   info(kind: string, message: string, data?: Record<string, unknown>): void;
   warn(kind: string, message: string, data?: Record<string, unknown>): void;
@@ -184,7 +206,12 @@ export function resolveHostServeConfig(options: {
 
   try {
     const bearer = resolveHostServeBearer(options.mycoHome ?? resolveMycoHome());
-    return { overlayAddress: (address as string).trim(), bearer };
+    return {
+      overlayAddress: (address as string).trim(),
+      bearer,
+      hostId: hostServe.host_id ?? undefined,
+      label: hostServe.label ?? undefined,
+    };
   } catch (err) {
     options.logger?.warn(
       LOG_KINDS.HOST_SERVE,
@@ -244,6 +271,66 @@ const OVERLAY_REFUSED_LIFECYCLE_ROUTES = new Set<string>(['/api/shutdown']);
 /** True when `pathname` is an operator/lifecycle raw route the overlay refuses. */
 export function overlayLifecycleRefused(pathname: string): boolean {
   return OVERLAY_REFUSED_LIFECYCLE_ROUTES.has(pathname);
+}
+
+// ---------------------------------------------------------------------------
+// Enrollment — the ONE bearer-exempt overlay route (Task 2.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * The single overlay route EXEMPT from the blanket bearer gate: host enrollment.
+ *
+ * WHY the exemption exists (the load-bearing security decision): enrollment is how
+ * a joining member OBTAINS the bearer, so a bearer-gated enrollment endpoint would
+ * be a chicken-and-egg deadlock — no member could ever get in. It is gated INSTEAD
+ * by overlay reachability. In v1, being on the overlay already means the operator
+ * minted you a one-time admission key and you completed overlay admission (spec §8),
+ * so **overlay membership IS the enrollment trust boundary** (spec §9: two gates —
+ * overlay admission + bearer; enrollment sits behind the first). The route handler
+ * (`daemon/server.ts`) additionally asserts overlay provenance (`isOverlayRequest`)
+ * and 404s any localhost/non-overlay hit, so the exemption never widens the
+ * localhost surface.
+ *
+ * The exemption is SURGICAL — {@link overlayBearerExempt} matches ONLY this exact
+ * path (`HOST_ENROLL_ROUTE`, `constants.ts`); every other overlay route (router,
+ * raw, `/mcp`) stays bearer-gated.
+ */
+
+/** True for the ONE overlay route whose bearer check is skipped (see {@link HOST_ENROLL_ROUTE}). */
+export function overlayBearerExempt(pathname: string): boolean {
+  return pathname === HOST_ENROLL_ROUTE;
+}
+
+/** The enrollment payload a member receives — its own overlay address, wire version,
+ *  the shared bearer, and (best-effort) the host's self-reported id/label. Mirrors the
+ *  member-side `HostEnrollment` shape (`host/member-overlay.ts`). */
+export interface HostEnrollmentPayload {
+  host_id: string;
+  label: string;
+  /** `<host 100.64 IP>:<daemon overlay port>` — the address the member's proxy dials. */
+  overlay_address: string;
+  protocol_version: number;
+  /** The shared host serve-bearer (the secret enrollment delivers over the overlay). */
+  bearer: string;
+  /** Pre-associated projects — always empty in v1 (attach is a separate UI step). */
+  projects: never[];
+}
+
+/**
+ * Build the enrollment response from the resolved host-serve runtime + the actual
+ * bound overlay port (`server.overlayPort`, known only after listen). The bearer is
+ * `runtime.bearer` — the exact value {@link resolveHostServeBearer} minted/read at
+ * config resolution, so there is one bearer per host, delivered here unchanged.
+ */
+export function buildHostEnrollmentPayload(runtime: HostServeRuntime, overlayPort: number): HostEnrollmentPayload {
+  return {
+    host_id: runtime.hostId ?? '',
+    label: runtime.label ?? '',
+    overlay_address: `${runtime.overlayAddress}:${overlayPort}`,
+    protocol_version: HOST_PROTOCOL_VERSION,
+    bearer: runtime.bearer,
+    projects: [],
+  };
 }
 
 /**

@@ -597,6 +597,18 @@ export const HOST_MIN_COMPAT_VERSION = 1;
 export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
 
 /**
+ * The host-side enrollment endpoint (Task 2.4). A joining member — already on the
+ * overlay — POSTs here through its local proxy to receive `{overlay_address,
+ * protocol_version, bearer, …}`. It is the ONE overlay route EXEMPT from the
+ * blanket bearer gate (the chicken-and-egg: enrollment is how the member obtains
+ * the bearer). Gated instead by overlay reachability (`overlayBearerExempt` +
+ * `isOverlayRequest`, `daemon/host-serve.ts`). The `/api/host/*` namespace is
+ * distinct from team-sync's `POST /api/team/join` (scope-map ⚑4) — they are
+ * different capabilities on different transports (live host overlay vs D1 replica).
+ */
+export const HOST_ENROLL_ROUTE = '/api/host/enroll';
+
+/**
  * Base for the local HTTP-CONNECT proxy port each joined host's userspace
  * tailscaled exposes (`--outbound-http-proxy-listen=localhost:<port>`), recorded
  * on that host's {@link HostRecord} as `proxy_port` and dialed by

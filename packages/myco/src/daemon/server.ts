@@ -28,14 +28,18 @@ import { handleAttachedConfigRequest } from './attached-config.js';
 import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
 import {
+  buildHostEnrollmentPayload,
   isBindableOverlayAddress,
   isOverlayRequest,
   markOverlayRequest,
+  overlayBearerExempt,
   overlayBearerRejection,
   overlayLifecycleRefused,
   overlayVersionRejection,
   type HostServeRuntime,
 } from './host-serve.js';
+import { appendHostAction } from '../host/action-log.js';
+import { HOST_ENROLL_ROUTE } from '../constants.js';
 import { type DaemonState } from './service-state.js';
 import {
   DaemonStateAuthority,
@@ -414,11 +418,18 @@ export class DaemonServer {
       return;
     }
 
-    // (2) Blanket bearer.
-    const bearerRejection = overlayBearerRejection(req, hostServe.bearer);
-    if (bearerRejection) {
-      this.writeOverlayRefusal(res, bearerRejection.status, bearerRejection.body, versionHeader, bearerRejection.headers);
-      return;
+    // (2) Blanket bearer — EXCEPT the ONE enrollment route (spec §8/§9). A member
+    // obtains the bearer THERE, so gating enrollment behind the bearer is a
+    // chicken-and-egg deadlock; overlay membership is its trust boundary instead.
+    // The exemption is surgical (overlayBearerExempt matches only that exact path)
+    // and the route's own handler re-asserts overlay provenance, so a no-bearer
+    // request to ANY OTHER overlay route still 401s here.
+    if (!overlayBearerExempt(pathname)) {
+      const bearerRejection = overlayBearerRejection(req, hostServe.bearer);
+      if (bearerRejection) {
+        this.writeOverlayRefusal(res, bearerRejection.status, bearerRejection.body, versionHeader, bearerRejection.headers);
+        return;
+      }
     }
 
     // (3) Lifecycle/operator raw routes are never overlay-served.
@@ -533,6 +544,61 @@ export class DaemonServer {
       res.end(JSON.stringify({ myco: true, shutting_down: true }), () => {
         handler();
       });
+    });
+
+    // Team Host enrollment (Task 2.4) — the ONE overlay route exempt from the
+    // blanket bearer gate (a member obtains the bearer HERE; see the surgical
+    // exemption in handleOverlayRequest + HOST_ENROLL_ROUTE). A raw route because
+    // enrollment needs no Grove/DB/tenancy — it returns machine-scoped host facts.
+    this.registerRawRoute(HOST_ENROLL_ROUTE, async (req, res) => {
+      // OVERLAY-ONLY is the enrollment gate: because the bearer check is skipped,
+      // this route MUST refuse any caller that did not arrive on the overlay
+      // listener (a localhost/LAN hit is never marked overlay). Being on the
+      // overlay already means the operator admitted you (spec §8/§9) — that
+      // membership, not a bearer, is what authorizes enrollment. Defense-in-depth
+      // beside the surgical bearer exemption: even if the exemption ever widened,
+      // a localhost hit still gets nothing.
+      if (!isOverlayRequest(req)) {
+        res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'not_found', message: 'Host enrollment is served over the overlay only.' }));
+        return;
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'method_not_allowed' }));
+        return;
+      }
+      const hostServe = this.hostServe;
+      if (!hostServe) {
+        // Unreachable when serving (the overlay listener only runs with hostServe
+        // set), but fail closed rather than 500.
+        res.writeHead(503, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'host_serve_unavailable' }));
+        return;
+      }
+      // Best-effort: the member POSTs `{member_hostname, member_overlay_ip}` for the
+      // action log. A parse failure never blocks enrollment (the bearer is the
+      // point, not the log line).
+      let memberInfo: Record<string, unknown> = {};
+      try { memberInfo = (await readBody(req)) as Record<string, unknown>; } catch { /* log without it */ }
+
+      const payload = buildHostEnrollmentPayload(hostServe, this.overlayPort);
+      res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
+      res.end(JSON.stringify(payload));
+
+      // Record the join for the operator's diagnosable safety net (spec §9). The
+      // subject is the member's overlay IP off the CONNECTION (unspoofable), with the
+      // self-reported hostname as detail. NEVER logs the bearer. Best-effort.
+      try {
+        appendHostAction({
+          action: 'enroll',
+          subject: req.socket.remoteAddress ?? (memberInfo.member_overlay_ip as string | undefined),
+          detail: {
+            member_hostname: memberInfo.member_hostname,
+            member_overlay_ip: memberInfo.member_overlay_ip,
+          },
+        });
+      } catch { /* the log is a diagnostic aid, not the trust boundary */ }
     });
 
     // Readiness deliberately uses the normal route pipeline. /health answers
