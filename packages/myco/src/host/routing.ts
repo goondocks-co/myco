@@ -129,6 +129,23 @@ export function configHostAuthoritative(capability: string): RefusalPayload {
 }
 
 /**
+ * Refusal for a route the host serves on its localhost only and never over the
+ * overlay — the operator/machine-local control plane (scope-map §1d) and the
+ * member-assembled config carve (§6.3), both of which are never a valid overlay
+ * surface. Uses the SAME 404 `not_found` body the host-serve lifecycle refusal
+ * emits (`daemon/host-serve.ts` `overlayLifecycleRefused`) so a member sees one
+ * uniform "not served over the overlay" shape.
+ */
+export function overlayLocalhostOnlyRefusal(): RefusalPayload {
+  return {
+    status: 404,
+    error: 'not_found',
+    message: 'This route is served on localhost only, not over the overlay.',
+    retryable: false,
+  };
+}
+
+/**
  * The refinement of Task 1.2's coarse `PUT /api/config/scoped` config-lock
  * (routing-layer §6.2/§6.3). A scoped-config write to an attached project may
  * carry `scope: 'project' | 'local'`; neither scope writes the grove tier
@@ -379,6 +396,56 @@ export function classifyRoute(input: {
     case 'serve':
     case 'collect':
       return { kind: 'remote', target: remoteTargetFor(input.projectId, attach), classification };
+  }
+}
+
+/**
+ * The HOST-side overlay backstop: what a Team Host does with a request that
+ * arrived on its overlay listener, keyed on the route's stamp alone (no project
+ * resolution — a host serves its own Groves, so it never re-attaches).
+ *
+ * `classifyRoute` above is the MEMBER's gate: it refuses localhost-only/degrade/
+ * config routes on the member daemon so they never leave the member. But v1 is
+ * flat-trust (design §9): the shared bearer proves admission, not identity, and a
+ * hostile or buggy member can craft a raw overlay request that never ran its own
+ * `classifyRoute`. This function is the host's independent enforcement of the same
+ * scope-map stamps, applied at the matched route so the guarantee does not rest on
+ * member cooperation. It NEVER proxies — the anti-circularity guarantee holds
+ * (the host serves its own Grove locally); it only decides serve-locally vs refuse:
+ *
+ *   - `localhost-only` → 404 (operator/machine-local control plane, scope-map §1d;
+ *     includes the machine-tier `PUT/DELETE /api/providers/secrets/:provider`
+ *     credential routes — the leaked-bearer credential-hijack moat).
+ *   - `degrade` → the capability-unavailable-hosted refusal (409) — the capability
+ *     is OFF for hosted projects (Canopy, git provenance, Grove-DB backup/restore),
+ *     the SAME payload the member-side `classifyRoute` returns for `degraded`.
+ *   - `config-lock` → the config-host-authoritative refusal (409) — shared config
+ *     is host-operator-managed and not member-writable even directly, the SAME
+ *     payload the member-side `classifyRoute` returns for `config_locked`.
+ *   - `config-carve` → 404: these are member-ASSEMBLED config routes that never
+ *     legitimately cross the overlay — a member resolves machine/project/personal
+ *     from its own disk and host-sources ONLY the grove tier via `GET
+ *     /api/grove-config` (a `serve` route, untouched here). Serving them on the
+ *     host would leak the host's machine/personal config (the GETs) or WRITE the
+ *     host's config (`PUT /api/config/scoped`); both are wrong, so refuse.
+ *   - `serve` / `collect` → `null`: served locally, the host answering for its own
+ *     Grove (unchanged behavior — the only classes the overlay is meant to carry).
+ *
+ * Returns the refusal to write, or `null` to serve the request locally.
+ */
+export function overlayHostStampRefusal(method: string, pathname: string): RefusalPayload | null {
+  const { capability, stamp } = classifyRouteStamp(method, pathname);
+  switch (stamp) {
+    case 'localhost-only':
+    case 'config-carve':
+      return overlayLocalhostOnlyRefusal();
+    case 'degrade':
+      return hostedCapabilityUnavailable(capability);
+    case 'config-lock':
+      return configHostAuthoritative(capability);
+    case 'serve':
+    case 'collect':
+      return null;
   }
 }
 

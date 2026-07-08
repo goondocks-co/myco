@@ -27,6 +27,7 @@ import {
   classifyRouteStamp,
   configHostAuthoritative,
   hostedCapabilityUnavailable,
+  overlayHostStampRefusal,
   refusalJson,
   refusalMcpBody,
 } from '@myco/host/routing';
@@ -256,5 +257,46 @@ describe('refusal serializers', () => {
     expect(body.error.data.code).toBe('config_host_authoritative');
     expect(body.error.data.capability).toBe('Config administration');
     expect(body.id).toBeNull();
+  });
+});
+
+describe('overlayHostStampRefusal (host-side overlay backstop)', () => {
+  // The host's independent enforcement of the scope-map stamp on a matched route,
+  // by stamp class. Pure over (method, matched pathname) — no registry, no attach.
+
+  test('localhost-only → 404 not_found (operator/machine-local; the secret routes)', () => {
+    // The Critical credential route resolves through the :param tier correctly.
+    const secret = overlayHostStampRefusal('PUT', '/api/providers/secrets/openai');
+    expect(secret).toEqual({
+      status: 404,
+      error: 'not_found',
+      message: 'This route is served on localhost only, not over the overlay.',
+      retryable: false,
+    });
+    expect(overlayHostStampRefusal('GET', '/api/providers/secrets')?.status).toBe(404);
+    expect(overlayHostStampRefusal('POST', '/api/restart')?.error).toBe('not_found');
+  });
+
+  test('degrade → 409 capability_unavailable_hosted (same payload the member returns)', () => {
+    expect(overlayHostStampRefusal('GET', '/api/git/status')).toEqual(
+      hostedCapabilityUnavailable('Git provenance'),
+    );
+  });
+
+  test('config-lock → 409 config_host_authoritative (same payload the member returns)', () => {
+    expect(overlayHostStampRefusal('PUT', '/api/grove-config')).toEqual(
+      configHostAuthoritative('Config administration'),
+    );
+  });
+
+  test('config-carve → 404 not_found (member-assembled; never a valid overlay surface)', () => {
+    expect(overlayHostStampRefusal('PUT', '/api/config/scoped')?.status).toBe(404);
+    expect(overlayHostStampRefusal('GET', '/api/config/merged')?.error).toBe('not_found');
+  });
+
+  test('serve / collect → null (served locally: the host answers for its own Grove)', () => {
+    expect(overlayHostStampRefusal('GET', '/api/sessions')).toBeNull(); // default serve
+    expect(overlayHostStampRefusal('GET', '/api/grove-config')).toBeNull(); // GET is serve, PUT is config-lock
+    expect(overlayHostStampRefusal('POST', '/events')).toBeNull(); // collect
   });
 });

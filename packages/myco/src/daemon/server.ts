@@ -22,7 +22,7 @@ import {
   type MycoRequestContext,
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
-import { classifyRoute, refusalJson, type RefusalPayload } from '../host/routing.js';
+import { classifyRoute, overlayHostStampRefusal, refusalJson, type RefusalPayload } from '../host/routing.js';
 import { defaultDial, handleAttachedRequest, proxyLoggerFrom } from './host-proxy.js';
 import { handleAttachedConfigRequest } from './attached-config.js';
 import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
@@ -665,6 +665,27 @@ export class DaemonServer {
       this.onRequest?.();
       const versionHeader = { 'X-Myco-Api-Version': this.version };
       try {
+        // Team Host HOST-side overlay backstop: a request that arrived on this
+        // daemon's overlay listener is served LOCALLY (the host answers for its own
+        // Grove) and is never re-classified/re-proxied — the anti-circularity
+        // guarantee the skip below protects. But v1 is flat-trust (design §9): the
+        // shared bearer proves admission, not identity, and the member-side
+        // classifyRoute is the MEMBER's gate — a hostile member can craft a raw
+        // overlay request that never ran it. So the host independently enforces the
+        // scope-map stamp on the matched route (match.pathname, so :param routes
+        // classify correctly), refusing the classes that must never be overlay-served
+        // (localhost-only operator/secret routes, degraded capabilities, and
+        // host-authoritative/member-assembled config) BEFORE the route is served.
+        // serve/collect fall through to local dispatch, so this only ADDS refusals —
+        // it never enters the remote/proxy branch.
+        if (isOverlayRequest(req)) {
+          const overlayRefusal = overlayHostStampRefusal(req.method!, match.pathname);
+          if (overlayRefusal) {
+            this.writeRefusal(res, overlayRefusal, versionHeader);
+            return;
+          }
+        }
+
         // Team Host member-side chokepoint: an attached project is served by a
         // remote host daemon, so the member's dispatch routes it over the overlay.
         // A request that ARRIVED on this daemon's overlay listener has already been

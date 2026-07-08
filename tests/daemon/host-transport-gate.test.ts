@@ -264,6 +264,206 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   });
 });
 
+describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
+  // The transport gate admits an overlay request (bearer + version); this backstop
+  // then enforces the per-route scope-map stamp on the HOST so a member cannot
+  // reach the routes the member-side classifier is supposed to keep off the overlay
+  // (v1 flat-trust: the shared bearer proves admission, not identity — a hostile
+  // member can craft a raw overlay request that never ran its own classifyRoute).
+  let tmp: string;
+  let server: DaemonServer;
+  let savedTeamHome: string | undefined;
+  let overlay: string;
+  let loopback: string;
+
+  // Per-route run counters — a REFUSED route's handler must never execute.
+  let secretWriteCalls: number;
+  let secretsListCalls: number;
+  let gitStatusCalls: number;
+  let sessionsCalls: number;
+  let groveConfigWriteCalls: number;
+  let scopedConfigWriteCalls: number;
+  let shutdownCalls: number;
+  let secretsFile: string;
+
+  beforeEach(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-stamp-'));
+    savedTeamHome = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_TEAM_HOME = tmp; // empty attach registry — this daemon is the HOST
+
+    secretWriteCalls = 0;
+    secretsListCalls = 0;
+    gitStatusCalls = 0;
+    sessionsCalls = 0;
+    groveConfigWriteCalls = 0;
+    scopedConfigWriteCalls = 0;
+    shutdownCalls = 0;
+    secretsFile = path.join(tmp, 'secrets.env');
+
+    server = new DaemonServer({
+      vaultDir: path.join(tmp, 'vault'),
+      logger: new DaemonLogger(path.join(tmp, 'logs')),
+      daemonStateAuthority: stubAuthority,
+      hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER },
+    });
+
+    // localhost-only — THE credential-hijack moat. This handler is the only writer
+    // of the host's provider secret; if the backstop stops it running, the host's
+    // secret is never overwritten (the Critical case the gap allowed).
+    server.registerRoute('PUT', '/api/providers/secrets/:provider', async ({ params }) => {
+      secretWriteCalls += 1;
+      fs.writeFileSync(secretsFile, `${(params as { provider: string }).provider}=stolen\n`);
+      return { body: { ok: true } };
+    });
+    // localhost-only — machine-tier secret enumeration, never served to members.
+    server.registerRoute('GET', '/api/providers/secrets', async () => {
+      secretsListCalls += 1;
+      return { body: { providers: ['openai'] } };
+    });
+    // degrade — capability off for hosted projects (git provenance).
+    server.registerRoute('GET', '/api/git/status', async () => {
+      gitStatusCalls += 1;
+      return { body: { clean: true } };
+    });
+    // serve (default stamp) — MUST still be served over the overlay (no over-refusal).
+    server.registerRoute('GET', '/api/sessions', async () => {
+      sessionsCalls += 1;
+      return { body: { ok: true, from: 'handler' } };
+    });
+    // config-lock — a write to host-authoritative shared config.
+    server.registerRoute('PUT', '/api/grove-config', async () => {
+      groveConfigWriteCalls += 1;
+      return { body: { ok: true } };
+    });
+    // config-carve — member-ASSEMBLED config; the scoped write mutates host config.
+    server.registerRoute('PUT', '/api/config/scoped', async () => {
+      scopedConfigWriteCalls += 1;
+      return { body: { ok: true } };
+    });
+    server.onShutdownRequest(() => { shutdownCalls += 1; });
+
+    await server.start(0);
+    overlay = `http://127.0.0.1:${server.overlayPort}`;
+    loopback = `http://127.0.0.1:${server.port}`;
+  });
+
+  afterEach(async () => {
+    await server.stop();
+    if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = savedTeamHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const authed = (extra: Record<string, string> = {}): Record<string, string> => ({
+    Authorization: `Bearer ${HOST_BEARER}`,
+    'x-myco-host-protocol': '1',
+    ...extra,
+  });
+
+  // --- THE Critical case: the provider-secret write is refused AND never written ---
+
+  test('PUT /api/providers/secrets/:provider over the overlay → 404 refused; host secret NOT written', async () => {
+    const res = await fetch(`${overlay}/api/providers/secrets/openai`, {
+      method: 'PUT',
+      headers: authed({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ api_key: 'sk-attacker' }),
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('not_found');
+    expect(secretWriteCalls).toBe(0);
+    // The write side-effect never happened — the host's credentials are untouched.
+    expect(fs.existsSync(secretsFile)).toBe(false);
+  });
+
+  test('the SAME provider-secret write on localhost still writes (the refusal is overlay-scoped, no over-block)', async () => {
+    const res = await fetch(`${loopback}/api/providers/secrets/openai`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: 'sk-legit' }),
+    });
+    expect(res.status).toBe(200);
+    expect(secretWriteCalls).toBe(1);
+    expect(fs.existsSync(secretsFile)).toBe(true);
+  });
+
+  test('GET /api/providers/secrets over the overlay → 404 refused, handler never runs', async () => {
+    const res = await fetch(`${overlay}/api/providers/secrets`, { headers: authed() });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('not_found');
+    expect(secretsListCalls).toBe(0);
+  });
+
+  // --- degrade → capability-unavailable-hosted (same payload the member returns) ---
+
+  test('a degrade route over the overlay → 409 capability_unavailable_hosted, handler never runs', async () => {
+    const res = await fetch(`${overlay}/api/git/status`, { headers: authed() });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('capability_unavailable_hosted');
+    expect(body.capability).toBe('Git provenance');
+    expect(gitStatusCalls).toBe(0);
+  });
+
+  // --- serve → STILL served (proves the backstop only ADDS refusals) ---
+
+  test('a serve route over the overlay is STILL served locally (handler runs)', async () => {
+    const res = await fetch(`${overlay}/api/sessions`, { headers: authed() });
+    expect(res.status).toBe(200);
+    expect((await res.json()).from).toBe('handler');
+    expect(sessionsCalls).toBe(1);
+  });
+
+  // --- config-lock → config-host-authoritative (same payload the member returns) ---
+
+  test('a config-lock write over the overlay → 409 config_host_authoritative, handler never runs', async () => {
+    const res = await fetch(`${overlay}/api/grove-config`, {
+      method: 'PUT',
+      headers: authed({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ config: { embedding: {} } }),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe('config_host_authoritative');
+    expect(groveConfigWriteCalls).toBe(0);
+  });
+
+  // --- config-carve → 404 (member-assembled; the scoped write mutates host config) ---
+
+  test('a config-carve scoped write over the overlay → 404 refused, host config NOT written', async () => {
+    const res = await fetch(`${overlay}/api/config/scoped`, {
+      method: 'PUT',
+      headers: authed({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ scope: 'machine', patch: { daemon: { log_level: 'debug' } } }),
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('not_found');
+    expect(scopedConfigWriteCalls).toBe(0);
+  });
+
+  // --- existing exemptions intact (the backstop does not touch raw routes) ---
+
+  test('/api/host/enroll over the overlay still works (bearer-exempt enrollment path intact)', async () => {
+    const res = await fetch(`${overlay}/api/host/enroll`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-myco-host-protocol': '1' },
+      body: JSON.stringify({ member_hostname: 'laptop', member_overlay_ip: '100.64.0.9' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).bearer).toBe(HOST_BEARER);
+  });
+
+  test('/api/shutdown over the overlay still 404s and its handler never fires', async () => {
+    const res = await fetch(`${overlay}/api/shutdown`, { method: 'POST', headers: authed() });
+    expect(res.status).toBe(404);
+    expect(shutdownCalls).toBe(0);
+  });
+
+  test('the localhost listener is unchanged: a degrade route is served locally with no overlay refusal', async () => {
+    const res = await fetch(`${loopback}/api/git/status`);
+    expect(res.status).toBe(200);
+    expect(gitStatusCalls).toBe(1);
+  });
+});
+
 describe('Team Host serve disabled → no second listener', () => {
   let tmp: string;
   let server: DaemonServer;
