@@ -11,6 +11,7 @@ import { OkfError } from './errors.js';
 import { resolveOutputRoot, type OutputClass } from './output-root.js';
 import { mycoProjectRef, runRef } from './privacy.js';
 import { assertSafeConceptId, conceptPathForId, detectCollisions, OkfPathError } from './paths.js';
+import { normalizeBodyLinks } from './links.js';
 import { parseConceptDoc, serializeConceptDoc } from './frontmatter.js';
 import { renderConcept, renderOkfDocument, renderRootIndex, renderRootLog, type OkfLogEntry } from './serialize.js';
 import { generateDirectoryIndexes, generateIndexes } from './indexes.js';
@@ -577,6 +578,15 @@ export class OkfBundle {
       warnings: OkfMaintainWarning[];
     },
   ): { pageCount: number; byType: Record<string, number> } {
+    // Structural cross-link normalization (Task 7.5) — BEFORE index generation,
+    // the publish-eligibility scan, strict validation, and the atomic-replace,
+    // so the content that is written to disk, fingerprinted for ownership, and
+    // swapped into place is the NORMALIZED content. Runs on the full carried +
+    // freshly-staged set: the whole published tree ends up with resolving
+    // absolute links, and (being idempotent) an already-normalized carried page
+    // is a byte-for-byte no-op that leaves its ownership fingerprint intact.
+    this.normalizeContentLinks(stagingDir, contentDocs, opts.warnings);
+
     // Collision guard reinstated from the deleted projectAllConcepts: two
     // document paths that collide after case-fold would clobber on a
     // case-insensitive filesystem. Same guard mutateConcepts runs, now on the
@@ -620,6 +630,41 @@ export class OkfBundle {
     );
 
     return { pageCount, byType };
+  }
+
+  /**
+   * Deterministically normalize every content doc's body cross-links against
+   * the run's full page set (Task 7.5), re-writing to disk ONLY a doc whose body
+   * actually changed. A bundle-internal `.md` link that resolves to a real page
+   * becomes the canonical ABSOLUTE bundle-relative form; a dead link is
+   * downgraded to plain text (label kept, never a 404) with a
+   * `body_link_downgraded` warning. External/anchor/non-`.md` links are left
+   * verbatim. `normalizeBodyLinks` is idempotent, so a carried-forward page that
+   * was already normalized on a prior run produces byte-identical output and is
+   * NOT re-written — its exact on-disk bytes (and thus its carried-forward
+   * ownership fingerprint) are preserved. Re-writing a changed doc routes back
+   * through {@link writeStagedDoc}, the single staged-file writer.
+   */
+  private normalizeContentLinks(
+    stagingDir: string,
+    contentDocs: OkfDocument[],
+    warnings: OkfMaintainWarning[],
+  ): void {
+    const pages = new Set(contentDocs.map((d) => d.path));
+    for (const doc of contentDocs) {
+      const { body, deadTargets } = normalizeBodyLinks(doc.body, doc.path, pages);
+      for (const target of deadTargets) {
+        warnings.push({
+          code: 'body_link_downgraded',
+          message: `dropped a dead body link to ${JSON.stringify(target)} (no such page); kept the link text`,
+          path: doc.path,
+        });
+      }
+      if (body !== doc.body) {
+        doc.body = body;
+        this.writeStagedDoc(stagingDir, doc);
+      }
+    }
   }
 
   /** Group documents by (non-empty) OKF frontmatter `type`; unknown/blank → 'unknown'. */

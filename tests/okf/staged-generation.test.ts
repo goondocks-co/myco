@@ -10,6 +10,7 @@ import { ProjectVault } from '@myco/vault/project-vault.js';
 import { OkfBundle, type OkfBundleDeps, type OkfFsOps } from '@myco/okf/bundle.js';
 import { validateBundleTree } from '@myco/okf/validate.js';
 import { parseConceptDoc } from '@myco/okf/frontmatter.js';
+import { readOwnership, isHandEdited } from '@myco/okf/ownership.js';
 import type { OkfDocument } from '@myco/okf/types.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
@@ -364,5 +365,77 @@ describe('OkfBundle publish-block acknowledge model (Task 7.1)', () => {
     const status = await bundle.acknowledgePendingFindings();
     expect(status.pendingFindings).toEqual([]);
     expect(manifest()).toBeNull();
+  });
+});
+
+describe('OkfBundle.beginStagedGeneration — body cross-link normalization (Task 7.5)', () => {
+  /** A root-level page whose body links two siblings (wrong depth) plus one non-existent page. */
+  function glossaryDoc(body: string): OkfDocument {
+    return {
+      path: 'glossary.md',
+      frontmatter: { type: 'glossary', title: 'Glossary', description: 'Terms.', timestamp: '2026-07-05T00:00:00Z' },
+      body,
+    };
+  }
+
+  it('rewrites resolving links to absolute bundle-relative and downgrades a dead link to plain text', async () => {
+    const outputRoot = okfDir();
+    const bundle = makeBundle();
+    const staged = await bundle.beginStagedGeneration({ mode: 'published' });
+    staged.stageDocument(contentDoc('concepts/alpha'));
+    // Wrong-depth relative (../ escapes the bundle from a root page), a
+    // root-relative link, and a dangling link to a page nobody synthesized.
+    staged.stageDocument(
+      glossaryDoc('See [Alpha](../concepts/alpha.md), [Alpha again](concepts/alpha.md), and [Ghost](../concepts/ghost.md).'),
+    );
+    const result = await staged.finalize({ inputsHash: 'gen-1' });
+
+    const glossary = fs.readFileSync(path.join(outputRoot, 'glossary.md'), 'utf8');
+    // Both real links resolve to the canonical absolute form ...
+    expect(glossary).toContain('[Alpha](/concepts/alpha.md)');
+    expect(glossary).toContain('[Alpha again](/concepts/alpha.md)');
+    // ... the dead link is downgraded to its label (no 404, no dropped content) ...
+    expect(glossary).toContain('and Ghost.');
+    expect(glossary).not.toContain('ghost.md');
+    // ... a recoverable warning names the page whose link was downgraded ...
+    expect(result.warnings.some((w) => w.code === 'body_link_downgraded' && w.path === 'glossary.md')).toBe(true);
+    // ... and the published tree still passes strict validation.
+    expect(validateBundleTree(outputRoot, 'strict').ok).toBe(true);
+  });
+
+  it('a carried-forward already-normalized page is byte-identical and keeps its ownership fingerprint (idempotency)', async () => {
+    const outputRoot = okfDir();
+    const bundle = makeBundle();
+
+    // Run 1: publish alpha + a glossary whose link is ALREADY the absolute form.
+    const first = await bundle.beginStagedGeneration({ mode: 'published' });
+    first.stageDocument(contentDoc('concepts/alpha'));
+    first.stageDocument(glossaryDoc('See [Alpha](/concepts/alpha.md).'));
+    await first.finalize({ inputsHash: 'gen-1' });
+
+    const glossaryPath = path.join(outputRoot, 'glossary.md');
+    const glossaryBefore = fs.readFileSync(glossaryPath, 'utf8');
+    const fingerprintBefore = readOwnership(new ProjectVault(projectRoot))?.pages['glossary.md']?.fingerprint;
+    expect(fingerprintBefore).toBeTruthy();
+
+    // Run 2: re-stage a DIFFERENT page. glossary is carried forward untouched and
+    // re-run through the normalizer — which, being idempotent on already-absolute
+    // links, must not change a single byte.
+    const second = await bundle.beginStagedGeneration({ mode: 'published' });
+    second.stageDocument({
+      path: 'concepts/alpha.md',
+      frontmatter: { type: 'concept', title: 'concepts/alpha', description: 'Refreshed.', timestamp: '2026-07-05T00:00:00Z' },
+      body: 'Refreshed alpha body.',
+    });
+    await second.finalize({ inputsHash: 'gen-2' });
+
+    // Byte-identical carried page → its carried-forward ownership fingerprint
+    // still matches disk, so it does NOT read as hand-edited (the interaction the
+    // brief calls out: normalization runs before ownership fingerprinting).
+    const glossaryAfter = fs.readFileSync(glossaryPath, 'utf8');
+    expect(glossaryAfter).toBe(glossaryBefore);
+    const ownership = readOwnership(new ProjectVault(projectRoot));
+    expect(ownership?.pages['glossary.md']?.fingerprint).toBe(fingerprintBefore);
+    expect(isHandEdited('glossary.md', glossaryAfter, ownership)).toBe(false);
   });
 });

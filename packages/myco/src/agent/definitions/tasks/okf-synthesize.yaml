@@ -175,11 +175,14 @@ phases:
         expected, not an error to retry.
 
         Call `okf_list_pages` to see this run's sibling pages and weave in a
-        few bundle-relative links (e.g. `[Beta](../concepts/beta.md)`) where
-        they genuinely help a reader. A link that doesn't resolve is tolerated
-        (OKF forgives a broken body link) and every directory index is
-        regenerated deterministically after this phase — don't stall over one
-        link you can't confirm.
+        few links where they genuinely help a reader. Use ABSOLUTE
+        bundle-relative link targets — a leading slash rooted at the bundle,
+        e.g. `[Beta](/concepts/beta.md)` — and link ONLY to pages that appear
+        in `okf_list_pages` (this run's siblings); do not invent links to
+        concepts that aren't in the bundle. Link targets are normalized
+        deterministically after this phase (relative links are rewritten to
+        absolute and unresolvable links are dropped to plain text), so don't
+        stall over one link you can't confirm.
 
         Write clear, accurate prose grounded in the source material — do not
         invent facts.

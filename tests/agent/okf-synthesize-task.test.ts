@@ -419,7 +419,10 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
     expect(alpha?.raw).not.toContain('okf:preserved-hand-edit');
 
     const beta = bundle.readPage('concepts/beta.md');
-    expect(beta?.raw).toContain('[Alpha](alpha.md)');
+    // Task 7.5: the model's relative sibling link is normalized to the canonical
+    // absolute bundle-relative form at finalize (it resolves to a real page).
+    expect(beta?.raw).toContain('[Alpha](/concepts/alpha.md)');
+    expect(beta?.raw).not.toContain('[Alpha](alpha.md)');
 
     // The foreign page was never staged (the tool rejected the write before
     // touching anything), but staging carries forward every currently-
@@ -571,6 +574,92 @@ describe('okf-synthesize task — explore → plan → map-synthesize → publis
     expect(alpha?.raw).toContain('Fresh synthesis for alpha, third run.');
     expect(alpha?.raw).toContain(HAND_EDIT_ADDENDUM);
     expect(alpha?.raw).toContain('okf:preserved-hand-edit');
+  });
+
+  it('Task 7.5: published body cross-links are all absolute bundle-relative and resolve — 0 dead links', async () => {
+    const runId = 'run-okf-synth-links';
+    const linkDeps: VaultToolDeps = { ...deps, runId };
+    const tools = createOkfTools(linkDeps);
+    const writePlan = tools.find((t) => t.name === 'okf_write_plan')!;
+    // A root-level glossary + two nested concept pages — mirrors the 6.3 dogfood
+    // shape where root pages linked ../concepts/* (escaping the bundle) and to
+    // pages that were never synthesized.
+    await invoke(writePlan, {
+      pages: [
+        { path: 'glossary', type: 'glossary', title: 'Glossary', rationale: 'Root terms.', sourceRefs: [] },
+        { path: 'concepts/alpha', type: 'concept', title: 'Alpha', rationale: 'Core.', sourceRefs: [] },
+        { path: 'concepts/beta', type: 'concept', title: 'Beta', rationale: 'Second.', sourceRefs: [] },
+      ],
+    });
+
+    // The exact broken shapes from the dogfood: wrong-depth relative that escapes
+    // the bundle, a root-relative link, a dangling link to an unsynthesized page,
+    // a bare sibling relative link, and an already-absolute link.
+    const bodies: Record<string, string> = {
+      glossary: 'Terms. See [Alpha](../concepts/alpha.md), [Beta](concepts/beta.md), and [Ghost](../concepts/ghost.md).',
+      'concepts/alpha': 'Alpha. See [Beta](beta.md) and the [Glossary](/glossary.md).',
+      'concepts/beta': 'Beta covers the second concept. No cross-links here.',
+    };
+
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: mock(async (input: any) => {
+        const sink = input.toolSurface.tools.find((t: any) => t.name === 'okf_write_page');
+        const itemPath = input.prompt.match(/Path: (\S+)/)![1];
+        await sink.handler({ description: `Summary of ${itemPath}.`, body: bodies[itemPath] });
+        return { finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 }, sessionRef: undefined };
+      }),
+    };
+
+    const mapResult = await executeMapPhase({
+      phase: synthesizePhase,
+      allTools: tools as any,
+      harness: stubRuntime as any,
+      params: {},
+      systemPrompt: 'sys',
+      runId,
+      agentId: linkDeps.agentId,
+      projectRoot,
+      vaultDir,
+      probeAvailable: async () => true,
+    });
+    expect(mapResult.written).toBe(3);
+
+    await finalizeOkfSynthesize({ agentId: linkDeps.agentId, runId, requestContext: ctx, vaultDir });
+
+    const bundle = publishedBundle();
+    const pageSet = new Set(bundle.listPages().map((p) => p.path));
+    expect(pageSet).toEqual(new Set(['glossary.md', 'concepts/alpha.md', 'concepts/beta.md']));
+
+    // Resolving links became absolute bundle-relative ...
+    const glossary = bundle.readPage('glossary.md')!.raw;
+    expect(glossary).toContain('[Alpha](/concepts/alpha.md)');
+    expect(glossary).toContain('[Beta](/concepts/beta.md)');
+    // ... the dangling link was downgraded to plain text (the reader keeps "Ghost").
+    expect(glossary).toContain('and Ghost.');
+    expect(glossary).not.toContain('ghost.md');
+    const alpha = bundle.readPage('concepts/alpha.md')!.raw;
+    expect(alpha).toContain('[Beta](/concepts/beta.md)');
+    expect(alpha).toContain('[Glossary](/glossary.md)');
+
+    // Whole-tree invariant: every `.md` body link on a content page is absolute
+    // bundle-relative AND resolves to a real published page (0 dead links, and no
+    // leftover relative link). Indexes/log are excluded — they are generated with
+    // their own relative-link convention, not authored by the model.
+    const LINK = /\[[^\]]*\]\(([^)]+)\)/g;
+    const EXTERNAL = /^[a-z][a-z0-9+.-]*:/i;
+    for (const pagePath of pageSet) {
+      const raw = bundle.readPage(pagePath)!.raw;
+      for (const match of raw.matchAll(LINK)) {
+        const target = match[1].trim();
+        if (target.startsWith('#') || EXTERNAL.test(target)) continue; // anchor / external
+        const pathPart = target.split('#')[0];
+        if (!pathPart.endsWith('.md')) continue; // asset link, out of scope
+        expect(pathPart.startsWith('/')).toBe(true); // absolute bundle-relative
+        expect(pageSet.has(pathPart.slice(1))).toBe(true); // resolves to a real page
+      }
+    }
   });
 });
 

@@ -25,6 +25,7 @@ const PURE_CORE = [
   'types.ts',
   'frontmatter.ts',
   'paths.ts',
+  'links.ts',
   'serialize.ts',
   'indexes.ts',
   'validate.ts',
