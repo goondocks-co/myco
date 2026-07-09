@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import {
   Activity,
   Bell,
+  BookOpen,
   Bot,
   Brain,
   GitBranch,
@@ -51,6 +52,7 @@ type IconComponent = ComponentType<{ className?: string }>;
 const ICONS: Record<string, IconComponent> = {
   Activity,
   Bell,
+  BookOpen,
   Bot,
   Brain,
   GitBranch,

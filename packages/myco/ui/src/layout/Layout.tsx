@@ -26,6 +26,7 @@ import {
   FolderTree,
   Activity,
   Plug,
+  BookOpenCheck,
 } from 'lucide-react';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
@@ -60,13 +61,16 @@ export interface NavItem {
 
 const NAV_ORDER: readonly NavCategory[] = ['Project', 'Observability', 'Grove management', 'Settings'];
 
-const navItems: readonly NavItem[] = [
+/** Exported for the nav/route registration test — asserts new pages
+ *  (e.g. OKF) are wired into the sidebar with the right scope. */
+export const navItems: readonly NavItem[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, scope: 'project', category: 'Project' },
   { to: '/sessions', label: 'Sessions', icon: MessageSquare, scope: 'project', category: 'Project' },
   { to: '/agent', label: 'Agent', icon: Bot, scope: 'project', category: 'Project' },
   { to: '/cortex', label: 'Cortex', icon: Brain, scope: 'project', category: 'Project' },
   { to: '/mycelium', label: 'Mycelium', icon: Network, scope: 'project', category: 'Project' },
   { to: '/skills', label: 'Skills', icon: Sparkles, scope: 'project', category: 'Project' },
+  { to: '/okf', label: 'OKF', icon: BookOpenCheck, scope: 'project', category: 'Project' },
   { to: '/g/:groveSlug/operations', label: 'Operations', icon: Activity, scope: 'grove', category: 'Observability' },
   { to: '/logs', label: 'Logs', icon: ScrollText, scope: 'machine', category: 'Observability' },
   { to: '/g/:groveSlug/dashboard', label: 'Grove', icon: Trees, scope: 'grove', category: 'Grove management' },

@@ -572,7 +572,72 @@ export const SKILL_LINEAGE_TABLE = `
     rationale        TEXT NOT NULL,
     source_ids_added TEXT NOT NULL DEFAULT '[]',
     content_snapshot TEXT NOT NULL,
-    created_at       INTEGER NOT NULL
+    created_at       INTEGER NOT NULL,
+    machine_id       TEXT NOT NULL DEFAULT 'local',
+    synced_at        INTEGER
+  )`;
+
+// -- OKF wiki content (DB-resident; disk materialization is claim-scope) ----
+//
+// The wiki a synthesis run produces lives in these three tables. Revisions
+// are the truth (full content snapshot per page-generation, mirroring
+// skill_lineage.content_snapshot); okf_pages is the head pointer; an
+// okf_generations row groups the page set one run produced so the wiki
+// renders coherently "as of generation N". All three sync (id + machine_id +
+// synced_at) — content must reach every team member's replica, unlike the
+// skill_lineage precedent this design corrects. Single writer: OkfStore
+// (packages/myco/src/okf/store.ts).
+
+export const OKF_GENERATIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS okf_generations (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT,
+    machine_id   TEXT NOT NULL DEFAULT 'local',
+    generation   INTEGER NOT NULL,
+    run_id       TEXT,
+    status       TEXT NOT NULL DEFAULT 'draft',
+    plan         TEXT NOT NULL DEFAULT '{}',
+    page_count   INTEGER NOT NULL DEFAULT 0,
+    log_summary  TEXT NOT NULL DEFAULT '',
+    inputs_hash  TEXT NOT NULL DEFAULT '',
+    last_run_ref TEXT,
+    findings     TEXT NOT NULL DEFAULT '[]',
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    synced_at    INTEGER
+  )`;
+
+export const OKF_PAGES_TABLE = `
+  CREATE TABLE IF NOT EXISTS okf_pages (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT,
+    machine_id  TEXT NOT NULL DEFAULT 'local',
+    path        TEXT NOT NULL,
+    type        TEXT NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    tags        TEXT NOT NULL DEFAULT '[]',
+    status      TEXT NOT NULL DEFAULT 'active',
+    generation  INTEGER NOT NULL DEFAULT 1,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    synced_at   INTEGER
+  )`;
+
+export const OKF_PAGE_REVISIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS okf_page_revisions (
+    id                   TEXT PRIMARY KEY,
+    project_id           TEXT,
+    machine_id           TEXT NOT NULL DEFAULT 'local',
+    page_id              TEXT NOT NULL REFERENCES okf_pages(id),
+    page_generation      INTEGER NOT NULL,
+    bundle_generation_id TEXT NOT NULL REFERENCES okf_generations(id),
+    action               TEXT NOT NULL,
+    rationale            TEXT NOT NULL DEFAULT '',
+    frontmatter          TEXT NOT NULL DEFAULT '{}',
+    body                 TEXT NOT NULL,
+    created_at           INTEGER NOT NULL,
+    synced_at            INTEGER
   )`;
 
 export const SKILL_USAGE_TABLE = `
@@ -860,6 +925,9 @@ export const GROVE_PROJECT_SCOPED_TABLES = [
   'canopy_maps',
   'session_myco_tool_calls',
   'session_tombstones',
+  'okf_generations',
+  'okf_pages',
+  'okf_page_revisions',
 ] as const;
 
 export const GROVE_PROJECT_SCOPE_INDEX_DDLS: readonly string[] =
@@ -892,6 +960,17 @@ export const PROJECT_SCOPED_UNIQUE_INDEX_DDLS: readonly string[] = [
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_records_project_name ON skill_records (project_id, name) WHERE project_id IS NOT NULL',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_cortex_instructions_legacy_id ON cortex_instructions (id) WHERE project_id IS NULL',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_cortex_instructions_project_logical_id ON cortex_instructions (project_id, id) WHERE project_id IS NOT NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_okf_pages_legacy_path ON okf_pages (path) WHERE project_id IS NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_okf_pages_project_path ON okf_pages (project_id, path) WHERE project_id IS NOT NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_okf_generations_legacy_generation ON okf_generations (generation) WHERE project_id IS NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_okf_generations_project_generation ON okf_generations (project_id, generation) WHERE project_id IS NOT NULL',
+];
+
+/** Non-unique OKF query indexes — revision lookups by page and by generation. */
+export const OKF_INDEX_DDLS: readonly string[] = [
+  'CREATE INDEX IF NOT EXISTS idx_okf_page_revisions_page ON okf_page_revisions (page_id, page_generation)',
+  'CREATE INDEX IF NOT EXISTS idx_okf_page_revisions_bundle ON okf_page_revisions (bundle_generation_id)',
+  'CREATE INDEX IF NOT EXISTS idx_okf_generations_status ON okf_generations (project_id, status)',
 ];
 
 // -- FTS5 Virtual Tables ----------------------------------------------------
@@ -1001,9 +1080,13 @@ export const TEAM_SYNC_OBSERVED_TABLES = [
   'digest_extracts',
   'skill_candidates',
   'skill_records',
+  'skill_lineage',
   'skill_usage',
   'knowledge_release_state',
   'team_members',
+  'okf_generations',
+  'okf_pages',
+  'okf_page_revisions',
 ] as const;
 
 export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
@@ -1027,7 +1110,8 @@ export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
 export const TEAM_DELETE_TRIGGER_TABLES = [
   'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
   'resolution_events', 'plans', 'artifacts', 'digest_extracts',
-  'skill_candidates', 'skill_records', 'skill_usage', 'knowledge_release_state',
+  'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage',
+  'knowledge_release_state', 'okf_generations', 'okf_pages', 'okf_page_revisions',
 ] as const;
 
 export const TEAM_DELETE_TRIGGERS: readonly string[] = TEAM_DELETE_TRIGGER_TABLES.map(
@@ -1146,6 +1230,7 @@ export const SECONDARY_INDEXES = [
   // Plans
   ...PLAN_LOGICAL_KEY_INDEX_DDLS,
   ...PROJECT_SCOPED_UNIQUE_INDEX_DDLS,
+  ...OKF_INDEX_DDLS,
   'CREATE INDEX IF NOT EXISTS idx_plans_session_id ON plans (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_plans_source_path ON plans (source_path)',
   'CREATE INDEX IF NOT EXISTS idx_plans_content_hash ON plans (content_hash)',
@@ -1251,6 +1336,10 @@ export const TABLE_DDLS = [
   SKILL_RECORDS_TABLE,
   SKILL_LINEAGE_TABLE,
   SKILL_USAGE_TABLE,
+  // OKF wiki layer (DB-resident content; single writer OkfStore)
+  OKF_GENERATIONS_TABLE,
+  OKF_PAGES_TABLE,
+  OKF_PAGE_REVISIONS_TABLE,
   // Per-session Myco tool usage (aggregated from activities at Stop)
   SESSION_MYCO_TOOL_CALLS_TABLE,
   // Sync layer

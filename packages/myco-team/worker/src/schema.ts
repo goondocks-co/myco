@@ -262,6 +262,77 @@ const SKILL_USAGE_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
+const SKILL_LINEAGE_TABLE = `
+  CREATE TABLE IF NOT EXISTS skill_lineage (
+    id               TEXT NOT NULL,
+    machine_id       TEXT NOT NULL,
+    project_id       TEXT,
+    skill_id         TEXT NOT NULL DEFAULT '',
+    generation       INTEGER NOT NULL DEFAULT 1,
+    action           TEXT NOT NULL DEFAULT '',
+    rationale        TEXT NOT NULL DEFAULT '',
+    source_ids_added TEXT NOT NULL DEFAULT '[]',
+    content_snapshot TEXT NOT NULL DEFAULT '',
+    created_at       INTEGER NOT NULL,
+    synced_at        INTEGER,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
+const OKF_GENERATIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS okf_generations (
+    id           TEXT NOT NULL,
+    machine_id   TEXT NOT NULL,
+    project_id   TEXT,
+    generation   INTEGER NOT NULL DEFAULT 0,
+    run_id       TEXT,
+    status       TEXT NOT NULL DEFAULT 'draft',
+    plan         TEXT NOT NULL DEFAULT '{}',
+    page_count   INTEGER NOT NULL DEFAULT 0,
+    log_summary  TEXT NOT NULL DEFAULT '',
+    inputs_hash  TEXT NOT NULL DEFAULT '',
+    last_run_ref TEXT,
+    findings     TEXT NOT NULL DEFAULT '[]',
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    synced_at    INTEGER,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
+const OKF_PAGES_TABLE = `
+  CREATE TABLE IF NOT EXISTS okf_pages (
+    id          TEXT NOT NULL,
+    machine_id  TEXT NOT NULL,
+    project_id  TEXT,
+    path        TEXT NOT NULL DEFAULT '',
+    type        TEXT NOT NULL DEFAULT 'note',
+    title       TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    tags        TEXT NOT NULL DEFAULT '[]',
+    status      TEXT NOT NULL DEFAULT 'active',
+    generation  INTEGER NOT NULL DEFAULT 1,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    synced_at   INTEGER,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
+const OKF_PAGE_REVISIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS okf_page_revisions (
+    id                   TEXT NOT NULL,
+    machine_id           TEXT NOT NULL,
+    project_id           TEXT,
+    page_id              TEXT NOT NULL DEFAULT '',
+    page_generation      INTEGER NOT NULL DEFAULT 1,
+    bundle_generation_id TEXT NOT NULL DEFAULT '',
+    action               TEXT NOT NULL DEFAULT '',
+    rationale            TEXT NOT NULL DEFAULT '',
+    frontmatter          TEXT NOT NULL DEFAULT '{}',
+    body                 TEXT NOT NULL DEFAULT '',
+    created_at           INTEGER NOT NULL,
+    synced_at            INTEGER,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
 const KNOWLEDGE_RELEASE_STATE_TABLE = `
   CREATE TABLE IF NOT EXISTS knowledge_release_state (
     id                       INTEGER NOT NULL,
@@ -400,7 +471,11 @@ const ALL_DDLS = [
   DIGEST_EXTRACTS_TABLE,
   SKILL_CANDIDATES_TABLE,
   SKILL_RECORDS_TABLE,
+  SKILL_LINEAGE_TABLE,
   SKILL_USAGE_TABLE,
+  OKF_GENERATIONS_TABLE,
+  OKF_PAGES_TABLE,
+  OKF_PAGE_REVISIONS_TABLE,
   KNOWLEDGE_RELEASE_STATE_TABLE,
   TEAM_MEMBERS_TABLE,
   NODES_TABLE,

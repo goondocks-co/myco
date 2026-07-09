@@ -46,6 +46,12 @@ export const CANOPY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'canopy_describe_charge',
 ]);
 
+export const OKF_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'okf_read_sources', 'okf_read_spec', 'okf_list_pages', 'okf_read_page',
+  'okf_write_plan', 'okf_list_planned_pages', 'okf_write_page',
+  'okf_report',
+]);
+
 /**
  * Duplicated literal, not a re-export, of `PHASE_METADATA_TOOL_NAMES` from
  * `tools/phase-metadata-tools.ts` — that module imports
@@ -70,5 +76,6 @@ export const ALL_VAULT_TOOL_NAMES: ReadonlySet<string> = new Set([
   ...SKILL_TOOL_NAMES,
   ...EXPLORATION_TOOL_NAMES,
   ...CANOPY_TOOL_NAMES,
+  ...OKF_TOOL_NAMES,
   PHASE_METADATA_TOOL_NAME,
 ]);

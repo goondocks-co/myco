@@ -67,6 +67,7 @@ export const TOOL_SESSIONS = 'myco_sessions';
 export const TOOL_SKILLS = 'myco_skills';
 export const TOOL_SPORES = 'myco_spores';
 export const TOOL_AGENT = 'myco_agent';
+export const TOOL_OKF = 'myco_okf';
 export const TOOL_COLLECTIVE_SEARCH = 'collective_search';
 export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
@@ -281,6 +282,37 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         task: { type: 'string', description: 'Filter op: "runs" by task name' },
         agent_id: { type: 'string', description: 'Filter op: "runs" by agent id' },
         limit: { type: 'number', description: 'Max results for op: "runs" (default: 50)' },
+      },
+    },
+  },
+  {
+    name: TOOL_OKF,
+    description: 'Read the project\'s Open Knowledge Format (OKF) knowledge wiki — the repo-visible export at okf/ — and edit its hand-authored pages under concepts/. op: "status" reports bundle metadata and the current bundle_generation. op: "validate" checks the published wiki against the OKF conformance rules. op: "list" enumerates the published pages (path, type, title, description, timestamp). op: "get" returns one page\'s frontmatter fields plus rendered-markdown body, by bundle-relative path. op: "save_concept" creates or updates a hand-authored page under concepts/. op: "supersede_concept" marks one page superseded by another. Regenerating the wiki itself is a scheduled background task and is deliberately not available here.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Read okf/index.md first for orientation. Use op: "status" to check the bundle and read the current bundle_generation. Use op: "save_concept" / "supersede_concept" ONLY for hand-authored pages under concepts/ (every other page is synthesized by Myco and read-only here) — write complete YAML-frontmatter markdown with a type, title, description, timestamp, and a stable identity (myco_id or resource), and cite sources. Pass expected_generation from a prior status call so a concurrent edit is detected. You cannot regenerate the wiki or choose output paths from here; that is a scheduled background task.',
+      priority: 40,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: {
+          type: 'string',
+          enum: ['status', 'validate', 'list', 'get', 'save_concept', 'supersede_concept'],
+          description: 'Operation (default: "status")',
+        },
+        id: { type: 'string', description: 'Bundle-relative page path for op: "get" (e.g. notes/my-note)' },
+        concept_id: { type: 'string', description: 'Concept id for op: "save_concept" — must start with concepts/' },
+        markdown: { type: 'string', description: 'Full YAML-frontmatter markdown document for op: "save_concept"' },
+        expected_generation: { type: 'number', description: 'Optimistic concurrency check for op: "save_concept" — the bundle_generation from a prior status call' },
+        old_id: { type: 'string', description: 'Concept id being superseded for op: "supersede_concept"' },
+        new_id: { type: 'string', description: 'Replacement concept id for op: "supersede_concept"' },
+        reason: { type: 'string', description: 'Why the old concept was superseded (op: "supersede_concept")' },
       },
     },
   },

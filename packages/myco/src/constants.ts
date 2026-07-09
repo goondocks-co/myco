@@ -507,8 +507,13 @@ export const DEFAULT_OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
  *       vector reindex, plus the additive `enqueued`/`by_table`
  *       fields on `/vectors/reindex`. Older v1 clients still parse
  *       the legacy fields the worker continues to emit.
+ *   3 — adds four synced record types: skill_lineage (content
+ *       history) and the DB-resident OKF wiki tables
+ *       (okf_generations, okf_pages, okf_page_revisions). Older
+ *       workers reject the new table names at the enqueue gate, so
+ *       clients must not push them below this version.
  */
-export const SYNC_PROTOCOL_VERSION = 2;
+export const SYNC_PROTOCOL_VERSION = 3;
 
 /**
  * Oldest sync protocol the current daemon/worker still accepts. Used

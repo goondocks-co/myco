@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { resolveNavLinkTo, type NavItem } from '../../../packages/myco/ui/src/layout/Layout';
+import { navItems, resolveNavLinkTo, type NavItem } from '../../../packages/myco/ui/src/layout/Layout';
 import type { GroveSummary, ProjectSelection } from '../../../packages/myco/ui/src/lib/selection';
 
 const groveA: GroveSummary = {
@@ -131,5 +131,25 @@ describe('resolveNavLinkTo', () => {
     // honors that shape.
     expect(resolveNavLinkTo(groveItemNoSlug, selectionA, '/g/alpha/p/p1/somewhere', [groveA]))
       .toBe('/g/alpha/p/p1/somewhere');
+  });
+});
+
+describe('OKF nav + route registration', () => {
+  it('registers an OKF nav item scoped to project, under the Project category', () => {
+    const okfItem = navItems.find((item) => item.to === '/okf');
+    expect(okfItem).toBeDefined();
+    expect(okfItem?.scope).toBe('project');
+    expect(okfItem?.category).toBe('Project');
+    expect(okfItem?.label).toBe('OKF');
+  });
+
+  it('resolves the OKF nav link the same way as other project-scoped items (e.g. Skills)', () => {
+    const okfItem = navItems.find((item) => item.to === '/okf')!;
+    expect(resolveNavLinkTo(okfItem, selectionA, '/g/alpha/p/p1/okf', [groveA]))
+      .toBe('/g/alpha/p/p1/okf');
+    // Machine-scope fallback (no route selection) still resolves via the
+    // project-path builder's un-grove fallback, matching every other
+    // project-scoped nav item.
+    expect(resolveNavLinkTo(okfItem, null, '/okf', [groveA])).toBe('/okf');
   });
 });

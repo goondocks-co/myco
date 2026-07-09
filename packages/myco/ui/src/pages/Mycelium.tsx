@@ -5,6 +5,7 @@ import { Inspector } from '../components/mycelium/Inspector';
 import { SporeList } from '../components/mycelium/SporeList';
 import { SporeDetail } from '../components/mycelium/SporeDetail';
 import { PageHeader } from '../components/ui/page-header';
+import { CapabilityIndicator } from '../components/config/CapabilityIndicator';
 import { TileTabs } from '../components/ui/tile-tabs';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -462,6 +463,7 @@ export default function Mycelium() {
       <PageHeader
         title="Mycelium"
         subtitle="Derived intelligence — spores, entity graph, and synthesized context."
+        actions={<CapabilityIndicator capability="vault_evolution" />}
       />
 
       <TileTabs

@@ -38,6 +38,11 @@ import {
   MIGRATION_IMPORT_JOURNAL_TABLE,
   MIGRATION_IMPORT_JOURNAL_INDEX_DDLS,
   MIGRATION_LOG_TABLE,
+  OKF_GENERATIONS_TABLE,
+  OKF_PAGES_TABLE,
+  OKF_PAGE_REVISIONS_TABLE,
+  OKF_INDEX_DDLS,
+  TEAM_DELETE_TRIGGERS,
   GROVE_PROJECT_SCOPED_TABLES,
   PLAN_LOGICAL_KEY_INDEX_DDLS,
   TABLE_DDLS,
@@ -127,6 +132,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 64, migrate: (db) => migrateV63ToV64(db) },
   { version: 65, migrate: (db) => migrateV64ToV65(db) },
   { version: 66, migrate: (db) => migrateV65ToV66(db) },
+  { version: 67, migrate: (db) => migrateV66ToV67(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4070,6 +4076,59 @@ function migrateV64ToV65(db: Database): void {
  * tool", which is the correct backward-compatible reading for every row
  * written before this feature existed.
  */
+/**
+ * v66 -> v67: DB-resident OKF wiki content + skill_lineage sync readiness.
+ *
+ * Adds the three OKF wiki tables (generations, page heads, page revisions —
+ * revisions carry the full content snapshot so wiki content is
+ * database-resident and team-syncable), their unique/query indexes, and the
+ * missing sync columns on skill_lineage. machine_id backfills from the parent
+ * skill record so pre-existing lineage rows route to the machine that
+ * generated them; synced_at stays NULL so the delta backfill picks every
+ * historical snapshot up.
+ */
+function migrateV66ToV67(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(OKF_GENERATIONS_TABLE);
+    db.exec(OKF_PAGES_TABLE);
+    db.exec(OKF_PAGE_REVISIONS_TABLE);
+    for (const ddl of OKF_INDEX_DDLS) db.exec(ddl);
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_okf_pages_legacy_path ON okf_pages (path) WHERE project_id IS NULL');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_okf_pages_project_path ON okf_pages (project_id, path) WHERE project_id IS NOT NULL');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_okf_generations_legacy_generation ON okf_generations (generation) WHERE project_id IS NULL');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_okf_generations_project_generation ON okf_generations (project_id, generation) WHERE project_id IS NOT NULL');
+
+    const lineageCols = getTableColumnSet(db, 'skill_lineage');
+    if (!lineageCols.has('machine_id')) {
+      db.prepare("ALTER TABLE skill_lineage ADD COLUMN machine_id TEXT NOT NULL DEFAULT 'local'").run();
+      db.prepare(
+        `UPDATE skill_lineage
+         SET machine_id = COALESCE((SELECT r.machine_id FROM skill_records r WHERE r.id = skill_lineage.skill_id), 'local')`,
+      ).run();
+    }
+    if (!lineageCols.has('synced_at')) {
+      db.prepare('ALTER TABLE skill_lineage ADD COLUMN synced_at INTEGER').run();
+    }
+
+    // Converge delete triggers for the tables this version adds to
+    // TEAM_DELETE_TRIGGER_TABLES: drop any historical shape, then recreate the
+    // fresh shape (after the ALTERs above so OLD.machine_id resolves).
+    for (const table of ['skill_lineage', 'okf_generations', 'okf_pages', 'okf_page_revisions']) {
+      db.exec(`DROP TRIGGER IF EXISTS ${table}_team_ad`);
+    }
+    for (const trg of TEAM_DELETE_TRIGGERS) db.exec(trg);
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(67, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
 function migrateV65ToV66(db: Database): void {
   db.prepare('BEGIN').run();
   try {

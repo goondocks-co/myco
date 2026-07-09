@@ -556,8 +556,12 @@ export const TEAM_SYNC_BACKFILL_TABLES = [
   'digest_extracts',
   'skill_candidates',
   'skill_records',
+  'skill_lineage',
   'knowledge_release_state',
   'team_members',
+  'okf_generations',
+  'okf_pages',
+  'okf_page_revisions',
 ] as const;
 // entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
 // skill_usage excluded — no `synced_at` column (syncs via syncRow on insert); included

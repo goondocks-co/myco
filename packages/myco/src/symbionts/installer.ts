@@ -21,6 +21,7 @@ import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherRef
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
 import { loadMergedConfig } from '../config/loader.js';
+import { capabilityEnabled } from '../config/capabilities.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 import { BUNDLED_SKILLS } from './skills.generated.js';
 import {
@@ -49,14 +50,32 @@ const GITIGNORE_SKILLS_COMMENT_LEGACY = '# Myco skill symlinks (machine-specific
 const WRANGLER_CACHE_DIR = '.wrangler/';
 const AGENTS_MANAGED_START = '<!-- myco:managed:start -->';
 const AGENTS_MANAGED_END = '<!-- myco:managed:end -->';
-const AGENTS_MANAGED_BLOCK = `${AGENTS_MANAGED_START}
-## Myco Managed Guidance
 
-- When \`capture.ignore_plan_dirs_in_git\` is enabled, custom directories in \`capture.plan_dirs\` may be intentionally gitignored after capture into Myco.
-- Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.
-- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — use Myco first: call \`myco tool call myco_cortex --json --input '{"op":"canopy_map"}'\` as the CLI path, or \`myco_cortex({"op":"canopy_map"})\` via MCP when the host exposes Myco tools cleanly, before falling back to Glob/Grep.
-${AGENTS_MANAGED_END}
-`;
+/** The always-present managed guidance lines — byte-identical to the historical static block. */
+const AGENTS_MANAGED_BASE_LINES = [
+  '- When `capture.ignore_plan_dirs_in_git` is enabled, custom directories in `capture.plan_dirs` may be intentionally gitignored after capture into Myco.',
+  '- Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.',
+  '- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — use Myco first: call `myco tool call myco_cortex --json --input \'{"op":"canopy_map"}\'` as the CLI path, or `myco_cortex({"op":"canopy_map"})` via MCP when the host exposes Myco tools cleanly, before falling back to Glob/Grep.',
+] as const;
+
+/**
+ * Managed AGENTS.md block. The OKF pointer line is state-dependent: present
+ * only while the OKF capability is effectively enabled (and not suppressed
+ * via `okf.maintain.managed_agents_md_pointer: false`); reconciliation is the
+ * ONLY writer of this line — one-shot/dry-run exports never touch it.
+ */
+export function buildAgentsManagedBlock(opts: { okfPointer: boolean; okfOutputPath?: string }): string {
+  const lines: string[] = [...AGENTS_MANAGED_BASE_LINES];
+  if (opts.okfPointer) {
+    const root = (opts.okfOutputPath ?? 'okf').replace(/\/+$/, '');
+    lines.push(
+      `- If \`${root}/index.md\` exists, read it before broad code exploration; it is this repository's Open Knowledge Format (OKF) wiki — a synthesized, code-grounded guide to the project (architecture, subsystems, key concepts, decisions), kept current by Myco. Start at \`${root}/index.md\` and follow its links.`,
+      `- Maintaining the OKF wiki does NOT require Myco — it is standard OKF v0.1, so any agent can keep it current by staying consistent with what is there: REFINE an existing page rather than rewriting it (preserve accurate content); every content page keeps a small YAML frontmatter header with \`type\`, \`title\`, \`description\`, and \`timestamp\`; cross-links are absolute bundle-relative — a leading slash rooted at the wiki, e.g. \`/architecture/overview.md\` — and point only at pages that exist; each folder's \`index.md\` is a headerless \`#\`-section-per-type bullet list of \`* [Title](link) - description\` that you update when you add, rename, or remove a page; and \`log.md\` records what each update changed.`,
+      `- When your change alters architecture, behavior, or concepts that a page under \`${root}/\` describes, update that page in the SAME pull request — the wiki is part of the code change, not a separate chore. If no page covers new load-bearing work, you may add one (frontmatter floor above, plus an entry in that folder's \`index.md\`).`,
+    );
+  }
+  return `${AGENTS_MANAGED_START}\n## Myco Managed Guidance\n\n${lines.join('\n')}\n${AGENTS_MANAGED_END}\n`;
+}
 
 /** Subdirectory within the package where symbiont templates live. */
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
@@ -782,10 +801,20 @@ export class SymbiontInstaller {
       return false;
     }
 
+    // The pointer follows effective config state only — never export events.
+    // capabilityEnabled is fail-closed on a null (unloadable) config.
+    const config = this.loadProjectConfig();
+    const okfPointer =
+      capabilityEnabled(config, 'okf') && config?.okf.maintain.managed_agents_md_pointer !== false;
+    const block = buildAgentsManagedBlock({
+      okfPointer,
+      okfOutputPath: config?.okf.maintain.output_path,
+    });
+
     const stripped = this.stripManagedAgentsBlock(content);
     const separator = stripped.length > 0 && !stripped.endsWith('\n') ? '\n' : '';
     const spacer = stripped.trimEnd().length > 0 ? '\n' : '';
-    const result = `${stripped}${separator}${spacer}${AGENTS_MANAGED_BLOCK}`;
+    const result = `${stripped}${separator}${spacer}${block}`;
     if (result === content) return false;
     fs.writeFileSync(agentsPath, result, 'utf-8');
     return true;

@@ -73,8 +73,10 @@ describe('agent_run_write_intents classifier columns (schema v66)', () => {
     `);
     db.exec(`DROP TABLE agent_run_write_intents`);
     db.exec(`ALTER TABLE agent_run_write_intents_old RENAME TO agent_run_write_intents`);
-    db.exec(`DELETE FROM schema_version WHERE version = ${SCHEMA_VERSION}`);
-    db.prepare(`INSERT INTO schema_version (version, applied_at) VALUES (?, ?)`).run(SCHEMA_VERSION - 1, 0);
+    // Stamp back to 65 — the version just below the v66 classifier-column
+    // migration — so createSchema replays v66 (and every later migration).
+    db.exec(`DELETE FROM schema_version WHERE version >= 66`);
+    db.prepare(`INSERT INTO schema_version (version, applied_at) VALUES (?, ?)`).run(65, 0);
 
     createSchema(db, 'local');
 

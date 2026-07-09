@@ -88,3 +88,7 @@ Canopy does **not**:
 - Synchronize across machines — the index is per-project-per-machine, regenerated cheaply on each one
 - Expand into a corrections layer — wrong injections don't get patched up; the agent sees what was scanned and chooses
 - Run an LLM in the Read hot path — the LLM pass is a separate background task, only its output is read at injection time
+
+## Canopy in OKF
+
+When both Canopy and [OKF](okf.md) are enabled, Canopy's file knowledge is projected into the repository-carried OKF bundle under `okf/canopy/`. The same anatomy your agents use then travels with your code — any teammate or agent can read it straight from the checkout, without Myco installed.

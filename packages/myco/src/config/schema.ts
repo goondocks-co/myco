@@ -642,6 +642,40 @@ const VaultEvolutionSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+/**
+ * Which OkfSourceSet slices (Task 2.1's `gatherSources`) the synthesis
+ * harness reads from — repo file tree, git diff context, vault knowledge
+ * (spores/decisions/Canopy). Reserved knob: no consumer wires it yet —
+ * `okf_read_sources` (okf-tools.ts) still takes its own per-call `kind`
+ * selector (repo|git|vault|all). A future task may wire this as the
+ * project-level default for that selector — a config knob shipped ahead of
+ * the consumer that will read it.
+ */
+const OkfSynthesisScopeSchema = z.object({
+  repo: z.boolean().default(true),
+  git: z.boolean().default(true),
+  vault: z.boolean().default(true),
+});
+
+const OkfMaintainSchema = z.object({
+  /** Bundle output root, relative to the project root. */
+  output_path: z.string().default('okf'),
+  /** Synthesis source scope — see {@link OkfSynthesisScopeSchema}. */
+  scope: OkfSynthesisScopeSchema.default(() => OkfSynthesisScopeSchema.parse({})),
+  managed_agents_md_pointer: z.boolean().default(true),
+});
+
+const OkfSchema = z.object({
+  /**
+   * Master gate for the OKF capability (okf-synthesize task, OKF page,
+   * AGENTS.md pointer). The FIRST off-by-default capability: absent config
+   * block ⇒ disabled. This Zod default is the runtime mechanism;
+   * CAPABILITIES.okf.defaultEnabled is defense-in-depth for raw configs.
+   */
+  enabled: z.boolean().default(false),
+  maintain: OkfMaintainSchema.default(() => OkfMaintainSchema.parse({})),
+});
+
 export const GroveConfigSchema = z.object({
   daemon: GroveDaemonSchema.default(() => GroveDaemonSchema.parse({})),
   backup: BackupSchema.default(() => BackupSchema.parse({})),
@@ -679,6 +713,7 @@ export const ProjectConfigSchema = z.object({
   // existing values to their new tier files.
   release_provenance: ReleaseProvenanceSchema.default(() => ReleaseProvenanceSchema.parse({})),
   cortex: CortexSchema.default(() => CortexSchema.parse({})),
+  okf: OkfSchema.default(() => OkfSchema.parse({})),
   symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
 });
 
@@ -763,6 +798,13 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['notifications'],
   // Grove-tier (only strippable once a Grove is bound — see GROVE_TIER_FIELDS):
   ['skills'],
+  // OKF Task 4.2: the Myco-shaped `include`/`include_status` config surface
+  // is retired outright (document-model synthesis has no equivalent knob),
+  // not moved to another tier — unconditionally strippable.
+  ['okf', 'maintain', 'include'],
+  ['okf', 'maintain', 'include_status'],
+  ['okf', 'maintain', 'include_undescribed_canopy'],
+  ['okf', 'maintain', 'agent_concept_refresh'],
 ];
 
 export const MycoConfigSchema = z.preprocess(
@@ -789,6 +831,7 @@ export const MycoConfigSchema = z.preprocess(
     vault_evolution: VaultEvolutionSchema.default(() => VaultEvolutionSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
     cortex: CortexSchema.default(() => CortexSchema.parse({})),
+    okf: OkfSchema.default(() => OkfSchema.parse({})),
     appearance: AppearanceConfigSchema,
     symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
   }),
@@ -806,6 +849,7 @@ export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
 export type VaultEvolutionConfig = z.infer<typeof VaultEvolutionSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsSchema>;
+export type OkfConfig = z.infer<typeof OkfSchema>;
 // CanopyConfig removed in config_version 8 — Canopy now lives under
 // `cortex.canopy`. Use `MycoConfig['cortex']['canopy']` for the slice.
 export type CortexConfig = z.infer<typeof CortexSchema>;

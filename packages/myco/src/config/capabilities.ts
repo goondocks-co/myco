@@ -30,6 +30,15 @@ export interface CapabilityDef {
   scheduledTasks: string[];
   /** Settings route for advanced knobs (deep-linked from the panel; finalized in the UI plan). */
   advancedSettingsLink: string;
+  /**
+   * Resolution when the master-gate path is absent from the config. Existing
+   * capabilities keep the implicit `true` (absent = enabled); OKF is the first
+   * off-by-default capability. Runtime configs come from the merged loader,
+   * which materializes every Zod default — so the schema's `.default(false)`
+   * is the real off-by-default mechanism and this field is defense-in-depth
+   * for raw/hand-built configs (spec-mandated).
+   */
+  defaultEnabled?: boolean;
 }
 
 export const CAPABILITIES: Record<CapabilityId, CapabilityDef> = {
@@ -66,6 +75,17 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityDef> = {
     scheduledTasks: ['vault-evolve', 'vault-seed'],
     advancedSettingsLink: '/settings#scheduled-tasks',
   },
+  okf: {
+    id: 'okf',
+    label: 'OKF',
+    masterGate: 'okf.enabled',
+    // Matches the universal precedent (all capabilities use []); the OKF page
+    // owns the advanced knobs, so UI grouping via memberGates buys nothing.
+    memberGates: [],
+    scheduledTasks: ['okf-synthesize'],
+    advancedSettingsLink: '/okf',
+    defaultEnabled: false,
+  },
 };
 
 /** Resolve the capability that governs a given agent task name, or null. */
@@ -82,12 +102,17 @@ export function governingCapability(taskName: string): CapabilityId | null {
 
 /**
  * Single authoritative capability gate. Fail-closed: a null/unloadable
- * config disables the capability. A master gate defaults on (only `false`
- * disables) — matching the gate-honoring contract.
+ * config disables the capability. When the master-gate path is absent, the
+ * capability's `defaultEnabled` decides — implicit `true` for the legacy
+ * capabilities, `false` for OKF — matching the gate-honoring contract.
  */
 export function capabilityEnabled(config: MycoConfig | null | undefined, capId: CapabilityId): boolean {
   if (!config) return false;
-  return getAtPath(config, CAPABILITIES[capId].masterGate) !== false;
+  const cap = CAPABILITIES[capId];
+  const value = getAtPath(config, cap.masterGate);
+  if (value === false) return false;
+  if (value === true) return true;
+  return cap.defaultEnabled ?? true;
 }
 
 /**

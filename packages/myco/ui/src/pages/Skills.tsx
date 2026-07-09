@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { HelpCircle, ExternalLink } from 'lucide-react';
 import { PageHeader } from '../components/ui/page-header';
+import { CapabilityIndicator } from '../components/config/CapabilityIndicator';
 import { PageContainer } from '../components/ui/page-container';
 import { TileTabs } from '../components/ui/tile-tabs';
 import { Badge } from '../components/ui/badge';
@@ -174,6 +175,7 @@ export default function Skills() {
           <div className="flex items-center gap-2">
             {pendingCount > 0 && <Badge variant="secondary">{pendingCount} pending</Badge>}
             {activeCount > 0 && <Badge variant="default">{activeCount} active</Badge>}
+            <CapabilityIndicator capability="skills" />
             <SkillsHelpDialog />
           </div>
         }

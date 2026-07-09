@@ -27,12 +27,12 @@ describe('MCP tool surface (createMycoTools)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers the trimmed core tool surface (7 read/editorial tools — no admin)', () => {
-    // The MCP surface is for Symbionts to read project intelligence.
-    // Administrative operations belong to the CLI + UI, not MCP.
-    // See docs/architecture/actors-and-boundaries.md and Bucket K
-    // (PR #308) for the removal of myco_maintenance, myco_update, and
-    // myco_skill_candidates.
+  it('registers the trimmed core tool surface (8 read/editorial tools — no admin)', () => {
+    // The MCP surface is for Symbionts to read project intelligence and make
+    // constrained editorial edits (myco_okf concepts). Administrative
+    // operations belong to the CLI + UI, not MCP. See
+    // docs/architecture/actors-and-boundaries.md and Bucket K (PR #308) for the
+    // removal of myco_maintenance, myco_update, and myco_skill_candidates.
     const tools = createMycoTools(tmpDir, client).getRegisteredTools();
     expect(tools).toContain('myco_search');
     expect(tools).toContain('myco_cortex');
@@ -41,7 +41,8 @@ describe('MCP tool surface (createMycoTools)', () => {
     expect(tools).toContain('myco_skills');
     expect(tools).toContain('myco_spores');
     expect(tools).toContain('myco_agent');
-    expect(tools).toHaveLength(7);
+    expect(tools).toContain('myco_okf');
+    expect(tools).toHaveLength(8);
   });
 
   it('no longer registers the retired MCP surfaces', () => {
