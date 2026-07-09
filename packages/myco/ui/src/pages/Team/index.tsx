@@ -59,6 +59,36 @@ function VersionBlockBanner({ status }: { status: TeamStatusResponse }) {
   );
 }
 
+/**
+ * Partial degradation companion to VersionBlockBanner: the worker accepts
+ * this daemon (sync is NOT paused) but its deployment predates some synced
+ * tables, so the reconcile pass skips them until the worker updates. Warns
+ * (ochre) rather than alerts, with the same actionable worker-update
+ * command. Renders nothing when the worker is current — and yields to the
+ * hard-block banner, which owns the page when sync is fully paused.
+ */
+function PartialSyncBanner({ status }: { status: TeamStatusResponse }) {
+  const gated = status.reconcile_gated_tables ?? [];
+  if (gated.length === 0) return null;
+  if (status.version_status === 'client_too_old' || status.version_status === 'worker_too_old') {
+    return null;
+  }
+  const command = `myco-team update --team-id ${status.team_id ?? '<team_id>'}`;
+  return (
+    <AccentSurface accent="ochre" padded className="mb-4 flex items-start gap-3" role="status">
+      <AlertTriangle className="size-5 shrink-0 text-ochre" aria-hidden />
+      <div className="flex flex-col gap-1">
+        <p className="m-0 text-sm font-medium text-on-surface">Partial sync — the team worker is behind this daemon</p>
+        <p className="m-0 text-sm text-on-surface-variant">
+          Not reconciling: <code className="text-ochre">{gated.join(', ')}</code> (worker protocol
+          v{status.worker_protocol_version ?? '?'}, daemon v{status.daemon_protocol_version}). Local
+          data is held safely; run <code className="text-ochre">{command}</code> to resume full sync.
+        </p>
+      </div>
+    </AccentSurface>
+  );
+}
+
 const TEAM_SELECTION_KEY = 'myco.team.selectedTeamId';
 
 export function TeamPage() {
@@ -145,6 +175,7 @@ export function TeamPage() {
         actions={teamScopeSelector}
       />
       <VersionBlockBanner status={status} />
+      <PartialSyncBanner status={status} />
       <TileTabs
         tabs={TABS}
         activeTab={tab}

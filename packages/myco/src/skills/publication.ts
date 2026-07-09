@@ -66,6 +66,13 @@ export function resolvePublishedSkillPaths(projectRoot: string, skillName: strin
   };
 }
 
+/**
+ * Materialization chokepoint: every published SKILL.md disk write flows
+ * through this function, and relocating the materialization step requires
+ * that to stay true. Content truth is `skill_lineage.content_snapshot`;
+ * the file written here is the delivery copy coding agents load. Delete
+ * side: `removePublishedSkillFileOrDirectory` below.
+ */
 export function writePublishedSkillFile(
   projectRoot: string,
   skillName: string,
