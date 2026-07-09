@@ -23,8 +23,19 @@ function makeSymbiont(overrides: Partial<SymbiontInfo> = {}): SymbiontInfo {
 }
 
 describe('buildCapabilityChips', () => {
-  it('returns an empty array for a symbiont that supports nothing', () => {
-    expect(buildCapabilityChips(makeSymbiont())).toEqual([]);
+  it('returns only the OKF (CLI) chip for a symbiont that supports nothing else', () => {
+    // The OKF chip is universal — every symbiont either supports MCP tool
+    // calls or falls back to the CLI, so it's the one chip that always
+    // renders even when every other capability flag is false.
+    expect(buildCapabilityChips(makeSymbiont())).toEqual([
+      {
+        id: 'okf',
+        label: 'OKF (CLI)',
+        to: '/okf',
+        tone: 'outline',
+        title: 'This symbiont falls back to the myco CLI / reading the OKF markdown directly',
+      },
+    ]);
   });
 
   it('emits the Sessions chip when supportsSessions is true', () => {
@@ -120,6 +131,7 @@ describe('buildCapabilityChips', () => {
       'plans',
       'skills',
       'mcp',
+      'okf',
     ]);
   });
 
@@ -134,5 +146,32 @@ describe('buildCapabilityChips', () => {
     }));
     const ids = chips.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  describe('OKF chip — symbiont-derived only', () => {
+    it('shows "OKF tools" (sage) when the symbiont supports MCP', () => {
+      const chips = buildCapabilityChips(makeSymbiont({ supportsMcp: true, mcpActive: true }));
+      const okf = chips.find((c) => c.id === 'okf');
+      expect(okf).toBeDefined();
+      expect(okf?.label).toBe('OKF tools');
+      expect(okf?.tone).toBe('sage');
+      expect(okf?.to).toBe('/okf');
+    });
+
+    it('shows the CLI-fallback chip (outline) when the symbiont does not support MCP', () => {
+      const chips = buildCapabilityChips(makeSymbiont({ supportsMcp: false }));
+      const okf = chips.find((c) => c.id === 'okf');
+      expect(okf).toBeDefined();
+      expect(okf?.label).toBe('OKF (CLI)');
+      expect(okf?.tone).toBe('outline');
+      expect(okf?.to).toBe('/okf');
+    });
+
+    it('never uses the ochre tone reserved for genuine warnings', () => {
+      const withMcp = buildCapabilityChips(makeSymbiont({ supportsMcp: true }));
+      const withoutMcp = buildCapabilityChips(makeSymbiont({ supportsMcp: false }));
+      expect(withMcp.find((c) => c.id === 'okf')?.tone).not.toBe('ochre');
+      expect(withoutMcp.find((c) => c.id === 'okf')?.tone).not.toBe('ochre');
+    });
   });
 });

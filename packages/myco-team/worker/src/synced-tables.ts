@@ -33,9 +33,13 @@ export const SYNCED_TABLES = [
   'digest_extracts',
   'skill_candidates',
   'skill_records',
+  'skill_lineage',
   'skill_usage',
   'knowledge_release_state',
   'team_members',
+  'okf_generations',
+  'okf_pages',
+  'okf_page_revisions',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -65,9 +69,13 @@ export const SYNCED_TABLE_SCOPE: Record<SyncedTable, 'project' | 'machine'> = {
   digest_extracts: 'project',
   skill_candidates: 'project',
   skill_records: 'project',
+  skill_lineage: 'project',
   skill_usage: 'project',
   knowledge_release_state: 'project',
   team_members: 'machine',
+  okf_generations: 'project',
+  okf_pages: 'project',
+  okf_page_revisions: 'project',
 };
 
 /**

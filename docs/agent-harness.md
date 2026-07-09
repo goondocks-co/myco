@@ -14,7 +14,7 @@ Every piece of this comes from the same source material: the prompts, tool calls
 
 ## Tasks
 
-Fourteen tasks cover the full lifecycle. Most users only interact with `vault-evolve` (the default scheduled task) or `vault-seed` (a one-shot for brownfield repos) — the others are available for manual trigger or specialized workflows.
+Fifteen tasks cover the full lifecycle. Most users only interact with `vault-evolve` (the default scheduled task) or `vault-seed` (a one-shot for brownfield repos) — the others are available for manual trigger or specialized workflows.
 
 ### Intelligence
 
@@ -55,6 +55,14 @@ See [Canopy](canopy.md) for what these produce.
 | `skill-evolve` | Monitors active skills for knowledge drift and rewrites stale content. |
 
 See the [Skills docs](skills.md) for the full skill lifecycle.
+
+### OKF
+
+| Task | What it does |
+|------|-------------|
+| `okf-synthesize` | Synthesizes the project's [OKF](okf.md) knowledge wiki — a curated set of topic pages — when the project has meaningfully changed. Only runs when OKF is enabled for the project; a precondition check skips the run when nothing has changed since the last refresh. |
+
+See [OKF](okf.md) for the repository-carried wiki this task keeps fresh.
 
 ## Configuring providers
 

@@ -1,0 +1,3 @@
+# Glossary
+
+* [Terminology](terms.md)

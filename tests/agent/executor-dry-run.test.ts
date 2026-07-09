@@ -2,6 +2,8 @@ import * as __orig__myco_agent_loader_js_1__ns from '@myco/agent/loader.js';
 const __orig__myco_agent_loader_js_1 = { ...__orig__myco_agent_loader_js_1__ns };
 import * as __orig__myco_db_client_js_2__ns from '@myco/db/client.js';
 const __orig__myco_db_client_js_2 = { ...__orig__myco_db_client_js_2__ns };
+import * as __orig__myco_config_loader_js_3__ns from '@myco/config/loader.js';
+const __orig__myco_config_loader_js_3 = { ...__orig__myco_config_loader_js_3__ns };
 /**
  * Tests for dryRun + evaluationId threading through the executor.
  *
@@ -214,6 +216,7 @@ mock.module('@myco/db/client.js', () => {
 // ---------------------------------------------------------------------------
 
 mock.module('@myco/config/loader.js', () => ({
+  ...__orig__myco_config_loader_js_3,
   loadConfig: () => ({
     version: 3,
     config_version: 0,

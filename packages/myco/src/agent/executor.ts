@@ -50,7 +50,12 @@ import {
   CANOPY_MAP_TASK,
   CANOPY_MAP_REPORT_ACTION,
   CANOPY_MAP_CONTENT_KEY,
+  OKF_SYNTHESIZE_TASK,
 } from './instruction-builders.js';
+import { OkfStore } from '@myco/okf/store.js';
+import { computeOkfSynthesizeSnapshot, type OkfSynthesizeSnapshot } from '@myco/okf/schedule.js';
+import { ProjectVault } from '@myco/vault/project-vault.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
@@ -847,6 +852,7 @@ export async function runAgent(
 
     await cleanupOnTaskFailure({
       taskName: config.taskName,
+      runId,
       vaultDir,
       runContext: options?.runContext,
     });
@@ -868,6 +874,13 @@ export async function runAgent(
  * for direct unit testing — the real executor call site lives in
  * runAgent's catch block.
  *
+ * okf-synthesize: the synthesize map phase may have opened a staged
+ * generation (taking the OKF lifecycle lock) on the first okf_write_page.
+ * A failed run never reaches finalizeOkfSynthesize, so abort here to publish
+ * nothing and release the lock — preserving the staged pages as the orphaned
+ * staging for the next generation to publish. Safe no-op when no session was
+ * opened (empty plan, or a failure before the first page write).
+ *
  * skill-generate: the draft phase stages SKILL.md + manifest to
  * .myco/staging/skills/<candidate_id>/ via vault_stage_skill. If the
  * validate phase (or any later required phase) fails, the staged
@@ -877,9 +890,13 @@ export async function runAgent(
  */
 export async function cleanupOnTaskFailure(args: {
   taskName: string | undefined;
+  runId?: string;
   vaultDir: string | undefined;
   runContext: RunOptions['runContext'];
 }): Promise<void> {
+  // okf-synthesize needs NO failure cleanup: wiki pages are database rows,
+  // written durably as the run progresses; a failed run's draft generation
+  // simply persists until the next okf_write_plan supersedes it.
   if (args.taskName !== SKILL_GENERATE_TASK) return;
   if (!args.vaultDir) return;
   const candidateId = args.runContext?.candidate_id;
@@ -929,6 +946,10 @@ export async function finalizeOnTaskSuccess(args: {
   }
   if (args.taskName === CANOPY_MAP_TASK) {
     finalizeCanopyMap(args);
+    return;
+  }
+  if (args.taskName === OKF_SYNTHESIZE_TASK) {
+    await finalizeOkfSynthesize(args);
     return;
   }
 }
@@ -1041,6 +1062,83 @@ function finalizeCanopyMap(args: {
     token_estimate: estimateTokens(content),
     generated_by_run_id: args.runId,
   });
+}
+
+/**
+ * Publish hook for a successful `okf-synthesize` run. The synthesize map phase
+ * wrote each page as durable rows against the run's draft wiki generation;
+ * this finalizes that generation — publish-eligibility scan, link
+ * normalization, then status 'published' (clean) or 'blocked' (findings). A
+ * blocked generation is still a SUCCESSFUL run: the content is durable and an
+ * acknowledge publishes it without re-synthesis. Returns without finalizing
+ * when no draft is open (an empty plan run).
+ */
+export async function finalizeOkfSynthesize(args: {
+  agentId: string;
+  runId: string;
+  requestContext?: RunOptions['requestContext'];
+  vaultDir?: string;
+}): Promise<void> {
+  const store = resolveOkfStore(args);
+  if (!store) return;
+  const draft = store.currentDraft();
+  if (!draft) return;
+  const snapshot = resolveOkfSynthesizeSnapshot(args);
+  store.finalizeGeneration(draft.id, {
+    logSummary: 'Synthesized OKF wiki pages.',
+    inputsHash: snapshot?.probeFingerprint ?? undefined,
+    lastRunRef: snapshot?.lastRunRef ?? null,
+  });
+}
+
+/**
+ * Build the OkfStore for a run's request context, or null when the context/
+ * vaultDir needed to resolve it is unavailable. Mirrors the harness tools'
+ * fail-closed construction (okf-tools.ts buildStore).
+ */
+function resolveOkfStore(args: {
+  requestContext?: RunOptions['requestContext'];
+  vaultDir?: string;
+}): OkfStore | null {
+  try {
+    if (!args.vaultDir || !args.requestContext) return null;
+    const projectId = requireProjectId(args.requestContext, 'okf-synthesize finalize');
+    const config = loadMergedConfig(args.vaultDir, { groveId: args.requestContext.groveId ?? undefined });
+    return new OkfStore({
+      scope: projectScopeFromRequestContext(args.requestContext),
+      projectId,
+      machineId: args.requestContext.machineId,
+      config,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort `okf-synthesize-due` baseline (Task 2.4) for the manifest
+ * `finalize` writes at publish time. Returns null when the request context/
+ * vaultDir needed to resolve config+scope is unavailable, or on any failure
+ * computing it — the publish itself must never be blocked by a scheduling
+ * bookkeeping computation; a null snapshot just means the manifest's
+ * `probe_fingerprint`/`last_run_ref` reset to null, and the next
+ * `okfSynthesizeDue` check fails open to "due" (harmless).
+ */
+function resolveOkfSynthesizeSnapshot(args: {
+  requestContext?: RunOptions['requestContext'];
+  vaultDir?: string;
+}): OkfSynthesizeSnapshot | null {
+  try {
+    if (!args.vaultDir || !args.requestContext) return null;
+    const projectId = requireProjectId(args.requestContext, 'okf-synthesize finalize');
+    const projectRoot = args.requestContext.projectRoot ?? resolveProjectRoot(args.vaultDir);
+    const machineId = args.requestContext.machineId;
+    const config = loadMergedConfig(args.vaultDir, { groveId: args.requestContext.groveId ?? undefined });
+    const scope = projectScopeFromRequestContext(args.requestContext);
+    return computeOkfSynthesizeSnapshot(scope, config, projectRoot, projectId, machineId);
+  } catch {
+    return null;
+  }
 }
 
 function fallbackInstructionHash(instruction: string | undefined): string {

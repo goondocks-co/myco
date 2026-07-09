@@ -14,6 +14,7 @@ import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
 import {
   COLLECTIVE_TOOL_DEFINITIONS,
   TOOL_AGENT,
+  TOOL_OKF,
   TOOL_COLLECTIVE_PROJECT,
   TOOL_COLLECTIVE_PROJECTS,
   TOOL_COLLECTIVE_SEARCH,
@@ -150,6 +151,13 @@ const HANDLERS = new Map<string, ToolLoader>([
         const r = result as { ok: unknown };
         return { op: input.op ?? 'runs', id: input.id, ok: r.ok };
       },
+    };
+  }],
+  [TOOL_OKF, async () => {
+    const { handleMycoOkf } = await import('./okf.js');
+    return {
+      handle: (input, client, context) => handleMycoOkf(input as unknown as Parameters<typeof handleMycoOkf>[0], client, context),
+      summarize: (input) => ({ op: input.op ?? 'status', id: input.id ?? input.concept_id }),
     };
   }],
 ]);

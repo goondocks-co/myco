@@ -5,8 +5,8 @@ import { CAPABILITIES } from '../../packages/myco/src/config/capabilities';
 import { enumerateLeafPaths } from '../../packages/myco/src/config/leaf-paths';
 
 describe('capability ids', () => {
-  it('declares the four capability ids', () => {
-    expect([...CAPABILITY_IDS].sort()).toEqual(['canopy', 'cortex', 'skills', 'vault_evolution']);
+  it('declares the five capability ids', () => {
+    expect([...CAPABILITY_IDS].sort()).toEqual(['canopy', 'cortex', 'okf', 'skills', 'vault_evolution']);
   });
 });
 
@@ -26,6 +26,12 @@ describe('capability gate annotations', () => {
     expect(e.home).toBe('grove');
     expect(e.overridableBy).toContain('local');
   });
+  it('okf.enabled is gated by okf, project-tier home, overridable by local', () => {
+    const e = scopePolicyForPath('okf.enabled');
+    expect(e.gate).toBe('okf');
+    expect(e.home).toBe('project');
+    expect(e.overridableBy).toContain('local');
+  });
 });
 
 describe('capability master-gate schema defaults', () => {
@@ -41,6 +47,9 @@ describe('capability master-gate schema defaults', () => {
   });
   it('vault_evolution.enabled defaults true', () => {
     expect(cfg.vault_evolution.enabled).toBe(true);
+  });
+  it('okf.enabled defaults FALSE — the first off-by-default capability', () => {
+    expect(cfg.okf.enabled).toBe(false);
   });
 });
 

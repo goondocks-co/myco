@@ -879,10 +879,12 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   }
 
   fs.mkdirSync(vaultDir, { recursive: true });
-  // Keep project config sparse. Capability gates are fail-open on unset, so
-  // stripping a wholly-default `cortex` section is behaviorally identical to
-  // leaving its default `enabled: true` materialized; revisit if that contract
-  // ever becomes fail-closed.
+  // Keep project config sparse. Legacy capability gates are fail-open on
+  // unset while `okf` is fail-closed (CapabilityDef.defaultEnabled: false) —
+  // stripping a wholly-default section stays behaviorally identical in BOTH
+  // cases, because a section is only stripped when it equals its defaults
+  // (cortex default enabled:true resolves open; okf default enabled:false
+  // resolves closed). A non-default gate value always survives the strip.
   const sparseProject = stripDefaultSections(projectOnly, defaults, ['version', 'config_version']);
   atomicWriteFileSync(configPath, YAML.stringify(sparseProject), 'utf-8');
   invalidateMergedConfigCache(vaultDir);

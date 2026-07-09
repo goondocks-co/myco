@@ -129,6 +129,39 @@ intelligence:
     expect(config.embedding.provider).toBe('openai-compatible');
   });
 
+  it('strips retired okf.maintain legacy leaves from myco.yaml on disk (migrateTiers: true)', () => {
+    // OKF Task 4.2: the Myco-shaped include/include_status/etc. leaves are
+    // retired outright (PROJECT_TIER_LEGACY_FIELDS), not moved to another
+    // tier. A myco.yaml written before this task carries them; the next
+    // migrateTiers: true load must physically remove them from disk (not
+    // just drop them from the in-memory parse).
+    const yaml = `version: 3
+okf:
+  enabled: true
+  maintain:
+    output_path: okf
+    include:
+      - spores
+      - canopy
+    include_status:
+      - active
+    include_undescribed_canopy: true
+    agent_concept_refresh: true
+`;
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), yaml);
+    const config = loadConfig(tmpDir, { migrateTiers: true });
+    expect(config.okf.maintain.output_path).toBe('okf');
+
+    const onDisk = fs.readFileSync(path.join(tmpDir, 'myco.yaml'), 'utf-8');
+    expect(onDisk).not.toContain('include_status');
+    expect(onDisk).not.toContain('include_undescribed_canopy');
+    expect(onDisk).not.toContain('agent_concept_refresh');
+    // `output_path` is kept; the bare word 'include' must not remain as a
+    // maintain leaf either (it was the array-of-strings include, not the
+    // new `scope` object).
+    expect(onDisk).not.toMatch(/^\s+include:$/m);
+  });
+
   it('updateConfig applies transform and persists (project-tier field)', () => {
     // capture.* moved to Machine tier (2026-06 scope correction), so it's no
     // longer a project-file field. Use a project-tier field
