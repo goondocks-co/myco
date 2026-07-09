@@ -2,9 +2,7 @@ import { useEffect, useState, type ChangeEvent, type KeyboardEvent } from 'react
 import { Input } from '../ui/input';
 import type { BaseFieldControlProps } from './field-control-types';
 
-export interface TextFieldProps extends BaseFieldControlProps {
-  value: string;
-  onChange: (next: string) => void;
+export interface TextFieldProps extends BaseFieldControlProps<string> {
   placeholder?: string;
   /** Trim the draft before committing. Defaults to true. */
   trim?: boolean;

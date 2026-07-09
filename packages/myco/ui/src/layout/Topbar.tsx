@@ -37,8 +37,9 @@ function breadcrumbFor(pathname: string): string[] {
   }
   if (effective === '/') return ['Dashboard'];
   const segments = effective.split('/').filter(Boolean);
-  const top = `/${segments[0]}`;
-  const topLabel = ROUTE_LABELS[top] ?? segments[0];
+  const firstSegment = segments[0] ?? '';
+  const top = `/${firstSegment}`;
+  const topLabel = ROUTE_LABELS[top] ?? firstSegment;
   return [topLabel];
 }
 

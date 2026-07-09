@@ -2,9 +2,7 @@ import { useEffect, useState, type ChangeEvent, type KeyboardEvent } from 'react
 import { Input } from '../ui/input';
 import type { BaseFieldControlProps } from './field-control-types';
 
-export interface NumberFieldProps extends BaseFieldControlProps {
-  value: number;
-  onChange: (next: number) => void;
+export interface NumberFieldProps extends BaseFieldControlProps<number> {
   min?: number;
   max?: number;
   step?: number;

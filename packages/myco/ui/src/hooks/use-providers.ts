@@ -46,7 +46,7 @@ const KNOWN_HARNESS_IDS: readonly HarnessId[] = Array.from(
  * harness selected" without blanket casting.
  */
 export function parseHarnessId(value: string): HarnessIdUi | '' {
-  return KNOWN_HARNESS_IDS.includes(value) ? (value as HarnessIdUi) : '';
+  return (KNOWN_HARNESS_IDS as readonly string[]).includes(value) ? (value as HarnessIdUi) : '';
 }
 
 /**

@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.typecheck.json --noEmit"
   },
   "devDependencies": {
     "@radix-ui/react-dialog": "^1.1.17",

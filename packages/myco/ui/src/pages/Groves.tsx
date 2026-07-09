@@ -144,7 +144,7 @@ export default function Groves() {
   }
 
   function handleIgnore(grove: GroveSummary, project: GroveProjectSummary) {
-    const existing = machineConfig.data?.config.capture.ignore?.paths ?? [];
+    const existing = machineConfig.data?.config.capture?.ignore?.paths ?? [];
     if (existing.includes(project.root)) { handleArchive(grove, project); return; }
     addToMachineConfigList.mutate(
       { path: 'capture.ignore.paths', value: project.root },

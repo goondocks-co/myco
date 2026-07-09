@@ -355,12 +355,12 @@ export function CanopyEntriesList({ selectedPath, onSelectPath }: CanopyEntriesL
   const tableHead = (
     <thead>
       <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
-        {SORT_COLUMNS.map((col, idx) => {
+        {SORT_COLUMNS.map((col) => {
           // The "Described" column lives between Language and Embedded in the
           // visual layout but isn't sortable on its own — described===null
           // is already filterable and a separate sort would surprise users.
-          // Re-inject it here at idx===2 so column order stays in sync with
-          // the table body.
+          // Insert it after the Language header so column order stays in sync
+          // with the table body.
           const elements: React.ReactNode[] = [
             <ColHeader
               key={col.id}

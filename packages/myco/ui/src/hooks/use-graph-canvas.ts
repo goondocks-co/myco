@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useMemo } from 'react';
-import cytoscape, { type Core, type ElementDefinition, type NodeSingular } from 'cytoscape';
+import cytoscape, { type Core, type ElementDefinition, type NodeSingular, type StylesheetJson } from 'cytoscape';
 import { formatGraphLabel } from '../lib/graph-labels';
 
 /* ---------- Graph palette ---------- */
@@ -76,12 +76,6 @@ const COSE_GRAVITY = 0.2;
 
 /** COSE layout: animation duration (ms). */
 const COSE_ANIMATION_DURATION = 600;
-
-/** Focused COSE layout repulsion force. */
-const FOCUS_NODE_REPULSION = 6000;
-
-/** Focused COSE ideal edge length. */
-const FOCUS_IDEAL_EDGE_LENGTH = 150;
 
 /** Focused layout animation duration (ms). */
 const FOCUS_ANIMATION_DURATION = 300;
@@ -226,7 +220,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId, centerNod
     return next;
   }, [nodes, edges]);
 
-  const style = useMemo(() => ([
+  const style = useMemo<StylesheetJson>(() => ([
     {
       selector: 'node',
       style: {
@@ -337,7 +331,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId, centerNod
           const anchorId = connectedEdge
             ? (connectedEdge.source_id === n.id ? connectedEdge.target_id : connectedEdge.source_id)
             : centerId;
-          const anchor = (anchorId && existingPositions?.get(anchorId)) ?? fallbackCenter;
+          const anchor = anchorId ? existingPositions?.get(anchorId) ?? fallbackCenter : fallbackCenter;
           const angle = (stableAngle(n.id) * Math.PI) / 180;
           const radius = anchorId === centerId ? 150 : 110;
           position = {
@@ -404,7 +398,7 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId, centerNod
           concentric: (node) => {
             if (node.id() === centerId) return 3;
             const neighborhood = node.closedNeighborhood();
-            if (neighborhood.some((ele) => ele.isNode() && ele.id() === centerId)) return 2;
+            if (neighborhood.nodes().toArray().some((ele) => ele.id() === centerId)) return 2;
             return 1;
           },
           levelWidth: () => 1,
@@ -442,8 +436,9 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId, centerNod
   }, [centerId, centerNodeType, selectedNodeId]);
 
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
+    const containerElement = containerRef.current;
+    if (!containerElement) return;
+    const container = containerElement;
 
     function tryInitialize(): void {
       const rect = container.getBoundingClientRect();
@@ -516,7 +511,8 @@ export function useGraphCanvas({ nodes, edges, onNodeSelect, centerId, centerNod
 
     const existingPositions = new Map<string, { x: number; y: number }>();
     cy.nodes().forEach((node) => {
-      existingPositions.set(node.id(), { x: node.position('x'), y: node.position('y') });
+      const position = node.position();
+      existingPositions.set(node.id(), { x: position.x, y: position.y });
     });
 
     cy.elements().remove();

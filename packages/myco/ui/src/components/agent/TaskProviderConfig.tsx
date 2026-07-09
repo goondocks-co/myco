@@ -23,6 +23,7 @@ import {
   useTestProvider,
   useUpdateTaskConfig,
   maybeInferHarnessFromProviderType,
+  parseProviderType,
   REASONING_LEVELS,
   type ProviderConfig,
   type PhaseOverride,
@@ -158,10 +159,11 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const resolvedTaskBaseUrl = baseUrl || defaultBaseUrlForProvider(providerType, draft.localBackend);
   const reasoningModelsQuery = useModels(providerType || null, resolvedTaskBaseUrl || undefined, 'llm', draft.localBackend || null);
   const reasoningModels = reasoningModelsQuery.data?.models ?? providers.find((provider) => provider.type === providerType)?.models ?? [];
+  const parsedDefaultProviderType = defaults?.providerType ? parseProviderType(defaults.providerType) || undefined : undefined;
   const effectiveHarness = harness
     || maybeInferHarnessFromProviderType(providerType)
     || defaults?.harness
-    || maybeInferHarnessFromProviderType(defaults?.providerType)
+    || maybeInferHarnessFromProviderType(parsedDefaultProviderType)
     || 'claude-sdk';
   const isDirty = isProviderDirty
     || reasoningLevel !== savedReasoningLevel

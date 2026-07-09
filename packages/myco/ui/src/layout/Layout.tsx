@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, type NavLinkRenderProps } from 'react-router-dom';
 import {
   CONFIG_FOCUS_FIELD_PARAM,
   CONFIG_FOCUS_SECTION_PARAM,
@@ -408,7 +408,7 @@ function SidebarNavLink({
       to={to}
       end={item.to === '/'}
       title={collapsed ? item.label : undefined}
-      className={({ isActive }) =>
+      className={({ isActive }: NavLinkRenderProps) =>
         cn(
           'flex items-center rounded-md text-sm font-medium transition-colors',
           collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
@@ -501,7 +501,7 @@ export default function Layout() {
     }, CONFIG_FOCUS_SCROLL_DELAY_MS);
 
     return () => window.clearTimeout(timeoutId);
-  }, [location.key, location.search]);
+  }, [location.pathname, location.search]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
