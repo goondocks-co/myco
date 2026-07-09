@@ -201,7 +201,7 @@ describe('host-proxy forwarder', () => {
 
   // --- serve route relay ---
 
-  test('serve route relays byte-faithfully with tenancy preserved, bearer swapped, version stamped', async () => {
+  test('serve route relays byte-faithfully with attach tenancy stamped, bearer swapped, version stamped', async () => {
     fixture.setResponder((_req, res) => {
       res.writeHead(201, { 'Content-Type': 'application/json', 'X-Host-Custom': 'yes' });
       res.end(JSON.stringify({ served: 'by-host' }));
@@ -209,7 +209,11 @@ describe('host-proxy forwarder', () => {
     const res = await fetch(memberUrl('/api/spores?q=1'), {
       headers: {
         'x-myco-project-id': 'proj_0123456789abcdef0123456789abcdef',
-        'x-myco-grove-id': 'grove_0123456789abcdef0123456789abcdef',
+        // The caller's LOCAL grove claim (a checkout's `.myco` binding names a
+        // member-side grove the host has never heard of) — the forward must
+        // replace it with the attach mapping's grove, or the host 404s the
+        // unknown tenancy (D-smoke regression).
+        'x-myco-grove-id': 'grove_feedfacefeedfacefeedfacefeedface',
         'x-myco-machine-id': 'machine-A',
         'x-myco-auth': 'LOCAL-BEARER',
       },
@@ -221,8 +225,10 @@ describe('host-proxy forwarder', () => {
     const got = fixture.requests[0];
     expect(got.method).toBe('GET');
     expect(got.url).toBe('/api/spores?q=1');
-    // Tenancy headers preserved verbatim; machine attribution rides through.
+    // TENANCY comes from the attach mapping — the local grove claim above is
+    // overwritten; IDENTITY (machine attribution) rides through untouched.
     expect(got.headers['x-myco-project-id']).toBe('proj_0123456789abcdef0123456789abcdef');
+    expect(got.headers['x-myco-grove-id']).toBe('grove_0123456789abcdef0123456789abcdef');
     expect(got.headers['x-myco-machine-id']).toBe('machine-A');
     // LOCAL bearer stripped; HOST bearer attached; version header stamped.
     expect(got.headers['x-myco-auth']).toBeUndefined();

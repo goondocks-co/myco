@@ -410,6 +410,16 @@ function buildForwardHeaders(
   headers.host = overlayHostHeader;
   headers.authorization = `Bearer ${target.bearer}`;
   headers[HOST_PROTOCOL_HEADER] = String(HOST_PROTOCOL_VERSION);
+  // TENANCY is the attach mapping's, never the caller's local claim. A hook or
+  // MCP client resolves its grove/project headers from the checkout's LOCAL
+  // registration (`.myco/` binding), which on a member names a grove that does
+  // not exist on the host — the host would 404 the unknown tenancy (live-caught
+  // by the D smoke: `x-myco-grove-id` arrived as the member's prod grove). The
+  // capture drains (C1/C5/C7) already stamp their tenancy from the attach
+  // target; this is the same rule at the live-relay chokepoint. IDENTITY
+  // (machine/session headers) stays the caller's — that is the member's own.
+  headers[REQUEST_CONTEXT_HEADERS.groveId] = target.groveId;
+  headers[REQUEST_CONTEXT_HEADERS.projectId] = target.projectId;
   if (bufferedLength !== null) headers['content-length'] = String(bufferedLength);
   return headers;
 }
