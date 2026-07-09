@@ -29,8 +29,7 @@
  */
 
 import crypto from 'node:crypto';
-import { readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
@@ -46,6 +45,7 @@ import {
   type SkillRecordRow,
 } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
+import { resolveSkillContent } from '@myco/skills/content.js';
 import { notify } from '@myco/notifications/notify.js';
 import {
   CANDIDATE_STATUS,
@@ -1562,15 +1562,10 @@ export function createSkillTools(deps: VaultToolDeps) {
           if (!args.id) return textResult({ error: 'id is required for get action' });
           const record = getSkillRecord(args.id, scope) ?? getSkillRecordByName(args.id, scope);
           if (!record) return textResult({ error: `Skill record not found: ${args.id}` });
-          // Include file content so evolve/merge operations can read skill bodies
+          // Include content so evolve/merge operations can read skill bodies.
           const result: Record<string, unknown> = { ...record };
-          if (record.path && projectRoot) {
-            try {
-              result.content = readFileSync(resolve(projectRoot, record.path), 'utf-8');
-            } catch {
-              // File missing — return record without content
-            }
-          }
+          const content = resolveSkillContent({ record, projectRoot });
+          if (content !== null) result.content = content;
           return textResult(result);
         }
 
@@ -1687,11 +1682,10 @@ export function createSkillTools(deps: VaultToolDeps) {
 
         const root = projectRoot ?? process.cwd();
 
-        // Look up the on-disk prior content the same way vault_write_skill does.
-        const resolvedPaths = resolvePublishedSkillPaths(root, args.name);
-        const priorContent = resolvedPaths.ok && existsSync(resolvedPaths.paths.skillPath)
-          ? readFileSync(resolvedPaths.paths.skillPath, 'utf-8')
-          : undefined;
+        // Resolve prior content the same way vault_write_skill does.
+        const gateRecord = getSkillRecordByName(args.name, scope);
+        const priorContent = resolveSkillContent({ record: gateRecord, name: args.name, projectRoot: root })
+          ?? undefined;
 
         const { issues, violations, claim, descWindow } = collectSkillWriteIssues({
           content: args.content,
@@ -1741,7 +1735,8 @@ export function createSkillTools(deps: VaultToolDeps) {
     async (args) => {
       // Traversal guard — must run before ANY filesystem access.
       // publishedSkillRelativePath() is unsanitized string interpolation;
-      // a name with '..' must never reach resolvePublishedSkillPaths or readFileSync.
+      // a name with '..' must never reach resolvePublishedSkillPaths or
+      // any filesystem read.
       if (!args.name || /[/\\]|\.\./.test(args.name)) {
         return textResult({
           error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
@@ -1770,11 +1765,12 @@ export function createSkillTools(deps: VaultToolDeps) {
         return textResult({ error: 'Invalid skill name: resolved path escapes .agents/skills' });
       }
 
-      // Read prior content once — used by the preservation gate, the description
-      // window, the fabrication gate, and the evolve-path rollback.
-      const priorContent = existsSync(resolvedPaths.paths.skillPath)
-        ? readFileSync(resolvedPaths.paths.skillPath, 'utf-8')
-        : undefined;
+      // Resolve prior content once — used by the preservation gate, the
+      // description window, the fabrication gate, and the evolve-path
+      // rollback. Lineage-latest is canonical for managed skills; a
+      // hand-edited or missing file never becomes the gate/rollback baseline.
+      const priorContent = resolveSkillContent({ record: existing, name: args.name, projectRoot: root })
+        ?? undefined;
 
       // Run all content-validation gates in one pass and batch every failure.
       // The agent previously saw at most one class of error per attempt; now it
@@ -1873,17 +1869,20 @@ export function createSkillTools(deps: VaultToolDeps) {
       }
 
       // Evolve path: delegate to the shared writeEvolvedSkill helper.
-      // priorContent was already read above; reuse it to avoid a second
-      // disk read. If the file was absent despite a DB record existing
-      // (orphan), fall back to re-reading — this will throw if still
-      // missing, preserving the same behavior as before.
-      const priorSkillContent = priorContent ?? readFileSync(resolvedPaths.paths.skillPath, 'utf-8');
+      // priorContent covers a record whose SKILL.md is missing locally
+      // (synced from another machine); a record with no content anywhere
+      // has nothing to evolve from.
+      if (priorContent === undefined) {
+        return textResult({
+          error: `Skill "${args.name}" has no stored content and no on-disk SKILL.md — cannot evolve.`,
+        });
+      }
 
       const evolveResult = await writeEvolvedSkill({
         existing,
         name: args.name,
         content: args.content,
-        priorContent: priorSkillContent,
+        priorContent,
         display_name: args.display_name,
         description: args.description,
         source_ids: args.source_ids,
@@ -2150,11 +2149,12 @@ export function createSkillTools(deps: VaultToolDeps) {
       }
 
       const root = projectRoot ?? process.cwd();
-      const resolvedPaths = resolvePublishedSkillPaths(root, args.name);
-      if (!resolvedPaths.ok || !existsSync(resolvedPaths.paths.skillPath)) {
-        return textResult({ error: `Skill "${args.name}" has no on-disk SKILL.md to edit.` });
+      // Edit base: lineage-latest is canonical, so a record whose SKILL.md
+      // is missing locally (synced from another machine) is still editable.
+      const priorContent = resolveSkillContent({ record: existing, projectRoot: root });
+      if (priorContent === null) {
+        return textResult({ error: `Skill "${args.name}" has no stored content and no on-disk SKILL.md to edit.` });
       }
-      const priorContent = readFileSync(resolvedPaths.paths.skillPath, 'utf-8');
 
       // Shared per-skill circuit breaker — mirror vault_write_skill's check-before-increment
       // ordering: check the count first, then increment on failure. Defers on the 4th failure.

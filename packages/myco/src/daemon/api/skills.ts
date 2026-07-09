@@ -31,12 +31,13 @@ import {
   getSkillRecordByName,
   deleteSkillRecordCascade,
 } from '@myco/db/queries/skill-records.js';
-import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
+import { getPublishedSkillContent, listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { CANDIDATE_STATUS, REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import { validateSkillCandidateQualityContract } from '@myco/agent/skill-candidate-quality.js';
+import { extractFrontmatterFields } from '@myco/agent/tools/skill-validator.js';
 import { isSafeSkillNameForFs } from '@myco/skills/names.js';
 import {
   removePublishedSkillFileOrDirectory,
@@ -308,22 +309,15 @@ export async function handleGetSkillRecord(req: RouteRequest, principal: Request
   const lineage = listLineageForSkill(record.id, scope, 50);
   const usage_total = countUsageForSkill(record.id);
 
-  // Parse frontmatter from latest lineage snapshot so the UI avoids client-side regex
-  const latestSnapshot = lineage[0]?.content_snapshot;
-  const frontmatterFields: Record<string, string> = {};
-  if (latestSnapshot) {
-    const fmMatch = latestSnapshot.match(/^---\n([\s\S]*?)\n---/);
-    if (fmMatch) {
-      for (const line of fmMatch[1].split('\n')) {
-        const colonIdx = line.indexOf(':');
-        if (colonIdx > 0) {
-          const key = line.slice(0, colonIdx).trim();
-          const val = line.slice(colonIdx + 1).trim();
-          if (key && val) frontmatterFields[key] = val;
-        }
-      }
-    }
-  }
+  // Parse frontmatter from the latest snapshot with the same YAML parse the
+  // write gates use, so the UI shows the fields exactly as validation sees
+  // them. The tenant-scoped history list already holds the latest row in
+  // the dominant path; the unscoped-by-id read recovers content when legacy
+  // lineage rows carry a project_id the tenant scope filters out.
+  const latestSnapshot = lineage[0]?.content_snapshot ?? getPublishedSkillContent(record) ?? undefined;
+  const frontmatterFields: Record<string, string> = latestSnapshot
+    ? extractFrontmatterFields(latestSnapshot)
+    : {};
 
   return { status: 200, body: { ...record, lineage, usage_total, frontmatter: frontmatterFields } };
 }

@@ -67,6 +67,29 @@ function normalizeFrontmatterValue(value: unknown): string | undefined {
 }
 
 /**
+ * Extract every frontmatter field from SKILL.md content as a normalized
+ * string map (arrays join to comma-separated lists, scalars stringify).
+ * Returns an empty map when no parseable frontmatter block exists. This is
+ * the same YAML parse the write gates use, so read-side consumers (e.g. the
+ * daemon skill-detail endpoint) see the fields exactly as validation does.
+ */
+export function extractFrontmatterFields(content: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  let parsed: ParsedFrontmatter | null = null;
+  try {
+    parsed = parseFrontmatter(content);
+  } catch {
+    return fields;
+  }
+  if (!parsed) return fields;
+  for (const [key, value] of Object.entries(parsed)) {
+    const normalized = normalizeFrontmatterValue(value);
+    if (normalized !== undefined) fields[key] = normalized;
+  }
+  return fields;
+}
+
+/**
  * Extract a frontmatter field value from SKILL.md content.
  * Returns the raw value string, or undefined if not found.
  */
