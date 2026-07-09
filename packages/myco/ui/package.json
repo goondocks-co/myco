@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.typecheck.json --noEmit"
   },
   "devDependencies": {
-    "@radix-ui/react-dialog": "^1.1.17",
+    "@radix-ui/react-dialog": "^1.1.19",
     "@radix-ui/react-select": "^2.3.1",
     "@radix-ui/react-toggle": "^1.1.12",
     "@tailwindcss/vite": "^4.3.1",
