@@ -79,16 +79,17 @@ function listSourceFiles(dir: string): string[] {
 }
 
 /** Blank `//` and block comments (line-count preserving) so prose that mentions
- *  `.registerRoute(` is never counted as a real registration. */
+ *  `.registerRoute(` is never counted as a real registration. STRING-AWARE: a
+ *  `/*` or `//` sequence INSIDE a string literal (e.g. a wildcard route path like
+ *  `'/api/okf/pages/*'`) must NOT be treated as a comment — so this matches string
+ *  literals and comments in one pass and blanks only the comments. */
 function stripComments(source: string): string {
-  const noBlock = source.replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, ' '));
-  return noBlock
-    .split('\n')
-    .map((line) => {
-      const idx = line.indexOf('//');
-      return idx === -1 ? line : line.slice(0, idx);
-    })
-    .join('\n');
+  // Alternation order matters: a string literal is matched (and kept) before a
+  // comment sequence it may contain can start a false match.
+  const re = /(['"`])(?:\\.|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+  return source.replace(re, (match) =>
+    match[0] === '/' ? match.replace(/[^\n]/g, ' ') : match,
+  );
 }
 
 /** `.registerRoute('METHOD', '/pattern'` — method + path literals (always on the

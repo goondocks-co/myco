@@ -463,6 +463,18 @@ export const SERVE_DEFAULT_ROUTES: ReadonlySet<string> = new Set<string>([
   'POST /api/notifications/dismiss-all',
   'POST /api/notifications/mark-all-read',
   'GET /api/notifications/unread-count',
+  // OKF (Open Knowledge Format) — the project wiki lives in the host Grove DB
+  // (tenant-scoped, knowledge-serving); rebase-integrated with the residency
+  // stamps. Reads + Grove-data contributions serve from the host for attached
+  // projects. (OKF generation is DB-only; a host disk-write would be caught by
+  // the B1 overlay-origin gate, same as skills.)
+  'POST /api/okf/acknowledge',
+  'GET /api/okf/status',
+  'POST /api/okf/validate',
+  'GET /api/okf/pages',
+  'POST /api/okf/concepts',
+  'POST /api/okf/concepts/supersede',
+  'GET /api/okf/pages/*',
 ]);
 
 /** Match a concrete request pathname against a route pattern (exact, `:param`,
