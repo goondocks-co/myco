@@ -42,12 +42,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Socket } from 'node:net';
 
 import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager, ServiceSpec } from '@myco/service/types.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
-import { connectViaHttpProxy } from '@myco/daemon/host-proxy.js';
+import { acquireTunnelBridgePort } from '@myco/daemon/host-proxy.js';
 
 import {
   HOST_BEARER_SECRET,
@@ -210,25 +209,26 @@ export type EnrollmentTransport = (input: {
  * The real overlay enrollment transport: a POST tunneled through THIS host's local
  * userspace-tailscaled HTTP CONNECT proxy (`127.0.0.1:<proxyPort>`) to the host's
  * overlay address — the SAME dial as the routing proxy (`daemon/host-proxy.ts`),
- * reusing its {@link connectViaHttpProxy} primitive via an `http.Agent`. The CONNECT
- * MUST happen inside `agent.createConnection` (not a bare `http.request` CONNECT,
- * which Bun's http path mishandles). Node sets the Host header from the request's
- * host:port, matching the host's overlay CSRF allowlist.
+ * riding its per-host loopback tunnel bridge ({@link acquireTunnelBridgePort} —
+ * Bun's `node:http` client can neither drive a `method: 'CONNECT'` request nor
+ * accept a caller-supplied socket; see the bridge doc). The Host header is pinned
+ * to the overlay authority, matching the host's overlay CSRF allowlist.
  */
 export const connectProxyEnrollTransport: EnrollmentTransport = ({ overlayAddress, proxyPort, path: reqPath, headers, body }) => {
   const { host, port } = splitOverlayAddress(overlayAddress);
   if (!host || !port) return Promise.reject(new Error(`Invalid host overlay address for enrollment: ${JSON.stringify(overlayAddress)}`));
   return new Promise((resolve, reject) => {
-    import('node:http').then((http) => {
-      const agent = new http.Agent();
-      // The Agent contract: produce a connected socket for (host, port). We produce
-      // a CONNECT-tunneled one via the shared proxy primitive (same as defaultDial).
-      (agent as unknown as {
-        createConnection: (o: { host?: string; port?: number }, cb: (e: Error | null, s?: Socket) => void) => void;
-      }).createConnection = (o, cb) => connectViaHttpProxy(proxyPort, o.host ?? host, o.port ?? port, cb);
-
+    Promise.all([import('node:http'), acquireTunnelBridgePort(proxyPort, host, port)]).then(([http, bridgePort]) => {
       const req = http.request(
-        { host, port, path: reqPath, method: 'POST', headers, agent, timeout: HOST_PROXY_HEADERS_TIMEOUT_MS },
+        {
+          host: '127.0.0.1',
+          port: bridgePort,
+          path: reqPath,
+          method: 'POST',
+          headers: { ...headers, host: `${host}:${port}` },
+          timeout: HOST_PROXY_HEADERS_TIMEOUT_MS,
+          agent: false, // one-shot: a kept-alive socket would pin the tunnel open
+        },
         (resp) => {
           const chunks: Buffer[] = [];
           resp.on('data', (c: Buffer) => chunks.push(c));
@@ -673,12 +673,12 @@ export async function defaultResolveMemberOverlayIp(
  * local CONNECT proxy to the host's overlay address. Any HTTP response (even a 401
  * from the host bearer gate) proves the tunnel + host listener are up. Never throws.
  *
- * The CONNECT MUST run inside `http.Agent.createConnection` (reusing Task 1.3's
- * {@link connectViaHttpProxy}, exactly like {@link connectProxyEnrollTransport} and
- * `defaultDial`): a bare `http.request({ method: 'CONNECT' })` is mishandled by
- * Bun's http path (`fetch() URL is invalid`), which under the Bun-compiled daemon
- * made this probe silently ALWAYS return false instead of actually dialing. An
- * outer timer bounds the whole attempt, including a CONNECT the proxy never answers.
+ * The tunnel rides the per-host loopback bridge ({@link acquireTunnelBridgePort},
+ * exactly like {@link connectProxyEnrollTransport} and `defaultDial`) — Bun's
+ * `node:http` client can neither drive a `method: 'CONNECT'` request nor accept a
+ * caller-supplied socket, which under the Bun-compiled daemon made this probe
+ * silently ALWAYS return false instead of actually dialing. An outer timer bounds
+ * the whole attempt, including a CONNECT the proxy never answers.
  */
 export async function defaultCheckHostReachable(overlayAddress: string, proxyPort: number): Promise<boolean> {
   const { host, port } = splitOverlayAddress(overlayAddress);
@@ -693,15 +693,15 @@ export async function defaultCheckHostReachable(overlayAddress: string, proxyPor
       resolve(v);
     };
     timer = setTimeout(() => done(false), HOST_PROXY_CONNECT_TIMEOUT_MS);
-    import('node:http').then((http) => {
-      const agent = new http.Agent();
-      (agent as unknown as {
-        createConnection: (o: { host?: string; port?: number }, cb: (e: Error | null, s?: Socket) => void) => void;
-      }).createConnection = (o, cb) => connectViaHttpProxy(proxyPort, o.host ?? host, o.port ?? port, cb);
-      const probe = http.request({ host, port, path: '/health', method: 'GET', agent }, (probeRes) => {
-        probeRes.resume();
-        done(true); // any response proves the tunnel + host listener are up
-      });
+    Promise.all([import('node:http'), acquireTunnelBridgePort(proxyPort, host, port)]).then(([http, bridgePort]) => {
+      const probe = http.request(
+        { host: '127.0.0.1', port: bridgePort, path: '/health', method: 'GET', headers: { host: `${host}:${port}` }, agent: false },
+        (probeRes) => {
+          probeRes.resume();
+          done(true); // any response proves the tunnel + host listener are up
+          probe.destroy(); // release the one-shot tunnel immediately
+        },
+      );
       probe.once('error', () => done(false));
       probe.end();
     }).catch(() => done(false));

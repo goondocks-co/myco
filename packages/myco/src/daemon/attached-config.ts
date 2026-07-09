@@ -107,9 +107,9 @@ export function fetchHostGroveConfig(
     };
     const degrade = (): void => done({ doc: null, versionSkew: false });
 
-    let proxyReq: http.ClientRequest;
+    let dialed: http.ClientRequest | Promise<http.ClientRequest>;
     try {
-      proxyReq = dial(target, {
+      dialed = dial(target, {
         method: 'GET',
         path: '/api/grove-config',
         headers: {
@@ -125,6 +125,9 @@ export function fetchHostGroveConfig(
       return;
     }
 
+    // The dialer may resolve its tunnel bridge first (`Dialer` union); a dial
+    // failure degrades to defaults exactly like the synchronous throw above.
+    Promise.resolve(dialed).then((proxyReq) => {
     proxyReq.setTimeout(HOST_PROXY_CONNECT_TIMEOUT_MS + HOST_PROXY_HEADERS_TIMEOUT_MS, () => {
       proxyReq.destroy();
       degrade();
@@ -173,6 +176,7 @@ export function fetchHostGroveConfig(
       });
     });
     proxyReq.end();
+    }).catch(() => degrade());
   });
 }
 

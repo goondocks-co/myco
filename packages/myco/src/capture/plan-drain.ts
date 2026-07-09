@@ -227,7 +227,7 @@ const defaultFileReader: PlanFileReader = {
  * This is what keeps a multi-project host-drain from misrouting one project's plan
  * into another's Grove.
  */
-export const defaultPlanTransport: PlanPostTransport = (target, body) => {
+export const defaultPlanTransport: PlanPostTransport = async (target, body) => {
   const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const payload = Buffer.from(JSON.stringify(body), 'utf-8');
   const headers = {
@@ -245,7 +245,7 @@ export const defaultPlanTransport: PlanPostTransport = (target, body) => {
     [REQUEST_CONTEXT_HEADERS.machineId]: body.machine_id,
     [REQUEST_CONTEXT_HEADERS.sessionId]: body.session_id,
   };
-  const req = defaultDial(target, { method: 'POST', path: '/routed-capture/plan', headers });
+  const req = await defaultDial(target, { method: 'POST', path: '/routed-capture/plan', headers });
 
   return new Promise<PlanChunkResponse>((resolve, reject) => {
     let settled = false;

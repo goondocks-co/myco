@@ -29,7 +29,7 @@
  * the upstream leg both ways.
  */
 import http from 'node:http';
-import type { Socket } from 'node:net';
+import net, { type Socket } from 'node:net';
 
 import {
   HOST_MIN_COMPAT_VERSION,
@@ -118,11 +118,14 @@ export function proxyLoggerFrom(
 }
 
 /** How the proxy opens the upstream connection to the host. Injectable so tests
- *  can dial a localhost fixture and so the CONNECT-proxy path is swappable. */
+ *  can dial a localhost fixture and so the CONNECT-proxy path is swappable.
+ *  May return a promise: the proxied path resolves its loopback tunnel bridge
+ *  first ({@link acquireTunnelBridgePort}). Callers `await` the result, which
+ *  also accepts the synchronous fixtures tests inject. */
 export type Dialer = (
   target: RemoteTarget,
   reqOptions: { method: string; path: string; headers: http.OutgoingHttpHeaders },
-) => http.ClientRequest;
+) => http.ClientRequest | Promise<http.ClientRequest>;
 
 /** Seams the forwarder depends on. Defaults are the real implementations; tests
  *  inject fakes/spies. Passed as an optional final arg so the two chokepoints
@@ -160,8 +163,14 @@ export function parseOverlayAddress(overlayAddress: string): { host: string; por
  *  (`--outbound-http-proxy-listen`, recorded as `HostRecord.proxy_port`). Exported
  *  so the member enrollment client (`host/member-overlay.ts`) dials the host through
  *  the SAME proven primitive — one CONNECT mechanism for routing and enrollment.
- *  MUST be driven from inside an `http.Agent.createConnection` (as {@link defaultDial}
- *  does): a bare `http.request({method:'CONNECT'})` is mishandled by Bun's http path. */
+ *
+ *  The CONNECT handshake is hand-rolled over a raw `net.Socket`: Bun's `node:http`
+ *  never emits the `'connect'` event for a `method: 'CONNECT'` request (the request
+ *  hangs until its timeout), so `http.request` cannot establish the tunnel under the
+ *  compiled binary on either the driving side or inside an Agent. A raw socket that
+ *  writes the CONNECT line and parses the single `HTTP/1.x 200` response is
+ *  runtime-agnostic, and the proxy's reply carries no body — bytes after the blank
+ *  line already belong to the tunneled stream and are pushed back via `unshift`. */
 export function connectViaHttpProxy(
   proxyPort: number,
   targetHost: string,
@@ -169,23 +178,119 @@ export function connectViaHttpProxy(
   cb: (err: Error | null, socket?: Socket) => void,
 ): void {
   const authority = `${targetHost}:${targetPort}`;
-  const connectReq = http.request({
-    host: '127.0.0.1',
-    port: proxyPort,
-    method: 'CONNECT',
-    path: authority,
-    headers: { host: authority },
-  });
-  connectReq.once('connect', (res, socket) => {
-    if (res.statusCode !== 200) {
-      socket.destroy();
-      cb(new Error(`overlay CONNECT proxy (127.0.0.1:${proxyPort}) → ${authority} failed: HTTP ${res.statusCode}`));
+  const socket = net.connect({ host: '127.0.0.1', port: proxyPort });
+  let done = false;
+  let buffered = Buffer.alloc(0);
+  const fail = (err: Error) => {
+    if (done) return;
+    done = true;
+    socket.destroy();
+    cb(err);
+  };
+  const onData = (chunk: Buffer) => {
+    if (done) return;
+    buffered = Buffer.concat([buffered, chunk]);
+    const headerEnd = buffered.indexOf('\r\n\r\n');
+    if (headerEnd === -1) {
+      if (buffered.length > 8192) fail(new Error(`overlay CONNECT proxy (127.0.0.1:${proxyPort}) → ${authority} failed: response headers exceed 8KB`));
       return;
     }
+    socket.removeListener('data', onData);
+    const statusLine = buffered.subarray(0, buffered.indexOf('\r\n')).toString('latin1');
+    const status = statusLine.match(/^HTTP\/1\.\d (\d{3})/)?.[1];
+    if (status !== '200') {
+      fail(new Error(`overlay CONNECT proxy (127.0.0.1:${proxyPort}) → ${authority} failed: ${status ? `HTTP ${status}` : `malformed response ${JSON.stringify(statusLine.slice(0, 120))}`}`));
+      return;
+    }
+    done = true;
+    const rest = buffered.subarray(headerEnd + 4);
+    if (rest.length > 0) socket.unshift(rest);
     cb(null, socket);
+  };
+  socket.on('data', onData);
+  socket.once('error', (err) => fail(err));
+  socket.once('close', () => fail(new Error(`overlay CONNECT proxy (127.0.0.1:${proxyPort}) → ${authority} failed: connection closed before tunnel established`)));
+  socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`);
+}
+
+// ---------------------------------------------------------------------------
+// Tunnel bridge — the Bun-compatible way to ride node:http over the tunnel
+// ---------------------------------------------------------------------------
+//
+// Bun's `node:http` CLIENT cannot use a caller-supplied socket AT ALL: it never
+// invokes `Agent.createConnection` overrides (assigned or subclassed), ignores
+// `options.createConnection`, and does not honor `options.socketPath` — every
+// shape stalls until its timeout with zero bytes written (verified live against
+// the tailscaled CONNECT proxy, Bun 1.3.14; Node handles all of them). So the
+// tunneled socket can never be handed to `http.request` directly.
+//
+// Instead, each (proxyPort → authority) pair gets ONE loopback TCP bridge: a
+// `net.Server` on 127.0.0.1:<ephemeral> that, per accepted connection, opens a
+// CONNECT tunnel via {@link connectViaHttpProxy} and splices bytes both ways.
+// Dialers then issue a PLAIN `http.request` against the bridge — which every
+// runtime's client can do — with the Host header pinned to the overlay
+// authority (the host's CSRF allowlist checks it; `buildForwardHeaders` and the
+// enrollment transport both set it explicitly).
+//
+// The accepted client's bytes are captured by a listener attached SYNCHRONOUSLY
+// in the accept handler: Bun drops socket data that arrives while no 'data'
+// listener is attached (Node buffers it), and the client's request head races
+// the tunnel establishment.
+//
+// Exposure note: the bridge is loopback-only and unauthenticated — exactly the
+// same local exposure as the tailscaled outbound CONNECT proxy (127.0.0.1:
+// <proxy_port>) it dials into, and the host's bearer gate still authenticates
+// every request end-to-end. Servers are unref'd (never hold the process open)
+// and live for the daemon's lifetime; a server error evicts the registry entry
+// so the next dial recreates it.
+
+const tunnelBridges = new Map<string, Promise<number>>();
+
+function createTunnelBridge(key: string, proxyPort: number, targetHost: string, targetPort: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer((client) => {
+      const early: Buffer[] = [];
+      const onEarly = (chunk: Buffer) => { early.push(chunk); };
+      client.on('data', onEarly);
+      client.once('error', () => { /* pre-tunnel client abort — nothing to tear down yet */ });
+      connectViaHttpProxy(proxyPort, targetHost, targetPort, (err, upstream) => {
+        if (err || !upstream) { client.destroy(); return; }
+        if (client.destroyed) { upstream.destroy(); return; }
+        client.removeListener('data', onEarly);
+        for (const chunk of early) upstream.write(chunk);
+        client.pipe(upstream);
+        upstream.pipe(client);
+        client.on('error', () => upstream.destroy());
+        upstream.on('error', () => client.destroy());
+        client.on('close', () => upstream.destroy());
+        upstream.on('close', () => client.destroy());
+      });
+    });
+    let listening = false;
+    server.on('error', (err) => {
+      tunnelBridges.delete(key);
+      if (!listening) reject(err);
+    });
+    server.unref();
+    server.listen(0, '127.0.0.1', () => {
+      listening = true;
+      resolve((server.address() as net.AddressInfo).port);
+    });
   });
-  connectReq.once('error', (err) => cb(err));
-  connectReq.end();
+}
+
+/** Resolve the loopback bridge port for a proxied overlay dial, creating the
+ *  bridge on first use. Exported for the member-side dialers that cannot ride
+ *  `defaultDial` (enrollment, reachability probe). */
+export function acquireTunnelBridgePort(proxyPort: number, targetHost: string, targetPort: number): Promise<number> {
+  const key = `${proxyPort}:${targetHost}:${targetPort}`;
+  let bridge = tunnelBridges.get(key);
+  if (!bridge) {
+    bridge = createTunnelBridge(key, proxyPort, targetHost, targetPort);
+    tunnelBridges.set(key, bridge);
+    bridge.catch(() => tunnelBridges.delete(key));
+  }
+  return bridge;
 }
 
 /**
@@ -193,27 +298,25 @@ export function connectViaHttpProxy(
  * kernel-mode member, or — when `HostRecord.proxy_port` is set — a request whose
  * Agent tunnels through the local userspace-tailscaled HTTP CONNECT proxy.
  *
- * Mechanism choice (recorded per the brief): `node:http.request` with a custom
- * `http.Agent.createConnection` that issues an HTTP CONNECT and hands back the
- * tunneled socket. This keeps ONE request-construction path (same headers,
- * body-piping, timeout wiring) for both dial modes — the only difference is
- * where the socket comes from — rather than forking into a manual CONNECT +
- * socket-handoff relay for the proxied case.
+ * Mechanism choice: `node:http.request` for BOTH modes, so there is ONE
+ * request-construction path (same headers, body-piping, timeout wiring); the
+ * proxied mode differs only in where the connection goes — a per-host loopback
+ * tunnel bridge ({@link acquireTunnelBridgePort}) that splices into the
+ * userspace-tailscaled CONNECT proxy. Handing the tunneled socket to the http
+ * client directly is not an option: Bun's client never consults any custom
+ * connection hook (see the bridge doc above).
  */
-export const defaultDial: Dialer = (target, opts) => {
+export const defaultDial: Dialer = async (target, opts) => {
   const { host, port } = parseOverlayAddress(target.host.overlay_address);
   if (target.host.proxy_port) {
-    const proxyPort = target.host.proxy_port;
-    const agent = new http.Agent();
-    // The Agent contract: produce a connected socket for (host, port). We
-    // produce a CONNECT-tunneled one. Node's typings don't surface the
-    // createConnection override cleanly, hence the cast.
-    (agent as unknown as {
-      createConnection: (o: { host?: string; port?: number }, cb: (e: Error | null, s?: Socket) => void) => void;
-    }).createConnection = (o, cb) => {
-      connectViaHttpProxy(proxyPort, o.host ?? host, o.port ?? port, cb);
-    };
-    return http.request({ host, port, method: opts.method, path: opts.path, headers: opts.headers, agent });
+    const bridgePort = await acquireTunnelBridgePort(target.host.proxy_port, host, port);
+    // The Host header must stay the overlay authority (the host's CSRF
+    // allowlist checks it); every caller sets `headers.host` explicitly, and
+    // the pin here covers any that don't. `agent: false` gives each dial a
+    // one-shot connection: a kept-alive socket would hold its CONNECT tunnel
+    // open through the bridge indefinitely.
+    const headers = { ...opts.headers, host: `${host}:${port}` };
+    return http.request({ host: '127.0.0.1', port: bridgePort, method: opts.method, path: opts.path, headers, agent: false });
   }
   return http.request({ host, port, method: opts.method, path: opts.path, headers: opts.headers });
 };
@@ -626,7 +729,7 @@ async function forwardCollectInBackground(
     }
     const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
     const headers = buildForwardHeaders(req, target, `${overlayHost}:${port}`, body.length);
-    const proxyReq = d.dial(target, { method: req.method ?? 'POST', path: req.url ?? pathname, headers });
+    const proxyReq = await d.dial(target, { method: req.method ?? 'POST', path: req.url ?? pathname, headers });
     await new Promise<void>((resolve) => {
       let settled = false;
       const done = () => { if (!settled) { settled = true; resolve(); } };
@@ -686,7 +789,7 @@ async function forwardAndRelay(
 ): Promise<void> {
   const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const headers = buildForwardHeaders(req, target, `${overlayHost}:${port}`, bufferedBody ? bufferedBody.length : null);
-  const proxyReq = d.dial(target, { method: req.method ?? 'GET', path: req.url ?? pathname, headers });
+  const proxyReq = await d.dial(target, { method: req.method ?? 'GET', path: req.url ?? pathname, headers });
 
   await new Promise<void>((resolve) => {
     let settled = false;

@@ -291,7 +291,7 @@ export function createFsReplayStore(rootDir: string = resolveMemberEventReplayDr
  * as claims under v1 flat trust (`daemon/server.ts` overlay handler).
  */
 function makeDefaultTransport(machineId: string): EventReplayTransport {
-  return (target, route, sessionId, body) => {
+  return async (target, route, sessionId, body) => {
     const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
     const payload = Buffer.from(JSON.stringify(body), 'utf-8');
     const headers: Record<string, string> = {
@@ -305,7 +305,7 @@ function makeDefaultTransport(machineId: string): EventReplayTransport {
       [REQUEST_CONTEXT_HEADERS.machineId]: machineId,
       [REQUEST_CONTEXT_HEADERS.sessionId]: sessionId,
     };
-    const req = defaultDial(target, { method: 'POST', path: route, headers });
+    const req = await defaultDial(target, { method: 'POST', path: route, headers });
 
     return new Promise<{ status: number }>((resolve, reject) => {
       let settled = false;

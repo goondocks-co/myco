@@ -234,7 +234,7 @@ const defaultFileReader: TranscriptFileReader = {
  * `proxy_port`), attaching the host bearer + protocol-version header exactly as
  * the collect forwarder does. Reads and parses the small JSON ack.
  */
-export const defaultTranscriptTransport: TranscriptPostTransport = (target, body) => {
+export const defaultTranscriptTransport: TranscriptPostTransport = async (target, body) => {
   const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const payload = Buffer.from(JSON.stringify(body), 'utf-8');
   const headers = {
@@ -244,7 +244,7 @@ export const defaultTranscriptTransport: TranscriptPostTransport = (target, body
     'content-length': String(payload.length),
     [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
   };
-  const req = defaultDial(target, { method: 'POST', path: '/routed-capture/transcript', headers });
+  const req = await defaultDial(target, { method: 'POST', path: '/routed-capture/transcript', headers });
 
   return new Promise<TranscriptChunkResponse>((resolve, reject) => {
     let settled = false;
