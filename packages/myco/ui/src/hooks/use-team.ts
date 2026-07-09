@@ -56,6 +56,8 @@ export interface TeamStatusResponse {
   daemon_protocol_version: number;
   worker_protocol_version: number | null;
   worker_min_client_version: number | null;
+  /** Tables reconcile is skipping because the deployed worker predates them. */
+  reconcile_gated_tables: string[];
 }
 
 export function teamSuffix(teamId?: string): string {

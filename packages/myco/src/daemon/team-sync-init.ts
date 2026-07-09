@@ -56,7 +56,7 @@ import {
   sanitizeSyncPayload,
   RECONCILE_ELIGIBLE_TABLES,
 } from '@myco/db/queries/team-outbox.js';
-import { tableMinSyncProtocol } from '@myco/db/schema-ddl.js';
+import { tablesGatedByWorkerProtocol } from '@myco/db/schema-ddl.js';
 import {
   reconcilePartition as reconcilePartitionImplDefault,
   createReconcileFlushMutex,
@@ -958,12 +958,10 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         // handling applies, same as before.
         await teamVersionStatus(teamId, client);
         const workerProtocol = client.getWorkerProtocolVersion();
-        const skippedTables: string[] = [];
+        const skippedTables = tablesGatedByWorkerProtocol(RECONCILE_ELIGIBLE_TABLES, workerProtocol);
+        const gatedTables = new Set(skippedTables);
         for (const table of RECONCILE_ELIGIBLE_TABLES) {
-          if (workerProtocol !== undefined && tableMinSyncProtocol(table) > workerProtocol) {
-            skippedTables.push(table);
-            continue;
-          }
+          if (gatedTables.has(table)) continue;
           try {
             await reconcilePartition(
               { ...baseDeps, client },

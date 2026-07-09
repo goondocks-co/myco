@@ -1114,6 +1114,23 @@ export function tableMinSyncProtocol(table: string): number {
 }
 
 /**
+ * The subset of `tables` a worker at `workerProtocol` cannot serve (its
+ * deployment predates them). Single source for BOTH the reconcile gate
+ * (skip these tables this pass) and the Team status disclosure
+ * (`reconcile_gated_tables`) — the behavior and what the UI reports come
+ * from one computation and cannot drift. An unprobed worker (undefined /
+ * null) gates nothing: reachability problems surface through the normal
+ * per-partition error handling, not this filter.
+ */
+export function tablesGatedByWorkerProtocol(
+  tables: readonly string[],
+  workerProtocol: number | undefined | null,
+): string[] {
+  if (workerProtocol === undefined || workerProtocol === null) return [];
+  return tables.filter((table) => tableMinSyncProtocol(table) > workerProtocol);
+}
+
+/**
  * Team-sync delete triggers — one per synced table.
  *
  * Auto-journal every local delete into `team_outbox` so the one-way push

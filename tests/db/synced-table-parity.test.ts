@@ -35,7 +35,7 @@ import {
   TEAM_SYNC_BACKFILL_TABLES,
   REBUILD_TABLES,
 } from '@myco/db/queries/team-outbox.js';
-import { TEAM_DELETE_TRIGGER_TABLES } from '@myco/db/schema-ddl.js';
+import { TEAM_DELETE_TRIGGER_TABLES, TABLE_MIN_SYNC_PROTOCOL, tablesGatedByWorkerProtocol } from '@myco/db/schema-ddl.js';
 // Relative import (not a tsconfig path alias) so the bun runner resolves the
 // real worker module. We import from the dependency-free `synced-tables`
 // module, NOT `index.ts`: index.ts transitively imports `agents/mcp` →
@@ -246,5 +246,21 @@ describe('synced-table scope: derivation is wired to SYNCED_TABLE_SCOPE', () => 
       (t) => SYNCED_TABLE_SCOPE[t] === 'machine',
     );
     expect([...MACHINE_SCOPED_TABLES].sort()).toEqual([...machineFromScope].sort());
+  });
+});
+
+describe('per-table sync-protocol floors (TABLE_MIN_SYNC_PROTOCOL)', () => {
+  it('every table with a protocol floor is a real synced table (no typos)', () => {
+    for (const table of Object.keys(TABLE_MIN_SYNC_PROTOCOL)) {
+      expect(worker.has(table)).toBe(true);
+    }
+  });
+
+  it('tablesGatedByWorkerProtocol gates protocol-3 tables against an older worker and nothing against a current or unprobed one', () => {
+    const tables = ['sessions', 'spores', 'skill_lineage', 'okf_pages'];
+    expect(tablesGatedByWorkerProtocol(tables, 2)).toEqual(['skill_lineage', 'okf_pages']);
+    expect(tablesGatedByWorkerProtocol(tables, 3)).toEqual([]);
+    expect(tablesGatedByWorkerProtocol(tables, undefined)).toEqual([]);
+    expect(tablesGatedByWorkerProtocol(tables, null)).toEqual([]);
   });
 });
