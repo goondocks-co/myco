@@ -1203,6 +1203,116 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
 }
 
 /**
+ * Fetch the host's raw grove-tier config doc for an attached project. Resolving
+ * to `null` (or rejecting) means the host is unreachable — the grove tier then
+ * degrades to defaults (see {@link loadAttachedMergedConfig}). Never reads local
+ * disk: for an attached project there is no local grove config file.
+ */
+export type AttachedGroveDocFetcher = () => Promise<Record<string, unknown> | null>;
+
+export interface LoadAttachedMergedConfigOptions {
+  /**
+   * Source the HOST's grove-tier config doc — the ONE tier not read from the
+   * member's local disk. Everything else (machine, project, personal) resolves
+   * locally, so the member's machine-tier mechanics never resolve from the
+   * host (routing-layer §6.3, guardrail 3 "no cross-machine config resolution").
+   */
+  fetchGroveDoc: AttachedGroveDocFetcher;
+  /** Override Myco home for tests. */
+  mycoHome?: string;
+  /**
+   * Fired once when the grove fetch fails or returns null, so the caller can
+   * warn once-per-host rather than on every read. The loader NEVER throws out
+   * of the degrade path — a merged view still renders with grove-tier defaults.
+   */
+  onGroveUnreachable?: (err: unknown) => void;
+}
+
+/**
+ * The attached-project counterpart to {@link loadMergedConfig}: build the merged
+ * runtime config for a project served by a remote host. Machine, project, and
+ * personal tiers resolve from the member's LOCAL disk exactly as
+ * `loadMergedConfig` does; only the **grove** tier is host-sourced (via
+ * `fetchGroveDoc`) instead of read from a local grove config file that does not
+ * exist for an attached project.
+ *
+ * This is NOT a fork of `loadMergedConfig` — it composes the same primitives it
+ * does (`loadConfigInternal` for the project doc, `readRawYamlDoc` for machine,
+ * `loadLocalConfig` for personal, `pruneToTier` + `deepMergeConfig` for the
+ * staged merge, the `isLocalOverlayUnreadable` fail-closed guard, and the final
+ * `MycoConfigSchema.parse`) with exactly one substitution: the grove raw doc.
+ *
+ * Host-unreachable degrades cleanly: a null/throwing `fetchGroveDoc` falls back
+ * to grove-tier defaults (`{}` → filled by the final schema parse) and fires
+ * `onGroveUnreachable` once so the caller can warn — it never hangs (the fetch
+ * seam owns its own timeout) and never serves a stale-wrong grove tier silently.
+ *
+ * Tier migration is deliberately OFF (`migrateTiers: false`, `groveId: null`):
+ * an attached project must never materialize a local grove config file for its
+ * hosted Grove. Grove-tier residue in the project's `myco.yaml` is dropped by
+ * `pruneToTier(projectRaw, 'project')` regardless, so it cannot leak into the
+ * project tier's contribution.
+ */
+export async function loadAttachedMergedConfig(
+  vaultDir: string,
+  options: LoadAttachedMergedConfigOptions,
+): Promise<MycoConfig> {
+  const mycoHome = options.mycoHome ?? resolveMycoHome();
+  const localPath = localConfigPath(vaultDir);
+  const machinePath = resolveGlobalConfigPath(mycoHome);
+
+  // Project tier — LOCAL. No local-grove materialization for the hosted Grove.
+  const { parsed: projectRaw } = loadConfigInternal(vaultDir, {
+    groveId: null,
+    mycoHome,
+    migrateTiers: false,
+  });
+
+  // Machine tier — LOCAL (the member's own machine mechanics), never the host's.
+  const machineRaw = readRawYamlDoc(machinePath);
+
+  // Grove tier — HOST-sourced; unreachable degrades to defaults + a once-warn.
+  let groveRaw: Record<string, unknown> = {};
+  try {
+    const fetched = await options.fetchGroveDoc();
+    if (fetched && typeof fetched === 'object' && !Array.isArray(fetched)) {
+      groveRaw = fetched;
+    } else {
+      options.onGroveUnreachable?.(null);
+    }
+  } catch (err) {
+    options.onGroveUnreachable?.(err);
+  }
+
+  // Personal tier — LOCAL (`.myco/local.yaml`, per-machine, not git-committed).
+  const local = loadLocalConfig(vaultDir);
+
+  // Scope-aware sparse merge, identical staging to loadMergedConfig
+  // (machine → grove → project → personal); each tier contributes only the
+  // leaves the scope registry assigns it.
+  const stage1 = deepMergeConfig(pruneToTier(machineRaw, 'machine'), pruneToTier(groveRaw, 'grove'));
+  const stage2 = deepMergeConfig(stage1, pruneToTier(projectRaw, 'project'));
+  const stage3 = deepMergeConfig(stage2, pruneToTier(local as Record<string, unknown>, 'local'));
+
+  // Fail closed on an unreadable personal overlay — same contract as
+  // loadMergedConfig: a corrupt local.yaml forces every capability master gate
+  // off until it is fixed, rather than silently re-enabling everything.
+  if (isLocalOverlayUnreadable(localPath)) {
+    for (const capability of Object.values(CAPABILITIES)) {
+      setAtPath(stage3, capability.masterGate.split('.'), false);
+    }
+    recordTierParseFailure(
+      localPath,
+      'personal overlay is unreadable — all capabilities forced off until it is fixed or removed',
+    );
+  } else {
+    tierParseFailures.delete(localPath);
+  }
+
+  return MycoConfigSchema.parse(stage3);
+}
+
+/**
  * Write local.yaml only when the serialized contents differ from `current`.
  * Skips the write (and mkdirSync) on a no-op to avoid noisy file mtimes.
  *

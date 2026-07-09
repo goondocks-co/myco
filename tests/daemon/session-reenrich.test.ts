@@ -33,6 +33,20 @@ function mockMiner(turns: TranscriptTurn[] | null) {
   } as unknown as Parameters<typeof reEnrichSessionFromTranscript>[1]['transcriptMiner'];
 }
 
+// Records the transcript-path arg the re-enrich path hands to the miner, so a
+// test can assert the STORED path is passed (routed/local) versus `undefined`
+// (the path-less disk-scan fallback).
+function recordingMiner(turns: TranscriptTurn[]) {
+  const received: Array<string | undefined> = [];
+  const transcriptMiner = {
+    getAllTurnsWithSource: (_sessionId: string, hookTranscriptPath?: string) => {
+      received.push(hookTranscriptPath);
+      return { turns, source: hookTranscriptPath ?? 'disk-scan' };
+    },
+  } as unknown as Parameters<typeof reEnrichSessionFromTranscript>[1]['transcriptMiner'];
+  return { transcriptMiner, received };
+}
+
 describe('reEnrichSessionFromTranscript', () => {
   beforeAll(() => setupTestDb());
   afterAll(() => teardownTestDb());
@@ -125,6 +139,54 @@ describe('reEnrichSessionFromTranscript', () => {
       logger: silentLogger(),
     });
     expect(result.changed).toBe(false);
+  });
+
+  it('routed session: mines the stored (host-materialized) transcript_path, not undefined', () => {
+    const storedPath = '/host/routed-transcripts/machine-x/s-reenrich-routed/abc.jsonl';
+    const sessionId = seedSession({ id: 's-reenrich-routed', agent: 'claude-code', transcriptPath: storedPath });
+    insertBatch({
+      session_id: sessionId, kind: 'initial', prompt_number: 1,
+      user_prompt: RECOVERED_BATCH_SENTINEL,
+      started_at: nowSec(), created_at: nowSec(),
+    });
+    const turns: TranscriptTurn[] = [{ prompt: 'materialized prompt', toolCount: 0, timestamp: 't', aiResponse: 'materialized reply' }];
+    const { transcriptMiner, received } = recordingMiner(turns);
+
+    const result = reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger: silentLogger() });
+
+    // The miner reads the host-materialized file — no drop to the disk-scan.
+    expect(received).toEqual([storedPath]);
+    expect(result.promptsReplaced).toBe(1);
+    expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })[0]!.user_prompt).toBe('materialized prompt');
+  });
+
+  it('path-less session: falls back to the disk-scan (miner receives undefined)', () => {
+    const sessionId = seedSession({ id: 's-reenrich-pathless', agent: 'antigravity' }); // no transcript_path
+    insertBatch({
+      session_id: sessionId, kind: 'initial', prompt_number: 1,
+      user_prompt: RECOVERED_BATCH_SENTINEL,
+      started_at: nowSec(), created_at: nowSec(),
+    });
+    const { transcriptMiner, received } = recordingMiner([{ prompt: 'scanned prompt', toolCount: 0, timestamp: 't' }]);
+
+    reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger: silentLogger() });
+
+    expect(received).toEqual([undefined]);
+  });
+
+  it('local session: passes its local transcript_path straight through', () => {
+    const localPath = '/Users/dev/.claude/projects/foo/session.jsonl';
+    const sessionId = seedSession({ id: 's-reenrich-local', agent: 'claude-code', transcriptPath: localPath });
+    insertBatch({
+      session_id: sessionId, kind: 'initial', prompt_number: 1,
+      user_prompt: RECOVERED_BATCH_SENTINEL,
+      started_at: nowSec(), created_at: nowSec(),
+    });
+    const { transcriptMiner, received } = recordingMiner([{ prompt: 'local prompt', toolCount: 0, timestamp: 't' }]);
+
+    reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger: silentLogger() });
+
+    expect(received).toEqual([localPath]);
   });
 
   it('survives a transcript miner that throws (logs warning, no change)', () => {

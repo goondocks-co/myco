@@ -7,11 +7,16 @@ import {
   ForeignGroveError,
   isCallerTenancy,
   requestContextFromHttpHeaders,
+  resolveInboundProjectId,
   tryResolveRequestContextForVault,
   UnauthorizedRequestContextError,
   UnknownRequestContextError,
   type MycoRequestContext,
 } from '../grove/request-context.js';
+import { classifyRoute, refusalMcpBody } from '../host/routing.js';
+import { handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from '../daemon/host-proxy.js';
+import { isOverlayRequest } from '../daemon/host-serve.js';
+import { LOG_KINDS } from '../constants/log-kinds.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
 
@@ -30,6 +35,14 @@ export interface StreamableMcpHttpHandlerOptions {
    * observability gap from issue #288.
    */
   logger?: Logger;
+  /**
+   * Capture-side proxy deps threaded into `handleAttachedRequest` for attached
+   * projects (transcript-drain flush + collect enqueue). This is the SECOND of
+   * the two dispatch chokepoints C1 wires (the first is `daemon/server.ts`) —
+   * both must pass the real dep or the flush-before-terminal-route guarantee
+   * silently never fires for the surface routed through this one.
+   */
+  hostProxyDeps?: Partial<HostProxyDeps>;
 }
 
 /**
@@ -129,6 +142,51 @@ export function createStreamableMcpHttpHandler(
 ): StreamableMcpHttpHandler {
   const client = options.client ?? new DaemonClient(vaultDir);
   return async (req, res) => {
+    // Team Host chokepoint 2: the raw /mcp route bypasses route dispatch and
+    // resolves its own context, so the attach short-circuit lives here too, as
+    // per-tool-call tenancy. It runs BEFORE resolveRequestContextOrLegacy and
+    // before any local Grove/DB resolution — an attached project must never open
+    // a local Grove DB. A non-attached project (the common case) falls through
+    // after a single empty-set registry probe.
+    //
+    // A request that ARRIVED on this daemon's overlay listener has already been
+    // routed to its host (this daemon); it is served LOCALLY and must never be
+    // re-classified/re-proxied — skipping attach classification for overlay
+    // requests makes a circular proxy structurally impossible (mirrors the router
+    // chokepoint in daemon/server.ts). handleOverlayRequest already validated the
+    // host bearer and stamped the local bearer, so the resolution below succeeds.
+    if (!isOverlayRequest(req)) {
+      try {
+        const { projectId } = resolveInboundProjectId(req.headers, vaultDir, {
+          expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
+        });
+        const decision = classifyRoute({ method: req.method ?? 'POST', pathname: '/mcp', projectId });
+        if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
+          res.statusCode = decision.refusal.status;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(refusalMcpBody(decision.refusal));
+          return;
+        }
+        if (decision.kind === 'remote') {
+          await handleAttachedRequest(req, res, decision.target, decision.classification, {
+            ...options.hostProxyDeps,
+            logger: options.logger ? proxyLoggerFrom(options.logger, LOG_KINDS.SERVER_ERROR) : undefined,
+          });
+          return;
+        }
+      } catch (err) {
+        // enforceContextSwitchAuth rejected the local bearer — same 401
+        // `unauthorized_context_switch` contract the local resolution path returns.
+        if (err instanceof UnauthorizedRequestContextError) {
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: err.message }));
+          return;
+        }
+        throw err;
+      }
+    }
+
     let resolved: ReturnType<typeof resolveRequestContextOrLegacy>;
     try {
       resolved = resolveRequestContextOrLegacy(req, vaultDir);

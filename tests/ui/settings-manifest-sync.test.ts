@@ -50,6 +50,10 @@ const ALLOWLIST: readonly string[] = [
   // Daemon port — derived from the service path by default; an override is
   // edited directly in config.yaml, not surfaced as a settings card.
   'daemon.port',
+  // Team Host serve opt-in — operator control-plane, configured via
+  // `myco-team host enable` and the operator Team page (Task 2.1 / Phase 3),
+  // never a generic per-field Settings card.
+  'daemon.host_serve.',
 ];
 
 function isAllowlisted(key: string): boolean {

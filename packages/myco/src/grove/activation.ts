@@ -29,6 +29,7 @@ import {
   findRegisteredProjectByBinding,
   loadGroveRecord,
   registerProjectInGrove,
+  resolveAttachForProjectRoot,
   resolveGrove,
   type GroveRecord,
 } from '@myco/grove/registry.js';
@@ -201,6 +202,19 @@ export function activateProjectMigration(
   const sourceDbPath = vaultDbPath(projectVaultDir);
 
   const mycoHome = input.mycoHome ?? resolveMycoHome();
+
+  // Team Host never-materialize invariant: refuse to migrate an attached
+  // project into a LOCAL Grove — its Grove lives on the host, and activation
+  // would materialize exactly the local Grove/DB the attach model forbids.
+  const attach = resolveAttachForProjectRoot(projectRoot);
+  if (attach) {
+    throw new Error(
+      `Project is served by host ${attach.host.label} (${attach.host.overlay_address}); `
+      + 'refusing to activate a local Grove migration for an attached project. '
+      + 'Detach it from the host first, then migrate locally.',
+    );
+  }
+
   const earlyManifest = loadProjectManifest(projectVaultDir);
   const earlyMarker = readActivationMarker(activationMarkerPath(projectVaultDir));
   const grove = resolveActivationGrove({

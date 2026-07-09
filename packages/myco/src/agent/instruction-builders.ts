@@ -13,7 +13,7 @@ import { resolve } from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { sha256Hex } from '@myco/canopy/hash.js';
-import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
+import { resolveRequestContextForVault, isHostServedRequest } from '@myco/grove/request-context.js';
 import {
   computeInputsHash,
   MAP_TASK_PROMPT_VERSION,
@@ -679,7 +679,11 @@ export async function buildSkillEvolveInstruction(
     // Drift verifies the same content the structural pass read; projectRoot
     // stays in the call for codebase claim/symbol verification.
     .map((skill) => ({ ...skill, content: skillContents.get(skill.id) }));
-  const drift = projectRoot
+  // Skip drift detection on a host-served run: `projectRoot` is the member's
+  // tree, which the host lacks, so a filesystem scan would report every skill
+  // claim as missing/drifted (false signal). Degrade to the empty report — the
+  // member re-verifies against its own tree when it publishes.
+  const drift = projectRoot && !isHostServedRequest(requestContext)
     ? detectDrift(oldestForVerify, projectRoot, nowEpoch)
     : {
         verifiedAt: nowEpoch,

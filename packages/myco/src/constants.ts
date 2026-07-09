@@ -559,6 +559,98 @@ export const COLLECTIVE_MCP_TOKEN_SECRET = 'MYCO_COLLECTIVE_MCP_TOKEN';
 /** Timeout for wrangler CLI commands (ms). */
 export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
 
+// --- Team Host ---
+/** Secrets key for the host bearer token in secrets.env. Never stored in the registry record itself.
+ *  MEMBER-side name: the bearer a member received at enrollment and presents to the host, stored in
+ *  the host record's `secrets.env` under the machine-global hosts registry. */
+export const HOST_BEARER_SECRET = 'MYCO_HOST_BEARER';
+/**
+ * HOST-side name for the same bearer, stored machine-scoped in `~/.myco/secrets.env`.
+ * The host mints it when host-serve is enabled; every request arriving on the overlay
+ * listener must present it as `Authorization: Bearer <value>`. Task 2.4's enrollment
+ * hands this value to a joining member, who then stores it under {@link HOST_BEARER_SECRET}.
+ * Distinct key + storage location, one shared value — the single flat-trust host bearer (spec §8/§9).
+ */
+export const HOST_SERVE_BEARER_SECRET = 'MYCO_HOST_SERVE_BEARER';
+
+/**
+ * Wire protocol for member-daemon ↔ host-daemon overlay traffic. Bump on any
+ * breaking change to the proxied request/response contract or tenancy headers.
+ *
+ * Distinct from {@link SYNC_PROTOCOL_VERSION}: team-sync (D1 replica) and
+ * team-host (live daemon overlay) are independent wire contracts. The pair
+ * `[HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION]` is the inclusive window a
+ * member accepts from a host, mirroring the sync
+ * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]` discipline.
+ */
+export const HOST_PROTOCOL_VERSION = 1;
+/** Oldest host protocol a member still talks to (inclusive window with HOST_PROTOCOL_VERSION). */
+export const HOST_MIN_COMPAT_VERSION = 1;
+
+/**
+ * Request header carrying the member's Team-Host protocol version on every
+ * proxied request. Rides alongside the tenancy headers so the version travels
+ * without the proxy ever parsing the (opaque) request body. The host's
+ * transport gate validates it and, on mismatch, replies 409
+ * `protocol_version_unsupported` echoing this header with its own version.
+ */
+export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
+
+/**
+ * The host-side enrollment endpoint (Task 2.4). A joining member — already on the
+ * overlay — POSTs here through its local proxy to receive `{overlay_address,
+ * protocol_version, bearer, …}`. It is the ONE overlay route EXEMPT from the
+ * blanket bearer gate (the chicken-and-egg: enrollment is how the member obtains
+ * the bearer). Gated instead by overlay reachability (`overlayBearerExempt` +
+ * `isOverlayRequest`, `daemon/host-serve.ts`). The `/api/host/*` namespace is
+ * distinct from team-sync's `POST /api/team/join` (scope-map ⚑4) — they are
+ * different capabilities on different transports (live host overlay vs D1 replica).
+ */
+export const HOST_ENROLL_ROUTE = '/api/host/enroll';
+
+/**
+ * Base for the local HTTP-CONNECT proxy port each joined host's userspace
+ * tailscaled exposes (`--outbound-http-proxy-listen=localhost:<port>`), recorded
+ * on that host's {@link HostRecord} as `proxy_port` and dialed by
+ * `daemon/host-proxy.ts`'s CONNECT tunnel (`connectViaHttpProxy`). The mechanism
+ * is HTTP-CONNECT, NOT SOCKS5 — chosen to MATCH what Task 1.3's proxy dials.
+ *
+ * MULTI-HOST: a member runs one tailscaled PER host (each host is its own tailnet
+ * that independently hands out `100.64.0.0/10`, so overlay addresses can collide),
+ * so each host's outbound listener needs a DISTINCT port — the `proxy_port` is what
+ * selects the right tailnet's tailscaled for a dial even when `overlay_address`
+ * collides. Ports are allocated from this base (lowest free not already used by
+ * another host record) and PERSISTED on the host record so the proxy's dial stays
+ * stable across restarts. High + uncommon to avoid colliding with a developer's own
+ * local proxy; listeners are localhost-bound and member-initiated.
+ */
+export const MEMBER_OVERLAY_PROXY_PORT_BASE = 41080;
+
+/**
+ * Member→host proxy timeouts (the host-proxy forwarder, `daemon/host-proxy.ts`).
+ * These bound the INNER overlay hop and must stay shorter than the local
+ * caller's own end-to-end timeout (`DAEMON_CLIENT_TIMEOUT_MS`) for the buffered
+ * class, so the caller sees a clean proxy error rather than its own abort.
+ */
+/** Overlay dial (connect) timeout (ms) — fast dead-peer detection. */
+export const HOST_PROXY_CONNECT_TIMEOUT_MS = 3000;
+/** Response-headers timeout (ms) — bounds connect+headers so a dial never hangs. */
+export const HOST_PROXY_HEADERS_TIMEOUT_MS = 10_000;
+/** Response-body timeout (ms) for the buffered (non-`/mcp`) response class. */
+export const HOST_PROXY_BODY_TIMEOUT_MS = 30_000;
+/**
+ * Idle-read timeout (ms) for a held `/mcp` stream. A streamed tool result may
+ * legitimately run long, so there is NO fixed body timeout — this fires only on
+ * a truly stalled stream (no bytes for this long); it resets on every chunk.
+ */
+export const HOST_PROXY_MCP_IDLE_TIMEOUT_MS = 120_000;
+/**
+ * Max bytes the proxy will buffer when it MUST read a request body: the collect
+ * routes (append to the local collector buffer before forwarding) and the one
+ * `/mcp` tool-name peek. Mirrors the daemon's own 8 MB inbound cap.
+ */
+export const HOST_PROXY_MAX_BUFFERED_BODY_BYTES = 8 * 1024 * 1024;
+
 // --- HTTP response flush ---
 /** Delay before initiating shutdown — allows the HTTP response to flush. */
 export const RESTART_RESPONSE_FLUSH_MS = 500;

@@ -21,7 +21,6 @@ import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
 import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
-import { getTeamMachineId } from '@myco/team/context.js';
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import { evaluateSessionCaptureRules } from '../hooks/capture-rules.js';
 import { stripPlanTagEnvelopes } from '../plans/tag-envelopes.js';
@@ -398,7 +397,6 @@ export class TranscriptMiner {
         // returned by findOpenParentBatch — defeating the human-anchoring.
         ended_at: isSystemOrigin ? now : undefined,
         created_at: now,
-        machine_id: getTeamMachineId(),
         kind: effectiveKind,
         origin: record.origin,
         parent_prompt_batch_id: effectiveKind === BATCH_KIND.INITIAL ? null : parentForNew,

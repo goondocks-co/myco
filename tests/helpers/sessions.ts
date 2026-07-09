@@ -22,6 +22,7 @@ export interface SeedSessionOptions {
   agent?: string;
   status?: 'active' | 'completed';
   startedAt?: number;
+  transcriptPath?: string | null;
 }
 
 /**
@@ -37,6 +38,7 @@ export function seedSession(options: SeedSessionOptions = {}): string {
     started_at: startedAt,
     created_at: startedAt,
     status: options.status ?? 'active',
+    transcript_path: options.transcriptPath ?? null,
   });
   return id;
 }

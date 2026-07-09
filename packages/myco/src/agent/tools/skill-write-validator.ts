@@ -64,6 +64,11 @@ export interface SkillWriteValidation {
  *   - `name`         — skill directory name (validates the `name:` frontmatter field).
  *   - `priorContent` — existing on-disk SKILL.md text, if any (undefined for creates).
  *   - `root`         — project root for the fabrication/claim gate filesystem scan.
+ *   - `hostServed`   — true on a Team Host run served for a remote member: the
+ *                      host lacks the member's working tree, so the fabrication
+ *                      gate (which scans `root`) would see every path/symbol as
+ *                      missing and falsely reject. Skip it — the member's tree is
+ *                      re-scanned when the skill is published there on accept.
  *
  * Returns a `SkillWriteValidation` whose fields are all non-blocking when empty/null.
  * The caller decides whether to reject and composes the error response.
@@ -73,8 +78,9 @@ export function collectSkillWriteIssues(args: {
   name: string;
   priorContent?: string;
   root: string;
+  hostServed?: boolean;
 }): SkillWriteValidation {
-  const { content, name, priorContent, root } = args;
+  const { content, name, priorContent, root, hostServed } = args;
 
   // Gate 1: structural/ceiling/contamination/allowed-tools
   const issues = validateSkillContent(content, name);
@@ -84,8 +90,12 @@ export function collectSkillWriteIssues(args: {
     ? checkFrontmatterPreservation(priorContent, content)
     : [];
 
-  // Gate 3: fabrication — verify inline path/symbol claims against the codebase
-  const claimCheck = verifySkillContentClaims(content, root, priorContent);
+  // Gate 3: fabrication — verify inline path/symbol claims against the codebase.
+  // Skipped on a host-served run: the host has no member working tree to scan, so
+  // the scan would flag every real claim as fabricated (a false rejection).
+  const claimCheck = hostServed
+    ? { missingPaths: [], missingInlineSymbols: [], suspectFencedSymbols: [] }
+    : verifySkillContentClaims(content, root, priorContent);
   let claim: SkillFabricationClaim | null = null;
   if (claimCheck.missingPaths.length > 0 || claimCheck.missingInlineSymbols.length > 0) {
     claim = {

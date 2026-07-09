@@ -18,7 +18,7 @@ import { promises as fs } from 'node:fs';
 import { epochSeconds } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
-import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
+import { resolveRequestContextForVault, isHostServedRequest } from '@myco/grove/request-context.js';
 import { postProcess } from '@myco/canopy/describe/post-process.js';
 import { isCanopySensitivePath } from '@myco/canopy/sensitive-paths.js';
 import {
@@ -143,13 +143,20 @@ export function createCanopyTools(deps: VaultToolDeps) {
       }
       const safeRows = rows.filter((row) => !isCanopySensitivePath(row.path));
 
+      // On a host-served run `projectRoot` is the member's tree, absent on the
+      // host: reading `first_lines` from it would return empty/wrong content (or
+      // a same-named file from the host's own repo). Degrade to null and skip the
+      // read — the DB-resident row fields (exports/imports/top_comment) still drive
+      // the description.
+      const hostServed = isHostServedRequest(deps.requestContext);
+
       const entries = await Promise.all(safeRows.map(async (row) => ({
         path: row.path,
         language: row.language ?? 'unknown',
         exports: parseJsonStringArray(row.exports_json),
         imports: parseJsonStringArray(row.imports_json),
         top_comment: row.top_comment?.trim() || null,
-        first_lines: await readFirstLines(path.join(projectRoot, row.path), FIRST_LINES),
+        first_lines: hostServed ? null : await readFirstLines(path.join(projectRoot, row.path), FIRST_LINES),
       })));
 
       return textResult({ entries });

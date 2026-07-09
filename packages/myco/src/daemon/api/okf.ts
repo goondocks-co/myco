@@ -15,7 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { RouteRequest, RouteResponse } from '../router.js';
+import type { RouteRequest, RouteResponse, RouteRegistrar } from '../router.js';
 import type { RequestPrincipal } from '../request-principal.js';
 import type { DaemonLogger } from '../logger.js';
 import { tenantRoute } from './route-helpers.js';
@@ -326,7 +326,7 @@ export async function handleOkfConceptSupersede(req: RouteRequest, principal: Re
 
 /** Register every OKF route on the daemon server, tenancy-wrapped. */
 export function registerOkfRoutes(
-  server: { registerRoute(method: string, routePath: string, handler: (req: RouteRequest) => Promise<RouteResponse>): void },
+  server: RouteRegistrar,
   tenant: { machineId: string; logger: DaemonLogger },
 ): void {
   server.registerRoute('POST', '/api/okf/acknowledge', tenantRoute(tenant, handleOkfAcknowledge));

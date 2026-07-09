@@ -35,6 +35,10 @@ Commands:
   open                     Open the dashboard in your browser
   restart                  Restart the daemon
   service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status)
+  join <host> --key <k>    Enroll this machine with a Team Host over the overlay
+  leave <host>             Detach this machine from a Team Host
+  attach <project> --host <h> --grove <g>   Route a project to a Team Host (going-forward)
+  detach <project>         Clear a project's Team Host mapping (resolves local again)
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
@@ -70,6 +74,44 @@ Options:
   --instruction TEXT  Additional instruction to pass to the agent run.
   --dry-run           Record intended writes without mutating vault state.
   -h, --help          Show this help
+`,
+  join: `Usage: myco join <host> --key <one-time-key> [--server-url <headscale-url>]
+
+Enroll this machine with a Team Host over its overlay: provisions a userspace
+tailscaled as a per-user service (NO root), joins with the single-use key, then
+records the host so attached projects route to it. Re-running converges.
+
+Options:
+  --key <k>            REQUIRED. The single-use pre-auth key the host operator minted.
+  --server-url <url>   Headscale control-plane URL (required unless already on the overlay).
+  --hostname <name>    This member's node name on the tailnet (default: this machine's hostname).
+  --overlay-address <100.64.x.y:port>  Host daemon overlay address (until enrollment ships).
+  --bearer <serve-bearer>              Shared host serve-bearer (until enrollment ships).
+`,
+  leave: `Usage: myco leave <host>
+
+Detach this machine from a Team Host: removes the stored host record + bearer
+(and its attach refs). When no other host remains, the userspace tailscaled
+service is torn down too. Idempotent.
+`,
+  attach: `Usage: myco attach <project> --host <hostId> --grove <groveId>
+
+Records a project's residency mapping so future requests route to the host that
+serves it, instead of a local Grove. Attach-going-forward only: it does NOT
+migrate existing local Grove data (a project that still has local data is refused
+with guidance). Idempotent — re-attaching to the same host converges.
+
+Options:
+  --host <hostId>       The joined host that will serve this project (falls back to the
+                        checkout's project.toml Team Host hint).
+  --grove <groveId>     REQUIRED. The Grove id on the host that serves this project.
+  --project-id <proj_…> Override the project id (default: the checkout's project.toml).
+`,
+  detach: `Usage: myco detach <project>
+
+Clears a project's residency mapping so future requests resolve to a local Grove
+again. Detach-only: removes the mapping going forward, pulls back NO data.
+Idempotent — detaching a project that is not attached is a clean no-op.
 `,
 };
 
@@ -154,6 +196,19 @@ async function main(): Promise<void> {
   // project vault. Belongs above the myco.yaml gate alongside daemon/update/remove,
   // so `myco service <verb>` works from any cwd (e.g. a fresh host with no project).
   if (cmd === 'service') return (await import('./cli/service.js')).run(args);
+
+  // Team Host member enrollment — machine-global (writes the ~/.myco-team hosts
+  // registry, not a project vault), so it sits above the myco.yaml gate like
+  // `service`/`subsystem`. The command name is load-bearing: the affiliation hint
+  // tells users to run exactly `myco join <host>`.
+  if (cmd === 'join') return (await import('./cli/join.js')).runJoin(args);
+  if (cmd === 'leave') return (await import('./cli/join.js')).runLeave(args);
+
+  // Team Host residency mapping — attach/detach record which host serves a
+  // project (machine-global attach registry, not a project vault), so like
+  // `join`/`leave` they sit above the myco.yaml gate and work from any cwd.
+  if (cmd === 'attach') return (await import('./cli/attach.js')).runAttach(args);
+  if (cmd === 'detach') return (await import('./cli/attach.js')).runDetach(args);
 
   if (cmd === 'doctor') {
     const vaultDir = resolveVaultDir();

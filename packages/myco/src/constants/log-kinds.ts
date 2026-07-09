@@ -105,6 +105,8 @@ export const LOG_KINDS = {
   SERVER_REQUEST: 'server.request',
   SERVER_STATIC: 'server.static',
   SERVER_ERROR: 'server.error',
+  // Team Host — the overlay-facing transport boundary (second listener + gate).
+  HOST_SERVE: 'host.serve',
 
   // Session maintenance job
   MAINTENANCE_SESSION: 'maintenance.session',
