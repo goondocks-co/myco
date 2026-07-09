@@ -134,6 +134,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 65, migrate: (db) => migrateV64ToV65(db) },
   { version: 66, migrate: (db) => migrateV65ToV66(db) },
   { version: 67, migrate: (db) => migrateV66ToV67(db) },
+  { version: 68, migrate: (db) => migrateV67ToV68(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4088,6 +4089,25 @@ function migrateV64ToV65(db: Database): void {
  * generated them; synced_at stays NULL so the delta backfill picks every
  * historical snapshot up.
  */
+function migrateV67ToV68(db: Database): void {
+  // Team Host routed-capture /events idempotency ledger. Renumbered from the
+  // branch's original v67 to v68 to sit after OKF's v67 — the two branches both
+  // claimed v67 (migrateV66ToV67), and the collision resolved silently in favor
+  // of OKF's during the rebase onto main; this re-adds the dropped migration so
+  // existing vaults get routed_event_dedup (fresh installs get it via TABLE_DDLS).
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(ROUTED_EVENT_DEDUP_TABLE);
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(68, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
 function migrateV66ToV67(db: Database): void {
   db.prepare('BEGIN').run();
   try {
@@ -4157,16 +4177,5 @@ function migrateV65ToV66(db: Database): void {
  * identity-bearing event id; NOT a team-sync table. `CREATE TABLE IF NOT EXISTS`,
  * so re-running is safe.
  */
-function migrateV66ToV67(db: Database): void {
-  db.prepare('BEGIN').run();
-  try {
-    db.exec(ROUTED_EVENT_DEDUP_TABLE);
-    db.prepare(
-      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
-    ).run(67, epochSeconds());
-    db.prepare('COMMIT').run();
-  } catch (err) {
-    db.prepare('ROLLBACK').run();
-    throw err;
-  }
-}
+// (Team Host's original v67 routed_event_dedup migration was renumbered to v68
+// above — migrateV67ToV68 — after the OKF rebase collision. Leftover removed.)
