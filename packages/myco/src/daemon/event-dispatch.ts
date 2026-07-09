@@ -280,6 +280,13 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       ? filesystemRootFromRequestContext(req.requestContext)
       : requestProjectRoot;
     const requestMachineId = req.requestContext?.machineId ?? machineId;
+    // Team Host — C7: a host-served (routed) request's plan/transcript FILES live on
+    // the MEMBER's disk, not here. Plan content arrives via the plan companion push
+    // (`POST /routed-capture/plan` → capturePlan), so the host must NOT try to read
+    // the member-local plan file from a live tool event — that read can never succeed
+    // on this machine. Gate the live plan-file read below on this; a local request is
+    // unchanged (false → today's disk read).
+    const requestHostServed = isHostServedRequest(req.requestContext);
     // Routed-capture idempotency key (residency §4a): the member-stamped, identity-
     // bearing id present only on a routed `/events` event. Threaded to the discrete
     // handlers so a live delivery and its drain-replay collapse to one row. Absent
@@ -628,7 +635,9 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         event.tool_input as Record<string, unknown> | undefined,
         { ...planWatchConfig, projectRoot: requestProjectRoot },
       );
-      if (planFilePath) {
+      // For a routed session the plan file is member-local — the plan companion push
+      // (C7) supplies its content to `capturePlan` instead; skip the host-local read.
+      if (planFilePath && !requestHostServed) {
         const captureSessionId = event.session_id;
         fs.promises.readFile(planFilePath, 'utf-8').then((planContent) => {
           const latestBatch = getLatestBatch(captureSessionId);

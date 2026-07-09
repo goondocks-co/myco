@@ -334,6 +334,23 @@ export function resolveMemberTranscriptDrainDir(): string {
   return path.join(resolveMemberOverlayDir(), MEMBER_TRANSCRIPT_DRAIN_DIRNAME);
 }
 
+export const MEMBER_PLAN_DRAIN_DIRNAME = 'plan-drain';
+
+/**
+ * MEMBER-side durable work-queue home for the routed plan-content companion push
+ * (capture-push §5.5, plan C7). One JSON entry per `(host_id, session_id,
+ * plan_ref)` carrying the host-acked CONTENT HASH, so a re-push of unchanged plan
+ * content is a member-side no-op and a restart resumes at the same high-water.
+ * Machine-scoped under the member overlay home — NOT a Grove-DB table: an attached
+ * project has no local Grove DB (§4), so this is the whole-file sibling of
+ * {@link resolveMemberTranscriptDrainDir} (which streams byte-offset deltas). A
+ * plan file is small and read WHOLE, so the queue keys on a content hash rather
+ * than a byte offset. Tests point `MYCO_TEAM_HOME` at a tmpdir for hermetic disk.
+ */
+export function resolveMemberPlanDrainDir(): string {
+  return path.join(resolveMemberOverlayDir(), MEMBER_PLAN_DRAIN_DIRNAME);
+}
+
 export const MEMBER_EVENT_REPLAY_DRAIN_DIRNAME = 'event-replay-drain';
 
 /**

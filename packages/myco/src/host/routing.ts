@@ -242,6 +242,11 @@ const ROUTE_RULES: RouteRule[] = [
   // bytes here; the host materializes them for its miner. Origin-side capture,
   // so `collect`: served locally on the host, proxied from a member.
   { method: 'POST', pattern: '/routed-capture/transcript', stamp: 'collect', capability: COLLECTION },
+  // Routed plan-content ingest — the host RECEIVE side of the plan companion push
+  // (capture-push §5.5, plan C7). The member reads its member-local plan file and
+  // POSTs the content here; the host runs the SAME capturePlan against its Grove DB.
+  // Origin-side capture, so `collect`: served locally on the host, proxied from a member.
+  { method: 'POST', pattern: '/routed-capture/plan', stamp: 'collect', capability: COLLECTION },
 
   // --- degrade: Code intelligence (Canopy) OFF for hosted projects v1 (§1c, §2) ---
   { method: 'POST', pattern: '/canopy/inject', stamp: 'degrade', capability: CANOPY },

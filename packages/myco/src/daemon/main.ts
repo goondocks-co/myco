@@ -200,7 +200,10 @@ import { createStopProcessor } from './stop-processing.js';
 import { captureBatchImages } from './capture-images.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
+import { createRoutedPlanHandler } from '../host/routed-plan.js';
+import type { RemoteTarget } from '../host/routing.js';
 import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
+import { createPlanDrainQueue } from '../capture/plan-drain.js';
 import { createEventReplayDrainQueue } from '../capture/event-replay-drain.js';
 import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
@@ -1204,6 +1207,33 @@ export async function main(): Promise<void> {
   // `pendingCount` inhibits deep sleep while a drain is outstanding.
   const transcriptDrain = createTranscriptDrainQueue({ machineId, logger });
 
+  // Team Host: the MEMBER-side plan-content companion push (capture-push §5.5, C7).
+  // A routed session's plan FILE is member-local and the proxy is byte-opaque, so
+  // plan content rides its OWN channel (parallel to the transcript drain, whole-file):
+  // on a plan-dir write the member reads its plan file and POSTs the content to the
+  // host `POST /routed-capture/plan`. Its `proxyDeps()` fan into the SAME dispatch
+  // chokepoints as the transcript drain (below) so plan content flushes before the
+  // plan-triggering Stop backstop, and its `pendingCount` inhibits deep sleep while a
+  // plan push is outstanding.
+  const planDrain = createPlanDrainQueue({ machineId, logger, planWatchConfig });
+
+  // Both capture drains plug the SAME two host-proxy seams (flush-before-terminal
+  // route + collect-event enqueue); fan each seam out to both so neither channel
+  // regresses the other. The transcript/plan drain modules stay independent — this
+  // is pure wiring composition, threaded into both dispatch chokepoints below.
+  const transcriptProxyDeps = transcriptDrain.proxyDeps();
+  const planProxyDeps = planDrain.proxyDeps();
+  const captureProxyDeps = {
+    flushBeforeForward: async (target: RemoteTarget): Promise<void> => {
+      await transcriptProxyDeps.flushBeforeForward(target);
+      await planProxyDeps.flushBeforeForward(target);
+    },
+    noteCollectEvent: (target: RemoteTarget, event: Record<string, unknown>): void => {
+      transcriptProxyDeps.noteCollectEvent(target, event);
+      planProxyDeps.noteCollectEvent(target, event);
+    },
+  };
+
   // Team Host: the MEMBER-side attach-aware live-event replay drain (capture-push
   // C5). When a host is unreachable the collect proxy buffers live capture events
   // to the DB-free collector buffer; this drain enumerates the attach registry and
@@ -1221,7 +1251,7 @@ export async function main(): Promise<void> {
     uiDevProxyTarget: uiDevProxyTarget ?? undefined,
     runtimeCache,
     hostServe,
-    hostProxyDeps: transcriptDrain.proxyDeps(),
+    hostProxyDeps: captureProxyDeps,
     // Don't record activity on every HTTP request — UI polling (every 3-10s)
     // would prevent the PowerManager from ever reaching 'idle' state, blocking
     // all idle-only scheduled tasks (skill-survey, skill-generate, skill-evolve).
@@ -1425,6 +1455,13 @@ export async function main(): Promise<void> {
   // Stamped `collect` in host/routing.ts, so it rides the overlay bearer/version
   // gate and is served locally on the host (never re-proxied).
   server.registerRoute('POST', '/routed-capture/transcript', createRoutedTranscriptHandler());
+  // Team Host — routed plan-content companion push (capture-push §5.5, C7). A
+  // routed session's plan FILE is member-local and the proxy is byte-opaque, so the
+  // member reads the file and POSTs its content here; the host runs the SAME
+  // capturePlan against its Grove DB (bound by the request's tenancy headers).
+  // Stamped `collect` in host/routing.ts, so it rides the overlay bearer/version
+  // gate and is served locally on the host (never re-proxied).
+  server.registerRoute('POST', '/routed-capture/plan', createRoutedPlanHandler({ logger }));
 
   // --- Context injection (cortex brief + semantic spore search) ---
   let teamSync!: ReturnType<typeof initTeamSync>;
@@ -1978,11 +2015,11 @@ export async function main(): Promise<void> {
       ? db
       : runtimeCache.getDatabase(databasePath),
     logger,
-    // Chokepoint 2 of the transcript-drain flush wiring (capture-push C1). The
+    // Chokepoint 2 of the capture-drain flush wiring (capture-push C1 + C7). The
     // /mcp path is serve-only (never a collect/terminal route), so the flush is
-    // inert here today, but both chokepoints thread the real dep so the
+    // inert here today, but both chokepoints thread the real deps so the
     // guarantee can never silently regress if /mcp ever carries a flush route.
-    hostProxyDeps: transcriptDrain.proxyDeps(),
+    hostProxyDeps: captureProxyDeps,
   }));
 
   // --- Backup routes ---
@@ -2548,6 +2585,21 @@ export async function main(): Promise<void> {
     hold: { pending: () => transcriptDrain.pendingCount() },
     fn: async () => {
       await transcriptDrain.drainAll();
+    },
+  });
+
+  // Team Host plan-content companion-push backstop (capture-push §5.5, C7). The
+  // sibling of the transcript drain for whole-file plan content: the throttled
+  // mid-turn drain + the flush-before-Stop guarantee the common case, and this job
+  // is the catch-up sweep for anything a throttle missed (host unreachable at flush
+  // time). Via `hold.pending` it inhibits deep sleep while a plan push is un-shipped.
+  jobRunner.register({
+    name: 'team-host-plan-drain',
+    runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
+    hold: { pending: () => planDrain.pendingCount() },
+    fn: async () => {
+      await planDrain.drainAll();
     },
   });
 

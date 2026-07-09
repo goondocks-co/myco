@@ -571,7 +571,12 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // the old mtime-window scan, which claimed every plan file merely *touched*
     // during the session's lifetime regardless of author — duplicating a plan
     // into every concurrently-open session and letting the stale copies diverge.
-    if (runTranscriptPhase) {
+    // The authored-plan backstop reads plan files off THIS machine's disk. For a
+    // routed (host-served) session those files are member-local and cannot be read
+    // here — plan content lands via the plan companion push (C7), flushed before
+    // this Stop forwards — so skip the guaranteed-failing host-local reads. A local
+    // session is unchanged.
+    if (runTranscriptPhase && !isHostServedRequest(requestContext)) {
       const captureWatchConfig: PlanWatchConfig = {
         watchDirs: planWatchConfig.watchDirs,
         projectRoot: planCaptureRoot,

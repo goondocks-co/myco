@@ -29,6 +29,7 @@ import path from 'node:path';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import { createFsDrainStore } from '../capture/transcript-drain.js';
 import { createFsReplayStore } from '../capture/event-replay-drain.js';
+import { createFsPlanDrainStore } from '../capture/plan-drain.js';
 import { isGroveEraId } from '../grove/ids.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '../grove/paths.js';
 import { teamHostHintFromManifest } from './hint.js';
@@ -180,14 +181,15 @@ export function detachCommand(options: DetachOptions): DetachResult {
   if (!existing) return { projectId, detachedFromHostId: null };
 
   detachProject(existing.host.host_id, projectId);
-  // Purge-on-detach (capture-push §5.2): drop this project's un-shipped
-  // transcript-drain AND live-event replay high-water entries for the host it was
-  // attached to, so a re-attach starts clean and no stale entry holds the machine
-  // awake via `hold.pending`. (The detached project's collector buffer dir also
-  // stops being enumerated, since the drain reads the attach registry — capture-push
-  // C5.)
+  // Purge-on-detach (capture-push §5.2, §5.5): drop this project's un-shipped
+  // transcript-drain, plan-drain, AND live-event replay high-water entries for the
+  // host it was attached to, so a re-attach starts clean and no stale entry holds
+  // the machine awake via `hold.pending`. (The detached project's collector buffer
+  // dir also stops being enumerated, since the drain reads the attach registry —
+  // capture-push C5.)
   try {
     createFsDrainStore().purgeProject(existing.host.host_id, projectId);
+    createFsPlanDrainStore().purgeProject(existing.host.host_id, projectId);
     createFsReplayStore().purgeProject(existing.host.host_id, projectId);
   } catch { /* best-effort machine-scoped cleanup — never block the detach */ }
   return { projectId, detachedFromHostId: existing.host.host_id };
