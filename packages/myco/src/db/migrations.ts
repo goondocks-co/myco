@@ -45,6 +45,7 @@ import {
   TEAM_DELETE_TRIGGERS,
   GROVE_PROJECT_SCOPED_TABLES,
   PLAN_LOGICAL_KEY_INDEX_DDLS,
+  ROUTED_EVENT_DEDUP_TABLE,
   TABLE_DDLS,
   FTS_TABLES,
   SECONDARY_INDEXES,
@@ -4143,6 +4144,26 @@ function migrateV65ToV66(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(66, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v66 → v67: add the `routed_event_dedup` idempotency ledger for routed `/events`
+ * capture (residency §4a). Host-local dedup state keyed on the member-stamped,
+ * identity-bearing event id; NOT a team-sync table. `CREATE TABLE IF NOT EXISTS`,
+ * so re-running is safe.
+ */
+function migrateV66ToV67(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(ROUTED_EVENT_DEDUP_TABLE);
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(67, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

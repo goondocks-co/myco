@@ -12,6 +12,7 @@ import path from 'node:path';
 import type { RouteHandler } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
+import { readEventId } from '@myco/capture/event-id.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { PowerManager } from './power.js';
 import { DaemonLogger } from './logger.js';
@@ -279,6 +280,11 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       ? filesystemRootFromRequestContext(req.requestContext)
       : requestProjectRoot;
     const requestMachineId = req.requestContext?.machineId ?? machineId;
+    // Routed-capture idempotency key (residency §4a): the member-stamped, identity-
+    // bearing id present only on a routed `/events` event. Threaded to the discrete
+    // handlers so a live delivery and its drain-replay collapse to one row. Absent
+    // (undefined) for local events → today's behavior, unchanged.
+    const sourceEventId = readEventId(event) ?? undefined;
 
     // Team Host — C4: for a session host-served for a remote member, the event's
     // `transcript_path` is a MEMBER-local path that does not exist on this host.
@@ -519,7 +525,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           source: ENSURE_SESSION_SOURCE.USER_PROMPT,
         });
         const kind = typeof event.kind === 'string' ? event.kind : 'initial';
-        const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind, origin: promptOrigin });
+        const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind, origin: promptOrigin, sourceEventId, sourceMachineId: requestMachineId });
         userPromptBatchId = batchId;
         logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
         deferGitProvenance({
@@ -667,6 +673,8 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
           requestFilesystemRoot,
           typeof event.transcript_path === 'string' ? event.transcript_path : undefined,
+          sourceEventId,
+          requestMachineId,
         );
       } catch (err) {
         handlerFailed = true;
@@ -729,6 +737,8 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           event.tool_input,
           typeof event.error === 'string' ? event.error : undefined,
           !!event.is_interrupt,
+          sourceEventId,
+          requestMachineId,
         );
       } catch (err) {
         handlerFailed = true;
