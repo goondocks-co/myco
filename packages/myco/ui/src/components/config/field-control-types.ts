@@ -6,13 +6,13 @@
  * The label/scope-badge/note row sits OUTSIDE the control — the unified
  * Settings page composes that wrapper around these primitives.
  */
-export interface BaseFieldControlProps {
+export interface BaseFieldControlProps<TValue = unknown, TNext = TValue> {
   /** Stable id for the input — must match the label's htmlFor. */
   id: string;
   /** Current value (kind-specific). */
-  value: unknown;
+  value: TValue;
   /** Called when the user commits a change. */
-  onChange: (next: unknown) => void;
+  onChange: (next: TNext) => void;
   /** Disable input (loading or in-flight write). */
   disabled?: boolean;
   /** Render as read-only display when truthy. */

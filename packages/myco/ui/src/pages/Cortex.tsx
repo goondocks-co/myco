@@ -404,7 +404,7 @@ function InstructionsTab() {
                 label="Managed instructions"
               >
                 {({ value, onChange }) => (
-                  <Switch checked={value ?? true} onCheckedChange={onChange} />
+                  <Switch checked={typeof value === 'boolean' ? value : true} onCheckedChange={onChange} />
                 )}
               </ScopedField>
 
@@ -414,7 +414,7 @@ function InstructionsTab() {
                   label="Preferred digest"
                 >
                   {({ value, onChange }) => (
-                    <Switch checked={value ?? false} onCheckedChange={onChange} />
+                    <Switch checked={typeof value === 'boolean' ? value : false} onCheckedChange={onChange} />
                   )}
                 </ScopedField>
                 <p className="max-w-md font-sans text-xs text-on-surface-variant">
@@ -445,7 +445,7 @@ function InstructionsTab() {
                 label="Subagent instructions"
               >
                 {({ value, onChange }) => (
-                  <Switch checked={value ?? true} onCheckedChange={onChange} />
+                  <Switch checked={typeof value === 'boolean' ? value : true} onCheckedChange={onChange} />
                 )}
               </ScopedField>
             </div>
@@ -464,7 +464,7 @@ function InstructionsTab() {
                 label="Spore retrieval"
               >
                 {({ value, onChange }) => (
-                  <Switch checked={value ?? true} onCheckedChange={onChange} />
+                  <Switch checked={typeof value === 'boolean' ? value : true} onCheckedChange={onChange} />
                 )}
               </ScopedField>
 

@@ -5,9 +5,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import type { BaseFieldControlProps } from './field-control-types';
 
-export interface SecretFieldProps extends BaseFieldControlProps {
-  value: string;
-  onChange: (next: string) => void;
+export interface SecretFieldProps extends BaseFieldControlProps<string> {
   /** Whether a value is currently configured (e.g., loaded from keychain). */
   configured?: boolean;
   /** Source label, e.g. "keychain" or "env" — surfaced as a chip when configured. */

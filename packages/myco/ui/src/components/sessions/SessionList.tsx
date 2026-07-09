@@ -240,8 +240,10 @@ export function SessionList({
       params.has('status') || params.has('agent') || params.has('has_plan');
     if (hasDeepLinkFilter) return;
     if (!selectedId && !isLoading && orderedRows.length > 0) {
+      const firstRow = orderedRows[0];
+      if (!firstRow) return;
       didAutoSelect.current = true;
-      onSelectSession(orderedRows[0].id, { replace: true });
+      onSelectSession(firstRow.id, { replace: true });
     }
   }, [selectedId, isLoading, orderedRows, onSelectSession, location.search]);
 

@@ -393,7 +393,7 @@ export function ComparisonView({
 
 /* ---------- Sub-components ---------- */
 
-function HeaderCell({ children }: { children: React.ReactNode }) {
+function HeaderCell({ children }: { children?: React.ReactNode }) {
   return (
     <th className="px-3 py-2 text-left text-[11px] font-medium text-on-surface-variant uppercase tracking-widest font-sans whitespace-nowrap">
       {children}
@@ -616,6 +616,7 @@ function summarizeTaskContext(
   if (distinct.size === 0) return { kind: 'none' };
   if (distinct.size === 1) {
     const [only] = distinct;
+    if (!only) return { kind: 'none' };
     return { kind: 'single', label: displayNames.get(only) ?? only };
   }
   const names = [...distinct].map((id) => displayNames.get(id) ?? id).sort();

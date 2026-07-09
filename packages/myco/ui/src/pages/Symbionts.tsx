@@ -71,7 +71,7 @@ export default function Symbionts() {
     <PageContainer>
       <PageHeader
         title="Symbionts"
-        description="Coding agents Myco supports on this machine, and the Myco features available for each."
+        subtitle="Coding agents Myco supports on this machine, and the Myco features available for each."
         actions={
           <Button onClick={redetect} disabled={detecting} variant="outline" size="sm">
             <RefreshCw className={`h-4 w-4 mr-1.5 ${detecting ? 'animate-spin' : ''}`} />

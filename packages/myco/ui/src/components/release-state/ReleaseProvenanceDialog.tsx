@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import type { JSX } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Dialog,

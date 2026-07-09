@@ -60,7 +60,7 @@ function MycoInjectionItem({ activity }: { activity: ActivityRow }) {
         </span>
         <span className="shrink-0 ml-auto" />
         {failedFetch && (
-          <span className="font-sans text-[10px] text-tertiary" title="No content stored — fetch may have failed">
+          <span className="font-sans text-[10px] text-tertiary" title="No content stored - fetch may have failed">
             no content
           </span>
         )}
@@ -263,7 +263,11 @@ export function ActivityList({ batchId, activityCount }: ActivityListProps) {
           {!isLoading && activities.length > 0 && (
             <div className="space-y-0">
               {activities.map((activity) => (
-                <ActivityItem key={activity.id} activity={activity} />
+                isMycoInjectionRow(activity.tool_name) ? (
+                  <MycoInjectionItem key={activity.id} activity={activity} />
+                ) : (
+                  <ActivityItem key={activity.id} activity={activity} />
+                )
               ))}
             </div>
           )}

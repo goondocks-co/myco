@@ -127,6 +127,7 @@ export function computeDeltas(
 
   for (let i = 0; i < runs.length; i++) {
     const run = runs[i];
+    if (!run) continue;
     const label = deriveCellLabel({
       harness: run.harness,
       reasoningLevel: reasoningByIndex[i],
@@ -193,7 +194,8 @@ export function formatWriteIntentsByTool(byTool: Record<string, number>): string
 function shortenToolName(name: string): string {
   const parts = name.split('_');
   if (parts.length <= 1) return name;
-  const tail = parts[parts.length - 1];
+  const tail = parts.at(-1);
+  if (!tail) return name;
   // Very short tails (e.g. "up" from a hypothetical "vault_sync_up") are
   // ambiguous — keep the full name in that case.
   if (tail.length < 3) return name;
@@ -317,16 +319,20 @@ export function selectVisibleColumns(
   if (runs.length < 2) {
     return new Set(candidates);
   }
+  const firstRun = runs[0];
+  if (!firstRun) return new Set(candidates);
   const visible = new Set<ColumnKey>();
   for (const column of candidates) {
     if (ALWAYS_VISIBLE_COLUMNS.has(column)) {
       visible.add(column);
       continue;
     }
-    const first = readColumnValue(runs[0], column);
+    const first = readColumnValue(firstRun, column);
     let varied = false;
     for (let i = 1; i < runs.length; i++) {
-      if (readColumnValue(runs[i], column) !== first) {
+      const run = runs[i];
+      if (!run) continue;
+      if (readColumnValue(run, column) !== first) {
         varied = true;
         break;
       }
@@ -629,7 +635,8 @@ export function detectSharedInputs(
   if (!anyHasInputs) return { sameInput: null };
 
   // A single run with inputs is trivially "same" (nothing to disagree with).
-  const first = perRun[0].inputs;
+  const first = perRun[0]?.inputs;
+  if (!first) return { sameInput: null };
   const allMatch = perRun.every((r) => inputsEqual(r.inputs, first));
   const firstHasAny = Object.keys(first).length > 0;
   if (allMatch && firstHasAny) {

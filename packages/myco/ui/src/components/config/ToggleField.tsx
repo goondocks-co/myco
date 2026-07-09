@@ -1,9 +1,7 @@
 import { Switch } from '../ui/switch';
 import type { BaseFieldControlProps } from './field-control-types';
 
-export interface ToggleFieldProps extends BaseFieldControlProps {
-  value: boolean;
-  onChange: (next: boolean) => void;
+export interface ToggleFieldProps extends BaseFieldControlProps<boolean> {
 }
 
 /**

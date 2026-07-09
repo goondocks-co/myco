@@ -23,7 +23,7 @@ export function CortexStatusPillView({
 }: CortexStatusPillViewProps) {
   const known = describedCount !== undefined && entriesCount !== undefined;
   const pct = known ? computeIndexingPct(describedCount, entriesCount) : null;
-  const indexing = known && pct < 100;
+  const indexing = pct !== null && pct < 100;
   const content = (
     <>
       <StatusDot tone={indexing ? 'ochre' : 'sage'} pulse={indexing} />

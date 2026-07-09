@@ -52,7 +52,7 @@ export function GroveBackupSnapshot() {
     enabled: !!groveId,
   });
   const backups = data?.backups ?? null;
-  const last = backups && backups.length > 0 ? backups[0] : null;
+  const last = backups && backups.length > 0 ? backups[0] ?? null : null;
   const recent = backups ? backups.slice(1, 5) : [];
 
   return (

@@ -294,7 +294,7 @@ function ActiveSessionsHero({
             <ActiveSessionRow
               key={s.id}
               session={s}
-              accent={(['sage', 'ochre', 'terra'] as const)[i % 3]}
+              accent={(['sage', 'ochre', 'terra'] as const)[i % 3] ?? 'sage'}
               onClick={() => navigate(projectPath(sessionSuffix(s.id)))}
             />
           ))}
@@ -376,7 +376,7 @@ function AgentRunsPanel({ runs }: { runs: RunRow[] }) {
   });
   return (
     <Panel
-      accent="terra"
+      tone="terra"
       eyebrow="Agent runs"
       title="Recent"
       actions={
@@ -448,7 +448,7 @@ function SkillsPanel({ skills }: { skills: SkillRecord[] }) {
   const sorted = [...skills].sort((a, b) => b.updated_at - a.updated_at);
   return (
     <Panel
-      accent="sage"
+      tone="sage"
       eyebrow="Skills"
       title="Recently evolved"
       actions={
@@ -499,7 +499,7 @@ function CanopyPanel({ entries }: { entries: CanopyEntryRow[] }) {
   const projectPath = useProjectPathBuilder();
   return (
     <Panel
-      accent="ochre"
+      tone="ochre"
       eyebrow="Canopy"
       title="Recent entries"
       actions={

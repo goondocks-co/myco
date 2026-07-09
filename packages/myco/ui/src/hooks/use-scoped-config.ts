@@ -9,7 +9,7 @@ import {
 } from '../lib/api';
 import { getAtPath, setAtPath } from '@myco/utils/dot-path';
 import type { MycoConfig } from './use-config';
-import type { MachineConfig } from '@myco/config/schema';
+import type { GroveConfig, MachineConfig } from '@myco/config/schema';
 import type { ConfigPath } from '../lib/config-paths';
 import { useUpdateGroveConfig } from './use-grove-config';
 import { useUpdateMachineConfig, type MachineConfigPatch } from './use-machine-config';

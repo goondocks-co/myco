@@ -4,7 +4,7 @@ import { usePowerQuery } from './use-power-query';
 import { fetchJson, postJson, putJson, deleteJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
 import { projectScopedQueryKey, useProjectScopedQueryKey, useProjectSelection } from './use-project-selection';
-import type { PhaseAudit, PhaseAuditEntry } from '@myco/services/phase-audit';
+import type { PhaseAudit } from '@myco/services/phase-audit';
 import type { WriteIntentRow } from '@myco/db/queries/write-intents';
 import type { DigestExtractRevisionRow } from '@myco/db/queries/digest-extracts';
 import type { HarnessId, ReasoningLevel } from '@myco/agent/types';

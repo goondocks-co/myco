@@ -5,9 +5,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import type { BaseFieldControlProps } from './field-control-types';
 
-export interface ListFieldProps extends BaseFieldControlProps {
-  value: readonly string[];
-  onChange: (next: string[]) => void;
+export interface ListFieldProps extends BaseFieldControlProps<readonly string[], string[]> {
   placeholder?: string;
   /** Allow duplicate entries. Defaults to false. */
   allowDuplicates?: boolean;

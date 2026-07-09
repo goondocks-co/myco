@@ -380,8 +380,10 @@ export function RunList({
   useEffect(() => {
     if (didAutoSelect.current) return;
     if (!selectedId && !isLoading && runs.length > 0) {
+      const firstRun = runs[0];
+      if (!firstRun) return;
       didAutoSelect.current = true;
-      onSelectRun(runs[0].id, { replace: true });
+      onSelectRun(firstRun.id, { replace: true });
     }
   }, [selectedId, isLoading, runs, onSelectRun]);
 

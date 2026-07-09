@@ -13,7 +13,7 @@
  * can also pass a namespace + recordId to open structured provenance details.
  */
 
-import { useState, type ReactNode } from 'react';
+import { useState, type JSX, type ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import { ReleaseProvenanceDialog } from './ReleaseProvenanceDialog';
 
@@ -41,6 +41,7 @@ const STATE_BADGE_CLASS: Record<string, string> = {
   unknown: 'bg-surface-container-high text-on-surface-variant',
   unreconciled: 'border border-[var(--ghost-border)] text-on-surface-variant/70',
 };
+const UNKNOWN_STATE_BADGE_CLASS = STATE_BADGE_CLASS.unknown ?? 'bg-surface-container-high text-on-surface-variant';
 
 /**
  * Theme-aware base colors for the state. Used by both the badge and the
@@ -54,6 +55,7 @@ const STATE_DOT_FILL: Record<string, string> = {
   unknown: 'bg-on-surface-variant/40',
   unreconciled: 'bg-on-surface-variant/25',
 };
+const UNKNOWN_STATE_DOT_FILL = STATE_DOT_FILL.unknown ?? 'bg-on-surface-variant/40';
 
 const STATE_DOT_RING: Record<string, string> = {
   released: 'border-primary',
@@ -62,6 +64,7 @@ const STATE_DOT_RING: Record<string, string> = {
   unknown: 'border-on-surface-variant/40',
   unreconciled: 'border-on-surface-variant/25',
 };
+const UNKNOWN_STATE_DOT_RING = STATE_DOT_RING.unknown ?? 'border-on-surface-variant/40';
 
 function buildTitle(annotation: ReleaseStateAnnotation): string {
   const parts: string[] = [STATE_LABEL[annotation.state] ?? annotation.state];
@@ -87,7 +90,7 @@ export function ReleaseStateBadge({
 }: ReleaseStateBadgeProps): JSX.Element | null {
   if (!annotation) return null;
   const label = STATE_LABEL[annotation.state] ?? annotation.state;
-  const stateClass = STATE_BADGE_CLASS[annotation.state] ?? STATE_BADGE_CLASS.unknown;
+  const stateClass = STATE_BADGE_CLASS[annotation.state] ?? UNKNOWN_STATE_BADGE_CLASS;
   const title = buildTitle(annotation);
   const canOpenDetail = Boolean(namespace && recordId);
 
@@ -133,8 +136,8 @@ export function ReleaseStateDot({
   recordId,
 }: ReleaseStateDotProps): JSX.Element | null {
   if (!annotation) return null;
-  const fill = STATE_DOT_FILL[annotation.state] ?? STATE_DOT_FILL.unknown;
-  const ring = STATE_DOT_RING[annotation.state] ?? STATE_DOT_RING.unknown;
+  const fill = STATE_DOT_FILL[annotation.state] ?? UNKNOWN_STATE_DOT_FILL;
+  const ring = STATE_DOT_RING[annotation.state] ?? UNKNOWN_STATE_DOT_RING;
   const confidence = annotation.confidence ?? null;
 
   let visual: string;

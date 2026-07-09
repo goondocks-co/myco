@@ -7,9 +7,7 @@ import {
 } from '../ui/select';
 import type { BaseFieldControlProps } from './field-control-types';
 
-export interface SelectFieldProps extends BaseFieldControlProps {
-  value: string;
-  onChange: (next: string) => void;
+export interface SelectFieldProps extends BaseFieldControlProps<string> {
   options: readonly string[];
   /** Optional label overrides keyed by option value. */
   optionLabels?: Readonly<Record<string, string>>;
