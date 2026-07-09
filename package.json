@@ -15,6 +15,7 @@
     "build:watch": "tsc --watch",
     "build:types": "tsc",
     "check:workers": "npm run check --prefix packages/myco-team/worker && npm run check --prefix packages/myco-collective/worker",
+    "typecheck:ui": "npm run typecheck:ui -w @goondocks/myco",
     "test": "node scripts/run-bun-tests.mjs",
     "test:debug": "node scripts/run-bun-tests.mjs --bail=1 --only-failures",
     "test:fast": "MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs",
@@ -22,7 +23,7 @@
     "test:watch": "bun test --watch",
     "lint:skills": "tsx packages/myco/scripts/lint-skill-content.ts",
     "lint:skills:strict": "tsx packages/myco/scripts/lint-skill-content.ts --strict",
-    "lint": "npm run lint:skills:strict && tsc --noEmit && npm run check:workers"
+    "lint": "npm run lint:skills:strict && tsc --noEmit && npm run typecheck:ui && npm run check:workers"
   },
   "repository": {
     "type": "git",

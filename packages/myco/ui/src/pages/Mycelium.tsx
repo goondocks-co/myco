@@ -27,7 +27,6 @@ const INSPECTOR_OFFSET_CLASS = 'right-[332px]';
 const SEARCH_MATCH_LIMIT = 6;
 const FOCUS_TRAIL_LIMIT = 3;
 const GRAPH_CANVAS_HEIGHT_CLASS = 'h-[calc(100vh-285px)]';
-type UiGraphEdge = { source_id: string; target_id: string; label: string; weight?: number };
 
 /* ---------- Types ---------- */
 

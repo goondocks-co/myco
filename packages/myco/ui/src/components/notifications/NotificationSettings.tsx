@@ -132,7 +132,7 @@ export function NotificationSettings() {
               {({ value, onChange }) => (
                 <NumberField
                   id="notifications-retention-days"
-                  value={value ?? 30}
+                  value={typeof value === 'number' ? value : 30}
                   onChange={onChange}
                   min={0}
                   max={365}

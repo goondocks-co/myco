@@ -26,7 +26,7 @@ import { formatEpochRelative, capitalize, runAttemptStart } from '../../lib/form
 import { formatCost, formatTokens, formatDuration, resolveTaskName, statusBadgeVariant } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 import type { CostResolution } from '@myco/agent/cost/types';
-import type { HarnessTokenBudget } from '@myco/agent/types';
+import type { RuntimeTokenBudget } from '@myco/agent/types';
 import { tryParseJson } from '../../lib/json';
 
 /* ---------- Helpers ---------- */
@@ -73,7 +73,7 @@ function formatEpochAbsoluteTime(epoch: number | null): string {
   return new Date(epoch * MS_PER_SECOND).toLocaleTimeString();
 }
 
-function formatBudgetSource(source: HarnessTokenBudget['contextWindowSource'] | undefined): string {
+function formatBudgetSource(source: RuntimeTokenBudget['contextWindowSource'] | undefined): string {
   if (!source) return '\u2014';
   switch (source) {
     case 'provider-config':
@@ -98,7 +98,7 @@ interface ParsedUsageData {
     cachedTokens?: number;
     requests?: number;
   };
-  runBudget?: HarnessTokenBudget;
+  runBudget?: RuntimeTokenBudget;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

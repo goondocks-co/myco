@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type JSX } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   Activity,
@@ -18,7 +18,6 @@ import {
 import { Surface } from '../components/ui/surface';
 import { PageHeader } from '../components/ui/page-header';
 import { Badge } from '../components/ui/badge';
-import { Button } from '../components/ui/button';
 import { RestartGateProvider, RestartBanner } from '../components/config/restart-gate';
 import { ScopeBadge } from '../components/config/ScopePill';
 import { configFieldId } from '@myco/config/focus';

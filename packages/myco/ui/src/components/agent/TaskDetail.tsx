@@ -6,7 +6,7 @@ import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useTask, type PhaseDefinition } from '../../hooks/use-agent';
 import { useScopedConfig } from '../../hooks/use-scoped-config';
-import { maybeInferHarnessFromProviderType, resolveReasoningModel } from '../../hooks/use-providers';
+import { maybeInferHarnessFromProviderType, parseProviderType, resolveReasoningModel } from '../../hooks/use-providers';
 import { capitalize } from '../../lib/format';
 import { sourceBadgeVariant } from './helpers';
 import { TaskActions } from './TaskActions';
@@ -30,7 +30,7 @@ interface TaskDetailProps {
 /* ---------- Helpers ---------- */
 
 /** Resolve effective execution config from task fields. */
-function getExecution(task: {
+interface TaskExecutionSource {
   execution?: {
     harness?: string;
     provider?: { type?: string };
@@ -43,7 +43,26 @@ function getExecution(task: {
   reasoningLevel?: 'low' | 'default' | 'high';
   maxTurns?: number;
   timeoutSeconds?: number;
-}) {
+}
+
+interface ExecutionSummary {
+  harness?: string;
+  provider?: string;
+  model?: string;
+  reasoningLevel?: 'low' | 'default' | 'high';
+  maxTurns?: number;
+  timeoutSeconds?: number;
+}
+
+interface InheritedExecutionSummary extends ExecutionSummary {
+  providerType?: string;
+  localBackend?: 'ollama' | 'lmstudio';
+  reasoningMap?: Partial<Record<'low' | 'default' | 'high', string>>;
+  baseUrl?: string;
+  contextLength?: number;
+}
+
+function getExecution(task: TaskExecutionSource): ExecutionSummary {
   return {
     harness: task.execution?.harness,
     provider: task.execution?.provider?.type,
@@ -89,16 +108,18 @@ function getInheritedExecution(
       };
     };
   } | undefined,
-) {
+): InheritedExecutionSummary {
   const globalProvider = config?.agent?.provider;
   const taskProvider = task.execution?.provider;
+  const taskProviderType = taskProvider?.type ? parseProviderType(taskProvider.type) || undefined : undefined;
+  const globalProviderType = globalProvider?.type ? parseProviderType(globalProvider.type) || undefined : undefined;
   const reasoningLevel = task.execution?.reasoningLevel ?? task.reasoningLevel;
   const fallbackModel = task.execution?.model ?? task.model ?? globalProvider?.model;
   return {
     harness: task.execution?.harness
       ?? config?.agent?.harness
-      ?? maybeInferHarnessFromProviderType(taskProvider?.type)
-      ?? maybeInferHarnessFromProviderType(globalProvider?.type),
+      ?? maybeInferHarnessFromProviderType(taskProviderType)
+      ?? maybeInferHarnessFromProviderType(globalProviderType),
     providerType: taskProvider?.type ?? globalProvider?.type,
     localBackend: taskProvider?.local_backend ?? globalProvider?.local_backend,
     reasoningLevel,
@@ -180,10 +201,9 @@ function PhaseCard({ phase, index }: { phase: PhaseDefinition; index: number }) 
 export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskDetailProps) {
   const { data, isPending, isError } = useTask(taskId);
   const { effective } = useScopedConfig();
-  const task = data?.task;
-  const phases: PhaseDefinition[] = task?.phases ?? [];
-  const execution = task ? getExecution(task) : {};
-  const inheritedExecution = task ? getInheritedExecution(task, effective) : {};
+  const taskForDefaults = data?.task;
+  const execution = taskForDefaults ? getExecution(taskForDefaults) : {};
+  const inheritedExecution = taskForDefaults ? getInheritedExecution(taskForDefaults, effective) : {};
   const taskConfigDefaults = useMemo(() => ({
     harness: inheritedExecution.harness,
     providerType: inheritedExecution.providerType,
@@ -226,6 +246,9 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
       </div>
     );
   }
+
+  const task = data.task;
+  const phases: PhaseDefinition[] = task.phases ?? [];
 
   return (
     <div className="space-y-6">

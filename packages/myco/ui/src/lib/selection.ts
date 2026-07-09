@@ -76,7 +76,8 @@ export function defaultSelection(groves: GroveSummary[]): ProjectSelection | nul
   const defaultGrove = groves.find((grove) => grove.is_default && grove.projects.length > 0);
   const grove = defaultGrove ?? groves.find((candidate) => candidate.projects.length > 0);
   if (!grove) return null;
-  return { grove, project: grove.projects[0] };
+  const project = grove.projects[0];
+  return project ? { grove, project } : null;
 }
 
 function activityMsByProject(activity: ProjectActivityRow[] | undefined): Map<string, number> {
@@ -126,7 +127,7 @@ export function mostRecentProjectInGrove(
   activity: ProjectActivityRow[] | undefined,
 ): GroveProjectSummary | null {
   if (grove.projects.length === 0) return null;
-  if (!activity || activity.length === 0) return grove.projects[0];
+  if (!activity || activity.length === 0) return grove.projects[0] ?? null;
   const ms = activityMsByProject(activity);
   return [...grove.projects].sort(
     (a, b) => (ms.get(b.project_id) ?? 0) - (ms.get(a.project_id) ?? 0),
@@ -206,8 +207,8 @@ export function monogramFor(name: string): string {
     .filter(Boolean);
   if (parts.length === 0) return 'M';
   const letters = parts.length === 1
-    ? parts[0].slice(0, 2)
-    : `${parts[0][0]}${parts[1][0]}`;
+    ? parts[0]?.slice(0, 2) ?? 'M'
+    : `${parts[0]?.[0] ?? ''}${parts[1]?.[0] ?? ''}`;
   return letters.toUpperCase();
 }
 

@@ -25,7 +25,9 @@ const READ_TOOL_NAMES = new Set(['Read', 'read']);
  * and on Read rows where Canopy didn't inject — targeted reads, small
  * files, unknown files, disabled scope).
  */
-function qualifies(activity: { tool_name: string; canopy_injection_tokens: number | null }): boolean {
+function qualifies(
+  activity: { tool_name: string; canopy_injection_tokens: number | null },
+): activity is { tool_name: string; canopy_injection_tokens: number } {
   if (activity.canopy_injection_tokens === null) return false;
   return READ_TOOL_NAMES.has(activity.tool_name);
 }
@@ -50,7 +52,7 @@ function BlobPanel({ sessionId, toolCallId }: { sessionId: string; toolCallId: n
     );
   }
 
-  if (isError || data === null) {
+  if (isError || data == null) {
     return (
       <div className="flex items-center gap-2 text-on-surface-variant">
         <FileX className="h-4 w-4" />
@@ -97,8 +99,7 @@ export function CanopyToolCallIndicator({ sessionId, activity }: CanopyToolCallI
 
   if (!qualifies(activity)) return null;
 
-  // Type-narrow: qualifies() guarantees this is non-null.
-  const tokens = activity.canopy_injection_tokens as number;
+  const tokens = activity.canopy_injection_tokens;
 
   return (
     <>

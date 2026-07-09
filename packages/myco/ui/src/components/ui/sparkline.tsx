@@ -40,11 +40,12 @@ export function Sparkline({
       <svg
         role="img"
         aria-label={ariaLabel}
-        title={title ?? ariaLabel}
         width={widthPx}
         height={heightPx}
         className={cn('inline-block', className)}
-      />
+      >
+        <title>{title ?? ariaLabel}</title>
+      </svg>
     );
   }
   const max = Math.max(...data, 1);
@@ -54,11 +55,11 @@ export function Sparkline({
     <svg
       role="img"
       aria-label={ariaLabel}
-      title={title ?? ariaLabel}
       width={widthPx}
       height={heightPx}
       className={cn('inline-block', className)}
     >
+      <title>{title ?? ariaLabel}</title>
       {data.map((v, i) => {
         const scaledHeight = max === 0 ? 0 : Math.round((v / max) * heightPx);
         const h = Math.min(
@@ -137,13 +138,13 @@ export function ActivitySparkline({
     <svg
       role="img"
       aria-label={label}
-      title={title ?? label}
       width={widthPx}
       height={heightPx}
       viewBox={`0 0 ${widthPx} ${heightPx}`}
       className={cn('inline-block', className)}
       {...props}
     >
+      <title>{title ?? label}</title>
       {buckets.map((value, index) => {
         const scaled = Math.round((value / max) * heightPx);
         const h = value > 0 ? Math.max(3, scaled) : 1;
