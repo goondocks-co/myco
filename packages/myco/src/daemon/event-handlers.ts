@@ -8,7 +8,6 @@
 import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
-import { getTeamMachineId } from '@myco/team/context.js';
 import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, getLatestBatch, replaceRecoveredBatchUserPrompt, liveContentOrdinal, normalizePromptForHash, BATCH_KIND, RECOVERED_BATCH_SENTINEL, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { classifyNextPromptOrigin } from '@myco/capture/prompt-kind.js';
 import { AntigravityJsonlParser } from '@myco/symbionts/parsers/antigravity-jsonl.js';
@@ -114,7 +113,6 @@ export function ensureOpenBatch(sessionId: string): void {
     user_prompt: RECOVERED_BATCH_SENTINEL,
     started_at: now,
     created_at: now,
-    machine_id: getTeamMachineId(),
     kind: BATCH_KIND.RECOVERED,
     parent_prompt_batch_id: null,
   });
@@ -335,7 +333,6 @@ function handleUserPromptCore(
     // the active turn. Human batches stay open (ended_at left null).
     ended_at: isSystemOrigin ? now : undefined,
     created_at: now,
-    machine_id: getTeamMachineId(),
     kind: effectiveKind,
     origin: incomingOrigin,
     parent_prompt_batch_id: parentId,
@@ -389,7 +386,6 @@ export function syncTranscriptPromptBatches(
   // written in one sweep.
   const now = epochSeconds();
   let createdBatchCount = 0;
-  const machineId = getTeamMachineId();
 
   const insertTail = getDatabase().transaction(() => {
     // content_hash ordinal = occurrence index over the FULL prompt list (origin
@@ -413,7 +409,6 @@ export function syncTranscriptPromptBatches(
         ordinal,
         started_at: now,
         created_at: now,
-        machine_id: machineId,
         kind: BATCH_KIND.INITIAL,
         parent_prompt_batch_id: null,
       });

@@ -782,6 +782,15 @@ export interface StatelessBatchInsert {
   started_at?: number | null;
   ended_at?: number | null;                 // set for point-in-time (born-closed) batches
   status?: string;
+  /**
+   * Explicit attribution override. Omit to inherit the owning SESSION's
+   * `machine_id` — the identity established at session registration. On a
+   * Team Host, capture paths (live event handlers, transcript miner) run on
+   * the HOST for sessions owned by MEMBER machines; stamping the process's
+   * own machine id here mis-attributed every routed batch to the host
+   * (live-caught by the D smoke). Falls back to `getTeamMachineId()` only
+   * when the session row is missing.
+   */
   machine_id?: string;
   kind?: string;                            // defaults to 'initial'
   origin?: PromptBatchOrigin;               // defaults to 'human'
@@ -856,7 +865,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
          (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
          ?, NULL,
          NULL, ?, ?, ?,
-         ?, ?, ?, ?, ?
+         ?, ?, ?, ?, COALESCE(?, (SELECT machine_id FROM sessions WHERE id = ?), ?)
        )`,
     ).run(
       data.session_id,
@@ -876,7 +885,11 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
       DEFAULT_PROCESSED,
       contentHash,
       data.created_at,
-      data.machine_id ?? getTeamMachineId(),
+      // Attribution: explicit override → owning session's machine_id → this
+      // process (see the StatelessBatchInsert.machine_id doc).
+      data.machine_id ?? null,
+      data.session_id,
+      getTeamMachineId(),
     );
 
     const batchId = Number(info.lastInsertRowid);
