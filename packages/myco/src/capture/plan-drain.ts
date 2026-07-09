@@ -220,6 +220,12 @@ const defaultFileReader: PlanFileReader = {
  * AND the tenancy headers (project/grove/machine/session) the host resolves the
  * Grove DB from — plan capture WRITES the DB, so unlike the transcript materializer
  * the host must bind the right Grove. Reads and parses the small JSON ack.
+ *
+ * `target.projectId`/`target.groveId` are the tenancy of the ENTRY being shipped
+ * (the drain scopes them per-entry — see `drainEntry`), NOT the batch's host
+ * target; only `target.host.*` + `target.bearer` are the shared host connection.
+ * This is what keeps a multi-project host-drain from misrouting one project's plan
+ * into another's Grove.
  */
 export const defaultPlanTransport: PlanPostTransport = (target, body) => {
   const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
@@ -230,9 +236,10 @@ export const defaultPlanTransport: PlanPostTransport = (target, body) => {
     'content-type': 'application/json',
     'content-length': String(payload.length),
     [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
-    // Tenancy claims → host binds the Grove DB capturePlan writes to. The host
-    // stamps its OWN local daemon bearer after the overlay gate, so we send no
-    // `x-myco-auth` (the member stripped it; the host re-adds it).
+    // Per-entry tenancy claims (set by drainEntry) → host binds the Grove DB
+    // capturePlan writes to. The host stamps its OWN local daemon bearer after the
+    // overlay gate, so we send no `x-myco-auth` (the member stripped it; the host
+    // re-adds it).
     [REQUEST_CONTEXT_HEADERS.projectId]: String(target.projectId),
     [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
     [REQUEST_CONTEXT_HEADERS.machineId]: body.machine_id,
@@ -531,8 +538,11 @@ export class PlanDrainQueue {
    * ack. Reads the whole file, dedups by content hash, POSTs, and records the new
    * hash on a 200 (at-least-once; a failed POST leaves the hash unadvanced and
    * retries next tick — prune-only-acked). Returns 1 if a POST was made.
+   *
+   * `hostTarget` carries only the HOST CONNECTION + bearer (shared by every entry
+   * on this host); the request's TENANCY is taken PER-ENTRY below.
    */
-  private async drainEntry(target: RemoteTarget, entry: PlanDrainEntry): Promise<number> {
+  private async drainEntry(hostTarget: RemoteTarget, entry: PlanDrainEntry): Promise<number> {
     const content = this.fileReader.read(entry.plan_path);
     if (content === null) {
       // The plan file was removed/moved after the write — its content is
@@ -542,6 +552,20 @@ export class PlanDrainQueue {
     }
     const hash = hashContent(content);
     if (hash === entry.acked_hash) return 0; // unchanged since last ack — no-op
+
+    // CROSS-TENANT SAFETY (the load-bearing invariant): one host-drain batches
+    // entries from EVERY project attached to this host, but `capturePlan` WRITES the
+    // Grove the tenancy headers bind. So each POST must carry its OWN entry's
+    // project/grove, NEVER the arbitrary project the batch's `hostTarget` happened
+    // to be resolved from — otherwise project B's plan lands in project A's Grove.
+    // Scope the transport target per-entry: host connection + bearer from
+    // `hostTarget`, tenancy (`projectId`/`groveId`) from the entry. Only the tenancy
+    // HEADERS read these fields; `defaultDial` reads solely `target.host.*`.
+    const target: RemoteTarget = {
+      ...hostTarget,
+      projectId: entry.project_id as GroveProjectId,
+      groveId: entry.grove_id,
+    };
 
     let resp: PlanChunkResponse;
     try {

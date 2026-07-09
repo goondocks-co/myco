@@ -63,11 +63,18 @@ function memFiles() {
   };
 }
 
-/** A fake host recording every plan POST with its dial target. Always 200. */
+/** A fake host recording every plan POST with its dial target — including the
+ *  target's TENANCY (projectId/groveId), so cross-tenant routing is assertable. */
 function fakeHost() {
-  const calls: Array<{ hostId: string; proxyPort?: number; body: PlanChunkRequest }> = [];
+  const calls: Array<{ hostId: string; proxyPort?: number; projectId: string; groveId: string; body: PlanChunkRequest }> = [];
   const transport: PlanPostTransport = async (target, body) => {
-    calls.push({ hostId: target.host.host_id, proxyPort: target.host.proxy_port, body });
+    calls.push({
+      hostId: target.host.host_id,
+      proxyPort: target.host.proxy_port,
+      projectId: String(target.projectId),
+      groveId: target.groveId,
+      body,
+    });
     return { status: 200, planId: `plan_${calls.length}` };
   };
   return { transport, calls };
@@ -87,10 +94,10 @@ function memStore(): PlanDrainStore {
   };
 }
 
-function target(opts: { hostId?: string; proxyPort?: number; overlay?: string; projectId?: string } = {}): RemoteTarget {
+function target(opts: { hostId?: string; proxyPort?: number; overlay?: string; projectId?: string; groveId?: string } = {}): RemoteTarget {
   return {
     projectId: (opts.projectId ?? 'proj_0123456789abcdef0123456789abcdef') as RemoteTarget['projectId'],
-    groveId: 'grove_0123456789abcdef0123456789abcdef',
+    groveId: opts.groveId ?? 'grove_0123456789abcdef0123456789abcdef',
     host: {
       host_id: opts.hostId ?? HOST_A,
       label: 'H',
@@ -216,6 +223,68 @@ describe('multi-host', () => {
     await q.flushBeforeForward(tB);
     expect(new Set(host.calls.filter((c) => c.hostId === HOST_A).map((c) => c.proxyPort))).toEqual(new Set([4111]));
     expect(new Set(host.calls.filter((c) => c.hostId === HOST_B).map((c) => c.proxyPort))).toEqual(new Set([4222]));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-tenant safety — two projects on ONE host (the misroute the batch drain
+// would produce if the transport stamped the batch target's tenancy)
+// ---------------------------------------------------------------------------
+
+describe('cross-tenant safety (two projects, one host)', () => {
+  const PROJ_A = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const PROJ_B = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const GROVE_A = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const GROVE_B = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+  test('each project’s plan POSTs with ITS OWN tenancy — B never lands in A’s Grove', async () => {
+    const files = memFiles();
+    files.set('/plans/a.md', 'A plan');
+    files.set('/plans/b.md', 'B plan');
+    const host = fakeHost();
+    const store = memStore();
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+
+    // Both projects are attached to the SAME host H (same host_id), different Grove.
+    const tA = target({ hostId: HOST_A, projectId: PROJ_A, groveId: GROVE_A });
+    const tB = target({ hostId: HOST_A, projectId: PROJ_B, groveId: GROVE_B });
+    q.noteCollect(tA, planEvent('sa', '/plans/a.md'));
+    q.noteCollect(tB, planEvent('sb', '/plans/b.md'));
+
+    // A SINGLE host-drain (triggered by A's terminal route) drains BOTH entries.
+    await q.flushBeforeForward(tA);
+
+    expect(host.calls).toHaveLength(2);
+    const byPlan = new Map(host.calls.map((c) => [c.body.plan_path, c]));
+    // A's plan carries A's tenancy…
+    expect(byPlan.get('/plans/a.md')).toMatchObject({ projectId: PROJ_A, groveId: GROVE_A });
+    // …and B's plan carries B's tenancy, NOT A's (the leak the fix prevents).
+    expect(byPlan.get('/plans/b.md')).toMatchObject({ projectId: PROJ_B, groveId: GROVE_B });
+    // Belt-and-suspenders: B was never stamped with A's Grove.
+    expect(byPlan.get('/plans/b.md')!.groveId).not.toBe(GROVE_A);
+  });
+
+  test('the backstop drainAll also scopes tenancy per-entry (resolveHostTarget path)', async () => {
+    const files = memFiles();
+    files.set('/plans/a.md', 'A');
+    files.set('/plans/b.md', 'B');
+    const host = fakeHost();
+    const store = memStore();
+    const tA = target({ hostId: HOST_A, projectId: PROJ_A, groveId: GROVE_A });
+    const tB = target({ hostId: HOST_A, projectId: PROJ_B, groveId: GROVE_B });
+    // Enqueue both, then drain via drainAll — the target is resolved from entries[0]
+    // (project A), so a batch-tenancy bug would stamp BOTH as A.
+    const q = new PlanDrainQueue({
+      machineId: MACHINE, planWatchConfig: WATCH, store, transport: host.transport, fileReader: files.reader,
+      resolveHostTarget: () => tA, ...noThrottle,
+    });
+    q.noteCollect(tA, planEvent('sa', '/plans/a.md'));
+    q.noteCollect(tB, planEvent('sb', '/plans/b.md'));
+    await q.drainAll();
+
+    const byPlan = new Map(host.calls.map((c) => [c.body.plan_path, c]));
+    expect(byPlan.get('/plans/a.md')).toMatchObject({ projectId: PROJ_A, groveId: GROVE_A });
+    expect(byPlan.get('/plans/b.md')).toMatchObject({ projectId: PROJ_B, groveId: GROVE_B });
   });
 });
 
