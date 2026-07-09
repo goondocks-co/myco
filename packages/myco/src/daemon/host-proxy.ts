@@ -43,6 +43,8 @@ import {
 } from '../constants.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { stampCollectRoute } from '../capture/collect-buffer-route.js';
+import { ensureEventId } from '../capture/event-id.js';
+import { getMachineId } from '../machine-id.js';
 import { resolveProjectBufferDir } from '../grove/paths.js';
 import { REQUEST_CONTEXT_AUTH_HEADER, REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import { TOOL_CORTEX, TOOL_SEARCH } from '../tools/definitions.js';
@@ -518,6 +520,18 @@ async function handleCollectRoute(
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) event = parsed as Record<string, unknown>;
   } catch { event = undefined; }
 
+  // Identity-bearing event id (residency §4a): stamp a discrete `/events` body ONCE
+  // at collection with `<machine_id>:<uuid>` and persist it, so the live-forward AND
+  // the drain-replay of THIS event carry the IDENTICAL id — the host dedups on it
+  // (insert-if-not-exists), collapsing at-least-once double-delivery + lost-ack
+  // retries to one row while keeping genuinely-distinct repeats distinct. Only
+  // `/events` (prompt/tool_use/tool_failure) needs it — the other four collect
+  // routes are already idempotent, so they stay byte-opaque (forwarded raw).
+  const isEventsRoute = pathname === '/events';
+  if (event && isEventsRoute) {
+    event = ensureEventId(event, resolveMemberMachineId(req));
+  }
+
   const sessionId = resolveSessionId(event, req);
   if (event && sessionId) {
     try {
@@ -525,8 +539,8 @@ async function handleCollectRoute(
       // drain (capture-push C5) re-forwards each body to the SAME host route it
       // was captured on — the collector buffer holds bodies from all five collect
       // routes and only `/events` bodies carry a `type` (`collect-buffer-route.ts`).
-      // The live forward below still sends the original bytes; only the durable
-      // copy carries the stamp, and the drain strips it before forwarding.
+      // A `/events` record also carries the event id stamped above; the drain
+      // forwards it through unchanged so the replay dedups against the live copy.
       d.bufferAppend(target, sessionId, stampCollectRoute(event, pathname));
     } catch (err) {
       // A failed buffer append must not hard-fail the agent. We still synthesize
@@ -565,7 +579,20 @@ async function handleCollectRoute(
     logVersionMismatchOnce(d.logger, target);
     return;
   }
-  void forwardCollectInBackground(req, target, pathname, body, d);
+  // A stamped `/events` body forwards the re-serialized event (with its id) so the
+  // live path carries the SAME id the buffer — and therefore the drain-replay —
+  // will; other routes forward the original bytes unchanged (byte-opaque).
+  const forwardBody = event && isEventsRoute ? Buffer.from(JSON.stringify(event), 'utf-8') : body;
+  void forwardCollectInBackground(req, target, pathname, forwardBody, d);
+}
+
+/** The member `machine_id` (identity §4a) for stamping a collect event's id — the
+ *  same value the hook set as `x-myco-machine-id` and the host attributes the row
+ *  to. Falls back to this machine's id when the header is absent. */
+function resolveMemberMachineId(req: http.IncomingMessage): string {
+  const header = req.headers[REQUEST_CONTEXT_HEADERS.machineId];
+  const value = Array.isArray(header) ? header[0] : header;
+  return typeof value === 'string' && value.length > 0 ? value : getMachineId();
 }
 
 function sendCollectAck(res: http.ServerResponse): void {

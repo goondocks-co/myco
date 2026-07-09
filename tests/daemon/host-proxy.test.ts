@@ -31,6 +31,8 @@ import type { RemoteTarget, RouteClassification } from '@myco/host/routing';
 import { shouldBufferFallback } from '@myco/hooks/send-event';
 import { resolveProjectBufferDir } from '@myco/grove/paths';
 import { listGroves } from '@myco/grove/registry';
+import { readEventId } from '@myco/capture/event-id';
+import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
 import { HOST_PROTOCOL_HEADER } from '@myco/constants';
 
 const HOST_BEARER = 'host-bearer-secret';
@@ -350,6 +352,39 @@ describe('host-proxy forwarder', () => {
     expect(fs.existsSync(path.join(groveDir, 'grove.toml'))).toBe(false);
     expect(fs.existsSync(path.join(groveDir, 'myco.db'))).toBe(false);
     expect(listGroves(tmpHome)).toHaveLength(0);
+  });
+
+  test('stamps a /events body with an identity-bearing id — live-forward and buffered copy carry the IDENTICAL id (§4a)', async () => {
+    config.classification = { capability: 'Collection', stamp: 'collect' };
+    const forwarded = new Promise<Recorded>((resolve) => {
+      fixture.setResponder((_req, res, recorded) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        resolve(recorded);
+      });
+    });
+
+    const machineId = 'alice_a1b2c3d4';
+    await fetch(memberUrl('/events'), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-project-id': 'proj_0123456789abcdef0123456789abcdef',
+        [REQUEST_CONTEXT_HEADERS.machineId]: machineId,
+      },
+      body: JSON.stringify({ type: 'user_prompt', session_id: 'sess-id', prompt: 'hi' }),
+    });
+
+    const bufferFile = path.join(resolveProjectBufferDir(config.target.groveId, config.target.projectId, tmpHome), 'sess-id.jsonl');
+    const bufferedId = readEventId(JSON.parse(fs.readFileSync(bufferFile, 'utf-8').trim()));
+    const forwardedId = readEventId(JSON.parse((await forwarded).body));
+
+    expect(bufferedId).not.toBeNull();
+    expect(bufferedId!.startsWith(`${machineId}:`)).toBe(true); // identity-bearing
+    // The load-bearing property: the durable copy (which the drain re-forwards) and
+    // the live forward carry the SAME id, so the host dedups the replay against the
+    // live delivery.
+    expect(forwardedId).toBe(bufferedId);
   });
 
   test('collect ack lands on the hook fallback matrix "never buffer" row for every event type', () => {
