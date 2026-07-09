@@ -1092,6 +1092,28 @@ export const TEAM_SYNC_OBSERVED_TABLES = [
 export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
 
 /**
+ * Sync-protocol version each synced table first shipped in. Any per-table
+ * request to the team worker (reconcile manifests, rebuilds) must skip
+ * tables newer than the worker's advertised protocol — an older deployed
+ * worker rejects unknown table names (400 "Unknown or ineligible table"),
+ * and retrying them every cycle churns until the worker is redeployed.
+ * Tables absent from this map predate versioned table additions (protocol 1).
+ * Every SYNC_PROTOCOL_VERSION bump that adds tables MUST add them here
+ * (see the version history on SYNC_PROTOCOL_VERSION in constants.ts).
+ */
+export const TABLE_MIN_SYNC_PROTOCOL: Readonly<Record<string, number>> = {
+  skill_lineage: 3,
+  okf_generations: 3,
+  okf_pages: 3,
+  okf_page_revisions: 3,
+};
+
+/** Minimum worker sync-protocol version required to reference `table`. */
+export function tableMinSyncProtocol(table: string): number {
+  return TABLE_MIN_SYNC_PROTOCOL[table] ?? 1;
+}
+
+/**
  * Team-sync delete triggers — one per synced table.
  *
  * Auto-journal every local delete into `team_outbox` so the one-way push

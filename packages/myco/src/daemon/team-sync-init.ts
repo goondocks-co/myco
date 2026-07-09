@@ -56,6 +56,7 @@ import {
   sanitizeSyncPayload,
   RECONCILE_ELIGIBLE_TABLES,
 } from '@myco/db/queries/team-outbox.js';
+import { tableMinSyncProtocol } from '@myco/db/schema-ddl.js';
 import {
   reconcilePartition as reconcilePartitionImplDefault,
   createReconcileFlushMutex,
@@ -946,7 +947,23 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         // No reachable/configured team worker for this project this pass — skip
         // (its rows stay as-is for a later pass), never delete on a missing peer.
         if (!client) continue;
+
+        // Version-floor obedience, per table (mirrors the drain gate): a
+        // worker deployed before a table's protocol version rejects its name
+        // with 400 "Unknown or ineligible table" on every manifest request,
+        // so skip those tables this pass — they self-heal on the first cycle
+        // after the worker updates. teamVersionStatus probes health() (cached)
+        // so the advertised protocol is populated; an unprobed/unreachable
+        // worker leaves it undefined and the normal per-partition error
+        // handling applies, same as before.
+        await teamVersionStatus(teamId, client);
+        const workerProtocol = client.getWorkerProtocolVersion();
+        const skippedTables: string[] = [];
         for (const table of RECONCILE_ELIGIBLE_TABLES) {
+          if (workerProtocol !== undefined && tableMinSyncProtocol(table) > workerProtocol) {
+            skippedTables.push(table);
+            continue;
+          }
           try {
             await reconcilePartition(
               { ...baseDeps, client },
@@ -960,6 +977,19 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
               error: (partitionErr as Error).message,
             });
           }
+        }
+        if (skippedTables.length > 0) {
+          logger.warn(
+            LOG_KINDS.TEAM_SYNC_ERROR,
+            'Skipping reconcile for tables newer than the worker protocol (self-heals after worker update)',
+            {
+              team_id: teamId,
+              project_id: projectId,
+              skipped_tables: skippedTables,
+              daemon_protocol: SYNC_PROTOCOL_VERSION,
+              worker_protocol: workerProtocol,
+            },
+          );
         }
       }
     } catch (err) {
