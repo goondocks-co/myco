@@ -692,6 +692,31 @@ export const NOTIFICATIONS_TABLE = `
     created_at  INTEGER NOT NULL
   )`;
 
+/**
+ * Idempotency ledger for routed `/events` capture (residency design §4a). Under
+ * Team Host, routed capture is at-least-once: the member both live-forwards AND
+ * buffers every event, and the replay drain re-forwards on reconnect. The member
+ * stamps each discrete `/events` event with a source-assigned, identity-bearing id
+ * (`<machine_id>:<uuid>`); this ledger is the host's insert-if-not-exists key, so
+ * live+drain double-delivery and lost-ack retries collapse to one prompt_batch /
+ * activity row.
+ *
+ * `event_id` is the globally-unique identity-bearing id (PRIMARY KEY IS the dedup
+ * constraint). `machine_id` records the originating member for origin-tracing.
+ * `prompt_batch_id` is the batch a `user_prompt` event created, so a deduped
+ * replay returns the SAME batch the live delivery opened (activities record NULL).
+ * Host-local dedup state: deliberately NOT a team-sync table (see
+ * `TEAM_SYNC_BACKFILL_TABLES`) — it never leaves the host.
+ */
+export const ROUTED_EVENT_DEDUP_TABLE = `
+  CREATE TABLE IF NOT EXISTS routed_event_dedup (
+    event_id        TEXT PRIMARY KEY,
+    machine_id      TEXT,
+    kind            TEXT NOT NULL,
+    prompt_batch_id INTEGER,
+    created_at      INTEGER NOT NULL
+  )`;
+
 // -- Eval Harness Layer -----------------------------------------------------
 
 /**
@@ -1389,6 +1414,8 @@ export const TABLE_DDLS = [
   LOG_ENTRIES_TABLE,
   // Notifications layer
   NOTIFICATIONS_TABLE,
+  // Routed-capture idempotency ledger (Team Host §4a)
+  ROUTED_EVENT_DEDUP_TABLE,
   // Eval harness layer
   AGENT_RUN_WRITE_INTENTS_TABLE,
   AGENT_RUN_EVENTS_TABLE,

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -199,6 +200,210 @@ export function resolveTeamConfigPath(teamId: string): string {
 
 export function resolveTeamSecretsPath(teamId: string): string {
   return path.join(resolveTeamDir(teamId), 'secrets.env');
+}
+
+export const HOSTS_DIRNAME = 'hosts';
+
+/**
+ * Sibling of `resolveTeamsDir` under the same machine-global team home
+ * (`~/.myco-team`) — Team Host reuses that home rather than minting a new
+ * one, since both are machine-global "who is this machine connected to"
+ * registries.
+ */
+export function resolveHostsDir(): string {
+  return path.join(resolveTeamsHome(), HOSTS_DIRNAME);
+}
+
+export function resolveHostDir(hostId: string): string {
+  assertGroveEraId(hostId, 'host');
+  return path.join(resolveHostsDir(), hostId);
+}
+
+export function resolveHostConfigPath(hostId: string): string {
+  return path.join(resolveHostDir(hostId), 'host.json');
+}
+
+export const HOST_CONTROL_DIRNAME = 'host';
+
+/**
+ * HOST-side control-plane home — this machine acting AS a Team Host. Holds the
+ * provisioned overlay binaries (`bin/`), the generated Headscale config + sqlite
+ * state (`headscale/`), and the host state record (`state.json`). Under the same
+ * machine-global team home (`~/.myco-team`) as `teams/` and `hosts/`.
+ *
+ * Deliberately SINGULAR (`host`) to distinguish it from {@link resolveHostsDir}
+ * (`hosts/`, plural): `host/` is "this machine serving a Grove to others";
+ * `hosts/` is "the hosts this machine has joined as a member". Managed by
+ * `myco-team host enable/disable` (Task 2.1).
+ */
+export function resolveHostControlDir(): string {
+  return path.join(resolveTeamsHome(), HOST_CONTROL_DIRNAME);
+}
+
+export function resolveHostSecretsPath(hostId: string): string {
+  return path.join(resolveHostDir(hostId), 'secrets.env');
+}
+
+export const ROUTED_TRANSCRIPTS_DIRNAME = 'routed-transcripts';
+
+/**
+ * A filesystem-safe capture path segment: non-empty, no separators, no `.`/`..`,
+ * charset `[A-Za-z0-9._-]`. Unlike the Grove/host/project ids, `machine_id` and
+ * `session_id` are NOT brand-shaped era ids (machine_id is `{user}_{hash}`,
+ * session_id is an agent-supplied uuid), so they get this structural guard rather
+ * than {@link assertGroveEraId}. Throws on any value that could escape its
+ * intended directory — the traversal defense for wire-supplied path components.
+ */
+export function assertSafeCaptureSegment(value: string, kind: string): string {
+  if (!value || value === '.' || value === '..' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(`Unsafe ${kind} path segment: ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+/**
+ * HOST-side materialized-transcript cache root — `~/.myco-team/host/routed-transcripts/`.
+ * A routed session's transcript bytes, pushed from the member and appended here so
+ * the host miner has a local file to reconcile (capture-push §5.2). Machine-scoped
+ * (under the host control home, {@link resolveHostControlDir}), NOT per-Grove: the
+ * tree is keyed `<machine_id>/<session_id>/<transcript_id>.jsonl`, a mining cache
+ * the Grove DB is authoritative over once mined.
+ */
+export function resolveRoutedTranscriptsDir(): string {
+  return path.join(resolveHostControlDir(), ROUTED_TRANSCRIPTS_DIRNAME);
+}
+
+/**
+ * The materialized file path for one routed transcript:
+ * `<routed-transcripts>/<machine_id>/<session_id>/<transcript_id>.jsonl`. Every
+ * wire-supplied segment funnels through {@link assertSafeCaptureSegment} before
+ * being joined, so a hostile `machine_id`/`session_id`/`transcript_id` cannot
+ * escape the cache root via `..` or separators (defense in depth alongside the
+ * ingest handler's own validation).
+ */
+export function resolveRoutedTranscriptPath(
+  machineId: string,
+  sessionId: string,
+  transcriptId: string,
+): string {
+  return path.join(
+    resolveRoutedTranscriptsDir(),
+    assertSafeCaptureSegment(machineId, 'machine_id'),
+    assertSafeCaptureSegment(sessionId, 'session_id'),
+    `${assertSafeCaptureSegment(transcriptId, 'transcript_id')}.jsonl`,
+  );
+}
+
+export const MEMBER_OVERLAY_DIRNAME = 'member';
+
+/**
+ * MEMBER-side overlay home — this machine acting as a Team Host MEMBER (it has
+ * joined one or more hosts via `myco join`, Task 2.2). Holds the provisioned
+ * Tailscale binaries (`bin/`), shared across every joined host (the CLI + daemon
+ * BINARIES are identical; only the running per-host instances differ). Under the
+ * same machine-global team home (`~/.myco-team`) as `teams/`, `hosts/`, and the
+ * host-side `host/`.
+ *
+ * MULTI-HOST: each joined host is its OWN Headscale tailnet (each independently
+ * hands out `100.64.0.0/10` — two hosts can both be `100.64.0.1`), so the member
+ * runs ONE userspace tailscaled PER HOST, each with its own socket + statedir +
+ * outbound-proxy port. The per-host state lives under that host's registry dir
+ * ({@link resolveMemberTailscaledStateDir}); only the shared binaries live here.
+ */
+export function resolveMemberOverlayDir(): string {
+  return path.join(resolveTeamsHome(), MEMBER_OVERLAY_DIRNAME);
+}
+
+/** Where the member's Tailscale client + daemon binaries land (shared across hosts). */
+export function resolveMemberBinDir(): string {
+  return path.join(resolveMemberOverlayDir(), 'bin');
+}
+
+export const MEMBER_TRANSCRIPT_DRAIN_DIRNAME = 'transcript-drain';
+
+/**
+ * MEMBER-side durable work-queue home for the routed transcript-content drain
+ * (capture-push §5.2, plan C1). One JSON entry per `(host_id, session_id,
+ * transcript_id)` carrying the host-acked high-water offset, persisted so the
+ * high-water survives daemon restart. Machine-scoped under the member overlay
+ * home — NOT a Grove-DB table: an attached project has no local Grove DB (§4),
+ * so this is the transcript analog of the DB-free EventBuffer (`capture/buffer.ts`).
+ * Tests point `MYCO_TEAM_HOME` at a tmpdir for hermetic disk.
+ */
+export function resolveMemberTranscriptDrainDir(): string {
+  return path.join(resolveMemberOverlayDir(), MEMBER_TRANSCRIPT_DRAIN_DIRNAME);
+}
+
+export const MEMBER_PLAN_DRAIN_DIRNAME = 'plan-drain';
+
+/**
+ * MEMBER-side durable work-queue home for the routed plan-content companion push
+ * (capture-push §5.5, plan C7). One JSON entry per `(host_id, session_id,
+ * plan_ref)` carrying the host-acked CONTENT HASH, so a re-push of unchanged plan
+ * content is a member-side no-op and a restart resumes at the same high-water.
+ * Machine-scoped under the member overlay home — NOT a Grove-DB table: an attached
+ * project has no local Grove DB (§4), so this is the whole-file sibling of
+ * {@link resolveMemberTranscriptDrainDir} (which streams byte-offset deltas). A
+ * plan file is small and read WHOLE, so the queue keys on a content hash rather
+ * than a byte offset. Tests point `MYCO_TEAM_HOME` at a tmpdir for hermetic disk.
+ */
+export function resolveMemberPlanDrainDir(): string {
+  return path.join(resolveMemberOverlayDir(), MEMBER_PLAN_DRAIN_DIRNAME);
+}
+
+export const MEMBER_EVENT_REPLAY_DRAIN_DIRNAME = 'event-replay-drain';
+
+/**
+ * MEMBER-side durable high-water home for the attach-aware live-event replay
+ * drain (capture-push §7 task 5, plan C5). One JSON entry per `(host_id,
+ * session_id)` carrying the count of collect-buffer records the host has already
+ * acked, so a reconnect resends only un-shipped events and a restart resumes at
+ * the same high-water. Machine-scoped under the member overlay home — NOT a
+ * Grove-DB table: an attached project has no local Grove DB (§4), so this is the
+ * sibling of {@link resolveMemberTranscriptDrainDir} for the DB-free collector
+ * buffer (`capture/buffer.ts`). Tests point `MYCO_TEAM_HOME` at a tmpdir for
+ * hermetic disk.
+ */
+export function resolveMemberEventReplayDrainDir(): string {
+  return path.join(resolveMemberOverlayDir(), MEMBER_EVENT_REPLAY_DRAIN_DIRNAME);
+}
+
+/**
+ * A short, deterministic per-host tag (10 hex chars of a hash of the host_id).
+ * Used to key a host's tailscaled socket + LaunchAgent label. A hash rather than
+ * the raw host_id keeps the socket path well under the macOS `sun_path` limit
+ * (a raw `host_<32hex>` segment plus a deep-ish home can crowd 104 bytes) and is
+ * format-independent, while staying collision-free for the handful of hosts a
+ * single machine realistically joins.
+ */
+export function memberHostTag(hostId: string): string {
+  return crypto.createHash('sha256').update(hostId).digest('hex').slice(0, 10);
+}
+
+/** A host's userspace-tailscaled `--statedir` (its node identity/state). Lives
+ *  under that host's registry dir so `removeHost` (leave) cleans it too. May be
+ *  arbitrarily deep — only the SOCKET path is length-constrained. */
+export function resolveMemberTailscaledStateDir(hostId: string): string {
+  return path.join(resolveHostDir(hostId), 'tailscaled-state');
+}
+
+/**
+ * A host's userspace-tailscaled `--socket` path. Deliberately HOME-anchored and
+ * SHORT — NOT under the (possibly deep, overridable) `MYCO_TEAM_HOME` — because
+ * macOS caps an `AF_UNIX` `sun_path` at 104 bytes and a team-home-derived path
+ * silently breaks `bind()` (the scratchpad/test case, proven to overflow in the
+ * live spike §0.1b). Per-host now (multi-host): the {@link memberHostTag} segment
+ * distinguishes each host's socket while staying short; a pathologically long
+ * home falls back to a `/tmp` path that is always short. Both the tailscaled
+ * LaunchAgent and the `tailscale --socket=<…>` CLI calls resolve through here for
+ * the SAME host, so they always agree.
+ */
+export function resolveMemberTailscaledSocketPath(hostId: string): string {
+  const tag = memberHostTag(hostId);
+  const preferred = path.join(resolveHomeDir(), '.myco-ts', `${tag}.sock`);
+  if (Buffer.byteLength(preferred) < 100) return preferred;
+  const uid = process.getuid?.() ?? 0;
+  return path.join('/tmp', `myco-td-${uid}-${tag}.sock`);
 }
 
 export function resolveGroveMetadataPath(groveId: string, mycoHome = resolveMycoHome()): string {

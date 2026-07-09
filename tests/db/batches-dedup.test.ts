@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { nowSec, seedSession } from '../helpers/sessions.js';
-import { getSession } from '@myco/db/queries/sessions.js';
+import { getSession, upsertSession } from '@myco/db/queries/sessions.js';
 import {
   insertBatchStateless,
   promptBatchContentHash,
@@ -172,5 +172,39 @@ describe('replaceRecoveredBatchUserPrompt — content_hash stamping', () => {
     const replaced = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE }).find((b) => b.id === sentinel.row.id)!;
     expect(replaced.user_prompt).toBe('dup text');
     expect(replaced.content_hash).toBeNull();
+  });
+});
+
+describe('insertBatchStateless — machine attribution inherits the owning session', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(teardownTestDb);
+  beforeEach(() => {
+    cleanTestDb();
+  });
+
+  it('a batch with no explicit machine_id gets the SESSION machine_id, not the process one', () => {
+    // A Team Host materializes batches for sessions owned by MEMBER machines:
+    // the session row carries the member identity from registration, and the
+    // process-local machine id (the host's) must never leak onto the batch
+    // (the D-smoke mis-attribution regression).
+    upsertSession({
+      id: 's-member',
+      agent: 'claude-code',
+      started_at: nowSec(),
+      created_at: nowSec(),
+      status: 'active',
+      machine_id: 'member_deadbeef',
+    });
+
+    const { row } = insertBatchStateless({ session_id: 's-member', user_prompt: 'routed turn', ordinal: 0, created_at: nowSec() });
+    expect(row.machine_id).toBe('member_deadbeef');
+  });
+
+  it('an explicit machine_id override still wins', () => {
+    seedSession({ id: 's-override' });
+    const { row } = insertBatchStateless({
+      session_id: 's-override', user_prompt: 'x', ordinal: 0, created_at: nowSec(), machine_id: 'explicit_override',
+    });
+    expect(row.machine_id).toBe('explicit_override');
   });
 });

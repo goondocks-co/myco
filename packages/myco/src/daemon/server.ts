@@ -12,14 +12,34 @@ import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
   ForeignGroveError,
   REQUEST_CONTEXT_AUTH_ENV,
+  REQUEST_CONTEXT_AUTH_HEADER,
   UnauthorizedRequestContextError,
   UnknownRequestContextError,
+  enforceUrlTenancyAuth,
   requestContextFromHttpHeaders,
   requestContextFromTenancyIds,
+  resolveInboundProjectId,
   type MycoRequestContext,
 } from '../grove/request-context.js';
+import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
+import { classifyRoute, overlayHostStampRefusal, refusalJson, type RefusalPayload } from '../host/routing.js';
+import { defaultDial, handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from './host-proxy.js';
+import { handleAttachedConfigRequest } from './attached-config.js';
 import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
+import {
+  buildHostEnrollmentPayload,
+  isBindableOverlayAddress,
+  isOverlayRequest,
+  markOverlayRequest,
+  overlayBearerExempt,
+  overlayBearerRejection,
+  overlayLifecycleRefused,
+  overlayVersionRejection,
+  type HostServeRuntime,
+} from './host-serve.js';
+import { appendHostAction } from '../host/action-log.js';
+import { HOST_ENROLL_ROUTE } from '../constants.js';
 import { type DaemonState } from './service-state.js';
 import {
   DaemonStateAuthority,
@@ -77,6 +97,23 @@ export interface DaemonServerConfig {
    * owned one when other subsystems need to share entries.
    */
   runtimeCache?: GroveRuntimeCache;
+  /**
+   * Team Host serve enablement (Task 2.3). When present, the server binds a
+   * SECOND listener on `overlayAddress` where every request passes the
+   * transport-boundary gate (blanket bearer + version + shutdown refusal). When
+   * `null`/omitted, host serving is off and only the loopback listener binds.
+   * Resolved by `resolveHostServeConfig` (machine config + bearer) in main.ts.
+   */
+  hostServe?: HostServeRuntime | null;
+  /**
+   * Capture-side proxy deps threaded into `handleAttachedRequest` for attached
+   * (routed) projects: the transcript-drain queue's `flushBeforeForward` (drain
+   * pending bytes before a terminal mining-trigger route) and `noteCollectEvent`
+   * (enqueue on every collect event). Wired at BOTH dispatch chokepoints
+   * (`daemon/server.ts` here + `mcp/http.ts`) — see capture-push C1. Omitted in
+   * tests that don't exercise routed capture; the proxy's no-op defaults apply.
+   */
+  hostProxyDeps?: Partial<HostProxyDeps>;
 }
 
 export type RawRouteHandler = (
@@ -90,6 +127,24 @@ export class DaemonServer {
   uiDir: string | null;
   uiDevProxyTarget: string | null;
   private server: http.Server | null = null;
+  /**
+   * The Team Host overlay listener — a SECOND HTTP server bound to the host's
+   * overlay interface address (never 0.0.0.0). Null unless host serving is
+   * enabled AND the overlay bind succeeds. Every request here passes the
+   * transport-boundary gate ({@link handleOverlayRequest}) before dispatch.
+   */
+  private overlayServer: http.Server | null = null;
+  private hostServe: HostServeRuntime | null;
+  /** Capture-side proxy deps (transcript-drain flush + collect enqueue) threaded
+   *  into `handleAttachedRequest` for attached projects. See {@link DaemonServerConfig}. */
+  private hostProxyDeps: Partial<HostProxyDeps>;
+  /** The overlay listener's bound port (0 until it binds). Public so tests /
+   *  enrollment can read the port the overlay surface is reachable on. */
+  overlayPort = 0;
+  /** The overlay listener's actually-bound address (null until it binds).
+   *  Public so enrollment records the real address and tests can assert the
+   *  bind is the overlay IP and never a wildcard/0.0.0.0. */
+  overlayBoundAddress: string | null = null;
   private vaultDir: string;
   private stateAuthority: DaemonStateAuthority;
   private logger: DaemonLogger;
@@ -142,6 +197,8 @@ export class DaemonServer {
     this.onRequest = config.onRequest ?? null;
     this.runtimeCache = config.runtimeCache ?? new GroveRuntimeCache();
     this.ownsRuntimeCache = config.runtimeCache === undefined;
+    this.hostServe = config.hostServe ?? null;
+    this.hostProxyDeps = config.hostProxyDeps ?? {};
     this.version = getPluginVersion();
     this.authToken = mintDaemonAuthToken();
     // Export to env so direct children inherit the bearer without
@@ -239,6 +296,84 @@ export class DaemonServer {
         this.startedAt = new Date().toISOString();
         this.writeDaemonJson();
         this.logger.info(LOG_KINDS.DAEMON_PORT, 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/` });
+        // Bring up the Team Host overlay listener (if host serving is enabled).
+        // It never rejects — a bind failure leaves host serving off and the
+        // loopback daemon fully up. Awaited so `start()` resolves with the
+        // overlay port set (and, in tests, before the overlay surface is hit).
+        this.startOverlayListener().then(() => resolve());
+      });
+    });
+  }
+
+  /**
+   * Bind the Team Host overlay listener — a SECOND HTTP server on the host's
+   * overlay interface address ONLY (never 0.0.0.0, never a LAN IP). Every request
+   * on it passes {@link handleOverlayRequest}'s transport-boundary gate before
+   * dispatch. No-op (and never throws) when host serving is off; a bind failure
+   * (overlay IP not up / TUN not attached) logs once and leaves host serving off
+   * — never a crash, never a wider fallback bind (Task 2.3 item 1).
+   */
+  private startOverlayListener(): Promise<void> {
+    return new Promise((resolve) => {
+      const hostServe = this.hostServe;
+      if (!hostServe) { resolve(); return; }
+
+      const address = hostServe.overlayAddress;
+      if (!isBindableOverlayAddress(address)) {
+        this.logger.warn(LOG_KINDS.HOST_SERVE, 'Refusing to bind Team Host overlay listener on a non-bindable address — host serving stays off', {
+          overlay_address: address,
+        });
+        resolve();
+        return;
+      }
+
+      // Members dial `<overlay_ip>:<daemon port>`, so the overlay listener binds
+      // the daemon's canonical port on the overlay IP. Tests pin an ephemeral
+      // overlay port to avoid the same-IP collision a `127.0.0.1` fixture hits.
+      const overlayPort = hostServe.overlayPort ?? this.port;
+
+      const overlay = http.createServer((req, res) => {
+        this.handleOverlayRequest(req, res).catch((err) => {
+          this.logUnhandledTransportFailure('request', err);
+          try {
+            if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'internal_error' }));
+          } catch { /* socket already gone */ }
+        });
+      });
+      // The overlay carries only daemon↔daemon API traffic — no WebSocket, no
+      // Vite dev proxy. Destroy any upgrade attempt outright.
+      overlay.on('upgrade', (_req, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
+      applyDaemonHttpServerLimits(overlay);
+
+      const onBindError = (err: NodeJS.ErrnoException) => {
+        this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host overlay listener failed to bind — host serving stays off', {
+          overlay_address: address,
+          port: overlayPort,
+          error: err.message,
+          code: err.code ?? null,
+        });
+        try { overlay.close(); } catch { /* not listening */ }
+        this.overlayServer = null;
+        resolve();
+      };
+      overlay.once('error', onBindError);
+
+      overlay.listen(overlayPort, address, HTTP_LISTEN_BACKLOG, () => {
+        overlay.removeListener('error', onBindError);
+        // Keep a persistent error handler so a post-bind socket error is logged
+        // rather than thrown as an unhandled 'error' event (which exits the process).
+        overlay.on('error', (err) => {
+          this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host overlay listener socket error', { error: (err as Error).message });
+        });
+        const addr = overlay.address() as { address: string; port: number } | null;
+        this.overlayServer = overlay;
+        this.overlayPort = addr?.port ?? overlayPort;
+        this.overlayBoundAddress = addr?.address ?? address;
+        this.logger.info(LOG_KINDS.HOST_SERVE, 'Team Host overlay listener bound', {
+          address: this.overlayBoundAddress,
+          port: this.overlayPort,
+        });
         resolve();
       });
     });
@@ -246,6 +381,13 @@ export class DaemonServer {
 
   async stop(): Promise<void> {
     // No daemon.json unlink — see reconcileExistingDaemon for cleanup ownership.
+    const overlay = this.overlayServer;
+    this.overlayServer = null;
+    this.overlayBoundAddress = null;
+    this.overlayPort = 0;
+    if (overlay) {
+      await gracefullyCloseHttpServer(overlay, { gracePeriodMs: SERVER_STOP_FORCE_CLOSE_GRACE_MS });
+    }
     if (!this.server) {
       this.closeRequestDatabases();
       return;
@@ -255,6 +397,96 @@ export class DaemonServer {
     });
     this.closeRequestDatabases();
     this.logger.info(LOG_KINDS.DAEMON_START, 'Server stopped');
+  }
+
+  /**
+   * The Team Host transport-boundary gate — runs on the overlay listener ONLY,
+   * BEFORE raw-route dispatch and BEFORE the router (spec §9). Order:
+   *   1. overlay CSRF (Host is the overlay address; Origin is refused — no
+   *      browsers on the overlay) + the shared mutating-body content-type check;
+   *   2. blanket bearer — EVERY overlay request (router, raw, `/mcp`) or 401;
+   *   3. lifecycle refusal — `/api/shutdown` (operator control plane) is 404 over
+   *      the overlay regardless of a valid bearer. Checked AFTER the bearer so a
+   *      no-bearer request still gets 401 on every route, and the shutdown handler
+   *      is never invoked either way;
+   *   4. version window — else 409 `protocol_version_unsupported` (both bounds).
+   * On pass, the local daemon bearer is stamped and the request is marked overlay,
+   * then it flows into the SAME dispatch as a localhost request.
+   */
+  private async handleOverlayRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const versionHeader = { 'X-Myco-Api-Version': this.version };
+    const hostServe = this.hostServe;
+    if (!hostServe) {
+      // Unreachable in practice (the overlay listener only runs when hostServe is
+      // set), but fail closed rather than serve unauthenticated.
+      this.writeOverlayRefusal(res, 503, { error: 'host_serve_unavailable' }, versionHeader);
+      return;
+    }
+    const pathname = new URL(req.url!, 'http://localhost').pathname;
+
+    // (1) Overlay CSRF: narrow Host allowlist + no-Origin, then shared content-type.
+    const csrf = validateOverlayRequest(req, hostServe.overlayAddress, this.overlayPort);
+    if (csrf) {
+      this.writeOverlayRefusal(res, csrf.status, { error: csrf.error }, versionHeader);
+      return;
+    }
+
+    // (2) Blanket bearer — EXCEPT the ONE enrollment route (spec §8/§9). A member
+    // obtains the bearer THERE, so gating enrollment behind the bearer is a
+    // chicken-and-egg deadlock; overlay membership is its trust boundary instead.
+    // The exemption is surgical (overlayBearerExempt matches only that exact path)
+    // and the route's own handler re-asserts overlay provenance, so a no-bearer
+    // request to ANY OTHER overlay route still 401s here.
+    if (!overlayBearerExempt(pathname)) {
+      const bearerRejection = overlayBearerRejection(req, hostServe.bearer);
+      if (bearerRejection) {
+        this.writeOverlayRefusal(res, bearerRejection.status, bearerRejection.body, versionHeader, bearerRejection.headers);
+        return;
+      }
+    }
+
+    // (3) Lifecycle/operator raw routes are never overlay-served.
+    if (overlayLifecycleRefused(pathname)) {
+      this.writeOverlayRefusal(res, 404, { error: 'not_found', message: 'This route is served on localhost only, not over the overlay.' }, versionHeader);
+      return;
+    }
+
+    // (4) Version window.
+    const versionRejection = overlayVersionRejection(req);
+    if (versionRejection) {
+      this.writeOverlayRefusal(res, versionRejection.status, versionRejection.body, versionHeader, versionRejection.headers);
+      return;
+    }
+
+    // Gate passed. The host bearer proved admission (flat trust, spec §9). Stamp
+    // the LOCAL daemon bearer — the member's proxy stripped `x-myco-auth`, and the
+    // host's downstream tenancy resolver requires it on context-switching headers —
+    // so the host-resident Grove resolves exactly as a local context-switch would.
+    // Tenancy headers (project/grove/machine) remain claims, per v1's flat trust.
+    req.headers[REQUEST_CONTEXT_AUTH_HEADER] = this.authToken;
+    markOverlayRequest(req);
+    await this.handleRequest(req, res);
+  }
+
+  private writeOverlayRefusal(
+    res: http.ServerResponse,
+    status: number,
+    body: Record<string, unknown>,
+    versionHeader: Record<string, string>,
+    extraHeaders?: Record<string, string>,
+  ): void {
+    res.writeHead(status, { 'Content-Type': 'application/json', ...versionHeader, ...(extraHeaders ?? {}) });
+    res.end(JSON.stringify(body));
+  }
+
+  /**
+   * The listener-appropriate CSRF gate. Overlay requests were fully validated by
+   * {@link handleOverlayRequest} (bearer, version, lifecycle refusal, and the
+   * overlay Host/Origin gate) before delegating here, so they skip the loopback
+   * gate; loopback requests get {@link validateLoopbackRequest} unchanged.
+   */
+  private csrfRejection(req: http.IncomingMessage): Rejection | null {
+    return isOverlayRequest(req) ? null : validateLoopbackRequest(req, this.port);
   }
 
   private registerDefaultRoutes(): void {
@@ -327,6 +559,61 @@ export class DaemonServer {
       });
     });
 
+    // Team Host enrollment (Task 2.4) — the ONE overlay route exempt from the
+    // blanket bearer gate (a member obtains the bearer HERE; see the surgical
+    // exemption in handleOverlayRequest + HOST_ENROLL_ROUTE). A raw route because
+    // enrollment needs no Grove/DB/tenancy — it returns machine-scoped host facts.
+    this.registerRawRoute(HOST_ENROLL_ROUTE, async (req, res) => {
+      // OVERLAY-ONLY is the enrollment gate: because the bearer check is skipped,
+      // this route MUST refuse any caller that did not arrive on the overlay
+      // listener (a localhost/LAN hit is never marked overlay). Being on the
+      // overlay already means the operator admitted you (spec §8/§9) — that
+      // membership, not a bearer, is what authorizes enrollment. Defense-in-depth
+      // beside the surgical bearer exemption: even if the exemption ever widened,
+      // a localhost hit still gets nothing.
+      if (!isOverlayRequest(req)) {
+        res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'not_found', message: 'Host enrollment is served over the overlay only.' }));
+        return;
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'method_not_allowed' }));
+        return;
+      }
+      const hostServe = this.hostServe;
+      if (!hostServe) {
+        // Unreachable when serving (the overlay listener only runs with hostServe
+        // set), but fail closed rather than 500.
+        res.writeHead(503, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'host_serve_unavailable' }));
+        return;
+      }
+      // Best-effort: the member POSTs `{member_hostname, member_overlay_ip}` for the
+      // action log. A parse failure never blocks enrollment (the bearer is the
+      // point, not the log line).
+      let memberInfo: Record<string, unknown> = {};
+      try { memberInfo = (await readBody(req)) as Record<string, unknown>; } catch { /* log without it */ }
+
+      const payload = buildHostEnrollmentPayload(hostServe, this.overlayPort);
+      res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
+      res.end(JSON.stringify(payload));
+
+      // Record the join for the operator's diagnosable safety net (spec §9). The
+      // subject is the member's overlay IP off the CONNECTION (unspoofable), with the
+      // self-reported hostname as detail. NEVER logs the bearer. Best-effort.
+      try {
+        appendHostAction({
+          action: 'enroll',
+          subject: req.socket.remoteAddress ?? (memberInfo.member_overlay_ip as string | undefined),
+          detail: {
+            member_hostname: memberInfo.member_hostname,
+            member_overlay_ip: memberInfo.member_overlay_ip,
+          },
+        });
+      } catch { /* the log is a diagnostic aid, not the trust boundary */ }
+    });
+
     // Readiness deliberately uses the normal route pipeline. /health answers
     // "is the process alive?"; /ready answers "can routed daemon requests
     // make it through request-context resolution and DB scoping?"
@@ -345,7 +632,7 @@ export class DaemonServer {
     const pathname = new URL(req.url!, 'http://localhost').pathname;
     const rawHandler = this.rawRoutes.get(pathname);
     if (rawHandler) {
-      const rejection = validateLoopbackRequest(req, this.port);
+      const rejection = this.csrfRejection(req);
       if (rejection) {
         res.writeHead(rejection.status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: rejection.error }));
@@ -379,7 +666,9 @@ export class DaemonServer {
       // the user visits can still POST cross-origin. Reject requests whose
       // Host or Origin headers disagree with the loopback listener; block
       // non-JSON mutating bodies so text/plain CSRF cannot slip JSON through.
-      const rejection = validateLoopbackRequest(req, this.port);
+      // (Overlay requests were already gated by handleOverlayRequest — see
+      // csrfRejection.)
+      const rejection = this.csrfRejection(req);
       if (rejection) {
         res.writeHead(rejection.status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: rejection.error }));
@@ -389,9 +678,95 @@ export class DaemonServer {
       this.onRequest?.();
       const versionHeader = { 'X-Myco-Api-Version': this.version };
       try {
+        // Team Host HOST-side overlay backstop: a request that arrived on this
+        // daemon's overlay listener is served LOCALLY (the host answers for its own
+        // Grove) and is never re-classified/re-proxied — the anti-circularity
+        // guarantee the skip below protects. But v1 is flat-trust (design §9): the
+        // shared bearer proves admission, not identity, and the member-side
+        // classifyRoute is the MEMBER's gate — a hostile member can craft a raw
+        // overlay request that never ran it. So the host independently enforces the
+        // scope-map stamp on the matched route (match.pathname, so :param routes
+        // classify correctly), refusing the classes that must never be overlay-served
+        // (localhost-only operator/secret routes, degraded capabilities, and
+        // host-authoritative/member-assembled config) BEFORE the route is served.
+        // serve/collect fall through to local dispatch, so this only ADDS refusals —
+        // it never enters the remote/proxy branch.
+        if (isOverlayRequest(req)) {
+          const overlayRefusal = overlayHostStampRefusal(req.method!, match.pathname);
+          if (overlayRefusal) {
+            this.writeRefusal(res, overlayRefusal, versionHeader);
+            return;
+          }
+        }
+
+        // Team Host member-side chokepoint: an attached project is served by a
+        // remote host daemon, so the member's dispatch routes it over the overlay.
+        // A request that ARRIVED on this daemon's overlay listener has already been
+        // routed to its host (this daemon) — it must be served LOCALLY and never
+        // re-classified/re-proxied. Skipping attach classification for overlay
+        // requests makes a circular proxy structurally impossible regardless of
+        // registry contents. (It is also impossible by construction: a host serving
+        // a Grove has that Grove's projects as LOCAL registry rows, and attachProject
+        // refuses to attach a project with a local Grove row — ProjectRegisteredLocallyError
+        // — so resolveAttach can never match a host's own served project.)
+        if (!isOverlayRequest(req)) {
+          // Resolve tenancy cheaply and route BEFORE the body is read and BEFORE any
+          // local Grove/DB resolution — the proxy pipes the raw request stream, and
+          // an attached project must never open a local Grove DB. A non-attached
+          // project (the common case) returns `local` after a single empty-set
+          // registry probe, so the path below is byte-identical.
+          const inboundProjectId = this.inboundProjectId(match.params, req.headers);
+          const decision = classifyRoute({
+            method: req.method!,
+            pathname: match.pathname,
+            projectId: inboundProjectId,
+          });
+          if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
+            this.writeRefusal(res, decision.refusal, versionHeader);
+            return;
+          }
+          if (decision.kind === 'remote') {
+            // URL-tenancy resource routes assert the (Grove, project) in the path,
+            // so the daemon bearer is required unconditionally — the same gate the
+            // local resolver (requestContextFromTenancyIds) runs, applied here
+            // BEFORE any proxy dial so an attached resource route can't skip it
+            // (closes the URL-route auth deviation Task 1.2 documented). Throws
+            // UnauthorizedRequestContextError → the existing catch maps it to 401.
+            if (match.params.projectId) {
+              enforceUrlTenancyAuth(req.headers, this.authToken);
+            }
+            await handleAttachedRequest(req, res, decision.target, decision.classification, {
+              ...this.hostProxyDeps,
+              logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
+            });
+            return;
+          }
+          if (decision.kind === 'config_carve') {
+            // An attached project's config is carved by tier, member-side: machine/
+            // project/personal resolve from the member's own disk, the grove tier is
+            // host-sourced, and a personal override of a grove-tier leaf is refused
+            // (routing-layer §6.3). Neither a proxy nor the local resolver is correct
+            // here (§6.3, §1.1) — the member assembles. The scoped PUT needs its body.
+            const carveBody = isWriteMethod(req.method) ? await readBody(req) : undefined;
+            await handleAttachedConfigRequest(req, res, match.pathname, decision.target, carveBody, {
+              dial: defaultDial,
+              logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
+            });
+            return;
+          }
+        }
+
         const needsBody = isWriteMethod(req.method);
         const body = needsBody ? await readBody(req) : undefined;
-        const requestContext = this.resolveRouteRequestContext(match.params, req.headers);
+        // Stamp overlay-origin onto the resolved context from the spoofing-proof
+        // overlay mark (a WeakSet keyed on the request object, not a header). A
+        // host-served-for-a-member run carries this to the executor's tool surface
+        // so committed-file publishes / project-tree reads never touch a member
+        // working tree the host lacks. False for every local (loopback) request.
+        const requestContext = {
+          ...this.resolveRouteRequestContext(match.params, req.headers),
+          hostServed: isOverlayRequest(req),
+        };
         // Long-running ops (move, vacuum) take a per-project pause in
         // `projects.toml`; while set, every writer for that project must
         // be refused. Reads stay open so the UI can still surface "this
@@ -494,6 +869,16 @@ export class DaemonServer {
     if (isDaemonControlPath(pathname)) {
       res.writeHead(404, { 'Content-Type': 'application/json', 'X-Myco-Api-Version': this.version });
       res.end(JSON.stringify({ error: 'not found' }));
+      return;
+    }
+
+    // The overlay carries only the daemon API (spec §9 — the host UI stays a
+    // localhost-only operator surface; no browsers on the overlay). An overlay
+    // request that matched no API route (static asset, dashboard SPA, dev proxy)
+    // is never served — 404 before the UI/static/dev-proxy fallthrough below.
+    if (isOverlayRequest(req)) {
+      res.writeHead(404, { 'Content-Type': 'application/json', 'X-Myco-Api-Version': this.version });
+      res.end(JSON.stringify({ error: 'not_found' }));
       return;
     }
 
@@ -642,6 +1027,43 @@ export class DaemonServer {
       // then open) a Grove served by the other daemon variant.
       enforceGroveOwnership: true,
     });
+  }
+
+  /**
+   * Effective project id for the Team Host routing chokepoint, resolved without
+   * any Grove/DB lookup. Any route that names the project in the path identifies
+   * the attach target directly — the resource routes (`:projectId` alongside
+   * `:groveId`) and the grove-lifecycle routes (`:projectId` alongside `:id`),
+   * so we key on `params.projectId` regardless of the grove param's name.
+   * Everything else goes through the header/manifest pre-parse (which also runs
+   * the local bearer gate exactly as the full resolver does). A malformed id
+   * resolves to null so the request falls through to today's local resolver,
+   * which reports the error exactly as before.
+   */
+  private inboundProjectId(
+    params: Record<string, string>,
+    headers: http.IncomingMessage['headers'],
+  ): GroveProjectId | null {
+    if (params.projectId) {
+      return isGroveEraId(params.projectId, 'project') ? (params.projectId as GroveProjectId) : null;
+    }
+    return resolveInboundProjectId(headers, this.vaultDir, { expectedAuthToken: this.authToken }).projectId;
+  }
+
+  /**
+   * The single writer for a Team Host degradation refusal on a router route
+   * (`classifyRoute` → `degraded` / `config_locked`). One uniform payload,
+   * serialized by `refusalJson`; the `/mcp` chokepoint renders the same payload
+   * through `refusalMcpBody`.
+   */
+  private writeRefusal(
+    res: http.ServerResponse,
+    payload: RefusalPayload,
+    versionHeader: Record<string, string>,
+  ): void {
+    const { status, body } = refusalJson(payload);
+    res.writeHead(status, { 'Content-Type': 'application/json', ...versionHeader });
+    res.end(JSON.stringify(body));
   }
 
   private databaseForRequestContext(context: MycoRequestContext): Database | null {
@@ -888,11 +1310,44 @@ export function validateLoopbackRequest(
     return { status: 403, error: 'forbidden_origin' };
   }
 
+  return validateMutatingContentType(req);
+}
+
+/**
+ * The overlay listener's CSRF-equivalent gate (Team Host, spec §9). Narrower
+ * than loopback: it accepts ONLY the overlay address as the request Host (for
+ * daemon-API calls), and it rejects ANY request carrying an Origin header —
+ * daemon↔daemon proxy traffic never sets Origin, so a present Origin means a
+ * browser, which is not a supported overlay client (members use their local UI).
+ * The mutating-body content-type rule is shared with loopback so a request the
+ * member proxied is dispatched byte-identically to how the host would receive it
+ * locally. The blanket bearer + version + lifecycle-refusal checks run separately
+ * (handleOverlayRequest) — this is only the Host/Origin/content-type layer.
+ */
+export function validateOverlayRequest(
+  req: http.IncomingMessage,
+  overlayAddress: string,
+  overlayPort: number,
+): Rejection | null {
+  const host = req.headers.host;
+  if (host && !isOverlayHost(host, overlayAddress, overlayPort)) {
+    return { status: 403, error: 'forbidden_host' };
+  }
+  if (req.headers.origin) {
+    return { status: 403, error: 'forbidden_origin' };
+  }
+  return validateMutatingContentType(req);
+}
+
+/**
+ * The mutating-body content-type check shared by the loopback and overlay CSRF
+ * gates. DELETE with an empty body is the common case (e.g. /api/plans/:id) and
+ * is allowed without Content-Type. For any non-empty body on a mutating route,
+ * require JSON so text/plain CSRF cannot smuggle parsed JSON in.
+ */
+function validateMutatingContentType(req: http.IncomingMessage): Rejection | null {
   if (!isWriteMethod(req.method)) return null;
 
-  // DELETE with an empty body is the common case (e.g. /api/plans/:id) and
-  // is allowed without Content-Type. For any non-empty body on a mutating
-  // route, require JSON so text/plain CSRF cannot smuggle parsed JSON in.
   const contentLengthHeader = req.headers['content-length'];
   const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
   const hasBody = Number.isFinite(contentLength) ? contentLength > 0 : (req.headers['transfer-encoding'] ?? '').length > 0;
@@ -923,6 +1378,13 @@ function isLoopbackOrigin(origin: string, port: number): boolean {
     origin === `http://127.0.0.1:${portStr}` ||
     origin === `http://localhost:${portStr}`
   );
+}
+
+// The overlay listener binds exactly the overlay IP on the daemon's port, so the
+// only legitimate Host is that address (with or without the explicit port — the
+// member's proxy sends `<overlay_ip>:<port>`). A bare-IP Host is also accepted.
+function isOverlayHost(host: string, overlayAddress: string, port: number): boolean {
+  return host === `${overlayAddress}:${String(port)}` || host === overlayAddress;
 }
 
 /**

@@ -518,6 +518,26 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
 // Resolution order on read: machine → grove → project → personal (highest).
 
 /**
+ * Team Host serve opt-in (machine tier, under `daemon.host_serve`). `enabled`
+ * gates the second overlay listener; `overlay_address` is the host's overlay
+ * interface IP the listener binds (the 100.64/10 utun address). Both default
+ * to the off state so a fresh machine never serves. Validated for bindability
+ * at daemon start (never a wildcard/0.0.0.0 bind).
+ */
+const HostServeSchema = z.object({
+  enabled: z.boolean().default(false),
+  overlay_address: z.string().nullable().default(null),
+  /**
+   * The host's control-plane id + label (`myco-team` `HostState`), mirrored here so
+   * the daemon's enrollment endpoint (Task 2.4) can self-report them to a joining
+   * member. Machine-local, non-secret; written by `myco-team host enable`. Nullable
+   * so a host enabled before Task 2.4 still parses (the member falls back to its ref).
+   */
+  host_id: z.string().nullable().default(null),
+  label: z.string().nullable().default(null),
+}).strict();
+
+/**
  * Machine tier — one daemon process per machine, one log policy.
  * Stored in `~/.myco/config.yaml`. Sparse — every field has a default.
  *
@@ -553,6 +573,19 @@ const MachineDaemonSchema = z.object({
    * is the canonical home — the legacy `~/.myco/update.yaml` is retired.
    */
   check_interval_hours: z.number().positive().max(8760).default(6),
+  /**
+   * Team Host — this machine's opt-in to serving its Grove(s) to member daemons
+   * over the private overlay (Task 2.3). Machine tier because host-serve is a
+   * per-machine daemon mechanic (like `port`/`log_level`): a machine either hosts
+   * or it does not, the overlay address is a machine-specific network fact, and
+   * the setting is never git-shared nor resolved cross-machine (config-lock §6:
+   * machine tier is the "nobody shares it" tier). `myco-team host enable` (Task
+   * 2.1) writes this; the daemon reads it once at startup. When `enabled` is true
+   * and `overlay_address` is a valid bind IP, the daemon binds a SECOND listener
+   * on that address (never 0.0.0.0, never a LAN IP) where every request requires
+   * the host bearer. Absent/invalid address → host-serve stays off with one log.
+   */
+  host_serve: HostServeSchema.default(() => HostServeSchema.parse({})),
 });
 
 // NOTE: the registry block (`grove.default_grove_id`) used to live

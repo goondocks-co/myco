@@ -61,7 +61,11 @@ export function reEnrichSessionFromTranscript(
 
   let mined;
   try {
-    mined = deps.transcriptMiner.getAllTurnsWithSource(sessionId, undefined);
+    // Read the session's stored transcript_path — host-materialized for a
+    // routed session, local for a local session. The miner's agent-dir
+    // disk-scan can't see a routed session's materialized file, so it stays
+    // a fallback for genuinely path-less rows only (transcript_path NULL).
+    mined = deps.transcriptMiner.getAllTurnsWithSource(sessionId, session.transcript_path ?? undefined);
   } catch (err) {
     deps.logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'transcript mining failed during re-enrichment', {
       session_id: sessionId, error: String(err),

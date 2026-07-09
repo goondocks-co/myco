@@ -84,6 +84,8 @@ import {
   writePublishedSkillFile,
 } from '@myco/skills/publication.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
+import { isHostServedRequest } from '@myco/grove/request-context.js';
+import type { SkillArtifactResult } from '@myco/skills/publication.js';
 import { buildSkillSurveyPreparation, hasHumanReviewEvidence } from '../skill-survey-prepare.js';
 import {
   RECONCILIATION_HANDLED_GROUPS,
@@ -152,6 +154,32 @@ export function createSkillTools(deps: VaultToolDeps) {
   const { agentId, machineId, projectRoot, vaultDir, embeddingManager, dryRun } = deps;
   const projectId = rowProjectIdFromVaultToolDeps(deps);
   const scope = projectScopeFromVaultToolDeps(deps);
+
+  // Team Host residency: on a host-served-for-a-member run the host holds the
+  // Grove DB but NOT the member's working tree. The skill RECORD still lands in
+  // the DB (generation is unchanged); the committed SKILL.md publishes to the
+  // member's tree only on manual accept. So the disk publish must never write,
+  // symlink, or remove a working tree the host lacks — these wrappers no-op the
+  // filesystem side of publication on a host-served run while preserving the
+  // path-escape validation the callers rely on. Local runs behave exactly as
+  // before (hostServed is false, so every wrapper delegates straight through).
+  const hostServed = isHostServedRequest(deps.requestContext);
+
+  function publishSkillFile(root: string, name: string, content: string): SkillArtifactResult {
+    if (!hostServed) return writePublishedSkillFile(root, name, content);
+    // Preserve the path-escape refusal the callers check for, without touching disk.
+    return resolvePublishedSkillPaths(root, name);
+  }
+
+  function publishSkillSymlinks(root: string, name: string, options?: { remove?: boolean }): void {
+    if (hostServed) return;
+    syncPublishedSkillSymlinks(root, name, options);
+  }
+
+  function removePublishedSkillArtifacts(root: string, name: string, options?: { fileOnly?: boolean }): void {
+    if (hostServed) return;
+    removePublishedSkillFileOrDirectory(root, name, options);
+  }
 
   function hydrateIdentifiedPlanEntriesFromBundles(
     plan: JsonRecord,
@@ -1151,7 +1179,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
     async function cleanupCreatedSkillArtifactsOnRollback(): Promise<void> {
       try {
-        removePublishedSkillFileOrDirectory(root, params.name, { fileOnly: skillDirPreexisted });
+        removePublishedSkillArtifacts(root, params.name, { fileOnly: skillDirPreexisted });
       } catch (rollbackErr) {
         console.warn(
           `[${params.label}] file rollback after DB failure also failed:`,
@@ -1160,7 +1188,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       }
 
       try {
-        syncPublishedSkillSymlinks(root, params.name, { remove: true });
+        publishSkillSymlinks(root, params.name, { remove: true });
       } catch (rollbackErr) {
         console.warn(
           `[${params.label}] symlink rollback after DB failure also failed:`,
@@ -1170,7 +1198,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     try {
-      const writeResult = writePublishedSkillFile(root, params.name, params.content);
+      const writeResult = publishSkillFile(root, params.name, params.content);
       if (!writeResult.ok) {
         return { error: 'Invalid skill name: resolved path escapes .agents/skills' };
       }
@@ -1181,7 +1209,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     try {
-      syncPublishedSkillSymlinks(root, params.name);
+      publishSkillSymlinks(root, params.name);
     } catch (err) {
       console.warn(
         `[${params.label}] syncSkillSymlinks failed:`,
@@ -1268,7 +1296,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     const root = projectRoot ?? process.cwd();
 
     try {
-      const writeResult = writePublishedSkillFile(root, params.name, params.content);
+      const writeResult = publishSkillFile(root, params.name, params.content);
       if (!writeResult.ok) {
         return { ok: false, error: 'Invalid skill name: resolved path escapes .agents/skills' };
       }
@@ -1277,7 +1305,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     try {
-      syncPublishedSkillSymlinks(root, params.name);
+      publishSkillSymlinks(root, params.name);
     } catch (err) {
       console.warn('[writeEvolvedSkill] syncSkillSymlinks failed:', err instanceof Error ? err.message : err);
     }
@@ -1313,7 +1341,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       })();
     } catch (err) {
       try {
-        const rollback = writePublishedSkillFile(root, params.name, params.priorContent);
+        const rollback = publishSkillFile(root, params.name, params.priorContent);
         if (!rollback.ok) {
           console.warn('[writeEvolvedSkill] file rollback refused:', rollback.reason);
         }
@@ -1692,6 +1720,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           name: args.name,
           priorContent,
           root,
+          hostServed,
         });
 
         const ok = issues.length === 0 && violations.length === 0 && claim === null;
@@ -1780,6 +1809,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         name: args.name,
         priorContent,
         root,
+        hostServed,
       });
 
       if (issues.length > 0 || violations.length > 0 || claim !== null) {
@@ -1952,6 +1982,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         content: args.content,
         name: args.name,
         root,
+        hostServed,
       });
 
       if (issues.length > 0 || claim !== null) {
@@ -2054,6 +2085,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         content: stagedContent,
         name: manifest.name,
         root,
+        hostServed,
       });
 
       if (issues.length > 0 || claim !== null) {
@@ -2186,6 +2218,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         name: args.name,
         priorContent,
         root,
+        hostServed,
       });
       if (issues.length > 0 || violations.length > 0 || claim !== null) {
         if (noteFailure().deferred) return deferredResult();

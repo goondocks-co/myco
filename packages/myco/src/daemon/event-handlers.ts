@@ -8,7 +8,6 @@
 import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
-import { getTeamMachineId } from '@myco/team/context.js';
 import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, getLatestBatch, replaceRecoveredBatchUserPrompt, liveContentOrdinal, normalizePromptForHash, BATCH_KIND, RECOVERED_BATCH_SENTINEL, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { classifyNextPromptOrigin } from '@myco/capture/prompt-kind.js';
 import { AntigravityJsonlParser } from '@myco/symbionts/parsers/antigravity-jsonl.js';
@@ -21,6 +20,7 @@ import { createBatchLineage } from '@myco/db/queries/lineage.js';
 import { consumePendingInjection } from '@myco/canopy/inject/pending.js';
 import { getManifestByName } from '@myco/symbionts/detect.js';
 import { extractAnyPath } from '@myco/symbionts/canopy-read-tools.js';
+import { getRoutedEventDedup, recordRoutedEventDedup } from '@myco/db/queries/routed-event-dedup.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -79,6 +79,16 @@ export interface UserPromptOptions {
    * manifest-driven origin computed by `evaluateUserPromptRules`.
    */
   origin?: PromptBatchOrigin;
+  /**
+   * Source-assigned, identity-bearing event id (residency §4a). Present only for a
+   * routed `/events` event the member stamped; the host dedups on it so a live
+   * delivery and its drain-replay collapse to one batch. Absent for local events
+   * and the buffer replayer — those keep today's (ordinal + 10 s window) behavior.
+   */
+  sourceEventId?: string;
+  /** The originating member's `machine_id`, recorded in the dedup ledger for
+   *  origin-tracing. Accompanies {@link sourceEventId}. */
+  sourceMachineId?: string;
 }
 
 /**
@@ -103,7 +113,6 @@ export function ensureOpenBatch(sessionId: string): void {
     user_prompt: RECOVERED_BATCH_SENTINEL,
     started_at: now,
     created_at: now,
-    machine_id: getTeamMachineId(),
     kind: BATCH_KIND.RECOVERED,
     parent_prompt_batch_id: null,
   });
@@ -248,6 +257,33 @@ export function handleUserPrompt(
   prompt: string | undefined,
   options: UserPromptOptions = {},
 ): { batchId: number; promptNumber: number } {
+  // Idempotent sink for routed capture (residency §4a): a re-delivery of the same
+  // source event (live + drain, or a lost-ack retry) returns the batch the first
+  // delivery opened — no second batch. Scoped by id PRESENCE: local events and the
+  // buffer replayer pass no id and keep today's behavior. The ordinal (below) stays
+  // for ORDERING, no longer the dedup mechanism for a routed event.
+  const eventId = options.sourceEventId;
+  if (eventId) {
+    const seen = getRoutedEventDedup(eventId);
+    if (seen) return { batchId: seen.prompt_batch_id ?? 0, promptNumber: 0 };
+  }
+  const result = handleUserPromptCore(sessionId, prompt, options);
+  if (eventId) {
+    recordRoutedEventDedup({
+      eventId,
+      machineId: options.sourceMachineId,
+      kind: 'user_prompt',
+      promptBatchId: result.batchId,
+    });
+  }
+  return result;
+}
+
+function handleUserPromptCore(
+  sessionId: string,
+  prompt: string | undefined,
+  options: UserPromptOptions = {},
+): { batchId: number; promptNumber: number } {
   const now = epochSeconds();
   const incomingKind = options.kind ?? BATCH_KIND.INITIAL;
 
@@ -297,7 +333,6 @@ export function handleUserPrompt(
     // the active turn. Human batches stay open (ended_at left null).
     ended_at: isSystemOrigin ? now : undefined,
     created_at: now,
-    machine_id: getTeamMachineId(),
     kind: effectiveKind,
     origin: incomingOrigin,
     parent_prompt_batch_id: parentId,
@@ -351,7 +386,6 @@ export function syncTranscriptPromptBatches(
   // written in one sweep.
   const now = epochSeconds();
   let createdBatchCount = 0;
-  const machineId = getTeamMachineId();
 
   const insertTail = getDatabase().transaction(() => {
     // content_hash ordinal = occurrence index over the FULL prompt list (origin
@@ -375,7 +409,6 @@ export function syncTranscriptPromptBatches(
         ordinal,
         started_at: now,
         created_at: now,
-        machine_id: machineId,
         kind: BATCH_KIND.INITIAL,
         parent_prompt_batch_id: null,
       });
@@ -406,7 +439,16 @@ export function handleToolUse(
   toolOutput: string | undefined,
   projectRoot: string,
   transcriptPath?: string,
+  sourceEventId?: string,
+  sourceMachineId?: string,
 ): void {
+  // Idempotent sink for routed capture (residency §4a): skip the activity insert
+  // for a re-delivery of a source event already recorded. Id-presence-scoped, so
+  // local events (no id) are unchanged. The dispatcher's other side effects (plan
+  // capture, live-reconcile, Canopy rescan) sit OUTSIDE this handler and are each
+  // idempotent, so they still run harmlessly on a replay.
+  if (sourceEventId && getRoutedEventDedup(sourceEventId)) return;
+
   const now = epochSeconds();
 
   ensureOpenBatch(sessionId);
@@ -451,6 +493,8 @@ export function handleToolUse(
     canopy_injection_tokens: injectionTokens,
   });
 
+  if (sourceEventId) recordRoutedEventDedup({ eventId: sourceEventId, machineId: sourceMachineId, kind: 'tool_use' });
+
   // `sessions.tool_count` cache bump is folded into the activity
   // insert itself — see `insertActivityWithBatch`.
 }
@@ -481,7 +525,12 @@ export function handleToolFailure(
   toolInput: unknown,
   error: string | undefined,
   isInterrupt: boolean | undefined,
+  sourceEventId?: string,
+  sourceMachineId?: string,
 ): void {
+  // Idempotent sink for routed capture (residency §4a) — see handleToolUse.
+  if (sourceEventId && getRoutedEventDedup(sourceEventId)) return;
+
   const now = epochSeconds();
   const filePath = extractToolFilePath(agent, toolName, toolInput);
 
@@ -498,6 +547,8 @@ export function handleToolFailure(
     timestamp: now,
     created_at: now,
   });
+
+  if (sourceEventId) recordRoutedEventDedup({ eventId: sourceEventId, machineId: sourceMachineId, kind: 'tool_failure' });
 }
 
 /**

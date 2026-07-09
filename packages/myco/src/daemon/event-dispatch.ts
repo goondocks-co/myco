@@ -12,6 +12,7 @@ import path from 'node:path';
 import type { RouteHandler } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
+import { readEventId } from '@myco/capture/event-id.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { PowerManager } from './power.js';
 import { DaemonLogger } from './logger.js';
@@ -37,10 +38,12 @@ import {
 import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
 import {
   filesystemRootFromRequestContext,
+  isHostServedRequest,
   projectScopeFromRequestContext,
   rowProjectIdFromRequestContext,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
+import { hostSubstitutedTranscriptPath } from '@myco/host/routed-transcript.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch, toPromptBatchOrigin, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
@@ -277,6 +280,45 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       ? filesystemRootFromRequestContext(req.requestContext)
       : requestProjectRoot;
     const requestMachineId = req.requestContext?.machineId ?? machineId;
+    // Team Host — C7: a host-served (routed) request's plan/transcript FILES live on
+    // the MEMBER's disk, not here. Plan content arrives via the plan companion push
+    // (`POST /routed-capture/plan` → capturePlan), so the host must NOT try to read
+    // the member-local plan file from a live tool event — that read can never succeed
+    // on this machine. Gate the live plan-file read below on this; a local request is
+    // unchanged (false → today's disk read).
+    const requestHostServed = isHostServedRequest(req.requestContext);
+    // Routed-capture idempotency key (residency §4a): the member-stamped, identity-
+    // bearing id present only on a routed `/events` event. Threaded to the discrete
+    // handlers so a live delivery and its drain-replay collapse to one row. Absent
+    // (undefined) for local events → today's behavior, unchanged.
+    const sourceEventId = readEventId(event) ?? undefined;
+
+    // Team Host — C4: for a session host-served for a remote member, the event's
+    // `transcript_path` is a MEMBER-local path that does not exist on this host.
+    // Substitute it with the file C2 materialized at
+    // `routed-transcripts/<machine>/<session>/<tid>.jsonl`, resolved from
+    // (machineId, sessionId), BEFORE any ensureSession*/live-mining site below —
+    // so live mid-turn mining reads a file that exists here. A local request is
+    // untouched; a routed session whose bytes haven't drained yet degrades to no
+    // path (no bogus mine — replay/re-enrich recovers). §5.3 / C4.
+    {
+      const memberTranscriptPath = typeof event.transcript_path === 'string' && event.transcript_path.length > 0
+        ? event.transcript_path
+        : undefined;
+      const substitution = hostSubstitutedTranscriptPath({
+        hostServed: isHostServedRequest(req.requestContext),
+        machineId: requestMachineId,
+        sessionId: event.session_id,
+        memberTranscriptPath,
+      });
+      if (substitution.action !== 'unchanged') {
+        event.transcript_path = substitution.transcriptPath;
+        logger.debug(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Routed transcript_path substituted for host-served event', {
+          session_id: event.session_id,
+          action: substitution.action,
+        });
+      }
+    }
 
     logger.debug(LOG_KINDS.HOOKS_EVENT, 'Event received', { type: event.type, session_id: event.session_id });
 
@@ -490,7 +532,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           source: ENSURE_SESSION_SOURCE.USER_PROMPT,
         });
         const kind = typeof event.kind === 'string' ? event.kind : 'initial';
-        const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind, origin: promptOrigin });
+        const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind, origin: promptOrigin, sourceEventId, sourceMachineId: requestMachineId });
         userPromptBatchId = batchId;
         logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
         deferGitProvenance({
@@ -593,7 +635,9 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         event.tool_input as Record<string, unknown> | undefined,
         { ...planWatchConfig, projectRoot: requestProjectRoot },
       );
-      if (planFilePath) {
+      // For a routed session the plan file is member-local — the plan companion push
+      // (C7) supplies its content to `capturePlan` instead; skip the host-local read.
+      if (planFilePath && !requestHostServed) {
         const captureSessionId = event.session_id;
         fs.promises.readFile(planFilePath, 'utf-8').then((planContent) => {
           const latestBatch = getLatestBatch(captureSessionId);
@@ -638,6 +682,8 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
           requestFilesystemRoot,
           typeof event.transcript_path === 'string' ? event.transcript_path : undefined,
+          sourceEventId,
+          requestMachineId,
         );
       } catch (err) {
         handlerFailed = true;
@@ -700,6 +746,8 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           event.tool_input,
           typeof event.error === 'string' ? event.error : undefined,
           !!event.is_interrupt,
+          sourceEventId,
+          requestMachineId,
         );
       } catch (err) {
         handlerFailed = true;

@@ -28,6 +28,7 @@ import {
   getRegisteredProjectInGrove,
   listGroves,
   listRegisteredProjects,
+  resolveAttachForProjectRoot,
 } from '../grove/registry.js';
 
 export interface ProjectBufferLocation {
@@ -66,6 +67,21 @@ export function resolveProjectBufferDirFromRoot(
   projectRoot: string,
   mycoHome = resolveMycoHome(),
 ): ProjectBufferLocation | null {
+  // Team Host never-materialize invariant: for an attached project, resolve
+  // the buffer dir straight from the attach ref's ids via the DB-free
+  // resolver — never through ensureProjectRegistered's local-Grove path. The
+  // hosted Grove has no local registry row, so a divert here writes only a
+  // buffer dir (a filesystem write, no Grove materialization) that the
+  // attach-aware drain later pushes to the host.
+  const attach = resolveAttachForProjectRoot(projectRoot);
+  if (attach) {
+    return {
+      groveId: attach.ref.grove_id,
+      projectId: attach.ref.project_id,
+      bufferDir: resolveProjectBufferDir(attach.ref.grove_id, attach.ref.project_id, mycoHome),
+    };
+  }
+
   const resolved = ensureProjectRegistered(projectRoot, mycoHome);
   if (!resolved) return null;
   return {
