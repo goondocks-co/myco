@@ -27,7 +27,7 @@
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.1",
     "typescript": "^6.0.3",
-    "vite": "^8.1.0"
+    "vite": "^8.1.4"
   },
   "dependencies": {
     "react-markdown": "^10.1.0",
