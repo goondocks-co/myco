@@ -9,7 +9,6 @@
  * Each builder corresponds to a task that needs pre-assembled context.
  */
 
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import type { MycoConfig } from '@myco/config/schema.js';
@@ -38,6 +37,7 @@ import { getSpore, listSpores, type SporeRow } from '@myco/db/queries/spores.js'
 import { getSession } from '@myco/db/queries/sessions.js';
 import { listSkillRecords, updateSkillRecord } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
+import { resolveSkillContent } from '@myco/skills/content.js';
 import { listRecentSupersessions, listSupersedingSporeIds } from '@myco/db/queries/spore-supersession.js';
 import { epochSeconds } from '@myco/constants.js';
 import { shortlistSemanticIds, type SemanticShortlistProvider } from '@myco/agent/semantic-shortlist.js';
@@ -608,17 +608,17 @@ export async function buildSkillEvolveInstruction(
   }
 
   // ----- Structural analysis: section counts + heading extraction -----
-  // Read each skill's content from disk and extract H2 headings.
-  // This gives the inventory phase mechanical signals for narrow/merge
-  // detection that don't depend on LLM judgment.
+  // Read each skill's content and extract H2 headings. This gives the
+  // inventory phase mechanical signals for narrow/merge detection that
+  // don't depend on LLM judgment. Content is cached per skill id because
+  // the drift inputs below reuse it.
   const structures: SkillStructure[] = [];
   const skillHeadings = new Map<string, string[]>();
+  const skillContents = new Map<string, string>();
   if (projectRoot) {
     for (const skill of allSkills) {
-      let content = '';
-      if (skill.path) {
-        try { content = readFileSync(resolve(projectRoot, skill.path), 'utf-8'); } catch { /* missing */ }
-      }
+      const content = resolveSkillContent({ record: skill, projectRoot }) ?? '';
+      skillContents.set(skill.id, content);
       const headings = extractHeadings(content);
       skillHeadings.set(skill.name, headings);
       structures.push({
@@ -675,7 +675,10 @@ export async function buildSkillEvolveInstruction(
       const tsB = typeof propsB.last_verified_at === 'number' ? propsB.last_verified_at : 0;
       return tsA - tsB;
     })
-    .slice(0, 5);
+    .slice(0, 5)
+    // Drift verifies the same content the structural pass read; projectRoot
+    // stays in the call for codebase claim/symbol verification.
+    .map((skill) => ({ ...skill, content: skillContents.get(skill.id) }));
   const drift = projectRoot
     ? detectDrift(oldestForVerify, projectRoot, nowEpoch)
     : {

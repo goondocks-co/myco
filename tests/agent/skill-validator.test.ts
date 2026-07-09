@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import { checkFrontmatterPreservation, MAX_SKILL_DESCRIPTION_CHARS } from '@myco/agent/tools/skill-validator.js';
+import { checkFrontmatterPreservation, extractFrontmatterFields, MAX_SKILL_DESCRIPTION_CHARS } from '@myco/agent/tools/skill-validator.js';
 import { descriptionHardContaminationLength } from '@myco/agent/tools/skill-contamination.js';
 
 /** Build valid SKILL.md content with the given description and optional body. */
@@ -149,5 +149,32 @@ describe('descriptionHardContaminationLength', () => {
     );
 
     expect(descriptionHardContaminationLength(content)).toBe(0);
+  });
+});
+
+describe('extractFrontmatterFields', () => {
+  it('parses block-list and quoted-colon values the way the write gates do', () => {
+    const content = [
+      '---',
+      'name: myco:block-list-skill',
+      'description: "Covers: block lists"',
+      'allowed-tools:',
+      '  - Read',
+      '  - Grep',
+      'user-invocable: true',
+      '---',
+      '',
+      '# Body',
+    ].join('\n');
+
+    const fields = extractFrontmatterFields(content);
+    expect(fields.name).toBe('myco:block-list-skill');
+    expect(fields.description).toBe('Covers: block lists');
+    expect(fields['allowed-tools']).toBe('Read, Grep');
+    expect(fields['user-invocable']).toBe('true');
+  });
+
+  it('returns an empty map for content without frontmatter', () => {
+    expect(extractFrontmatterFields('# Just a body\n')).toEqual({});
   });
 });

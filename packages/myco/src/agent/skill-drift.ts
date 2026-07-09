@@ -7,6 +7,13 @@ export interface SkillDriftInput {
   description: string;
   path: string;
   properties: string;
+  /**
+   * Skill body to verify — lineage-latest from the caller. When absent, the
+   * published file at `path` is read instead (legacy records with no
+   * lineage). `projectRoot` is still required either way: claim and symbol
+   * verification greps the codebase, not the skill.
+   */
+  content?: string;
 }
 
 export interface SkillFileFingerprint {
@@ -354,12 +361,13 @@ export function detectDrift(
   const allSymbols = new Set<string>();
 
   for (const skill of skills) {
-    const absPath = resolve(projectRoot, skill.path);
-    let content = '';
-    try {
-      content = readFileSync(absPath, 'utf-8');
-    } catch {
-      content = '';
+    let content = skill.content ?? '';
+    if (!content) {
+      try {
+        content = readFileSync(resolve(projectRoot, skill.path), 'utf-8');
+      } catch {
+        content = '';
+      }
     }
     skillContents.set(skill.id, content);
     const claims = extractClaims(content);

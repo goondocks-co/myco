@@ -6,8 +6,10 @@ import { vi } from '../helpers/vi-shim.js';
 import { initTeamSync } from '@myco/daemon/team-sync-init.js';
 
 // Reconcile-eligible table allow-list the trigger pass iterates. Mocked to a
-// small set so call counts stay legible (real list is 13 project-scoped tables).
-const MOCK_RECONCILE_TABLES = ['sessions', 'spores'];
+// small set so call counts stay legible (real list is 13+ project-scoped
+// tables). skill_lineage is included as a protocol-3 table so the
+// worker-version gate has something to skip when the worker is older.
+const MOCK_RECONCILE_TABLES = ['sessions', 'spores', 'skill_lineage'];
 
 /**
  * Drain the microtask + timer queues so a FIRE-AND-FORGET reconcile pass
@@ -20,6 +22,7 @@ async function flushAsync(times = 3): Promise<void> {
 }
 
 const {
+  getWorkerProtocolVersionMock,
   enqueueBatchMock,
   listPendingMock,
   backfillUnsyncedMock,
@@ -47,6 +50,7 @@ const {
   enqueueOutboxMock: vi.fn(),
   enqueueProjectRemovalTombstonesMock: vi.fn(() => ({ enqueued: 0, reset: 0 })),
   forEachGroveMock: vi.fn(),
+  getWorkerProtocolVersionMock: vi.fn((): number | undefined => 3),
 }));
 
 mock.module('@myco/db/queries/team-outbox.js', () => ({
@@ -92,7 +96,7 @@ mock.module('@myco/daemon/team-sync.js', () => ({
     enqueueBatch = enqueueBatchMock;
     health = vi.fn();
     getVersionCompat = vi.fn(() => 'unknown');
-    getWorkerProtocolVersion = vi.fn(() => 3);
+    getWorkerProtocolVersion = getWorkerProtocolVersionMock;
     supportsManifest = vi.fn(() => true);
     getManifest = vi.fn();
   },
@@ -140,6 +144,8 @@ describe('team-sync reconcile triggers', () => {
     // clearAllMocks resets call history but NOT implementations, so restore the
     // default no-op pass here (the throwing-reconcile test overrides it).
     reconcilePartitionSpy.mockImplementation(async () => {});
+    // Same restore for the worker protocol probe (version-gate tests override).
+    getWorkerProtocolVersionMock.mockImplementation(() => 3);
     // Default fan-out: replay whatever scopes the test registered.
     forEachGroveMock.mockImplementation(
       async (
@@ -240,8 +246,8 @@ describe('team-sync reconcile triggers', () => {
     // settle before counting partition reconciles.
     await flushAsync();
 
-    // 2 projects × 2 eligible tables = 4 partition reconciles.
-    expect(reconcilePartitionSpy).toHaveBeenCalledTimes(4);
+    // 2 projects × 3 eligible tables = 6 partition reconciles.
+    expect(reconcilePartitionSpy).toHaveBeenCalledTimes(6);
     const args = reconcileArgs();
     expect(new Set(args.map((a) => a.projectId))).toEqual(new Set(['p-a', 'p-b']));
     expect(new Set(args.map((a) => a.table))).toEqual(new Set(MOCK_RECONCILE_TABLES));
@@ -267,8 +273,8 @@ describe('team-sync reconcile triggers', () => {
 
     await reconcileJob!.fn({ sliceBudget: { maxItems: 0, softDeadlineMs: 0 } });
 
-    // 2 groves × 1 project × 2 tables = 4 partition reconciles.
-    expect(reconcilePartitionSpy).toHaveBeenCalledTimes(4);
+    // 2 groves × 1 project × 3 tables = 6 partition reconciles.
+    expect(reconcilePartitionSpy).toHaveBeenCalledTimes(6);
     const args = reconcileArgs();
     expect(new Set(args.map((a2) => a2.projectId))).toEqual(new Set(['p-a', 'p-b']));
     // The backstop always forces a full diff to catch equal-count / different-set
@@ -327,15 +333,15 @@ describe('team-sync reconcile triggers', () => {
     await teamSync.reconcileClient(requestContext(grove.id, 'p-a'));
     await flushAsync();
 
-    // Exactly ONE poll-path pass ran (count-first; 2 projects × 2 tables = 4), not two.
+    // Exactly ONE poll-path pass ran (count-first; 2 projects × 3 tables = 6), not two.
     const pollPath = reconcileArgs().filter((a) => a.forceFullDiff === false);
-    expect(pollPath.length).toBe(4);
+    expect(pollPath.length).toBe(6);
 
     // The on-demand path bypasses the throttle entirely: it runs immediately even
     // though a poll-path pass just executed for the same grove. It full-diffs.
     await teamSync.reconcileAllGroves({} as never);
     const onDemand = reconcileArgs().filter((a) => a.forceFullDiff === true);
-    expect(onDemand.length).toBe(4);
+    expect(onDemand.length).toBe(6);
   });
 
   it('a throwing reconcile pass does not propagate out of reconcileClient and does not break the flush', async () => {
@@ -386,5 +392,39 @@ describe('team-sync reconcile triggers', () => {
     const args = reconcileArgs();
     expect(args.length).toBeGreaterThan(0);
     expect(args.every((a2) => a2.forceFullDiff === false)).toBe(true);
+  });
+
+  it('skips tables newer than the worker protocol and warns once per team', async () => {
+    // Worker advertises protocol 2 — skill_lineage (protocol 3) must be
+    // skipped instead of hammering the worker with 400s every cycle.
+    getWorkerProtocolVersionMock.mockImplementation(() => 2);
+    const { grove } = await registerGroveWithProjects('old-worker-grove', ['p-ow']);
+    const teamSync = makeTeamSync();
+
+    await teamSync.reconcileClient(requestContext(grove.id, 'p-ow'));
+    await flushAsync();
+
+    const tables = reconcileArgs().map((a) => a.table);
+    expect(new Set(tables)).toEqual(new Set(['sessions', 'spores']));
+    expect(tables).not.toContain('skill_lineage');
+    const warn = logger.warn.mock.calls.find(
+      (c) => String((c as unknown[])[1]).includes('newer than the worker protocol'),
+    );
+    expect(warn).toBeDefined();
+    expect(((warn as unknown[])[2] as { skipped_tables: string[] }).skipped_tables).toEqual(['skill_lineage']);
+  });
+
+  it('reconciles every table when the worker protocol is unprobed', async () => {
+    // An unreachable/unprobed worker leaves the version undefined — the gate
+    // stays open and the normal per-partition error handling applies.
+    getWorkerProtocolVersionMock.mockImplementation(() => undefined);
+    const { grove } = await registerGroveWithProjects('unprobed-grove', ['p-up']);
+    const teamSync = makeTeamSync();
+
+    await teamSync.reconcileClient(requestContext(grove.id, 'p-up'));
+    await flushAsync();
+
+    const tables = reconcileArgs().map((a) => a.table);
+    expect(new Set(tables)).toEqual(new Set(MOCK_RECONCILE_TABLES));
   });
 });

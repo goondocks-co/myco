@@ -70,6 +70,7 @@ function createSkillWithWatermark(
   watermark: number,
   lastAssessedAt?: number,
   description?: string,
+  contentSnapshot?: string,
 ): string {
   const id = `skill-${name}`;
   const now = epochSeconds();
@@ -88,13 +89,16 @@ function createSkillWithWatermark(
       last_assessed_at: lastAssessedAt ?? 0,
     }),
   });
+  // Lineage-latest is the canonical content the builder reads — tests that
+  // care about structure/drift must put the real body here, not on disk.
   insertLineage({
     id: `lineage-${name}`,
     skill_id: id,
     generation: 1,
     action: 'created',
     rationale: 'test',
-    content_snapshot: `---\nname: myco:${name}\ndescription: Test\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, Grep\n---\n# ${name}`,
+    content_snapshot: contentSnapshot
+      ?? `---\nname: myco:${name}\ndescription: Test\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, Grep\n---\n# ${name}`,
     created_at: now,
   });
   return id;
@@ -435,13 +439,14 @@ describe('buildSkillEvolveInstruction', () => {
 
   it('returns undefined when all signals are zero with projectRoot', async () => {
     const now = epochSeconds();
-    createSkillWithWatermark('steady-skill', now + 1000, 0, 'Steady skill');
+    const steadyContent = '# Steady\n## Scope\nNo code refs.\n## Procedure\nNo changes.\n';
+    createSkillWithWatermark('steady-skill', now + 1000, 0, 'Steady skill', steadyContent);
 
     const root = mkdtempSync(join(tmpdir(), 'myco-evolve-'));
     mkdirSync(join(root, '.agents', 'skills', 'steady-skill'), { recursive: true });
     writeFileSync(
       join(root, '.agents', 'skills', 'steady-skill', 'SKILL.md'),
-      '# Steady\n## Scope\nNo code refs.\n## Procedure\nNo changes.\n',
+      steadyContent,
     );
 
     const result = await buildSkillEvolveInstruction({}, root, undefined, TEST_REQUEST_CONTEXT);

@@ -21,7 +21,9 @@ import {
   LOCAL_ONLY_OUTBOX_TABLES,
   LOCAL_ONLY_SYNC_COLUMNS,
   LOCAL_ONLY_RATIONALES,
+  RECONCILE_ELIGIBLE_TABLES,
 } from '@myco/db/queries/team-outbox.js';
+import { tablesGatedByWorkerProtocol } from '@myco/db/schema-ddl.js';
 import { markSelfMemberUnsynced } from '@myco/db/queries/team-members.js';
 import { searchLogs, type LogEntryRow } from '@myco/db/queries/logs.js';
 import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
@@ -659,6 +661,14 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         daemon_protocol_version: SYNC_PROTOCOL_VERSION,
         worker_protocol_version: client?.getWorkerProtocolVersion() ?? null,
         worker_min_client_version: client?.getWorkerMinClientVersion() ?? null,
+        // Tables the reconcile pass is skipping because the deployed worker
+        // predates them — computed by the SAME helper the reconcile gate
+        // uses, so this disclosure and the actual behavior cannot drift.
+        // Empty when the worker is current or unprobed.
+        reconcile_gated_tables: tablesGatedByWorkerProtocol(
+          RECONCILE_ELIGIBLE_TABLES,
+          client?.getWorkerProtocolVersion(),
+        ),
         mcp_token: client?.getMcpToken() ?? null,
         mcp_endpoint: client?.getMcpEndpoint() ?? null,
         mcp_healthy: healthy && workerHasMcpToken,

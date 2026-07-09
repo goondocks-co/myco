@@ -4393,4 +4393,124 @@ describe('vault skill tools', () => {
       expect((await runEdit('run-brk', 'edit-brk', bad)).deferred).toBe(true); // 4
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // DB-resident content: skill_lineage.content_snapshot is the canonical
+  // published content; the on-disk SKILL.md is a materialization of it.
+  // ---------------------------------------------------------------------------
+
+  describe('DB-resident content (lineage-latest canonical)', () => {
+    /** Create a skill through the real tool so lineage rows exist. */
+    async function createSkill(name: string, body: string): Promise<string> {
+      const t = findTool(tools, 'vault_write_skill');
+      const res = parseResult(await t.handler(
+        {
+          name,
+          display_name: name,
+          description: `DB residency test skill ${name}`,
+          content: validSkillContent(name, body),
+        },
+        undefined,
+      )) as { id?: string; error?: string };
+      expect(res.error).toBeUndefined();
+      return res.id as string;
+    }
+
+    function skillFilePath(name: string): string {
+      return path.join(tmpDir, '.agents', 'skills', name, 'SKILL.md');
+    }
+
+    it('get returns lineage content when the published file is missing', async () => {
+      await createSkill('db-res-get', '# DB Res Get\n\nBody from lineage.');
+      fs.rmSync(skillFilePath('db-res-get'));
+
+      const t = findTool(tools, 'vault_skill_records');
+      const rec = parseResult(await t.handler({ action: 'get', id: 'db-res-get' }, undefined)) as { content?: string };
+      expect(rec.content).toContain('Body from lineage.');
+    });
+
+    it('get returns lineage content, not a hand-edited file (managed skills are DB-owned)', async () => {
+      await createSkill('db-res-owned', '# Owned\n\nCanonical body.');
+      fs.writeFileSync(
+        skillFilePath('db-res-owned'),
+        validSkillContent('db-res-owned', '# Owned\n\nHand edit.'),
+        'utf-8',
+      );
+
+      const t = findTool(tools, 'vault_skill_records');
+      const rec = parseResult(await t.handler({ action: 'get', id: 'db-res-owned' }, undefined)) as { content?: string };
+      expect(rec.content).toContain('Canonical body.');
+      expect(rec.content).not.toContain('Hand edit.');
+    });
+
+    it('evolve succeeds and re-materializes the file when it is missing locally', async () => {
+      await createSkill('db-res-evolve', '# Evolve\n\nGen one body.');
+      fs.rmSync(skillFilePath('db-res-evolve'));
+
+      const t = findTool(tools, 'vault_write_skill');
+      const res = parseResult(await t.handler(
+        {
+          name: 'db-res-evolve',
+          display_name: 'db-res-evolve',
+          description: 'DB residency test skill db-res-evolve',
+          content: validSkillContent('db-res-evolve', '# Evolve\n\nGen two body.'),
+        },
+        undefined,
+      )) as { generation?: number; error?: string };
+      expect(res.error).toBeUndefined();
+      expect(res.generation).toBe(2);
+      expect(fs.readFileSync(skillFilePath('db-res-evolve'), 'utf-8')).toContain('Gen two body.');
+    });
+
+    it('edit succeeds when the published file is missing locally', async () => {
+      await createSkill('db-res-edit', '# Edit\n\neditable line.');
+      fs.rmSync(skillFilePath('db-res-edit'));
+
+      const t = findTool(tools, 'vault_edit_skill');
+      const res = parseResult(await t.handler(
+        { name: 'db-res-edit', edits: [{ old_string: 'editable line.', new_string: 'edited line.' }] },
+        undefined,
+      )) as { generation?: number; error?: string };
+      expect(res.error).toBeUndefined();
+      expect(res.generation).toBe(2);
+      expect(fs.readFileSync(skillFilePath('db-res-edit'), 'utf-8')).toContain('edited line.');
+    });
+
+    it('failed evolve rolls the file back to lineage-latest, not a hand edit', async () => {
+      const id = await createSkill('db-res-rollback', '# Rollback\n\nCanonical body.');
+      // Manual edits to managed skills are unsupported: the rollback baseline
+      // is the DB snapshot, so the hand edit must NOT survive a failed evolve.
+      fs.writeFileSync(
+        skillFilePath('db-res-rollback'),
+        validSkillContent('db-res-rollback', '# Rollback\n\nHand edit.'),
+        'utf-8',
+      );
+
+      const db = getDatabase();
+      db.exec(
+        `CREATE TRIGGER fail_lineage BEFORE INSERT ON skill_lineage
+         WHEN NEW.skill_id = '${id}'
+         BEGIN SELECT RAISE(ABORT, 'forced failure'); END`,
+      );
+      try {
+        const t = findTool(tools, 'vault_write_skill');
+        const res = parseResult(await t.handler(
+          {
+            name: 'db-res-rollback',
+            display_name: 'db-res-rollback',
+            description: 'DB residency test skill db-res-rollback',
+            content: validSkillContent('db-res-rollback', '# Rollback\n\nGen two body.'),
+          },
+          undefined,
+        )) as { error?: string };
+        expect(res.error).toContain('rolled back');
+      } finally {
+        db.exec('DROP TRIGGER IF EXISTS fail_lineage');
+      }
+
+      const after = fs.readFileSync(skillFilePath('db-res-rollback'), 'utf-8');
+      expect(after).toContain('Canonical body.');
+      expect(after).not.toContain('Hand edit.');
+    });
+  });
 });

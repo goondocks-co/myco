@@ -299,12 +299,91 @@ describe('createTeamHandlers.handleStatus', () => {
       daemon_protocol_version: number;
       worker_protocol_version: number | null;
       worker_min_client_version: number | null;
+      reconcile_gated_tables: string[];
     };
 
     expect(body.version_status).toBe('client_too_old');
     expect(body.worker_protocol_version).toBe(3);
     expect(body.worker_min_client_version).toBe(2);
     expect(body.daemon_protocol_version).toBeGreaterThan(0);
+    // Worker at protocol 3 serves every synced table — nothing gated.
+    expect(body.reconcile_gated_tables).toEqual([]);
+  });
+
+  it('surfaces reconcile_gated_tables when the worker predates newer synced tables', async () => {
+    const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+    const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
+    const { teamRegistry } = await import('../../../packages/myco/src/team/registry.js');
+    const { createTeamId, createProjectId } = await import('../../../packages/myco/src/grove/ids.js');
+    const { resolveGroveDir } = await import('../../../packages/myco/src/grove/paths.js');
+
+    const mycoHome = process.env.MYCO_HOME!;
+    const grove = createGrove('Partial Skew Grove', mycoHome);
+    const projectId = createProjectId();
+    const teamId = createTeamId();
+    teamRegistry.save({
+      team_id: teamId,
+      name: 'Partial Skew Team',
+      worker_url: 'https://myco-team-test.example.workers.dev',
+      domain: null,
+      mcp_endpoint: null,
+      created_at: new Date().toISOString(),
+      projects: [{ grove_id: grove.id, project_id: projectId }],
+    });
+    const groveDir = resolveGroveDir(grove.id, mycoHome);
+    fs.mkdirSync(groveDir, { recursive: true });
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'test-api-key');
+
+    // The partial-degradation middle state: the worker ACCEPTS this client
+    // (sync not paused) but its deployment predates the protocol-3 tables,
+    // so reconcile skips them. The status payload must disclose exactly
+    // which tables — from the same helper the reconcile gate uses.
+    const handlers = createTeamHandlers({
+      vaultDir,
+      machineId: 'machine-test',
+      globalPrefix: null,
+      logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined },
+      getTeamClient: () => ({
+        health: async () => ({
+          status: 'ok',
+          node_count: 1,
+          sync_protocol_version: 2,
+          min_compat_client_version: 1,
+        }),
+        getCollectiveStatus: async () => ({
+          connected: false, collective_url: null, project_id: null,
+          last_settings_sync: null, last_heartbeat: null, capabilities: [], settings: {},
+        }),
+        getConfig: async () => ({ config: {}, sync_protocol_version: 2 }),
+        getVersionCompat: () => 'ok',
+        getWorkerProtocolVersion: () => 2,
+        getWorkerMinClientVersion: () => 1,
+        getMcpToken: () => null,
+        getMcpEndpoint: () => null,
+      }) as never,
+    });
+
+    const response = await handlers.handleStatus({
+      requestContext: {
+        projectRoot: path.join(tempDir, 'project'),
+        projectVaultDir: vaultDir,
+        projectId,
+        groveId: grove.id,
+        machineId: 'machine-test',
+        sessionId: null,
+        databasePath: path.join(mycoHome, 'groves', grove.id, 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
+    const body = response.body as {
+      version_status: string;
+      reconcile_gated_tables: string[];
+    };
+
+    expect(body.version_status).toBe('ok');
+    expect(new Set(body.reconcile_gated_tables)).toEqual(
+      new Set(['skill_lineage', 'okf_generations', 'okf_pages', 'okf_page_revisions']),
+    );
   });
 
   it('reports enabled=false when the Grove participates in no team (registry gate)', async () => {

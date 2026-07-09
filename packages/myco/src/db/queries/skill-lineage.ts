@@ -11,6 +11,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 
@@ -130,8 +131,9 @@ export function insertLineage(data: LineageInsert): LineageRow {
 }
 
 /**
- * List all lineage entries for a skill, ordered by generation DESC
- * (newest generation first).
+ * List all lineage entries for a skill, newest generation first. The
+ * created_at/id tiebreakers keep the order deterministic when team sync
+ * lands two rows with the same generation from different machines.
  */
 export function listLineageForSkill(
   skillId: string,
@@ -147,9 +149,28 @@ export function listLineageForSkill(
     `SELECT ${SELECT_COLUMNS}
      FROM skill_lineage
      WHERE ${conditions.join(' AND ')}
-     ORDER BY generation DESC
+     ORDER BY generation DESC, created_at DESC, id DESC
      LIMIT ?`,
   ).all(...params, limit) as Record<string, unknown>[];
 
   return rows.map(toLineageRow);
+}
+
+/**
+ * Canonical published content for a skill: the latest lineage snapshot.
+ *
+ * Lineage is the source of truth for skill content (`skill_records` carries
+ * only metadata + path; the on-disk SKILL.md is a materialization). The read
+ * is deliberately unscoped: `skill_id` is a UUID foreign key to a record the
+ * caller already fetched under its own tenancy scope, and lineage
+ * `project_id` is denormalized routing metadata that legacy backfills can
+ * leave NULL — a project filter here can only hide this skill's own history.
+ *
+ * Returns null when the skill has no lineage rows or the latest snapshot is
+ * empty (callers fall back to the published file for those).
+ */
+export function getPublishedSkillContent(record: { id: string }): string | null {
+  const rows = listLineageForSkill(record.id, ALL_PROJECTS_SCOPE, 1);
+  const snapshot = rows[0]?.content_snapshot;
+  return snapshot ? snapshot : null;
 }
