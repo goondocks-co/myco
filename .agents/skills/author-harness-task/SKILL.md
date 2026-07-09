@@ -230,8 +230,10 @@ Every phase execution writes to `agent_runs`:
 | Column | What it tells you |
 |--------|-------------------|
 | `exit_reason` | `budget_exhausted` / `short_circuit` / `complete` / `error` |
-| `turn_count` | LLM turns used |
+| `turn_count` | LLM turns used — for tool-heavy phases this counts API requests, not SDK turns; `actions_taken.phases[].turnsUsed` can legitimately show 21 for a 10-turn-cap phase |
 | `tool_output_summary` | Concatenated tool outputs (truncated) |
+
+For failed runs, `agent_turns.tool_input` is a fully recoverable audit trail — use it to reconstruct exactly which tool calls a phase made even when `tool_output_summary` is truncated.
 
 ### Silent failure patterns
 
@@ -240,6 +242,14 @@ Every phase execution writes to `agent_runs`:
 | `exit_reason = 'complete'` but no state change | Sentinel triggered incorrectly |
 | `turn_count = 1`, empty `tool_output_summary` | Malformed prompt or injected context |
 | Task never appears in `agent_runs` | TaskDefinition export malformed |
+
+### Postcondition gates vs. clean exit
+
+A clean `exit_reason = 'complete'` only proves the model didn't error — it does not prove the model made the load-bearing tool call. Deterministic postcondition gates (asserting a specific write occurred) catch silent-completion failures that exit-reason monitoring alone misses. A single postcondition failure can be noise; a **cluster** of postcondition failures across runs signals a prompt regression, not a one-off fluke.
+
+### STOP after terminal tool call
+
+Phases with a single terminal tool (e.g., `write_plan`, `vault_report`) need an explicit "STOP once the tool returns ok" instruction in the system prompt. Without it, the model burns remaining turn budget re-verifying an already-successful write instead of exiting cleanly.
 
 ## Procedure 8: Advanced Harness Integration
 
@@ -317,7 +327,7 @@ This prevents inconsistent or divergent behavior across the delegation hierarchy
 
 1. **Scan for installed agents**: Check agent-specific hook configurations in `.myco/`
 2. **Validate hook implementations**: Check that hook files exist and are executable
-3. **Cross-platform deployment**: Use `join(resolveMycoHome(), 'launcher.cjs')` for the cross-platform hook guard (`.agents/myco-run.cjs` is a retired project-local path)
+3. **Cross-platform deployment**: Use `join(resolveMycoHome(), 'launcher.cjs')` for the cross-platform hook guard (`.agents/myco-run.cjs` was retired by the global-install migration)
 4. **Transport protocol setup**: Configure capture channels based on agent type
 5. **Scope validation**: Ensure captured content belongs to current project
 6. **Permission checks**: Verify agent has capture rights for target files/directories
@@ -363,6 +373,6 @@ This prevents inconsistent or divergent behavior across the delegation hierarchy
 - **Session state consistency** → Always validate session status before operations — intelligence tasks must gate on session-terminal state (completed/processed) as active sessions produce stale artifacts.
 - **Cortex instructions requirement** → Lead agent MUST call `myco_cortex({op:"instructions"})` before delegating to sub-agents — delegation without instructions causes sub-agents to operate with inconsistent scope.
 - **Cortex injection uniformity** → All task phases must receive cortex context via unified injection path. Tasks that bypass cortex context propagation or re-acquire it per-phase introduce inconsistency.
-- **Cross-platform hook deployment** → The cross-platform hook guard is `join(resolveMycoHome(), 'launcher.cjs')` (exported from `packages/myco/src/grove/paths.ts`). The old `.agents/myco-run.cjs` project-local path is retired. MCP children inherit `cwd=/` from some agents — use `resolveVaultDir()` with `MYCO_VAULT_DIR` fallback.
+- **Cross-platform hook deployment** → The cross-platform hook guard is `join(resolveMycoHome(), 'launcher.cjs')` (exported from `packages/myco/src/grove/paths.ts`). The old `.agents/myco-run.cjs` project-local path was retired by the global-install migration. MCP children inherit `cwd=/` from some agents — use `resolveVaultDir()` with `MYCO_VAULT_DIR` fallback.
 - **Runtime resource management** → Agent harness execution consumes resources — implement proper cleanup. Concurrent sessions must coordinate vault database access to prevent corruption.
 - **Cortex injection is capability-gated at two levels**: A task that depends on cortex context must verify two conditions before assuming injection happened: (1) `capabilityEnabled(config, 'cortex')` from `packages/myco/src/config/capabilities.ts` returns true — the gate is fail-closed (null config → false) and reads the `cortex` capability's masterGate config leaf; (2) the relevant injection flag in the `cortex.instructions` config block — either `inject_on_session_start` or `inject_on_subagent_start` — is enabled. Both must be true. A task that assumes cortex context exists will silently operate without it when the capability is disabled or the injection flags are off.
