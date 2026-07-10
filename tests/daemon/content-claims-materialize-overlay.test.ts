@@ -38,7 +38,7 @@ import { defaultDial } from '@myco/daemon/host-proxy.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
-import { insertContentClaim } from '@myco/db/queries/content-claims.js';
+import { insertContentClaim, upsertContentPublication } from '@myco/db/queries/content-claims.js';
 import { getOkfPageRevisionAtGeneration } from '@myco/db/queries/okf.js';
 import { getDatabase, initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@myco/grove/registry.js';
@@ -208,6 +208,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       cache: hostCache,
       dial: defaultDial,
       logger: noopProxyLogger,
+      machineId: 'host-machine',
       mycoHome,
     });
     await hostServer.start(0);
@@ -246,6 +247,12 @@ describe('content claim materialize over the Team Host overlay', () => {
       cache: memberCache,
       dial: defaultDial,
       logger: noopProxyLogger,
+      // Matches `claimedBy` on both fixture claims above: the auto-close
+      // mark-published dial stamps this as the member's own machine id
+      // (`REQUEST_CONTEXT_HEADERS.machineId`), and the host's holder gate
+      // (`content-claims.ts`'s `loadActiveHeldClaim`) requires it to equal
+      // `claim.claimed_by`.
+      machineId: 'attached-member-machine',
       mycoHome,
     });
     await memberServer.start(0);
@@ -276,8 +283,8 @@ describe('content claim materialize over the Team Host overlay', () => {
       body: JSON.stringify({ project_root: memberProjectRoot }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; skill_name: string; generation: number };
-    expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1 });
+    const body = await res.json() as { ok: boolean; skill_name: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1, auto_published: false });
 
     const written = fs.readFileSync(
       path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR, 'skill-1', 'SKILL.md'),
@@ -289,13 +296,57 @@ describe('content claim materialize over the Team Host overlay', () => {
     // Grove DB, not the member's working tree (B1).
     expect(fs.existsSync(path.join(hostProjectRoot, CANONICAL_PROJECT_SKILLS_DIR))).toBe(false);
 
-    // The claim on the host's Grove DB is still `active` — materialize does
-    // not itself transition the claim; the holder marks it published after
-    // committing (a separate, later step, out of this task's scope).
+    // No prior publication row exists for this artifact, so this is a
+    // first-time publish, not a republish — the claim on the host's Grove DB
+    // stays `active` for the manual Mark-published flow (Task 1.4's
+    // republish auto-close is covered by the test below).
     const row = getDatabase().prepare(
       `SELECT state FROM content_claims WHERE id = ?`,
     ).get(claimId) as { state: string } | undefined;
     expect(row?.state).toBe('active');
+  });
+
+  test('member republishes a same-generation claim — auto-closes through the proxied mark-published call', async () => {
+    const priorPublishedAt = Math.floor(Date.now() / 1000) - 3600;
+    upsertContentPublication({
+      artifact_kind: 'skill',
+      artifact_id: 'skill-1',
+      published_generation: 1, // matches the fixture claim's own generation — a republish
+      published_at: priorPublishedAt,
+      published_by: 'attached-member-machine',
+      machine_id: 'attached-member-machine',
+    });
+
+    const res = await fetch(`${memberBase}/api/content-claims/${claimId}/materialize`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project_root: memberProjectRoot }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; skill_name: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1, auto_published: true });
+
+    // The republished content still lands on the member's tree exactly as a
+    // normal materialize would.
+    const written = fs.readFileSync(
+      path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR, 'skill-1', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(written).toBe(CONTENT);
+
+    // The member dialed the host's OWN `POST /api/content-claims/:id/published`
+    // through the real overlay — the close landed on the host's Grove DB.
+    const claimRow = getDatabase().prepare(
+      `SELECT state, published_at FROM content_claims WHERE id = ?`,
+    ).get(claimId) as { state: string; published_at: number } | undefined;
+    expect(claimRow?.state).toBe('published');
+    expect(claimRow?.published_at).toBeGreaterThan(priorPublishedAt);
+
+    const pubRow = getDatabase().prepare(
+      `SELECT published_generation, published_at FROM content_publications WHERE artifact_kind = 'skill' AND artifact_id = 'skill-1'`,
+    ).get() as { published_generation: number; published_at: number } | undefined;
+    expect(pubRow?.published_generation).toBe(1);
+    expect(pubRow?.published_at).toBeGreaterThan(priorPublishedAt);
   });
 
   test('member materializes an attached okf_page claim by dialing the host directly — byte-faithful, lands on the MEMBER tree only', async () => {

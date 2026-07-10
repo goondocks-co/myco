@@ -38,8 +38,18 @@
  * (mirroring `attached-config.ts`'s `fetchHostGroveConfig`) rather than
  * proxying the whole request — the member needs the claim state and content
  * snapshot as data to decide whether to write, not a relayed response body.
- * One `dialHostJson` transport backs every remote read below (skill content,
- * OKF content) — a second one must never be added.
+ * One `dialHostJson` transport backs every remote call below (skill content,
+ * OKF content, and the republish auto-close's mark-published POST) — a
+ * second one must never be added.
+ *
+ * Republish auto-close (spec §2(c)): after a successful write, if the
+ * claim's own generation equals the artifact's already-recorded
+ * `published_generation`, the write IS a republish of already-published
+ * content (e.g. the published file was deleted from disk/git and the user
+ * re-claimed at the same, unchanged generation) — the claim closes in the
+ * same request rather than dangling as an invisible lock. A first-time
+ * publish or a materialize at a newer generation leaves the claim `active`
+ * for the existing manual Mark-published flow.
  *
  * Two artifact kinds write through the SAME orchestration (spec §0: "one
  * mechanism, unified across skills + OKF + kin"): `skill` runs the two
@@ -59,10 +69,15 @@ import {
   HOST_PROXY_CONNECT_TIMEOUT_MS,
   HOST_PROXY_HEADERS_TIMEOUT_MS,
   HOST_PROXY_MAX_BUFFERED_BODY_BYTES,
+  epochSeconds,
 } from '@myco/constants.js';
 import { loadMergedConfig, loadAttachedMergedConfig } from '@myco/config/loader.js';
 import { withDatabase, type Database } from '@myco/db/client.js';
-import { getContentClaimById } from '@myco/db/queries/content-claims.js';
+import {
+  getContentClaimById,
+  getContentPublication,
+  markContentClaimPublished,
+} from '@myco/db/queries/content-claims.js';
 import { getSkillContentAtGeneration } from '@myco/db/queries/skill-lineage.js';
 import { getSkillRecord } from '@myco/db/queries/skill-records.js';
 import { getOkfPageById, getOkfPageRevisionAtGeneration } from '@myco/db/queries/okf.js';
@@ -114,9 +129,26 @@ export interface ClaimSource {
   getActiveClaim(claimId: string): Promise<ResolvedClaim | null>;
   getSkillContent(artifactId: string, generation: number): Promise<SkillContent | null>;
   getOkfPageContent(artifactId: string, generation: number): Promise<OkfPageContent | null>;
+  /** The durable `published_generation` already on record for this artifact,
+   *  or null if it has never been published. Read AFTER a successful write to
+   *  decide republish auto-close (spec §2(c)): never throws — a resolution
+   *  failure degrades to null (no auto-close) rather than failing the write
+   *  that already landed. */
+  getPublishedGeneration(artifactKind: string, artifactId: string): Promise<number | null>;
+  /** Marks the claim published through the branch's pinned close path
+   *  (local: `markContentClaimPublished`; attached: the host's `POST
+   *  /api/content-claims/:id/published`). Returns true on success, false on
+   *  any failure — never throws, so a bookkeeping failure after a successful
+   *  disk write never turns into a failed materialize response. */
+  markPublished(claimId: string): Promise<boolean>;
 }
 
-function localClaimSource(db: Database, scope: ProjectScope): ClaimSource {
+function localClaimSource(
+  db: Database,
+  scope: ProjectScope,
+  machineId: string,
+  logger: ProxyLogger,
+): ClaimSource {
   return {
     async getActiveClaim(claimId) {
       return withDatabase(db, () => {
@@ -146,6 +178,36 @@ function localClaimSource(db: Database, scope: ProjectScope): ClaimSource {
         return revision ? { path: page.path, frontmatter: revision.frontmatter, body: revision.body } : null;
       });
     },
+    async getPublishedGeneration(artifactKind, artifactId) {
+      try {
+        return withDatabase(db, () => getContentPublication(artifactKind, artifactId)?.published_generation ?? null);
+      } catch (err) {
+        logger.warn('materialize: local publication-row read failed during auto-close check', {
+          artifact_kind: artifactKind,
+          artifact_id: artifactId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return null;
+      }
+    },
+    async markPublished(claimId) {
+      try {
+        return withDatabase(db, () => {
+          const result = markContentClaimPublished(claimId, {
+            publishedAt: epochSeconds(),
+            publishedBy: machineId,
+            machineId,
+          });
+          return result !== null;
+        });
+      } catch (err) {
+        logger.warn('materialize: local mark-published call failed during auto-close', {
+          claim_id: claimId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return false;
+      }
+    },
   };
 }
 
@@ -156,6 +218,15 @@ interface ContentClaimsListBody {
     artifact_id: string;
     generation: number;
     state: string;
+  }>;
+  /** The inventory's already-published-at-latest artifacts (Task 1.2). Reused
+   *  here, from the SAME dial `getActiveClaim` already makes, as the attached
+   *  branch's publication read for the republish auto-close check — no second
+   *  host surface. */
+  published?: Array<{
+    artifact_kind: string;
+    artifact_id: string;
+    published_generation: number;
   }>;
 }
 
@@ -170,17 +241,25 @@ interface OkfPageRevisionsBody {
 }
 
 /**
- * One-shot GET against the host over the overlay, returning the parsed JSON
- * body alongside the status code — or null on any transport failure
+ * One-shot request against the host over the overlay, returning the parsed
+ * JSON body alongside the status code — or null on any transport failure
  * (unreachable, timeout, oversized, unparseable). Deliberately does not
  * special-case non-2xx: callers need to see a 404 body (e.g. a deleted skill
  * record) to render the right materialize failure, not have it degrade
  * silently the way a config read (which always has a sane default) does.
+ *
+ * Defaults to GET with no body; a caller doing the republish auto-close's
+ * mark-published call passes `method: 'POST'` and, when the target route
+ * needs one, `body` (JSON-serialized and given a `content-length`/
+ * `content-type` so the host's mutating-body CSRF gate accepts it) and
+ * `machineId` (stamped as `REQUEST_CONTEXT_HEADERS.machineId` so the host
+ * attributes the write to the calling member, not itself).
  */
 function dialHostJson<T>(
   target: RemoteTarget,
   pathname: string,
   dial: Dialer,
+  options: { method?: string; body?: unknown; machineId?: string } = {},
 ): Promise<{ status: number; body: T } | null> {
   return new Promise((resolve) => {
     let settled = false;
@@ -190,17 +269,24 @@ function dialHostJson<T>(
       resolve(value);
     };
 
+    const method = options.method ?? 'GET';
+    const bodyBytes = options.body !== undefined ? Buffer.from(JSON.stringify(options.body), 'utf-8') : null;
+
     let dialed: http.ClientRequest | Promise<http.ClientRequest>;
     try {
       dialed = dial(target, {
-        method: 'GET',
+        method,
         path: pathname,
         headers: {
           authorization: `Bearer ${target.bearer}`,
           [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
           [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
           [REQUEST_CONTEXT_HEADERS.projectId]: target.projectId,
+          ...(options.machineId ? { [REQUEST_CONTEXT_HEADERS.machineId]: options.machineId } : {}),
           accept: 'application/json',
+          ...(bodyBytes
+            ? { 'content-type': 'application/json', 'content-length': String(bodyBytes.length) }
+            : {}),
         },
       });
     } catch {
@@ -237,12 +323,21 @@ function dialHostJson<T>(
           }
         });
       });
+      if (bodyBytes) proxyReq.write(bodyBytes);
       proxyReq.end();
     }).catch(() => done(null));
   });
 }
 
-function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogger): ClaimSource {
+function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogger, machineId: string): ClaimSource {
+  // Populated by every `getActiveClaim` dial from that SAME response's
+  // `published[]` array — the republish auto-close check below reads this
+  // cache instead of issuing a second `/api/content-claims` dial ("one dial
+  // covers claim state and publication row"). `getActiveClaim` runs at least
+  // once, and immediately before the write (spec §4 step 3), before the
+  // auto-close check ever runs, so the cache is always fresh by then.
+  let lastPublicationByKey: Map<string, number> | null = null;
+
   return {
     async getActiveClaim(claimId) {
       const result = await dialHostJson<ContentClaimsListBody>(target, '/api/content-claims', dial);
@@ -251,9 +346,16 @@ function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogg
           host_id: target.host.host_id,
           claim_id: claimId,
         });
+        lastPublicationByKey = null;
         return null;
       }
-      if (result.status !== 200) return null;
+      if (result.status !== 200) {
+        lastPublicationByKey = null;
+        return null;
+      }
+      lastPublicationByKey = new Map(
+        (result.body.published ?? []).map((p) => [`${p.artifact_kind}:${p.artifact_id}`, p.published_generation]),
+      );
       const claim = result.body.active_claims?.find((c) => c.id === claimId);
       if (!claim || claim.state !== 'active') return null;
       return {
@@ -297,6 +399,26 @@ function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogg
       const revision = result.body.revisions?.find((r) => r.page_generation === generation);
       return revision ? { path: result.body.path, frontmatter: revision.frontmatter, body: revision.body } : null;
     },
+    async getPublishedGeneration(artifactKind, artifactId) {
+      return lastPublicationByKey?.get(`${artifactKind}:${artifactId}`) ?? null;
+    },
+    async markPublished(claimId) {
+      const result = await dialHostJson<{ ok: boolean }>(
+        target,
+        `/api/content-claims/${encodeURIComponent(claimId)}/published`,
+        dial,
+        { method: 'POST', machineId },
+      );
+      if (!result || result.status !== 200) {
+        logger.warn('materialize: host mark-published dial failed during auto-close', {
+          host_id: target.host.host_id,
+          claim_id: claimId,
+          status: result?.status ?? null,
+        });
+        return false;
+      }
+      return true;
+    },
   };
 }
 
@@ -315,10 +437,57 @@ type MaterializeFailureCode =
   | 'scan_blocked';
 
 export type MaterializeOutcome =
-  | { ok: true; artifactKind: 'skill'; path: string; skillName: string; generation: number }
-  | { ok: true; artifactKind: 'okf_page'; path: string; pagePath: string; generation: number }
+  | { ok: true; artifactKind: 'skill'; path: string; skillName: string; generation: number; autoPublished: boolean }
+  | { ok: true; artifactKind: 'okf_page'; path: string; pagePath: string; generation: number; autoPublished: boolean }
   | { ok: false; code: Exclude<MaterializeFailureCode, 'scan_blocked'> }
   | { ok: false; code: 'scan_blocked'; findings: PublishFinding[] };
+
+/**
+ * Republish auto-close (spec §2(c)): after a successful write, close the
+ * claim through the branch's pinned mark-published path when the claim's own
+ * generation matches the artifact's already-recorded `published_generation`
+ * — this write republished already-published content unchanged. Never
+ * throws and never turns a bookkeeping failure into a failed materialize
+ * response (Step 2's failure posture): any exception or a `markPublished`
+ * false is logged as a warn and degrades to `autoPublished: false`, leaving
+ * the claim `active` for the pre-existing manual Mark-published flow or TTL
+ * expiry to close it instead.
+ */
+async function attemptAutoClose(
+  source: ClaimSource,
+  logger: ProxyLogger,
+  claimId: string,
+  artifactKind: string,
+  artifactId: string,
+  generation: number,
+): Promise<boolean> {
+  try {
+    const publishedGeneration = await source.getPublishedGeneration(artifactKind, artifactId);
+    if (publishedGeneration !== generation) return false;
+    const closed = await source.markPublished(claimId);
+    if (!closed) {
+      logger.warn(
+        'materialize: same-generation republish wrote to disk but the auto-close mark-published call failed; '
+        + 'the claim stays active for the manual Mark-published flow or TTL expiry',
+        { claim_id: claimId, artifact_kind: artifactKind, artifact_id: artifactId, generation },
+      );
+    }
+    return closed;
+  } catch (err) {
+    logger.warn(
+      'materialize: same-generation republish wrote to disk but the auto-close check threw; '
+      + 'the claim stays active for the manual Mark-published flow or TTL expiry',
+      {
+        claim_id: claimId,
+        artifact_kind: artifactKind,
+        artifact_id: artifactId,
+        generation,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    return false;
+  }
+}
 
 /**
  * Resolve the member's published-wiki root for an OKF write:
@@ -366,6 +535,11 @@ async function resolveOkfPublishedRoot(
  * `resolveOkfPublishedRoot` is lazy (called only for an `okf_page` claim) so
  * a skill materialize never pays for a config read it doesn't need.
  *
+ * After a successful write, {@link attemptAutoClose} runs the republish
+ * auto-close check for both artifact kinds — the disk write is already
+ * committed by that point, so its result never changes whether this function
+ * returns `ok: true`, only the `autoPublished` flag carried on it.
+ *
  * Exported as a test seam alongside {@link ClaimSource}.
  */
 export async function materializeContentClaim(
@@ -373,6 +547,7 @@ export async function materializeContentClaim(
   currentRoot: string,
   source: ClaimSource,
   resolveOkfPublishedRootFn: () => Promise<string>,
+  logger: ProxyLogger,
 ): Promise<MaterializeOutcome> {
   const initial = await source.getActiveClaim(claimId);
   if (!initial) return { ok: false, code: 'claim_not_active' };
@@ -389,12 +564,21 @@ export async function materializeContentClaim(
       return { ok: false, code: written.reason === 'unsafe_name' ? 'unsafe_skill_name' : 'path_escape' };
     }
     syncPublishedSkillSymlinks(currentRoot, content.name);
+    const autoPublished = await attemptAutoClose(
+      source,
+      logger,
+      claimId,
+      initial.artifactKind,
+      initial.artifactId,
+      initial.generation,
+    );
     return {
       ok: true,
       artifactKind: 'skill',
       path: written.paths.skillPath,
       skillName: content.name,
       generation: initial.generation,
+      autoPublished,
     };
   }
 
@@ -412,12 +596,21 @@ export async function materializeContentClaim(
         ? { ok: false, code: 'scan_blocked', findings: written.findings }
         : { ok: false, code: written.reason };
     }
+    const autoPublished = await attemptAutoClose(
+      source,
+      logger,
+      claimId,
+      initial.artifactKind,
+      initial.artifactId,
+      initial.generation,
+    );
     return {
       ok: true,
       artifactKind: 'okf_page',
       path: written.absolutePath,
       pagePath: written.relativePath,
       generation: initial.generation,
+      autoPublished,
     };
   }
 
@@ -429,11 +622,23 @@ function responseForOutcome(outcome: MaterializeOutcome): RouteResponse {
     return outcome.artifactKind === 'skill'
       ? {
           status: 200,
-          body: { ok: true, path: outcome.path, skill_name: outcome.skillName, generation: outcome.generation },
+          body: {
+            ok: true,
+            path: outcome.path,
+            skill_name: outcome.skillName,
+            generation: outcome.generation,
+            auto_published: outcome.autoPublished,
+          },
         }
       : {
           status: 200,
-          body: { ok: true, path: outcome.path, page_path: outcome.pagePath, generation: outcome.generation },
+          body: {
+            ok: true,
+            path: outcome.path,
+            page_path: outcome.pagePath,
+            generation: outcome.generation,
+            auto_published: outcome.autoPublished,
+          },
         };
   }
   switch (outcome.code) {
@@ -494,6 +699,12 @@ export interface ContentClaimMaterializeDeps {
   cache: GroveRuntimeCache;
   dial: Dialer;
   logger: ProxyLogger;
+  /** This daemon's own machine id — the identity stamped on a local
+   *  mark-published call (`publishedBy`/`machineId`) and sent as
+   *  `REQUEST_CONTEXT_HEADERS.machineId` on the attached branch's
+   *  mark-published dial, so the host's holder gate attributes the
+   *  republish auto-close to the calling member, not itself. */
+  machineId: string;
   mycoHome?: string;
 }
 
@@ -520,17 +731,23 @@ export function createContentClaimMaterializeHandler(deps: ContentClaimMateriali
       } catch {
         return { status: 404, body: errorBody('project_not_registered', `Malformed project id ${projectId}`) };
       }
-      const source = remoteClaimSource(target, deps.dial, deps.logger);
-      const outcome = await materializeContentClaim(claimId, currentRoot, source, () =>
-        resolveOkfPublishedRoot(
-          currentRoot,
-          () =>
-            loadAttachedMergedConfig(resolveProjectVaultDir(currentRoot), {
-              mycoHome: deps.mycoHome,
-              fetchGroveDoc: async () => (await fetchHostGroveConfig(target, deps.dial, deps.logger)).doc,
-            }),
-          deps.logger,
-        ));
+      const source = remoteClaimSource(target, deps.dial, deps.logger, deps.machineId);
+      const outcome = await materializeContentClaim(
+        claimId,
+        currentRoot,
+        source,
+        () =>
+          resolveOkfPublishedRoot(
+            currentRoot,
+            () =>
+              loadAttachedMergedConfig(resolveProjectVaultDir(currentRoot), {
+                mycoHome: deps.mycoHome,
+                fetchGroveDoc: async () => (await fetchHostGroveConfig(target, deps.dial, deps.logger)).doc,
+              }),
+            deps.logger,
+          ),
+        deps.logger,
+      );
       return responseForOutcome(outcome);
     }
 
@@ -542,18 +759,24 @@ export function createContentClaimMaterializeHandler(deps: ContentClaimMateriali
     } catch {
       return { status: 404, body: errorBody('project_not_registered', `Malformed project id ${projectId}`) };
     }
-    const source = localClaimSource(db, scope);
-    const outcome = await materializeContentClaim(claimId, currentRoot, source, () =>
-      resolveOkfPublishedRoot(
-        currentRoot,
-        async () =>
-          loadMergedConfig(resolveProjectVaultDir(currentRoot), {
-            groveId: registered.grove.id,
-            mycoHome: deps.mycoHome,
-            projectTierOptional: true,
-          }),
-        deps.logger,
-      ));
+    const source = localClaimSource(db, scope, deps.machineId, deps.logger);
+    const outcome = await materializeContentClaim(
+      claimId,
+      currentRoot,
+      source,
+      () =>
+        resolveOkfPublishedRoot(
+          currentRoot,
+          async () =>
+            loadMergedConfig(resolveProjectVaultDir(currentRoot), {
+              groveId: registered.grove.id,
+              mycoHome: deps.mycoHome,
+              projectTierOptional: true,
+            }),
+          deps.logger,
+        ),
+      deps.logger,
+    );
     return responseForOutcome(outcome);
   };
 }

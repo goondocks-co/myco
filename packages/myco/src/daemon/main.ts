@@ -1524,6 +1524,7 @@ export async function main(): Promise<void> {
     cache: runtimeCache,
     dial: defaultDial,
     logger: proxyLoggerFrom(logger, LOG_KINDS.CONTENT_CLAIM_MATERIALIZE),
+    machineId,
     mycoHome,
   });
   registerContentClaimFileStatusRoute(server, {

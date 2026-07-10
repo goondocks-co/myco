@@ -17,11 +17,18 @@ import {
   materializeContentClaim,
   type ClaimSource,
 } from '@myco/daemon/api/content-claims-materialize.js';
+import type { ProxyLogger } from '@myco/daemon/host-proxy.js';
 import { withDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
-import { insertContentClaim, releaseContentClaim } from '@myco/db/queries/content-claims.js';
+import {
+  insertContentClaim,
+  releaseContentClaim,
+  getContentClaimById,
+  getContentPublication,
+  upsertContentPublication,
+} from '@myco/db/queries/content-claims.js';
 import { getOkfPageRevisionAtGeneration } from '@myco/db/queries/okf.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
@@ -106,6 +113,7 @@ describe('content claim materialize — local project', () => {
       cache,
       dial: (() => { throw new Error('dial must not be called for a local (non-attached) project'); }) as never,
       logger: noopProxyLogger,
+      machineId: 'daemon-machine',
       mycoHome,
     });
   }
@@ -154,7 +162,7 @@ describe('content claim materialize — local project', () => {
       if (!result.ok) throw new Error('test setup: unexpected already_claimed conflict');
       claimId = result.row.id;
     });
-    return { skillId, claimId, name, content };
+    return { skillId, claimId, name, content, generation };
   }
 
   function okfPlan(pagePath: string): WikiPlan {
@@ -240,14 +248,81 @@ describe('content claim materialize — local project', () => {
 
     const res = await handler()(req(claimId, projectRoot));
     expect(res.status).toBe(200);
-    const body = res.body as { ok: boolean; path: string; skill_name: string; generation: number };
-    expect(body).toMatchObject({ ok: true, skill_name: name, generation: 1 });
+    const body = res.body as { ok: boolean; path: string; skill_name: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, skill_name: name, generation: 1, auto_published: false });
 
     const writtenPath = path.join(projectRoot, CANONICAL_PROJECT_SKILLS_DIR, name, 'SKILL.md');
     expect(fs.readFileSync(writtenPath, 'utf-8')).toBe(content);
 
     const linkPath = path.join(projectRoot, '.claude', 'skills', name);
     expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
+
+    // First-time publish (no prior content_publications row): the manual
+    // Mark-published flow owns this, not the republish auto-close — the
+    // claim stays active.
+    const claimRow = withDatabase(cache.getDatabase(resolveGroveDbPath(groveId, mycoHome)), () =>
+      getContentClaimById(claimId, projectScope(projectId as GroveProjectId)));
+    expect(claimRow?.state).toBe('active');
+  });
+
+  test('a same-generation republish (claim generation matches the recorded publication) auto-closes the claim', async () => {
+    const { claimId, skillId, name, content } = seed({ generation: 1, claimedBy: 'machine-a' });
+    const db = cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
+    const priorPublishedAt = epochNow() - 3600;
+    withDatabase(db, () => {
+      upsertContentPublication({
+        artifact_kind: 'skill',
+        artifact_id: skillId,
+        published_generation: 1,
+        published_at: priorPublishedAt,
+        published_by: 'machine-a',
+        machine_id: 'machine-a',
+      });
+    });
+
+    const res = await handler()(req(claimId, projectRoot));
+    expect(res.status).toBe(200);
+    const body = res.body as { ok: boolean; skill_name: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, skill_name: name, generation: 1, auto_published: true });
+
+    // The republished content still lands on disk exactly as a normal
+    // materialize would — auto-close never substitutes for the write.
+    const writtenPath = path.join(projectRoot, CANONICAL_PROJECT_SKILLS_DIR, name, 'SKILL.md');
+    expect(fs.readFileSync(writtenPath, 'utf-8')).toBe(content);
+
+    const claimRow = withDatabase(db, () => getContentClaimById(claimId, projectScope(projectId as GroveProjectId)));
+    expect(claimRow?.state).toBe('published');
+
+    const publication = withDatabase(db, () => getContentPublication('skill', skillId));
+    expect(publication?.published_generation).toBe(1);
+    expect(publication?.published_at).toBeGreaterThan(priorPublishedAt);
+  });
+
+  test('a different-generation materialize (content evolved since the last publish) leaves the claim active, auto_published false', async () => {
+    const { claimId, skillId, generation: claimGeneration } = seed({ generation: 2 });
+    expect(claimGeneration).toBe(2);
+    const db = cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
+    withDatabase(db, () => {
+      upsertContentPublication({
+        artifact_kind: 'skill',
+        artifact_id: skillId,
+        published_generation: 1, // an OLDER generation than the claim being materialized now
+        published_at: epochNow() - 3600,
+        published_by: 'machine-a',
+        machine_id: 'machine-a',
+      });
+    });
+
+    const res = await handler()(req(claimId, projectRoot));
+    expect(res.status).toBe(200);
+    const body = res.body as { ok: boolean; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, generation: 2, auto_published: false });
+
+    const claimRow = withDatabase(db, () => getContentClaimById(claimId, projectScope(projectId as GroveProjectId)));
+    expect(claimRow?.state).toBe('active');
+
+    const publication = withDatabase(db, () => getContentPublication('skill', skillId));
+    expect(publication?.published_generation).toBe(1); // unchanged — the manual flow owns this generation
   });
 
   test('a released (no longer active) claim -> 409 claim_not_active, nothing written', async () => {
@@ -407,6 +482,16 @@ async function unusedOkfPublishedRoot(): Promise<never> {
   throw new Error('resolveOkfPublishedRootFn must not be called for a skill claim');
 }
 
+/** The re-assert race tests below never reach a successful write, so the
+ *  post-write auto-close check never runs — these stubs prove it by throwing
+ *  if the orchestration ever calls them in those tests. */
+async function unusedGetPublishedGeneration(): Promise<never> {
+  throw new Error('getPublishedGeneration must not be called when the write never lands');
+}
+async function unusedMarkPublished(): Promise<never> {
+  throw new Error('markPublished must not be called when the write never lands');
+}
+
 describe('materializeContentClaim orchestration — the re-assert race', () => {
   let tmp: string;
 
@@ -433,9 +518,11 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
         return { name: 'race-skill', content: '# race\n' };
       },
       getOkfPageContent: unusedOkfPageContent,
+      getPublishedGeneration: unusedGetPublishedGeneration,
+      markPublished: unusedMarkPublished,
     };
 
-    const outcome = await materializeContentClaim('cclaim_race', tmp, source, unusedOkfPublishedRoot);
+    const outcome = await materializeContentClaim('cclaim_race', tmp, source, unusedOkfPublishedRoot, noopProxyLogger);
     expect(outcome).toEqual({ ok: false, code: 'claim_no_longer_active' });
     expect(calls).toBe(2);
     expect(fs.existsSync(path.join(tmp, CANONICAL_PROJECT_SKILLS_DIR, 'race-skill'))).toBe(false);
@@ -447,9 +534,11 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
       async getActiveClaim() { return null; },
       async getSkillContent() { contentFetched = true; return { name: 'x', content: 'x' }; },
       getOkfPageContent: unusedOkfPageContent,
+      getPublishedGeneration: unusedGetPublishedGeneration,
+      markPublished: unusedMarkPublished,
     };
 
-    const outcome = await materializeContentClaim('cclaim_stale', tmp, source, unusedOkfPublishedRoot);
+    const outcome = await materializeContentClaim('cclaim_stale', tmp, source, unusedOkfPublishedRoot, noopProxyLogger);
     expect(outcome).toEqual({ ok: false, code: 'claim_not_active' });
     expect(contentFetched).toBe(false);
   });
@@ -468,12 +557,44 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
         contentFetched = true;
         return { path: 'race.md', frontmatter: JSON.stringify({ type: 'note', title: 't', description: 'd', timestamp: '2026-01-01T00:00:00Z' }), body: 'race body' };
       },
+      getPublishedGeneration: unusedGetPublishedGeneration,
+      markPublished: unusedMarkPublished,
     };
 
-    const outcome = await materializeContentClaim('cclaim_okf_race', tmp, source, async () => tmp);
+    const outcome = await materializeContentClaim('cclaim_okf_race', tmp, source, async () => tmp, noopProxyLogger);
     expect(outcome).toEqual({ ok: false, code: 'claim_no_longer_active' });
     expect(calls).toBe(2);
     expect(contentFetched).toBe(true); // content WAS fetched — the re-assert runs after, per spec §4 step 3
     expect(fs.existsSync(path.join(tmp, 'race.md'))).toBe(false);
+  });
+
+  test('a same-generation republish whose mark-published call fails still returns the write outcome with autoPublished:false, and logs a warn', async () => {
+    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+    const spyLogger: ProxyLogger = {
+      warn: (message, meta) => warnings.push({ message, meta }),
+      error() { /* unused */ },
+    };
+    const source: ClaimSource = {
+      async getActiveClaim(id) {
+        return { id, artifactKind: 'skill', artifactId: 'skill-fail-mark', generation: 1 };
+      },
+      async getSkillContent() {
+        return { name: 'fail-mark-skill', content: '# fail\n' };
+      },
+      getOkfPageContent: unusedOkfPageContent,
+      async getPublishedGeneration() { return 1; }, // matches claim.generation -> a same-generation republish
+      async markPublished() { return false; }, // simulated failure AFTER the disk write already landed
+    };
+
+    const outcome = await materializeContentClaim('cclaim_fail_mark', tmp, source, unusedOkfPublishedRoot, spyLogger);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.artifactKind === 'skill') {
+      expect(outcome.autoPublished).toBe(false);
+    }
+    // The write is the user-visible outcome — it lands regardless of the
+    // bookkeeping failure (spec's binding failure posture).
+    expect(fs.existsSync(path.join(tmp, CANONICAL_PROJECT_SKILLS_DIR, 'fail-mark-skill', 'SKILL.md'))).toBe(true);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0].message).toContain('auto-close');
   });
 });
