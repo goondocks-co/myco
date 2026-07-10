@@ -21,6 +21,7 @@
 import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { resolveTenantConfig } from './request-config.js';
@@ -178,7 +179,14 @@ function resolveCortexTenantConfig(
   logger: DaemonLogger,
 ): MycoConfig {
   const groveId = requestContext.groveId ?? null;
-  const fallback = loadMergedConfig(vaultDir, { groveId: null });
+  // The fallback resolves the SAME vault (null grove tier) — for a served
+  // project whose working tree lives on the member's machine, degrade to
+  // the machine tier (empty project tier) instead of throwing before the
+  // seam ever runs.
+  const fallback = loadMergedConfig(vaultDir, {
+    groveId: null,
+    projectTierOptional: !projectTreeAvailable(vaultDir),
+  });
   return resolveTenantConfig(
     { projectVaultDir: vaultDir, groveId },
     fallback,

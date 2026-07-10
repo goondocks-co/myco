@@ -9,6 +9,7 @@
  *   POST /api/okf/validate
  *   GET  /api/okf/pages                (list — wiki page heads)
  *   GET  /api/okf/pages/*              (get — prefix route, slash-safe paths)
+ *   GET  /api/okf/pages/by-id/:id      (get by okf_pages.id — revision history)
  *   POST /api/okf/concepts             (save — editorial authored-page surface)
  *   POST /api/okf/concepts/supersede
  */
@@ -32,7 +33,9 @@ import {
   latestOkfGeneration,
   latestRevisionForPage,
   listOkfPages,
+  listRevisionsForPage,
   getOkfPageByPath,
+  getOkfPageById,
 } from '@myco/db/queries/okf.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 
@@ -50,7 +53,16 @@ interface OkfContext {
 function contextFor(principal: RequestPrincipal): OkfContext {
   const vaultDir = principal.tenancy.projectVaultDir;
   const projectRoot = resolveProjectRoot(vaultDir);
-  const config = loadMergedConfig(vaultDir, { groveId: principal.tenancy.groveId });
+  // A Team Host serving this project for a member has no local working
+  // tree — the checkout lives on the member's machine. Degrade to
+  // machine+grove tiers (empty project tier) instead of throwing "myco.yaml
+  // not found", the same signal + mechanism `task-scheduling.ts` and
+  // `power-jobs.ts` use for the identical served-project shape.
+  const treeAvailable = fs.existsSync(projectRoot);
+  const config = loadMergedConfig(vaultDir, {
+    groveId: principal.tenancy.groveId,
+    projectTierOptional: !treeAvailable,
+  });
   const scope = projectScope(principal.tenancy.projectId as GroveProjectId);
   const store = new OkfStore({
     scope,
@@ -241,6 +253,27 @@ export async function handleOkfPagesList(_req: RouteRequest, principal: RequestP
   return { status: 200, body: { ok: true, pages } };
 }
 
+/**
+ * One wiki page's identity plus its full `page_generation` revision history,
+ * by `okf_pages.id` — a claim's `artifact_id` is this id, not the bundle
+ * path (`db/queries/okf.ts`'s `getOkfPageById` doc comment). This is the
+ * content-claim materialize path's remote content-fetch surface for a
+ * pinned generation (design §4): an attached member dials this route and
+ * picks the claimed generation out of `revisions` client-side, the same
+ * shape `GET /api/skill-records/:id`'s `lineage` array gives skills.
+ */
+export async function handleOkfPageRevisionsById(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
+  const ctx = contextFor(principal);
+  const page = getOkfPageById(ctx.scope, req.params.id);
+  if (!page) return { status: 404, body: errorBody('not_found', `Not found: ${req.params.id}`) };
+  const revisions = listRevisionsForPage(ctx.scope, page.id).map((r) => ({
+    page_generation: r.page_generation,
+    frontmatter: r.frontmatter,
+    body: r.body,
+  }));
+  return { status: 200, body: { ok: true, path: page.path, title: page.title, revisions } };
+}
+
 /** Get one wiki page's frontmatter fields + markdown body, by bundle-relative path. */
 export async function handleOkfPageGet(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const ctx = contextFor(principal);
@@ -335,6 +368,7 @@ export function registerOkfRoutes(
   server.registerRoute('GET', '/api/okf/pages', tenantRoute(tenant, handleOkfPagesList));
   server.registerRoute('POST', '/api/okf/concepts', tenantRoute(tenant, handleOkfConceptSave));
   server.registerRoute('POST', '/api/okf/concepts/supersede', tenantRoute(tenant, handleOkfConceptSupersede));
+  server.registerRoute('GET', '/api/okf/pages/by-id/:id', tenantRoute(tenant, handleOkfPageRevisionsById));
   server.registerRoute('GET', '/api/okf/pages/*', tenantRoute(tenant, handleOkfPageGet));
 }
 

@@ -222,6 +222,7 @@ const BACKUP = 'Backup and restore';
 const GROVE_ADMIN = 'Grove administration';
 const DB_MAINTENANCE = 'Database maintenance';
 const EMBEDDING_MAINTENANCE = 'Embedding maintenance';
+const CONTENT_MATERIALIZE = 'Content materialization';
 
 /**
  * The stamp table — every rule here is a route whose attached-project behavior
@@ -366,6 +367,19 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/api/team/*', stamp: 'localhost-only', capability: 'team-sync' },
   { method: 'GET', pattern: '/api/collective/*', stamp: 'localhost-only', capability: 'collective' },
   { method: 'POST', pattern: '/api/collective/*', stamp: 'localhost-only', capability: 'collective' },
+
+  // --- localhost-only: content-claim MATERIALIZATION, the disk-write step
+  //     (design: docs/superpowers/specs/2026-07-09-content-claim-system-design.md
+  //     §4). This is the ONE route in the content-claims family that is NOT
+  //     `serve`: the other five (list/create/refresh/release/published) mutate
+  //     Grove-DB rows the host legitimately owns, so they proxy for an attached
+  //     project. This route writes the CALLING member's own working tree —
+  //     proxying it to the host would violate B1 (the host never writes a
+  //     member tree). Served on whichever daemon received the request; for an
+  //     attached project the handler dials the host directly (mirroring
+  //     `attached-config.ts`'s grove-tier fetch) for the claim/content state
+  //     instead of proxying the request wholesale. ---
+  { method: 'POST', pattern: '/api/content-claims/:id/materialize', stamp: 'localhost-only', capability: CONTENT_MATERIALIZE },
 ];
 
 /**
@@ -474,7 +488,22 @@ export const SERVE_DEFAULT_ROUTES: ReadonlySet<string> = new Set<string>([
   'GET /api/okf/pages',
   'POST /api/okf/concepts',
   'POST /api/okf/concepts/supersede',
+  'GET /api/okf/pages/by-id/:id',
   'GET /api/okf/pages/*',
+  // Content claims (Team Host WS2) — the publication-lock surface over
+  // DB-resident skills + OKF pages (design:
+  // docs/superpowers/specs/2026-07-09-content-claim-system-design.md §3). A
+  // claim is a lock the Grove's ACTIVE-partial unique index enforces
+  // transactionally on ONE database, so an attached project's member must
+  // reach the host's authoritative claim state over the overlay — a local
+  // Grove serves the identical routes locally (classifyRoute short-circuits
+  // before this table is ever consulted). Knowledge/viewing + host-run
+  // mutation, so serve.
+  'GET /api/content-claims',
+  'POST /api/content-claims',
+  'POST /api/content-claims/:id/refresh',
+  'POST /api/content-claims/:id/release',
+  'POST /api/content-claims/:id/published',
 ]);
 
 /** Match a concrete request pathname against a route pattern (exact, `:param`,
@@ -616,8 +645,10 @@ export function overlayHostStampRefusal(method: string, pathname: string): Refus
 /** Assemble the {@link RemoteTarget} a host round-trip needs from the attach
  *  record, reading the host bearer from the host record's secrets.env. Shared by
  *  the `remote` (proxy) and `config_carve` (member-assembled merged read, which
- *  host-sources only the grove tier) decisions. */
-function remoteTargetFor(
+ *  host-sources only the grove tier) decisions, and by the content-claim
+ *  materialize handler's direct dial for an attached project's claim/content
+ *  state (`daemon/api/content-claims-materialize.ts`). */
+export function remoteTargetFor(
   projectId: GroveProjectId,
   attach: { host: { host_id: string; label: string; overlay_address: string; protocol_version: number; proxy_port?: number }; ref: { grove_id: string } },
 ): RemoteTarget {

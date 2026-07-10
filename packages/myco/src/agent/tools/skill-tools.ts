@@ -1665,11 +1665,11 @@ export function createSkillTools(deps: VaultToolDeps) {
           // Disk + symlink cleanup (best-effort)
           const root = projectRoot ?? process.cwd();
           if (!/[/\\]|\.\./.test(result.name)) {
-            try { removePublishedSkillFileOrDirectory(root, result.name); } catch (err) {
+            try { removePublishedSkillArtifacts(root, result.name); } catch (err) {
               console.warn('[vault_skill_records] Failed to remove skill directory:', err instanceof Error ? err.message : err);
             }
             try {
-              syncPublishedSkillSymlinks(root, result.name, { remove: true });
+              publishSkillSymlinks(root, result.name, { remove: true });
             } catch (err) {
               console.warn('[vault_skill_records] Failed to remove symlinks:', err instanceof Error ? err.message : err);
             }

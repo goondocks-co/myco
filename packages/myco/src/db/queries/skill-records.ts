@@ -10,6 +10,7 @@ import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import { cancelActiveContentClaimForArtifact } from '@myco/db/queries/content-claims.js';
 
 
 /** Default status for new skill records. */
@@ -376,8 +377,13 @@ export function countSkillRecords(
 
 /**
  * Delete a skill record and cascade to lineage, usage, and linked candidates.
- * Runs in a transaction. Does NOT handle disk/symlink cleanup — callers must
- * handle filesystem operations separately.
+ * Runs in a transaction, and also cancels the artifact's active content
+ * claim (if any) in the same transaction — the delete flow's explicit
+ * cancel, not an FK cascade (content-claim spec §5). Both skill-DELETE
+ * paths (the agent tool and the daemon API) call this one function, so the
+ * cancel fires for either caller without duplicating the logic at each
+ * call site. Does NOT handle disk/symlink cleanup — callers must handle
+ * filesystem operations separately.
  *
  * @returns the deleted record's name (for disk cleanup) or null if not found.
  */
@@ -389,6 +395,7 @@ export function deleteSkillRecordCascade(
   const record = getSkillRecord(idOrName, scope) ?? getSkillRecordByName(idOrName, scope);
   if (!record) return null;
   const candidateScope = projectScopeClause(scope);
+  const now = Math.floor(Date.now() / 1000);
 
   db.transaction(() => {
     db.prepare('DELETE FROM skill_lineage WHERE skill_id = ?').run(record.id);
@@ -397,12 +404,13 @@ export function deleteSkillRecordCascade(
     if (record.candidate_id) {
       db.prepare(
         `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE id = ?${candidateScope.sql}`,
-      ).run(Math.floor(Date.now() / 1000), record.candidate_id, ...candidateScope.params);
+      ).run(now, record.candidate_id, ...candidateScope.params);
     }
     db.prepare(
       `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE skill_id = ?${candidateScope.sql}`,
-    ).run(Math.floor(Date.now() / 1000), record.id, ...candidateScope.params);
+    ).run(now, record.id, ...candidateScope.params);
     db.prepare('DELETE FROM skill_records WHERE id = ?').run(record.id);
+    cancelActiveContentClaimForArtifact('skill', record.id, now);
   })();
 
   return { id: record.id, project_id: record.project_id, name: record.name };

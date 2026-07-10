@@ -1,6 +1,7 @@
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { projectScopeFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import { OkfStore } from '@myco/okf/store.js';
 import { OkfError } from '@myco/okf/errors.js';
 import { validateWikiRows } from '@myco/okf/validate.js';
@@ -45,7 +46,13 @@ function fail(message: string): ToolFailure {
 
 function buildStore(requestContext: MycoRequestContext): OkfStore {
   const vaultDir = requestContext.projectVaultDir;
-  const config = loadMergedConfig(vaultDir, { groveId: requestContext.groveId ?? undefined });
+  // Served over the overlay, the host runs this handler for a project whose
+  // working tree lives on the member's machine — degrade to machine+grove
+  // tiers (empty project tier); the wiki itself is DB-resident.
+  const config = loadMergedConfig(vaultDir, {
+    groveId: requestContext.groveId ?? undefined,
+    projectTierOptional: !projectTreeAvailable(vaultDir),
+  });
   return new OkfStore({
     scope: projectScopeFromRequestContext(requestContext),
     projectId: requestContext.projectId ?? null,

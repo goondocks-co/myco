@@ -113,6 +113,25 @@ const PAGES: OkfPageSummary[] = [
 
 /* ---------- Mocks ---------- */
 
+// The Okf page renders OkfClaimsPanel (B6, per-page claim affordances) —
+// stub the hook so this pre-existing suite (which predates the claim system
+// and doesn't exercise it) doesn't need a PowerProvider just to satisfy
+// usePowerQuery's context requirement. Claim-panel behavior has its own
+// coverage in tests/ui/okf-claims-panel.test.tsx.
+mock.module('../../packages/myco/ui/src/hooks/use-content-claims', () => ({
+  useContentClaims: () => ({ data: undefined, isLoading: false }),
+  findClaimableArtifact: () => undefined,
+  useMyMachineId: () => undefined,
+  useReleaseContentClaim: () => ({ mutate: () => {}, isPending: false }),
+  useMarkContentClaimPublished: () => ({ mutate: () => {}, isPending: false }),
+  useClaimAndMaterialize: () => ({
+    phase: { status: 'idle' },
+    run: () => {},
+    retryMaterialize: () => {},
+    reset: () => {},
+  }),
+}));
+
 mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
   useActiveProjectSelection: () => SELECTION,
   useProjectSelection: () => SELECTION,

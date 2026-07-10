@@ -1,7 +1,9 @@
+import fs from 'node:fs';
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
 import type { Database } from '@myco/db/client.js';
 import { withDatabase } from '@myco/db/client.js';
 import { loadMergedConfig } from '../../config/loader.js';
+import { resolveProjectRoot } from '../../vault/resolve.js';
 import { EMBEDDING_BATCH_SIZE } from '../../constants.js';
 import type { EmbeddingManager } from '../embedding/index.js';
 import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
@@ -135,7 +137,14 @@ export async function handleGetEmbeddingStatus(
   vaultDir: string,
   options: EmbeddingScopeOptions = {},
 ): Promise<RouteResponse> {
-  const config = loadMergedConfig(vaultDir, { groveId: options.groveId ?? null });
+  // A Team Host serving this project for a member has no local working
+  // tree — degrade to machine+grove tiers (empty project tier) instead of
+  // throwing "myco.yaml not found" (same signal + mechanism as `okf.ts`).
+  const treeAvailable = fs.existsSync(resolveProjectRoot(vaultDir));
+  const config = loadMergedConfig(vaultDir, {
+    groveId: options.groveId ?? null,
+    projectTierOptional: !treeAvailable,
+  });
 
   const scope = options.scope ?? ALL_PROJECTS_SCOPE;
   const { queue_depth, embedded_count } = options.db

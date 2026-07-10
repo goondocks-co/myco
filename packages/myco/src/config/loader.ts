@@ -1098,6 +1098,17 @@ export interface LoadMergedConfigOptions {
   groveId?: string | null;
   /** Override Myco home for tests. */
   mycoHome?: string;
+  /**
+   * Tolerate a missing project-tier file: when true and `myco.yaml` does not
+   * exist in `vaultDir`, the project tier contributes nothing to the merge
+   * instead of throwing "myco.yaml not found". Machine, grove, and personal
+   * tiers still resolve normally from their own paths (none of which read
+   * the project's working tree). For callers iterating a registered project
+   * whose working tree isn't present on this machine (a Team Host serving a
+   * member's project) — a project WITH a present `myco.yaml` is unaffected
+   * by this flag either way.
+   */
+  projectTierOptional?: boolean;
 }
 
 /**
@@ -1123,6 +1134,7 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
     ? options.groveId
     : (loadProjectManifest(vaultDir)?.grove?.id ?? null);
   const mycoHome = options.mycoHome ?? resolveMycoHome();
+  const projectTierOptional = options.projectTierOptional === true;
 
   const configStat = statOrNull(configPath);
   const localStat = statOrNull(localPath);
@@ -1131,7 +1143,12 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
   const machineStat = statOrNull(machinePath);
   const groveStat = grovePath ? statOrNull(grovePath) : null;
 
-  const cacheKey = `${vaultDir}::${groveId ?? ''}`;
+  // The optional-project-tier mode caches separately from the normal mode —
+  // otherwise a tolerant read (empty project tier) and a throwing read of the
+  // same absent `myco.yaml` would share a cache entry keyed only on the
+  // (matching, both-null) file stat, letting the tolerant result silently
+  // paper over what should still be a throw when the caller didn't opt in.
+  const cacheKey = `${vaultDir}::${groveId ?? ''}${projectTierOptional ? '::optional' : ''}`;
   const cached = mergedConfigCache.get(cacheKey);
   if (cached && fingerprintMatches(cached, configStat, localStat, machineStat, groveStat)) {
     return cached.config;
@@ -1142,11 +1159,16 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
   // second read+parse of myco.yaml against disk. Tier migration is
   // opt-in so test fixtures that don't sandbox MYCO_HOME don't
   // contaminate the developer's real ~/.myco/.
-  const { parsed: projectRaw } = loadConfigInternal(vaultDir, {
-    groveId,
-    mycoHome,
-    migrateTiers: true,
-  });
+  //
+  // `projectTierOptional` skips this entirely when the file is absent: the
+  // project tier contributes nothing to the merge rather than throwing, and
+  // there is nothing on disk to migrate or write back. `version` is still
+  // required — it's a project-tier-owned literal with no schema default
+  // (`config/scope.ts`'s SCOPE_REGISTRY has no other home for it) — so the
+  // stand-in doc carries it exactly as every real project file does.
+  const projectRaw = (projectTierOptional && !configStat)
+    ? { version: 3 }
+    : loadConfigInternal(vaultDir, { groveId, mycoHome, migrateTiers: true }).parsed;
 
   migrateLegacyLocalAppearanceToGrove(vaultDir, groveId, mycoHome);
   const machineRaw = readRawYamlDoc(machinePath);

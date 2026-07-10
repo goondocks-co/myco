@@ -460,6 +460,96 @@ describe('Grove-tier promotion — merge verification', () => {
   });
 });
 
+describe('loadMergedConfig projectTierOptional — missing working tree', () => {
+  let scratchDir: string;
+  // A vaultDir nested under a project root that is never created on disk —
+  // stands in for a registered project's vaultDir when the working tree
+  // doesn't exist on this machine (a Team Host iterating a member's
+  // registered project). Unlike an mkdtemp'd scratch dir, this path (and
+  // every ancestor below scratchDir) genuinely does not exist.
+  let missingVaultDir: string;
+  let mycoHomeDir: string;
+  let previousMycoHome: string | undefined;
+  const groveId = 'grove_' + 'c'.repeat(32);
+
+  beforeEach(() => {
+    scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-optional-tier-'));
+    missingVaultDir = path.join(scratchDir, 'member-project-root', '.myco');
+    mycoHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-optional-tier-'));
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHomeDir;
+    invalidateMergedConfigCache();
+  });
+
+  afterEach(() => {
+    fs.rmSync(scratchDir, { recursive: true, force: true });
+    fs.rmSync(mycoHomeDir, { recursive: true, force: true });
+    if (previousMycoHome === undefined) {
+      delete process.env.MYCO_HOME;
+    } else {
+      process.env.MYCO_HOME = previousMycoHome;
+    }
+    invalidateMergedConfigCache();
+  });
+
+  function writeGroveConfig(groveYaml: string): void {
+    const groveDir = path.join(mycoHomeDir, 'groves', groveId);
+    fs.mkdirSync(groveDir, { recursive: true });
+    fs.writeFileSync(path.join(groveDir, 'grove.yaml'), groveYaml);
+  }
+
+  it('resolves machine+grove tiers with an empty project tier when the file is absent', () => {
+    writeGroveConfig('agent:\n  model: claude-haiku-4-5\n  scheduled_tasks_enabled: true\n');
+
+    const config = loadMergedConfig(missingVaultDir, {
+      groveId,
+      mycoHome: mycoHomeDir,
+      projectTierOptional: true,
+    });
+
+    expect(config.agent.model).toBe('claude-haiku-4-5');
+    expect(config.agent.scheduled_tasks_enabled).toBe(true);
+  });
+
+  it('does not create the vault directory or a myco.yaml file', () => {
+    loadMergedConfig(missingVaultDir, { groveId, mycoHome: mycoHomeDir, projectTierOptional: true });
+    expect(fs.existsSync(missingVaultDir)).toBe(false);
+    expect(fs.existsSync(path.join(missingVaultDir, 'myco.yaml'))).toBe(false);
+  });
+
+  it('still throws "myco.yaml not found" when projectTierOptional is not passed', () => {
+    expect(() => loadMergedConfig(missingVaultDir, { groveId, mycoHome: mycoHomeDir }))
+      .toThrow(/myco\.yaml not found/);
+  });
+
+  it('a present project tier is unaffected by projectTierOptional: true', () => {
+    const presentVaultDir = path.join(scratchDir, 'local-project', '.myco');
+    fs.mkdirSync(presentVaultDir, { recursive: true });
+    fs.writeFileSync(path.join(presentVaultDir, 'myco.yaml'), 'version: 3\nembedding:\n  provider: ollama\n');
+    writeGroveConfig('agent:\n  model: claude-haiku-4-5\n');
+
+    const config = loadMergedConfig(presentVaultDir, {
+      groveId,
+      mycoHome: mycoHomeDir,
+      projectTierOptional: true,
+    });
+
+    expect(config.embedding.provider).toBe('ollama');
+    expect(config.agent.model).toBe('claude-haiku-4-5');
+  });
+
+  it('does not let a tolerant read cache-poison a later throwing read for the same vaultDir', () => {
+    writeGroveConfig('agent:\n  model: claude-haiku-4-5\n');
+    // First call: tolerant — succeeds and populates the merged-config cache.
+    const tolerant = loadMergedConfig(missingVaultDir, { groveId, mycoHome: mycoHomeDir, projectTierOptional: true });
+    expect(tolerant.agent.model).toBe('claude-haiku-4-5');
+    // Second call: same vaultDir, no projectTierOptional — must still throw,
+    // not silently serve the tolerant read's cached result.
+    expect(() => loadMergedConfig(missingVaultDir, { groveId, mycoHome: mycoHomeDir }))
+      .toThrow(/myco\.yaml not found/);
+  });
+});
+
 describe('loadMergedConfig caching', () => {
   let tmpDir: string;
   let mycoHomeDir: string;

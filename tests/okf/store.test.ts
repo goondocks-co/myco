@@ -5,8 +5,14 @@ import path from 'node:path';
 import { openDatabase, withDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
-import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import { OkfStore } from '@myco/okf/store.js';
+import { getOkfPageByPath } from '@myco/db/queries/okf.js';
+import {
+  insertContentClaim,
+  getActiveContentClaim,
+  getContentClaimById,
+} from '@myco/db/queries/content-claims.js';
 import type { WikiPlan } from '@myco/okf/synthesis/plan.js';
 
 const PROJECT_ID = 'proj_11111111111111111111111111111111' as GroveProjectId;
@@ -191,6 +197,86 @@ describe('OkfStore — page writes and finalize', () => {
       expect(store.readPage('a/two')).toBeNull();
       // d1 is history.
       expect(store.currentDraft()?.id).toBe(d2.id);
+    });
+  });
+});
+
+describe('OkfStore — supersedePage cancels the retired page\'s active claim (Task B5)', () => {
+  const epochNow = () => Math.floor(Date.now() / 1000);
+
+  /** Publish two pages and return the old page's head id. */
+  function seedTwoPublishedPages(store: OkfStore): string {
+    const draft = store.createDraftGeneration({ runId: 'r1', plan: plan(['concepts/old', 'concepts/new']) });
+    store.writePage(pageInput('concepts/old'));
+    store.writePage(pageInput('concepts/new'));
+    store.finalizeGeneration(draft.id);
+    return getOkfPageByPath(projectScope(PROJECT_ID), 'concepts/old.md')!.id;
+  }
+
+  it('supersede with an active claim on the old page: page retired AND claim released', () => {
+    withDatabase(db, () => {
+      const store = makeStore();
+      const oldPageId = seedTwoPublishedPages(store);
+
+      const claimed = insertContentClaim({
+        artifactKind: 'okf_page',
+        artifactId: oldPageId,
+        generation: 1,
+        projectId: PROJECT_ID,
+        claimedBy: 'member-machine',
+        claimedAt: epochNow(),
+        expiresAt: epochNow() + 86400,
+        machineId: 'member-machine',
+      });
+      expect(claimed.ok).toBe(true);
+      if (!claimed.ok) throw new Error('unreachable');
+
+      store.supersedePage('concepts/old', 'concepts/new', 'replaced by the new page');
+
+      // The retired page's claim is no longer active — cancelled inside the
+      // supersede transaction, not left to TTL expiry.
+      expect(getActiveContentClaim('okf_page', oldPageId)).toBeNull();
+      const row = getContentClaimById(claimed.row.id, ALL_PROJECTS_SCOPE);
+      expect(row?.state).toBe('released');
+      expect(row?.released_at).not.toBeNull();
+      // And the page itself really was retired.
+      expect(getOkfPageByPath(projectScope(PROJECT_ID), 'concepts/old.md')?.status).toBe('retired');
+    });
+  });
+
+  it('supersede with no claim on the old page: no-op cancel, no error', () => {
+    withDatabase(db, () => {
+      const store = makeStore();
+      seedTwoPublishedPages(store);
+
+      expect(() =>
+        store.supersedePage('concepts/old', 'concepts/new', 'replaced with nothing claimed'),
+      ).not.toThrow();
+      expect(getOkfPageByPath(projectScope(PROJECT_ID), 'concepts/old.md')?.status).toBe('retired');
+    });
+  });
+
+  it('supersede never touches a claim on a different page (the replacement)', () => {
+    withDatabase(db, () => {
+      const store = makeStore();
+      seedTwoPublishedPages(store);
+      const newPageId = getOkfPageByPath(projectScope(PROJECT_ID), 'concepts/new.md')!.id;
+
+      const claimed = insertContentClaim({
+        artifactKind: 'okf_page',
+        artifactId: newPageId,
+        generation: 1,
+        projectId: PROJECT_ID,
+        claimedBy: 'member-machine',
+        claimedAt: epochNow(),
+        expiresAt: epochNow() + 86400,
+        machineId: 'member-machine',
+      });
+      expect(claimed.ok).toBe(true);
+
+      store.supersedePage('concepts/old', 'concepts/new', 'replacement stays claimed');
+
+      expect(getActiveContentClaim('okf_page', newPageId)).not.toBeNull();
     });
   });
 });

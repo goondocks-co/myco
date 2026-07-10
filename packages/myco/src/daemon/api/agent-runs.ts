@@ -5,6 +5,7 @@
  * for the /api/agent/run and /api/agent/runs/* endpoints.
  */
 
+import fs from 'node:fs';
 import { z } from 'zod';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import {
@@ -186,6 +187,12 @@ export interface AgentRunDeps {
 export function createAgentRunHandlers(deps: AgentRunDeps) {
   const { vaultDir, resolveEmbeddingManager, logger, getTeamClient } = deps;
   const vaultDirForRequest = (req: RouteRequest): string => req.requestContext?.projectVaultDir ?? vaultDir;
+  // A Team Host running this task for a member-attached project has no local
+  // working tree — degrade to machine+grove tiers (empty project tier)
+  // instead of throwing "myco.yaml not found" (same signal + mechanism as
+  // `task-scheduling.ts` / `power-jobs.ts` / `okf.ts`).
+  const treeAvailableForRequest = (req: RouteRequest, runVaultDir: string): boolean =>
+    fs.existsSync(req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir));
 
   /** POST /api/agent/run — trigger an agent run. */
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
@@ -235,7 +242,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
-    const mycoConfig = loadMergedConfig(runVaultDir, { groveId: req.requestContext?.groveId ?? null });
+    const mycoConfig = loadMergedConfig(runVaultDir, {
+      groveId: req.requestContext?.groveId ?? null,
+      projectTierOptional: !treeAvailableForRequest(req, runVaultDir),
+    });
 
     // Governed-task admission check, before the provider check.
     const capabilityError = capabilityGateError(mycoConfig, task);
@@ -550,7 +560,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     // Same governed-task admission as handleRun: resuming a governed task
     // must not bypass a capability the project has since disabled.
-    const resumeMycoConfig = loadMergedConfig(runVaultDir, { groveId: req.requestContext?.groveId ?? null });
+    const resumeMycoConfig = loadMergedConfig(runVaultDir, {
+      groveId: req.requestContext?.groveId ?? null,
+      projectTierOptional: !treeAvailableForRequest(req, runVaultDir),
+    });
     const capabilityError = capabilityGateError(resumeMycoConfig, run.task ?? undefined);
     if (capabilityError) return capabilityError;
 

@@ -331,4 +331,30 @@ describe('runInitialCanopyPopulateAcrossProjects honors the project pause primit
 
     expect(new Set(visited)).toEqual(new Set([PROJECT_PAUSED, PROJECT_LIVE]));
   });
+
+  it('skips a project with no local working tree without throwing', async () => {
+    // Team Host shape: the registered project row is real, but its working
+    // tree was checked out on a member machine — never populate against a
+    // root this daemon can't see.
+    const projectId = 'proj_' + 'cccc111122223333cccc111122223333';
+    registerProjectInGrove(fx.grove.id, {
+      projectId,
+      projectName: 'hosted',
+      projectRoot: path.join(fx.workDir, 'never-created', 'hosted'),
+    }, fx.mycoHome);
+
+    const visited: string[] = [];
+    const errorSpy = vi.spyOn(fx.logger, 'error');
+    await expect(runInitialCanopyPopulateAcrossProjects(
+      fx.cache,
+      fx.logger,
+      'test-machine',
+      fakeRegistry(visited),
+      makeLiveConfig(),
+      path.join(fx.mycoHome, 'service'),
+    )).resolves.toBeUndefined();
+
+    expect(visited).not.toContain(projectId);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
 });

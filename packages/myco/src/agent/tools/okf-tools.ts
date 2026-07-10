@@ -29,6 +29,7 @@ import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds } from '@myco/constants.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import { OkfError } from '@myco/okf/errors.js';
 import { OkfStore } from '@myco/okf/store.js';
 import { gatherSources, gatherCanopyMap } from '@myco/okf/synthesis/sources.js';
@@ -61,7 +62,13 @@ export { OKF_TOOL_NAMES };
  */
 function buildStore(deps: VaultToolDeps): OkfStore | null {
   if (!deps.vaultDir || !deps.requestContext) return null;
-  const config = loadMergedConfig(deps.vaultDir, { groveId: deps.requestContext.groveId ?? undefined });
+  // Host-run tasks for a served project have no local working tree —
+  // degrade to machine+grove tiers (empty project tier); the store is
+  // DB-resident.
+  const config = loadMergedConfig(deps.vaultDir, {
+    groveId: deps.requestContext.groveId ?? undefined,
+    projectTierOptional: !projectTreeAvailable(deps.vaultDir),
+  });
   const projectId = rowProjectIdFromVaultToolDeps(deps);
   if (!projectId) return null;
   return new OkfStore({
@@ -195,7 +202,14 @@ export function createOkfTools(deps: VaultToolDeps) {
     async (args) => {
       if (!deps.projectRoot || !deps.vaultDir || !deps.requestContext) return textResult({ error: MISSING_DEPS_ERROR });
       try {
-        const config = loadMergedConfig(deps.vaultDir, { groveId: deps.requestContext.groveId ?? undefined });
+        // Same tree-unavailable degrade as buildStore above. The git slice
+        // fails soft on its own (runGit catch); a repo-tree walk of an
+        // absent root surfaces as this tool's structured error via the
+        // catch below rather than blocking config resolution here.
+        const config = loadMergedConfig(deps.vaultDir, {
+          groveId: deps.requestContext.groveId ?? undefined,
+          projectTierOptional: !projectTreeAvailable(deps.vaultDir),
+        });
         const scope = projectScopeFromVaultToolDeps(deps);
         const machineId = deps.machineId ?? deps.requestContext.machineId;
         // A claimed on-disk bundle (e.g. this repo's committed okf/) is still

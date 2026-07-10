@@ -199,6 +199,18 @@ export function listOkfPages(scope: ProjectScope, status: 'active' | 'retired' |
   return db.prepare(`SELECT ${PAGE_COLUMNS} FROM okf_pages ${where} ORDER BY path ASC`).all(...params) as OkfPageRow[];
 }
 
+/** Get one wiki page head by its `okf_pages.id` — the content-claim system's
+ *  artifact lookup (a claim's `artifact_id` is this id, not the bundle path). */
+export function getOkfPageById(scope: ProjectScope, id: string): OkfPageRow | null {
+  const db = getDatabase();
+  const conditions: string[] = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  return (db.prepare(
+    `SELECT ${PAGE_COLUMNS} FROM okf_pages WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as OkfPageRow | undefined) ?? null;
+}
+
 export function insertOkfPage(row: Omit<OkfPageRow, 'synced_at'>): OkfPageRow {
   const db = getDatabase();
   db.prepare(
@@ -279,4 +291,40 @@ export function latestRevisionForPage(pageId: string): OkfPageRevisionRow | null
   return (db.prepare(
     `SELECT ${REVISION_COLUMNS} FROM okf_page_revisions WHERE page_id = ? ORDER BY page_generation DESC LIMIT 1`,
   ).get(pageId) as OkfPageRevisionRow | undefined) ?? null;
+}
+
+/**
+ * Revision at a SPECIFIC `page_generation` — the content-claim materialize
+ * path (design §4) writes the claim's PINNED generation, not necessarily the
+ * page's current head generation: a claim can be refreshed independently of
+ * further edits landing on the page after it was taken. Mirrors
+ * `getSkillContentAtGeneration` (`skill-lineage.ts`)'s unscoped lookup —
+ * `pageId` is a UUID FK the caller already resolved under its own tenancy
+ * scope via `getOkfPageById`.
+ */
+export function getOkfPageRevisionAtGeneration(pageId: string, pageGeneration: number): OkfPageRevisionRow | null {
+  const db = getDatabase();
+  return (db.prepare(
+    `SELECT ${REVISION_COLUMNS} FROM okf_page_revisions
+      WHERE page_id = ? AND page_generation = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+  ).get(pageId, pageGeneration) as OkfPageRevisionRow | undefined) ?? null;
+}
+
+/**
+ * Every revision recorded for one page (its full page_generation history),
+ * newest first — the content-claim system's remote content-fetch surface:
+ * an attached member dials the host for this list and picks the claimed
+ * generation client-side, mirroring `listLineageForSkill` for skills.
+ */
+export function listRevisionsForPage(scope: ProjectScope, pageId: string, limit = 200): OkfPageRevisionRow[] {
+  const db = getDatabase();
+  const conditions: string[] = ['page_id = ?'];
+  const params: unknown[] = [pageId];
+  appendProjectCondition(conditions, params, scope);
+  return db.prepare(
+    `SELECT ${REVISION_COLUMNS} FROM okf_page_revisions WHERE ${conditions.join(' AND ')}
+      ORDER BY page_generation DESC LIMIT ?`,
+  ).all(...params, limit) as OkfPageRevisionRow[];
 }

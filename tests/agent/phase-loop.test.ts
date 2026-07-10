@@ -496,6 +496,41 @@ describe('executePhase', () => {
     expect(capturedExecuteInputs).toHaveLength(1);
   });
 
+  it('skips a requiresProjectTree phase entirely (no harness invocation) when treeAvailable is false', async () => {
+    // Team Host shape: a scheduled run for a registered project whose
+    // working tree lives on a member machine. A phase declaring
+    // requiresProjectTree must skip rather than run its prompt/tools
+    // against a nonexistent projectRoot.
+    const ctx = baseContext({ treeAvailable: false });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('scan-tree', { requiresProjectTree: true }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('skipped');
+    expect(result.summary).toContain('requires project tree');
+    expect(capturedExecuteInputs).toHaveLength(0);
+    expect(result.turnsUsed).toBe(0);
+    expect(result.costUsd).toBe(0);
+  });
+
+  it('runs a requiresProjectTree phase normally when treeAvailable is true (default)', async () => {
+    // ctx.treeAvailable is undefined for every non-scheduled dispatch path —
+    // must default to "available" so this never regresses local runs.
+    const ctx = baseContext();
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('scan-tree', { requiresProjectTree: true }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(capturedExecuteInputs).toHaveLength(1);
+  });
+
   it('converts a completed phase to failed when its postCondition is unsatisfied', async () => {
     // The live failure mode this gate closes: the model completes the
     // phase with prose only (zero required tool calls), the phase would

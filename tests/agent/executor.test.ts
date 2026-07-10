@@ -17,6 +17,7 @@ const __orig__myco_agent_lmstudio_context_js_5 = { ...__orig__myco_agent_lmstudi
  */
 
 import crypto from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -1403,6 +1404,43 @@ describe('runAgent', () => {
 
     expect(result.status).toBe('completed');
   });
+
+  it('completes a scheduled title-summary run and writes the title for a rootless (treeless) project', async () => {
+    // Team Host shape: a registered project whose working tree lives on a
+    // member machine, not this one. title-summary never touches the tree
+    // (its tool surface is vault_unprocessed/vault_session_summary_material/
+    // vault_update_session/vault_report, all DB-resident) — the scheduled-
+    // tasks dispatcher's treeAvailable:false must not stop it from
+    // completing and writing the title.
+    const { runAgent } = await import('@myco/agent/executor.js');
+    await createTask('title-summary', 'Generate or update session titles and summaries.');
+
+    mockToolCallCounts = { vault_update_session: 1 };
+    mockRunReports = [{
+      id: 1,
+      run_id: 'unused',
+      agent_id: TEST_AGENT_ID,
+      action: 'summary',
+      summary: 'Sessions updated: 1',
+      details: null,
+      created_at: epochSeconds(),
+    }];
+
+    const rootlessRequestContext = {
+      ...TEST_REQUEST_CONTEXT,
+      projectRoot: '/nonexistent/rootless-project',
+    };
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: rootlessRequestContext,
+      task: 'title-summary',
+      treeAvailable: false,
+    });
+
+    expect(result.status).toBe('completed');
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
+    expect(run?.status).toBe('completed');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1485,6 +1523,89 @@ describe('runAgent — phased execution', () => {
     // Total should be sum of all phases
     expect(result.tokensUsed).toBe(1850 * 3);
     expect(result.costUsd).toBeCloseTo(0.0042 * 3);
+  });
+
+  it('records a requiresProjectTree phase skip on the run, visible in agent_runs.checkpoints, when treeAvailable is false', async () => {
+    // A tree-requiring phase in a scheduled run for a treeless (Team Host
+    // served) project must be skipped and annotated on the run rather than
+    // silently invoked against a nonexistent projectRoot.
+    mockYamlPhases = [
+      {
+        name: 'scan-tree',
+        prompt: 'Survey the working tree.',
+        tools: [],
+        maxTurns: 3,
+        required: false,
+        requiresProjectTree: true,
+      },
+      {
+        name: 'report',
+        prompt: 'Write final report.',
+        tools: ['vault_report'],
+        maxTurns: 2,
+        required: true,
+        dependsOn: ['scan-tree'],
+      },
+    ];
+
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: { ...TEST_REQUEST_CONTEXT, projectRoot: '/nonexistent/rootless-project' },
+      treeAvailable: false,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.phases).toBeDefined();
+    const scanPhase = result.phases!.find((p) => p.name === 'scan-tree');
+    expect(scanPhase?.status).toBe('skipped');
+    expect(scanPhase?.summary).toContain('requires project tree');
+    // Only the report phase actually invoked the harness.
+    expect(allQueryCalls.length).toBe(1);
+
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
+    expect(run?.checkpoints).not.toBeNull();
+    const checkpoints = JSON.parse(run!.checkpoints!);
+    expect(checkpoints.phases['scan-tree'].status).toBe('skipped');
+  });
+
+  it('skips both real skill-generate phases for a rootless project without creating the phantom root', async () => {
+    // skill-generate's draft and validate phases both write into the project
+    // tree (vault_stage_skill stages under <root>/.myco/staging/skills/,
+    // vault_finalize_skill promotes to <root>/.agents/skills/). On a treeless
+    // (Team Host served) project the run must complete with both phases
+    // skipped and annotated — zero harness invocations, and no directory
+    // fabricated at the member's projectRoot path.
+    const { BUNDLED_AGENT_TASKS } = await import('@myco/agent/definitions.generated.js');
+    const sg = BUNDLED_AGENT_TASKS.find((t) => t.name === 'skill-generate');
+    mockTaskName = 'skill-generate';
+    mockYamlPhases = [...(sg!.phases ?? [])];
+    await createTask('skill-generate', 'Generate a skill.');
+
+    const phantomRoot = '/nonexistent/rootless-skillgen-project';
+    const { runAgent } = await import('@myco/agent/executor.js');
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: { ...TEST_REQUEST_CONTEXT, projectRoot: phantomRoot },
+      task: 'skill-generate',
+      treeAvailable: false,
+    });
+
+    expect(result.status).toBe('completed');
+    const draft = result.phases!.find((p) => p.name === 'draft');
+    const validate = result.phases!.find((p) => p.name === 'validate');
+    expect(draft?.status).toBe('skipped');
+    expect(validate?.status).toBe('skipped');
+    expect(draft?.summary).toContain('requires project tree');
+    expect(validate?.summary).toContain('requires project tree');
+    expect(allQueryCalls.length).toBe(0);
+
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
+    expect(run?.checkpoints).not.toBeNull();
+    const checkpoints = JSON.parse(run!.checkpoints!);
+    expect(checkpoints.phases['draft'].status).toBe('skipped');
+    expect(checkpoints.phases['validate'].status).toBe('skipped');
+
+    expect(existsSync(phantomRoot)).toBe(false);
   });
 
   it('scopes tools per phase', async () => {
