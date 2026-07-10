@@ -30,6 +30,7 @@ import { DaemonLogger } from '@myco/daemon/logger.js';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority.js';
 import { registerContentClaimRoutes } from '@myco/daemon/api/content-claims.js';
 import { registerContentClaimMaterializeRoute } from '@myco/daemon/api/content-claims-materialize.js';
+import { registerContentClaimFileStatusRoute } from '@myco/daemon/api/content-claims-file-status.js';
 import { handleGetSkillRecord } from '@myco/daemon/api/skills.js';
 import { handleOkfPageRevisionsById } from '@myco/daemon/api/okf.js';
 import { tenantRoute } from '@myco/daemon/api/route-helpers.js';
@@ -193,6 +194,12 @@ describe('content claim materialize over the Team Host overlay', () => {
       hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER },
     });
     registerContentClaimRoutes(hostServer, { machineId: 'host-machine', logger: hostLogger });
+    // Registered so the host's own overlay-stamp backstop (`overlayHostStampRefusal`
+    // in `daemon/server.ts`) has a matched route to classify — an overlay hit on
+    // this `localhost-only`-stamped path must be refused BEFORE the handler below
+    // ever resolves a member's disk (see the transport-boundary test at the bottom
+    // of this file).
+    registerContentClaimFileStatusRoute(hostServer, { logger: noopProxyLogger, mycoHome });
     hostServer.registerRoute(
       'GET',
       '/api/skill-records/:id',
@@ -243,6 +250,13 @@ describe('content claim materialize over the Team Host overlay', () => {
       daemonStateAuthority: stubAuthority,
     });
     memberCache = new GroveRuntimeCache();
+    // Registered locally (mirroring production `daemon/main.ts`, which wires every
+    // content-claim route on every daemon unconditionally) so the router match
+    // succeeds and the daemon's attach-classification chokepoint (`server.ts`
+    // `handleRequest`) runs at all — for an attached project this `serve`-stamped
+    // GET is then proxied to the host rather than invoking this local handler
+    // (see the inventory-through-the-proxy test at the bottom of this file).
+    registerContentClaimRoutes(memberServer, { machineId: 'attached-member-machine', logger: memberLogger });
     registerContentClaimMaterializeRoute(memberServer, {
       cache: memberCache,
       dial: defaultDial,
@@ -566,5 +580,91 @@ describe('content claim materialize over the Team Host overlay', () => {
     // Nothing landed anywhere a materialize write could plausibly have gone.
     expect(fs.existsSync(path.join(hostProjectRoot, CANONICAL_PROJECT_SKILLS_DIR))).toBe(false);
     expect(fs.existsSync(path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR))).toBe(false);
+  });
+
+  test('an attached member GET /api/content-claims proxies to the host and carries the published[] entry, with active_claim', async () => {
+    // skill-1 published at its own lineage-latest generation (1) — the
+    // inventory route's `addCandidate` (content-claims.ts) routes this to
+    // `published`, not `claimable`, and still attaches the live claim fixture
+    // set up above (also generation 1, still `active`) as `active_claim`.
+    const publishedAt = Math.floor(Date.now() / 1000) - 60;
+    upsertContentPublication({
+      artifact_kind: 'skill',
+      artifact_id: 'skill-1',
+      published_generation: 1,
+      published_at: publishedAt,
+      published_by: 'attached-member-machine',
+      machine_id: 'attached-member-machine',
+    });
+
+    // No `x-myco-machine-id` — this is the member DAEMON's own attach-classification
+    // dispatch, the same header shape the dashboard's inventory fetch uses. The
+    // member has no local Grove DB for this project at all (B1's whole premise):
+    // this can ONLY resolve by the member proxying to the host over the real
+    // overlay dial, never a local answer.
+    //
+    // `x-myco-project-id` is a context-switching header (grove/request-context.ts),
+    // so the member daemon's own auth-token gate requires its bearer here — the
+    // same token a spawned child (hook/MCP) inherits via `MYCO_REQUEST_CONTEXT_AUTH`.
+    const res = await fetch(`${memberBase}/api/content-claims`, {
+      headers: { 'x-myco-project-id': projectId, 'x-myco-auth': memberServer.getAuthToken() },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      published: Array<{
+        artifact_kind: string;
+        artifact_id: string;
+        name: string;
+        label: string;
+        published_generation: number;
+        lineage_generation: number;
+        active_claim: { id: string; state: string; generation: number; claimed_by: string } | null;
+      }>;
+    };
+    expect(body.ok).toBe(true);
+    const entry = body.published.find((p) => p.artifact_id === 'skill-1');
+    expect(entry).toMatchObject({
+      artifact_kind: 'skill',
+      artifact_id: 'skill-1',
+      name: 'skill-1',
+      label: 'Skill One',
+      published_generation: 1,
+      lineage_generation: 1,
+    });
+    expect(entry?.active_claim).toMatchObject({
+      id: claimId,
+      state: 'active',
+      generation: 1,
+      claimed_by: 'attached-member-machine',
+    });
+  });
+
+  test('a file-status POST arriving over the overlay is refused at the transport boundary — never resolves a member disk', async () => {
+    // The member-disk-truth sibling of the materialize refusal above: the
+    // `localhost-only` stamp (host/routing.ts) and the host's independent
+    // overlay backstop (`overlayHostStampRefusal`, server.ts) hold for
+    // `/api/content-claims/file-status` exactly as they do for materialize —
+    // the specific `message`/`retryable` fields (not just a bare 404) prove the
+    // STAMP-based refusal fired, not merely "no such route registered here".
+    const res = await fetch(`http://127.0.0.1:${hostServer.overlayPort}/api/content-claims/file-status`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${HOST_BEARER}`,
+        'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION),
+        'x-myco-grove-id': groveId,
+        'x-myco-project-id': projectId,
+      },
+      body: JSON.stringify({
+        project_root: hostProjectRoot,
+        artifacts: [{ artifact_kind: 'skill', artifact_id: 'skill-1', name: 'skill-1' }],
+      }),
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: string; message: string; retryable: boolean };
+    expect(body.error).toBe('not_found');
+    expect(body.message).toBe('This route is served on localhost only, not over the overlay.');
+    expect(body.retryable).toBe(false);
   });
 });
