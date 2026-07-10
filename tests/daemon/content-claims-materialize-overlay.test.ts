@@ -30,6 +30,7 @@ import { DaemonLogger } from '@myco/daemon/logger.js';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority.js';
 import { registerContentClaimRoutes } from '@myco/daemon/api/content-claims.js';
 import { registerContentClaimMaterializeRoute } from '@myco/daemon/api/content-claims-materialize.js';
+import { registerContentClaimFileStatusRoute } from '@myco/daemon/api/content-claims-file-status.js';
 import { handleGetSkillRecord } from '@myco/daemon/api/skills.js';
 import { handleOkfPageRevisionsById } from '@myco/daemon/api/okf.js';
 import { tenantRoute } from '@myco/daemon/api/route-helpers.js';
@@ -38,7 +39,7 @@ import { defaultDial } from '@myco/daemon/host-proxy.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
-import { insertContentClaim } from '@myco/db/queries/content-claims.js';
+import { insertContentClaim, upsertContentPublication } from '@myco/db/queries/content-claims.js';
 import { getOkfPageRevisionAtGeneration } from '@myco/db/queries/okf.js';
 import { getDatabase, initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@myco/grove/registry.js';
@@ -193,6 +194,12 @@ describe('content claim materialize over the Team Host overlay', () => {
       hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER },
     });
     registerContentClaimRoutes(hostServer, { machineId: 'host-machine', logger: hostLogger });
+    // Registered so the host's own overlay-stamp backstop (`overlayHostStampRefusal`
+    // in `daemon/server.ts`) has a matched route to classify — an overlay hit on
+    // this `localhost-only`-stamped path must be refused BEFORE the handler below
+    // ever resolves a member's disk (see the transport-boundary test at the bottom
+    // of this file).
+    registerContentClaimFileStatusRoute(hostServer, { logger: noopProxyLogger, mycoHome });
     hostServer.registerRoute(
       'GET',
       '/api/skill-records/:id',
@@ -208,6 +215,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       cache: hostCache,
       dial: defaultDial,
       logger: noopProxyLogger,
+      machineId: 'host-machine',
       mycoHome,
     });
     await hostServer.start(0);
@@ -242,10 +250,23 @@ describe('content claim materialize over the Team Host overlay', () => {
       daemonStateAuthority: stubAuthority,
     });
     memberCache = new GroveRuntimeCache();
+    // Registered locally (mirroring production `daemon/main.ts`, which wires every
+    // content-claim route on every daemon unconditionally) so the router match
+    // succeeds and the daemon's attach-classification chokepoint (`server.ts`
+    // `handleRequest`) runs at all — for an attached project this `serve`-stamped
+    // GET is then proxied to the host rather than invoking this local handler
+    // (see the inventory-through-the-proxy test at the bottom of this file).
+    registerContentClaimRoutes(memberServer, { machineId: 'attached-member-machine', logger: memberLogger });
     registerContentClaimMaterializeRoute(memberServer, {
       cache: memberCache,
       dial: defaultDial,
       logger: noopProxyLogger,
+      // Matches `claimedBy` on both fixture claims above: the auto-close
+      // mark-published dial stamps this as the member's own machine id
+      // (`REQUEST_CONTEXT_HEADERS.machineId`), and the host's holder gate
+      // (`content-claims.ts`'s `loadActiveHeldClaim`) requires it to equal
+      // `claim.claimed_by`.
+      machineId: 'attached-member-machine',
       mycoHome,
     });
     await memberServer.start(0);
@@ -276,8 +297,8 @@ describe('content claim materialize over the Team Host overlay', () => {
       body: JSON.stringify({ project_root: memberProjectRoot }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; skill_name: string; generation: number };
-    expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1 });
+    const body = await res.json() as { ok: boolean; skill_name: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1, auto_published: false });
 
     const written = fs.readFileSync(
       path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR, 'skill-1', 'SKILL.md'),
@@ -289,24 +310,156 @@ describe('content claim materialize over the Team Host overlay', () => {
     // Grove DB, not the member's working tree (B1).
     expect(fs.existsSync(path.join(hostProjectRoot, CANONICAL_PROJECT_SKILLS_DIR))).toBe(false);
 
-    // The claim on the host's Grove DB is still `active` — materialize does
-    // not itself transition the claim; the holder marks it published after
-    // committing (a separate, later step, out of this task's scope).
+    // No prior publication row exists for this artifact, so this is a
+    // first-time publish, not a republish — the claim on the host's Grove DB
+    // stays `active` for the manual Mark-published flow (Task 1.4's
+    // republish auto-close is covered by the test below).
     const row = getDatabase().prepare(
       `SELECT state FROM content_claims WHERE id = ?`,
     ).get(claimId) as { state: string } | undefined;
     expect(row?.state).toBe('active');
   });
 
+  test('member republishes a same-generation claim — auto-closes through the proxied mark-published call', async () => {
+    const priorPublishedAt = Math.floor(Date.now() / 1000) - 3600;
+    upsertContentPublication({
+      artifact_kind: 'skill',
+      artifact_id: 'skill-1',
+      published_generation: 1, // matches the fixture claim's own generation — a republish
+      published_at: priorPublishedAt,
+      published_by: 'attached-member-machine',
+      machine_id: 'attached-member-machine',
+    });
+
+    const res = await fetch(`${memberBase}/api/content-claims/${claimId}/materialize`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project_root: memberProjectRoot }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; skill_name: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1, auto_published: true });
+
+    // The republished content still lands on the member's tree exactly as a
+    // normal materialize would.
+    const written = fs.readFileSync(
+      path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR, 'skill-1', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(written).toBe(CONTENT);
+
+    // The member dialed the host's OWN `POST /api/content-claims/:id/published`
+    // through the real overlay — the close landed on the host's Grove DB.
+    const claimRow = getDatabase().prepare(
+      `SELECT state, published_at FROM content_claims WHERE id = ?`,
+    ).get(claimId) as { state: string; published_at: number } | undefined;
+    expect(claimRow?.state).toBe('published');
+    expect(claimRow?.published_at).toBeGreaterThan(priorPublishedAt);
+
+    const pubRow = getDatabase().prepare(
+      `SELECT published_generation, published_at FROM content_publications WHERE artifact_kind = 'skill' AND artifact_id = 'skill-1'`,
+    ).get() as { published_generation: number; published_at: number } | undefined;
+    expect(pubRow?.published_generation).toBe(1);
+    expect(pubRow?.published_at).toBeGreaterThan(priorPublishedAt);
+  });
+
+  test('a same-generation republish whose proxied mark-published call fails (real 403 not_holder) still returns the write with auto_published:false and exactly ONE warn', async () => {
+    // Drives the REAL remote source's mark-failure path end-to-end: this
+    // member daemon's machineId does not match the claim's `claimed_by`, so
+    // every read dial succeeds and the write lands, but the host's holder
+    // gate 403s the mark-published POST. The failure posture (200 +
+    // auto_published:false) and the single-warn discipline (the remote
+    // source's one detection warn, nothing added by the orchestration) are
+    // both asserted against real code, not a hand-rolled ClaimSource.
+    upsertContentPublication({
+      artifact_kind: 'skill',
+      artifact_id: 'skill-1',
+      published_generation: 1, // same generation as the claim — the auto-close check fires
+      published_at: Math.floor(Date.now() / 1000) - 3600,
+      published_by: 'attached-member-machine',
+      machine_id: 'attached-member-machine',
+    });
+
+    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+    const spyLogger = {
+      warn(message: string, meta?: Record<string, unknown>): void { warnings.push({ message, meta }); },
+      error(): void { /* unused */ },
+    };
+    const nonHolderLogger = new DaemonLogger(path.join(tmp, 'non-holder-logs'));
+    const nonHolderServer = new DaemonServer({
+      vaultDir: path.join(tmp, 'non-holder-anchor', '.myco'),
+      logger: nonHolderLogger,
+      daemonStateAuthority: stubAuthority,
+    });
+    const nonHolderCache = new GroveRuntimeCache();
+    registerContentClaimMaterializeRoute(nonHolderServer, {
+      cache: nonHolderCache,
+      dial: defaultDial,
+      logger: spyLogger,
+      machineId: 'not-the-claim-holder', // != claimed_by -> the host's holder gate 403s the mark dial
+      mycoHome,
+    });
+    await nonHolderServer.start(0);
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${nonHolderServer.port}/api/content-claims/${claimId}/materialize`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project_root: memberProjectRoot }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { ok: boolean; skill_name: string; generation: number; auto_published: boolean };
+      expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1, auto_published: false });
+
+      // The write is the user-visible outcome — it landed on the member tree
+      // despite the failed bookkeeping.
+      const written = fs.readFileSync(
+        path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR, 'skill-1', 'SKILL.md'),
+        'utf-8',
+      );
+      expect(written).toBe(CONTENT);
+
+      // The host refused the close: the claim stays active for the holder's
+      // own manual Mark-published flow or TTL expiry.
+      const claimRow = getDatabase().prepare(
+        `SELECT state FROM content_claims WHERE id = ?`,
+      ).get(claimId) as { state: string } | undefined;
+      expect(claimRow?.state).toBe('active');
+
+      // Exactly one warn: the remote source's detection log (carrying the
+      // dial's real 403), with no second generic warn from the orchestration.
+      expect(warnings.length).toBe(1);
+      expect(warnings[0].message).toContain('mark-published');
+      expect(warnings[0].meta?.status).toBe(403);
+    } finally {
+      try { await nonHolderServer.stop(); } catch { /* not started */ }
+      try { nonHolderCache.closeAll(); } catch { /* not created */ }
+    }
+  });
+
   test('member materializes an attached okf_page claim by dialing the host directly — byte-faithful, lands on the MEMBER tree only', async () => {
+    // Pin the okf_page half of the auto-close asymmetry: even with a
+    // same-generation publication row on record, an attached okf_page never
+    // auto-closes — the inventory's `published[]` array (the attached
+    // branch's only publication read) is skills-only by design (spec §2(a)),
+    // so the remote source resolves no published generation for the page.
+    upsertContentPublication({
+      artifact_kind: 'okf_page',
+      artifact_id: okfPageId,
+      published_generation: 1, // matches the claim's generation — would auto-close on the LOCAL branch
+      published_at: Math.floor(Date.now() / 1000) - 3600,
+      published_by: 'attached-member-machine',
+      machine_id: 'attached-member-machine',
+    });
+
     const res = await fetch(`${memberBase}/api/content-claims/${okfClaimId}/materialize`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ project_root: memberProjectRoot }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; path: string; page_path: string; generation: number };
-    expect(body).toMatchObject({ ok: true, page_path: okfDocPath, generation: 1 });
+    const body = await res.json() as { ok: boolean; path: string; page_path: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, page_path: okfDocPath, generation: 1, auto_published: false });
 
     const revision = getOkfPageRevisionAtGeneration(okfPageId, 1)!;
     const expected = renderOkfDocument({
@@ -323,6 +476,13 @@ describe('content claim materialize over the Team Host overlay', () => {
 
     // The host's own project tree was never touched (B1).
     expect(fs.existsSync(path.join(hostProjectRoot, 'okf'))).toBe(false);
+
+    // No auto-close fired: the claim on the host's Grove DB stays active for
+    // the manual Mark-published flow.
+    const claimRow = getDatabase().prepare(
+      `SELECT state FROM content_claims WHERE id = ?`,
+    ).get(okfClaimId) as { state: string } | undefined;
+    expect(claimRow?.state).toBe('active');
   });
 
   test('attached member with a non-default output_path in its own myco.yaml materializes there — proves the attached config resolution, not the fallback', async () => {
@@ -420,5 +580,91 @@ describe('content claim materialize over the Team Host overlay', () => {
     // Nothing landed anywhere a materialize write could plausibly have gone.
     expect(fs.existsSync(path.join(hostProjectRoot, CANONICAL_PROJECT_SKILLS_DIR))).toBe(false);
     expect(fs.existsSync(path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR))).toBe(false);
+  });
+
+  test('an attached member GET /api/content-claims proxies to the host and carries the published[] entry, with active_claim', async () => {
+    // skill-1 published at its own lineage-latest generation (1) — the
+    // inventory route's `addCandidate` (content-claims.ts) routes this to
+    // `published`, not `claimable`, and still attaches the live claim fixture
+    // set up above (also generation 1, still `active`) as `active_claim`.
+    const publishedAt = Math.floor(Date.now() / 1000) - 60;
+    upsertContentPublication({
+      artifact_kind: 'skill',
+      artifact_id: 'skill-1',
+      published_generation: 1,
+      published_at: publishedAt,
+      published_by: 'attached-member-machine',
+      machine_id: 'attached-member-machine',
+    });
+
+    // No `x-myco-machine-id` — this is the member DAEMON's own attach-classification
+    // dispatch, the same header shape the dashboard's inventory fetch uses. The
+    // member has no local Grove DB for this project at all (B1's whole premise):
+    // this can ONLY resolve by the member proxying to the host over the real
+    // overlay dial, never a local answer.
+    //
+    // `x-myco-project-id` is a context-switching header (grove/request-context.ts),
+    // so the member daemon's own auth-token gate requires its bearer here — the
+    // same token a spawned child (hook/MCP) inherits via `MYCO_REQUEST_CONTEXT_AUTH`.
+    const res = await fetch(`${memberBase}/api/content-claims`, {
+      headers: { 'x-myco-project-id': projectId, 'x-myco-auth': memberServer.getAuthToken() },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      published: Array<{
+        artifact_kind: string;
+        artifact_id: string;
+        name: string;
+        label: string;
+        published_generation: number;
+        lineage_generation: number;
+        active_claim: { id: string; state: string; generation: number; claimed_by: string } | null;
+      }>;
+    };
+    expect(body.ok).toBe(true);
+    const entry = body.published.find((p) => p.artifact_id === 'skill-1');
+    expect(entry).toMatchObject({
+      artifact_kind: 'skill',
+      artifact_id: 'skill-1',
+      name: 'skill-1',
+      label: 'Skill One',
+      published_generation: 1,
+      lineage_generation: 1,
+    });
+    expect(entry?.active_claim).toMatchObject({
+      id: claimId,
+      state: 'active',
+      generation: 1,
+      claimed_by: 'attached-member-machine',
+    });
+  });
+
+  test('a file-status POST arriving over the overlay is refused at the transport boundary — never resolves a member disk', async () => {
+    // The member-disk-truth sibling of the materialize refusal above: the
+    // `localhost-only` stamp (host/routing.ts) and the host's independent
+    // overlay backstop (`overlayHostStampRefusal`, server.ts) hold for
+    // `/api/content-claims/file-status` exactly as they do for materialize —
+    // the specific `message`/`retryable` fields (not just a bare 404) prove the
+    // STAMP-based refusal fired, not merely "no such route registered here".
+    const res = await fetch(`http://127.0.0.1:${hostServer.overlayPort}/api/content-claims/file-status`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${HOST_BEARER}`,
+        'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION),
+        'x-myco-grove-id': groveId,
+        'x-myco-project-id': projectId,
+      },
+      body: JSON.stringify({
+        project_root: hostProjectRoot,
+        artifacts: [{ artifact_kind: 'skill', artifact_id: 'skill-1', name: 'skill-1' }],
+      }),
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: string; message: string; retryable: boolean };
+    expect(body.error).toBe('not_found');
+    expect(body.message).toBe('This route is served on localhost only, not over the overlay.');
+    expect(body.retryable).toBe(false);
   });
 });

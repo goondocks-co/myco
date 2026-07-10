@@ -3,7 +3,7 @@
  * surface over DB-resident skills and OKF pages (design:
  * docs/superpowers/specs/2026-07-09-content-claim-system-design.md §3).
  *
- *   GET  /api/content-claims                  claimable inventory + active claims
+ *   GET  /api/content-claims                  claimable inventory + active claims + published artifacts
  *   POST /api/content-claims                  constraint-based claim
  *   POST /api/content-claims/:id/refresh      holder-only generation bump
  *   POST /api/content-claims/:id/release      holder-only release
@@ -97,8 +97,21 @@ function claimView(row: ContentClaimRow, currentGeneration: number | null): Reco
   };
 }
 
+/** One artifact published at its current lineage-latest generation — the
+ *  additive companion to `claimable`. Skills-only: a published `okf_page`
+ *  emits no entry (spec §2(a)). */
+interface PublishedArtifactView {
+  artifact_kind: 'skill';
+  artifact_id: string;
+  name: string;
+  label: string;
+  published_generation: number;
+  lineage_generation: number;
+  active_claim: Record<string, unknown> | null;
+}
+
 // ---------------------------------------------------------------------------
-// GET /api/content-claims — claimable inventory + active claims
+// GET /api/content-claims — claimable inventory + active claims + published
 // ---------------------------------------------------------------------------
 
 export async function handleContentClaimsList(
@@ -116,11 +129,32 @@ export async function handleContentClaimsList(
   const activeClaimByKey = new Map(activeClaims.map((c) => [`${c.artifact_kind}:${c.artifact_id}`, c]));
 
   const claimable: Array<Record<string, unknown>> = [];
-  const addCandidate = (kind: ContentClaimArtifactKind, id: string, label: string, generation: number) => {
+  const published: PublishedArtifactView[] = [];
+  const addCandidate = (
+    kind: ContentClaimArtifactKind,
+    id: string,
+    name: string,
+    label: string,
+    generation: number,
+  ) => {
     const key = `${kind}:${id}`;
     const publishedGeneration = publicationByKey.get(key)?.published_generation ?? null;
-    if (publishedGeneration === generation) return; // already published at lineage-latest
     const activeClaim = activeClaimByKey.get(key) ?? null;
+    if (publishedGeneration === generation) {
+      // already published at lineage-latest — surfaced via `published`, not `claimable`.
+      if (kind === 'skill') {
+        published.push({
+          artifact_kind: 'skill',
+          artifact_id: id,
+          name,
+          label,
+          published_generation: publishedGeneration,
+          lineage_generation: generation,
+          active_claim: activeClaim ? claimView(activeClaim, generation) : null,
+        });
+      }
+      return;
+    }
     claimable.push({
       artifact_kind: kind,
       artifact_id: id,
@@ -132,10 +166,10 @@ export async function handleContentClaimsList(
   };
 
   for (const record of skills) {
-    addCandidate('skill', record.id, record.display_name || record.name, record.generation);
+    addCandidate('skill', record.id, record.name, record.display_name || record.name, record.generation);
   }
   for (const page of pages) {
-    addCandidate('okf_page', page.id, page.title || page.path, page.generation);
+    addCandidate('okf_page', page.id, page.path, page.title || page.path, page.generation);
   }
 
   return {
@@ -143,6 +177,7 @@ export async function handleContentClaimsList(
     body: {
       ok: true,
       claimable,
+      published,
       active_claims: activeClaims.map((claim) => {
         const artifact = resolveArtifact(claim.artifact_kind, claim.artifact_id, scope);
         return claimView(claim, artifact?.generation ?? null);
