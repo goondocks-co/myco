@@ -2,15 +2,19 @@
  * OKF (Open Knowledge Format) page — a focused read surface for the
  * repository-carried wiki. The wiki itself is plain markdown on the file
  * system, best browsed in an editor — this page deliberately does NOT render
- * page bodies. It holds exactly four things:
+ * page bodies. It holds:
  *
  *   1. The publish-block banner (conditional) — the ONE human decision OKF
  *      ever asks for. "Acknowledge & publish" ships the blocked run's
  *      preserved pages immediately (POST /api/okf/acknowledge).
  *   2. Bundle status — validity, freshness, page count, generation — with
  *      "Open in VS Code" (the bundle is files; the editor is the browser).
- *   3. The bundle's directory structure, as it exists on disk.
- *   4. What OKF is, with a link to the spec. Agents maintain the wiki
+ *   3. The Publish panel (conditional) — every page whose lineage-latest
+ *      generation hasn't been claimed-and-materialized to disk yet, each with
+ *      its own claim-to-publish control (content-claim system, spec §7). This
+ *      is where a synthesis run's DB-only write gets a visible next step.
+ *   4. The bundle's directory structure, as it exists on disk.
+ *   5. What OKF is, with a link to the spec. Agents maintain the wiki
  *      automatically (scheduled okf-synthesize + the managed AGENTS.md
  *      pointer); a pointer problem surfaces here only when something is
  *      actually wrong.
@@ -32,6 +36,7 @@ import { Button } from '../components/ui/button';
 import { MetricCard } from '../components/ui/metric-card';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
 import { CapabilityIndicator } from '../components/config/CapabilityIndicator';
+import { ClaimControl } from '../components/content-claims/ClaimControl';
 import { formatTimeAgo } from '../lib/format';
 import {
   useOkfAcknowledge,
@@ -41,6 +46,7 @@ import {
   type OkfPageSummary,
   type OkfStatusResponse,
 } from '../hooks/use-okf';
+import { useContentClaims } from '../hooks/use-content-claims';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 
 const OKF_SPEC_URL = 'https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md';
@@ -148,6 +154,35 @@ function OkfStructure() {
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * The claim-to-publish surface (spec §7): every OKF page whose lineage-latest
+ * generation hasn't been published yet, one `ClaimControl` per page. This is
+ * where the okf-synthesize task's DB-only write (§0 — "one mechanism...
+ * synthesize DB-only everywhere") gets a visible next step instead of ending
+ * silently — a run that stages new page generations makes them show up here,
+ * each with its own Publish / Release affordance. Renders
+ * nothing once every page is caught up with what's published.
+ */
+function OkfClaimsPanel() {
+  const { data, isLoading } = useContentClaims();
+  const pages = (data?.claimable ?? []).filter((c) => c.artifact_kind === 'okf_page');
+
+  if (isLoading || pages.length === 0) return null;
+
+  return (
+    <Panel eyebrow="Publish" title="Pages ready to publish" data-testid="okf-claims-panel">
+      <div className="space-y-3">
+        {pages.map((page) => (
+          <div key={page.artifact_id} className="space-y-2">
+            <p className="font-sans text-sm text-on-surface m-0">{page.label}</p>
+            <ClaimControl artifactKind="okf_page" artifactId={page.artifact_id} />
+          </div>
+        ))}
+      </div>
+    </Panel>
   );
 }
 
@@ -285,6 +320,8 @@ export default function Okf() {
               <MetricCard label="Generation" value={status.bundleGeneration ?? '—'} />
             </div>
           </Panel>
+
+          <OkfClaimsPanel />
 
           <Panel eyebrow="Structure" title={<span className="font-mono">{status.outputPath}/</span>} padded={false}>
             <OkfStructure />

@@ -29,6 +29,7 @@ import {
 } from '@myco/daemon/host-proxy';
 import type { RemoteTarget, RouteClassification } from '@myco/host/routing';
 import { shouldBufferFallback } from '@myco/hooks/send-event';
+import { getMachineId } from '@myco/machine-id';
 import { resolveProjectBufferDir } from '@myco/grove/paths';
 import { listGroves } from '@myco/grove/registry';
 import { readEventId } from '@myco/capture/event-id';
@@ -235,6 +236,70 @@ describe('host-proxy forwarder', () => {
     expect(got.headers.authorization).toBe(`Bearer ${HOST_BEARER}`);
     expect(got.headers[HOST_PROTOCOL_HEADER]).toBe('1');
     expect(got.headers.host).toBe(`127.0.0.1:${fixturePort}`);
+  });
+
+  test('serve route stamps the MEMBER machine id when the inbound request carries none; a caller-supplied one is preserved verbatim', async () => {
+    fixture.setResponder((_req, res) => {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+
+    // Browser-shaped: a dashboard fetch sets no x-myco-machine-id. The caller
+    // at this hop is the member daemon, so its own machine id is stamped —
+    // without it the host handler's fallback attributes the write to the
+    // HOST's machine id (a dashboard-made claim became the host's, and the
+    // member's own release then 403'd not_holder).
+    await fetch(memberUrl('/api/content-claims'), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-project-id': 'proj_0123456789abcdef0123456789abcdef',
+      },
+      body: JSON.stringify({ artifact_kind: 'skill', artifact_id: 'skill-1' }),
+    });
+    expect(fixture.requests[0].headers['x-myco-machine-id']).toBe(getMachineId());
+
+    // Agent-shaped: hooks/MCP clients supply their own machine id — forwarded
+    // verbatim, never overwritten.
+    await fetch(memberUrl('/api/content-claims'), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-project-id': 'proj_0123456789abcdef0123456789abcdef',
+        'x-myco-machine-id': 'agent-caller-machine',
+      },
+      body: JSON.stringify({ artifact_kind: 'skill', artifact_id: 'skill-1' }),
+    });
+    expect(fixture.requests[1].headers['x-myco-machine-id']).toBe('agent-caller-machine');
+  });
+
+  test('serve route strips the inbound browser Origin/Referer/Cookie before forwarding to the host', async () => {
+    fixture.setResponder((_req, res) => {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    // A dashboard-initiated mutation: the browser sends Origin (+ Referer,
+    // Cookie) on the request the member's loopback listener already vetted.
+    // This hop is server-to-server; the host's overlay CSRF gate rejects ANY
+    // Origin, so a verbatim forward of these would 403 every browser-driven
+    // routed mutation (the live-caught regression).
+    const res = await fetch(memberUrl('/api/content-claims'), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-project-id': 'proj_0123456789abcdef0123456789abcdef',
+        origin: 'http://127.0.0.1:19666',
+        referer: 'http://127.0.0.1:19666/dashboard',
+        cookie: 'session=should-not-cross-the-hop',
+      },
+      body: JSON.stringify({ artifact_kind: 'skill', artifact_id: 'skill-1' }),
+    });
+    expect(res.status).toBe(201);
+
+    const got = fixture.requests[0];
+    expect(got.headers.origin).toBeUndefined();
+    expect(got.headers.referer).toBeUndefined();
+    expect(got.headers.cookie).toBeUndefined();
   });
 
   test('serve route with a request body pipes the body through to the host', async () => {

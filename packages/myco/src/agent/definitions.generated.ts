@@ -520,6 +520,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "assess"
         ],
         "purpose": "Applies classified merges, narrowing, and content updates by writing to vault_skill_records — status transitions to retired/deleted for DEPRECATED and merged-away skills, and lineage-bearing content changes via vault_edit_skill/vault_write_skill, which carry no destructiveHint of their own.",
+        "requiresProjectTree": true,
         "onItemError": "skip"
       }
     ],
@@ -556,6 +557,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 10,
         "required": true,
+        "requiresProjectTree": true,
         "onItemError": "skip"
       },
       {
@@ -578,6 +580,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "purpose": "Finalizes the staged skill via vault_finalize_skill, which atomically inserts the vault_skill_records row plus lineage and transitions the source candidate to 'generated' — no separate vault_skill_candidates write call is made in this phase.",
         "postCondition": "skill-generate-validate",
+        "requiresProjectTree": true,
         "onItemError": "skip"
       }
     ],

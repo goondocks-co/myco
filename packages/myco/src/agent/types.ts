@@ -124,6 +124,17 @@ export interface PhaseDefinition {
    * same-wave gates throw at YAML load time.
    */
   gateOnPriorMetadata?: PhaseGateOnPriorMetadata;
+  /**
+   * Declares that this phase's prompt/tools assume the project's working
+   * tree is present on disk. When set and the run's `treeAvailable` is
+   * `false` (a Team Host iterating a registered project whose tree lives
+   * on a member machine — see `RunOptions.treeAvailable`), the phase loop
+   * skips the phase before composing the prompt and records it as
+   * `skipped` rather than invoking the harness against a nonexistent
+   * `projectRoot`. Runs BEFORE preCondition and before any harness
+   * invocation — zero LLM turns.
+   */
+  requiresProjectTree?: boolean;
 
   // --- Map mode (mode === 'map') -------------------------------------------
   /** Phase execution mode. Unset/`agent` = free-form (existing). `map` = drain mode. */
@@ -639,6 +650,17 @@ export interface RunOptions {
    * measure what the agent would do without corrupting the vault.
    */
   dryRun?: boolean;
+  /**
+   * Whether the project's working tree is present on disk for this run.
+   * Defaults to `true` (unset) — every manual/API-triggered dispatch runs
+   * where a live caller is working in the tree. Set `false` only by the
+   * scheduled-tasks dispatcher for a registered project whose tree isn't
+   * checked out on this machine (Team Host serving a member's project;
+   * see `RegisteredProjectScope.treeAvailable`). Phases that declare
+   * `PhaseDefinition.requiresProjectTree` consult this to skip cleanly
+   * instead of running against a nonexistent `projectRoot`.
+   */
+  treeAvailable?: boolean;
   /**
    * Per-run execution overrides. When set, these overwrite the
    * corresponding fields on the resolved EffectiveConfig before the

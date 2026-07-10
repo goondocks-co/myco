@@ -1,7 +1,7 @@
 /** Agent executor — orchestrates a single agent run end to end. */
 
 import crypto from 'node:crypto';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { projectTreeAvailable, resolveProjectRoot } from '@myco/vault/resolve.js';
 import {
   epochSeconds,
   estimateTokens,
@@ -591,6 +591,7 @@ export async function runAgent(
       abortController: taskAbortController,
       projectRoot,
       vaultDir,
+      treeAvailable: options?.treeAvailable,
       requestContext: options?.requestContext,
       options,
       checkpointState,
@@ -1103,7 +1104,12 @@ function resolveOkfStore(args: {
   try {
     if (!args.vaultDir || !args.requestContext) return null;
     const projectId = requireProjectId(args.requestContext, 'okf-synthesize finalize');
-    const config = loadMergedConfig(args.vaultDir, { groveId: args.requestContext.groveId ?? undefined });
+    // Host-run finalize for a served project has no local working tree —
+    // degrade to machine+grove tiers; the store writes are DB-only.
+    const config = loadMergedConfig(args.vaultDir, {
+      groveId: args.requestContext.groveId ?? undefined,
+      projectTierOptional: !projectTreeAvailable(args.vaultDir),
+    });
     return new OkfStore({
       scope: projectScopeFromRequestContext(args.requestContext),
       projectId,
@@ -1133,7 +1139,11 @@ function resolveOkfSynthesizeSnapshot(args: {
     const projectId = requireProjectId(args.requestContext, 'okf-synthesize finalize');
     const projectRoot = args.requestContext.projectRoot ?? resolveProjectRoot(args.vaultDir);
     const machineId = args.requestContext.machineId;
-    const config = loadMergedConfig(args.vaultDir, { groveId: args.requestContext.groveId ?? undefined });
+    // Same tree-unavailable degrade as resolveOkfStore above.
+    const config = loadMergedConfig(args.vaultDir, {
+      groveId: args.requestContext.groveId ?? undefined,
+      projectTierOptional: !projectTreeAvailable(args.vaultDir),
+    });
     const scope = projectScopeFromRequestContext(args.requestContext);
     return computeOkfSynthesizeSnapshot(scope, config, projectRoot, projectId, machineId);
   } catch {

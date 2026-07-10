@@ -21,6 +21,7 @@ import {
 } from './loader.js';
 import { loadAllTasks } from './registry.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import type { MycoConfig, PhaseOverride, TaskProviderOverride } from '@myco/config/schema.js';
 import type { ProviderConfig, EffectiveConfig, HarnessId, ReasoningLevel } from './types.js';
 import { HARNESS_CLAUDE_SDK } from './types.js';
@@ -296,7 +297,14 @@ export function resolveRunConfig(
   let defaultReasoningLevel: ReasoningLevel | undefined;
   let semanticWriteCheckEnabledDefault = false;
   try {
-    const mycoConfig = loadMergedConfig(vaultDir, { groveId });
+    // A host-run task for a served project has no local working tree —
+    // degrade to machine+grove tiers (empty project tier) so the run keeps
+    // its grove-tier provider/model/params overrides instead of falling
+    // into the catch below and losing them all.
+    const mycoConfig = loadMergedConfig(vaultDir, {
+      groveId,
+      projectTierOptional: !projectTreeAvailable(vaultDir),
+    });
 
     // Per-task override takes priority over global
     taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;

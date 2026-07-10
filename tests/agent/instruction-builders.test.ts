@@ -36,6 +36,7 @@ import {
   buildSkillGenerateInstruction,
   buildSkillSurveyInstruction,
   buildTaskInstruction,
+  CANOPY_MAP_TASK,
   CORTEX_INSTRUCTIONS_TASK,
   getSkillSurveyEligibility,
   isInstructionRequiredTask,
@@ -1388,5 +1389,72 @@ describe('buildTaskInstruction', () => {
     );
     expect(result).toBeUndefined();
     rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('withholds projectRoot from skill-evolve drift detection when treeAvailable is false (Team Host degrade)', async () => {
+    // Same growth-signal fixture as "includes drift report when growth-only
+    // signal is present" above — proves the treeAvailable=false path
+    // withholds projectRoot from buildSkillEvolveInstruction so a scheduled
+    // run for a treeless registered project never reads (and never
+    // misreads) files that aren't on this machine.
+    const now = epochSeconds();
+    const skillId = createSkillWithWatermark('growth-skill-treeless', now + 1000, 0, 'helpers skill');
+
+    const db = getDatabase();
+    db.prepare('UPDATE skill_records SET properties = ? WHERE id = ?').run(JSON.stringify({
+      knowledge_watermark: now + 1000,
+      file_fingerprints: {
+        'packages/myco/src/helpers.ts': { exports: ['ExistingSymbol'] },
+      },
+    }), skillId);
+
+    const root = mkdtempSync(join(tmpdir(), 'myco-evolve-treeless-'));
+    mkdirSync(join(root, '.agents', 'skills', 'growth-skill-treeless'), { recursive: true });
+    mkdirSync(join(root, 'packages', 'myco', 'src'), { recursive: true });
+    writeFileSync(
+      join(root, '.agents', 'skills', 'growth-skill-treeless', 'SKILL.md'),
+      '# Growth\n## Scope\nUse `packages/myco/src/helpers.ts`.\n## Procedure\nKeep updated.\n',
+    );
+    writeFileSync(
+      join(root, 'packages', 'myco', 'src', 'helpers.ts'),
+      'export const ExistingSymbol = 1;\nexport const AddedOne = 2;\nexport const AddedTwo = 3;\n',
+    );
+
+    const withTree = await buildTaskInstruction(
+      SKILL_EVOLVE_TASK, {}, undefined, root, undefined, undefined, undefined, TEST_REQUEST_CONTEXT,
+    );
+    expect(withTree?.instruction).toContain('Pre-computed Drift Report');
+
+    // With projectRoot withheld, the growth signal — the only signal this
+    // fixture produces — never materializes: no drift is computed, so
+    // there is nothing to assess. Matches the existing "returns undefined
+    // when all signals are zero" contract, now reached via treeAvailable
+    // rather than an absent projectRoot.
+    const treeless = await buildTaskInstruction(
+      SKILL_EVOLVE_TASK, {}, undefined, root, undefined, undefined, undefined, TEST_REQUEST_CONTEXT, false,
+    );
+    expect(treeless).toBeUndefined();
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('withholds projectRoot from canopy-map when treeAvailable is false (Team Host degrade)', async () => {
+    // buildCanopyMapInstructionDetailed's first gate is `!projectRoot` — a
+    // scheduled run for a treeless registered project must resolve to the
+    // same "no_project_root" skip as a caller that never had a projectRoot,
+    // rather than reading rules files from a root that doesn't exist here.
+    const config = MycoConfigSchema.parse({ version: 3 });
+    const result = await buildTaskInstruction(
+      CANOPY_MAP_TASK,
+      undefined,
+      undefined,
+      '/some/registered/project/root',
+      undefined,
+      config,
+      undefined,
+      TEST_REQUEST_CONTEXT,
+      false,
+    );
+    expect(result).toBeUndefined();
   });
 });

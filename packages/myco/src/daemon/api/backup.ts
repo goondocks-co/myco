@@ -16,7 +16,9 @@
  * DB handle from the runtime cache, and shape responses.
  */
 
+import fs from 'node:fs';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import {
   createGroveBackup,
   listGroveBackups,
@@ -335,7 +337,11 @@ export function createBackupConfigHandlers(deps: BackupConfigDeps) {
   async function handleGetBackupConfig(req: RouteRequest): Promise<RouteResponse> {
     const vaultDir = vaultDirForRequest(req);
     const groveId = req.requestContext?.groveId ?? deps.bootGroveId;
-    const cfg = loadMergedConfig(vaultDir, { groveId, mycoHome });
+    // A Team Host serving this project for a member has no local working
+    // tree — degrade to machine+grove tiers (empty project tier) instead of
+    // throwing "myco.yaml not found" (same signal + mechanism as `okf.ts`).
+    const treeAvailable = fs.existsSync(resolveProjectRoot(vaultDir));
+    const cfg = loadMergedConfig(vaultDir, { groveId, mycoHome, projectTierOptional: !treeAvailable });
     const grove = groveId ? loadGroveRecord(groveId, mycoHome) : null;
     return {
       body: {

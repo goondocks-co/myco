@@ -85,6 +85,9 @@ export const LOG_KINDS = {
   DAEMON_LOGGER: 'daemon.logger',
   TENANCY_VIOLATION: 'tenancy.violation',
 
+  // Scope iteration (forEachRegisteredProject / forEachGrove)
+  SCOPE_TREE_UNAVAILABLE: 'scope.tree_unavailable',
+
   // Provider-level fetch instrumentation (cross-runtime: anything that
   // routes outbound LLM/embedding requests through `instrumentedFetch`).
   FETCH_START: 'fetch.start',
@@ -131,6 +134,12 @@ export const LOG_KINDS = {
   LOG_RETENTION: 'log.retention',
   AGENT_RUN_RETENTION: 'agent_run.retention',
   NOTIFICATION_RETENTION: 'notification.retention',
+  // Content claim system (Team Host WS2) — the publication-lock expiry sweep
+  CONTENT_CLAIM_EXPIRY: 'content_claim.expiry',
+  // Content claim system (Team Host WS2) — member-side materialization (§4)
+  CONTENT_CLAIM_MATERIALIZE: 'content_claim.materialize',
+  // Content claim system (Team Host WS2) — terminal-row retention prune
+  CONTENT_CLAIM_PRUNE: 'content_claim.prune',
 
   // Backup
   BACKUP_START: 'backup.start',

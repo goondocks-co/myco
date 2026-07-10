@@ -1,6 +1,7 @@
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import type { JobRunner } from './job-runner.js';
 import type {
   ProjectTaskLastRunMap,
@@ -94,9 +95,16 @@ export function makeTotalCanopyPendingProbe(deps: CanopyPendingProbeDeps): () =>
     countForGrove: ({ grove, mycoHome }) => {
       let grovePending = 0;
       for (const project of listRegisteredProjects(grove.id, mycoHome)) {
-        const config = loadMergedConfig(resolveProjectVaultDir(project.root), {
+        // A served project's working tree lives on the member's machine —
+        // degrade to machine+grove tiers (empty project tier). Without this,
+        // one tree-unavailable project throws out of countForGrove and the
+        // probe's per-Grove catch discards the count for EVERY project in
+        // the Grove.
+        const projectVaultDir = resolveProjectVaultDir(project.root);
+        const config = loadMergedConfig(projectVaultDir, {
           groveId: grove.id,
           mycoHome,
+          projectTierOptional: !projectTreeAvailable(projectVaultDir),
         });
         if (!effectiveTaskScheduleEnabled(config, 'canopy-describe', false)) continue;
         grovePending += countPendingCanopyDescribe(
@@ -517,6 +525,11 @@ export async function registerScheduledTasks(
       const config = loadMergedConfig(scope.projectVaultDir, {
         groveId: scope.grove.id,
         mycoHome,
+        // A Team Host iterating a member's registered project has no local
+        // working tree — degrade to machine+grove tiers (empty project tier)
+        // instead of throwing "myco.yaml not found" and silently skipping
+        // the project via shouldVisit's catch below.
+        projectTierOptional: !scope.treeAvailable,
       });
       if (lastConfigErrorByProject.has(key)) {
         logger.info(LOG_KINDS.AGENT_RUN, 'Tenant config recovered for scheduled tasks', {
@@ -556,7 +569,7 @@ export async function registerScheduledTasks(
   ): Promise<void> {
     const config = resolveProjectConfig(scope);
     if (!config) return;
-    const { requestContext, projectRoot, projectVaultDir, projectId } = scope;
+    const { requestContext, projectRoot, projectVaultDir, projectId, treeAvailable } = scope;
     // Grove-scoped manager for this project's run — never the bootstrap anchor.
     const embeddingManager = resolveEmbeddingManager(requestContext);
     const readScope: ProjectScope = toProjectScope(projectId);
@@ -583,6 +596,7 @@ export async function registerScheduledTasks(
           embeddingManager,
           requestContext,
           logger,
+          treeAvailable,
         });
         if (resumed.status === 'skipped') {
           // The executor never started the resume (another run of the task
@@ -617,6 +631,7 @@ export async function registerScheduledTasks(
       config,
       getTeamClient,
       requestContext,
+      treeAvailable,
     );
 
     // Without this guard, instruction-required tasks (e.g. skill-generate)
@@ -637,6 +652,7 @@ export async function registerScheduledTasks(
       embeddingManager,
       requestContext,
       logger,
+      treeAvailable,
     });
     logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
       project_id: projectId,

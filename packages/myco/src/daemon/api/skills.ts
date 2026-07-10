@@ -36,6 +36,7 @@ import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { CANDIDATE_STATUS, REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
+import { isHostServedRequest } from '@myco/grove/request-context.js';
 import { validateSkillCandidateQualityContract } from '@myco/agent/skill-candidate-quality.js';
 import { extractFrontmatterFields } from '@myco/agent/tools/skill-validator.js';
 import { isSafeSkillNameForFs } from '@myco/skills/names.js';
@@ -368,6 +369,12 @@ export interface SkillDeleteDeps {
  * (`principal.tenancy.projectVaultDir`), never a baked-in bootstrap anchor:
  * a delete from project B must remove B's `.agents/skills/<name>` and must
  * never touch the anchor project's files.
+ *
+ * Team Host residency: on a host-served delete (the host running this route
+ * on a remote member's behalf) the host holds the Grove DB but NOT the
+ * member's working tree, so the fs cascade below must never run — only the
+ * DB delete (and its claim cancel, inside `deleteSkillRecordCascade`) does.
+ * Mirrors the write-side gate at `agent/tools/skill-tools.ts:166-182`.
  */
 export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
   const { logger } = deps;
@@ -380,7 +387,7 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
     // Delete skill file and symlinks from disk if the DB delete succeeded
     if ((result.body as Record<string, unknown>)?.deleted) {
       const record = result.body as { name?: string };
-      if (record.name) {
+      if (record.name && !isHostServedRequest(req.requestContext)) {
         // Path-traversal gate: a peer-controlled skill name (rows arrive
         // via team-sync from the cloud Worker) reaching `fs.rmSync({
         // recursive: true, force: true })` is a destructive primitive

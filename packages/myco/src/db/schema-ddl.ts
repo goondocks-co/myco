@@ -717,6 +717,81 @@ export const ROUTED_EVENT_DEDUP_TABLE = `
     created_at      INTEGER NOT NULL
   )`;
 
+// -- Content Claim System (Team Host WS2; grove-resident, NOT team-synced) --
+//
+// A content claim is a LOCK on a publishable artifact (a skill or an OKF wiki
+// page) so exactly one team member's daemon materializes it into a working
+// tree. Grove-resident and deliberately NOT a team-sync table (the
+// `routed_event_dedup` pattern above): a lock needs a single transactional
+// arbiter, and independent local DBs syncing offline could each insert an
+// "active" claim and both survive reconciliation — the lock would fail
+// exactly in the contention case it exists for. Members reach the
+// authoritative rows over the serve surface instead; `machine_id` /
+// `claimed_by` are origin-tracing only, kept for future per-node authz.
+
+/**
+ * `id` is `cclaim_<32hex>`. `artifact_kind`/`artifact_id`/`generation`
+ * identify what is claimed (a `skill_records.id` at a
+ * `skill_lineage.generation`, or an `okf_pages.id` at an
+ * `okf_page_revisions.page_generation`). `claimed_by` is the claiming
+ * machine_id — under v1 flat trust this is an unauthenticated identity, so
+ * holder-only checks (release/refresh/mark-published) are cooperative, not
+ * enforced; the ACTIVE-partial unique index below is the real serialization
+ * guarantee. `expires_at` backstops an abandoned claim: TTL is the only
+ * guarantee that a lock eventually frees (there is no reliable
+ * release-on-detach). Terminal rows (released/published/expired) are audit
+ * breadcrumbs pruned by GC after 30 days — content history lives in lineage,
+ * not here. No `synced_at` column — not a synced table.
+ */
+export const CONTENT_CLAIMS_TABLE = `
+  CREATE TABLE IF NOT EXISTS content_claims (
+    id              TEXT PRIMARY KEY,
+    artifact_kind   TEXT NOT NULL,
+    artifact_id     TEXT NOT NULL,
+    generation      INTEGER NOT NULL,
+    project_id      TEXT NOT NULL,
+    claimed_by      TEXT NOT NULL,
+    claimed_at      INTEGER NOT NULL,
+    expires_at      INTEGER NOT NULL,
+    state           TEXT NOT NULL,
+    released_at     INTEGER,
+    published_at    INTEGER,
+    machine_id      TEXT NOT NULL
+  )`;
+
+/**
+ * The ACTIVE-partial unique index IS the claim system's serialization
+ * guarantee: claim creation is a constraint-based INSERT (never
+ * SELECT-then-INSERT — that would be TOCTOU), so a second INSERT for the
+ * same (artifact_kind, artifact_id) while a row is still 'active' hits this
+ * constraint and the caller maps it to 409 `already_claimed`. Once the
+ * holding row transitions off 'active' (released/published/expired), a new
+ * active claim is free to insert.
+ */
+export const CONTENT_CLAIMS_ACTIVE_UNIQUE_INDEX =
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_content_claims_active ON content_claims (artifact_kind, artifact_id) WHERE state = 'active'`;
+
+/**
+ * Durable "what was last published" marker — NEVER pruned (unlike
+ * `content_claims`, whose terminal rows age out, which would resurrect
+ * artifacts as "unpublished" if this table derived from claim history
+ * instead of recording its own). Upserted by the mark-published operation;
+ * absence of a row means the artifact has never been published. The
+ * claimable inventory and "unpublished generation" badge compare
+ * lineage-latest against `published_generation`. Grove-resident and NOT a
+ * team-sync table, same posture as `content_claims`.
+ */
+export const CONTENT_PUBLICATIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS content_publications (
+    artifact_kind        TEXT NOT NULL,
+    artifact_id          TEXT NOT NULL,
+    published_generation INTEGER NOT NULL,
+    published_at         INTEGER NOT NULL,
+    published_by         TEXT NOT NULL,
+    machine_id           TEXT NOT NULL,
+    PRIMARY KEY (artifact_kind, artifact_id)
+  )`;
+
 // -- Eval Harness Layer -----------------------------------------------------
 
 /**
@@ -953,6 +1028,7 @@ export const GROVE_PROJECT_SCOPED_TABLES = [
   'okf_generations',
   'okf_pages',
   'okf_page_revisions',
+  'content_claims',
 ] as const;
 
 export const GROVE_PROJECT_SCOPE_INDEX_DDLS: readonly string[] =
@@ -1348,6 +1424,9 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications (created_at)',
   'CREATE INDEX IF NOT EXISTS idx_notifications_status_created ON notifications (status, created_at)',
 
+  // Content claims
+  CONTENT_CLAIMS_ACTIVE_UNIQUE_INDEX,
+
   // Eval harness
   'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id ON agent_run_write_intents (run_id)',
   'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id_tool ON agent_run_write_intents (run_id, tool_name)',
@@ -1416,6 +1495,9 @@ export const TABLE_DDLS = [
   NOTIFICATIONS_TABLE,
   // Routed-capture idempotency ledger (Team Host §4a)
   ROUTED_EVENT_DEDUP_TABLE,
+  // Content claim system (Team Host WS2; grove-resident, not team-synced)
+  CONTENT_CLAIMS_TABLE,
+  CONTENT_PUBLICATIONS_TABLE,
   // Eval harness layer
   AGENT_RUN_WRITE_INTENTS_TABLE,
   AGENT_RUN_EVENTS_TABLE,

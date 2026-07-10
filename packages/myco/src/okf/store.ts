@@ -39,6 +39,7 @@ import {
   type OkfGenerationRow,
   type OkfPageRevisionRow,
 } from '@myco/db/queries/okf.js';
+import { cancelActiveContentClaimForArtifact } from '@myco/db/queries/content-claims.js';
 import { OkfError } from './errors.js';
 import { sanitizePublishedText } from './privacy.js';
 import { scanContentSet, type PublishFinding } from './publish-eligibility.js';
@@ -354,6 +355,17 @@ export class OkfStore {
    * Editorial supersede: retire the old page head, recording a final revision
    * that carries its current body and the supersession reason — auditable
    * history without content loss. The replacement page must already exist.
+   *
+   * Also cancels the retired page's active content claim (if any), in the
+   * same transaction. Supersession retires the page IDENTITY from the
+   * publishable inventory: a claim on the retired id can never be published
+   * meaningfully and cannot refresh (refresh bumps generation on the SAME
+   * artifact id), so without the explicit cancel it would sit as dead weight
+   * until TTL expiry. The holder re-claims the replacement page. This is the
+   * OKF counterpart of the skill delete's cancel-on-delete
+   * (`deleteSkillRecordCascade`) — content-claim spec §5. Distinct from
+   * concurrent evolution, which advances generations on the same page and is
+   * never blocked by claims (they go stale and refresh).
    */
   supersedePage(oldPath: string, newPath: string, reason: string): { retired: string; replacement: string } {
     this.assertEnabled();
@@ -386,6 +398,7 @@ export class OkfStore {
         created_at: at,
       });
       updateOkfPage(oldHead.id, { status: 'retired', generation: oldHead.generation + 1, updated_at: at });
+      cancelActiveContentClaimForArtifact('okf_page', oldHead.id, at);
       db.prepare('COMMIT').run();
     } catch (err) {
       db.prepare('ROLLBACK').run();

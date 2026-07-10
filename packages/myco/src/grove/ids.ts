@@ -32,6 +32,7 @@ export const GROVE_ID_PREFIXES = {
   canopy_map: 'cmap',
   team: 'team',
   host: 'host',
+  content_claim: 'cclaim',
 } as const;
 
 export type GroveIdKind = keyof typeof GROVE_ID_PREFIXES;

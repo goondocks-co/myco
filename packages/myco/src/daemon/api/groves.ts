@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { CAPABILITIES, capabilityEnabled } from '@myco/config/capabilities.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
@@ -188,7 +189,13 @@ function resolveCapabilities(projectRoot: string, groveId: string): Record<Capab
   let config = null;
   try {
     const vaultDir = resolveProjectVaultDir(projectRoot);
-    config = loadMergedConfig(vaultDir, { groveId });
+    // A Team Host serving this project for a member has no local working
+    // tree — degrade to machine+grove tiers (empty project tier) instead of
+    // throwing "myco.yaml not found" (same signal + mechanism as `okf.ts`).
+    // Without this, a served project's capabilities always render all-false
+    // (the fail-closed catch below) instead of the machine+grove merge.
+    const treeAvailable = fs.existsSync(projectRoot);
+    config = loadMergedConfig(vaultDir, { groveId, projectTierOptional: !treeAvailable });
   } catch {
     // Unloadable config → capabilityEnabled(null, …) returns false (fail-closed).
   }
