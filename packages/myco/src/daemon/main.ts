@@ -106,6 +106,9 @@ import {
 } from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
 import { registerOkfRoutes } from './api/okf.js';
+import { registerContentClaimRoutes } from './api/content-claims.js';
+import { registerContentClaimMaterializeRoute } from './api/content-claims-materialize.js';
+import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
 import { tenantRoute } from './api/route-helpers.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
 import { handleGetFeed } from './api/feed.js';
@@ -623,7 +626,11 @@ export async function runInitialCanopyPopulateAcrossProjects(
     await forEachRegisteredProject(
       cache,
       logger,
-      async ({ databasePath, projectId, projectRoot, grove, db }) => {
+      async ({ databasePath, projectId, projectRoot, grove, db, treeAvailable }) => {
+        // Canopy populate walks the working tree — a Team Host iterating a
+        // member's registered project has none. Skip rather than throw
+        // ENOENT walking a nonexistent root.
+        if (!treeAvailable) return;
         if (cutoffSeconds > 0 && !isProjectActive(db, projectId, cutoffSeconds)) {
           // Cold project — let SessionStart trigger when the user returns.
           return;
@@ -1511,6 +1518,13 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/cortex/prompt-builder', tenantRoute(cortexTenant, cortexHandlers.handleBuildPrompt));
   server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', tenantRoute(cortexTenant, cortexHandlers.handleGetPromptResult));
   registerOkfRoutes(server, cortexTenant);
+  registerContentClaimRoutes(server, cortexTenant);
+  registerContentClaimMaterializeRoute(server, {
+    cache: runtimeCache,
+    dial: defaultDial,
+    logger: proxyLoggerFrom(logger, LOG_KINDS.CONTENT_CLAIM_MATERIALIZE),
+    mycoHome,
+  });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};

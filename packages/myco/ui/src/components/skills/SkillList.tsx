@@ -4,6 +4,7 @@ import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { ListFilterBar, type FilterDefinition } from '../ui/list-filter-bar';
 import { Pagination } from '../ui/pagination';
+import { UnpublishedBadge } from '../content-claims/UnpublishedBadge';
 import { useSkillRecords, type SkillRecord } from '../../hooks/use-skills';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
@@ -90,9 +91,12 @@ function SkillTableRow({
 
       {/* Generation */}
       <td className="px-4 py-3">
-        <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
-          gen {record.generation}
-        </Badge>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
+            gen {record.generation}
+          </Badge>
+          <UnpublishedBadge artifactKind="skill" artifactId={record.id} />
+        </div>
       </td>
 
       {/* Status */}

@@ -1279,6 +1279,19 @@ export async function buildCanopyMapInstruction(
  * scheduler's short-circuit for the "no work to do" path.
  *
  * Single dispatch point used by both the scheduler and the API handler.
+ *
+ * `treeAvailable` (default `true`) degrades the tasks whose instruction
+ * genuinely reads the project's working tree — skill-evolve (structural/
+ * drift verification against source files) and canopy-map (AGENTS.md/
+ * CLAUDE.md rules-file discovery) — by withholding `projectRoot` from
+ * their builders when the caller's registered project has no tree on this
+ * machine (Team Host serving a member's project; see
+ * `RegisteredProjectScope.treeAvailable`). Both builders already treat a
+ * missing `projectRoot` as "skip the tree-dependent step," so this reuses
+ * their existing degrade path instead of a new one. cortex-instructions is
+ * deliberately excluded: its use of `projectRoot` only derives the vault
+ * directory path string, and its content is entirely DB-resident — it must
+ * keep generating for a treeless project.
  */
 export async function buildTaskInstruction(
   taskName: string,
@@ -1289,7 +1302,9 @@ export async function buildTaskInstruction(
   config?: MycoConfig,
   getTeamClient?: () => AgentTeamStatusPort | null,
   requestContext?: MycoRequestContext,
+  treeAvailable = true,
 ): Promise<BuiltTaskInstruction | undefined> {
+  const treeProjectRoot = treeAvailable ? projectRoot : undefined;
   switch (taskName) {
     case SKILL_GENERATE_TASK:
       return buildSkillGenerateInstruction(requestContext);
@@ -1298,7 +1313,7 @@ export async function buildTaskInstruction(
         ignoreWatermark: taskParams?.force === true,
       }) : undefined;
     case SKILL_EVOLVE_TASK: {
-      const instruction = await buildSkillEvolveInstruction(taskParams, projectRoot, retrievalProvider, requestContext);
+      const instruction = await buildSkillEvolveInstruction(taskParams, treeProjectRoot, retrievalProvider, requestContext);
       return instruction ? { instruction } : undefined;
     }
     case CORTEX_INSTRUCTIONS_TASK: {
@@ -1316,7 +1331,7 @@ export async function buildTaskInstruction(
       // Map-phase task — no instruction text; phase reads params via templating.
       return undefined;
     case CANOPY_MAP_TASK:
-      return buildCanopyMapInstruction(taskParams, projectRoot, config);
+      return buildCanopyMapInstruction(taskParams, treeProjectRoot, config);
     default:
       return undefined;
   }

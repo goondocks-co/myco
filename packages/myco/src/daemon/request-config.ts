@@ -1,5 +1,6 @@
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { Logger } from './logger.js';
 
@@ -42,7 +43,14 @@ export function resolveTenantConfig(
   // so the catch below only ever runs for a tenancy that WAS present.
   if (!tenancy?.projectVaultDir || !tenancy.groveId) return fallback;
   try {
-    return loadMergedConfig(tenancy.projectVaultDir, { groveId: tenancy.groveId });
+    // A Team Host serving this tenant's project has no local working tree —
+    // resolve the machine+grove merge (empty project tier) rather than
+    // falling through to the daemon-config fallback below, which would gate
+    // the tenant op on the wrong tiers.
+    return loadMergedConfig(tenancy.projectVaultDir, {
+      groveId: tenancy.groveId,
+      projectTierOptional: !projectTreeAvailable(tenancy.projectVaultDir),
+    });
   } catch (err) {
     opts?.logger?.warn(
       LOG_KINDS.DAEMON_CONFIG,

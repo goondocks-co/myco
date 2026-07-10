@@ -243,6 +243,29 @@ describe('OKF API — editorial surface', () => {
   });
 });
 
+describe('OKF API — served project with no local working tree (F1)', () => {
+  it('handleOkfStatus returns 200 with machine+grove config when the project root is absent on this machine', async () => {
+    publishPage();
+    // Team Host shape: this daemon holds the Grove DB (content lives there,
+    // unaffected) but the checkout is on the member's machine, not here.
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    const res = await handleOkfStatus(req(), principal());
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.bundleExists).toBe(true);
+    expect(body.bundleGeneration).toBe(1);
+  });
+
+  it('handleOkfPageGet still serves the DB-resident page body with no working tree present', async () => {
+    publishPage();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    const got = await handleOkfPageGet(req({ pathname: `/api/okf/pages/${encodeURIComponent('concepts/alpha')}` }), principal());
+    expect(got.status).toBe(200);
+    const page = (got.body as { page: Record<string, unknown> }).page;
+    expect(page).toMatchObject({ path: 'concepts/alpha.md', type: 'concept', body: AGENT_BODY });
+  });
+});
+
 describe('OKF API — validate', () => {
   it('validates the current row set', async () => {
     publishPage();

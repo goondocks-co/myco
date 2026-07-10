@@ -123,6 +123,13 @@ export interface PhaseLoopContext {
   readonly projectRoot?: string;
   /** Absolute path to the vault directory. */
   readonly vaultDir?: string;
+  /**
+   * Whether the project's working tree is present on disk for this run.
+   * Passed through from `RunOptions.treeAvailable`; `undefined` (every
+   * non-scheduled dispatch) is treated as available. See
+   * `PhaseDefinition.requiresProjectTree`.
+   */
+  readonly treeAvailable?: boolean;
   /** Resolved Grove/project request context for in-process vault tool access. */
   readonly requestContext?: RunOptions['requestContext'];
   /** Raw RunOptions — exposed to honor executionOverrides.phases per-phase. */
@@ -178,11 +185,31 @@ export async function executePhase(
 ): Promise<PhaseResult & { sessionData?: unknown }> {
   const { ctx, phasePrompt, phaseModel, reasoningLevel, phase, toolSurface, provider, sessionId, sessionData, priorPhaseResults } = input;
 
+  const logger = ctx.options?.logger;
+
+  // Tree-requiring phase, no working tree available for this run — skip
+  // before any dispatch (map or agent mode), zero LLM turns. Distinct from
+  // a hard runtime failure: the omission reflects scheduled-tasks residency
+  // (a Team Host iterating a registered project whose tree lives on a
+  // member machine), not a phase-content problem, and it lands on the
+  // PhaseResult/checkpoint so the run stays auditable via agent_runs
+  // instead of the phase quietly failing against a nonexistent projectRoot.
+  if (phase.requiresProjectTree && ctx.treeAvailable === false) {
+    logger?.info(
+      'agent.phase.skip-tree-unavailable',
+      `Phase ${phase.name} skipped: requires project tree, none available for this run`,
+      { runId: ctx.runId, phase: phase.name },
+    );
+    return buildPhaseResult({
+      name: phase.name,
+      status: 'skipped',
+      summary: 'Skipped (requires project tree): no working tree available for this project on this machine',
+    });
+  }
+
   if (phase.mode === 'map') {
     return runMapPhaseAdapter(input);
   }
-
-  const logger = ctx.options?.logger;
 
   // Cross-phase skip gate — runs FIRST, before preCondition. Reads the
   // named upstream phase's emitted metadata; skip THIS phase unless the

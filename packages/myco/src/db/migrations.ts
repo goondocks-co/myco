@@ -46,6 +46,9 @@ import {
   GROVE_PROJECT_SCOPED_TABLES,
   PLAN_LOGICAL_KEY_INDEX_DDLS,
   ROUTED_EVENT_DEDUP_TABLE,
+  CONTENT_CLAIMS_TABLE,
+  CONTENT_PUBLICATIONS_TABLE,
+  CONTENT_CLAIMS_ACTIVE_UNIQUE_INDEX,
   TABLE_DDLS,
   FTS_TABLES,
   SECONDARY_INDEXES,
@@ -135,6 +138,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 66, migrate: (db) => migrateV65ToV66(db) },
   { version: 67, migrate: (db) => migrateV66ToV67(db) },
   { version: 68, migrate: (db) => migrateV67ToV68(db) },
+  { version: 69, migrate: (db) => migrateV68ToV69(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4101,6 +4105,60 @@ function migrateV67ToV68(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(68, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v68 -> v69: content claim system (Team Host WS2). Adds `content_claims`
+ * (the publication lock, with its ACTIVE-partial unique index) and
+ * `content_publications` (the durable last-published marker, never pruned).
+ * Both are grove-resident and deliberately absent from every team-sync list
+ * — the `routed_event_dedup` pattern (v67->v68 above).
+ *
+ * Backfill: every pre-existing active skill and non-retired OKF page reached
+ * the repo through the legacy pre-claim-system path, so it is treated as
+ * already published — a `content_publications` row is seeded at its CURRENT
+ * generation. Without this, every artifact that predates the claim system
+ * would show the Unpublished badge on upgrade; with it, the badge only
+ * lights for content that changes AFTER this migration runs.
+ * `published_by`/`machine_id` use `DEFAULT_MACHINE_ID` — no real actor
+ * performed this "publish", matching the convention for migration-authored
+ * rows elsewhere in this file. `ON CONFLICT DO NOTHING` keeps the seed
+ * idempotent: re-running never overwrites a publication a real
+ * mark-published call has recorded since. A fresh install never runs this
+ * migration at all — `skill_records`/`okf_pages` start empty on a brand-new
+ * vault, so there is nothing to seed there.
+ */
+function migrateV68ToV69(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(CONTENT_CLAIMS_TABLE);
+    db.exec(CONTENT_PUBLICATIONS_TABLE);
+    db.exec(CONTENT_CLAIMS_ACTIVE_UNIQUE_INDEX);
+
+    const seededAt = epochSeconds();
+    db.prepare(
+      `INSERT INTO content_publications (artifact_kind, artifact_id, published_generation, published_at, published_by, machine_id)
+       SELECT 'skill', id, generation, ?, ?, ?
+         FROM skill_records
+        WHERE status = 'active'
+       ON CONFLICT (artifact_kind, artifact_id) DO NOTHING`,
+    ).run(seededAt, DEFAULT_MACHINE_ID, DEFAULT_MACHINE_ID);
+    db.prepare(
+      `INSERT INTO content_publications (artifact_kind, artifact_id, published_generation, published_at, published_by, machine_id)
+       SELECT 'okf_page', id, generation, ?, ?, ?
+         FROM okf_pages
+        WHERE status = 'active'
+       ON CONFLICT (artifact_kind, artifact_id) DO NOTHING`,
+    ).run(seededAt, DEFAULT_MACHINE_ID, DEFAULT_MACHINE_ID);
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(69, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

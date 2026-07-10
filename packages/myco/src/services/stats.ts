@@ -3,7 +3,7 @@
  */
 
 import { getDatabase, openDatabase, type Database } from '@myco/db/client.js';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { projectTreeAvailable, resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
 import { projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
@@ -133,7 +133,15 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions): V2St
       ? Array.from(new Set([...persistedActiveSessionIds, ...(options.active_sessions ?? [])]))
       : Array.from(persistedActiveSessionIds);
 
-    const config = loadMergedConfig(vaultDir, { groveId: options.groveId });
+    // A Team Host serving this project for a member has no local working
+    // tree — degrade to machine+grove tiers (empty project tier) instead of
+    // throwing "myco.yaml not found" (same signal + mechanism as the
+    // daemon/api handlers and task-scheduling.ts). Stats are DB reads; the
+    // config only supplies embedding provider/model labels.
+    const config = loadMergedConfig(vaultDir, {
+      groveId: options.groveId,
+      projectTierOptional: !projectTreeAvailable(vaultDir),
+    });
 
     const counts = countProjectScopedTables(db, scopeArg);
     const canopyScope = projectScopeClause(scopeArg);

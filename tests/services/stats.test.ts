@@ -198,6 +198,21 @@ describe('gatherStats', () => {
     expect(stats.agent.last_run_status).toBe('completed');
   });
 
+  it('degrades to machine+grove config when the project root does not exist on this machine (Team Host served project)', () => {
+    // Team Host shape: the Grove row (and DB) are local but the checkout
+    // lives on the member's machine — the vault dir names a path that does
+    // not exist here. Stats are DB reads; config only supplies embedding
+    // labels, so the read must succeed on the machine+grove merge instead
+    // of throwing "myco.yaml not found" (the dashboard-landing 500).
+    const servedVaultDir = path.join(tempDir, 'served-project', '.myco'); // never created
+    const stats = gatherStats(servedVaultDir, { active_sessions: [], scope: ALL_PROJECTS_SCOPE });
+    expect(stats.vault.path).toBe(servedVaultDir);
+    // The project tier contributed nothing; embedding labels resolve from
+    // machine-tier/schema defaults rather than the absent myco.yaml.
+    expect(typeof stats.embedding.provider).toBe('string');
+    expect(stats.vault.session_count).toBeGreaterThanOrEqual(0);
+  });
+
   it('reads Grove-scoped counts from an explicit database path instead of the singleton', () => {
     const now = epochNow();
     const targetVaultDir = path.join(tempDir, 'target', '.myco');

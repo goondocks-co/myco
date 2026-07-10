@@ -15,6 +15,7 @@ export const POLL_INTERVALS = {
   CANOPY_ENTRIES: 60_000,
   GIT_IDENTITY: 5_000,
   TEAM: 5_000,
+  CONTENT_CLAIMS: 15_000,
 } as const;
 
 export const STALE_TIME = 10_000;

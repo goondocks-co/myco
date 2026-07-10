@@ -6,6 +6,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
+import { insertContentClaim, getActiveContentClaim } from '@myco/db/queries/content-claims.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
 import { handleDeleteSkillRecord, createSkillRecordDeleteHandler, isSafeSkillNameForFs } from '@myco/daemon/api/skills.js';
@@ -347,5 +348,104 @@ describe('createSkillRecordDeleteHandler — fs cascade is scoped to the request
     expect(stillThere.n).toBe(1);
     expect(existsSync(tenantB.skillDir)).toBe(true);
     expect(existsSync(anchor.skillDir)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task B5: delete cancels the active content claim, and the api/skills.ts fs
+// cascade must respect Team Host residency — a host-served delete request
+// removes the DB row (and its claim) but must never touch the member's
+// working tree (content-claim spec §5; residency gate mirrors
+// agent/tools/skill-tools.ts:166-182).
+// ---------------------------------------------------------------------------
+
+describe('createSkillRecordDeleteHandler — Task B5: claim cancel + host-served residency', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+    registerAgent({ id: 'agent-test', name: 'Agent Test', created_at: 10 });
+  });
+  afterEach(() => { resetTeamContext(); });
+
+  function makeProject(prefix: string, skillName: string) {
+    const projectRoot = mkdtempSync(join(tmpdir(), prefix));
+    const vaultDir = join(projectRoot, '.myco');
+    mkdirSync(vaultDir, { recursive: true });
+    const skillDir = join(projectRoot, '.agents', 'skills', skillName);
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, 'SKILL.md'), '# skill', 'utf-8');
+    return { projectRoot, vaultDir, skillDir };
+  }
+
+  function seedClaimedSkill(id: string, skillName: string): void {
+    insertSkillRecord({
+      id,
+      project_id: PROJECT_ID,
+      agent_id: 'agent-test',
+      name: skillName,
+      display_name: 'Claimed Skill',
+      description: 'A skill under an active content claim',
+      path: `.agents/skills/${skillName}/SKILL.md`,
+      created_at: 10,
+      updated_at: 10,
+    });
+    const claimed = insertContentClaim({
+      artifactKind: 'skill',
+      artifactId: id,
+      generation: 1,
+      projectId: PROJECT_ID,
+      claimedBy: 'member-machine',
+      claimedAt: 10,
+      expiresAt: 10 + 86400,
+      machineId: 'member-machine',
+    });
+    expect(claimed.ok).toBe(true);
+  }
+
+  it('host-served delete: DB row + active claim are gone, but the member-tree skill dir survives', async () => {
+    const SKILL_NAME = 'host-served-skill';
+    const tenant = makeProject('myco-hostserved-', SKILL_NAME);
+    seedClaimedSkill('skill-hostserved', SKILL_NAME);
+
+    const ctx: MycoRequestContext = {
+      ...callerContext({ vaultDir: tenant.vaultDir, projectId: PROJECT_ID, groveId: 'grove-a' }),
+      hostServed: true,
+    };
+    const handler = createSkillRecordDeleteHandler({ logger: recordingLogger([]) });
+
+    const response = await handler(
+      { params: { id: 'skill-hostserved' }, requestContext: ctx, pathname: '/api/skill-records/skill-hostserved' } as never,
+      principalFor(ctx),
+    );
+
+    expect(response.status ?? 200).toBe(200);
+    const remaining = getDatabase().prepare(
+      'SELECT COUNT(*) AS n FROM skill_records WHERE id = ?',
+    ).get('skill-hostserved') as { n: number };
+    expect(remaining.n).toBe(0);
+    // The claim cancel runs where the DB row lives — always, regardless of
+    // residency — so it fires on this host-served request too.
+    expect(getActiveContentClaim('skill', 'skill-hostserved')).toBeNull();
+    // The host never touched the member's working-tree file.
+    expect(existsSync(tenant.skillDir)).toBe(true);
+  });
+
+  it('local (non-host-served) delete: DB row, active claim, AND the on-disk skill dir are all removed', async () => {
+    const SKILL_NAME = 'local-delete-skill';
+    const tenant = makeProject('myco-localdelete-', SKILL_NAME);
+    seedClaimedSkill('skill-local', SKILL_NAME);
+
+    const ctx = callerContext({ vaultDir: tenant.vaultDir, projectId: PROJECT_ID, groveId: 'grove-a' });
+    const handler = createSkillRecordDeleteHandler({ logger: recordingLogger([]) });
+
+    const response = await handler(
+      { params: { id: 'skill-local' }, requestContext: ctx, pathname: '/api/skill-records/skill-local' } as never,
+      principalFor(ctx),
+    );
+
+    expect(response.status ?? 200).toBe(200);
+    expect(getActiveContentClaim('skill', 'skill-local')).toBeNull();
+    expect(existsSync(tenant.skillDir)).toBe(false);
   });
 });

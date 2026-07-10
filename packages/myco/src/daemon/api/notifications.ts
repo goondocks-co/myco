@@ -4,9 +4,11 @@
  * Thin handlers that delegate to DB queries and the notification registry.
  */
 
+import fs from 'node:fs';
 import { z } from 'zod';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { RequestPrincipal } from '../request-principal.js';
+import { resolveProjectRoot } from '../../vault/resolve.js';
 import {
   listNotifications,
   countNotifications,
@@ -161,7 +163,15 @@ export async function handleCreateNotification(
   // default merged under the personal/local override), never the bootstrap
   // anchor. Passing groveId keeps the Grove-tier notification settings in the
   // merge and the cache slots aligned with Grove-aware callers.
-  const config = loadMergedConfig(vaultDir, { groveId: principal.tenancy.groveId });
+  //
+  // A Team Host serving this project for a member has no local working
+  // tree — degrade to machine+grove tiers (empty project tier) instead of
+  // throwing "myco.yaml not found" (same signal + mechanism as `okf.ts`).
+  const treeAvailable = fs.existsSync(resolveProjectRoot(vaultDir));
+  const config = loadMergedConfig(vaultDir, {
+    groveId: principal.tenancy.groveId,
+    projectTierOptional: !treeAvailable,
+  });
   if (!config.notifications.enabled) {
     return { body: { ok: true, suppressed: true, reason: 'notifications_disabled' } };
   }

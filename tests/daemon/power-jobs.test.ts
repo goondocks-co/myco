@@ -18,6 +18,7 @@ import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { loadGroveConfig, loadMachineConfig, saveGroveConfig, saveMachineConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { CONTENT_CLAIM_RETENTION_MS } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Test fixture: bring up a real Myco home with one Grove and an open DB
@@ -376,6 +377,87 @@ describe('release-provenance power job', () => {
     const job = pm.find('release-provenance-reconcile');
     expect(job.runIn).toEqual(['active', 'idle', 'sleep']);
   });
+
+  it('resolves config via projectTierOptional and completes without error for a project with no working tree', async () => {
+    // Team Host shape: the project row is real, but its working tree was
+    // checked out on a member machine — this path never existed here.
+    const projectRoot = path.join(fx.workDir, 'never-created', 'hosted');
+    registerProjectInGrove(fx.grove.id, {
+      projectId: 'proj_' + 'cccc111122223333cccc111122223333',
+      projectName: 'hosted',
+      projectRoot,
+    }, fx.mycoHome);
+
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('release-provenance-reconcile');
+    const errorSpy = vi.spyOn(fx.logger, 'error');
+
+    // Before the projectTierOptional fix this threw "myco.yaml not found",
+    // which forEachRegisteredProject's per-project catch turns into a
+    // "Project iteration body failed" error log.
+    await expect(job.fn()).resolves.toBeUndefined();
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(projectRoot)).toBe(false);
+  });
+});
+
+describe('registerPowerJobs — managed-files-reconcile', () => {
+  let fx: GroveFixture;
+  let pm: FakeJobRunner;
+
+  beforeEach(() => {
+    fx = setupGrove();
+    pm = new FakeJobRunner();
+  });
+
+  afterEach(() => fx.cleanup());
+
+  it('registers a managed-files-reconcile job that runs in active/idle/sleep', () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('managed-files-reconcile');
+    expect(job.runIn).toEqual(['active', 'idle', 'sleep']);
+  });
+
+  it('skips reconciliation and never creates the working tree for a project with no local root', async () => {
+    // The host never writes a member's working tree (B1) — and there is no
+    // tree here to write to regardless. Before the treeAvailable gate this
+    // threw ENOENT trying to write AGENTS.md into a nonexistent directory.
+    const projectRoot = path.join(fx.workDir, 'never-created', 'hosted');
+    registerProjectInGrove(fx.grove.id, {
+      projectId: 'proj_' + 'dddd111122223333dddd111122223333',
+      projectName: 'hosted',
+      projectRoot,
+    }, fx.mycoHome);
+
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('managed-files-reconcile');
+    const errorSpy = vi.spyOn(fx.logger, 'error');
+
+    await expect(job.fn()).resolves.toBeUndefined();
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(projectRoot)).toBe(false);
+  });
+
+  it('does not skip a project whose working tree exists', async () => {
+    const projectRoot = path.join(fx.workDir, 'projects', 'local');
+    const projectVaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(projectVaultDir, { recursive: true });
+    fs.writeFileSync(path.join(projectVaultDir, 'myco.yaml'), 'version: 3\n');
+    registerProjectInGrove(fx.grove.id, {
+      projectId: 'proj_' + 'eeee111122223333eeee111122223333',
+      projectName: 'local',
+      projectRoot,
+    }, fx.mycoHome);
+
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('managed-files-reconcile');
+    const errorSpy = vi.spyOn(fx.logger, 'error');
+
+    await expect(job.fn()).resolves.toBeUndefined();
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -639,6 +721,97 @@ describe('notification-retention power job', () => {
     expect(notificationCount('old-dismissed')).toBe(0);
     expect(notificationCount('old-unread')).toBe(1);
     expect(notificationCount('new-read')).toBe(1);
+  });
+});
+
+describe('content-claim-expiry power job', () => {
+  let fx: GroveFixture;
+  let pm: FakeJobRunner;
+
+  beforeEach(() => {
+    fx = setupGrove();
+    pm = new FakeJobRunner();
+  });
+
+  afterEach(() => fx.cleanup());
+
+  function seedClaim(id: string, state: 'active' | 'released' | 'published' | 'expired', expiresAt: number): void {
+    const now = Math.floor(Date.now() / 1000);
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      getDatabase().prepare(
+        `INSERT INTO content_claims (
+           id, artifact_kind, artifact_id, generation, project_id,
+           claimed_by, claimed_at, expires_at, state, released_at, published_at, machine_id
+         ) VALUES (?, 'skill', ?, 1, 'proj_test', 'machine-a', ?, ?, ?, NULL, NULL, 'machine-a')`,
+      ).run(id, id, now, expiresAt, state);
+    });
+  }
+
+  function claimState(id: string): string {
+    return withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      (getDatabase().prepare(`SELECT state FROM content_claims WHERE id = ?`).get(id) as { state: string }).state,
+    );
+  }
+
+  function claimExists(id: string): boolean {
+    return withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      !!getDatabase().prepare(`SELECT 1 FROM content_claims WHERE id = ?`).get(id),
+    );
+  }
+
+  it('registers as active/idle/sleep housekeeping', () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('content-claim-expiry');
+    expect(job.runIn).toEqual(['active', 'idle', 'sleep']);
+    expect(job.kind).toBe('housekeeping');
+  });
+
+  it('flips an active claim past its TTL to expired, leaves an unexpired active claim alone', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const now = Math.floor(Date.now() / 1000);
+    seedClaim('cclaim_expired', 'active', now - 10);
+    seedClaim('cclaim_fresh', 'active', now + 10_000);
+
+    await pm.find('content-claim-expiry').fn();
+
+    expect(claimState('cclaim_expired')).toBe('expired');
+    expect(claimState('cclaim_fresh')).toBe('active');
+  });
+
+  it('is the backstop for a row that arrives active with expires_at already past (e.g. backup-restore)', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const longPast = Math.floor(Date.now() / 1000) - 999_999;
+    seedClaim('cclaim_restored', 'active', longPast);
+
+    await pm.find('content-claim-expiry').fn();
+
+    expect(claimState('cclaim_restored')).toBe('expired');
+  });
+
+  it('never touches an already-terminal row', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const now = Math.floor(Date.now() / 1000);
+    seedClaim('cclaim_released', 'released', now - 10);
+
+    await pm.find('content-claim-expiry').fn();
+
+    expect(claimState('cclaim_released')).toBe('released');
+  });
+
+  it('flips an expired claim AND prunes a terminal row older than retention, keeping a younger one', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const now = Math.floor(Date.now() / 1000);
+    const retentionSeconds = Math.floor(CONTENT_CLAIM_RETENTION_MS / 1000);
+
+    seedClaim('cclaim_expiring', 'active', now - 10);
+    seedClaim('cclaim_old_released', 'released', now - retentionSeconds - 3600);
+    seedClaim('cclaim_young_released', 'released', now - 3600);
+
+    await pm.find('content-claim-expiry').fn();
+
+    expect(claimState('cclaim_expiring')).toBe('expired');
+    expect(claimExists('cclaim_old_released')).toBe(false);
+    expect(claimExists('cclaim_young_released')).toBe(true);
   });
 });
 
@@ -1033,6 +1206,44 @@ describe('canopy-background-scan power job', () => {
 
     await pm.find('canopy-background-scan').fn();
 
+    const count = withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      getDatabase().prepare(
+        `SELECT COUNT(*) AS n FROM canopy_entries`,
+      ).get() as { n: number },
+    );
+    expect(count.n).toBe(0);
+  });
+
+  it('skips the scan without error for a project with no local working tree', async () => {
+    // Before the treeAvailable gate, a missing project root either threw
+    // ENOENT walking the tree (surfacing as a CANOPY_ERROR log every tick)
+    // or, incidentally, skipped only because the (now-degraded)
+    // loadMergedConfig call threw first. Either way this must be a clean,
+    // silent skip — not tested by an exception path.
+    const projectRoot = path.join(fx.workDir, 'never-created', 'hosted');
+    registerProjectInGrove(fx.grove.id, {
+      projectId: 'proj_' + 'ffff111122223333ffff111122223333',
+      projectName: 'hosted',
+      projectRoot,
+    }, fx.mycoHome);
+
+    const deps = buildDeps(fx);
+    deps.liveConfig.current = {
+      ...deps.liveConfig.current,
+      cortex: {
+        ...(deps.liveConfig.current as { cortex: Record<string, unknown> }).cortex,
+        canopy: {
+          refresh: { background_enabled: true, background_period_minutes: 1 },
+          exclude: { default_patterns: [], patterns: [] },
+        },
+      },
+    };
+    registerPowerJobs(pm as never, deps);
+    const errorSpy = vi.spyOn(fx.logger, 'error');
+
+    await expect(pm.find('canopy-background-scan').fn()).resolves.toBeUndefined();
+
+    expect(errorSpy).not.toHaveBeenCalled();
     const count = withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
       getDatabase().prepare(
         `SELECT COUNT(*) AS n FROM canopy_entries`,

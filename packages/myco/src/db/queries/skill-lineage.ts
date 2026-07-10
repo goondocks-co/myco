@@ -174,3 +174,24 @@ export function getPublishedSkillContent(record: { id: string }): string | null 
   const snapshot = rows[0]?.content_snapshot;
   return snapshot ? snapshot : null;
 }
+
+/**
+ * Content snapshot for a skill at a SPECIFIC generation — the content-claim
+ * materialize path (design §4) writes the claim's PINNED generation, not
+ * necessarily lineage-latest: a claim can be refreshed independently of
+ * whatever new lineage events land on the skill after it was taken. Unscoped
+ * for the same reason as `getPublishedSkillContent`: `skillId` is a UUID FK
+ * the caller already resolved under its own tenancy scope.
+ *
+ * Returns null when no lineage row records that generation.
+ */
+export function getSkillContentAtGeneration(skillId: string, generation: number): string | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT content_snapshot FROM skill_lineage
+      WHERE skill_id = ? AND generation = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+  ).get(skillId, generation) as { content_snapshot?: string } | undefined;
+  return row?.content_snapshot ? row.content_snapshot : null;
+}

@@ -490,5 +490,13 @@ phases:
     # value). If max_skills_per_run changes, scale this ~5–6× per skill.
     maxTurns: 36
     required: true
+    # vault_edit_skill/vault_write_skill publish through writePublishedSkillFile,
+    # which mkdirSync(..., {recursive:true})s the destination — on a scheduled
+    # run for a registered project with no working tree (Team Host) that would
+    # silently create a phantom directory tree at the member's projectRoot path
+    # instead of erroring. Skip rather than write; a skip here does not fail
+    # the run (infra omission, not a content failure — same contract as a
+    # map-phase provider-outage skip on a required phase).
+    requiresProjectTree: true
     dependsOn:
       - assess

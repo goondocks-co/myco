@@ -437,7 +437,17 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
           const projectId = project.project_id as GroveProjectId;
           try {
             const projectVaultDir = resolveProjectVaultDir(project.root);
-            const projectConfig = loadMergedConfig(projectVaultDir, { groveId: scope.grove.id, mycoHome });
+            // A Team Host owns this project's Grove row but the working tree
+            // lives on the member's machine — degrade to machine+grove tiers
+            // (empty project tier) instead of throwing "myco.yaml not found",
+            // the same signal + mechanism the scheduled reconcile power job
+            // (`power-jobs.ts`) uses for the identical served-project shape.
+            const treeAvailable = fs.existsSync(project.root);
+            const projectConfig = loadMergedConfig(projectVaultDir, {
+              groveId: scope.grove.id,
+              mycoHome,
+              projectTierOptional: !treeAvailable,
+            });
             const config = releaseProvenanceConfig(projectConfig);
             if (!config.enabled) {
               results.push({

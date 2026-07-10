@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DaemonLogger } from '@myco/daemon/logger.js';
+import { DaemonLogger, type Logger } from '@myco/daemon/logger.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
 import {
   forEachGrove,
   forEachRegisteredProject,
   isProjectActive,
 } from '@myco/daemon/scope-iteration.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { openDatabase, getDatabase } from '@myco/db/client.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
@@ -61,6 +62,30 @@ describe('scope-iteration', () => {
       projectRoot,
     }, mycoHome);
     return projectRoot;
+  }
+
+  // Registers a project row whose root is never created on disk — the
+  // Team Host shape: the project genuinely belongs to this Grove, but its
+  // working tree was checked out on a member machine, not this one.
+  function registerProjectWithoutTree(grove: GroveRecord, projectId: string, slug: string): string {
+    const projectRoot = path.join(workDir, 'never-created', slug);
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: slug,
+      projectRoot,
+    }, mycoHome);
+    return projectRoot;
+  }
+
+  function makeCapturingLogger(): Logger & { calls: Array<{ level: string; kind: string; message: string; data?: Record<string, unknown> }> } {
+    const calls: Array<{ level: string; kind: string; message: string; data?: Record<string, unknown> }> = [];
+    return {
+      calls,
+      debug: (kind, message, data) => calls.push({ level: 'debug', kind, message, data }),
+      info: (kind, message, data) => calls.push({ level: 'info', kind, message, data }),
+      warn: (kind, message, data) => calls.push({ level: 'warn', kind, message, data }),
+      error: (kind, message, data) => calls.push({ level: 'error', kind, message, data }),
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -376,6 +401,80 @@ describe('scope-iteration', () => {
         shouldVisit: ({ projectId }) => projectId === 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });
       expect(visited).toEqual(['proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
+      cache.closeAll();
+    });
+
+    // -----------------------------------------------------------------------
+    // treeAvailable — Team Host iterating a registered project with no
+    // local working tree (task A1)
+    // -----------------------------------------------------------------------
+
+    it('exposes treeAvailable: true for a project whose root exists (regression, byte-identical)', async () => {
+      const a = createGroveWithDb('Alpha');
+      registerProject(a, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'a1');
+      const cache = new GroveRuntimeCache();
+      let seen: boolean | undefined;
+      const summary = await forEachRegisteredProject(cache, logger, (scope) => {
+        seen = scope.treeAvailable;
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID });
+      expect(seen).toBe(true);
+      expect(summary).toEqual({ attempted: 1, ok: 1, failed: 0 });
+      cache.closeAll();
+    });
+
+    it('exposes treeAvailable: false for a project whose root does not exist, and the body runs without error', async () => {
+      const a = createGroveWithDb('Alpha');
+      registerProjectWithoutTree(a, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hosted-only');
+      const cache = new GroveRuntimeCache();
+      let seen: boolean | undefined;
+      const summary = await forEachRegisteredProject(cache, logger, (scope) => {
+        seen = scope.treeAvailable;
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID });
+      expect(seen).toBe(false);
+      // The body ran to completion — no thrown error, `failed` unchanged.
+      expect(summary).toEqual({ attempted: 1, ok: 1, failed: 0 });
+      cache.closeAll();
+    });
+
+    it('logs one scope.tree_unavailable info line per project for the daemon lifetime, not once per call', async () => {
+      const a = createGroveWithDb('Alpha');
+      registerProjectWithoutTree(a, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hosted-only');
+      const cache = new GroveRuntimeCache();
+      const capturingLogger = makeCapturingLogger();
+
+      // Two independent calls to forEachRegisteredProject — mirrors two
+      // different PowerJobs (e.g. staging-gc and release-provenance-reconcile)
+      // each iterating the same registered project on their own tick.
+      await forEachRegisteredProject(cache, capturingLogger, () => {}, {
+        mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID,
+      });
+      await forEachRegisteredProject(cache, capturingLogger, () => {}, {
+        mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID,
+      });
+
+      const treeUnavailableLogs = capturingLogger.calls.filter(
+        (c) => c.kind === LOG_KINDS.SCOPE_TREE_UNAVAILABLE,
+      );
+      expect(treeUnavailableLogs.length).toBe(1);
+      expect(treeUnavailableLogs[0]?.level).toBe('info');
+      expect(treeUnavailableLogs[0]?.data).toMatchObject({
+        grove_id: a.id,
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      });
+      // No error-level noise from the missing tree.
+      expect(capturingLogger.calls.some((c) => c.level === 'error')).toBe(false);
+      cache.closeAll();
+    });
+
+    it('does not log scope.tree_unavailable for a project whose root exists', async () => {
+      const a = createGroveWithDb('Alpha');
+      registerProject(a, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'a1');
+      const cache = new GroveRuntimeCache();
+      const capturingLogger = makeCapturingLogger();
+      await forEachRegisteredProject(cache, capturingLogger, () => {}, {
+        mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID,
+      });
+      expect(capturingLogger.calls.some((c) => c.kind === LOG_KINDS.SCOPE_TREE_UNAVAILABLE)).toBe(false);
       cache.closeAll();
     });
   });

@@ -6,6 +6,7 @@ import { withDatabase, openDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { getSkillRecordByName } from '@myco/db/queries/skill-records.js';
+import { insertContentClaim, getActiveContentClaim } from '@myco/db/queries/content-claims.js';
 import { epochSeconds } from '@myco/constants.js';
 import { assertGroveProjectId, createProjectId, GLOBAL_SCOPE } from '@myco/grove/ids.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
@@ -234,5 +235,119 @@ When verifying the fabrication gate reads \`packages/does-not-exist/phantom-file
       hostServed: true,
     });
     expect(result.claim).toBeNull();
+  });
+});
+
+describe('Task B5 — skill delete cancels the active claim, fs cleanup respects residency', () => {
+  let db: Database;
+  let projectRoot: string;
+  const agentId = 'test-agent';
+  const runId = 'residency-delete-run-1';
+  const projectId = assertGroveProjectId(createProjectId());
+
+  beforeEach(() => {
+    db = openDatabase(':memory:');
+    createSchema(db);
+    withDatabase(db, () => {
+      registerAgent({ id: agentId, name: 'Test Agent', created_at: epochSeconds() });
+    });
+    projectRoot = mkdtempSync(path.join(tmpdir(), 'myco-residency-delete-'));
+  });
+
+  afterEach(() => {
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  function deps(hostServed: boolean): VaultToolDeps {
+    const requestContext: MycoRequestContext = {
+      projectRoot,
+      callerRoot: null,
+      projectId,
+      groveId: null,
+      machineId: 'test-machine',
+      sessionId: null,
+      projectVaultDir: path.join(projectRoot, '.myco'),
+      databasePath: ':memory:',
+      source: 'headers',
+      tenancySource: 'caller',
+      hostServed,
+    };
+    return {
+      agentId,
+      runId,
+      projectRoot,
+      vaultDir: path.join(projectRoot, '.myco'),
+      requestContext,
+      recordTurn: () => null,
+    };
+  }
+
+  function skillFilePath(name: string): string {
+    return path.join(projectRoot, '.agents', 'skills', name, 'SKILL.md');
+  }
+
+  /** Seed a published skill locally (file on disk + DB record) and claim it. */
+  async function seedClaimedSkill(name: string): Promise<string> {
+    await withDatabase(db, async () => {
+      const write = findTool(createSkillTools(deps(false)), 'vault_write_skill');
+      await callTool(write, {
+        name,
+        display_name: 'Delete Fixture',
+        description: 'A durable procedure for exercising the delete-cancels-claim gate in a hermetic test harness.',
+        content: VALID_SKILL_CONTENT(name),
+      });
+    });
+    expect(existsSync(skillFilePath(name))).toBe(true);
+
+    let skillId = '';
+    withDatabase(db, () => {
+      const record = getSkillRecordByName(name, GLOBAL_SCOPE)!;
+      skillId = record.id;
+      const claimed = insertContentClaim({
+        artifactKind: 'skill',
+        artifactId: record.id,
+        generation: record.generation,
+        projectId,
+        claimedBy: 'member-machine',
+        claimedAt: epochSeconds(),
+        expiresAt: epochSeconds() + 86400,
+        machineId: 'member-machine',
+      });
+      expect(claimed.ok).toBe(true);
+    });
+    return skillId;
+  }
+
+  test('host-served delete: the record and its active claim are gone, but the member-tree file is NOT touched', async () => {
+    const name = 'host-served-delete';
+    const skillId = await seedClaimedSkill(name);
+
+    await withDatabase(db, async () => {
+      const records = findTool(createSkillTools(deps(true)), 'vault_skill_records');
+      const result = await callTool(records, { action: 'delete', id: skillId });
+      expect(result.deleted).toBe(true);
+      expect(getSkillRecordByName(name, GLOBAL_SCOPE)).toBeNull();
+      // The explicit cancel fires regardless of residency — it runs where the
+      // Grove DB row lives, which is exactly where this delete is dispatched.
+      expect(getActiveContentClaim('skill', skillId)).toBeNull();
+    });
+
+    // The host never removed the member's working-tree file or symlinks.
+    expect(existsSync(skillFilePath(name))).toBe(true);
+  });
+
+  test('local delete: the record, its active claim, AND the on-disk file are all removed', async () => {
+    const name = 'local-delete';
+    const skillId = await seedClaimedSkill(name);
+
+    await withDatabase(db, async () => {
+      const records = findTool(createSkillTools(deps(false)), 'vault_skill_records');
+      const result = await callTool(records, { action: 'delete', id: skillId });
+      expect(result.deleted).toBe(true);
+      expect(getSkillRecordByName(name, GLOBAL_SCOPE)).toBeNull();
+      expect(getActiveContentClaim('skill', skillId)).toBeNull();
+    });
+
+    expect(existsSync(skillFilePath(name))).toBe(false);
   });
 });

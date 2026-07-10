@@ -29,6 +29,7 @@
  *    A failure in one Grove must not poison the rest of the sweep.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from '@myco/db/client.js';
 import { withDatabase } from '@myco/db/client.js';
@@ -203,6 +204,15 @@ export interface RegisteredProjectScope extends GroveScope {
   projectRoot: string;
   projectVaultDir: string;
   /**
+   * Whether `projectRoot` exists on this machine. False for a Team Host
+   * iterating a member's registered project — the row lives in the shared
+   * Grove but the working tree was checked out on the member's machine, not
+   * the host's. Bodies must DEGRADE config resolution (empty project tier,
+   * see `loadMergedConfig`'s `projectTierOptional`) and skip any tree read
+   * or write when this is false; DB-only work proceeds unaffected.
+   */
+  treeAvailable: boolean;
+  /**
    * Per-project request context built from the Grove + project tuple.
    * `sessionId` is null because background iteration is not bound to a
    * live session.
@@ -276,6 +286,7 @@ export async function forEachRegisteredProject(
           db,
           project,
           machineId,
+          logger,
         });
         if (shouldVisit && !shouldVisit(registeredScope)) continue;
         attempted += 1;
@@ -342,6 +353,12 @@ export function isProjectActive(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+// Dedupe key set for the tree-unavailable notice — module-level so every
+// independent PowerJob/scheduler fan-out that calls forEachRegisteredProject
+// shares one gate. Logs at most once per (grove, project) for the life of
+// the daemon process instead of once per tick per job.
+const treeUnavailableLogged = new Set<string>();
+
 function buildRegisteredProjectScope(input: {
   grove: GroveRecord;
   groveHome: string;
@@ -349,10 +366,29 @@ function buildRegisteredProjectScope(input: {
   db: Database;
   project: RegisteredProject;
   machineId: string;
+  logger: Logger;
 }): RegisteredProjectScope {
   const projectRoot = path.resolve(input.project.root);
   const projectVaultDir = resolveProjectVaultDir(projectRoot);
   const projectId = assertGroveProjectId(input.project.project_id);
+  const treeAvailable = fs.existsSync(projectRoot);
+
+  if (!treeAvailable) {
+    const key = `${input.grove.id}:${projectId}`;
+    if (!treeUnavailableLogged.has(key)) {
+      treeUnavailableLogged.add(key);
+      input.logger.info(
+        LOG_KINDS.SCOPE_TREE_UNAVAILABLE,
+        'Registered project has no local working tree — config resolves machine+grove only; tree reads/writes skip',
+        {
+          grove_id: input.grove.id,
+          project_id: projectId,
+          project_root: projectRoot,
+        },
+      );
+    }
+  }
+
   const requestContext: MycoRequestContext = {
     projectRoot,
     callerRoot: null,
@@ -378,6 +414,7 @@ function buildRegisteredProjectScope(input: {
     projectId,
     projectRoot,
     projectVaultDir,
+    treeAvailable,
     requestContext,
   };
 }

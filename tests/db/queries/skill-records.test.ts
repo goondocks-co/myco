@@ -16,6 +16,7 @@ import {
   deleteSkillRecordCascade,
 } from '@myco/db/queries/skill-records.js';
 import type { SkillRecordInsert } from '@myco/db/queries/skill-records.js';
+import { insertContentClaim, getActiveContentClaim } from '@myco/db/queries/content-claims.js';
 import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
@@ -456,6 +457,52 @@ describe('skill record query helpers', () => {
       expect(deleteSkillRecordCascade('skill-project-a', projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId))).toBeNull();
       expect(getSkillRecord('skill-project-a', projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId))).not.toBeNull();
       expect(deleteSkillRecordCascade('skill-project-a', projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId))!.id).toBe('skill-project-a');
+    });
+
+    // Content-claim spec §5: deletion cancels the artifact's active claim via
+    // an explicit call inside the cascade, never an FK cascade.
+    it('cancels the skill\'s active content claim as part of the delete', () => {
+      insertSkillRecord(makeSkillRecord({ id: 'skill-claimed', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      const claimed = insertContentClaim({
+        artifactKind: 'skill',
+        artifactId: 'skill-claimed',
+        generation: 1,
+        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        claimedBy: 'machine-a',
+        claimedAt: epochNow(),
+        expiresAt: epochNow() + 86400,
+        machineId: 'machine-a',
+      });
+      expect(claimed.ok).toBe(true);
+
+      const deleted = deleteSkillRecordCascade('skill-claimed', projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId));
+      expect(deleted?.id).toBe('skill-claimed');
+      expect(getActiveContentClaim('skill', 'skill-claimed')).toBeNull();
+    });
+
+    it('deleting an unclaimed skill is unaffected by the claim cancel (no-op, no throw)', () => {
+      insertSkillRecord(makeSkillRecord({ id: 'skill-unclaimed', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      expect(() =>
+        deleteSkillRecordCascade('skill-unclaimed', projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId)),
+      ).not.toThrow();
+    });
+
+    it('deleting one skill leaves a different claimed skill\'s active claim untouched', () => {
+      insertSkillRecord(makeSkillRecord({ id: 'skill-victim', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      insertSkillRecord(makeSkillRecord({ id: 'skill-bystander', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      insertContentClaim({
+        artifactKind: 'skill',
+        artifactId: 'skill-bystander',
+        generation: 1,
+        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        claimedBy: 'machine-a',
+        claimedAt: epochNow(),
+        expiresAt: epochNow() + 86400,
+        machineId: 'machine-a',
+      });
+
+      deleteSkillRecordCascade('skill-victim', projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId));
+      expect(getActiveContentClaim('skill', 'skill-bystander')).not.toBeNull();
     });
   });
 });

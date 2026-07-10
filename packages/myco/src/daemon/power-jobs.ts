@@ -15,6 +15,7 @@ import { isAutoBackupDue, createGroveBackup } from '@myco/backup/service.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
 import { pruneOldNotifications } from '@myco/db/queries/notifications.js';
 import { pruneOldAgentRuns } from '@myco/db/queries/runs.js';
+import { expireStaleContentClaims, pruneTerminalContentClaims } from '@myco/db/queries/content-claims.js';
 import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';
 import { notify } from '@myco/notifications/notify.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -27,6 +28,8 @@ import {
   MS_PER_DAY,
   MS_PER_HOUR,
   CAPTURE_BUFFER_DRAIN_INTERVAL_MS,
+  CONTENT_CLAIM_RETENTION_MS,
+  epochSeconds,
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { POWER_JOB_NAMES, type PowerJobName } from '@myco/constants/power-jobs.js';
@@ -471,6 +474,41 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
     }),
   });
 
+  // content-claim-expiry: active && expires_at < now -> expired, THEN prune
+  // terminal (released/published/expired) rows older than the retention
+  // window. The expiry sweep is the backstop that frees an abandoned
+  // publication lock — a row can arrive via backup-restore/project-copy with
+  // expires_at already past, so this never assumes active implies unexpired.
+  // The prune is the terminal-row GC (spec §2/§8): audit breadcrumbs, not
+  // content history, so they don't accumulate forever. Runs in active too (a
+  // stale lock should clear promptly for someone waiting to claim, not only
+  // on idle/sleep).
+  runner.register({
+    name: POWER_JOB_NAMES.CONTENT_CLAIM_EXPIRY,
+    runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
+    fn: fanOutGroves(POWER_JOB_NAMES.CONTENT_CLAIM_EXPIRY, async (scope) => {
+      const now = epochSeconds();
+      const expired = expireStaleContentClaims(now);
+      if (expired > 0) {
+        logger.info(LOG_KINDS.CONTENT_CLAIM_EXPIRY, 'Expired stale content claims', {
+          expired,
+          grove_id: scope.grove.id,
+          grove_slug: scope.grove.slug,
+        });
+      }
+
+      const pruned = pruneTerminalContentClaims(Math.floor(CONTENT_CLAIM_RETENTION_MS / 1000), now);
+      if (pruned > 0) {
+        logger.info(LOG_KINDS.CONTENT_CLAIM_PRUNE, 'Pruned terminal content claims', {
+          pruned,
+          grove_id: scope.grove.id,
+          grove_slug: scope.grove.slug,
+        });
+      }
+    }),
+  });
+
   runner.register({
     name: POWER_JOB_NAMES.AUTO_BACKUP,
     runIn: ['idle', 'sleep'],
@@ -670,8 +708,18 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       await forEachRegisteredProject(
         cache,
         logger,
-        ({ grove, projectId, projectRoot, projectVaultDir, databasePath }: RegisteredProjectScope) => {
-          const projectConfig = loadMergedConfig(projectVaultDir, { groveId: grove.id, mycoHome });
+        ({ grove, projectId, projectRoot, projectVaultDir, databasePath, treeAvailable }: RegisteredProjectScope) => {
+          const projectConfig = loadMergedConfig(projectVaultDir, {
+            groveId: grove.id,
+            mycoHome,
+            // A Team Host iterating a member's registered project has no
+            // local working tree — degrade to machine+grove tiers instead of
+            // throwing "myco.yaml not found". Git provenance itself already
+            // degrades on a missing tree: `runGitAsync` returns `ok: false`
+            // rather than throwing, and with no configured release refs
+            // (the default) `classify()` never shells out to git at all.
+            projectTierOptional: !treeAvailable,
+          });
           const config = releaseProvenanceConfig(projectConfig);
           if (!config.enabled) return;
           const intervalMs = config.reconcile_interval_minutes * 60 * 1000;
@@ -765,7 +813,11 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       await forEachRegisteredProject(
         cache,
         logger,
-        ({ grove, projectId, projectRoot, projectVaultDir }: RegisteredProjectScope) => {
+        ({ grove, projectId, projectRoot, projectVaultDir, treeAvailable }: RegisteredProjectScope) => {
+          // A Team Host never writes a member's working tree — and there is
+          // no tree here to write to regardless (the host has no local
+          // checkout of a member's registered project).
+          if (!treeAvailable) return;
           const key = `${grove.id}:${projectId}`;
           visited.add(key);
           const lastRun = lastManagedReconcileAt.get(key) ?? 0;
@@ -927,7 +979,12 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       forEachRegisteredProject(
         cache,
         logger,
-        async ({ databasePath, projectId, projectRoot, projectVaultDir, grove }: RegisteredProjectScope) => {
+        async ({ databasePath, projectId, projectRoot, projectVaultDir, grove, treeAvailable }: RegisteredProjectScope) => {
+          // Canopy scan walks the working tree — a Team Host iterating a
+          // member's registered project has none. Skip before ever touching
+          // config or the scanner; without this the scan would throw ENOENT
+          // walking a nonexistent root and log a CANOPY_ERROR every tick.
+          if (!treeAvailable) return;
           try {
             const projectConfig = loadMergedConfig(projectVaultDir, { groveId: grove.id, mycoHome });
             if (!capabilityEnabled(projectConfig, 'canopy')) return;

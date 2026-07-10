@@ -303,6 +303,39 @@ describe('agent loader', () => {
       expect(act?.prompt).not.toContain('process at most 6 STALE updates per run');
     });
 
+    it('declares skill-evolve act as requiring the project tree (publishes via vault_write_skill/vault_edit_skill)', () => {
+      // act is the only phase that writes a published SKILL.md to disk
+      // (writePublishedSkillFile mkdirSync's the destination). A scheduled
+      // run for a registered project with no working tree (Team Host) must
+      // skip this phase rather than silently create a phantom directory
+      // tree at the member's projectRoot path.
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const se = tasks.find((t) => t.name === 'skill-evolve');
+      const act = se?.phases?.find((phase) => phase.name === 'act');
+
+      expect(act?.requiresProjectTree).toBe(true);
+      expect(act?.required).toBe(true);
+    });
+
+    it('declares both skill-generate phases as requiring the project tree (staging + finalize write into it)', () => {
+      // draft stages SKILL.md under <projectRoot>/.myco/staging/skills/ via
+      // vault_stage_skill; validate re-stages and promotes to
+      // <projectRoot>/.agents/skills/<name>/ via vault_finalize_skill →
+      // writePublishedSkillFile. Both mkdirSync their destinations, so a
+      // scheduled run for a registered project with no working tree (Team
+      // Host) must skip them rather than create a phantom directory tree at
+      // the member's projectRoot path.
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const sg = tasks.find((t) => t.name === 'skill-generate');
+      const draft = sg?.phases?.find((phase) => phase.name === 'draft');
+      const validate = sg?.phases?.find((phase) => phase.name === 'validate');
+
+      expect(draft?.requiresProjectTree).toBe(true);
+      expect(validate?.requiresProjectTree).toBe(true);
+      expect(draft?.required).toBe(true);
+      expect(validate?.required).toBe(true);
+    });
+
     it('loads skill-evolve inventory as a writable state/report phase', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const se = tasks.find((t) => t.name === 'skill-evolve');

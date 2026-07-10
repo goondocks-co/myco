@@ -9,6 +9,7 @@ import { SectionHeader } from '../ui/section-header';
 import { MarkdownContent } from '../ui/markdown-content';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { EvolutionTimeline } from './EvolutionTimeline';
+import { ClaimControl } from '../content-claims/ClaimControl';
 import { useSkillRecord, useDeleteSkillRecord } from '../../hooks/use-skills';
 
 /* ---------- Types ---------- */
@@ -141,6 +142,9 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
           </Badge>
         </div>
       </Surface>
+
+      {/* Publication claim — renders only when this generation is unpublished */}
+      <ClaimControl artifactKind="skill" artifactId={skill.id} />
 
       {/* Metric tiles */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

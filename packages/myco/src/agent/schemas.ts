@@ -238,6 +238,7 @@ export const PhaseDefinitionSchema = z.object({
     // strict-equality only in v1 — extend when a real consumer surfaces
     equals: z.union([z.string(), z.number(), z.boolean(), z.null()]),
   }).optional(),
+  requiresProjectTree: z.boolean().optional(),
 
   // --- Map mode -------------------------------------------------------------
   mode: z.enum(['agent', 'map']).optional(),

@@ -62,6 +62,15 @@ export const POWER_JOB_NAMES = {
    * `myco daemon` is never auto-reconciled.
    */
   SERVICE_RECONCILE: 'service-reconcile',
+  /**
+   * Content claim system (Team Host WS2) expiry sweep: flips `active` claims
+   * whose `expires_at` has passed to `expired`. Runs where the Grove lives —
+   * the backstop that frees an abandoned lock even when release-on-detach
+   * never fires (design doc §5: there is no reliable release-on-detach).
+   * Active rows can arrive with `expires_at` already past (backup-restore/
+   * project-copy), so this sweep never assumes active implies unexpired.
+   */
+  CONTENT_CLAIM_EXPIRY: 'content-claim-expiry',
 } as const;
 
 export type PowerJobName = (typeof POWER_JOB_NAMES)[keyof typeof POWER_JOB_NAMES];

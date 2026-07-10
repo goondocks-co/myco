@@ -8,6 +8,7 @@
 
 import crypto from 'node:crypto';
 import { loadMergedConfig } from '@myco/config/loader.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import { insertNotification } from '@myco/db/queries/notifications.js';
 import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import { getType } from './registry.js';
@@ -81,7 +82,14 @@ export function notify(
   if (!vaultDir) return null;
 
   try {
-    const cfg = config ?? loadMergedConfig(vaultDir);
+    // A daemon-internal notify for a served project (e.g. a per-project
+    // failure notifier) names a vault whose working tree lives on the
+    // member's machine — degrade to machine+grove tiers (empty project
+    // tier) so the notification lands instead of being swallowed by the
+    // best-effort catch below.
+    const cfg = config ?? loadMergedConfig(vaultDir, {
+      projectTierOptional: !projectTreeAvailable(vaultDir),
+    });
 
     if (!cfg.notifications.enabled) return null;
 

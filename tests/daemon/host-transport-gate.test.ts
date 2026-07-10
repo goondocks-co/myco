@@ -97,6 +97,17 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   const bearer = (token = HOST_BEARER) => `Bearer ${token}`;
   const v1 = { 'x-myco-host-protocol': '1' };
 
+  // --- overlay CSRF: no browsers on the overlay (runs before the bearer gate) ---
+
+  test('a request carrying an Origin header → 403 forbidden_origin, handler never runs — direct browser access to the overlay stays refused', async () => {
+    const res = await fetch(`${overlay}/api/sessions`, {
+      headers: { Authorization: bearer(), ...v1, Origin: 'http://127.0.0.1:19666' },
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('forbidden_origin');
+    expect(sessionsHandlerCalls).toBe(0);
+  });
+
   // --- blanket bearer: 401 on every route incl. raw + /mcp ---
 
   test('router route without the host bearer → 401, handler never runs', async () => {

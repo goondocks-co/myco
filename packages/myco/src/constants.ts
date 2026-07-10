@@ -137,6 +137,12 @@ export const BUFFER_HARD_RETENTION_MS = 7 * MS_PER_DAY;
 /** Cadence of the periodic quiescence-gated buffer drain job. */
 export const CAPTURE_BUFFER_DRAIN_INTERVAL_MS = 15 * 60 * 1000;
 
+// --- Content claim system (Team Host WS2) ---
+/** Default TTL for a content claim — the backstop that frees an abandoned lock. */
+export const CONTENT_CLAIM_TTL_MS = 1 * MS_PER_DAY;
+/** Terminal claim rows (released/published/expired) are pruned past this age. */
+export const CONTENT_CLAIM_RETENTION_MS = 30 * MS_PER_DAY;
+
 /**
  * How long a session's buffer file must sit unmodified before the drain
  * job treats an open-row session as quiescent. Deliberately much wider

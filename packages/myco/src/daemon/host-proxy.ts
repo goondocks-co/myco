@@ -67,7 +67,21 @@ const FLUSH_BEFORE_FORWARD_ROUTES = new Set([
 
 /** Hop-by-hop request headers the proxy never forwards (it re-computes them for
  *  the upstream leg). `authorization` + the local `x-myco-auth` are stripped so
- *  the LOCAL bearer never leaks to the host; the HOST bearer is attached fresh. */
+ *  the LOCAL bearer never leaks to the host; the HOST bearer is attached fresh.
+ *
+ *  `origin`, `referer`, and `cookie` are stripped because this hop is
+ *  server-to-server, not browser-to-server: the member has already enforced
+ *  its OWN browser-facing auth/origin policy (the loopback CSRF gate) before
+ *  ever reaching the proxy, so nothing downstream needs the inbound browser's
+ *  ambient headers. The host's overlay listener runs the SAME CSRF-equivalent
+ *  gate for its own direct callers (`validateOverlayRequest`) and rejects any
+ *  request carrying `Origin` on the theory that daemon↔daemon traffic never
+ *  sets it — which was true until this proxy forwarded a browser's `Origin`
+ *  verbatim and 403'd every routed mutation from the dashboard. Forwarding a
+ *  member-local UI's browser-context headers across the hop was never correct
+ *  regardless of that gate: the host has no use for them and no cookie is
+ *  ever set (bearer-only auth), so `cookie` is stripped alongside `origin` /
+ *  `referer` as the same class of header with no business on this hop. */
 const STRIPPED_REQUEST_HEADERS = new Set([
   'host',
   'connection',
@@ -77,6 +91,9 @@ const STRIPPED_REQUEST_HEADERS = new Set([
   'proxy-connection',
   'authorization',
   REQUEST_CONTEXT_AUTH_HEADER,
+  'origin',
+  'referer',
+  'cookie',
 ]);
 
 /** Hop-by-hop response headers the relay drops; everything else (including
@@ -393,8 +410,12 @@ function readRawBody(req: http.IncomingMessage): Promise<Buffer> {
 }
 
 /** Build the upstream request headers: preserve every tenancy `x-myco-*` header
- *  verbatim, drop the local bearer + hop-by-hop headers, attach the HOST bearer
- *  and the member's protocol-version header, and point `host` at the overlay. */
+ *  verbatim, drop the local bearer + hop-by-hop + browser-context headers,
+ *  attach the HOST bearer and the member's protocol-version header, and point
+ *  `host` at the overlay. This hop is always server-to-server — the member
+ *  has already run its own browser-facing auth/origin policy on the inbound
+ *  request before it ever reaches the proxy — so the upstream leg carries
+ *  none of the calling browser's ambient headers. */
 function buildForwardHeaders(
   req: http.IncomingMessage,
   target: RemoteTarget,
@@ -420,6 +441,15 @@ function buildForwardHeaders(
   // (machine/session headers) stays the caller's — that is the member's own.
   headers[REQUEST_CONTEXT_HEADERS.groveId] = target.groveId;
   headers[REQUEST_CONTEXT_HEADERS.projectId] = target.projectId;
+  // MACHINE IDENTITY always crosses the hop. Agent/MCP clients supply
+  // `x-myco-machine-id` themselves — forwarded verbatim, never overwritten.
+  // A browser supplies none, and a host handler receiving no machine id
+  // attributes the write to the daemon executing it — the HOST — which is
+  // the wrong holder for claim-style ownership rows. The caller at this hop
+  // is the member daemon, so absent a caller-supplied id the member's own
+  // is stamped (the same fallback rule as the collect-path event-id stamp,
+  // `resolveMemberMachineId`).
+  headers[REQUEST_CONTEXT_HEADERS.machineId] = resolveMemberMachineId(req);
   if (bufferedLength !== null) headers['content-length'] = String(bufferedLength);
   return headers;
 }

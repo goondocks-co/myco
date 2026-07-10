@@ -88,6 +88,14 @@ mock.module('../../packages/myco/ui/src/hooks/use-debounce', () => ({
   useDebounce: (v: string) => v,
 }));
 
+// SkillList renders the content-claims "Unpublished" badge per row (B6) —
+// stub the hook so this unrelated test doesn't need a PowerProvider or a
+// mocked lib/api just to satisfy usePowerQuery's context requirement.
+mock.module('../../packages/myco/ui/src/hooks/use-content-claims', () => ({
+  useContentClaims: () => ({ data: undefined, isLoading: false }),
+  findClaimableArtifact: () => undefined,
+}));
+
 import Skills from '../../packages/myco/ui/src/pages/Skills';
 
 function renderPage(initial: string) {

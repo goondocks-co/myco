@@ -165,6 +165,13 @@ phases:
       - vault_stage_skill
     maxTurns: 10
     required: true
+    # vault_stage_skill writes .myco/staging/skills/<candidate_id>/ under the
+    # project-local vault, mkdirSync-ing the destination — on a scheduled run
+    # for a registered project with no working tree (Team Host) that would
+    # silently create a phantom directory tree at the member's projectRoot
+    # path. Skip rather than write; a skip here does not fail the run (infra
+    # omission, not a content failure).
+    requiresProjectTree: true
 
   - name: validate
     prompt: |
@@ -294,6 +301,11 @@ phases:
       - code_grep
     maxTurns: 18
     required: true
+    # vault_stage_skill re-stages into .myco/staging/skills/ and
+    # vault_finalize_skill promotes to .agents/skills/<name>/ via
+    # writePublishedSkillFile — both are project-tree writes with the same
+    # phantom-directory hazard as draft. Skip on treeless projects.
+    requiresProjectTree: true
     postCondition: skill-generate-validate
     dependsOn:
       - draft
