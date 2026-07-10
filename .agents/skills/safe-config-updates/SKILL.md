@@ -103,9 +103,11 @@ updateTierConfigRaw({ kind: 'grove', groveId }, (raw) => {
 
 ## React Settings Forms — Spread Before Overlay
 
+**Note:** `formToConfig()` no longer exists in the codebase — settings pages have migrated to the ScopedField/patch-based API (see below), which handles spread-before-overlay internally. The pattern below documents the underlying principle for any custom save handler that still assembles a config object by hand.
+
 ### Why spread?
 
-A settings page only renders fields for its own section. When the user submits, `formToConfig()` reconstructs a config object from form state. If it builds from scratch, every key it doesn't render disappears on save — including keys owned by other pages, keys added by future features, and keys set programmatically.
+A settings page only renders fields for its own section. If a hand-rolled save handler reconstructs a config object from form state from scratch, every key it doesn't render disappears on save — including keys owned by other pages, keys added by future features, and keys set programmatically.
 
 The fix is structural: always start from the original config and overlay only what this page owns.
 
@@ -321,35 +323,33 @@ If the field requires daemon restart rather than live-reload, document it in the
 
 ## Config-Change Reactions — Live Reload System
 
-Use `registry.on(pathPrefixes, handler)` from the ConfigReactionRegistry to subscribe daemon subsystems to config changes for live-reload.
+Use `reactions.on(pathPrefixes, handler)` on the `ConfigReactionRegistry` (created via `createConfigReactionRegistry(logger)` from `packages/myco/src/daemon/config-reactions/registry.ts`) to subscribe daemon subsystems to config changes for live-reload.
 
 ### Set Up Config-Change Reactions
 
-**Step 1: Get access to the registry**
-In the subsystem initialization code, obtain the ConfigReactionRegistry instance:
-
+**Step 1: Create the registry during daemon startup**
+`packages/myco/src/daemon/main.ts` creates one registry instance and wires all reactions against it:
 ```typescript
-import type { ConfigReactionRegistry } from '../config-reactions/registry.js';
+import { createConfigReactionRegistry } from './config-reactions/index.js';
 
-// Registry is typically passed as a dependency during daemon startup
-function initializeSubsystem(registry: ConfigReactionRegistry, deps: Dependencies) {
-  // Register reactions here
-}
+const reactions = createConfigReactionRegistry(logger);
 ```
 
-**Step 2: Register the reaction**
+**Step 2: Register reactions with path-prefix semantics**
 ```typescript
 // Path-prefix semantics: array of strings, prefix match triggers
 // Empty array [] fires on every config write
-registry.on(['agent.model', 'embedding'], createModelReaction(dependencies));
+reactions.on([], () => { configHash = computeConfigHash(bootstrapVaultDir); });
+reactions.on(['okf'], createOkfReconcileReaction());
+reactions.on(['agent.tasks'], async () => { /* re-schedule tasks */ });
 ```
 
 **Step 3: Implement closure factory pattern**
+`createOkfReconcileReaction` in `packages/myco/src/daemon/okf-reconcile-reaction.ts` shows the factory pattern — a function that takes dependencies and returns a `ConfigReaction` closure:
 ```typescript
-function createModelReaction(deps: { logger: Logger, embedManager: EmbedManager }) {
-  return (config: MycoConfig) => {
-    deps.logger.info('Model config changed, updating embedding provider');
-    deps.embedManager.updateProvider(config.embedding.provider);
+export function createOkfReconcileReaction(deps: OkfReconcileReactionDeps = {}): ConfigReaction {
+  return (config) => {
+    // reconcile OKF state against the new config
   };
 }
 ```

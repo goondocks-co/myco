@@ -21,6 +21,8 @@ This skill covers comprehensive procedures for deploying, maintaining, and opera
 
 ## Procedure A: Team Sync D1/Vectorize Deployment
 
+> **Deprecation note:** Team Sync is being fully deprecated in favor of Team Host — one UI/UX going forward, not two parallel team systems. Team functionality (including the MCP connection story) is now based on Team Host. The worker code and Cloudflare/D1 infrastructure below are **not deleted** — kept dormant in-repo by explicit decision. This procedure remains accurate for maintaining the dormant worker, but new team feature work should target Team Host, not this D1/Vectorize path.
+
 Deploy and maintain the team sync infrastructure with Grove-aware schema migration handling. The team sync worker lives in `packages/myco-team/` as a standalone package. **Grove installation is now mandatory** — team sync deployment cannot proceed without Grove architecture.
 
 ### Grove-Only Installation Requirement
@@ -493,3 +495,7 @@ packages/myco-team/
 ### `myco-team-dev` vs `myco-team` Binary Naming
 
 The `myco-team-dev` symlink (installed to `~/.local/bin/myco-team-dev` by `make dev-link-team`) points to the local build at `packages/myco-team/dist/main.js` and is the correct binary for local development IaC and deploy commands. The globally-installed `myco-team` package binary is separate and targets the production release path. Using the wrong binary for IaC commands results in silent version mismatches — e.g., running schema migrations or Wrangler deploys against the wrong build. Rule: use `myco-team-dev` for all local development operations against a dev-linked setup; use `myco-team` only when operating against a production deployment from a globally-installed release.
+
+### Worker-Protocol Reconcile Gate
+
+Team-sync reconcile previously lacked a drain-path worker-protocol gate: every `SYNC_PROTOCOL_VERSION` bump (`packages/myco/src/constants.ts`) spammed reconcile errors until the deployed worker was updated, because reconcile attempted to sync tables the older worker didn't understand yet, with no signal surfaced to the UI. The fix is a shared helper, `tablesGatedByWorkerProtocol(tables, workerProtocol)` in `packages/myco/src/db/schema-ddl.ts`, used by both `packages/myco/src/daemon/team-sync-init.ts` (skips gated tables during reconcile) and `packages/myco/src/daemon/api/team-connect.ts` (exposes `reconcile_gated_tables` to the UI) — enforcement and UI disclosure share one source of truth instead of drifting independently. When bumping `SYNC_PROTOCOL_VERSION`, verify new tables/columns are covered by this gate before deploying the worker.

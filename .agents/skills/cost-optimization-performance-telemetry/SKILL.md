@@ -157,6 +157,7 @@ Optimize task cadence and resource allocation patterns across grove boundaries.
    - **Serial tick starvation**: Long-running jobs (e.g., release-provenance reconciler averaging 348s) block all subsequent jobs in the serial tick loop — do not schedule expensive jobs at short intervals without bounded drain specs
    - **Per-job dispatch tracking**: `JobRunner` maintains a `lastDispatched` map keyed by job name; each job tracks its own cadence independently rather than sharing a global state
    - **Deep-sleep hold from `HoldSpec`**: Jobs with a `HoldSpec` use a `pending()` function to signal non-empty queues; non-zero `pending()` prevents the daemon from entering deep sleep (`allowDeepSleepHold` defaults true)
+   - **PowerManager tick is not the eligibility gate**: `CanopyBackgroundScanDispatcher` (`packages/myco/src/daemon/jobs/canopy-scan.ts`) is ticked by `PowerManager` on every active/idle/sleep tick, but the tick alone doesn't mean the job should run — it tracks its own `lastDispatchedAt` and only dispatches once `background_period_minutes` has elapsed. A job driven by an external ticker still needs its own per-job dispatched-timestamp gate, or it fires on every tick regardless of configured cadence.
 
 ## Procedure D: SDK Execution Telemetry & Monitoring
 
