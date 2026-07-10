@@ -382,7 +382,7 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/api/content-claims/:id/materialize', stamp: 'localhost-only', capability: CONTENT_MATERIALIZE },
 
   // --- localhost-only: content-claim FILE-STATUS, the member disk-truth read
-  //     (design: docs/superpowers/specs/2026-07-09-content-claim-system-design.md
+  //     (design: docs/superpowers/specs/2026-07-10-publication-coupling-okf-disposition-design.md
   //     §2(b)). Read-only sibling of materialize above, sharing its capability
   //     stamp: it checks presence in the CALLING member's own working tree, so
   //     proxying it to the host would answer with the wrong machine's disk. ---

@@ -3,7 +3,7 @@
  * surface over DB-resident skills and OKF pages (design:
  * docs/superpowers/specs/2026-07-09-content-claim-system-design.md §3).
  *
- *   GET  /api/content-claims                  claimable inventory + active claims
+ *   GET  /api/content-claims                  claimable inventory + active claims + published artifacts
  *   POST /api/content-claims                  constraint-based claim
  *   POST /api/content-claims/:id/refresh      holder-only generation bump
  *   POST /api/content-claims/:id/release      holder-only release
@@ -111,7 +111,7 @@ interface PublishedArtifactView {
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/content-claims — claimable inventory + active claims
+// GET /api/content-claims — claimable inventory + active claims + published
 // ---------------------------------------------------------------------------
 
 export async function handleContentClaimsList(
