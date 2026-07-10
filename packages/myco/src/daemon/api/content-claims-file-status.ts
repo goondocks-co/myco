@@ -60,9 +60,16 @@ function asRecord(body: unknown): Record<string, unknown> {
   return body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
 }
 
-function asArtifactsArray(body: Record<string, unknown>): FileStatusArtifactInput[] {
+function asArtifactsArray(body: Record<string, unknown>): unknown[] {
   const raw = body.artifacts;
-  return Array.isArray(raw) ? (raw as FileStatusArtifactInput[]) : [];
+  return Array.isArray(raw) ? raw : [];
+}
+
+/** A batch entry that isn't a plain object (null, string, number, boolean,
+ *  array) carries no artifact identity at all — distinct from a well-formed
+ *  entry with a bad field, which still echoes its own kind/id. */
+function isArtifactObject(entry: unknown): entry is FileStatusArtifactInput {
+  return !!entry && typeof entry === 'object' && !Array.isArray(entry);
 }
 
 /**
@@ -78,9 +85,9 @@ function fileStatusForArtifact(
   artifact: FileStatusArtifactInput,
   logger: ProxyLogger,
 ): boolean | null {
-  if (artifact.artifact_kind !== 'skill') return null;
-
   try {
+    if (artifact.artifact_kind !== 'skill') return null;
+
     if (typeof artifact.name !== 'string' || artifact.name.length === 0) {
       logger.warn('file-status: refused a skill artifact with a non-string or empty name', {
         artifact_id: artifact.artifact_id,
@@ -107,6 +114,26 @@ function fileStatusForArtifact(
   }
 }
 
+/**
+ * One response entry per request entry, index-aligned. A non-object entry
+ * (e.g. a literal `null` in the artifacts array) has no identity to echo —
+ * it degrades to `{artifact_kind: null, artifact_id: null, file_present: null}`
+ * with one `warn` log, keeping the batch alive and the alignment intact.
+ */
+function statusForEntry(currentRoot: string, entry: unknown, logger: ProxyLogger): FileStatusResult {
+  if (!isArtifactObject(entry)) {
+    logger.warn('file-status: refused a non-object artifact entry', {
+      entry_type: entry === null ? 'null' : Array.isArray(entry) ? 'array' : typeof entry,
+    });
+    return { artifact_kind: null, artifact_id: null, file_present: null };
+  }
+  return {
+    artifact_kind: entry.artifact_kind ?? null,
+    artifact_id: entry.artifact_id ?? null,
+    file_present: fileStatusForArtifact(currentRoot, entry, logger),
+  };
+}
+
 export interface ContentClaimFileStatusDeps {
   logger: ProxyLogger;
   mycoHome?: string;
@@ -129,11 +156,8 @@ export function createContentClaimFileStatusHandler(deps: ContentClaimFileStatus
       };
     }
 
-    const statuses: FileStatusResult[] = artifacts.map((artifact) => ({
-      artifact_kind: artifact.artifact_kind,
-      artifact_id: artifact.artifact_id,
-      file_present: fileStatusForArtifact(context.currentRoot, artifact, deps.logger),
-    }));
+    const statuses: FileStatusResult[] = artifacts.map((entry) =>
+      statusForEntry(context.currentRoot, entry, deps.logger));
 
     return { status: 200, body: { statuses } };
   };

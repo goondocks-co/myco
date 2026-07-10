@@ -176,6 +176,28 @@ describe('content claim file-status — local project', () => {
     }
   });
 
+  test('malformed entries (null, non-object) never fail the batch — index-aligned nulls with one warn each', async () => {
+    writeSkillFile(projectRoot, 'good-skill');
+
+    const { h, warnSpy } = handler();
+    const res = await h(req(projectRoot, [
+      { artifact_kind: 'skill', artifact_id: 'sk-good', name: 'good-skill' },
+      null,
+      'not-an-object',
+    ]));
+
+    expect(res.status).toBe(200);
+    const statuses = (res.body as { statuses: FileStatusEntry[] }).statuses;
+    // One response entry per request entry, in request order — a bad entry
+    // degrades in place instead of failing the batch or shifting alignment.
+    expect(statuses).toEqual([
+      { artifact_kind: 'skill', artifact_id: 'sk-good', file_present: true },
+      { artifact_kind: null, artifact_id: null, file_present: null },
+      { artifact_kind: null, artifact_id: null, file_present: null },
+    ]);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
   test('unknown artifact kind -> null, no warn log (a routine, expected shape — not a bad entry)', async () => {
     const { h, warnSpy } = handler();
     const res = await h(req(projectRoot, [
