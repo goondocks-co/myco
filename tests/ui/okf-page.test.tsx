@@ -121,6 +121,9 @@ const PAGES: OkfPageSummary[] = [
 mock.module('../../packages/myco/ui/src/hooks/use-content-claims', () => ({
   useContentClaims: () => ({ data: undefined, isLoading: false }),
   findClaimableArtifact: () => undefined,
+  findPublishedArtifact: () => undefined,
+  useContentFileStatus: () => ({ data: undefined, isLoading: false, isError: false }),
+  useInvalidateContentClaims: () => () => {},
   useMyMachineId: () => undefined,
   useReleaseContentClaim: () => ({ mutate: () => {}, isPending: false }),
   useMarkContentClaimPublished: () => ({ mutate: () => {}, isPending: false }),
