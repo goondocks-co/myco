@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // scan-content.mjs — pre-commit content scanner for an OKF wiki tree.
 //
-// Distilled from packages/myco/src/okf/publish-eligibility.ts's finding
-// patterns (secrets, absolute local paths, raw session identifiers) before
-// that module was deleted alongside the rest of the built OKF feature.
-// Zero-dependency: only Node.js core modules, so it runs standalone from any
-// wiki root with no `npm install` step and no repo-specific import paths.
+// Scans every `.md` file under a target directory for four finding classes:
+// secret-shaped tokens, absolute local filesystem paths, raw session
+// identifiers, and `resource: repo://…` frontmatter references to
+// sensitive-looking repo files (.env, private keys, credential stores).
+// Zero-dependency: only Node.js core modules, no daemon imports — it runs
+// standalone from any wiki root with no `npm install` step.
 //
 // Usage:
 //   node scan-content.mjs <directory>
@@ -45,6 +46,54 @@ const ABSOLUTE_PATH_PATTERNS = [
 /** UUID-shaped session identifiers (v1-v8), and the raw identifier key names. */
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
 const RAW_ID_KEY_RE = /(^|[^a-z])(session_id|prompt_batch_id|machine_id)\s*[:=]/im;
+
+/**
+ * Sensitive repo-file detection for `resource: repo://<path>` frontmatter
+ * references: a wiki page pointing its `resource` at a credential file leaks
+ * that the file exists and where, even when the page body is clean.
+ */
+const SENSITIVE_BASENAMES = new Set([
+  '.env',
+  '.npmrc',
+  '.pypirc',
+  '.netrc',
+  '.dockercfg',
+  'id_rsa',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
+]);
+const SENSITIVE_EXTENSIONS = new Set(['.key', '.pem', '.p12', '.pfx']);
+
+function isSensitiveRepoPath(relPath) {
+  const normalized = relPath.replace(/\\/g, '/');
+  const basename = normalized.split('/').pop() ?? normalized;
+  const lower = basename.toLowerCase();
+  if (SENSITIVE_BASENAMES.has(lower)) return true;
+  if (lower.startsWith('.env.')) return true;
+  if (lower.endsWith('_rsa') || lower.endsWith('_dsa') || lower.endsWith('_ecdsa') || lower.endsWith('_ed25519')) {
+    return true;
+  }
+  const dot = lower.lastIndexOf('.');
+  const ext = dot > 0 ? lower.slice(dot) : '';
+  return SENSITIVE_EXTENSIONS.has(ext);
+}
+
+/**
+ * Extract the `resource: repo://<path>` value from a document's frontmatter
+ * block, if present. Deliberately regex-based rather than a YAML parse to
+ * stay zero-dependency: matches a top-level `resource:` line between the
+ * opening `---` and the closing `---`, tolerating optional quoting.
+ */
+function repoResourcePath(content) {
+  const src = content.replace(/\r\n/g, '\n');
+  if (!src.startsWith('---\n')) return null;
+  const close = src.indexOf('\n---', 3);
+  if (close === -1) return null;
+  const frontmatter = src.slice(4, close);
+  const m = /^resource:\s*['"]?repo:\/\/([^'"\n]+?)['"]?\s*$/m.exec(frontmatter);
+  return m ? m[1] : null;
+}
 
 /** 16 hex chars of SHA-256 — enough to distinguish findings, never the secret itself. */
 function findingHash(raw) {
@@ -103,6 +152,15 @@ function scanText(text, relPath, findings) {
       path: relPath,
       excerpt: maskExcerpt(text, uuidMatch.index, uuidMatch[0].length),
       hash: findingHash(uuidMatch[0]),
+    });
+  }
+  const repoPath = repoResourcePath(text);
+  if (repoPath && isSensitiveRepoPath(repoPath)) {
+    findings.push({
+      code: 'sensitive_filename',
+      path: relPath,
+      excerpt: repoPath,
+      hash: findingHash(repoPath),
     });
   }
 }

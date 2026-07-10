@@ -157,15 +157,21 @@ a global skill, `~/.myco/skills/myco-okf/scripts/scan-content.mjs`. Locate
 whichever of these exists on this host and invoke it with a path (absolute
 or relative) to the wiki root as the sole argument.
 
-It flags secrets (API keys, tokens, private-key headers), absolute local
-filesystem paths, and raw session/machine identifiers (UUIDs, `session_id:`
-/ `prompt_batch_id:` / `machine_id:` keys) that leaked into page content —
+It flags four finding classes: secrets (API keys, tokens, private-key
+headers), absolute local filesystem paths, raw session/machine identifiers
+(UUIDs, `session_id:` / `prompt_batch_id:` / `machine_id:` keys), and
+`resource: repo://…` frontmatter references to sensitive-looking repo files
+(`.env` and `.env.*`, `.npmrc`/`.pypirc`/`.netrc`/`.dockercfg`, SSH private
+keys like `id_rsa`/`*_ed25519`, and `.key`/`.pem`/`.p12`/`.pfx` files) —
 defense-in-depth against a spore or session excerpt that happened to carry
-one of these. Exit code 0 means clean; non-zero means findings printed to
-stderr, each with a masked excerpt and a stable hash — resolve each one
-(redact the offending text) before proceeding. Do not silently ignore a
-finding; if you believe it's a false positive, say so explicitly to the
-user rather than dropping it.
+one of these, or a page whose `resource` points at a credential file. Exit
+code 0 means clean. Exit code 1 means findings were printed to stderr, each
+with a masked excerpt and a stable hash — resolve each one (redact the
+offending text) before proceeding. Exit code 2 means the invocation itself
+was wrong (missing argument, or the target isn't a directory) — fix the
+command and re-run; it says nothing about the content. Do not silently
+ignore a finding; if you believe it's a false positive, say so explicitly
+to the user rather than dropping it.
 
 **If `node`/`Bash` isn't available on this host**, fall back to manually
 checking each new or changed page against this checklist before advising a
@@ -179,6 +185,11 @@ commit:
   Windows `C:\Users\...` form).
 - No raw `session_id:`/`prompt_batch_id:`/`machine_id:` value, and no bare
   UUID that looks like one of those identifiers.
+- No `resource: repo://…` frontmatter value pointing at a sensitive repo
+  file: `.env` or `.env.*`, `.npmrc`, `.pypirc`, `.netrc`, `.dockercfg`, an
+  SSH private key (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, or any
+  `*_rsa`/`*_dsa`/`*_ecdsa`/`*_ed25519` name), or a `.key`/`.pem`/`.p12`/
+  `.pfx` file.
 
 ### 7. Hand back to the user
 
