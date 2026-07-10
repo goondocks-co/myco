@@ -46,9 +46,28 @@ export interface ClaimableArtifact {
   active_claim: ContentClaimView | null;
 }
 
+/** One artifact published at its current lineage-latest generation — the
+ *  additive companion to `claimable` (design §2(a)). Skills-only: a
+ *  published `okf_page` never emits an entry here. `name` is the
+ *  path-derivation key (skills derive `.agents/skills/<name>/SKILL.md`);
+ *  `label` is display-only. */
+export interface PublishedArtifactView {
+  artifact_kind: 'skill';
+  artifact_id: string;
+  name: string;
+  label: string;
+  published_generation: number;
+  lineage_generation: number;
+  active_claim: ContentClaimView | null;
+}
+
 export interface ContentClaimsListResponse {
   ok: boolean;
   claimable: ClaimableArtifact[];
+  /** Absent from a response predating this field — every consumer
+   *  (`findPublishedArtifact`, the file-status batch below) treats a
+   *  missing `published` as `[]`, never as an error. */
+  published?: PublishedArtifactView[];
   active_claims: ContentClaimView[];
 }
 
@@ -79,8 +98,8 @@ export interface MarkContentClaimPublishedResponse {
 }
 
 export type MaterializeContentClaimResponse =
-  | { ok: true; path: string; skill_name: string; generation: number }
-  | { ok: true; path: string; page_path: string; generation: number };
+  | { ok: true; path: string; skill_name: string; generation: number; auto_published: boolean }
+  | { ok: true; path: string; page_path: string; generation: number; auto_published: boolean };
 
 const CONTENT_CLAIMS_BASE_KEY = ['content-claims'] as const;
 
@@ -103,6 +122,89 @@ export function findClaimableArtifact(
   artifactId: string,
 ): ClaimableArtifact | undefined {
   return (data?.claimable ?? []).find((c) => c.artifact_kind === artifactKind && c.artifact_id === artifactId);
+}
+
+/** Find one artifact's published-at-latest entry, or undefined when it's
+ *  unpublished/stale (in `claimable` instead) or the response predates the
+ *  `published` field. Mirrors `findClaimableArtifact`. */
+export function findPublishedArtifact(
+  data: ContentClaimsListResponse | undefined,
+  artifactKind: ContentClaimArtifactKind,
+  artifactId: string,
+): PublishedArtifactView | undefined {
+  return (data?.published ?? []).find((p) => p.artifact_kind === artifactKind && p.artifact_id === artifactId);
+}
+
+/* ---------- File-status (member disk truth, Task 1.3) ---------- */
+
+export interface ContentFileStatusRequestArtifact {
+  artifact_kind: ContentClaimArtifactKind;
+  artifact_id: string;
+  name: string;
+}
+
+/** One status entry, index-aligned to the request's `artifacts` — the route
+ *  echoes `artifact_kind`/`artifact_id` back unvalidated (a malformed batch
+ *  entry degrades rather than throwing), so callers match by the SAME
+ *  identity pair rather than trusting response order. */
+export interface ContentFileStatusEntry {
+  artifact_kind: ContentClaimArtifactKind | null;
+  artifact_id: string | null;
+  file_present: boolean | null;
+}
+
+export interface ContentFileStatusResponse {
+  statuses: ContentFileStatusEntry[];
+}
+
+const CONTENT_FILE_STATUS_BASE_KEY = [...CONTENT_CLAIMS_BASE_KEY, 'file-status'] as const;
+
+/** POST /api/content-claims/file-status — one batched disk-presence check
+ *  for every published-at-latest artifact, against the active project's own
+ *  working tree (design §2(b)). Skipped entirely (no request fires) when
+ *  there's nothing to check or no project root to check it against — the
+ *  route requires both. Rides the same 15s cadence as `useContentClaims`. */
+export function useContentFileStatus(
+  projectRoot: string | undefined,
+  published: PublishedArtifactView[],
+): UseQueryResult<ContentFileStatusResponse> {
+  const artifacts: ContentFileStatusRequestArtifact[] = published.map((p) => ({
+    artifact_kind: p.artifact_kind,
+    artifact_id: p.artifact_id,
+    name: p.name,
+  }));
+  return usePowerQuery<ContentFileStatusResponse>({
+    queryKey: [...CONTENT_FILE_STATUS_BASE_KEY, projectRoot, artifacts],
+    queryFn: ({ signal }) =>
+      fetchJson<ContentFileStatusResponse>('/content-claims/file-status', {
+        method: 'POST',
+        body: JSON.stringify({ project_root: projectRoot, artifacts }),
+        signal,
+      }),
+    enabled: artifacts.length > 0 && !!projectRoot,
+    refetchInterval: POLL_INTERVALS.CONTENT_CLAIMS,
+    pollCategory: 'standard',
+  });
+}
+
+/**
+ * Invalidate the inventory query AND the file-status query in one call. The
+ * two live under different query-key shapes (the inventory's scoped key has
+ * nothing after the project marker; file-status has request params after
+ * it), so the inventory mutations' own `onSettled` invalidation — which
+ * targets the inventory's exact scoped key — never reaches file-status.
+ * Used by `ClaimControl`'s merged-state Publish flow: when a same-generation
+ * republish auto-closes server-side (Task 1.4's `auto_published: true`), the
+ * repaired entry should drop its Publish affordance immediately rather than
+ * wait for the next poll.
+ */
+export function useInvalidateContentClaims(): () => void {
+  const qc = useQueryClient();
+  const inventoryKey = useProjectScopedQueryKey(CONTENT_CLAIMS_BASE_KEY);
+  return useCallback(() => {
+    void qc.invalidateQueries({ queryKey: inventoryKey });
+    void qc.invalidateQueries({ queryKey: CONTENT_FILE_STATUS_BASE_KEY });
+  }, [qc, inventoryKey]);
 }
 
 /** This daemon's own machine id — the identity a claim's `claimed_by` is compared against to
@@ -196,7 +298,7 @@ export type ClaimAndMaterializePhase =
   | { status: 'claim-failed'; message: string; holder: ContentClaimView | null }
   | { status: 'materializing'; claimId: string }
   | { status: 'materialize-failed'; claimId: string; message: string }
-  | { status: 'success'; claimId: string; path: string };
+  | { status: 'success'; claimId: string; path: string; autoPublished: boolean };
 
 function messageFor(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
@@ -220,7 +322,7 @@ export function useClaimAndMaterialize() {
       setPhase({ status: 'materializing', claimId });
       try {
         const result = await materialize.mutateAsync({ claimId, projectRoot });
-        setPhase({ status: 'success', claimId, path: result.path });
+        setPhase({ status: 'success', claimId, path: result.path, autoPublished: result.auto_published });
       } catch (err) {
         setPhase({ status: 'materialize-failed', claimId, message: messageFor(err, 'Publishing failed') });
       }

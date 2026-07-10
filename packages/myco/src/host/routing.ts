@@ -380,6 +380,13 @@ const ROUTE_RULES: RouteRule[] = [
   //     `attached-config.ts`'s grove-tier fetch) for the claim/content state
   //     instead of proxying the request wholesale. ---
   { method: 'POST', pattern: '/api/content-claims/:id/materialize', stamp: 'localhost-only', capability: CONTENT_MATERIALIZE },
+
+  // --- localhost-only: content-claim FILE-STATUS, the member disk-truth read
+  //     (design: docs/superpowers/specs/2026-07-10-publication-coupling-okf-disposition-design.md
+  //     §2(b)). Read-only sibling of materialize above, sharing its capability
+  //     stamp: it checks presence in the CALLING member's own working tree, so
+  //     proxying it to the host would answer with the wrong machine's disk. ---
+  { method: 'POST', pattern: '/api/content-claims/file-status', stamp: 'localhost-only', capability: CONTENT_MATERIALIZE },
 ];
 
 /**

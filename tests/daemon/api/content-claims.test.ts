@@ -7,7 +7,7 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
-import { insertSkillRecord, updateSkillRecord } from '@myco/db/queries/skill-records.js';
+import { insertSkillRecord, updateSkillRecord, deleteSkillRecordCascade } from '@myco/db/queries/skill-records.js';
 import { insertOkfPage } from '@myco/db/queries/okf.js';
 import { getContentPublication, upsertContentPublication } from '@myco/db/queries/content-claims.js';
 import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
@@ -168,6 +168,104 @@ describe('content claim daemon API', () => {
       expect(body.claimable[0].active_claim).toMatchObject({ claimed_by: 'machine-a', generation: 1, stale: true });
       expect(body.active_claims).toHaveLength(1);
       expect(body.active_claims[0]).toMatchObject({ claimed_by: 'machine-a', stale: true });
+    });
+
+    it('surfaces a published-at-latest artifact in `published` with active_claim populated, and excludes it from `claimable`', async () => {
+      seedSkill('skill-1');
+      const created = await handleContentClaimCreate(
+        req({ body: { artifact_kind: 'skill', artifact_id: 'skill-1' } }),
+        principal('machine-a'),
+      );
+      const claimId = (created.body as { claim: { id: string } }).claim.id;
+      await handleContentClaimPublished(req({ params: { id: claimId } }), principal('machine-a'));
+
+      // The first claim is now `published`, not `active` — a second claim on
+      // the still-published artifact (same generation) is free to succeed.
+      await handleContentClaimCreate(
+        req({ body: { artifact_kind: 'skill', artifact_id: 'skill-1' } }),
+        principal('machine-b'),
+      );
+
+      const res = await handleContentClaimsList(req(), principal());
+      const body = res.body as {
+        ok: boolean;
+        claimable: unknown[];
+        published: Array<Record<string, unknown>>;
+        active_claims: unknown[];
+      };
+      expect(Object.keys(body).sort()).toEqual(['active_claims', 'claimable', 'ok', 'published']);
+      expect(body.claimable).toHaveLength(0);
+      expect(body.published).toHaveLength(1);
+      expect(body.published[0]).toMatchObject({
+        artifact_kind: 'skill',
+        artifact_id: 'skill-1',
+        name: 'skill-1',
+        label: 'skill-1',
+        published_generation: 1,
+        lineage_generation: 1,
+      });
+      expect(body.published[0].active_claim).toMatchObject({ claimed_by: 'machine-b', state: 'active', stale: false });
+    });
+
+    it('a stale-published artifact appears in `claimable` only, with the pre-existing claimable shape unchanged', async () => {
+      seedSkill('skill-1');
+      const created = await handleContentClaimCreate(
+        req({ body: { artifact_kind: 'skill', artifact_id: 'skill-1' } }),
+        principal('machine-a'),
+      );
+      const claimId = (created.body as { claim: { id: string } }).claim.id;
+      await handleContentClaimPublished(req({ params: { id: claimId } }), principal('machine-a'));
+      updateSkillRecord('skill-1', { generation: 2 }, projectScope(PROJECT_ID as GroveProjectId));
+
+      const res = await handleContentClaimsList(req(), principal());
+      const body = res.body as { claimable: Array<Record<string, unknown>>; published: unknown[] };
+      expect(body.published).toHaveLength(0);
+      expect(body.claimable).toHaveLength(1);
+      expect(body.claimable[0]).toEqual({
+        artifact_kind: 'skill',
+        artifact_id: 'skill-1',
+        label: 'skill-1',
+        lineage_generation: 2,
+        published_generation: 1,
+        active_claim: null,
+      });
+    });
+
+    it('a published-at-latest okf_page emits no `published` entry (skills-only)', async () => {
+      seedOkfPage('page-1');
+      upsertContentPublication({
+        artifact_kind: 'okf_page',
+        artifact_id: 'page-1',
+        published_generation: 1,
+        published_at: epochNow(),
+        published_by: 'machine-a',
+        machine_id: 'machine-a',
+      });
+
+      const res = await handleContentClaimsList(req(), principal());
+      const body = res.body as { claimable: unknown[]; published: unknown[] };
+      expect(body.published).toHaveLength(0);
+      expect(body.claimable).toHaveLength(0);
+    });
+
+    it('a publication row whose skill record was deleted emits no `published` entry (orphan)', async () => {
+      seedSkill('skill-1');
+      const created = await handleContentClaimCreate(
+        req({ body: { artifact_kind: 'skill', artifact_id: 'skill-1' } }),
+        principal('machine-a'),
+      );
+      const claimId = (created.body as { claim: { id: string } }).claim.id;
+      await handleContentClaimPublished(req({ params: { id: claimId } }), principal('machine-a'));
+
+      deleteSkillRecordCascade('skill-1', projectScope(PROJECT_ID as GroveProjectId));
+
+      const res = await handleContentClaimsList(req(), principal());
+      const body = res.body as { claimable: unknown[]; published: unknown[] };
+      expect(body.published).toHaveLength(0);
+      expect(body.claimable).toHaveLength(0);
+      // The durable publication marker survives the delete — proves the join
+      // iterates scoped skill records, not `listContentPublications()`.
+      expect(getContentPublication('skill', 'skill-1')).not.toBeNull();
     });
   });
 

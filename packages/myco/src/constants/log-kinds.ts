@@ -140,6 +140,8 @@ export const LOG_KINDS = {
   CONTENT_CLAIM_MATERIALIZE: 'content_claim.materialize',
   // Content claim system (Team Host WS2) — terminal-row retention prune
   CONTENT_CLAIM_PRUNE: 'content_claim.prune',
+  // Content claim system (Team Host PR-1) — member disk-truth file-status route
+  CONTENT_CLAIM_FILE_STATUS: 'content_claim.file_status',
 
   // Backup
   BACKUP_START: 'backup.start',

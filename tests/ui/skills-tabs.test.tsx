@@ -88,12 +88,25 @@ mock.module('../../packages/myco/ui/src/hooks/use-debounce', () => ({
   useDebounce: (v: string) => v,
 }));
 
-// SkillList renders the content-claims "Unpublished" badge per row (B6) —
-// stub the hook so this unrelated test doesn't need a PowerProvider or a
-// mocked lib/api just to satisfy usePowerQuery's context requirement.
+// SkillList renders the content-claims "Unpublished" badge per row, and
+// SkillDetail renders the full ClaimControl (B6) — stub every hook
+// ClaimControl imports so this unrelated test doesn't need a PowerProvider
+// or a mocked lib/api just to satisfy usePowerQuery's context requirement.
 mock.module('../../packages/myco/ui/src/hooks/use-content-claims', () => ({
   useContentClaims: () => ({ data: undefined, isLoading: false }),
   findClaimableArtifact: () => undefined,
+  findPublishedArtifact: () => undefined,
+  useContentFileStatus: () => ({ data: undefined, isLoading: false, isError: false }),
+  useInvalidateContentClaims: () => () => {},
+  useMyMachineId: () => undefined,
+  useReleaseContentClaim: () => ({ mutate: () => {}, isPending: false }),
+  useMarkContentClaimPublished: () => ({ mutate: () => {}, isPending: false }),
+  useClaimAndMaterialize: () => ({
+    phase: { status: 'idle' },
+    run: () => {},
+    retryMaterialize: () => {},
+    reset: () => {},
+  }),
 }));
 
 import Skills from '../../packages/myco/ui/src/pages/Skills';
