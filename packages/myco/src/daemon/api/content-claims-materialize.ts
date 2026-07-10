@@ -16,9 +16,10 @@
  * request that reaches this handler — `requestContext.hostServed` is
  * structurally always false here (a genuine overlay-origin request is
  * refused earlier, at the transport boundary, by `overlayHostStampRefusal`).
- * The explicit `isHostServedRequest` check below repeats that guarantee
- * in-handler as defense in depth, matching the host's own independent
- * enforcement elsewhere — it must never rest on the stamp alone.
+ * The explicit `isHostServedRequest` check inside `resolveMemberProjectContext`
+ * repeats that guarantee in-handler as defense in depth, matching the host's
+ * own independent enforcement elsewhere — it must never rest on the stamp
+ * alone.
  *
  * Deliberately bypasses `req.requestContext` for project identity: that
  * context is resolved from `x-myco-*` tenancy headers against the LOCAL
@@ -26,10 +27,10 @@
  * throws for an attached project (its Grove has no local registry row — see
  * `grove/request-context.ts`'s `requestContextFromHttpHeaders` docstring).
  * The caller sends none of those headers for this route; instead the
- * member's CURRENT project root travels in the JSON body, and this handler
- * resolves identity from it directly (`resolveAttach`, `findRegisteredProject`
- * — both pure disk reads), the same pattern `attached-config.ts` uses for the
- * config carve.
+ * member's CURRENT project root travels in the JSON body, and identity is
+ * resolved from it directly by the shared `resolveMemberProjectContext`
+ * prelude (`resolveAttach`, `findRegisteredProject` — both pure disk reads),
+ * the same pattern `attached-config.ts` uses for the config carve.
  *
  * Two claim/content sources feed the same orchestration
  * (`materializeContentClaim`): a LOCAL source that queries the project's own
@@ -59,7 +60,6 @@ import {
   HOST_PROXY_HEADERS_TIMEOUT_MS,
   HOST_PROXY_MAX_BUFFERED_BODY_BYTES,
 } from '@myco/constants.js';
-import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import { loadMergedConfig, loadAttachedMergedConfig } from '@myco/config/loader.js';
 import { withDatabase, type Database } from '@myco/db/client.js';
 import { getContentClaimById } from '@myco/db/queries/content-claims.js';
@@ -67,10 +67,8 @@ import { getSkillContentAtGeneration } from '@myco/db/queries/skill-lineage.js';
 import { getSkillRecord } from '@myco/db/queries/skill-records.js';
 import { getOkfPageById, getOkfPageRevisionAtGeneration } from '@myco/db/queries/okf.js';
 import { assertGroveProjectId, projectScope, type ProjectScope } from '@myco/grove/ids.js';
-import { pathsEquivalent, resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
-import { isHostServedRequest, REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context.js';
-import { findRegisteredProject } from '@myco/grove/registry.js';
-import { resolveAttach } from '@myco/host/registry.js';
+import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context.js';
 import { remoteTargetFor, type RemoteTarget } from '@myco/host/routing.js';
 import { writePublishedSkillFile, syncPublishedSkillSymlinks } from '@myco/skills/publication.js';
 import { materializeOkfPage, type OkfPageContent } from '@myco/okf/materialize.js';
@@ -80,6 +78,7 @@ import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import type { Dialer, ProxyLogger } from '../host-proxy.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
+import { resolveMemberProjectContext } from './member-project-context.js';
 
 /** OKF's project-tier default (`config/schema.ts`'s `OkfMaintainSchema.output_path`),
  *  repeated here only as the fallback when config cannot be resolved at all —
@@ -504,49 +503,17 @@ function asRecord(body: unknown): Record<string, unknown> {
 
 export function createContentClaimMaterializeHandler(deps: ContentClaimMaterializeDeps): RouteHandler {
   return async (req) => {
-    // Defense in depth: `localhost-only` (host/routing.ts) already refuses an
-    // overlay-origin request before this handler runs, and every loopback
-    // request stamps `hostServed: false` — this can never actually be true.
-    // Repeating the check here means the never-writes-a-member-tree
-    // invariant does not rest on the routing stamp alone (`skill-tools.ts`
-    // 166-182 documents the same layered posture for the agent tool surface).
-    if (isHostServedRequest(req.requestContext)) {
-      return { status: 404, body: errorBody('not_found', 'This route is served on localhost only.') };
-    }
-
     const claimId = req.params.id;
     const body = asRecord(req.body);
-    const projectRootInput = body.project_root;
-    if (typeof projectRootInput !== 'string' || projectRootInput.length === 0) {
-      return { status: 400, body: errorBody('invalid_request', 'project_root is required') };
+
+    const context = await resolveMemberProjectContext(req, body, deps.mycoHome);
+    if ('status' in context) {
+      return context;
     }
-    const currentRoot = path.resolve(projectRootInput);
+    const { currentRoot, projectId } = context;
 
-    const manifest = loadProjectManifest(resolveProjectVaultDir(currentRoot));
-    const projectId = manifest?.project?.id;
-    if (!projectId) {
-      return {
-        status: 404,
-        body: errorBody('project_not_registered', `No Grove project manifest at ${currentRoot}`),
-      };
-    }
-
-    const attach = resolveAttach(projectId);
-    if (attach) {
-      if (attach.ref.root && !pathsEquivalent(attach.ref.root, currentRoot)) {
-        return {
-          status: 409,
-          body: {
-            ...errorBody(
-              'root_mismatch',
-              'The attached checkout root does not match the current project root.',
-            ),
-            attached_root: attach.ref.root,
-            current_root: currentRoot,
-          },
-        };
-      }
-
+    if (context.source === 'attached') {
+      const { attach } = context;
       let target: RemoteTarget;
       try {
         target = remoteTargetFor(assertGroveProjectId(projectId), attach);
@@ -567,30 +534,7 @@ export function createContentClaimMaterializeHandler(deps: ContentClaimMateriali
       return responseForOutcome(outcome);
     }
 
-    const registered = findRegisteredProject({ projectId }, deps.mycoHome);
-    if (!registered) {
-      return {
-        status: 404,
-        body: errorBody(
-          'project_not_registered',
-          `Project ${projectId} is not registered locally and is not attached to a host`,
-        ),
-      };
-    }
-    if (!pathsEquivalent(registered.project.root, currentRoot)) {
-      return {
-        status: 409,
-        body: {
-          ...errorBody(
-            'root_mismatch',
-            'The registered project root does not match the current project root.',
-          ),
-          registered_root: registered.project.root,
-          current_root: currentRoot,
-        },
-      };
-    }
-
+    const { registered } = context;
     const db = deps.cache.getDatabase(resolveGroveDbPath(registered.grove.id, deps.mycoHome));
     let scope: ProjectScope;
     try {
