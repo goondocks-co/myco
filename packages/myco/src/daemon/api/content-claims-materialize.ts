@@ -139,7 +139,10 @@ export interface ClaimSource {
    *  (local: `markContentClaimPublished`; attached: the host's `POST
    *  /api/content-claims/:id/published`). Returns true on success, false on
    *  any failure — never throws, so a bookkeeping failure after a successful
-   *  disk write never turns into a failed materialize response. */
+   *  disk write never turns into a failed materialize response. Every false
+   *  return carries exactly ONE warn, logged by the source itself at the
+   *  point of detection (where the failure's specifics live); the
+   *  orchestration adds no second, generic warn on top. */
   markPublished(claimId: string): Promise<boolean>;
 }
 
@@ -198,10 +201,16 @@ function localClaimSource(
             publishedBy: machineId,
             machineId,
           });
-          return result !== null;
+          if (result === null) {
+            logger.warn('materialize: auto-close found the claim no longer active after the write; it closes via the manual Mark-published flow or TTL instead', {
+              claim_id: claimId,
+            });
+            return false;
+          }
+          return true;
         });
       } catch (err) {
-        logger.warn('materialize: local mark-published call failed during auto-close', {
+        logger.warn('materialize: local mark-published call failed after the write; the claim stays active for the manual Mark-published flow or TTL', {
           claim_id: claimId,
           error: err instanceof Error ? err.message : String(err),
         });
@@ -410,7 +419,7 @@ function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogg
         { method: 'POST', machineId },
       );
       if (!result || result.status !== 200) {
-        logger.warn('materialize: host mark-published dial failed during auto-close', {
+        logger.warn('materialize: host mark-published dial failed after the write; the claim stays active for the manual Mark-published flow or TTL', {
           host_id: target.host.host_id,
           claim_id: claimId,
           status: result?.status ?? null,
@@ -448,10 +457,17 @@ export type MaterializeOutcome =
  * generation matches the artifact's already-recorded `published_generation`
  * — this write republished already-published content unchanged. Never
  * throws and never turns a bookkeeping failure into a failed materialize
- * response (Step 2's failure posture): any exception or a `markPublished`
- * false is logged as a warn and degrades to `autoPublished: false`, leaving
- * the claim `active` for the pre-existing manual Mark-published flow or TTL
- * expiry to close it instead.
+ * response (Step 2's failure posture): a `markPublished` false degrades to
+ * `autoPublished: false`, leaving the claim `active` for the pre-existing
+ * manual Mark-published flow or TTL expiry to close it instead.
+ *
+ * Log discipline: one warn per failure, at the point of detection. The
+ * sources own the `markPublished`-false warn (they hold the failure's
+ * specifics — dial status, DB error); this helper adds nothing on top of a
+ * false return. Its own catch is its own detection point — the sources
+ * contractually never throw, so it only fires for a source that breaks
+ * that contract (e.g. a test seam), and warns because that path has no
+ * other logger.
  */
 async function attemptAutoClose(
   source: ClaimSource,
@@ -464,15 +480,7 @@ async function attemptAutoClose(
   try {
     const publishedGeneration = await source.getPublishedGeneration(artifactKind, artifactId);
     if (publishedGeneration !== generation) return false;
-    const closed = await source.markPublished(claimId);
-    if (!closed) {
-      logger.warn(
-        'materialize: same-generation republish wrote to disk but the auto-close mark-published call failed; '
-        + 'the claim stays active for the manual Mark-published flow or TTL expiry',
-        { claim_id: claimId, artifact_kind: artifactKind, artifact_id: artifactId, generation },
-      );
-    }
-    return closed;
+    return await source.markPublished(claimId);
   } catch (err) {
     logger.warn(
       'materialize: same-generation republish wrote to disk but the auto-close check threw; '

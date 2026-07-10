@@ -349,15 +349,103 @@ describe('content claim materialize over the Team Host overlay', () => {
     expect(pubRow?.published_at).toBeGreaterThan(priorPublishedAt);
   });
 
+  test('a same-generation republish whose proxied mark-published call fails (real 403 not_holder) still returns the write with auto_published:false and exactly ONE warn', async () => {
+    // Drives the REAL remote source's mark-failure path end-to-end: this
+    // member daemon's machineId does not match the claim's `claimed_by`, so
+    // every read dial succeeds and the write lands, but the host's holder
+    // gate 403s the mark-published POST. The failure posture (200 +
+    // auto_published:false) and the single-warn discipline (the remote
+    // source's one detection warn, nothing added by the orchestration) are
+    // both asserted against real code, not a hand-rolled ClaimSource.
+    upsertContentPublication({
+      artifact_kind: 'skill',
+      artifact_id: 'skill-1',
+      published_generation: 1, // same generation as the claim — the auto-close check fires
+      published_at: Math.floor(Date.now() / 1000) - 3600,
+      published_by: 'attached-member-machine',
+      machine_id: 'attached-member-machine',
+    });
+
+    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+    const spyLogger = {
+      warn(message: string, meta?: Record<string, unknown>): void { warnings.push({ message, meta }); },
+      error(): void { /* unused */ },
+    };
+    const nonHolderLogger = new DaemonLogger(path.join(tmp, 'non-holder-logs'));
+    const nonHolderServer = new DaemonServer({
+      vaultDir: path.join(tmp, 'non-holder-anchor', '.myco'),
+      logger: nonHolderLogger,
+      daemonStateAuthority: stubAuthority,
+    });
+    const nonHolderCache = new GroveRuntimeCache();
+    registerContentClaimMaterializeRoute(nonHolderServer, {
+      cache: nonHolderCache,
+      dial: defaultDial,
+      logger: spyLogger,
+      machineId: 'not-the-claim-holder', // != claimed_by -> the host's holder gate 403s the mark dial
+      mycoHome,
+    });
+    await nonHolderServer.start(0);
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${nonHolderServer.port}/api/content-claims/${claimId}/materialize`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project_root: memberProjectRoot }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { ok: boolean; skill_name: string; generation: number; auto_published: boolean };
+      expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1, auto_published: false });
+
+      // The write is the user-visible outcome — it landed on the member tree
+      // despite the failed bookkeeping.
+      const written = fs.readFileSync(
+        path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR, 'skill-1', 'SKILL.md'),
+        'utf-8',
+      );
+      expect(written).toBe(CONTENT);
+
+      // The host refused the close: the claim stays active for the holder's
+      // own manual Mark-published flow or TTL expiry.
+      const claimRow = getDatabase().prepare(
+        `SELECT state FROM content_claims WHERE id = ?`,
+      ).get(claimId) as { state: string } | undefined;
+      expect(claimRow?.state).toBe('active');
+
+      // Exactly one warn: the remote source's detection log (carrying the
+      // dial's real 403), with no second generic warn from the orchestration.
+      expect(warnings.length).toBe(1);
+      expect(warnings[0].message).toContain('mark-published');
+      expect(warnings[0].meta?.status).toBe(403);
+    } finally {
+      try { await nonHolderServer.stop(); } catch { /* not started */ }
+      try { nonHolderCache.closeAll(); } catch { /* not created */ }
+    }
+  });
+
   test('member materializes an attached okf_page claim by dialing the host directly — byte-faithful, lands on the MEMBER tree only', async () => {
+    // Pin the okf_page half of the auto-close asymmetry: even with a
+    // same-generation publication row on record, an attached okf_page never
+    // auto-closes — the inventory's `published[]` array (the attached
+    // branch's only publication read) is skills-only by design (spec §2(a)),
+    // so the remote source resolves no published generation for the page.
+    upsertContentPublication({
+      artifact_kind: 'okf_page',
+      artifact_id: okfPageId,
+      published_generation: 1, // matches the claim's generation — would auto-close on the LOCAL branch
+      published_at: Math.floor(Date.now() / 1000) - 3600,
+      published_by: 'attached-member-machine',
+      machine_id: 'attached-member-machine',
+    });
+
     const res = await fetch(`${memberBase}/api/content-claims/${okfClaimId}/materialize`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ project_root: memberProjectRoot }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; path: string; page_path: string; generation: number };
-    expect(body).toMatchObject({ ok: true, page_path: okfDocPath, generation: 1 });
+    const body = await res.json() as { ok: boolean; path: string; page_path: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, page_path: okfDocPath, generation: 1, auto_published: false });
 
     const revision = getOkfPageRevisionAtGeneration(okfPageId, 1)!;
     const expected = renderOkfDocument({
@@ -374,6 +462,13 @@ describe('content claim materialize over the Team Host overlay', () => {
 
     // The host's own project tree was never touched (B1).
     expect(fs.existsSync(path.join(hostProjectRoot, 'okf'))).toBe(false);
+
+    // No auto-close fired: the claim on the host's Grove DB stays active for
+    // the manual Mark-published flow.
+    const claimRow = getDatabase().prepare(
+      `SELECT state FROM content_claims WHERE id = ?`,
+    ).get(okfClaimId) as { state: string } | undefined;
+    expect(claimRow?.state).toBe('active');
   });
 
   test('attached member with a non-default output_path in its own myco.yaml materializes there — proves the attached config resolution, not the fallback', async () => {

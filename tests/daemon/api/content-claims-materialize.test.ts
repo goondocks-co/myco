@@ -387,6 +387,35 @@ describe('content claim materialize — local project', () => {
     expect(fs.readFileSync(writtenPath, 'utf-8')).toBe(expected.content);
   });
 
+  test('a same-generation okf_page republish auto-closes the claim — the local publication read is kind-agnostic', async () => {
+    const { pageId, claimId, docPath } = seedOkfPage({ body: 'Body for the okf republish.' });
+    const db = cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
+    const priorPublishedAt = epochNow() - 3600;
+    withDatabase(db, () => {
+      upsertContentPublication({
+        artifact_kind: 'okf_page',
+        artifact_id: pageId,
+        published_generation: 1, // matches the claim's generation — a republish
+        published_at: priorPublishedAt,
+        published_by: 'machine-a',
+        machine_id: 'machine-a',
+      });
+    });
+
+    const res = await handler()(req(claimId, projectRoot));
+    expect(res.status).toBe(200);
+    const body = res.body as { ok: boolean; page_path: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, page_path: docPath, generation: 1, auto_published: true });
+    expect(fs.existsSync(path.join(projectRoot, 'okf', docPath))).toBe(true);
+
+    const claimRow = withDatabase(db, () => getContentClaimById(claimId, projectScope(projectId as GroveProjectId)));
+    expect(claimRow?.state).toBe('published');
+
+    const publication = withDatabase(db, () => getContentPublication('okf_page', pageId));
+    expect(publication?.published_generation).toBe(1);
+    expect(publication?.published_at).toBeGreaterThan(priorPublishedAt);
+  });
+
   test('a non-default config.okf.maintain.output_path resolves the published root — proves the config read, not the fallback', async () => {
     // `output_path` is project-tier (config/scope.ts homes okf.* at 'project'),
     // read from the project's own myco.yaml. A value the hard-coded fallback
@@ -568,7 +597,12 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
     expect(fs.existsSync(path.join(tmp, 'race.md'))).toBe(false);
   });
 
-  test('a same-generation republish whose mark-published call fails still returns the write outcome with autoPublished:false, and logs a warn', async () => {
+  test('a same-generation republish whose mark-published call fails still returns the write outcome with autoPublished:false — and the orchestration adds no warn of its own', async () => {
+    // Log discipline: the SOURCE owns the markPublished-false warn at its
+    // point of detection (proven against the real remote source by the
+    // overlay suite's failing-mark test). This seam-level test pins the
+    // complementary half — `attemptAutoClose` adds no second, generic warn
+    // on top of a false return, so a real failure logs exactly once.
     const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
     const spyLogger: ProxyLogger = {
       warn: (message, meta) => warnings.push({ message, meta }),
@@ -583,7 +617,7 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
       },
       getOkfPageContent: unusedOkfPageContent,
       async getPublishedGeneration() { return 1; }, // matches claim.generation -> a same-generation republish
-      async markPublished() { return false; }, // simulated failure AFTER the disk write already landed
+      async markPublished() { return false; }, // failure AFTER the disk write landed; a real source logs this itself
     };
 
     const outcome = await materializeContentClaim('cclaim_fail_mark', tmp, source, unusedOkfPublishedRoot, spyLogger);
@@ -594,7 +628,6 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
     // The write is the user-visible outcome — it lands regardless of the
     // bookkeeping failure (spec's binding failure posture).
     expect(fs.existsSync(path.join(tmp, CANONICAL_PROJECT_SKILLS_DIR, 'fail-mark-skill', 'SKILL.md'))).toBe(true);
-    expect(warnings.length).toBe(1);
-    expect(warnings[0].message).toContain('auto-close');
+    expect(warnings.length).toBe(0);
   });
 });
