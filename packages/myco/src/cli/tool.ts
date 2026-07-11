@@ -96,6 +96,11 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
       process.exitCode = 1;
       return;
     }
+    // Parity with the shared dispatcher's `normalizeInput` (tools/index.ts):
+    // `--input null` has always meant "no arguments" ({}), exactly like an
+    // omitted --input. Only a non-null non-object (string, number, array)
+    // is invalid.
+    if (input === null) input = {};
     // The wire contract (both the MCP `arguments` record schema and the
     // shared dispatcher's own `normalizeInput`) requires a JSON object.
     // Checked here — rather than round-tripped to the daemon — because the
@@ -103,7 +108,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     // `record` schema; sending a non-object would fail as a generic
     // transport/schema error, losing the specific `invalid_input` code the
     // in-process dispatcher produced for the same input.
-    if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    if (typeof input !== 'object' || Array.isArray(input)) {
       await writeEnvelope({
         ok: false,
         tool,
@@ -186,12 +191,29 @@ function extractStructuredResult(response: ToolCallResult): unknown {
 }
 
 /**
+ * Team Host refusal codes (`daemon/host-proxy.ts`'s member-side soft-fails)
+ * → the retryability hint appended to their already-friendly messages. The
+ * proxy's message says what happened and what to do; the hint says whether
+ * plain retry is worth it, which the wire envelope's router-route twin
+ * carries as `retryable` but the JSON-RPC envelope does not.
+ */
+const HOST_REFUSAL_HINTS: Record<string, string> = {
+  host_unreachable: 'Retryable — the host may be briefly offline; try again shortly.',
+  host_auth_rejected: 'Not retryable until this machine re-joins the host.',
+  host_protocol_mismatch: 'Not retryable until the version mismatch is resolved.',
+};
+
+/**
  * Translate an error thrown by the MCP client into the CLI's stable error
  * envelope. Two shapes reach here:
  *
  *   - `McpError` — a JSON-RPC error response from a dispatched tool call
- *     (unknown tool, invalid input, a tool's own failure). `.data.code`
- *     carries the original `ToolErrorCode` (see `tools/error.ts`).
+ *     (unknown tool, invalid input, a tool's own failure), OR a member-side
+ *     Team Host refusal (`host_unreachable` / `host_auth_rejected` /
+ *     `host_protocol_mismatch` — schema-valid since the proxy echoes the
+ *     request id, so the SDK classifies them as proper JSON-RPC errors).
+ *     `.data.code` carries the original code (see `tools/error.ts` and
+ *     `daemon/host-proxy.ts` `mcpSoftFail`).
  *   - `StreamableHTTPError` — a non-2xx HTTP response the transport never
  *     got to parse as JSON-RPC (the `/mcp` handler's pre-dispatch refusals:
  *     `legacy_vault` 503, `unauthorized_context_switch` 401, `foreign_grove`
@@ -203,7 +225,9 @@ function classifyMcpError(error: unknown): ToolCliError {
   if (error instanceof McpError) {
     const data = error.data as { code?: unknown } | undefined;
     const code = typeof data?.code === 'string' ? data.code : 'tool_call_failed';
-    return { code, message: error.message.replace(/^MCP error -?\d+: /, '') };
+    const message = error.message.replace(/^MCP error -?\d+: /, '');
+    const hint = HOST_REFUSAL_HINTS[code];
+    return { code, message: hint ? `${message} ${hint}` : message };
   }
   if (error instanceof StreamableHTTPError) {
     const structured = extractStructuredHttpError(error.message);

@@ -192,8 +192,16 @@ export function refusalJson(payload: RefusalPayload): { status: number; body: Re
  * structured soft-fails (the `legacy_vault` precedent: code `-32004`, a
  * `data.code` discriminator) so MCP clients render a friendly message instead
  * of `tool_call_failed`.
+ *
+ * `id` must echo the request's JSON-RPC id whenever the caller has parsed the
+ * request body (the host-proxy `/mcp` peek path has): the MCP SDK's
+ * `JSONRPCMessageSchema` accepts a string/number response id but REJECTS
+ * `id: null`, so a refusal that fails to echo it throws a ZodError inside SDK
+ * clients before any friendly-message classification. The `null` default is
+ * correct only where no request id is knowable — an unparseable request, or a
+ * transport-level refusal written before any body read.
  */
-export function refusalMcpBody(payload: RefusalPayload): string {
+export function refusalMcpBody(payload: RefusalPayload, id: string | number | null = null): string {
   return JSON.stringify({
     jsonrpc: '2.0',
     error: {
@@ -201,7 +209,7 @@ export function refusalMcpBody(payload: RefusalPayload): string {
       message: payload.message,
       data: { code: payload.error, capability: payload.capability },
     },
-    id: null,
+    id,
   });
 }
 

@@ -296,6 +296,27 @@ describe('myco tool CLI', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('returns invalid_input for array JSON input (client-side, parity with the dispatcher)', async () => {
+    await run(['call', 'myco_cortex', '--json', '--input', '[1,2]'], tmpDir);
+
+    const output = outputJson<{ ok: boolean; error: { code: string } }>();
+    expect(output.ok).toBe(false);
+    expect(output.error.code).toBe('invalid_input');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('treats --input null as no arguments (parity with the dispatcher normalizeInput)', async () => {
+    // The in-process dispatcher's normalizeInput has always mapped null → {}.
+    // The daemon round-trip must preserve that: `--input null` succeeds
+    // exactly like an omitted --input (myco_cortex defaults op → digest).
+    await startLocalDaemon();
+    await run(['call', 'myco_cortex', '--json', '--input', 'null'], tmpDir);
+
+    const output = outputJson<{ ok: boolean; tool: string; result: { tier: number } }>();
+    expect(output.ok).toBe(true);
+    expect(output.result.tier).toBe(5000);
+  });
+
   it('returns JSON error envelope for invalid JSON', async () => {
     await run(['call', 'myco_cortex', '--json', '--input', '{bad'], tmpDir);
 
@@ -332,12 +353,26 @@ describe('myco tool CLI', () => {
 
   it('never imports createMycoTools directly (decision-14e572a3: the CLI delegates to the daemon, permanently)', () => {
     const cliDir = path.resolve(__dirname, '..', '..', 'packages', 'myco', 'src', 'cli');
+    // Recursive: cli/ has subdirectories (cli/providers/, ...) and a new one
+    // must not become a loophole for re-importing the in-process runtime.
+    const listTsFiles = (dir: string): string[] => {
+      const out: string[] = [];
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { out.push(...listTsFiles(full)); continue; }
+        if (entry.isFile() && entry.name.endsWith('.ts')) out.push(full);
+      }
+      return out;
+    };
+    const files = listTsFiles(cliDir);
+    // The scan must actually be looking at something — a moved/renamed dir
+    // would otherwise pass vacuously.
+    expect(files.length).toBeGreaterThan(10);
     const offenders: string[] = [];
-    for (const name of fs.readdirSync(cliDir)) {
-      if (!name.endsWith('.ts')) continue;
-      const source = fs.readFileSync(path.join(cliDir, name), 'utf-8');
+    for (const file of files) {
+      const source = fs.readFileSync(file, 'utf-8');
       if (/from\s+['"][^'"]*tools\/index\.js['"]/.test(source) || /import\(['"][^'"]*tools\/index\.js['"]\)/.test(source)) {
-        offenders.push(name);
+        offenders.push(path.relative(cliDir, file));
       }
     }
     expect(offenders, `cli/ files importing the in-process tools runtime: ${offenders.join(', ')}`).toEqual([]);
@@ -493,5 +528,27 @@ describe('myco tool CLI — attached (Team Host) project', () => {
     });
     expect(toolCalls).toHaveLength(1);
     expect(JSON.parse(toolCalls[0].body).params.name).toBe('myco_search');
+  });
+
+  it('host unreachable surfaces the designed host_unreachable refusal, never a Zod validation dump', async () => {
+    // The reviewer's repro: attached project, host port closed. The member
+    // proxy's refusal must echo the request's JSON-RPC id (a schema-valid
+    // envelope) so the SDK client classifies it as a proper McpError — id:null
+    // made the SDK throw a ~3.4KB ZodError before any classification, which
+    // the CLI then dumped verbatim.
+    await new Promise<void>((resolve) => hostFixture.close(() => resolve()));
+
+    await run(['call', 'myco_search', '--json', '--input', '{"query":"host probe"}'], vaultDir);
+
+    const output = outputJson<{ ok: boolean; error: { code: string; message: string } }>();
+    expect(output.ok).toBe(false);
+    expect(output.error.code).toBe('host_unreachable');
+    // The designed message + the retryable hint — clean prose, no schema dump.
+    expect(output.error.message).toContain('currently unreachable');
+    expect(output.error.message).toContain('Retryable');
+    expect(output.error.message).not.toContain('ZodError');
+    expect(output.error.message).not.toContain('invalid_union');
+    expect(output.error.message.length).toBeLessThan(400);
+    expect(process.exitCode).toBe(1);
   });
 });
