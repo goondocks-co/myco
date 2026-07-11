@@ -72,6 +72,7 @@ import {
   type BinaryFetcher,
   type CommandRunner,
 } from './overlay-binaries.js';
+import { codedMembershipError } from './membership-error.js';
 import {
   getHost,
   readHostRegistry,
@@ -276,7 +277,11 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
         body,
       });
       if (status === 409) {
-        throw new Error(
+        // Coded (see membership-error.ts): the daemon-API wrapper surfaces
+        // `protocol_mismatch` on the wire so the Team page can render its own
+        // outcome copy instead of this CLI-voiced message.
+        throw codedMembershipError(
+          'protocol_mismatch',
           `The host rejected enrollment with a protocol-version mismatch (409). This member speaks Team-Host `
           + `protocol v${HOST_PROTOCOL_VERSION}; run \`myco update\` so both sides match, then retry.`,
         );

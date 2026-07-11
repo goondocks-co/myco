@@ -81,6 +81,45 @@ describe('myco join / myco leave (daemon API fallback)', () => {
     expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Re-joined'))).toBe(true);
   });
 
+  it('join announces itself up front — the daemon runs the whole enrollment before answering, so the terminal must not sit silent', async () => {
+    fakeDaemon.postResult = {
+      ok: true,
+      data: { host_id: 'host_abc', overlay_address: 'a', proxy_port: 1, member_overlay_ip: 'ip', host_reachable: true, created: true, notes: [] },
+    };
+    await runJoin(['host_abc', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault');
+
+    const upfrontIndex = logSpy.mock.calls.findIndex((c) => String(c[0]).includes('can take up to a minute'));
+    expect(upfrontIndex).toBeGreaterThanOrEqual(0);
+    expect(String(logSpy.mock.calls[upfrontIndex]![0])).toContain('Joining Team Host host_abc');
+    // Printed BEFORE the POST result renders — it is the waiting message.
+    const joinedIndex = logSpy.mock.calls.findIndex((c) => String(c[0]).includes('Joined Team Host'));
+    expect(upfrontIndex).toBeLessThan(joinedIndex);
+  });
+
+  it('join replays the daemon-collected step log after the POST returns', async () => {
+    fakeDaemon.postResult = {
+      ok: true,
+      data: {
+        host_id: 'host_abc', overlay_address: 'a', proxy_port: 1, member_overlay_ip: 'ip',
+        host_reachable: true, created: true, notes: [],
+        steps: ['Provisioning Tailscale for darwin/arm64…', 'Joining the overlay with the one-time key…'],
+      },
+    };
+    await runJoin(['host_abc', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault');
+
+    expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Provisioning Tailscale'))).toBe(true);
+    expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Joining the overlay with the one-time key'))).toBe(true);
+  });
+
+  it('join tolerates a steps-less response (daemon mid-upgrade) without failing', async () => {
+    fakeDaemon.postResult = {
+      ok: true,
+      data: { host_id: 'h', overlay_address: 'a', proxy_port: 1, member_overlay_ip: 'ip', host_reachable: true, created: true, notes: [] },
+    };
+    await runJoin(['h', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault');
+    expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Joined Team Host'))).toBe(true);
+  });
+
   it('join without <host> or --key exits before touching the daemon', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
       throw new Error('__exit__');

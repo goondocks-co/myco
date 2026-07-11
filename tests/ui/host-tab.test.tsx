@@ -14,6 +14,7 @@ import { vi } from '../helpers/vi-shim.js';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PowerProvider } from '../../packages/myco/ui/src/providers/power';
+import { ApiError } from '../../packages/myco/ui/src/lib/api';
 
 const joinMutateAsync = vi.fn(async () => ({
   host_id: 'host_abc', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
@@ -105,9 +106,16 @@ describe('JoinHostForm', () => {
     await waitFor(() => expect((screen.getByLabelText('One-time key') as HTMLInputElement).value).toBe(''));
   });
 
-  it('renders the daemon error message on a rejected join', async () => {
+  it('renders mapped outcome copy for a coded refusal (protocol_mismatch) — never the CLI-voiced wire message', async () => {
     joinMutateAsync.mockImplementationOnce(async () => {
-      throw new Error('The host rejected enrollment with a protocol-version mismatch (409).');
+      // The real wire shape: the daemon API's error envelope carries the
+      // orchestration's CLI-voiced message under a stable membership code.
+      throw new ApiError(400, {
+        error: {
+          code: 'protocol_mismatch',
+          message: 'The host rejected enrollment with a protocol-version mismatch (409). This member speaks Team-Host protocol v1; run `myco update` so both sides match, then retry.',
+        },
+      });
     });
     renderHostTab();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
@@ -116,7 +124,25 @@ describe('JoinHostForm', () => {
     fireEvent.change(screen.getByLabelText('Overlay address'), { target: { value: '100.64.0.1:7433' } });
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
-    await waitFor(() => expect(screen.getByTestId('host-join-error')).toHaveTextContent(/protocol-version mismatch/));
+    await waitFor(() => expect(screen.getByTestId('host-join-error')).toHaveTextContent(/different Myco versions/));
+    const rendered = screen.getByTestId('host-join-error').textContent ?? '';
+    expect(rendered).not.toContain('myco update');
+    expect(rendered).not.toContain('`');
+    expect(rendered).not.toContain('409');
+  });
+
+  it('falls back to the raw daemon message for an uncoded failure', async () => {
+    joinMutateAsync.mockImplementationOnce(async () => {
+      throw new ApiError(400, { error: { code: 'join_failed', message: 'tailscaled socket did not appear (API 400)' } });
+    });
+    renderHostTab();
+    fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
+    fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
+    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
+    fireEvent.change(screen.getByLabelText('Overlay address'), { target: { value: '100.64.0.1:7433' } });
+    fireEvent.click(screen.getByRole('button', { name: /join host/i }));
+
+    await waitFor(() => expect(screen.getByTestId('host-join-error')).toHaveTextContent(/tailscaled socket did not appear/));
   });
 });
 
@@ -211,6 +237,36 @@ describe('AttachProjectPanel', () => {
       project_root: '/checkout/fresh', host_id: 'host_abc', grove_id: 'grove_y',
     }));
     await waitFor(() => expect(screen.getByTestId('host-attach-success')).toBeInTheDocument());
+  });
+
+  it('renders mapped outcome copy for project_registered_locally — no "task A2", no CLI syntax', async () => {
+    attachMutateAsync.mockImplementationOnce(async () => {
+      throw new ApiError(400, {
+        error: {
+          code: 'project_registered_locally',
+          message: 'Cannot attach proj_x: it still has local Grove data (Grove grove_y). Adopting existing '
+            + 'local history into a team host requires the residency-transition migration, which is not yet '
+            + 'available (task A2). This command attaches a project going forward only — detach/migrate the '
+            + 'project off its local Grove first.',
+        },
+      });
+    });
+    statusFixture = {
+      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
+      hint: null,
+    };
+    renderHostTab();
+
+    fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/used' } });
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_abc' } });
+    fireEvent.change(screen.getByLabelText('Grove id (on the host)'), { target: { value: 'grove_y' } });
+    fireEvent.click(screen.getByRole('button', { name: /attach project/i }));
+
+    await waitFor(() => expect(screen.getByTestId('host-attach-error')).toHaveTextContent(/already has local Myco data/));
+    const rendered = screen.getByTestId('host-attach-error').textContent ?? '';
+    expect(rendered).not.toContain('task A2');
+    expect(rendered).not.toContain('`');
+    expect(rendered).not.toContain('myco ');
   });
 });
 

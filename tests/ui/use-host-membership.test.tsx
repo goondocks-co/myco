@@ -156,4 +156,24 @@ describe('mutations', () => {
 
     expect(postJsonMock).toHaveBeenCalledWith('/host-membership/detach', { project_root: '/checkout' });
   });
+
+  it('mutations invalidate BOTH the membership status and the degrade-affected git-identity query on settle', async () => {
+    // Detach is the case that matters most: useGitIdentity deliberately
+    // STOPS polling once it has seen the hosted-degraded 409 (the storm
+    // fix), so without an explicit invalidation the topbar git pill would
+    // stay stuck in its unavailable state after the project detaches.
+    postJsonMock.mockResolvedValue({ project_id: 'proj_x', detached_from_host_id: 'host_abc' });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const invalidateSpy = vi.spyOn(client, 'invalidateQueries');
+    const spyWrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+
+    const { result } = renderHook(() => useDetachProject(), { wrapper: spyWrapper });
+    result.current.mutate({ project_root: '/checkout' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['host-membership-status'] }));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['git-identity'] });
+  });
 });

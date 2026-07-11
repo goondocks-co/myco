@@ -59,7 +59,17 @@ export function useHostMembershipStatus(projectRoot?: string) {
 
 function useInvalidateHostMembershipStatus() {
   const qc = useQueryClient();
-  return () => void qc.invalidateQueries({ queryKey: HOST_MEMBERSHIP_STATUS_KEY });
+  return () => {
+    void qc.invalidateQueries({ queryKey: HOST_MEMBERSHIP_STATUS_KEY });
+    // Membership changes alter which routes degrade for a project — attach
+    // turns routes off (e.g. git status starts 409ing), detach/leave turn
+    // them back on. The degrade-affected queries deliberately STOP polling
+    // once they've seen the hosted-refusal (`useGitIdentity`'s storm fix),
+    // so without this nudge the topbar git pill would stay stuck in its
+    // unavailable state after a detach until something else remounted it.
+    // Prefix match: the scoped key is ['git-identity', {projectSelection}].
+    void qc.invalidateQueries({ queryKey: ['git-identity'] });
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +96,10 @@ export interface JoinHostResponse {
   host_reachable: boolean;
   created: boolean;
   notes: string[];
+  /** joinHost's step-by-step progress log, collected daemon-side (the join
+   *  route runs the whole enrollment before answering). Optional: a daemon
+   *  mid-upgrade may not send it. */
+  steps?: string[];
 }
 
 /** POST /api/host-membership/join — the Team page's join form. Provisions a

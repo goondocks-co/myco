@@ -6,6 +6,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { AccentSurface } from '../../components/ui/accent-surface';
 import { cn } from '../../lib/cn';
+import { membershipErrorCopy } from '../../lib/membership-copy';
 import { useActiveProjectSelection } from '../../hooks/use-project-selection';
 import {
   useHostMembershipStatus,
@@ -19,10 +20,6 @@ import {
   type HostMembershipProjectRef,
   type DrainCounters,
 } from '../../hooks/use-host-membership';
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 const inputClass =
   'rounded-md border border-[var(--ghost-border)] bg-surface-container px-3 py-1.5 text-xs text-on-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/40';
@@ -75,7 +72,7 @@ function JoinHostForm() {
       // One-time key: never leave it sitting in a form field after use.
       setKey('');
     } catch (err) {
-      setError(errorMessage(err));
+      setError(membershipErrorCopy(err));
     }
   };
 
@@ -166,7 +163,7 @@ function ProjectRefRow({ hostId, ref: projectRef }: { hostId: string; ref: HostM
     try {
       await detach.mutateAsync({ project_root: projectRef.root, project_id: projectRef.project_id });
     } catch (err) {
-      setError(errorMessage(err));
+      setError(membershipErrorCopy(err));
     }
   };
 
@@ -204,7 +201,7 @@ function HostCard({ host }: { host: HostMembershipHost }) {
     try {
       await leave.mutateAsync(host.host_id);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(membershipErrorCopy(err));
     }
   };
 
@@ -280,7 +277,7 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
       setProjectRoot('');
       setGroveId('');
     } catch (err) {
-      setError(errorMessage(err));
+      setError(membershipErrorCopy(err));
     }
   };
 

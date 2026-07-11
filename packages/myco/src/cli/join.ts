@@ -64,6 +64,11 @@ interface JoinResponseBody {
   host_reachable: boolean;
   created: boolean;
   notes: string[];
+  /** joinHost's step-by-step progress log, collected daemon-side and
+   *  replayed here after the POST returns — the in-process CLI used to
+   *  stream these live; the daemon API can only hand them back at the end.
+   *  Optional: a daemon mid-upgrade may not send them. */
+  steps?: string[];
 }
 
 interface LeaveResponseBody {
@@ -87,6 +92,12 @@ export async function runJoin(args: string[], vaultDir: string): Promise<void> {
     process.exit(2);
   }
 
+  // The daemon runs the whole join (binary provisioning, overlay join,
+  // enrollment) before answering — up to JOIN_TIMEOUT_MS of silence from the
+  // operator's seat. Say so up front; the per-step log is replayed from the
+  // response's `steps` once the join completes.
+  console.log(`Joining Team Host ${hostRef} — provisioning the overlay and enrolling; this can take up to a minute…`);
+
   const protocolVersionRaw = flags.get('protocol-version');
   const client = await connectToGlobalDaemon(vaultDir);
   const result = await client.post('/api/host-membership/join', {
@@ -107,6 +118,7 @@ export async function runJoin(args: string[], vaultDir: string): Promise<void> {
   }
 
   const body = result.data as JoinResponseBody;
+  for (const step of body.steps ?? []) console.log(`  ${step}`);
   console.log(`\n${body.created ? 'Joined' : 'Re-joined'} Team Host ${body.host_id}.`);
   console.log(`  Host overlay:  ${body.overlay_address}`);
   console.log(`  Local proxy:   127.0.0.1:${body.proxy_port} (HTTP-CONNECT)`);

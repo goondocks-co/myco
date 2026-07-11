@@ -39,6 +39,7 @@ import { resolveMycoHome, resolveProjectVaultDir } from '../../grove/paths.js';
 import { attachCommand, detachCommand, type AttachOptions, type DetachOptions } from '../../host/attach-command.js';
 import { resolveTeamHostHintState, teamHostHintMessage } from '../../host/hint.js';
 import { joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
+import { membershipErrorCode } from '../../host/membership-error.js';
 import { readHostRegistry } from '../../host/registry.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
@@ -64,14 +65,17 @@ function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-/** Render a thrown orchestration error as a uniform 400 — every failure mode
- *  of join/leave/attach/detach (bad input, precondition not met, provisioning
- *  failure) is something the operator acts on from the message text; there is
- *  no machine-readable discrimination a caller needs beyond "it didn't work,
- *  here's why" (the CLI wrapper prints `err.message` verbatim today). */
-function failure(code: string, err: unknown): RouteResponse {
+/** Render a thrown orchestration error as a uniform 400. The envelope's
+ *  `code` prefers the error's stable membership code (`membership-error.ts` —
+ *  `project_registered_locally`, `not_joined`, `protocol_mismatch`, …) so the
+ *  Team page can map known failures to its own outcome copy
+ *  (`ui/src/lib/membership-copy.ts`) instead of rendering the CLI-voiced
+ *  message ("run `myco detach`…", "…task A2…") verbatim in a browser. The
+ *  message still travels: the CLI wrappers print it (right voice for a
+ *  terminal), and the UI falls back to it for uncoded failures. */
+function failure(fallbackCode: string, err: unknown): RouteResponse {
   const message = err instanceof Error ? err.message : String(err);
-  return { status: 400, body: errorBody(code, message) };
+  return { status: 400, body: errorBody(membershipErrorCode(err) ?? fallbackCode, message) };
 }
 
 // ---------------------------------------------------------------------------
@@ -99,8 +103,23 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
       label: str(body.label),
     };
 
+    // joinHost's step-by-step progress log used to print straight to the
+    // operator's terminal (the CLI called it in-process); behind the daemon
+    // API it would land in the daemon's log where the operator never sees
+    // it. Collect the lines and return them on the success body (`steps`)
+    // so both callers can replay them — the CLI prints them after the POST
+    // returns, the Team page has them available. Tee'd to the daemon log
+    // too, so the daemon-side record of a join is not lost.
+    // (Streaming them live — SSE/progress-token — is deliberately NOT built
+    // here; noted as an E-0-era follow-up in the task report.)
+    const steps: string[] = [];
+    const logger = (message: string): void => {
+      steps.push(message);
+      console.log(`[host-membership] join: ${message}`);
+    };
+
     try {
-      const result = await join(options);
+      const result = await join(options, { logger });
       return {
         status: 200,
         body: {
@@ -111,6 +130,7 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
           host_reachable: result.hostReachable,
           created: result.created,
           notes: result.notes,
+          steps,
         },
       };
     } catch (err) {

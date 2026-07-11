@@ -22,6 +22,7 @@ import { stringify } from 'smol-toml';
 import { clearProjectManifestCache } from '@myco/config/project-manifest.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
+import { codedMembershipError } from '@myco/host/membership-error.js';
 import { upsertHost, type HostRecord } from '@myco/host/registry.js';
 import {
   createHostMembershipAttachHandler,
@@ -82,7 +83,26 @@ describe('POST /api/host-membership/join', () => {
     expect(res.body).toEqual({
       host_id: 'host_abc', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
       member_overlay_ip: '100.64.0.5', host_reachable: true, created: true, notes: ['note-1'],
+      steps: [],
     });
+  });
+
+  test('collects joinHost\'s step log via the injected logger and returns it as `steps` (the CLI replays it post-POST)', async () => {
+    const handler = createHostMembershipJoinHandler({
+      join: async (options, deps) => {
+        deps?.logger?.('Provisioning Tailscale for darwin/arm64…');
+        deps?.logger?.('Joining the overlay with the one-time key…');
+        return {
+          hostId: options.hostRef, overlayAddress: 'a', proxyPort: 1,
+          memberOverlayIp: 'ip', hostReachable: true, created: true, notes: [],
+        };
+      },
+    });
+    const res = await handler(req({ host_ref: 'host_abc', key: 'k' }));
+    expect((res.body as { steps: string[] }).steps).toEqual([
+      'Provisioning Tailscale for darwin/arm64…',
+      'Joining the overlay with the one-time key…',
+    ]);
   });
 
   test('missing host_ref/key are rejected client-side (never call join)', async () => {
@@ -96,7 +116,7 @@ describe('POST /api/host-membership/join', () => {
     expect(called).toBe(false);
   });
 
-  test('a thrown orchestration error maps to 400 with the message preserved', async () => {
+  test('an UNCODED orchestration error maps to 400 with the route fallback code + message preserved', async () => {
     const handler = createHostMembershipJoinHandler({
       join: async () => { throw new Error('tailscaled socket did not appear'); },
     });
@@ -105,6 +125,24 @@ describe('POST /api/host-membership/join', () => {
     expect((res.body as { error: { code: string; message: string } }).error).toEqual({
       code: 'join_failed', message: 'tailscaled socket did not appear',
     });
+  });
+
+  test('a CODED orchestration error surfaces its stable membership code (protocol_mismatch), not the fallback', async () => {
+    const handler = createHostMembershipJoinHandler({
+      join: async () => {
+        throw codedMembershipError(
+          'protocol_mismatch',
+          'The host rejected enrollment with a protocol-version mismatch (409). This member speaks Team-Host protocol v1; run `myco update` so both sides match, then retry.',
+        );
+      },
+    });
+    const res = await handler(req({ host_ref: 'h', key: 'k' }));
+    expect(res.status).toBe(400);
+    const error = (res.body as { error: { code: string; message: string } }).error;
+    expect(error.code).toBe('protocol_mismatch');
+    // The CLI-voiced message still travels (terminals print it verbatim);
+    // the UI keys on the code and never renders it.
+    expect(error.message).toContain('protocol-version mismatch');
   });
 });
 
@@ -178,13 +216,33 @@ describe('POST /api/host-membership/attach', () => {
     expect((res.body as { error: { message: string } }).error.message).toContain('attach requires --grove');
   });
 
-  test('a thrown attach error (e.g. already attached elsewhere) maps to 400', async () => {
+  test('an UNCODED attach error maps to 400 with the route fallback code', async () => {
     const handler = createHostMembershipAttachHandler({
-      attach: () => { throw new Error('Cannot attach proj_x: already attached to host_other.'); },
+      attach: () => { throw new Error('Could not determine the project id for /checkout.'); },
     });
     const res = await handler(req({ project_root: '/checkout', grove_id: 'g' }));
     expect(res.status).toBe(400);
     expect((res.body as { error: { code: string } }).error.code).toBe('attach_failed');
+  });
+
+  test('a CODED attach refusal surfaces its stable membership code — the UI keys copy on it, never the CLI-voiced message', async () => {
+    const handler = createHostMembershipAttachHandler({
+      attach: () => {
+        // The real mapAttachError output for ProjectRegisteredLocallyError —
+        // message references `myco detach`-style remediation and "task A2",
+        // both fine for a terminal, neither renderable in the Team page.
+        throw codedMembershipError(
+          'project_registered_locally',
+          'Cannot attach proj_x: it still has local Grove data (Grove grove_y). Adopting existing local '
+          + 'history into a team host requires the residency-transition migration, which is not yet '
+          + 'available (task A2). This command attaches a project going forward only — detach/migrate '
+          + 'the project off its local Grove first.',
+        );
+      },
+    });
+    const res = await handler(req({ project_root: '/checkout', grove_id: 'g' }));
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { code: string } }).error.code).toBe('project_registered_locally');
   });
 });
 
