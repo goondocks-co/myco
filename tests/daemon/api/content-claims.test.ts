@@ -3,16 +3,19 @@
  * transport: seeds skill rows directly through their own query module and
  * asserts the HTTP envelopes the handlers return.
  *
- * `seedOkfPage`/`insertOkfPage` survive here only to back the residue tests
- * — a pre-retirement `okf_page` publication/claim row must still read safely
- * even though the claim system no longer creates new claims for that kind.
+ * `seedOkfPage` survives here only to back the residue tests — a
+ * pre-retirement `okf_page` publication/claim row must still read safely
+ * even though the claim system no longer creates new claims for that kind,
+ * and the OKF module (including its query helpers) is gone. This seeds the
+ * `okf_pages` row directly via SQL rather than through the retired
+ * `insertOkfPage` helper.
  */
 
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
+import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSkillRecord, updateSkillRecord, deleteSkillRecordCascade } from '@myco/db/queries/skill-records.js';
-import { insertOkfPage } from '@myco/db/queries/okf.js';
 import {
   getContentPublication,
   upsertContentPublication,
@@ -66,20 +69,17 @@ function seedSkill(id: string, overrides: { generation?: number; name?: string }
 
 function seedOkfPage(id: string, overrides: { generation?: number; path?: string } = {}): void {
   const now = epochNow();
-  insertOkfPage({
-    id,
-    project_id: PROJECT_ID,
-    machine_id: 'machine-a',
-    path: overrides.path ?? `concepts/${id}`,
-    type: 'concept',
-    title: id,
-    description: '',
-    tags: '[]',
-    status: 'active',
-    generation: overrides.generation ?? 1,
-    created_at: now,
-    updated_at: now,
-  });
+  // Raw insert (the retired `insertOkfPage` helper is gone with the OKF
+  // module) — the `okf_pages` table itself survives for residue reads.
+  getDatabase().prepare(
+    `INSERT INTO okf_pages (
+       id, project_id, machine_id, path, type, title, description, tags,
+       status, generation, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id, PROJECT_ID, 'machine-a', overrides.path ?? `concepts/${id}`, 'concept', id,
+    '', '[]', 'active', overrides.generation ?? 1, now, now,
+  );
 }
 
 describe('content claim daemon API', () => {

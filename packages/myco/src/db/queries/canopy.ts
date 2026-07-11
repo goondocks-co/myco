@@ -809,26 +809,3 @@ export function listCanopyEntries(
       LIMIT ?`,
   ).all(...params, options.limit) as CanopyListRow[];
 }
-
-/**
- * List full CanopyEntry rows for a project — the OKF canopy projector needs
- * every column (hash, sizes, exports/imports, top_comment), not the thin
- * CanopyListRow subset. Same predicate and ordering as listCanopyEntries so
- * the two listings cannot diverge.
- */
-export function listFullCanopyEntries(
-  db: Database,
-  projectId: string,
-  options: { includeUndescribed: boolean; limit: number },
-): CanopyEntry[] {
-  const { where, params } = options.includeUndescribed
-    ? { where: 'project_id = ?', params: [projectId] as unknown[] }
-    : describedCanopyEntriesPredicate(projectId);
-  return db.prepare(
-    `SELECT *
-       FROM canopy_entries
-      WHERE ${where}
-      ORDER BY ${CANOPY_ENTRIES_ORDER_BY}
-      LIMIT ?`,
-  ).all(...params, options.limit) as CanopyEntry[];
-}
