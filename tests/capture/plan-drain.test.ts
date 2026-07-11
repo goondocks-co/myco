@@ -775,4 +775,29 @@ describe('drain health (consolidation Task C-5)', () => {
     await q2.flushBeforeForward(t);
     expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
   });
+
+  test('an inert (deleted-file) entry\'s stale failure never counts — no permanent false doctor warning (reviewer repro)', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan');
+    const store = memStore();
+    const t = target();
+
+    // 1. One transport failure recorded against the plan entry.
+    const throwing: PlanPostTransport = async () => { throw new Error('network down'); };
+    const q1 = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q1.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q1.flushBeforeForward(t);
+    expect(q1.health().get(HOST_A)?.hostUnreachableEntries).toBe(1);
+
+    // 2. The plan file is deleted — its content is unreachable forever;
+    //    drainEntry would remove the inert entry on the next LIVE cycle, but
+    //    the doctor path never runs one.
+    files.remove('/plans/x.md');
+
+    // 3. A FRESH queue over the same store (doctor's disk-only construction):
+    //    the stale failure must NOT read as failing/unreachable — otherwise
+    //    every doctor run warns forever while the daemon is down.
+    const q2 = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
 });

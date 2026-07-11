@@ -73,8 +73,15 @@ export interface DrainHealthCounters {
   /** Un-shipped bytes or records summed across pending entries — meaning is
    *  drain-specific (see the interface doc). */
   pendingUnits?: number;
-  /** Entries currently in a failing state (`consecutive_failures > 0`),
-   *  regardless of failure kind. */
+  /** PENDING entries currently in a failing state (`consecutive_failures >
+   *  0`), regardless of failure kind. Always <= `pendingEntries`: a failure
+   *  only counts while the entry still has un-shipped content the failure is
+   *  blocking. An INERT entry (rotated transcript, deleted plan file) with a
+   *  stale prior failure never counts — its bytes are unreachable, no retry
+   *  will ever run for it, and the next live drain cycle removes it
+   *  (`drainEntry`'s inert-check); counting it would leave a permanent false
+   *  "failing" signal on the disk-only doctor path, where no drain cycle
+   *  ever runs to self-heal it. */
   failingEntries: number;
   /** Of those, how many are failing because the HOST itself could not be
    *  reached (transport-level), rather than an unexpected-but-reachable
@@ -99,7 +106,20 @@ function emptyCounters(): DrainHealthCounters {
 }
 
 /** Aggregate a flat list of per-entry rows (already classified by the owning
- *  drain queue) into a per-host health map. Pure — no I/O. */
+ *  drain queue) into a per-host health map. Pure — no I/O.
+ *
+ *  Failure counts are gated on `row.pending` — the aggregation-level twin of
+ *  the inert-check each `drainEntry` applies (rotated inode, deleted plan
+ *  file). An entry can only be "failing" while it has un-shipped content the
+ *  failure is actually blocking: an inert entry's recorded failure is stale
+ *  by definition (its bytes are unreachable, no retry will ever fire, and
+ *  the next live drain cycle removes the entry), and on the disk-only
+ *  doctor path — fresh queue instances, no drain cycle ever running — an
+ *  ungated count would report that stale failure as a warning FOREVER.
+ *  Gating here (rather than having each `health()` skip inert rows) keeps
+ *  the invariant in one place for all three drains and keeps `pending` and
+ *  `failing` semantics coupled by construction: `failingEntries` is always
+ *  a subset of `pendingEntries`. */
 export function summarizeDrainHealth(rows: readonly DrainHealthRow[]): Map<string, DrainHealthCounters> {
   const out = new Map<string, DrainHealthCounters>();
   for (const row of rows) {
@@ -113,10 +133,10 @@ export function summarizeDrainHealth(rows: readonly DrainHealthRow[]): Map<strin
       if (row.pendingUnits !== undefined) {
         counters.pendingUnits = (counters.pendingUnits ?? 0) + row.pendingUnits;
       }
-    }
-    if ((row.consecutive_failures ?? 0) > 0) {
-      counters.failingEntries += 1;
-      if (row.last_error_kind === 'unreachable') counters.hostUnreachableEntries += 1;
+      if ((row.consecutive_failures ?? 0) > 0) {
+        counters.failingEntries += 1;
+        if (row.last_error_kind === 'unreachable') counters.hostUnreachableEntries += 1;
+      }
     }
   }
   return out;

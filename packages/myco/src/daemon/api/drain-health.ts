@@ -25,7 +25,7 @@
  *         "label": "my-host",
  *         "drains": {
  *           "transcript":   { "pending_entries": 2, "pending_bytes":   4096, "failing_entries": 0, "host_unreachable_entries": 0 },
- *           "plan":         { "pending_entries": 0, "pending_bytes":      0, "failing_entries": 0, "host_unreachable_entries": 0 },
+ *           "plan":         { "pending_entries": 0,                          "failing_entries": 0, "host_unreachable_entries": 0 },
  *           "event_replay": { "pending_entries": 1, "pending_records":    3, "failing_entries": 1, "host_unreachable_entries": 1 }
  *         }
  *       }

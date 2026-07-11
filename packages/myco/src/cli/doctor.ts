@@ -132,34 +132,39 @@ export async function checkTeamHostReachability(): Promise<DoctorCheck[]> {
   const hosts = readHostRegistry();
   if (hosts.length === 0) return [];
 
-  const checks: DoctorCheck[] = [];
-  for (const host of hosts) {
-    const name = checks.length === 0 ? 'Team Host' : '';
-    if (host.proxy_port === undefined) {
-      checks.push({
+  // Probe every host CONCURRENTLY: each probe is individually bounded
+  // (HOST_PROXY_CONNECT_TIMEOUT_MS inside defaultCheckHostReachable) and each
+  // host rides its own tailscaled/proxy-port, so N joined hosts cost one
+  // probe-timeout worst case, not N of them serialized. `reachable: null`
+  // marks the no-proxy-port case (nothing to probe).
+  const probed = await Promise.all(hosts.map(async (host): Promise<{ host: typeof hosts[number]; reachable: boolean | null }> => {
+    if (host.proxy_port === undefined) return { host, reachable: null };
+    try {
+      return { host, reachable: await defaultCheckHostReachable(host.overlay_address, host.proxy_port) };
+    } catch {
+      return { host, reachable: false };
+    }
+  }));
+
+  return probed.map(({ host, reachable }, index): DoctorCheck => {
+    const name = index === 0 ? 'Team Host' : '';
+    if (reachable === null) {
+      return {
         name,
         status: 'warn',
         detail: `${host.label} (${host.host_id}): no local proxy port on record — re-join with \`myco join\` to repair`,
         fixable: false,
-      });
-      continue;
+      };
     }
-    let reachable: boolean;
-    try {
-      reachable = await defaultCheckHostReachable(host.overlay_address, host.proxy_port);
-    } catch {
-      reachable = false;
-    }
-    checks.push({
+    return {
       name,
       status: reachable ? 'ok' : 'warn',
       detail: reachable
         ? `${host.label} (${host.host_id}) reachable over the overlay`
         : `${host.label} (${host.host_id}) not reachable over the overlay — check the host daemon is running and the overlay connection is up`,
       fixable: false,
-    });
-  }
-  return checks;
+    };
+  });
 }
 
 /** Human-readable byte count, e.g. "4.2 KB". */

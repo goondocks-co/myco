@@ -11,6 +11,7 @@ import path from 'node:path';
 import { checkTeamHostDrainHealth, checkTeamHostReachability } from '@myco/cli/doctor.js';
 import { upsertHost, type HostRecord } from '@myco/host/registry.js';
 import { createFsDrainStore } from '@myco/capture/transcript-drain.js';
+import { deriveTranscriptId } from '@myco/host/routed-transcript.js';
 import { getMachineId } from '@myco/machine-id.js';
 
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -131,29 +132,57 @@ describe('checkTeamHostDrainHealth', () => {
 
   test('a failing transcript entry (host unreachable) surfaces as a warn row naming the drain', async () => {
     upsertHost(host());
-    const machineId = getMachineId();
-    // Write a transcript-drain entry directly — the SAME persisted shape
-    // `TranscriptDrainQueue.health()` reads, with a recorded failure. No
-    // daemon process required: doctor constructs its own disk-only queue.
+    // A LIVE failing entry: the transcript file must actually exist, un-rotated
+    // (transcript_id derived from its real inode) and have un-shipped bytes
+    // past acked_offset — a failure only counts while there is pending content
+    // it is blocking (the inert-entry gate). No daemon process required:
+    // doctor constructs its own disk-only queue.
+    const transcriptPath = path.join(tmp, 'sess-1.jsonl');
+    fs.writeFileSync(transcriptPath, '{"role":"user"}\n', 'utf-8');
+    const inode = Number(fs.statSync(transcriptPath).ino);
     createFsDrainStore().put({
       host_id: HOST_A,
       session_id: 'sess-1',
-      transcript_id: 'tid-1',
+      transcript_id: deriveTranscriptId({ machineId: getMachineId(), transcriptPath, inode }),
       project_id: 'proj_0123456789abcdef0123456789abcdef',
       grove_id: 'grove_0123456789abcdef0123456789abcdef',
-      transcript_path: '/does/not/matter.jsonl',
+      transcript_path: transcriptPath,
       acked_offset: 0,
       updated_at: new Date().toISOString(),
       consecutive_failures: 3,
       last_error_kind: 'unreachable',
       last_error_at: new Date().toISOString(),
     });
-    void machineId; // health() keys the ROW by host_id, not machineId — the field only matters for rotation/pending sizing.
 
     const checks = await checkTeamHostDrainHealth();
     expect(checks).toHaveLength(1);
     expect(checks[0].status).toBe('warn');
     expect(checks[0].detail).toContain('transcript');
     expect(checks[0].detail).toContain('failing');
+  });
+
+  test('an inert entry\'s stale failure does NOT warn — rotated/deleted content is not a drain problem (reviewer repro)', async () => {
+    upsertHost(host());
+    // Same failing entry shape, but its transcript file does not exist — the
+    // inert case (deleted, or rotated so the recorded inode no longer
+    // matches). Doctor must report ok, not a permanent false warning.
+    createFsDrainStore().put({
+      host_id: HOST_A,
+      session_id: 'sess-1',
+      transcript_id: 'tid-stale',
+      project_id: 'proj_0123456789abcdef0123456789abcdef',
+      grove_id: 'grove_0123456789abcdef0123456789abcdef',
+      transcript_path: path.join(tmp, 'gone.jsonl'), // never created
+      acked_offset: 0,
+      updated_at: new Date().toISOString(),
+      consecutive_failures: 3,
+      last_error_kind: 'unreachable',
+      last_error_at: new Date().toISOString(),
+    });
+
+    const checks = await checkTeamHostDrainHealth();
+    expect(checks).toHaveLength(1);
+    expect(checks[0].status).toBe('ok');
+    expect(checks[0].detail).toContain('nothing pending, no failures');
   });
 });

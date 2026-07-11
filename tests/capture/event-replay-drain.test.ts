@@ -931,4 +931,29 @@ describe('drain health (consolidation Task C-5)', () => {
     await q.drainAll();
     expect(q.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
   });
+
+  test('a removed buffer file leaves no stale failure to count — the enumeration skips the vanished session (reviewer repro, event-replay analog)', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-inert';
+    buf.append(dir, 'sess-1', evt());
+    const store = memStore();
+    const throwing: EventReplayTransport = async () => { throw new Error('unreachable'); };
+    const q1 = new EventReplayDrainQueue({
+      machineId: MACHINE, store, transport: throwing, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q1.drainAll();
+    expect(q1.health().get(HOST_A)?.hostUnreachableEntries).toBe(1);
+
+    // The buffer file goes away (e.g. a manual cleanup) while the failed
+    // ReplayEntry remains persisted. A FRESH queue (doctor's disk-only
+    // construction) enumerates buffer FILES — the vanished session yields no
+    // row at all, so the stale failure never surfaces.
+    buf.remove(dir, 'sess-1');
+    const q2 = new EventReplayDrainQueue({
+      machineId: MACHINE, store, transport: throwing, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    expect(q2.health().get(HOST_A)).toBeUndefined();
+  });
 });
