@@ -16,6 +16,14 @@ import { deleteOldLogs } from '@myco/db/queries/logs.js';
 import { pruneOldNotifications } from '@myco/db/queries/notifications.js';
 import { pruneOldAgentRuns } from '@myco/db/queries/runs.js';
 import { expireStaleContentClaims, pruneTerminalContentClaims } from '@myco/db/queries/content-claims.js';
+import { pruneRoutedEventDedup } from '@myco/db/queries/routed-event-dedup.js';
+import { getSession, STATUS_COMPLETED } from '@myco/db/queries/sessions.js';
+import type { SessionCompletionMiner } from './session-completion.js';
+import {
+  listRoutedTranscriptSessionDirs,
+  newestRoutedTranscriptMtimeMs,
+  pruneRoutedTranscriptSessionDir,
+} from '@myco/host/routed-transcript.js';
 import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';
 import { notify } from '@myco/notifications/notify.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -29,6 +37,8 @@ import {
   MS_PER_HOUR,
   CAPTURE_BUFFER_DRAIN_INTERVAL_MS,
   CONTENT_CLAIM_RETENTION_MS,
+  ROUTED_EVENT_DEDUP_RETENTION_MS,
+  ROUTED_TRANSCRIPT_GC_QUIESCENCE_MS,
   epochSeconds,
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -97,6 +107,14 @@ export interface PowerJobDeps {
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
   machineId: string;
+  /**
+   * The completion chokepoint's mining seam (`daemon/session-completion.ts`),
+   * threaded into the session-maintenance stale sweep: a stale-swept session
+   * got no SessionEnd, so its transcript tail must be mined before the
+   * status flip — the routed-transcript cache GC's "completed implies mined"
+   * invariant depends on every completion path mining first.
+   */
+  transcriptMiner: SessionCompletionMiner;
   /**
    * Vault dir consulted for daemon-scope notification gating
    * (`notifications.enabled`, per-domain enabled flags). Daemon-scope
@@ -372,6 +390,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
         logger: groveLoggers.get(scope),
         registeredSessionIds: () => [...registry.sessions],
         embeddingManager: manager,
+        transcriptMiner: deps.transcriptMiner,
         resolveProjectVaultDir: projectVaultDirResolvers.get(scope).resolve,
         staleThresholdMs: liveConfig.current.daemon.stale_session_threshold_ms,
         ...(deps.reconciler
@@ -501,6 +520,114 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       const pruned = pruneTerminalContentClaims(Math.floor(CONTENT_CLAIM_RETENTION_MS / 1000), now);
       if (pruned > 0) {
         logger.info(LOG_KINDS.CONTENT_CLAIM_PRUNE, 'Pruned terminal content claims', {
+          pruned,
+          grove_id: scope.grove.id,
+          grove_slug: scope.grove.slug,
+        });
+      }
+    }),
+  });
+
+  // routed-transcript-cache-gc (consolidation Task C-1): the host-materialized
+  // transcript cache (~/.myco-team/host/routed-transcripts/<machine>/<session>/)
+  // is a MINING CACHE, not the source of truth — but until a routed session is
+  // BOTH fully mined and session-terminal, the host may be the only durable
+  // copy of its transcript (the member can rotate/trim its own file at any
+  // time), so this NEVER TTLs a tree by age. "Session-terminal" is
+  // `sessions.status = 'completed'`, and "completed implies fully mined"
+  // holds because EVERY daemon completion path — SessionEnd, the manual
+  // complete route, AND the stale-session sweep — routes through the
+  // completion chokepoint (`completeSessionWithMining`,
+  // `daemon/session-completion.ts`), which runs the final mining convergence
+  // against the stamped `transcript_path` (host-substituted for a routed
+  // session, and guaranteed caught-up at SessionEnd by the member's
+  // `flushBeforeForward` before that terminal route is dispatched) BEFORE
+  // the status flip. A completed session with NO stamped `transcript_path`
+  // had no mine source at close (degraded-missing at every Stop, or no Stop
+  // at all) — its tree may hold unmined bytes, so it is never pruned (kept
+  // forever; data preservation over disk). Pruning additionally requires
+  // APPEND QUIESCENCE (the late-append TOCTOU guard — see the in-loop
+  // comment): the tree's newest write must predate the session's completion
+  // AND be older than ROUTED_TRANSCRIPT_GC_QUIESCENCE_MS. The candidate
+  // list is walked
+  // ONCE per tick (bounded by the cache's own size, not total session
+  // history) and resolved against every Grove this daemon serves — a
+  // candidate whose session cannot be found in ANY served Grove is left
+  // alone (conservative: it is either not yet visible or belongs to a Grove
+  // this daemon no longer serves, and this job never guesses).
+  runner.register({
+    name: POWER_JOB_NAMES.ROUTED_TRANSCRIPT_CACHE_GC,
+    runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
+    fn: async () => {
+      const candidates = listRoutedTranscriptSessionDirs();
+      if (candidates.length === 0) return;
+      // Keyed on (machineId, sessionId), NOT sessionId alone: session ids are
+      // agent-supplied UUIDs, not structurally guaranteed unique across two
+      // different member machines, so a sessionId-only key could collapse two
+      // distinct candidate directories onto one map entry and silently drop
+      // one from consideration. `getSession` still looks up by sessionId
+      // (its only key), but each compound entry is checked independently.
+      const unresolved = new Map(candidates.map((c) => [`${c.machineId}/${c.sessionId}`, c]));
+      let pruned = 0;
+      await fanOutGroves(POWER_JOB_NAMES.ROUTED_TRANSCRIPT_CACHE_GC, async () => {
+        if (unresolved.size === 0) return;
+        for (const [key, candidate] of [...unresolved]) {
+          const session = getSession(candidate.sessionId, ALL_PROJECTS_SCOPE);
+          if (!session) continue; // not in this Grove — try the next
+          // Defense in depth: a mismatch means this row is not the one that
+          // owns the directory (e.g. a sessionId collision across two
+          // members' UUIDs) — leave BOTH the row's grove and this candidate
+          // unresolved rather than ever deleting on an unverified match.
+          if (session.machine_id !== candidate.machineId) continue;
+          unresolved.delete(key); // owning Grove found regardless of status
+          if (session.status !== STATUS_COMPLETED) continue; // still in flight — never touch
+          // No stamped transcript_path = the completion chokepoint had no
+          // mine source at close — the tree may hold unmined bytes. Keep it
+          // forever rather than guess (data preservation over disk).
+          if (!session.transcript_path) continue;
+          // Late-append TOCTOU guard (prune-only-when-quiet): the transcript
+          // ingest route appends purely by offset and never touches the
+          // sessions row, so a reconnecting member's drain backstop can land
+          // tail bytes AFTER the stale sweep completed (and mined) this
+          // session — no event, no reactivation, no new mining trigger.
+          // Refuse when the tree's newest write is at/after the session's
+          // completion time (bytes newer than the last mine) OR within the
+          // quiescence window of now (an append may be in flight). A null
+          // ended_at (legacy/imported row) or unreadable dir is never
+          // provably quiet — keep the tree.
+          const newestWriteMs = newestRoutedTranscriptMtimeMs(candidate.dirPath);
+          if (newestWriteMs === null || session.ended_at === null) continue;
+          if (newestWriteMs >= session.ended_at * 1000) continue;
+          if (Date.now() - newestWriteMs < ROUTED_TRANSCRIPT_GC_QUIESCENCE_MS) continue;
+          pruneRoutedTranscriptSessionDir(candidate.dirPath);
+          pruned += 1;
+        }
+      })();
+      if (pruned > 0) {
+        logger.info(
+          LOG_KINDS.ROUTED_TRANSCRIPT_CACHE_PRUNE,
+          'Pruned fully-mined, session-terminal routed-transcript cache trees',
+          { pruned },
+        );
+      }
+    },
+  });
+
+  // routed-event-dedup-prune (consolidation Task C-1): age-based prune of the
+  // routed `/events` idempotency ledger. The ledger carries no `session_id`
+  // (host-local dedup keyed on the source-assigned `event_id` alone), so —
+  // unlike the cache GC above — there is no terminal signal to gate on;
+  // retention is purely `created_at` age past ROUTED_EVENT_DEDUP_RETENTION_MS
+  // (constants.ts documents the conservative reasoning for the window).
+  runner.register({
+    name: POWER_JOB_NAMES.ROUTED_EVENT_DEDUP_PRUNE,
+    runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
+    fn: fanOutGroves(POWER_JOB_NAMES.ROUTED_EVENT_DEDUP_PRUNE, async (scope) => {
+      const pruned = pruneRoutedEventDedup(Math.floor(ROUTED_EVENT_DEDUP_RETENTION_MS / 1000));
+      if (pruned > 0) {
+        logger.info(LOG_KINDS.ROUTED_EVENT_DEDUP_PRUNE, 'Pruned aged routed-event dedup rows', {
           pruned,
           grove_id: scope.grove.id,
           grove_slug: scope.grove.slug,

@@ -15,6 +15,25 @@ const epochNow = () => Math.floor(Date.now() / MS_PER_SECOND);
 /** Threshold in seconds. */
 const STALE_THRESHOLD_S = STALE_SESSION_THRESHOLD_MS / MS_PER_SECOND;
 
+/** Recording fake for the completion chokepoint's mining seam. */
+function makeRecordingMiner() {
+  const calls: Array<{ sessionId: string; agent: string; transcriptPath: string }> = [];
+  return {
+    calls,
+    completion: {
+      transcriptMiner: {
+        reconcileAndAttributeResponses(sessionId: string, input: { agent: string; transcriptPath: string }) {
+          calls.push({ sessionId, ...input });
+          return {};
+        },
+      },
+    },
+  };
+}
+
+/** No-op completion deps for tests that don't assert mining. */
+const noopCompletion = makeRecordingMiner().completion;
+
 function seedSession(id: string, opts: {
   status?: string;
   promptCount?: number;
@@ -61,7 +80,7 @@ describe('completeStaleActiveSessions', () => {
     const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
     seedSession('stale-1', { status: 'active', startedAt: staleTime });
 
-    const count = completeStaleActiveSessions();
+    const count = completeStaleActiveSessions(noopCompletion);
 
     expect(count).toBe(1);
     const session = getSession('stale-1', ALL_PROJECTS_SCOPE);
@@ -72,7 +91,7 @@ describe('completeStaleActiveSessions', () => {
     const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
     seedSession('stale-2', { status: 'active', batchStartedAt: staleTime });
 
-    const count = completeStaleActiveSessions();
+    const count = completeStaleActiveSessions(noopCompletion);
 
     expect(count).toBe(1);
     const session = getSession('stale-2', ALL_PROJECTS_SCOPE);
@@ -88,7 +107,7 @@ describe('completeStaleActiveSessions', () => {
     const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
     seedSession('registered-but-idle', { status: 'active', startedAt: staleTime });
 
-    const count = completeStaleActiveSessions();
+    const count = completeStaleActiveSessions(noopCompletion);
 
     expect(count).toBe(1);
     expect(getSession('registered-but-idle', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
@@ -97,7 +116,7 @@ describe('completeStaleActiveSessions', () => {
   it('skips recently active sessions', () => {
     seedSession('fresh-1', { status: 'active', batchStartedAt: epochNow() });
 
-    const count = completeStaleActiveSessions();
+    const count = completeStaleActiveSessions(noopCompletion);
 
     expect(count).toBe(0);
     const session = getSession('fresh-1', ALL_PROJECTS_SCOPE);
@@ -108,7 +127,7 @@ describe('completeStaleActiveSessions', () => {
     const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
     seedSession('completed-1', { status: 'completed', startedAt: staleTime });
 
-    const count = completeStaleActiveSessions();
+    const count = completeStaleActiveSessions(noopCompletion);
 
     expect(count).toBe(0);
   });
@@ -118,10 +137,10 @@ describe('completeStaleActiveSessions', () => {
     const tenMinAgo = epochNow() - 10 * 60;
     seedSession('config-threshold', { status: 'active', batchStartedAt: tenMinAgo });
 
-    expect(completeStaleActiveSessions(STALE_THRESHOLD_S)).toBe(0);
+    expect(completeStaleActiveSessions(noopCompletion, STALE_THRESHOLD_S)).toBe(0);
     expect(getSession('config-threshold', ALL_PROJECTS_SCOPE)?.status).toBe('active');
 
-    expect(completeStaleActiveSessions(5 * 60)).toBe(1);
+    expect(completeStaleActiveSessions(noopCompletion, 5 * 60)).toBe(1);
     expect(getSession('config-threshold', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
   });
 
@@ -130,7 +149,7 @@ describe('completeStaleActiveSessions', () => {
     seedSession('ended-at-check', { status: 'active', startedAt: staleTime });
 
     const before = epochNow();
-    completeStaleActiveSessions();
+    completeStaleActiveSessions(noopCompletion);
     const session = getSession('ended-at-check', ALL_PROJECTS_SCOPE);
 
     expect(session?.ended_at).not.toBeNull();
@@ -151,7 +170,7 @@ describe('completeStaleActiveSessions', () => {
     seedSession('stale-open-batch', { status: 'active', batchStartedAt: staleTime });
     expect(openBatchCount('stale-open-batch')).toBe(1);
 
-    completeStaleActiveSessions();
+    completeStaleActiveSessions(noopCompletion);
 
     expect(openBatchCount('stale-open-batch')).toBe(0);
   });
@@ -159,9 +178,72 @@ describe('completeStaleActiveSessions', () => {
   it('leaves open batches of a fresh (non-swept) session untouched', () => {
     seedSession('fresh-open-batch', { status: 'active', batchStartedAt: epochNow() });
 
-    completeStaleActiveSessions();
+    completeStaleActiveSessions(noopCompletion);
 
     expect(openBatchCount('fresh-open-batch')).toBe(1);
+  });
+
+  it('runs the final transcript-mining convergence for a swept session with a transcript source (the unmined-tail case)', () => {
+    // The reviewer-caught data-loss failure mode: a session swept stale got
+    // no SessionEnd, so its transcript tail since the last per-turn Stop is
+    // UNMINED. The sweep must route through the completion chokepoint,
+    // which mines against the stamped transcript_path BEFORE the status
+    // flip — otherwise "completed" would not imply "mined" and the routed-
+    // transcript cache GC could prune a host's only transcript copy.
+    const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
+    seedSession('stale-unmined', { status: 'active', startedAt: staleTime });
+    upsertSession({
+      id: 'stale-unmined',
+      agent: 'claude-code',
+      started_at: staleTime,
+      created_at: staleTime,
+      transcript_path: '/routed/materialized/stale-unmined.jsonl',
+    });
+    const { calls, completion } = makeRecordingMiner();
+
+    const count = completeStaleActiveSessions(completion);
+
+    expect(count).toBe(1);
+    expect(calls).toEqual([{
+      sessionId: 'stale-unmined',
+      agent: 'claude-code',
+      transcriptPath: '/routed/materialized/stale-unmined.jsonl',
+    }]);
+    expect(getSession('stale-unmined', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
+  });
+
+  it('does not invoke the miner for a swept session with no transcript source, and still completes it', () => {
+    const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
+    seedSession('stale-no-source', { status: 'active', startedAt: staleTime });
+    const { calls, completion } = makeRecordingMiner();
+
+    const count = completeStaleActiveSessions(completion);
+
+    expect(count).toBe(1);
+    expect(calls).toEqual([]);
+    expect(getSession('stale-no-source', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
+  });
+
+  it('a mining failure never blocks the sweep — the session still completes', () => {
+    const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
+    seedSession('stale-mine-throws', { status: 'active', startedAt: staleTime });
+    upsertSession({
+      id: 'stale-mine-throws',
+      agent: 'claude-code',
+      started_at: staleTime,
+      created_at: staleTime,
+      transcript_path: '/routed/materialized/stale-mine-throws.jsonl',
+    });
+    const throwingCompletion = {
+      transcriptMiner: {
+        reconcileAndAttributeResponses() { throw new Error('mine failed'); },
+      },
+    };
+
+    const count = completeStaleActiveSessions(throwingCompletion);
+
+    expect(count).toBe(1);
+    expect(getSession('stale-mine-throws', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
   });
 });
 

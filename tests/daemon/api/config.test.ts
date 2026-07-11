@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { handleGetConfig, handlePutScopedConfig } from '@myco/daemon/api/config';
+import { handleGetConfig, handleGetMergedConfig, handlePutScopedConfig } from '@myco/daemon/api/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -68,5 +68,31 @@ describe('config API', () => {
       patch: { embedding: { provider: 'invalid-provider' } },
     });
     expect(result.status).toBe(400);
+  });
+
+  describe('GET /api/config/merged — served-treeless degrade (Task C-6 item 1)', () => {
+    it('degrades to machine+grove tiers instead of throwing when the project root has no myco.yaml on this machine', async () => {
+      // A Team Host operator browsing a served member project's Settings
+      // page over localhost: `vaultDir`'s parent (the project root) exists
+      // nowhere on this machine at all — the member's checkout, not this
+      // one. Before the fix, `loadMergedConfig` here had no
+      // `projectTierOptional`, so this threw "myco.yaml not found" and the
+      // request 500'd instead of rendering machine+grove-tier settings.
+      const treelessVaultDir = path.join(
+        os.tmpdir(),
+        `myco-config-merged-treeless-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        '.myco',
+      );
+      // Deliberately never created on disk — this IS the treeless case.
+      expect(fs.existsSync(path.dirname(treelessVaultDir))).toBe(false);
+
+      const result = await handleGetMergedConfig(treelessVaultDir, { groveId: null });
+
+      expect(result.status ?? 200).toBe(200);
+      const body = result.body as { version: number };
+      // The merge still succeeds — machine+grove tiers (here, both empty)
+      // plus the schema defaults, not a thrown error.
+      expect(body.version).toBeGreaterThan(0);
+    });
   });
 });

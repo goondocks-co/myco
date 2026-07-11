@@ -404,6 +404,195 @@ describe('rotation + hold.pending', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Session-terminal prune (consolidation Task C-2, item 1)
+// ---------------------------------------------------------------------------
+
+describe('noteSessionEnded prune (item 1 — prune only acked)', () => {
+  test('a fully-acked entry for the ended session is pruned', () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'a\nb\n', 1); // 4 bytes
+    const store = memStore();
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: p, inode: 1 });
+    store.put({
+      host_id: HOST_A, session_id: 's', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: p, acked_offset: 4, updated_at: 'x', // caught up
+    });
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, fileReader: files.reader, ...noThrottle });
+
+    q.noteSessionEnded(HOST_A, 's');
+
+    expect(store.get(HOST_A, 's', tid)).toBeNull();
+  });
+
+  test('an entry with un-shipped bytes is left untouched — prune-only-acked', () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'a\nb\n', 1); // 4 bytes
+    const store = memStore();
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: p, inode: 1 });
+    store.put({
+      host_id: HOST_A, session_id: 's', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: p, acked_offset: 2, updated_at: 'x', // NOT caught up
+    });
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, fileReader: files.reader, ...noThrottle });
+
+    q.noteSessionEnded(HOST_A, 's');
+
+    expect(store.get(HOST_A, 's', tid)).not.toBeNull();
+    expect(store.get(HOST_A, 's', tid)!.acked_offset).toBe(2); // unchanged
+  });
+
+  test('a rotated (inert) entry is pruned even though it never caught up', () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'old\n', 1);
+    const store = memStore();
+    const t = target();
+    const oldTid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: p, inode: 1 });
+    store.put({
+      host_id: HOST_A, session_id: 's', transcript_id: oldTid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: p, acked_offset: 0, updated_at: 'x',
+    });
+    files.rotate(p, 'brand new\n', 2); // inode changed — old bytes unreachable
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, fileReader: files.reader, ...noThrottle });
+
+    q.noteSessionEnded(HOST_A, 's');
+
+    expect(store.get(HOST_A, 's', oldTid)).toBeNull();
+  });
+
+  test('a different session on the same host is left alone', () => {
+    const files = memFiles();
+    const p = '/m/other.jsonl';
+    files.set(p, 'x\n', 1);
+    const store = memStore();
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: p, inode: 1 });
+    store.put({
+      host_id: HOST_A, session_id: 'other-session', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: p, acked_offset: 2, updated_at: 'x', // caught up
+    });
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, fileReader: files.reader, ...noThrottle });
+
+    q.noteSessionEnded(HOST_A, 's'); // ends a DIFFERENT session
+
+    expect(store.get(HOST_A, 'other-session', tid)).not.toBeNull();
+  });
+
+  test('an unreadable file (stat fails) is left untouched — cannot prove caught-up', () => {
+    const store = memStore();
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: '/gone.jsonl', inode: 1 });
+    store.put({
+      host_id: HOST_A, session_id: 's', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: '/gone.jsonl', acked_offset: 0, updated_at: 'x',
+    });
+    const emptyReader: TranscriptFileReader = { stat: () => null, readSlice: () => Buffer.alloc(0) };
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, fileReader: emptyReader, ...noThrottle });
+
+    q.noteSessionEnded(HOST_A, 's');
+
+    expect(store.get(HOST_A, 's', tid)).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Atomic drain-entry write (consolidation Task C-2, item 2)
+// ---------------------------------------------------------------------------
+
+describe('fs drain-entry store atomicity (item 2 — write-then-rename)', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-drain-atomic-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('interrupt simulation: a torn `.tmp` leftover from a simulated crash never corrupts a read, and the next real write self-heals it', () => {
+    const store = createFsDrainStore(tmp);
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: '/m/s.jsonl', inode: 1 });
+    const entry: DrainEntry = {
+      host_id: HOST_A, session_id: 's', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: '/m/s.jsonl', acked_offset: 4, updated_at: 'x',
+    };
+    store.put(entry); // establishes the real file via write-then-rename
+
+    // Simulate a crash mid-write of a LATER put(): the tmp file was written but the
+    // process died before the rename — leaving a torn/incomplete `.tmp` sibling.
+    const finalPath = path.join(tmp, HOST_A, 's', `${tid}.json`);
+    expect(fs.existsSync(finalPath)).toBe(true); // ground the assumed layout before relying on it
+    const tmpPath = `${finalPath}.tmp`;
+    fs.writeFileSync(tmpPath, '{"host_id":"' + HOST_A); // deliberately truncated JSON
+
+    // The read path only ever opens the FINAL path — the torn tmp is invisible.
+    expect(store.get(HOST_A, 's', tid)).toEqual(entry);
+
+    // A subsequent legitimate write overwrites both the stale tmp and the final
+    // file cleanly (self-heals — no leftover torn state survives a real put()).
+    const advanced = { ...entry, acked_offset: 8 };
+    store.put(advanced);
+    expect(store.get(HOST_A, 's', tid)).toEqual(advanced);
+    expect(fs.existsSync(tmpPath)).toBe(false); // renamed away, not left dangling
+  });
+
+  test('a crash BEFORE the tmp write leaves the prior committed entry intact (rename never partially applies)', () => {
+    const store = createFsDrainStore(tmp);
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: '/m/s.jsonl', inode: 1 });
+    const entry: DrainEntry = {
+      host_id: HOST_A, session_id: 's', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: '/m/s.jsonl', acked_offset: 4, updated_at: 'x',
+    };
+    store.put(entry);
+
+    // No tmp file at all (the "crash" happens before writeFileSync even starts) —
+    // reading must return the last fully-committed entry, never a partial one.
+    expect(store.get(HOST_A, 's', tid)).toEqual(entry);
+  });
+
+  test('remove() reaps a torn `.tmp` sibling alongside the entry', () => {
+    const store = createFsDrainStore(tmp);
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: '/m/s.jsonl', inode: 1 });
+    store.put({
+      host_id: HOST_A, session_id: 's', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: '/m/s.jsonl', acked_offset: 4, updated_at: 'x',
+    });
+    const finalPath = path.join(tmp, HOST_A, 's', `${tid}.json`);
+    const tmpPath = `${finalPath}.tmp`;
+    fs.writeFileSync(tmpPath, '{"torn'); // crash-mid-put leftover
+
+    store.remove(HOST_A, 's', tid);
+
+    expect(fs.existsSync(finalPath)).toBe(false);
+    expect(fs.existsSync(tmpPath)).toBe(false); // sibling reaped, not orphaned
+  });
+
+  test('purgeProject reaps `.tmp` siblings of the purged entries', () => {
+    const store = createFsDrainStore(tmp);
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: '/m/s.jsonl', inode: 1 });
+    store.put({
+      host_id: HOST_A, session_id: 's', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: '/m/s.jsonl', acked_offset: 4, updated_at: 'x',
+    });
+    const finalPath = path.join(tmp, HOST_A, 's', `${tid}.json`);
+    const tmpPath = `${finalPath}.tmp`;
+    fs.writeFileSync(tmpPath, '{"torn');
+
+    store.purgeProject(HOST_A, t.projectId as string);
+
+    expect(fs.existsSync(finalPath)).toBe(false);
+    expect(fs.existsSync(tmpPath)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Chokepoint wiring — flush + note threaded at BOTH dispatch chokepoints
 // ---------------------------------------------------------------------------
 
@@ -417,6 +606,7 @@ describe('chokepoint 1 (router dispatch) threads the capture deps', () => {
   let authToken: string;
   let flushCalls: number;
   let noteCalls: Array<Record<string, unknown>>;
+  let sessionEndedCalls: Array<{ sessionId: string }>;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-drain-cp1-'));
@@ -424,6 +614,7 @@ describe('chokepoint 1 (router dispatch) threads the capture deps', () => {
     process.env.MYCO_TEAM_HOME = tmp;
     flushCalls = 0;
     noteCalls = [];
+    sessionEndedCalls = [];
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
@@ -432,10 +623,12 @@ describe('chokepoint 1 (router dispatch) threads the capture deps', () => {
         flushBeforeForward: async () => { flushCalls += 1; },
         noteCollectEvent: (_t, event) => { noteCalls.push(event); },
         bufferAppend: () => { /* keep the collect buffer off disk */ },
+        noteSessionEnded: async (_t, sessionId) => { sessionEndedCalls.push({ sessionId }); },
       },
     });
-    // Register a stub for the terminal collect route so dispatch matches it.
+    // Register stubs for the terminal collect routes so dispatch matches them.
     server.registerRoute('POST', '/events/stop', async () => ({ body: { ok: true } }));
+    server.registerRoute('POST', '/sessions/unregister', async () => ({ body: { ok: true } }));
     await server.start(0);
     base = `http://127.0.0.1:${server.port}`;
     authToken = server.getAuthToken();
@@ -473,6 +666,34 @@ describe('chokepoint 1 (router dispatch) threads the capture deps', () => {
     expect(noteCalls[0].transcript_path).toBe('/m/s.jsonl');
     await waitFor(() => flushCalls > 0);
     expect(flushCalls).toBe(1);
+    // /events/stop is a flush-before-forward route but NOT the session-terminal
+    // one — noteSessionEnded must never fire for it (item 6/item-1 wiring).
+    expect(sessionEndedCalls).toHaveLength(0);
+  });
+
+  test('/sessions/unregister flushes AND fires noteSessionEnded — after the flush, with the ended session id', async () => {
+    const projectId = assertGroveProjectId(createProjectId());
+    const host: HostRecord = {
+      host_id: createHostId(),
+      label: 'Mac Studio',
+      overlay_address: '127.0.0.1:59', // dead port: the background forward fails AFTER flush
+      protocol_version: 1,
+      created_at: new Date().toISOString(),
+      projects: [{ grove_id: createGroveId(), project_id: projectId }],
+    };
+    upsertHost(host);
+    writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'host-bearer');
+
+    const res = await fetch(`${base}/sessions/unregister`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-myco-project-id': projectId, 'x-myco-auth': authToken },
+      body: JSON.stringify({ session_id: 'ending-session' }),
+    });
+    expect(res.status).toBe(200);
+
+    await waitFor(() => sessionEndedCalls.length > 0);
+    expect(flushCalls).toBe(1); // flush happened
+    expect(sessionEndedCalls).toEqual([{ sessionId: 'ending-session' }]);
   });
 });
 
@@ -487,6 +708,9 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
   let hostHits: number;
   let overlayAddress: string;
   let dialCalls: number;
+  let cp2FlushCalls: number;
+  let cp2NoteCalls: number;
+  let cp2SessionEndedCalls: number;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-drain-cp2-'));
@@ -499,6 +723,9 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
 
     hostHits = 0;
     dialCalls = 0;
+    cp2FlushCalls = 0;
+    cp2NoteCalls = 0;
+    cp2SessionEndedCalls = 0;
     hostServer = http.createServer((req, res) => {
       req.resume();
       req.on('end', () => {
@@ -513,11 +740,19 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
 
     const handler = createStreamableMcpHttpHandler(vaultDir, {
       resolveDatabase: () => ({} as never),
-      // The capture deps threaded at chokepoint 2. A spy `dial` proves the
-      // handler forwards hostProxyDeps into handleAttachedRequest (the /mcp path
-      // is serve-only, so it exercises the dial rather than the flush).
+      // The FULL capture-deps shape threaded at chokepoint 2 — the same object
+      // shape main.ts's captureProxyDeps carries. A spy `dial` proves the
+      // handler forwards hostProxyDeps into handleAttachedRequest; the three
+      // capture seams are spied so their (non-)firing on the serve-only /mcp
+      // path is asserted rather than assumed. Passing all of them here also
+      // pins the seam names at compile time (a renamed/typo'd field is a TS
+      // excess-property error), so chokepoint-2 wiring can't silently drift
+      // from chokepoint-1's.
       hostProxyDeps: {
         dial: (t, opts) => { dialCalls += 1; return defaultDial(t, opts); },
+        flushBeforeForward: async () => { cp2FlushCalls += 1; },
+        noteCollectEvent: () => { cp2NoteCalls += 1; },
+        noteSessionEnded: async () => { cp2SessionEndedCalls += 1; },
       },
     });
     member = http.createServer((req, res) => { void handler(req, res); });
@@ -558,5 +793,127 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
     await res.text();
     expect(dialCalls).toBe(1); // the threaded dial was used
     expect(hostHits).toBe(1);
+    // The /mcp path is serve-only — none of the capture seams may fire here.
+    // They are threaded (typed + accepted above) so the guarantee cannot
+    // silently regress if /mcp ever carries a flush/collect/terminal route,
+    // but on today's serve classification they must stay silent.
+    expect(cp2FlushCalls).toBe(0);
+    expect(cp2NoteCalls).toBe(0);
+    expect(cp2SessionEndedCalls).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drain health (consolidation Task C-5 — routed-capture observability)
+// ---------------------------------------------------------------------------
+
+describe('drain health (consolidation Task C-5)', () => {
+  test('a fully-shipped entry reports zero counters (no pendingUnits key)', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'x1\n', 1);
+    const store = memStore();
+    const host = multiFakeHost();
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    const t = target();
+    q.noteCollect(t, { session_id: 's', transcript_path: p });
+    await q.flushBeforeForward(t);
+
+    expect(q.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('a transport failure counts as failing AND host-unreachable, with pending bytes sized', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'q1\nq2\n', 1); // 6 bytes
+    const store = memStore();
+    const t = target();
+    const throwing: TranscriptPostTransport = async () => { throw new Error('network down'); };
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(t, { session_id: 's', transcript_path: p });
+    await q.flushBeforeForward(t);
+
+    expect(q.health().get(HOST_A)).toEqual({
+      pendingEntries: 1,
+      pendingUnits: 6,
+      failingEntries: 1,
+      hostUnreachableEntries: 1,
+    });
+  });
+
+  test('a rejected (unexpected) host response counts as failing but NOT host-unreachable', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'q1\n', 1);
+    const store = memStore();
+    const t = target();
+    const rejecting: TranscriptPostTransport = async () => ({ status: 500, size: null });
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: rejecting, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(t, { session_id: 's', transcript_path: p });
+    await q.flushBeforeForward(t);
+
+    const counters = q.health().get(HOST_A);
+    expect(counters?.failingEntries).toBe(1);
+    expect(counters?.hostUnreachableEntries).toBe(0);
+  });
+
+  test('a later successful drain clears a prior failure', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'q1\nq2\n', 1);
+    const store = memStore();
+    const t = target();
+
+    const throwing: TranscriptPostTransport = async () => { throw new Error('network down'); };
+    const q1 = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q1.noteCollect(t, { session_id: 's', transcript_path: p });
+    await q1.flushBeforeForward(t);
+    expect(q1.health().get(HOST_A)?.failingEntries).toBe(1);
+
+    const host = multiFakeHost();
+    const q2 = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    await q2.flushBeforeForward(t);
+    expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('an inert (rotated) entry\'s stale failure never counts — no permanent false doctor warning (reviewer repro)', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'q1\nq2\n', 1);
+    const store = memStore();
+    const t = target();
+
+    // 1. One transport failure recorded against the inode-1 entry.
+    const throwing: TranscriptPostTransport = async () => { throw new Error('network down'); };
+    const q1 = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q1.noteCollect(t, { session_id: 's', transcript_path: p });
+    await q1.flushBeforeForward(t);
+    expect(q1.health().get(HOST_A)?.hostUnreachableEntries).toBe(1);
+
+    // 2. The file rotates (new inode) — the old entry's bytes are unreachable
+    //    forever; drainEntry would remove the inert entry on the next LIVE
+    //    cycle, but the doctor path never runs one.
+    files.rotate(p, 'fresh\n', 2);
+
+    // 3. A FRESH queue over the same store (doctor's disk-only construction):
+    //    the stale failure must NOT read as failing/unreachable — otherwise
+    //    every doctor run warns forever while the daemon is down.
+    const q2 = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('health aggregates per host — a second host with no entries is simply absent from the map', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'a\n', 1);
+    const store = memStore();
+    const host = multiFakeHost();
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(target({ hostId: HOST_A }), { session_id: 's', transcript_path: p });
+    await q.flushBeforeForward(target({ hostId: HOST_A }));
+
+    const health = q.health();
+    expect(health.has(HOST_A)).toBe(true);
+    expect(health.has(HOST_B)).toBe(false);
   });
 });

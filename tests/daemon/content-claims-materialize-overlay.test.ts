@@ -214,6 +214,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       machineId: 'attached-member-machine',
       mycoHome,
     });
+    registerContentClaimFileStatusRoute(memberServer, { logger: noopProxyLogger, mycoHome });
     await memberServer.start(0);
     memberBase = `http://127.0.0.1:${memberServer.port}`;
   });
@@ -263,6 +264,71 @@ describe('content claim materialize over the Team Host overlay', () => {
       `SELECT state FROM content_claims WHERE id = ?`,
     ).get(claimId) as { state: string } | undefined;
     expect(row?.state).toBe('active');
+  });
+
+  test("member materializes with the dashboard's full tenancy-header shape (grove-id + project-id + auth) — drives the registered-context branch real traffic hits (PR-669 residual)", async () => {
+    // `materialize`/`file-status` are `localhost-only` (never proxied), so
+    // — unlike the `serve`/proxied `GET /api/content-claims` below, whose
+    // remote-classification branch never touches local context resolution
+    // at all — a request here DOES run the full local
+    // `resolveRouteRequestContext` before the handler, same as any other
+    // localhost-only route. The prior test above sent no headers at all;
+    // this one sends the shape the dashboard ACTUALLY sends:
+    // `requestContextHeadersForSelection()` (ui/src/lib/selection.ts)
+    // always emits `x-myco-grove-id` PAIRED with `x-myco-project-id`, plus
+    // `x-myco-auth` — every `ClaimControl` action fires only once a
+    // `ProjectSelection` is active, so `fetchJson` always attaches all
+    // three. With grove-id present, `requestContextFromHttpHeaders` takes
+    // the REGISTERED branch (`resolveRegisteredRequestContext`) rather than
+    // the manifest-header branch a project-id-only request routes through —
+    // the fixture registers the grove locally, so this exercises the branch
+    // real dashboard traffic hits. Proves the handler's identity resolution
+    // — deliberately sourced from the JSON body's `project_root`, NOT
+    // `req.requestContext` (see this file's module docstring) — actually
+    // holds under that shape.
+    const res = await fetch(`${memberBase}/api/content-claims/${claimId}/materialize`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-grove-id': groveId,
+        'x-myco-project-id': projectId,
+        'x-myco-auth': memberServer.getAuthToken(),
+      },
+      body: JSON.stringify({ project_root: memberProjectRoot }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; skill_name: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1, auto_published: false });
+
+    const written = fs.readFileSync(
+      path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR, 'skill-1', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(written).toBe(CONTENT);
+  });
+
+  test("member checks file-status with the dashboard's full tenancy-header shape (grove-id + project-id + auth) — PR-669 residual, file-status half", async () => {
+    // Sibling of the materialize case above — file-status shares the same
+    // `localhost-only` stamp and the same `resolveMemberProjectContext`
+    // prelude, so it is exposed to the identical registered-branch
+    // local-context resolution a real dashboard request exercises.
+    const res = await fetch(`${memberBase}/api/content-claims/file-status`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-grove-id': groveId,
+        'x-myco-project-id': projectId,
+        'x-myco-auth': memberServer.getAuthToken(),
+      },
+      body: JSON.stringify({
+        project_root: memberProjectRoot,
+        artifacts: [{ artifact_kind: 'skill', artifact_id: 'skill-1', name: 'skill-1' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { statuses: Array<{ artifact_kind: string | null; artifact_id: string | null; file_present: boolean | null }> };
+    // Not yet materialized on the member tree in THIS test's fixture state.
+    expect(body.statuses).toEqual([{ artifact_kind: 'skill', artifact_id: 'skill-1', file_present: false }]);
   });
 
   test('member republishes a same-generation claim — auto-closes through the proxied mark-published call', async () => {

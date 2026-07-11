@@ -311,6 +311,16 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         sessionId: event.session_id,
         memberTranscriptPath,
       });
+      // NOTE — /events-vs-Stop logging asymmetry: this site logs at `debug` for
+      // EVERY non-unchanged action (both `substituted` and `degraded-missing`),
+      // since /events fires many times per session and a per-event debug trace
+      // is the right volume for tracing routed substitution. The Stop handler's
+      // equivalent site (`stop-processing.ts`, same C4 substitution) only logs
+      // the `degraded-missing` case at `warn` — a successful Stop substitution
+      // is silent. Stop fires once per turn, not once per tool call, so the
+      // asymmetry is a real logging-volume decision, not obviously a bug; noted
+      // here so a future reader does not "fix" one site without checking the
+      // other's reasoning first.
       if (substitution.action !== 'unchanged') {
         event.transcript_path = substitution.transcriptPath;
         logger.debug(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Routed transcript_path substituted for host-served event', {

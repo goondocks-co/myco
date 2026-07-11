@@ -64,12 +64,23 @@ function recordingSink() {
   return { transport, calls, setStatus(fn: (callNo: number) => number) { statusFor = fn; } };
 }
 
-/** In-memory collector buffer: `bufferDir → sessionId → records` (in order). */
+/** In-memory collector buffer: `bufferDir → sessionId → records` (in order).
+ *  Tracks a per-session "version" bumped on every append, standing in for the
+ *  real reader's size/mtime — item 5's `pendingCount` cache keys off exactly
+ *  that kind of change signal, so tests can assert it invalidates on write and
+ *  stays put otherwise. */
 function memBuffer() {
   const dirs = new Map<string, Map<string, Record<string, unknown>[]>>();
+  const versions = new Map<string, number>();
+  const vkey = (dir: string, s: string) => `${dir}::${s}`;
   const reader: CollectBufferReader = {
     listSessions: (dir) => [...(dirs.get(dir)?.keys() ?? [])],
     readRecords: (dir, s) => [...(dirs.get(dir)?.get(s) ?? [])],
+    statSession: (dir, s) => {
+      if (!dirs.get(dir)?.has(s)) return null;
+      const v = versions.get(vkey(dir, s)) ?? 0;
+      return { size: v, mtimeMs: v };
+    },
   };
   const append = (dir: string, s: string, record: Record<string, unknown>) => {
     const byDir = dirs.get(dir) ?? new Map<string, Record<string, unknown>[]>();
@@ -77,8 +88,13 @@ function memBuffer() {
     recs.push(record);
     byDir.set(s, recs);
     dirs.set(dir, byDir);
+    versions.set(vkey(dir, s), (versions.get(vkey(dir, s)) ?? 0) + 1);
   };
-  return { reader, append };
+  const remove = (dir: string, s: string) => {
+    dirs.get(dir)?.delete(s);
+    versions.delete(vkey(dir, s));
+  };
+  return { reader, append, remove };
 }
 
 function memStore(): ReplayStore {
@@ -244,11 +260,17 @@ describe('at-least-once (prune/advance only after ack)', () => {
       listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
     });
     await q.drainAll();
-    expect(store.get(HOST_A, 'sess-1')).toBeNull(); // nothing acked
+    // Nothing acked — but a failure IS recorded (consolidation Task C-5: a
+    // session that has never once succeeded still needs a persisted entry for
+    // `health()` to read; see the "drain health" describe block below).
+    expect(store.get(HOST_A, 'sess-1')!.acked_count).toBe(0);
+    expect(store.get(HOST_A, 'sess-1')!.consecutive_failures).toBe(1);
+    expect(store.get(HOST_A, 'sess-1')!.last_error_kind).toBe('unreachable');
     expect(q.pendingCount()).toBe(1);
     fail = false;
     await q.drainAll();
     expect(store.get(HOST_A, 'sess-1')!.acked_count).toBe(1);
+    expect(store.get(HOST_A, 'sess-1')!.consecutive_failures).toBe(0); // recovered
     expect(q.pendingCount()).toBe(0);
   });
 });
@@ -340,6 +362,364 @@ describe('purge / skip on detach', () => {
 });
 
 // ---------------------------------------------------------------------------
+// pendingCount perf: change-detection cache (consolidation Task C-2, item 5)
+// ---------------------------------------------------------------------------
+
+describe('pendingCount change-detection cache (item 5)', () => {
+  /** Wraps a {@link CollectBufferReader} to count `readRecords` calls, so tests
+   *  can assert the cache actually skips a full re-parse. */
+  function countingReader(inner: CollectBufferReader): { reader: CollectBufferReader; readCalls: () => number } {
+    let calls = 0;
+    return {
+      reader: {
+        listSessions: (dir) => inner.listSessions(dir),
+        readRecords: (dir, s) => { calls += 1; return inner.readRecords(dir, s); },
+        statSession: (dir, s) => inner.statSession(dir, s),
+      },
+      readCalls: () => calls,
+    };
+  }
+
+  test('an unchanged buffer is NOT re-parsed on the second pendingCount() poll', async () => {
+    const buf = memBuffer();
+    buf.append('/buf/a', 'sa', evt({ session_id: 'sa' }));
+    const counting = countingReader(buf.reader);
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), bufferReader: counting.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: '/buf/a' })],
+    });
+
+    expect(q.pendingCount()).toBe(1); // first poll: cold cache, one parse
+    const afterFirst = counting.readCalls();
+    expect(afterFirst).toBeGreaterThan(0);
+
+    expect(q.pendingCount()).toBe(1); // second poll: size/mtime unchanged → cache hit
+    expect(counting.readCalls()).toBe(afterFirst); // no additional parse
+  });
+
+  test('an appended record invalidates the cache — the next poll re-parses and reflects the new count', async () => {
+    const buf = memBuffer();
+    buf.append('/buf/a', 'sa', evt({ session_id: 'sa' }));
+    const counting = countingReader(buf.reader);
+    const store = memStore();
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, bufferReader: counting.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: '/buf/a' })],
+    });
+    expect(q.pendingCount()).toBe(1);
+    const afterFirst = counting.readCalls();
+
+    store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // fully acked
+    expect(q.pendingCount()).toBe(0); // still cache-hit (buffer unchanged) — correctness holds under cache
+    expect(counting.readCalls()).toBe(afterFirst);
+
+    buf.append('/buf/a', 'sa', evt({ session_id: 'sa' })); // buffer grows → stat changes
+    expect(q.pendingCount()).toBe(1); // re-parsed, sees the new un-acked record
+    expect(counting.readCalls()).toBeGreaterThan(afterFirst);
+  });
+
+  test('a session whose buffer file disappeared is not counted (and the cache entry is dropped, not left dangling)', () => {
+    const buf = memBuffer();
+    buf.append('/buf/a', 'sa', evt({ session_id: 'sa' }));
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: '/buf/a' })],
+    });
+    expect(q.pendingCount()).toBe(1);
+    buf.remove('/buf/a', 'sa');
+    expect(q.pendingCount()).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session-terminal prune (consolidation Task C-2, item 6)
+// ---------------------------------------------------------------------------
+
+describe('noteSessionEnded prune (item 6 — prune only acked, buffer file included)', () => {
+  // noteSessionEnded takes a RemoteTarget (not an AttachedReplayTarget), so it
+  // re-derives the buffer dir itself via `resolveProjectBufferDir(groveId,
+  // projectId)` — the SAME resolver `listAttachedReplayTargets` uses in
+  // production. These tests key the in-memory buffer on that resolved path
+  // (not an arbitrary string) so they exercise the real derivation.
+  const bufferDir = resolveProjectBufferDir(GROVE_A, PROJ_A);
+  // noteSessionEnded runs its OWN catch-up drain first (it has no
+  // flushBeforeForward of its own — see the class doc), so every construction
+  // below supplies a transport, even the ones expecting it to short-circuit
+  // (records.length <= acked, checked before any transport call) — keeps every
+  // test hermetic with no real network attempt.
+  const unreachable: EventReplayTransport = async () => { throw new Error('unreachable in test'); };
+
+  /** In-memory analog of `EventBuffer.deleteIfSync`'s contract for the
+   *  injected seam: re-read the buffer, consult `shouldDelete` against that
+   *  read, delete only on approval. Records every call for assertions. */
+  function memLockedDelete(buf: ReturnType<typeof memBuffer>) {
+    const calls: Array<{ dir: string; sessionId: string; approved: boolean }> = [];
+    const fn = (dir: string, sessionId: string, shouldDelete: (records: Record<string, unknown>[]) => boolean): boolean => {
+      if (!buf.reader.statSession(dir, sessionId)) return false; // file gone
+      const approved = shouldDelete(buf.reader.readRecords(dir, sessionId));
+      calls.push({ dir, sessionId, approved });
+      if (!approved) return false;
+      buf.remove(dir, sessionId);
+      return true;
+    };
+    return { fn, calls };
+  }
+
+  test('a fully-acked session is pruned: BOTH the high-water entry AND the buffer file are removed', async () => {
+    const buf = memBuffer();
+    buf.append(bufferDir, 'sa', evt({ session_id: 'sa' }));
+    buf.append(bufferDir, 'sa', stop({ session_id: 'sa' }));
+    const store = memStore();
+    store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 2, updated_at: 'x' }); // fully acked
+    const del = memLockedDelete(buf);
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
+      deleteSessionBuffer: del.fn,
+    });
+    const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
+
+    await q.noteSessionEnded(t.target, 'sa');
+
+    expect(store.get(HOST_A, 'sa')).toBeNull();
+    expect(del.calls).toEqual([{ dir: bufferDir, sessionId: 'sa', approved: true }]);
+    expect(buf.reader.listSessions(bufferDir)).not.toContain('sa');
+  });
+
+  test('an un-acked session whose catch-up drain ALSO fails (host unreachable) is left COMPLETELY untouched', async () => {
+    const buf = memBuffer();
+    buf.append(bufferDir, 'sa', evt({ session_id: 'sa' }));
+    buf.append(bufferDir, 'sa', stop({ session_id: 'sa' }));
+    const store = memStore();
+    store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // NOT fully acked
+    const del = memLockedDelete(buf);
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
+      deleteSessionBuffer: del.fn,
+    });
+    const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
+
+    await q.noteSessionEnded(t.target, 'sa');
+
+    expect(del.calls).toHaveLength(0); // refused at the pre-check — locked delete never attempted
+    expect(store.get(HOST_A, 'sa')!.acked_count).toBe(1); // unchanged — the catch-up drain couldn't reach the host
+    expect(buf.reader.listSessions(bufferDir)).toContain('sa'); // buffer file untouched
+  });
+
+  test('an un-acked session whose catch-up drain SUCCEEDS is pruned (the case the drain-then-prune fix exists for)', async () => {
+    const buf = memBuffer();
+    buf.append(bufferDir, 'sa', evt({ session_id: 'sa' }));
+    buf.append(bufferDir, 'sa', stop({ session_id: 'sa' })); // e.g. the just-buffered /sessions/unregister record
+    const store = memStore();
+    store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // one record un-acked
+    const sink = recordingSink();
+    const del = memLockedDelete(buf);
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, bufferReader: buf.reader, transport: sink.transport,
+      deleteSessionBuffer: del.fn,
+    });
+    const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
+
+    await q.noteSessionEnded(t.target, 'sa');
+
+    expect(sink.calls).toHaveLength(1); // the drain sent the un-acked tail record
+    expect(del.calls).toEqual([{ dir: bufferDir, sessionId: 'sa', approved: true }]); // now caught up → pruned
+    expect(store.get(HOST_A, 'sa')).toBeNull();
+  });
+
+  test('a straggler append landing between the pre-check and the locked delete is refused by the in-lock re-check (entry survives)', async () => {
+    const buf = memBuffer();
+    buf.append(bufferDir, 'sa', evt({ session_id: 'sa' }));
+    const store = memStore();
+    store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // covers record 0
+    // Locked-delete fake that lands a straggler append at the exact moment the
+    // lock is acquired — BEFORE the re-read — simulating the hook-fallback
+    // writer that got the flock first. The in-lock shouldDelete then sees the
+    // straggler and must refuse.
+    let deleted = false;
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
+      deleteSessionBuffer: (dir, sessionId, shouldDelete) => {
+        buf.append(dir, sessionId, evt({ session_id: sessionId, prompt: 'straggler' })); // lands first
+        const approved = shouldDelete(buf.reader.readRecords(dir, sessionId)); // re-read AFTER it landed
+        if (!approved) return false;
+        buf.remove(dir, sessionId);
+        deleted = true;
+        return true;
+      },
+    });
+    const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
+
+    await q.noteSessionEnded(t.target, 'sa'); // pre-check passes (1 record, acked 1)...
+
+    expect(deleted).toBe(false); // ...but the in-lock re-check refused
+    expect(store.get(HOST_A, 'sa')).not.toBeNull(); // entry survives → backstop will forward the straggler
+    expect(buf.reader.readRecords(bufferDir, 'sa')).toHaveLength(2); // straggler intact
+  });
+
+  test('a session with no high-water entry at all (nothing ever drained) still prunes once its catch-up drain succeeds', async () => {
+    const buf = memBuffer();
+    buf.append(bufferDir, 'sa', evt({ session_id: 'sa' }));
+    const store = memStore();
+    const del = memLockedDelete(buf);
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, bufferReader: buf.reader, transport: recordingSink().transport,
+      deleteSessionBuffer: del.fn,
+    });
+    const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
+
+    await q.noteSessionEnded(t.target, 'sa');
+
+    // No pre-existing ReplayEntry (acked defaults to 0), but the catch-up
+    // drain sends the one buffered record and advances to fully-caught-up —
+    // this case behaves identically to any other un-acked session once the
+    // drain succeeds.
+    expect(del.calls).toEqual([{ dir: bufferDir, sessionId: 'sa', approved: true }]);
+    expect(store.get(HOST_A, 'sa')).toBeNull();
+  });
+
+  test('an empty buffer (nothing ever buffered for the session) is a true no-op', async () => {
+    const buf = memBuffer(); // '/buf' has no session 'sa' at all
+    const store = memStore();
+    const del = memLockedDelete(buf);
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
+      deleteSessionBuffer: del.fn,
+    });
+    const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
+
+    await q.noteSessionEnded(t.target, 'sa');
+
+    expect(del.calls).toHaveLength(0);
+    expect(store.get(HOST_A, 'sa')).toBeNull();
+  });
+
+  test('pruning one session never touches a different session on the same buffer dir', async () => {
+    const buf = memBuffer();
+    buf.append(bufferDir, 'sa', evt({ session_id: 'sa' }));
+    buf.append(bufferDir, 'sb', evt({ session_id: 'sb' }));
+    const store = memStore();
+    store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // caught up
+    store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sb', acked_count: 1, updated_at: 'x' }); // also caught up
+    const del = memLockedDelete(buf);
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
+      deleteSessionBuffer: del.fn,
+    });
+    const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
+
+    await q.noteSessionEnded(t.target, 'sa'); // only session sa ended
+
+    expect(store.get(HOST_A, 'sa')).toBeNull();
+    expect(store.get(HOST_A, 'sb')).not.toBeNull(); // sb's entry survives
+    expect(buf.reader.listSessions(bufferDir)).toEqual(['sb']);
+  });
+
+  test('a real-fs default deleteSessionBuffer removes the .jsonl file under the flock (EventBuffer.deleteIfSync semantics)', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-bufdel-home-'));
+    const tmpTeam = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-bufdel-team-'));
+    const savedHome = process.env.MYCO_HOME;
+    const savedTeam = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_HOME = tmpHome;
+    process.env.MYCO_TEAM_HOME = tmpTeam;
+    try {
+      const realBufferDir = resolveProjectBufferDir(GROVE_A, PROJ_A);
+      new EventBuffer(realBufferDir, 'sa').append(evt({ session_id: 'sa' }));
+      const filePath = path.join(realBufferDir, 'sa.jsonl');
+      expect(fs.existsSync(filePath)).toBe(true);
+
+      const store = memStore();
+      store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // fully acked
+      const q = createEventReplayDrainQueue({ machineId: MACHINE, store, transport: unreachable }); // default deleteSessionBuffer
+      const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: realBufferDir });
+
+      await q.noteSessionEnded(t.target, 'sa');
+
+      expect(fs.existsSync(filePath)).toBe(false);
+      expect(fs.existsSync(path.join(realBufferDir, '.sa.lock'))).toBe(false); // lock companion reaped
+      expect(store.get(HOST_A, 'sa')).toBeNull();
+    } finally {
+      if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
+      if (savedTeam === undefined) delete process.env.MYCO_TEAM_HOME; else process.env.MYCO_TEAM_HOME = savedTeam;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpTeam, { recursive: true, force: true });
+    }
+  });
+
+  test('REAL-FS straggler: a record appended after the drain-queue pre-check state is refused by the default locked delete (never destroyed)', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-straggler-home-'));
+    const tmpTeam = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-straggler-team-'));
+    const savedHome = process.env.MYCO_HOME;
+    const savedTeam = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_HOME = tmpHome;
+    process.env.MYCO_TEAM_HOME = tmpTeam;
+    try {
+      const realBufferDir = resolveProjectBufferDir(GROVE_A, PROJ_A);
+      const acked = evt({ session_id: 'sa' });
+      new EventBuffer(realBufferDir, 'sa').append(acked); // record 0 — acked below
+      const store = memStore();
+      store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' });
+
+      // The race, made deterministic: the drain queue's own reader is pinned to
+      // the PRE-STRAGGLER view (1 record — what the queue saw when it decided
+      // to prune), while the hook-fallback appender has ALREADY landed a
+      // second record on the real file via the real locked append.
+      new EventBuffer(realBufferDir, 'sa').append(evt({ session_id: 'sa', prompt: 'straggler' }));
+      const staleReader: CollectBufferReader = {
+        listSessions: () => ['sa'],
+        readRecords: () => [acked], // stale: pre-straggler view
+        statSession: () => ({ size: 1, mtimeMs: 1 }),
+      };
+
+      // Default deleteSessionBuffer → the REAL EventBuffer.deleteIfSync: real
+      // flock, real in-lock re-read of the real file.
+      const q = createEventReplayDrainQueue({
+        machineId: MACHINE, store, bufferReader: staleReader, transport: unreachable,
+      });
+      const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: realBufferDir });
+
+      await q.noteSessionEnded(t.target, 'sa'); // stale pre-check passes (1 record, acked 1)...
+
+      // ...but the locked re-read saw the straggler and REFUSED. The bytes
+      // survive, the entry survives, the backstop forwards the straggler later.
+      const filePath = path.join(realBufferDir, 'sa.jsonl');
+      expect(fs.existsSync(filePath)).toBe(true);
+      expect(new EventBuffer(realBufferDir, 'sa').readAll()).toHaveLength(2);
+      expect(store.get(HOST_A, 'sa')).not.toBeNull();
+    } finally {
+      if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
+      if (savedTeam === undefined) delete process.env.MYCO_TEAM_HOME; else process.env.MYCO_TEAM_HOME = savedTeam;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpTeam, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fs replay-store hygiene (consolidation Task C-2 review minor: torn `.tmp`
+// siblings must not outlive the entry they belonged to)
+// ---------------------------------------------------------------------------
+
+describe('fs replay store — torn `.tmp` sibling reap', () => {
+  test('remove() reaps a torn `.tmp` sibling alongside the entry', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-store-tmp-'));
+    try {
+      const store = createFsReplayStore(tmp);
+      store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 3, updated_at: 'x' });
+      const finalPath = path.join(tmp, HOST_A, 'sa.json');
+      const tmpPath = `${finalPath}.tmp`;
+      fs.writeFileSync(tmpPath, '{"torn'); // crash-mid-put leftover
+
+      store.remove(HOST_A, 'sa');
+
+      expect(fs.existsSync(finalPath)).toBe(false);
+      expect(fs.existsSync(tmpPath)).toBe(false); // sibling reaped, not orphaned
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // default transport wire shape (real localhost host, direct dial)
 // ---------------------------------------------------------------------------
 
@@ -402,7 +782,10 @@ describe('default transport wire shape', () => {
     });
     await q.drainAll();
     expect(seen).toHaveLength(1);
-    expect(store.get(HOST_A, 'sess-1')).toBeNull(); // not acked
+    // Not acked — but a "rejected" failure IS recorded (consolidation Task
+    // C-5), distinct from a transport-level "unreachable" failure.
+    expect(store.get(HOST_A, 'sess-1')!.acked_count).toBe(0);
+    expect(store.get(HOST_A, 'sess-1')!.last_error_kind).toBe('rejected');
   });
 });
 
@@ -471,5 +854,106 @@ describe('never-materialize + attach-registry enumeration (real fs)', () => {
     const q = createEventReplayDrainQueue({ machineId: MACHINE, transport: sink.transport });
     await q.drainAll();
     expect(sink.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drain health (consolidation Task C-5 — routed-capture observability)
+// ---------------------------------------------------------------------------
+
+describe('drain health (consolidation Task C-5)', () => {
+  test('a fully-acked session reports zero counters (no pendingUnits key)', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-ok';
+    buf.append(dir, 'sess-1', evt());
+    const sink = recordingSink();
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), transport: sink.transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+
+    expect(q.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('a transport throw on a session\'s FIRST attempt still shows up in health (no prior ReplayEntry to update)', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-throw';
+    buf.append(dir, 'sess-1', evt());
+    buf.append(dir, 'sess-1', evt({ prompt: 'p2' }));
+    const throwing: EventReplayTransport = async () => { throw new Error('unreachable'); };
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), transport: throwing, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+
+    expect(q.health().get(HOST_A)).toEqual({
+      pendingEntries: 1,
+      pendingUnits: 2,
+      failingEntries: 1,
+      hostUnreachableEntries: 1,
+    });
+  });
+
+  test('a rejected (non-2xx) forward counts as failing but NOT host-unreachable', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-reject';
+    buf.append(dir, 'sess-1', evt());
+    const sink = recordingSink();
+    sink.setStatus(() => 500);
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), transport: sink.transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+
+    const counters = q.health().get(HOST_A);
+    expect(counters?.failingEntries).toBe(1);
+    expect(counters?.hostUnreachableEntries).toBe(0);
+  });
+
+  test('a later successful drain clears a prior failure', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-recover';
+    buf.append(dir, 'sess-1', evt());
+    const store = memStore();
+    let fail = true;
+    const transport: EventReplayTransport = async () => { if (fail) throw new Error('unreachable'); return { status: 200 }; };
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+    expect(q.health().get(HOST_A)?.failingEntries).toBe(1);
+
+    fail = false;
+    await q.drainAll();
+    expect(q.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('a removed buffer file leaves no stale failure to count — the enumeration skips the vanished session (reviewer repro, event-replay analog)', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-inert';
+    buf.append(dir, 'sess-1', evt());
+    const store = memStore();
+    const throwing: EventReplayTransport = async () => { throw new Error('unreachable'); };
+    const q1 = new EventReplayDrainQueue({
+      machineId: MACHINE, store, transport: throwing, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q1.drainAll();
+    expect(q1.health().get(HOST_A)?.hostUnreachableEntries).toBe(1);
+
+    // The buffer file goes away (e.g. a manual cleanup) while the failed
+    // ReplayEntry remains persisted. A FRESH queue (doctor's disk-only
+    // construction) enumerates buffer FILES — the vanished session yields no
+    // row at all, so the stale failure never surfaces.
+    buf.remove(dir, 'sess-1');
+    const q2 = new EventReplayDrainQueue({
+      machineId: MACHINE, store, transport: throwing, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    expect(q2.health().get(HOST_A)).toBeUndefined();
   });
 });

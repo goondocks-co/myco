@@ -40,3 +40,47 @@ describe('host action log', () => {
     expect(readHostActionLog(dir).map((r) => r.action)).toEqual(['enroll', 'evict']);
   });
 });
+
+describe('host action log rotation/cap', () => {
+  let dir: string;
+
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-actionlog-rotate-')); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  test('rotates the live file to .1 once it exceeds maxBytes; a fresh live file starts the next append', () => {
+    // A tiny cap so one append already exceeds it, exercising rotation without
+    // writing a real-size (1 MB default) file in a unit test.
+    const rotation = { maxBytes: 10, maxBackups: 3 };
+    appendHostAction({ action: 'enroll', subject: 'first' }, dir, rotation);
+    expect(fs.existsSync(`${hostActionLogPath(dir)}.1`)).toBe(false); // nothing to rotate on the first append
+
+    appendHostAction({ action: 'enroll', subject: 'second' }, dir, rotation);
+    expect(fs.existsSync(`${hostActionLogPath(dir)}.1`)).toBe(true);
+    // The live file now holds only the second append (rotation ran before the write).
+    const liveLines = fs.readFileSync(hostActionLogPath(dir), 'utf-8').trim().split('\n');
+    expect(liveLines).toHaveLength(1);
+    expect(JSON.parse(liveLines[0]).subject).toBe('second');
+  });
+
+  test('shifts numbered backups and drops the oldest beyond maxBackups', () => {
+    const rotation = { maxBytes: 1, maxBackups: 2 };
+    appendHostAction({ action: 'enroll', subject: 'a' }, dir, rotation); // live=[a]
+    appendHostAction({ action: 'enroll', subject: 'b' }, dir, rotation); // .1=[a], live=[b]
+    appendHostAction({ action: 'enroll', subject: 'c' }, dir, rotation); // .2=[a], .1=[b], live=[c]
+    appendHostAction({ action: 'enroll', subject: 'd' }, dir, rotation); // .2=[b] (drops old .2=[a]), .1=[c], live=[d]
+
+    expect(JSON.parse(fs.readFileSync(hostActionLogPath(dir), 'utf-8').trim()).subject).toBe('d');
+    expect(JSON.parse(fs.readFileSync(`${hostActionLogPath(dir)}.1`, 'utf-8').trim()).subject).toBe('c');
+    expect(JSON.parse(fs.readFileSync(`${hostActionLogPath(dir)}.2`, 'utf-8').trim()).subject).toBe('b');
+    expect(fs.existsSync(`${hostActionLogPath(dir)}.3`)).toBe(false);
+  });
+
+  test('readHostActionLog spans rotated backups oldest-first, then the live file', () => {
+    const rotation = { maxBytes: 1, maxBackups: 2 };
+    appendHostAction({ action: 'enroll', subject: 'a' }, dir, rotation);
+    appendHostAction({ action: 'enroll', subject: 'b' }, dir, rotation);
+    appendHostAction({ action: 'enroll', subject: 'c' }, dir, rotation);
+
+    expect(readHostActionLog(dir, rotation).map((r) => r.subject)).toEqual(['a', 'b', 'c']);
+  });
+});

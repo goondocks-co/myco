@@ -140,11 +140,11 @@ export class ProjectRegisteredLocallyError extends Error {
 }
 
 /**
- * Attach a project to a host. No-op if already attached to this same host.
- * Throws if the host is unknown, if the project still has a LOCAL Grove
- * registry row (see {@link ProjectRegisteredLocallyError}), or if the project
- * is already attached to a different host (see
- * {@link ProjectAttachedToOtherHostError}).
+ * Attach a project to a host. Idempotent re-attach to this same host
+ * backfills `ref.root` (see below) rather than a bare no-op. Throws if the
+ * host is unknown, if the project still has a LOCAL Grove registry row (see
+ * {@link ProjectRegisteredLocallyError}), or if the project is already
+ * attached to a different host (see {@link ProjectAttachedToOtherHostError}).
  */
 export function attachProject(
   hostId: string,
@@ -153,7 +153,27 @@ export function attachProject(
 ): void {
   const record = getHost(hostId);
   if (!record) throw new Error(`Unknown host: ${hostId}`);
-  if (record.projects.some((p) => p.project_id === ref.project_id)) return;
+
+  const existingIdx = record.projects.findIndex((p) => p.project_id === ref.project_id);
+  if (existingIdx !== -1) {
+    // Already attached to THIS host — converges as a no-op EXCEPT for
+    // `root`. Records created before `root` was added to `AttachRef` (or
+    // whose checkout has since moved) sit forever without it unless a
+    // re-attach backfills it — and `member-project-context.ts`'s
+    // root-mismatch reconciliation silently skips any ref with no `root`
+    // (`attach.ref.root && …`), so a stuck record never gets validated
+    // against the caller's `project_root`. `grove_id` is deliberately NOT
+    // refreshed here — `attachCommand` treats a Grove change on re-attach
+    // as requiring an explicit detach first, and this function must not
+    // silently move which Grove serves the project.
+    const existingRef = record.projects[existingIdx];
+    if (ref.root && existingRef.root !== ref.root) {
+      const projects = [...record.projects];
+      projects[existingIdx] = { ...existingRef, root: ref.root };
+      upsertHost({ ...record, projects });
+    }
+    return;
+  }
 
   // Never-materialize invariant, enforced at the point of attach: refuse to
   // create an attach record while local Grove state exists for the project.

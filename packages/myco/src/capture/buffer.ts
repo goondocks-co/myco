@@ -57,11 +57,68 @@ export class EventBuffer {
     return fs.existsSync(this.filePath);
   }
 
+  /**
+   * UNLOCKED delete — safe ONLY for CONDEMNED buffers, where the caller has
+   * already decided the content is disposable regardless of what any
+   * concurrent writer might still append (stale-swept, tombstoned,
+   * quarantined, or cascade-deleted buffers). It takes no flock, so it can
+   * race `append()`'s locked write: a line landing between the caller's last
+   * read and this unlink is destroyed. Any caller deleting a LIVE buffer
+   * conditioned on its content — "remove iff every record is acked" — must
+   * use {@link deleteIfSync} instead.
+   */
   delete(): void {
     if (fs.existsSync(this.filePath)) {
       fs.unlinkSync(this.filePath);
     }
     removeBufferLockCompanion(this.bufferDir, this.sessionId);
+  }
+
+  /**
+   * LOCKED conditional delete — the content-gated counterpart of
+   * {@link delete}. `append()` serializes every writer (daemon dispatcher AND
+   * the hook-fallback subprocess — a real cross-process appender) through an
+   * exclusive flock on the lock companion, so an unlocked check-then-delete
+   * has a window where a straggler append lands between the caller's read
+   * and the unlink and is silently destroyed. This variant closes that
+   * window: it holds the SAME flock the appender takes, RE-READS the buffer
+   * inside the lock, and unlinks only when `shouldDelete(records)` approves
+   * the exact state the unlink will act on. A concurrent appender therefore
+   * either lands before the lock is acquired (the re-read sees its line and
+   * the caller can refuse) or blocks until the delete decision is made — a
+   * write can never fall between check and delete.
+   *
+   * Conservative refusals: a missing file returns false without invoking the
+   * callback; a buffer containing any unparseable line refuses outright (its
+   * bytes cannot be proven disposable).
+   *
+   * Returns true when the file was deleted (the lock companion is reaped
+   * with it, matching {@link delete}'s contract).
+   */
+  deleteIfSync(shouldDelete: (records: Array<Record<string, unknown>>) => boolean): boolean {
+    const deleted = withFileLockSync(this.lockPath, () => {
+      let raw: string;
+      try {
+        raw = fs.readFileSync(this.filePath, 'utf-8');
+      } catch {
+        return false; // already gone — nothing to delete
+      }
+      const records: Array<Record<string, unknown>> = [];
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          records.push(JSON.parse(trimmed) as Record<string, unknown>);
+        } catch {
+          return false; // unparseable line — content not provably disposable; refuse
+        }
+      }
+      if (!shouldDelete(records)) return false;
+      fs.unlinkSync(this.filePath);
+      return true;
+    });
+    if (deleted) removeBufferLockCompanion(this.bufferDir, this.sessionId);
+    return deleted;
   }
 
   getFilePath(): string {

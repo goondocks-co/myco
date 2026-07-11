@@ -163,6 +163,20 @@ export interface HostProxyDeps {
    *  the hook-style `ensureProjectRegistered` path that would materialize a
    *  local Grove (routing-layer §1.1, §3.1). */
   bufferAppend: (target: RemoteTarget, sessionId: string, event: Record<string, unknown>) => void;
+  /** Session-terminal signal (consolidation Task C-2, item 6): fired once,
+   *  AFTER the pre-forward flush above, when the route being forwarded is
+   *  `/sessions/unregister` (SessionEnd). The member holds no local
+   *  session-state for a routed session (it never opens a local Grove DB —
+   *  routing-layer §1.1), so this is the ONLY observable completion signal
+   *  the member-side drains get. No-op default; the transcript/plan/event-
+   *  replay drains plug in here to prune a FULLY-ACKED entry for the ended
+   *  session (prune-only-acked — an entry with unshipped bytes is left for
+   *  the backstop drain to keep retrying regardless of session end). Async
+   *  because the event-replay drain performs one synchronous catch-up drain
+   *  of the ended session before deciding whether it can prune (it has no
+   *  `flushBeforeForward` of its own — see its class doc). Awaited here, but
+   *  still best-effort — must never throw into the collect forward path. */
+  noteSessionEnded: (target: RemoteTarget, sessionId: string) => Promise<void>;
   logger: ProxyLogger;
 }
 
@@ -347,6 +361,7 @@ function defaultDeps(logger?: ProxyLogger): HostProxyDeps {
       const bufferDir = resolveProjectBufferDir(target.groveId, target.projectId);
       new EventBuffer(bufferDir, sessionId).append(event);
     },
+    noteSessionEnded: async () => { /* no-op until a drain queue plugs in */ },
     logger: logger ?? stderrLogger,
   };
 }
@@ -586,6 +601,7 @@ export async function handleAttachedRequest(
     flushBeforeForward: deps?.flushBeforeForward ?? base.flushBeforeForward,
     noteCollectEvent: deps?.noteCollectEvent ?? base.noteCollectEvent,
     bufferAppend: deps?.bufferAppend ?? base.bufferAppend,
+    noteSessionEnded: deps?.noteSessionEnded ?? base.noteSessionEnded,
     logger: deps?.logger ?? base.logger,
   };
   const pathname = safePathname(req.url);
@@ -726,7 +742,7 @@ async function handleCollectRoute(
   // live path carries the SAME id the buffer — and therefore the drain-replay —
   // will; other routes forward the original bytes unchanged (byte-opaque).
   const forwardBody = event && isEventsRoute ? Buffer.from(JSON.stringify(event), 'utf-8') : body;
-  void forwardCollectInBackground(req, target, pathname, forwardBody, d);
+  void forwardCollectInBackground(req, target, pathname, sessionId, forwardBody, d);
 }
 
 /** The member `machine_id` (identity §4a) for stamping a collect event's id — the
@@ -760,12 +776,20 @@ async function forwardCollectInBackground(
   req: http.IncomingMessage,
   target: RemoteTarget,
   pathname: string,
+  sessionId: string | null,
   body: Buffer,
   d: HostProxyDeps,
 ): Promise<void> {
   try {
     if (FLUSH_BEFORE_FORWARD_ROUTES.has(pathname)) {
       await d.flushBeforeForward(target);
+      // Fired only for the SessionEnd route, and only after the flush above has
+      // drained everything the member can reach — so a drain queue checking "is
+      // this entry caught up?" right now sees the flush's own result, not a
+      // stale pre-flush state.
+      if (pathname === '/sessions/unregister' && sessionId) {
+        await d.noteSessionEnded(target, sessionId);
+      }
     }
     const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
     const headers = buildForwardHeaders(req, target, `${overlayHost}:${port}`, body.length);

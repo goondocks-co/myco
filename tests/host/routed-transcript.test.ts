@@ -150,6 +150,14 @@ describe('fs materializer store (C2)', () => {
     expect(MAX_TRANSCRIPT_PUSH_BYTES).toBeGreaterThan(0);
     expect(MAX_TRANSCRIPT_PUSH_BYTES).toBeLessThan(8 * 1024 * 1024);
   });
+
+  test('throws on a traversal-shaped machine_id — the assertSafeCaptureSegment guard behind the schema check', () => {
+    // The HTTP handler's zod schema now refuses this shape before the store is
+    // ever called (see the C2 wire-contract tests below); this is the deeper
+    // defense-in-depth layer for any caller that reaches the store directly.
+    expect(() => store.appendAtOffset('..', sessionId, transcriptId, 0, Buffer.from('x')))
+      .toThrow(/Unsafe machine_id path segment/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -230,12 +238,26 @@ describe('POST /routed-capture/transcript handler (C2 wire contract)', () => {
     }
   });
 
-  test('a traversal-shaped key is refused 400 invalid_key by the default fs store guard', async () => {
-    const handler = createRoutedTranscriptHandler(createFsRoutedTranscriptStore());
+  test('a traversal-shaped key is refused 400 invalid_body by the schema check (before the store ever runs)', async () => {
+    const store = memoryStore();
+    const handler = createRoutedTranscriptHandler(store);
     const res = await handler(req({
       machine_id: '..', session_id: 's', transcript_id: 'tx_x', base_offset: 0, bytes: b64('x'),
     }));
     expect(res.status).toBe(400);
-    expect(res.body).toMatchObject({ ok: false, error: 'invalid_key' });
+    expect(res.body).toMatchObject({ ok: false, error: 'invalid_body' });
+    // The store was never reached — the schema refused it up front.
+    expect(store.bytesFor('../s/tx_x').length).toBe(0);
+  });
+
+  test('every traversal/separator/empty shape the schema refuses matches what assertSafeCaptureSegment refuses', async () => {
+    const handler = createRoutedTranscriptHandler(memoryStore());
+    for (const bad of ['..', '.', '', 'a/b', 'a\\b']) {
+      const res = await handler(req({
+        machine_id: bad, session_id: 's', transcript_id: 'tx_x', base_offset: 0, bytes: b64('x'),
+      }));
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ ok: false, error: 'invalid_body' });
+    }
   });
 });

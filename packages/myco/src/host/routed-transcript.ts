@@ -32,7 +32,12 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
-import { assertSafeCaptureSegment, resolveRoutedTranscriptPath, resolveRoutedTranscriptsDir } from '../grove/paths.js';
+import {
+  assertSafeCaptureSegment,
+  isSafeCaptureSegment,
+  resolveRoutedTranscriptPath,
+  resolveRoutedTranscriptsDir,
+} from '../grove/paths.js';
 import type { RouteRequest, RouteResponse } from '../daemon/router.js';
 
 /**
@@ -142,6 +147,16 @@ export function deriveTranscriptId(input: {
 // Host ingest route — POST /routed-capture/transcript
 // ---------------------------------------------------------------------------
 
+/** A wire-supplied id destined for a materialized-path segment: rejects
+ *  anything {@link isSafeCaptureSegment} would reject, so a traversal-shaped
+ *  `machine_id`/`session_id`/`transcript_id` fails schema validation up front
+ *  instead of only being caught deeper by {@link assertSafeCaptureSegment}
+ *  inside path resolution (see `grove/paths.ts#resolveRoutedTranscriptPath`). */
+const captureSegmentField = (kind: string) => z.string().min(1).refine(
+  isSafeCaptureSegment,
+  { message: `Unsafe ${kind} path segment` },
+);
+
 /**
  * The append-delta body (capture-push §5.2). `bytes` is the base64 encoding of
  * the raw transcript slice `[base_offset, base_offset + len)` — base64, not a
@@ -151,9 +166,9 @@ export function deriveTranscriptId(input: {
  * discovers the adapter from the session row), so it is accepted but unused here.
  */
 const TranscriptChunkBody = z.object({
-  machine_id: z.string().min(1),
-  session_id: z.string().min(1),
-  transcript_id: z.string().min(1),
+  machine_id: captureSegmentField('machine_id'),
+  session_id: captureSegmentField('session_id'),
+  transcript_id: captureSegmentField('transcript_id'),
   agent: z.string().optional(),
   base_offset: z.number().int().nonnegative(),
   bytes: z.string(),
@@ -305,4 +320,123 @@ export function hostSubstitutedTranscriptPath(params: {
     : null;
   if (hostPath) return { transcriptPath: hostPath, action: 'substituted' };
   return { transcriptPath: undefined, action: 'degraded-missing' };
+}
+
+// ---------------------------------------------------------------------------
+// Consolidation Task C-1 — routed-transcripts cache GC
+// ---------------------------------------------------------------------------
+
+/** One materialized `<machine_id>/<session_id>` cache directory found under
+ *  the routed-transcripts root — a GC candidate for {@link listRoutedTranscriptSessionDirs}. */
+export interface RoutedTranscriptSessionDir {
+  machineId: string;
+  sessionId: string;
+  dirPath: string;
+}
+
+/**
+ * Enumerate every materialized `<machine_id>/<session_id>` directory under
+ * the routed-transcripts cache root (consolidation Task C-1). The GC power
+ * job (`daemon/power-jobs.ts`) walks this list once per tick and resolves
+ * each session's terminal status against the Grove DBs this daemon serves,
+ * pruning a tree ONLY when its session is confirmed `status = 'completed'`
+ * (fully mined + session-terminal — never age-based, unlike the sibling
+ * `routed_event_dedup` prune).
+ *
+ * A malformed path segment (fails {@link assertSafeCaptureSegment}) is
+ * skipped — it cannot be a directory the materializer itself wrote, since
+ * every write funnels through the same guard ({@link createFsRoutedTranscriptStore}),
+ * so treating it as inert here is safe. Returns an empty list when the cache
+ * root does not exist yet (nothing has been routed through this host).
+ */
+export function listRoutedTranscriptSessionDirs(): RoutedTranscriptSessionDir[] {
+  const root = resolveRoutedTranscriptsDir();
+  const out: RoutedTranscriptSessionDir[] = [];
+  let machineEntries: fs.Dirent[];
+  try {
+    machineEntries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const machineEntry of machineEntries) {
+    if (!machineEntry.isDirectory()) continue;
+    let machineId: string;
+    try {
+      machineId = assertSafeCaptureSegment(machineEntry.name, 'machine_id');
+    } catch {
+      continue;
+    }
+    const machineDir = path.join(root, machineEntry.name);
+    let sessionEntries: fs.Dirent[];
+    try {
+      sessionEntries = fs.readdirSync(machineDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const sessionEntry of sessionEntries) {
+      if (!sessionEntry.isDirectory()) continue;
+      let sessionId: string;
+      try {
+        sessionId = assertSafeCaptureSegment(sessionEntry.name, 'session_id');
+      } catch {
+        continue;
+      }
+      out.push({ machineId, sessionId, dirPath: path.join(machineDir, sessionEntry.name) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Newest write timestamp (ms) under one materialized session directory —
+ * the GC's append-quiescence signal. Considers every direct child file
+ * (`.jsonl` transcripts, their `.lock` companions) AND the directory's own
+ * mtime (bumped by entry creation, i.e. a post-completion ROTATION landing a
+ * brand-new `<tid>.jsonl` the file scan alone could race). Returns null when
+ * the directory is unreadable — the caller treats that as "not provably
+ * quiet" and keeps the tree.
+ *
+ * This exists because the ingest route above appends purely by offset and
+ * never touches the sessions row: bytes can land AFTER the session
+ * completed (a reconnecting member's drain backstop pushing a crashed
+ * session's tail), so session status alone cannot prove the tree is done
+ * growing — only observed write-quiescence can.
+ */
+export function newestRoutedTranscriptMtimeMs(dirPath: string): number | null {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  let newest: number | null = null;
+  try {
+    newest = fs.statSync(dirPath).mtimeMs;
+  } catch {
+    /* dir stat raced a removal — file scan below may still resolve */
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    try {
+      const mtimeMs = fs.statSync(path.join(dirPath, entry.name)).mtimeMs;
+      if (newest === null || mtimeMs > newest) newest = mtimeMs;
+    } catch {
+      /* file vanished mid-scan — skip */
+    }
+  }
+  return newest;
+}
+
+/**
+ * Delete one confirmed-terminal session's materialized transcript tree
+ * (every sibling `.jsonl`, including inert rotated files — C3). Best-effort:
+ * a concurrent removal or transient fs error never throws into the GC job's
+ * per-Grove loop.
+ */
+export function pruneRoutedTranscriptSessionDir(dirPath: string): void {
+  try {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  } catch {
+    /* best-effort — GC retries next tick */
+  }
 }

@@ -92,3 +92,78 @@ describe.skipIf(!supported)('EventBuffer.append — concurrent-writer serializat
     }
   }, 30_000);
 });
+
+// ---------------------------------------------------------------------------
+// deleteIfSync mutual exclusion (consolidation Task C-2 review fix): a
+// cross-process appender holding the flock either blocks the delete until it
+// finishes — after which the in-lock re-read sees its line and refuses — or,
+// symmetrically, blocks behind the delete decision. Bytes can never fall
+// between check and unlink.
+// ---------------------------------------------------------------------------
+
+const LOCK_HOLDER_HELPER = path.resolve('tests/helpers/event-buffer-lock-holder-helper.ts');
+
+describe.skipIf(!supported)('EventBuffer.deleteIfSync — cross-process flock mutual exclusion', () => {
+  let tmpDir: string;
+  let bufferDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buffer-locked-delete-'));
+    bufferDir = path.join(tmpDir, 'buffer');
+    fs.mkdirSync(bufferDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('a delete racing a lock-holding appender blocks, then refuses — the straggler line is never destroyed', async () => {
+    const { EventBuffer } = await import('@myco/capture/buffer.js');
+    const sessionId = 'locked-delete-001';
+    const buffer = new EventBuffer(bufferDir, sessionId);
+    buffer.append({ type: 'user_prompt', session_id: sessionId, prompt: 'acked-record' }); // record 0
+
+    // Spawn the straggler writer: it acquires the SAME flock append() uses,
+    // signals readiness, holds the lock ~400ms, appends its line INSIDE the
+    // lock, then releases — the hook-fallback subprocess shape.
+    const holdMs = 400;
+    const child = spawn(
+      process.execPath,
+      ['run', LOCK_HOLDER_HELPER, bufferDir, sessionId, String(holdMs)],
+      { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() },
+    );
+    let stderr = '';
+    child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8'); });
+    const childExit = new Promise<void>((resolve, reject) => {
+      child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`lock holder exited ${code}: ${stderr}`)));
+      child.on('error', reject);
+    });
+
+    // Wait until the child provably HOLDS the flock (sentinel written inside it).
+    const sentinel = path.join(bufferDir, `${sessionId}.holder-ready`);
+    const start = Date.now();
+    while (!fs.existsSync(sentinel)) {
+      if (Date.now() - start > 10_000) throw new Error(`lock holder never signalled readiness: ${stderr}`);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    // The delete decision, taken while the appender holds the lock. The
+    // caller's view says "1 record, all acked → delete". A correct
+    // deleteIfSync BLOCKS on the flock until the child appends + releases,
+    // re-reads (now 2 records), and the callback refuses. An unlocked
+    // check-then-delete would have read 1 record mid-hold, approved, and
+    // unlinked the file the child was about to append into.
+    const blockStart = Date.now();
+    const deleted = buffer.deleteIfSync((records) => records.length <= 1);
+    const blockedMs = Date.now() - blockStart;
+    await childExit;
+
+    expect(deleted).toBe(false); // refused — the re-read saw the straggler
+    const lines = buffer.readAll();
+    expect(lines).toHaveLength(2); // both records intact
+    expect(lines[1].prompt).toBe('straggler-from-lock-holder');
+    // The delete provably waited for the lock holder rather than racing past
+    // it (child held for ~400ms after the sentinel; tolerate scheduling slop).
+    expect(blockedMs).toBeGreaterThanOrEqual(200);
+  }, 30_000);
+});

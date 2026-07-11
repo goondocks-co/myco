@@ -114,6 +114,19 @@ export interface ClaimSource {
    *  `active`. Called TWICE by the orchestration: once to learn what to
    *  fetch, once immediately before the write (spec §4 step 3). */
   getActiveClaim(claimId: string): Promise<ResolvedClaim | null>;
+  /**
+   * True when the MOST RECENT `getActiveClaim` call returned null because
+   * the host could not be reached at all (a transport failure — dial
+   * threw, timed out, or the response never arrived), as opposed to a
+   * reachable host reporting the claim isn't active. Optional: the LOCAL
+   * source has no network failure mode and omits it — a missing
+   * implementation reads as "not unreachable" (a genuine claim-state
+   * miss). Lets the orchestration surface a distinct `host_unreachable`
+   * outcome on materialize's first check instead of the misleading
+   * `claim_not_active` ("re-claim and try again") when the real problem
+   * is a down host — re-claiming would fail the identical way.
+   */
+  wasLastActiveClaimCheckHostUnreachable?(): boolean;
   getSkillContent(artifactId: string, generation: number): Promise<SkillContent | null>;
   /** The durable `published_generation` already on record for this artifact,
    *  or null if it has never been published. Read AFTER a successful write to
@@ -220,6 +233,11 @@ interface ContentClaimsListBody {
 interface SkillRecordBody {
   name?: string;
   lineage?: Array<{ generation: number; content_snapshot: string }>;
+  /** Present only when the request carried `?generation=` — the exact
+   *  requested generation's snapshot, resolved independently of the
+   *  (capped) `lineage` page above. Absent on an older host that predates
+   *  this field; callers fall back to searching `lineage`. */
+  requested_generation_content?: string | null;
 }
 
 /**
@@ -319,6 +337,12 @@ function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogg
   // once, and immediately before the write (spec §4 step 3), before the
   // auto-close check ever runs, so the cache is always fresh by then.
   let lastPublicationByKey: Map<string, number> | null = null;
+  // Set on every `getActiveClaim` call — true only for the transport-failure
+  // branch (`dialHostJson` returned null: the host itself couldn't be
+  // reached), false for a reachable host regardless of what it answered.
+  // Read by the orchestration immediately after a null result to tell
+  // "host down" apart from "claim genuinely not active".
+  let lastActiveClaimHostUnreachable = false;
 
   return {
     async getActiveClaim(claimId) {
@@ -329,8 +353,10 @@ function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogg
           claim_id: claimId,
         });
         lastPublicationByKey = null;
+        lastActiveClaimHostUnreachable = true;
         return null;
       }
+      lastActiveClaimHostUnreachable = false;
       if (result.status !== 200) {
         lastPublicationByKey = null;
         return null;
@@ -347,10 +373,21 @@ function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogg
         generation: claim.generation,
       };
     },
+    wasLastActiveClaimCheckHostUnreachable() {
+      return lastActiveClaimHostUnreachable;
+    },
     async getSkillContent(artifactId, generation) {
+      // `?generation=` asks the host to resolve this EXACT generation
+      // directly (`getSkillContentAtGeneration`), independent of the
+      // capped `lineage` page below — a claim pinned at a generation
+      // older than the skill's most-recent-50 lineage window would
+      // otherwise read back as `content_unavailable` even though the
+      // content still exists. Falls back to searching `lineage` for an
+      // older host that doesn't send the new field (additive, no
+      // HOST_PROTOCOL_VERSION bump needed).
       const result = await dialHostJson<SkillRecordBody>(
         target,
-        `/api/skill-records/${encodeURIComponent(artifactId)}`,
+        `/api/skill-records/${encodeURIComponent(artifactId)}?generation=${encodeURIComponent(String(generation))}`,
         dial,
       );
       if (!result) {
@@ -361,7 +398,8 @@ function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogg
         return null;
       }
       if (result.status !== 200 || !result.body.name) return null;
-      const snapshot = result.body.lineage?.find((l) => l.generation === generation)?.content_snapshot;
+      const snapshot = result.body.requested_generation_content
+        ?? result.body.lineage?.find((l) => l.generation === generation)?.content_snapshot;
       return snapshot ? { name: result.body.name, content: snapshot } : null;
     },
     async getPublishedGeneration(artifactKind, artifactId) {
@@ -394,6 +432,7 @@ function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogg
 type MaterializeFailureCode =
   | 'claim_not_active'
   | 'claim_no_longer_active'
+  | 'host_unreachable'
   | 'unsupported_artifact_kind'
   | 'content_unavailable'
   | 'unsafe_skill_name'
@@ -478,7 +517,16 @@ export async function materializeContentClaim(
   logger: ProxyLogger,
 ): Promise<MaterializeOutcome> {
   const initial = await source.getActiveClaim(claimId);
-  if (!initial) return { ok: false, code: 'claim_not_active' };
+  if (!initial) {
+    // A down host on this FIRST check reads identically to a genuinely
+    // inactive claim (both are `null`) unless the source can tell them
+    // apart — distinguish so the caller doesn't get told to re-claim
+    // (`claim_not_active`) when re-claiming would fail the same way.
+    if (source.wasLastActiveClaimCheckHostUnreachable?.()) {
+      return { ok: false, code: 'host_unreachable' };
+    }
+    return { ok: false, code: 'claim_not_active' };
+  }
 
   if (initial.artifactKind === 'skill') {
     const content = await source.getSkillContent(initial.artifactId, initial.generation);
@@ -531,6 +579,18 @@ function responseForOutcome(outcome: MaterializeOutcome): RouteResponse {
       return {
         status: 409,
         body: errorBody('claim_not_active', 'This claim is no longer active. Re-claim before materializing.'),
+      };
+    case 'host_unreachable':
+      // Distinct from `claim_not_active` (409): the claim's real state is
+      // unknown, not confirmed inactive, and re-claiming would fail the
+      // identical way while the host stays down. 503 (not 409) — this is
+      // upstream unavailability, not a conflict over the claim's state.
+      return {
+        status: 503,
+        body: errorBody(
+          'host_unreachable',
+          'The Team Host could not be reached. Check your connection and try again.',
+        ),
       };
     case 'claim_no_longer_active':
       return {

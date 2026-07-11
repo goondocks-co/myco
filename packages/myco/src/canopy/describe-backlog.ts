@@ -31,6 +31,7 @@ import {
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 
 export interface CanopyDescribeBacklogContext {
   /** Grove the request is bound to; consulted for grove-wide reads. */
@@ -93,7 +94,15 @@ function projectCanopyEnabled(
 ): boolean {
   let config: MycoConfig | null = null;
   try {
-    config = loadMergedConfig(resolveProjectVaultDir(projectRoot), { groveId, mycoHome });
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    // A Team Host serving this project for a member has no local working
+    // tree — degrade to machine+grove tiers (empty project tier) instead
+    // of throwing "myco.yaml not found" (same signal + mechanism as
+    // `task-scheduling.ts`). Without this, a served treeless project was
+    // always excluded from the serviceable/enabled set below even when
+    // its machine+grove tier has Canopy enabled.
+    const treeAvailable = projectTreeAvailable(vaultDir);
+    config = loadMergedConfig(vaultDir, { groveId, mycoHome, projectTierOptional: !treeAvailable });
   } catch {
     // unloadable config → capabilityEnabled(null) === false
   }
@@ -123,9 +132,15 @@ export function effectiveCanopyDescribeMaxAttempts(
   try {
     const found = findRegisteredProject({ projectId: scope.id, groveId }, home);
     if (!found) return DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
-    const config = loadMergedConfig(resolveProjectVaultDir(found.project.root), {
+    const vaultDir = resolveProjectVaultDir(found.project.root);
+    // Same served-treeless degrade as `projectCanopyEnabled` above — a
+    // Team Host reading a member project's max_attempts override has no
+    // local working tree, so this must not throw "myco.yaml not found".
+    const treeAvailable = projectTreeAvailable(vaultDir);
+    const config = loadMergedConfig(vaultDir, {
       groveId,
       mycoHome: home,
+      projectTierOptional: !treeAvailable,
     });
     return canopyDescribeMaxAttempts(config);
   } catch {

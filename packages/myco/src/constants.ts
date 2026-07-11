@@ -143,6 +143,44 @@ export const CONTENT_CLAIM_TTL_MS = 1 * MS_PER_DAY;
 /** Terminal claim rows (released/published/expired) are pruned past this age. */
 export const CONTENT_CLAIM_RETENTION_MS = 30 * MS_PER_DAY;
 
+// --- Routed capture idempotency + cache GC (Team Host, consolidation Task C-1) ---
+/**
+ * Retention for `routed_event_dedup` rows. The ledger is idempotency state,
+ * not history: a row's only job is to collapse a live-forward + buffer-replay
+ * double-delivery of the SAME source event_id into one host-side write
+ * (`db/queries/routed-event-dedup.ts`). It carries no `session_id`, so pruning
+ * is necessarily age-based rather than tied to a session-terminal signal
+ * (contrast the routed-transcripts cache GC below, which IS
+ * session-terminal-gated).
+ *
+ * The bound must outlive every realistic replay window. The uncapped replay
+ * source is the EVENT-REPLAY drain queue over the attached-project collector
+ * buffer (`capture/event-replay-drain.ts`). Consolidation Task C-2 (item 6)
+ * shipped that queue's member-side acked-entry prune
+ * (`EventReplayDrainQueue.noteSessionEnded`, called after the member observes
+ * `/sessions/unregister`) — but the bound it produces is CONDITIONAL, not
+ * universal: it closes the window to near-zero for a session that ends
+ * cleanly (SessionEnd observed, every buffered record acked), but a session
+ * that never reaches SessionEnd (member crash, force-quit, killed daemon) has
+ * no other prune path — its buffer + high-water entry sit exactly as
+ * unbounded as before (the queue's own docstring: "NO TTL / NO cap on
+ * pending"), and a reconnecting member can still replay it whenever it next
+ * comes online, with no upper bound on the gap. So 30 days remains the right
+ * conservative choice for THIS ledger, which must cover that worst case, not
+ * just the common clean-completion path:
+ * it matches CONTENT_CLAIM_RETENTION_MS (the sibling host-local
+ * terminal/idempotency-row retention already in production) and comfortably
+ * exceeds every OTHER buffer-survivability window this codebase already
+ * enforces (BUFFER_HARD_RETENTION_MS = 7d, TOMBSTONE_RETENTION_MS = 14d) —
+ * both of which describe a materially LESS durable queue (a local daemon's
+ * own buffers) than an attached member's crash-abandoned replay queue.
+ * Shrinking this window without a hard cap on the CRASH case (not just the
+ * clean-completion case) risks pruning a dedup row before a legitimately
+ * long-delayed replay arrives, producing the exact double-delivery this
+ * ledger exists to prevent — don't lower it on the strength of item 6 alone.
+ */
+export const ROUTED_EVENT_DEDUP_RETENTION_MS = 30 * MS_PER_DAY;
+
 /**
  * How long a session's buffer file must sit unmodified before the drain
  * job treats an open-row session as quiescent. Deliberately much wider
@@ -150,6 +188,26 @@ export const CONTENT_CLAIM_RETENTION_MS = 30 * MS_PER_DAY;
  * "no turn in flight", not "no duplicate in flight".
  */
 export const BUFFER_QUIESCENCE_IDLE_MS = 5 * 60 * 1000;
+
+/**
+ * How long a routed session's materialized cache tree must sit unmodified
+ * (newest mtime under `<machine>/<session>/`) before the routed-transcript
+ * cache GC will prune it. Closes the late-append TOCTOU: the transcript
+ * ingest route (`host/routed-transcript.ts` POST /routed-capture/transcript)
+ * appends purely by offset and never touches the sessions row, so a
+ * reconnecting member's drain backstop can land tail bytes AFTER the stale
+ * sweep completed (and mined) the session — with no event, no reactivation,
+ * and no new mining trigger. The GC therefore refuses to prune any tree
+ * whose newest write is at/after the session's completion time OR within
+ * this window of now (prune-only-when-quiet discipline).
+ *
+ * A named sibling of BUFFER_QUIESCENCE_IDLE_MS rather than a reuse: the
+ * gates share the "no write in flight" meaning and the same 5-minute
+ * width today, but they guard different queues (member collector buffer
+ * vs host transcript cache) and must stay independently tunable — widening
+ * one gate should never silently widen the other.
+ */
+export const ROUTED_TRANSCRIPT_GC_QUIESCENCE_MS = 5 * 60 * 1000;
 
 /**
  * Maximum sessions one drain pass converges, mirroring the drain.slice

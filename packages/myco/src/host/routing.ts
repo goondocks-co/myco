@@ -387,6 +387,13 @@ const ROUTE_RULES: RouteRule[] = [
   //     stamp: it checks presence in the CALLING member's own working tree, so
   //     proxying it to the host would answer with the wrong machine's disk. ---
   { method: 'POST', pattern: '/api/content-claims/file-status', stamp: 'localhost-only', capability: CONTENT_MATERIALIZE },
+
+  // --- localhost-only: Team Host member drain health (consolidation Task
+  //     C-5, `daemon/api/drain-health.ts`). Reports THIS machine's own
+  //     outbound transcript/plan/event-replay drain state to every host it
+  //     has joined — machine-local diagnostic data with no Grove/project
+  //     scope, never meaningful to answer on another machine's behalf. ---
+  { method: 'GET', pattern: '/api/team-host/drain-health', stamp: 'localhost-only', capability: HOST_ADMIN },
 ];
 
 /**

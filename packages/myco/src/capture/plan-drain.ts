@@ -44,6 +44,13 @@ import type { RemoteTarget } from '../host/routing.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import { isPlanWriteEvent, type PlanWatchConfig } from '../daemon/plan-capture.js';
 import type { DaemonLogger } from '../daemon/logger.js';
+import {
+  clearDrainFailure,
+  recordDrainFailure,
+  summarizeDrainHealth,
+  type DrainHealthCounters,
+  type FailureTrackedEntry,
+} from './drain-health.js';
 
 /** Stable, filesystem-safe queue key for one plan file (its member-local path).
  *  Whole-file channel → keyed by path (no inode/offset like the transcript id). */
@@ -60,7 +67,7 @@ function hashContent(content: string): string {
 
 /** One persisted work-queue entry: a plan file the member is shipping to a host,
  *  plus the host-acked content hash. Keyed `(host_id, session_id, plan_ref)`. */
-export interface PlanDrainEntry {
+export interface PlanDrainEntry extends FailureTrackedEntry {
   host_id: string;
   session_id: string;
   plan_ref: string;
@@ -183,7 +190,11 @@ export function createFsPlanDrainStore(rootDir: string = resolveMemberPlanDrainD
     },
     remove(hostId, sessionId, planRef) {
       if (!safeKey(hostId, sessionId, planRef)) return;
-      fs.rmSync(entryFilePath(rootDir, hostId, sessionId, planRef), { force: true });
+      const filePath = entryFilePath(rootDir, hostId, sessionId, planRef);
+      fs.rmSync(filePath, { force: true });
+      // Reap a torn `.tmp` sibling left by a crash mid-put (write-then-rename)
+      // — otherwise it outlives the entry it belonged to.
+      fs.rmSync(`${filePath}.tmp`, { force: true });
     },
     purgeHost(hostId) {
       if (!safeKey(hostId, 'x', 'x')) return;
@@ -193,7 +204,10 @@ export function createFsPlanDrainStore(rootDir: string = resolveMemberPlanDrainD
       if (!safeKey(hostId, 'x', 'x')) return;
       for (const filePath of walkFiles(path.join(rootDir, hostId))) {
         const entry = readEntryFile(filePath);
-        if (entry && entry.project_id === projectId) fs.rmSync(filePath, { force: true });
+        if (entry && entry.project_id === projectId) {
+          fs.rmSync(filePath, { force: true });
+          fs.rmSync(`${filePath}.tmp`, { force: true }); // torn-put sibling
+        }
       }
     },
   };
@@ -363,6 +377,23 @@ export class PlanDrainQueue {
    * event is a plan-dir write (the SAME `isPlanWriteEvent` predicate the local path
    * uses), ensure a queue entry exists for the plan file and schedule a throttled
    * push of its content. Best-effort: never throws into the collect path.
+   *
+   * NOTE — root scoping (C7, carried): `isPlanWriteEvent` below resolves relative
+   * watch dirs against `this.planWatchConfig.projectRoot`, which is bound ONCE at
+   * daemon construction to the bootstrap-anchor project's root
+   * (`daemon/main.ts`), NOT re-derived per request from `target.projectId`. That
+   * is correct for a member serving only its own bootstrap project, but this
+   * daemon CAN serve requests for OTHER attached projects too (the same
+   * multi-tenant dispatch the skill-delete API path resolves per request from
+   * `principal.tenancy.projectVaultDir` — see `daemon/api/skills.ts`); a collect
+   * event for a non-anchor attached project would be checked against the WRONG
+   * root here. `RemoteTarget` does not currently carry a filesystem root (the
+   * attach registry's `AttachRef.root` is available where `remoteTargetFor`
+   * builds the target but is not threaded onto it) — wiring a per-request root
+   * through would touch `RemoteTarget`, `remoteTargetFor`, and every
+   * `RemoteTarget` construction site, not just this function. Left as a real,
+   * grounded gap rather than papered over; a genuine fix is a small dedicated
+   * follow-up, not a one-line change here.
    */
   noteCollect(target: RemoteTarget, event: Record<string, unknown>): void {
     try {
@@ -456,15 +487,53 @@ export class PlanDrainQueue {
     this.store.purgeHost(hostId);
   }
 
+  /**
+   * Session-terminal prune (consolidation Task C-2, item 3 — the plan-drain
+   * equivalent of the transcript drain's `noteSessionEnded`). Called from the
+   * host-proxy's `noteSessionEnded` seam right after `flushBeforeForward` has
+   * drained this host for the `/sessions/unregister` route. Removes this
+   * session's entries that are demonstrably unreachable-or-caught-up:
+   *  - the plan file is gone (mirrors `drainEntry`'s existing missing-file
+   *    prune — content unreachable, nothing to ship), or
+   *  - unchanged since the last ack (`hashContent(content) === acked_hash`).
+   * An entry the flush could NOT catch up (transport still failing) is left
+   * completely alone — prune-only-acked; the backstop drain keeps retrying
+   * it regardless of session end.
+   */
+  noteSessionEnded(hostId: string, sessionId: string): void {
+    try {
+      for (const entry of this.store.listForHost(hostId)) {
+        if (entry.session_id !== sessionId) continue;
+        const content = this.fileReader.read(entry.plan_path);
+        if (content === null) {
+          this.store.remove(entry.host_id, entry.session_id, entry.plan_ref);
+          continue;
+        }
+        if (hashContent(content) === entry.acked_hash) {
+          this.store.remove(entry.host_id, entry.session_id, entry.plan_ref);
+        }
+      }
+    } catch (err) {
+      this.logger?.warn('capture.plan-drain', 'noteSessionEnded failed', {
+        host_id: hostId,
+        session_id: sessionId,
+        error: (err as Error).message,
+      });
+    }
+  }
+
   /** The deps object both dispatch chokepoints thread into `handleAttachedRequest`:
-   *  the flush-before-terminal-route seam and the collect enqueue trigger. */
+   *  the flush-before-terminal-route seam, the collect enqueue trigger, and the
+   *  session-terminal prune trigger. */
   proxyDeps(): {
     flushBeforeForward: (target: RemoteTarget) => Promise<void>;
     noteCollectEvent: (target: RemoteTarget, event: Record<string, unknown>) => void;
+    noteSessionEnded: (target: RemoteTarget, sessionId: string) => void;
   } {
     return {
       flushBeforeForward: (target) => this.flushBeforeForward(target),
       noteCollectEvent: (target, event) => this.noteCollect(target, event),
+      noteSessionEnded: (target, sessionId) => this.noteSessionEnded(target.host.host_id, sessionId),
     };
   }
 
@@ -582,12 +651,16 @@ export class PlanDrainQueue {
         session_id: entry.session_id,
         error: (err as Error).message,
       });
+      // Transport-level failure — the host itself could not be reached.
+      recordDrainFailure(entry, 'unreachable', new Date().toISOString());
+      this.store.put(entry);
       return 0; // leave acked_hash unchanged (prune-only-acked); retry next tick
     }
 
     if (resp.status === 200) {
       entry.acked_hash = hash;
       entry.updated_at = new Date().toISOString();
+      clearDrainFailure(entry);
       this.store.put(entry);
     } else {
       this.logger?.warn('capture.plan-drain', 'unexpected host response — retry next tick', {
@@ -595,8 +668,30 @@ export class PlanDrainQueue {
         session_id: entry.session_id,
         status: resp.status,
       });
+      // The host was reachable (it answered) but rejected the push.
+      recordDrainFailure(entry, 'rejected', new Date().toISOString());
+      this.store.put(entry);
     }
     return 1;
+  }
+
+  /** Per-host drain health (consolidation Task C-5): un-shipped entries/bytes,
+   *  host-unreachable occurrences, and failing-entry counts, derived from the
+   *  SAME persisted queue state `drainAll`/`pendingCount` read — no new store,
+   *  no network call. */
+  health(): Map<string, DrainHealthCounters> {
+    const rows = this.store.list().map((entry) => {
+      const content = this.fileReader.read(entry.plan_path);
+      const pending = content !== null && hashContent(content) !== entry.acked_hash;
+      return {
+        host_id: entry.host_id,
+        pending,
+        pendingUnits: pending && content !== null ? Buffer.byteLength(content, 'utf-8') : undefined,
+        consecutive_failures: entry.consecutive_failures,
+        last_error_kind: entry.last_error_kind,
+      };
+    });
+    return summarizeDrainHealth(rows);
   }
 }
 

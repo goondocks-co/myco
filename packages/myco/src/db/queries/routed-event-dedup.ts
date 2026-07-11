@@ -61,3 +61,22 @@ export function recordRoutedEventDedup(input: {
     )
     .run(input.eventId, input.machineId ?? null, input.kind, input.promptBatchId ?? null, epochSeconds());
 }
+
+/**
+ * Age-based prune (consolidation Task C-1). The ledger has no `session_id`
+ * to gate on a terminal signal, so retention is purely `created_at` age —
+ * see `ROUTED_EVENT_DEDUP_RETENTION_MS` (constants.ts) for why the default
+ * window is conservative. Scheduled by the `routed-event-dedup-prune` power
+ * job (`daemon/power-jobs.ts`). Returns the number of rows deleted.
+ */
+export function pruneRoutedEventDedup(
+  retentionSeconds: number,
+  nowSeconds: number = epochSeconds(),
+): number {
+  const db = getDatabase();
+  const cutoff = nowSeconds - Math.max(0, retentionSeconds);
+  const result = db.prepare(
+    `DELETE FROM routed_event_dedup WHERE created_at < ?`,
+  ).run(cutoff);
+  return result.changes;
+}

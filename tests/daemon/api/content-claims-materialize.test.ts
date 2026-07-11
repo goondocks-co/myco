@@ -387,6 +387,40 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
     expect(contentFetched).toBe(false);
   });
 
+  test('the host is unreachable on the FIRST check -> distinct host_unreachable, not the misleading claim_not_active', async () => {
+    // A source that can distinguish "host down" from "claim genuinely not
+    // active" (Task C-6 item 2) — mirrors what `remoteClaimSource` reports
+    // via `wasLastActiveClaimCheckHostUnreachable` after a transport
+    // failure on `dialHostJson`.
+    let contentFetched = false;
+    const source: ClaimSource = {
+      async getActiveClaim() { return null; },
+      wasLastActiveClaimCheckHostUnreachable() { return true; },
+      async getSkillContent() { contentFetched = true; return { name: 'x', content: 'x' }; },
+      getPublishedGeneration: unusedGetPublishedGeneration,
+      markPublished: unusedMarkPublished,
+    };
+
+    const outcome = await materializeContentClaim('cclaim_host_down', tmp, source, noopProxyLogger);
+    expect(outcome).toEqual({ ok: false, code: 'host_unreachable' });
+    expect(contentFetched).toBe(false);
+  });
+
+  test('a source with no wasLastActiveClaimCheckHostUnreachable (the LOCAL source contract) still reports claim_not_active, never host_unreachable', async () => {
+    // The optional method is absent entirely — the LOCAL source never has a
+    // network failure mode. `source.wasLastActiveClaimCheckHostUnreachable?.()`
+    // must degrade to falsy, not throw.
+    const source: ClaimSource = {
+      async getActiveClaim() { return null; },
+      async getSkillContent() { return { name: 'x', content: 'x' }; },
+      getPublishedGeneration: unusedGetPublishedGeneration,
+      markPublished: unusedMarkPublished,
+    };
+
+    const outcome = await materializeContentClaim('cclaim_no_seam', tmp, source, noopProxyLogger);
+    expect(outcome).toEqual({ ok: false, code: 'claim_not_active' });
+  });
+
   test('a claim of a retired kind (okf_page) never reaches the content fetch', async () => {
     let contentFetched = false;
     const source: ClaimSource = {

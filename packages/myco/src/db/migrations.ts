@@ -139,6 +139,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 67, migrate: (db) => migrateV66ToV67(db) },
   { version: 68, migrate: (db) => migrateV67ToV68(db) },
   { version: 69, migrate: (db) => migrateV68ToV69(db) },
+  { version: 70, migrate: (db) => migrateV69ToV70(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4159,6 +4160,66 @@ function migrateV68ToV69(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(69, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v69 -> v70: guard for the v67 skill_lineage sync-column gap.
+ *
+ * migrateV66ToV67 guards its skill_lineage machine_id/synced_at ALTERs with
+ * getTableColumnSet() so a vault MIGRATING THROUGH v67 gets them — but the
+ * migration loop only invokes a step when `currentVersion < step.version`
+ * (see createSchema() in schema.ts), so that guard runs exactly once per
+ * vault, at the moment it crosses v67. A vault already stamped
+ * schema_version=67 — e.g. a machine that ran an earlier iteration of the
+ * v67 body before the column guard was authored, or any vault whose
+ * skill_lineage table was otherwise recreated/restored without these
+ * columns — skips migrateV66ToV67 forever on every later boot.
+ * reapplyCurrentSchemaDdl() (also run on every createSchema() call) does not
+ * cover this: it only replays `CREATE TABLE/INDEX/TRIGGER IF NOT EXISTS`
+ * DDL, never `ALTER TABLE ADD COLUMN` — see the "Known gap: column drift"
+ * comment above FTS_TRIGGER_GROUPS in schema.ts. Confirmed by direct
+ * simulation (see tests/db/migrate-v69-to-v70-skill-lineage-columns.test.ts):
+ * a vault stamped v67 with skill_lineage missing these columns still lacks
+ * them after createSchema() runs — even run twice — on pre-v70 code.
+ *
+ * This migration re-runs the identical idempotent column-add logic as its
+ * own standalone step so every vault converges regardless of which
+ * historical shape of v67 it ran. It also refreshes the skill_lineage
+ * delete trigger (drop + let reapplyCurrentSchemaDdl's unconditional
+ * `CREATE TRIGGER IF NOT EXISTS` recreate it) in case a trigger by that name
+ * was ever created before the columns existed.
+ *
+ * NEVER fold this back into migrateV66ToV67 — that function is already
+ * stamped on real vaults and will not re-run for them.
+ */
+function migrateV69ToV70(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const lineageCols = getTableColumnSet(db, 'skill_lineage');
+    if (!lineageCols.has('machine_id')) {
+      db.prepare("ALTER TABLE skill_lineage ADD COLUMN machine_id TEXT NOT NULL DEFAULT 'local'").run();
+      db.prepare(
+        `UPDATE skill_lineage
+         SET machine_id = COALESCE((SELECT r.machine_id FROM skill_records r WHERE r.id = skill_lineage.skill_id), 'local')`,
+      ).run();
+    }
+    if (!lineageCols.has('synced_at')) {
+      db.prepare('ALTER TABLE skill_lineage ADD COLUMN synced_at INTEGER').run();
+    }
+
+    // Force the delete trigger to be re-derived from the current (correct)
+    // definition — reapplyCurrentSchemaDdl() runs right after the migration
+    // loop and recreates it via CREATE TRIGGER IF NOT EXISTS.
+    db.exec('DROP TRIGGER IF EXISTS skill_lineage_team_ad');
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(70, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

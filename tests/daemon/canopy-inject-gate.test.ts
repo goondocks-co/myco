@@ -75,4 +75,46 @@ describe('POST /canopy/inject — per-project capability gate', () => {
 
     expect(res.body).toMatchObject({ inject: false, reason: 'capability_off' });
   });
+
+  it('degrades to machine+grove tiers instead of always reading as capability_off for a served treeless project (Task C-6 item 1)', async () => {
+    // A Team Host running this project's PreToolUse hooks host-side has no
+    // local working tree for a served member project — `ctx().projectVaultDir`
+    // below points at a directory that exists nowhere on this machine.
+    // Before the fix, `loadMergedConfig` here had no `projectTierOptional`,
+    // so it always threw and the catch always degraded to `projectConfig =
+    // null` -> `capabilityEnabled(null, 'canopy') === false` -> every
+    // served-treeless request read as capability_off regardless of the
+    // project's actual machine+grove-tier canopy setting. `cortex.canopy.enabled`
+    // defaults to `true` in the schema, so with the fix a treeless project
+    // now degrades to machine+grove tiers (both empty here -> schema
+    // defaults) and canopy reads as ON — the request proceeds past the
+    // capability gate to the next real decision (no file_path -> unknown_file,
+    // not capability_off).
+    const treelessProjectRoot = path.join(
+      os.tmpdir(),
+      `myco-canopy-inject-treeless-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    expect(fs.existsSync(treelessProjectRoot)).toBe(false);
+
+    const bootstrapConfig = MycoConfigSchema.parse({ version: 3 });
+    const handler = createCanopyInjectHandler({
+      liveConfig: { current: bootstrapConfig },
+      getDatabase,
+    });
+
+    const res = await handler({
+      requestContext: ctx({
+        projectRoot: treelessProjectRoot,
+        projectVaultDir: path.join(treelessProjectRoot, '.myco'),
+      }),
+      body: {
+        sessionId: 's1',
+        agent: 'claude-code',
+        toolInput: {}, // no file_path -> the decision layer's own no-op reason, never capability_off
+      },
+    });
+
+    expect(res.body).not.toMatchObject({ reason: 'capability_off' });
+    expect(res.body).toMatchObject({ inject: false, reason: 'unknown_file' });
+  });
 });

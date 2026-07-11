@@ -394,6 +394,7 @@ describe('useClaimAndMaterialize', () => {
       status: 'materialize-failed',
       claimId: 'cclaim_aaaa',
       message: 'root_mismatch: attached checkout root does not match',
+      error: expect.any(Error),
     });
 
     // Retrying materialize (without re-claiming) succeeds against the same held claim.
