@@ -32,7 +32,12 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
-import { assertSafeCaptureSegment, resolveRoutedTranscriptPath, resolveRoutedTranscriptsDir } from '../grove/paths.js';
+import {
+  assertSafeCaptureSegment,
+  isSafeCaptureSegment,
+  resolveRoutedTranscriptPath,
+  resolveRoutedTranscriptsDir,
+} from '../grove/paths.js';
 import type { RouteRequest, RouteResponse } from '../daemon/router.js';
 
 /**
@@ -142,6 +147,16 @@ export function deriveTranscriptId(input: {
 // Host ingest route — POST /routed-capture/transcript
 // ---------------------------------------------------------------------------
 
+/** A wire-supplied id destined for a materialized-path segment: rejects
+ *  anything {@link isSafeCaptureSegment} would reject, so a traversal-shaped
+ *  `machine_id`/`session_id`/`transcript_id` fails schema validation up front
+ *  instead of only being caught deeper by {@link assertSafeCaptureSegment}
+ *  inside path resolution (see `grove/paths.ts#resolveRoutedTranscriptPath`). */
+const captureSegmentField = (kind: string) => z.string().min(1).refine(
+  isSafeCaptureSegment,
+  { message: `Unsafe ${kind} path segment` },
+);
+
 /**
  * The append-delta body (capture-push §5.2). `bytes` is the base64 encoding of
  * the raw transcript slice `[base_offset, base_offset + len)` — base64, not a
@@ -151,9 +166,9 @@ export function deriveTranscriptId(input: {
  * discovers the adapter from the session row), so it is accepted but unused here.
  */
 const TranscriptChunkBody = z.object({
-  machine_id: z.string().min(1),
-  session_id: z.string().min(1),
-  transcript_id: z.string().min(1),
+  machine_id: captureSegmentField('machine_id'),
+  session_id: captureSegmentField('session_id'),
+  transcript_id: captureSegmentField('transcript_id'),
   agent: z.string().optional(),
   base_offset: z.number().int().nonnegative(),
   bytes: z.string(),
