@@ -169,4 +169,33 @@ describe('member enrollment client — end-to-end through the CONNECT proxy', ()
     const reachable = await defaultCheckHostReachable(`127.0.0.1:${deadPort}`, proxyPort);
     expect(reachable).toBe(false);
   });
+
+  test('an outer-timeout (host accepts the connection but never answers) destroys the probe socket, not just resolves false', async () => {
+    // A TCP listener that completes the CONNECT/TCP handshake but never writes
+    // an HTTP response — the exact case the outer timer must bound. Before the
+    // fix, `done(false)` on the outer timeout resolved the promise but never
+    // called `probe.destroy()` (the request lived in a scope the timeout
+    // handler couldn't reach), leaking the socket past this call's return.
+    let serverSideClosed: Promise<void> | undefined;
+    const hangingServer = net.createServer((socket) => {
+      serverSideClosed = new Promise((resolve) => socket.once('close', () => resolve()));
+    });
+    const hangingPort = await new Promise<number>((resolve) => {
+      hangingServer.listen(0, '127.0.0.1', () => resolve((hangingServer.address() as net.AddressInfo).port));
+    });
+
+    const reachable = await defaultCheckHostReachable(`127.0.0.1:${hangingPort}`, proxyPort);
+    expect(reachable).toBe(false);
+    expect(serverSideClosed).toBeDefined();
+    // Bounded wait for the accepted socket to actually close — a leaked probe
+    // would leave the connection open (and this promise pending) forever.
+    await Promise.race([
+      serverSideClosed,
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('server-side socket never closed — probe leaked past the outer timeout')), 2000);
+      }),
+    ]);
+
+    await new Promise<void>((resolve) => hangingServer.close(() => resolve()));
+  }, 10_000);
 });
