@@ -370,6 +370,23 @@ export class PlanDrainQueue {
    * event is a plan-dir write (the SAME `isPlanWriteEvent` predicate the local path
    * uses), ensure a queue entry exists for the plan file and schedule a throttled
    * push of its content. Best-effort: never throws into the collect path.
+   *
+   * NOTE — root scoping (C7, carried): `isPlanWriteEvent` below resolves relative
+   * watch dirs against `this.planWatchConfig.projectRoot`, which is bound ONCE at
+   * daemon construction to the bootstrap-anchor project's root
+   * (`daemon/main.ts`), NOT re-derived per request from `target.projectId`. That
+   * is correct for a member serving only its own bootstrap project, but this
+   * daemon CAN serve requests for OTHER attached projects too (the same
+   * multi-tenant dispatch the skill-delete API path resolves per request from
+   * `principal.tenancy.projectVaultDir` — see `daemon/api/skills.ts`); a collect
+   * event for a non-anchor attached project would be checked against the WRONG
+   * root here. `RemoteTarget` does not currently carry a filesystem root (the
+   * attach registry's `AttachRef.root` is available where `remoteTargetFor`
+   * builds the target but is not threaded onto it) — wiring a per-request root
+   * through would touch `RemoteTarget`, `remoteTargetFor`, and every
+   * `RemoteTarget` construction site, not just this function. Left as a real,
+   * grounded gap rather than papered over; a genuine fix is a small dedicated
+   * follow-up, not a one-line change here.
    */
   noteCollect(target: RemoteTarget, event: Record<string, unknown>): void {
     try {
