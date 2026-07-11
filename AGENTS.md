@@ -135,6 +135,7 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 
 - Use `@myco/*` path aliases for imports from `src/*`.
 - Mirror source tests at `tests/<module>.test.ts`.
+- `db/migrations.ts` contains an intentional NUL byte (a collision-safe map-key delimiter); binary-skipping search tools (`grep -I` default, ripgrep default) silently miss matches there — pass `-a`/`--text`, or use the Read tool.
 
 <!-- myco:managed:start -->
 ## Myco Managed Guidance
