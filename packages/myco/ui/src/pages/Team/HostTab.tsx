@@ -6,7 +6,6 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { AccentSurface } from '../../components/ui/accent-surface';
 import { cn } from '../../lib/cn';
-import { useGroves } from '../../hooks/use-groves';
 import { useActiveProjectSelection } from '../../hooks/use-project-selection';
 import {
   useHostMembershipStatus,
@@ -244,12 +243,17 @@ function HostCard({ host }: { host: HostMembershipHost }) {
 }
 
 // ---------------------------------------------------------------------------
-// Attach a local project — the host's Grove id is operator-typed, honestly
-// unverified (no local source knows a host's Grove list; WS5/E-0 territory).
+// Attach a project — going-forward only (attach-command.ts): the checkout
+// must have NO local Grove data yet, so this deliberately does NOT offer a
+// picker built from `/api/groves` (every project it lists already has local
+// Grove state and would be refused with `ProjectRegisteredLocallyError`).
+// The operator types the checkout path directly, exactly like `myco attach
+// <project>` — same "typed, honestly unverified" posture as the join form's
+// host id, and the same principle applied to the Grove id (no local source
+// knows a host's Grove list; WS5/E-0 territory).
 // ---------------------------------------------------------------------------
 
 function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
-  const groves = useGroves();
   const attach = useAttachProject();
   const [projectRoot, setProjectRoot] = useState('');
   const [hostId, setHostId] = useState('');
@@ -258,13 +262,6 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
   const [success, setSuccess] = useState<string | null>(null);
 
   if (hosts.length === 0) return null;
-
-  const attachedProjectIds = new Set(hosts.flatMap((h) => h.projects.map((p) => p.project_id)));
-  const localProjects = (groves.data?.groves ?? []).flatMap((g) =>
-    g.projects
-      .filter((p) => !attachedProjectIds.has(p.project_id))
-      .map((p) => ({ projectId: p.project_id, root: p.root, label: `${p.name} (${g.name})` })),
-  );
 
   const canSubmit = Boolean(projectRoot.trim() && hostId.trim() && groveId.trim()) && !attach.isPending;
 
@@ -290,34 +287,26 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
   return (
     <Panel tone="sage" eyebrow={<IconEyebrow Icon={Link2}>Attach</IconEyebrow>} title="Route a project through a Team Host">
       <p className="text-xs text-on-surface-variant m-0 mb-3">
-        Attach a local project so future requests route to the host's Grove instead. The Grove id below isn't
-        verified here — get it from the host operator or the host's Groves page.
+        Attach a checkout that hasn't been used with Myco yet — going forward only, so a project that already has
+        local Grove history is refused (migrate it off its local Grove first). The path and Grove id below aren't
+        verified here; get the Grove id from the host operator or the host's Groves page.
       </p>
-      {localProjects.length === 0 ? (
-        <p className="text-sm text-on-surface-variant m-0">
-          No local projects available to attach — every registered project is already attached, or none are registered yet.
-        </p>
-      ) : (
-        <div className="flex flex-col gap-2">
-          <label className={labelClass} htmlFor="host-attach-project">Project</label>
-          <select id="host-attach-project" className={inputClass} value={projectRoot} onChange={(e) => setProjectRoot(e.target.value)}>
-            <option value="">Select a local project…</option>
-            {localProjects.map((p) => <option key={p.projectId} value={p.root}>{p.label}</option>)}
-          </select>
-          <label className={labelClass} htmlFor="host-attach-host">Host</label>
-          <select id="host-attach-host" className={inputClass} value={hostId} onChange={(e) => setHostId(e.target.value)}>
-            <option value="">Select a joined host…</option>
-            {hosts.map((h) => <option key={h.host_id} value={h.host_id}>{h.label} ({h.host_id})</option>)}
-          </select>
-          <label className={labelClass} htmlFor="host-attach-grove">Grove id (on the host)</label>
-          <input id="host-attach-grove" className={inputClass} value={groveId} onChange={(e) => setGroveId(e.target.value)} placeholder="grove_…" />
-          <div className="flex justify-end">
-            <Button size="sm" disabled={!canSubmit} onClick={handleAttach}>
-              {attach.isPending ? 'Attaching…' : 'Attach project'}
-            </Button>
-          </div>
+      <div className="flex flex-col gap-2">
+        <label className={labelClass} htmlFor="host-attach-project">Project path</label>
+        <input id="host-attach-project" className={inputClass} value={projectRoot} onChange={(e) => setProjectRoot(e.target.value)} placeholder="/path/to/checkout" />
+        <label className={labelClass} htmlFor="host-attach-host">Host</label>
+        <select id="host-attach-host" className={inputClass} value={hostId} onChange={(e) => setHostId(e.target.value)}>
+          <option value="">Select a joined host…</option>
+          {hosts.map((h) => <option key={h.host_id} value={h.host_id}>{h.label} ({h.host_id})</option>)}
+        </select>
+        <label className={labelClass} htmlFor="host-attach-grove">Grove id (on the host)</label>
+        <input id="host-attach-grove" className={inputClass} value={groveId} onChange={(e) => setGroveId(e.target.value)} placeholder="grove_…" />
+        <div className="flex justify-end">
+          <Button size="sm" disabled={!canSubmit} onClick={handleAttach}>
+            {attach.isPending ? 'Attaching…' : 'Attach project'}
+          </Button>
         </div>
-      )}
+      </div>
       {error && <p className="text-sm text-terracotta m-0 mt-2" data-testid="host-attach-error">{error}</p>}
       {success && <p className="text-sm text-sage m-0 mt-2" data-testid="host-attach-success">{success}</p>}
     </Panel>

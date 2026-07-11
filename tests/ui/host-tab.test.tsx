@@ -38,24 +38,6 @@ mock.module('../../packages/myco/ui/src/hooks/use-host-membership', () => ({
   useDrainHealth: () => ({ data: drainFixture, isLoading: false }),
 }));
 
-mock.module('../../packages/myco/ui/src/hooks/use-groves', () => ({
-  useGroves: () => ({
-    data: {
-      groves: [
-        {
-          id: 'grove_1', name: 'Acme', slug: 'acme', mode: 'local', is_default: true, project_count: 2,
-          created_at: '', updated_at: '',
-          projects: [
-            { project_id: 'proj_a', name: 'App A', slug: 'app-a', root: '/checkout/a', binding_id: null, created_at: '', updated_at: '', manifest_state: 'present' },
-            { project_id: 'proj_b', name: 'App B', slug: 'app-b', root: '/checkout/b', binding_id: null, created_at: '', updated_at: '', manifest_state: 'present' },
-          ],
-        },
-      ],
-    },
-    isLoading: false,
-  }),
-}));
-
 mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
   useActiveProjectSelection: () => null,
 }));
@@ -206,24 +188,27 @@ describe('AttachProjectPanel', () => {
     expect(screen.queryByText('Route a project through a Team Host')).not.toBeInTheDocument();
   });
 
-  it('lists local projects not already attached, and submits project_root/host_id/grove_id', async () => {
+  it('takes an operator-typed project path (never a picker of already-locally-registered projects), and submits project_root/host_id/grove_id', async () => {
     statusFixture = {
-      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [{ grove_id: 'grove_x', project_id: 'proj_a', root: '/checkout/a' }] }],
+      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
     };
     renderHostTab();
 
-    // proj_a is already attached (excluded); proj_b is offered.
-    const projectSelect = screen.getByLabelText('Project') as HTMLSelectElement;
-    expect(Array.from(projectSelect.options).map((o) => o.value)).toEqual(['', '/checkout/b']);
+    // Attach is going-forward only (attach-command.ts): any project already
+    // visible via /api/groves has local Grove state and would be refused, so
+    // the field is a free-text path, not a picker built from that list.
+    const submit = screen.getByRole('button', { name: /attach project/i });
+    expect(submit).toBeDisabled();
 
-    fireEvent.change(projectSelect, { target: { value: '/checkout/b' } });
+    fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/fresh' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('Grove id (on the host)'), { target: { value: 'grove_y' } });
-    fireEvent.click(screen.getByRole('button', { name: /attach project/i }));
+    expect(submit).not.toBeDisabled();
+    fireEvent.click(submit);
 
     await waitFor(() => expect(attachMutateAsync).toHaveBeenCalledWith({
-      project_root: '/checkout/b', host_id: 'host_abc', grove_id: 'grove_y',
+      project_root: '/checkout/fresh', host_id: 'host_abc', grove_id: 'grove_y',
     }));
     await waitFor(() => expect(screen.getByTestId('host-attach-success')).toBeInTheDocument());
   });
