@@ -161,10 +161,21 @@ describe('POST /api/host-membership/attach', () => {
     });
   });
 
-  test('missing project_root or grove_id is rejected client-side', async () => {
-    const handler = createHostMembershipAttachHandler({ attach: () => { throw new Error('unreachable'); } });
+  test('missing project_root is rejected client-side (never calls attach)', async () => {
+    let called = false;
+    const handler = createHostMembershipAttachHandler({ attach: () => { called = true; throw new Error('unreachable'); } });
     expect((await handler(req({ grove_id: 'g' }))).status).toBe(400);
-    expect((await handler(req({ project_root: '/checkout' }))).status).toBe(400);
+    expect(called).toBe(false);
+  });
+
+  test('missing grove_id is NOT pre-validated here — it passes through to attachCommand, whose own richer message surfaces', async () => {
+    const handler = createHostMembershipAttachHandler({
+      attach: () => { throw new Error("attach requires --grove <groveId> — the id of the Grove on host host_abc that will serve this project."); },
+      mycoHome: '/tmp/myco-home',
+    });
+    const res = await handler(req({ project_root: '/checkout', host_id: 'host_abc' }));
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { message: string } }).error.message).toContain('attach requires --grove');
   });
 
   test('a thrown attach error (e.g. already attached elsewhere) maps to 400', async () => {

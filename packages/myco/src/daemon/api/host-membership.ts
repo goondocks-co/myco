@@ -148,14 +148,17 @@ export function createHostMembershipAttachHandler(deps: HostMembershipRouteDeps)
   return async (req) => {
     const body = asRecord(req.body);
     const projectRoot = str(body.project_root);
-    const groveId = str(body.grove_id);
     if (!projectRoot) return { status: 400, body: errorBody('missing_project_root', 'project_root is required.') };
-    if (!groveId) return { status: 400, body: errorBody('missing_grove_id', 'grove_id is required.') };
 
+    // grove_id (and host_id) are NOT validated here — attachCommand itself
+    // validates both, and its own messages are richer (the host_id message
+    // names the resolved host; the missing-hostId case falls back to the
+    // manifest's affiliation hint before failing). Duplicating a shallower
+    // check here would only produce a worse error for the same input.
     const options: AttachOptions = {
       projectPath: projectRoot,
       hostId: str(body.host_id),
-      groveId,
+      groveId: str(body.grove_id),
       projectId: str(body.project_id),
       mycoHome,
     };
