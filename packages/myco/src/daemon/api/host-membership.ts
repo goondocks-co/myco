@@ -41,6 +41,7 @@ import { resolveTeamHostHintState, teamHostHintMessage } from '../../host/hint.j
 import { joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
 import { membershipErrorCode } from '../../host/membership-error.js';
 import { readHostRegistry } from '../../host/registry.js';
+import type { DaemonLogger } from '../logger.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
 
@@ -51,6 +52,7 @@ export interface HostMembershipRouteDeps {
   attach?: typeof attachCommand;
   detach?: typeof detachCommand;
   mycoHome?: string;
+  logger?: DaemonLogger;
 }
 
 function asRecord(body: unknown): Record<string, unknown> {
@@ -84,12 +86,14 @@ function failure(fallbackCode: string, err: unknown): RouteResponse {
 
 export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): RouteHandler {
   const join = deps.join ?? joinHost;
+  const logger = deps.logger;
   return async (req) => {
     const body = asRecord(req.body);
     const hostRef = str(body.host_ref);
     const key = str(body.key);
     if (!hostRef) return { status: 400, body: errorBody('missing_host_ref', 'host_ref is required.') };
     if (!key) return { status: 400, body: errorBody('missing_key', 'key is required.') };
+    const hostId = str(body.host_id) ?? hostRef;
 
     const options: JoinOptions = {
       hostRef,
@@ -113,13 +117,13 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
     // (Streaming them live — SSE/progress-token — is deliberately NOT built
     // here; noted as an E-0-era follow-up in the task report.)
     const steps: string[] = [];
-    const logger = (message: string): void => {
+    const stepLogger = (message: string): void => {
       steps.push(message);
-      console.log(`[host-membership] join: ${message}`);
+      logger?.info('host-membership.join', message, { host_id: hostId });
     };
 
     try {
-      const result = await join(options, { logger });
+      const result = await join(options, { logger: stepLogger });
       return {
         status: 200,
         body: {

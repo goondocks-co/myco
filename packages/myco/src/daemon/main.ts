@@ -1554,7 +1554,7 @@ export async function main(): Promise<void> {
   // Team Host MEMBERSHIP lifecycle (consolidation Task D-2): join/leave/
   // attach/detach as daemon API, the Team page's primary write surface (the
   // CLI wrappers become a thin fallback over this same route set).
-  registerHostMembershipRoutes(server, { mycoHome });
+  registerHostMembershipRoutes(server, { mycoHome, logger });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};

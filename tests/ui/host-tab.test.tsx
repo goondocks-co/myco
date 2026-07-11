@@ -271,7 +271,7 @@ describe('AttachProjectPanel', () => {
 });
 
 describe('DrainHealthPanel', () => {
-  it('renders pending/failing counters per host per drain', () => {
+  it('renders pending/failing counters per host per drain, with units per drain kind', () => {
     statusFixture = {
       hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
@@ -280,7 +280,7 @@ describe('DrainHealthPanel', () => {
       hosts: [{
         host_id: 'host_abc', label: 'Mac Studio',
         drains: {
-          transcript: { pending_entries: 2, pending_bytes: 4096, failing_entries: 1, host_unreachable_entries: 1 },
+          transcript: { pending_entries: 2, pending_bytes: 18234, failing_entries: 1, host_unreachable_entries: 1 },
           plan: { pending_entries: 0, failing_entries: 0, host_unreachable_entries: 0 },
           event_replay: { pending_entries: 3, pending_records: 9, failing_entries: 0, host_unreachable_entries: 0 },
         },
@@ -288,7 +288,7 @@ describe('DrainHealthPanel', () => {
     };
     renderHostTab();
 
-    expect(screen.getByText(/2 pending \(4096\) · 1 failing/)).toBeInTheDocument();
-    expect(screen.getByText(/3 pending \(9\)/)).toBeInTheDocument();
+    expect(screen.getByText(/2 pending \(18,234 bytes\) · 1 failing/)).toBeInTheDocument();
+    expect(screen.getByText(/3 pending \(9 records\)/)).toBeInTheDocument();
   });
 });

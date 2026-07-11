@@ -26,8 +26,19 @@ const inputClass =
 const labelClass = 'myco-eyebrow-sm text-on-surface-variant';
 
 // ---------------------------------------------------------------------------
-// Affiliation hint (host/hint.ts's "run myco join" guidance, as a UI CTA)
+// Affiliation hint — host/hint.ts's `state` + `host_id` re-voiced for the UI.
+// `hint.message` is the CLI-voiced wire string (backticked `myco` commands);
+// that stays put for CLI/doctor consumers, but never renders in the browser.
 // ---------------------------------------------------------------------------
+
+function affiliationHintCopy(hint: HostMembershipHint): string {
+  switch (hint.state) {
+    case 'not_joined':
+      return `This project is affiliated with host ${hint.host_id} — join it using the form below to route the project there.`;
+    case 'not_attached':
+      return `This machine is joined to ${hint.host_id} — attach this project using the panel below.`;
+  }
+}
 
 function AffiliationHintBanner({ hint }: { hint: HostMembershipHint }) {
   return (
@@ -35,7 +46,7 @@ function AffiliationHintBanner({ hint }: { hint: HostMembershipHint }) {
       <AlertTriangle className="size-5 shrink-0 text-ochre" aria-hidden />
       <div className="flex flex-col gap-1">
         <p className="m-0 text-sm font-medium text-on-surface">This project is affiliated with a Team Host</p>
-        <p className="m-0 text-sm text-on-surface-variant">{hint.message}</p>
+        <p className="m-0 text-sm text-on-surface-variant">{affiliationHintCopy(hint)}</p>
       </div>
     </AccentSurface>
   );
@@ -110,7 +121,11 @@ function JoinHostForm() {
 function DrainCell({ label, counters }: { label: string; counters: DrainCounters | undefined }) {
   if (!counters) return null;
   const failing = counters.failing_entries > 0;
-  const sized = counters.pending_bytes ?? counters.pending_records;
+  const sized = counters.pending_bytes !== undefined
+    ? `${counters.pending_bytes.toLocaleString()} bytes`
+    : counters.pending_records !== undefined
+      ? `${counters.pending_records.toLocaleString()} records`
+      : undefined;
   return (
     <div className={cn('flex flex-col gap-0.5 rounded px-2 py-1', failing ? 'bg-terracotta/10' : 'bg-surface-container')}>
       <span className="myco-eyebrow-sm text-on-surface-variant">{label}</span>
@@ -126,7 +141,7 @@ function DrainHealthPanel() {
   const { data, isLoading } = useDrainHealth();
   const hosts = data?.hosts ?? [];
   return (
-    <Panel tone="sage" eyebrow={<IconEyebrow Icon={Activity}>Drain health</IconEyebrow>} title="Capture delivery">
+    <Panel tone="sage" eyebrow={<IconEyebrow Icon={Activity}>Capture delivery</IconEyebrow>} title="Capture delivery">
       {isLoading && hosts.length === 0 ? (
         <p className="text-sm text-on-surface-variant m-0">Loading…</p>
       ) : hosts.length === 0 ? (
@@ -153,7 +168,7 @@ function DrainHealthPanel() {
 // Joined hosts — per-project attach refs, leave/detach.
 // ---------------------------------------------------------------------------
 
-function ProjectRefRow({ hostId, ref: projectRef }: { hostId: string; ref: HostMembershipProjectRef }) {
+function ProjectRefRow({ hostId, projectRef }: { hostId: string; projectRef: HostMembershipProjectRef }) {
   const detach = useDetachProject();
   const [error, setError] = useState<string | null>(null);
 
@@ -220,7 +235,7 @@ function HostCard({ host }: { host: HostMembershipHost }) {
       {host.projects.length > 0 && (
         <div className="flex flex-col gap-1">
           {host.projects.map((ref) => (
-            <ProjectRefRow key={ref.project_id} hostId={host.host_id} ref={ref} />
+            <ProjectRefRow key={ref.project_id} hostId={host.host_id} projectRef={ref} />
           ))}
         </div>
       )}
@@ -272,8 +287,8 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
         grove_id: groveId.trim(),
       });
       setSuccess(result.already_attached
-        ? `${result.project_id} is already attached to ${result.host_label} — converged.`
-        : `Attached ${result.project_id} to ${result.host_label}.`);
+        ? `${result.project_id} is already attached to ${result.host_label}.`
+        : `Project attached — new work now routes to ${result.host_label}.`);
       setProjectRoot('');
       setGroveId('');
     } catch (err) {

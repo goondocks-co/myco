@@ -89,13 +89,16 @@ describe('Team page — Host-primary transition', () => {
     await waitFor(() => expect(screen.getByText('Registered teams')).toBeInTheDocument());
   });
 
-  it('surfaces the affiliation hint as a CTA banner when present', async () => {
+  it('surfaces the affiliation hint as a CTA banner when present, mapped to UI voice — never the CLI-voiced wire message', async () => {
     registryTeams = [];
     hostMembershipHint = { host_id: 'host_abc', state: 'not_joined', message: 'This project is served by Team Host host_abc — run `myco join host_abc` to enroll this machine, then attach this project.' };
     renderTeamPage();
 
     await waitFor(() => expect(screen.getByText('This project is affiliated with a Team Host')).toBeInTheDocument());
-    expect(screen.getByText(/run `myco join host_abc`/)).toBeInTheDocument();
+    expect(screen.getByText(/join it using the form below to route the project there/)).toBeInTheDocument();
+    const rendered = screen.getByRole('status').textContent ?? '';
+    expect(rendered).not.toContain('`');
+    expect(rendered).not.toContain('myco ');
   });
 
   it('renders no hint banner when the hint is null (resolved or absent)', async () => {
