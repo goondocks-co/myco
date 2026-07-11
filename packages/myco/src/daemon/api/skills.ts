@@ -31,7 +31,7 @@ import {
   getSkillRecordByName,
   deleteSkillRecordCascade,
 } from '@myco/db/queries/skill-records.js';
-import { getPublishedSkillContent, listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
+import { getPublishedSkillContent, getSkillContentAtGeneration, listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { CANDIDATE_STATUS, REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
@@ -320,7 +320,24 @@ export async function handleGetSkillRecord(req: RouteRequest, principal: Request
     ? extractFrontmatterFields(latestSnapshot)
     : {};
 
-  return { status: 200, body: { ...record, lineage, usage_total, frontmatter: frontmatterFields } };
+  // A caller pinned to one SPECIFIC generation (the content-claim remote
+  // materialize path — `content-claims-materialize.ts`'s `getSkillContent`)
+  // passes `?generation=N`. A claim can be pinned at a generation older
+  // than the 50-row lineage window above once a skill has been evolved
+  // past it, so resolve the requested generation directly via
+  // `getSkillContentAtGeneration` instead of requiring it to land inside
+  // the display-oriented page — a real, existing generation must never
+  // read back as "content unavailable" purely because of the window size.
+  // Additive field, ignored by any caller that doesn't send the param.
+  const requestedGenerationRaw = req.query.generation;
+  const requestedGeneration = requestedGenerationRaw !== undefined && requestedGenerationRaw !== ''
+    ? Number(requestedGenerationRaw)
+    : NaN;
+  const extra = Number.isInteger(requestedGeneration)
+    ? { requested_generation_content: getSkillContentAtGeneration(record.id, requestedGeneration) }
+    : {};
+
+  return { status: 200, body: { ...record, lineage, usage_total, frontmatter: frontmatterFields, ...extra } };
 }
 
 /**
