@@ -402,6 +402,19 @@ const ROUTE_RULES: RouteRule[] = [
   //     has joined — machine-local diagnostic data with no Grove/project
   //     scope, never meaningful to answer on another machine's behalf. ---
   { method: 'GET', pattern: '/api/team-host/drain-health', stamp: 'localhost-only', capability: HOST_ADMIN },
+
+  // --- localhost-only: Team Host MEMBERSHIP lifecycle (consolidation Task
+  //     D-2, `daemon/api/host-membership.ts`). join/leave/attach/detach mutate
+  //     THIS machine's own local registry/team-home (`~/.myco-team/hosts/*`)
+  //     and, for join/leave, provision a per-user LaunchAgent — member-machine
+  //     admin actions with no Grove/project scope to proxy. `status` is the
+  //     read-only companion (host list + attach refs + affiliation hint) the
+  //     Team page polls; same posture, no new state. ---
+  { method: 'POST', pattern: '/api/host-membership/join', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-membership/leave', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-membership/attach', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-membership/detach', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'GET', pattern: '/api/host-membership/status', stamp: 'localhost-only', capability: HOST_ADMIN },
 ];
 
 /**
