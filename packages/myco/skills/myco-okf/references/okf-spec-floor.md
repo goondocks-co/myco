@@ -34,7 +34,7 @@ YAML mapping, is not conformant.
 
 | Key | Constraint |
 |---|---|
-| `resource` | A URI identifying what the page documents (e.g. `repo://packages/myco/src/okf`). Any scheme is legal; no enforced allowlist at the floor level. |
+| `resource` | A URI identifying what the page documents (e.g. `repo://packages/myco/src/skills/publication.ts`). Any scheme is legal; no enforced allowlist at the floor level. |
 | `tags` | A YAML list of strings. |
 
 **No `id` field.** A page's identity is its file path, not a frontmatter

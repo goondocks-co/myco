@@ -263,6 +263,7 @@ describe('agent loader', () => {
     it('no longer registers the retired okf-maintain task', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       expect(tasks.map((task) => task.name)).not.toContain('okf-maintain');
+      expect(tasks.map((task) => task.name)).not.toContain('okf-synthesize');
     });
 
     it('loads skill-evolve candidate metadata triage guidance', () => {

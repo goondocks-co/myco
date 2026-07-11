@@ -235,9 +235,7 @@ export function releaseContentClaim(id: string, releasedAt: number): ContentClai
  * artifact has no active claim.
  *
  * `artifactKind` is deliberately `string`, not `ContentClaimArtifactKind`:
- * release is kind-independent (residue tolerance), and a pre-retirement
- * `okf_page` delete path (`okf/store.ts`) still calls this with that literal
- * until the module itself is removed.
+ * release is kind-independent (residue tolerance).
  */
 export function cancelActiveContentClaimForArtifact(
   artifactKind: string,
