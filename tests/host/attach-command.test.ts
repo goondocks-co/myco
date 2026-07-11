@@ -179,6 +179,27 @@ describe('attach/detach command', () => {
     expect(getHost(host.host_id)?.projects).toHaveLength(1);
   });
 
+  test('re-running `myco attach` backfills a pre-WS1 ref with no `root` (the operator-facing "attach refresh")', () => {
+    // Seeded directly, bypassing `attachCommand`/`attachProject`, to
+    // simulate a record from before `AttachRef.root` existed — every real
+    // attach today always sets `root`, so this is the only way to
+    // reproduce the stuck shape.
+    const host = makeHost();
+    const projectId = createProjectId();
+    const groveId = createGroveId();
+    upsertHost({ ...host, projects: [{ grove_id: groveId, project_id: projectId }] });
+    expect(resolveAttach(projectId)?.ref.root).toBeUndefined();
+
+    const root = makeCheckout(projectId);
+    const result = attachCommand({ projectPath: root, hostId: host.host_id, groveId, mycoHome: home });
+
+    expect(result.alreadyAttached).toBe(true);
+    expect(resolveAttach(projectId)?.ref.root).toBe(path.resolve(root));
+    // `member-project-context.ts`'s root-mismatch reconciliation is now
+    // live for this project: a `project_root` that no longer matches would
+    // be caught instead of silently skipped (`attach.ref.root && …`).
+  });
+
   test('attach maps ProjectRegisteredLocallyError to a migration-needed (A2) message', () => {
     const grove = createGrove('Default', home);
     const projectId = createProjectId();

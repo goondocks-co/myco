@@ -123,6 +123,46 @@ describe('host registry', () => {
     expect(getHost(host.host_id)?.projects).toHaveLength(1);
   });
 
+  test('re-attach to the same host backfills a pre-WS1 ref missing `root`', () => {
+    // Simulates a record created before `AttachRef.root` existed (or a
+    // record that otherwise never got one): seeded directly via
+    // `upsertHost`, not `attachProject`, since a real attach always sets
+    // `root` today.
+    const host = makeHost({ projects: [{ grove_id: 'grove-7', project_id: 'proj-7' }] });
+    upsertHost(host);
+    expect(resolveAttach('proj-7')?.ref.root).toBeUndefined();
+
+    attachProject(host.host_id, { grove_id: 'grove-7', project_id: 'proj-7', root: '/checkouts/proj-7' });
+
+    const resolved = resolveAttach('proj-7');
+    expect(resolved?.ref.root).toBe('/checkouts/proj-7');
+    // grove_id is untouched by the backfill — only `root` self-heals.
+    expect(resolved?.ref.grove_id).toBe('grove-7');
+    expect(getHost(host.host_id)?.projects).toHaveLength(1);
+  });
+
+  test('re-attach to the same host refreshes `root` when the checkout has moved', () => {
+    const host = makeHost();
+    upsertHost(host);
+    attachProject(host.host_id, { grove_id: 'grove-8', project_id: 'proj-8', root: '/old/checkout' });
+    expect(resolveAttach('proj-8')?.ref.root).toBe('/old/checkout');
+
+    attachProject(host.host_id, { grove_id: 'grove-8', project_id: 'proj-8', root: '/new/checkout' });
+
+    expect(resolveAttach('proj-8')?.ref.root).toBe('/new/checkout');
+    expect(getHost(host.host_id)?.projects).toHaveLength(1);
+  });
+
+  test('re-attach to the same host never refreshes `grove_id` — a Grove change requires an explicit detach first', () => {
+    const host = makeHost();
+    upsertHost(host);
+    attachProject(host.host_id, { grove_id: 'grove-original', project_id: 'proj-9', root: '/checkouts/proj-9' });
+
+    attachProject(host.host_id, { grove_id: 'grove-different', project_id: 'proj-9', root: '/checkouts/proj-9' });
+
+    expect(resolveAttach('proj-9')?.ref.grove_id).toBe('grove-original');
+  });
+
   test('attachProject throws ProjectAttachedToOtherHostError when the project is already attached to a different host', () => {
     const hostA = makeHost({ label: 'Host A' });
     const hostB = makeHost({ label: 'Host B' });
