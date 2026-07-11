@@ -244,7 +244,6 @@ async function main(): Promise<void> {
 
   switch (cmd) {
     case 'config': return (await import('./cli/config.js')).run(args, vaultDir);
-    case 'okf': return (await import('./cli/okf.js')).run(args, vaultDir);
     case 'verify': return (await import('./cli/verify.js')).run(args, vaultDir);
     case 'stats': return (await import('./cli/stats.js')).run(args, vaultDir);
     case 'search': return (await import('./cli/search.js')).run(args, vaultDir);

@@ -190,7 +190,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
   // A Team Host running this task for a member-attached project has no local
   // working tree — degrade to machine+grove tiers (empty project tier)
   // instead of throwing "myco.yaml not found" (same signal + mechanism as
-  // `task-scheduling.ts` / `power-jobs.ts` / `okf.ts`).
+  // `task-scheduling.ts` / `power-jobs.ts`).
   const treeAvailableForRequest = (req: RouteRequest, runVaultDir: string): boolean =>
     fs.existsSync(req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir));
 
