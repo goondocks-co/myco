@@ -158,15 +158,24 @@ export interface ContentFileStatusResponse {
 const CONTENT_FILE_STATUS_BASE_KEY = [...CONTENT_CLAIMS_BASE_KEY, 'file-status'] as const;
 
 /** POST /api/content-claims/file-status — one batched disk-presence check
- *  for every published-at-latest artifact, against the active project's own
- *  working tree (design §2(b)). Skipped entirely (no request fires) when
- *  there's nothing to check or no project root to check it against — the
- *  route requires both. Rides the same 15s cadence as `useContentClaims`. */
+ *  against the active project's own working tree (design §2(b)). Takes the
+ *  identity fields directly rather than `PublishedArtifactView[]` — the
+ *  merged-state branch batches every published-at-latest artifact, but
+ *  `ClaimControl`'s claimable branch also uses this (item 5, "does the
+ *  materialized file already match") for a single not-yet-published
+ *  artifact, which has no `PublishedArtifactView` to offer. Skipped entirely
+ *  (no request fires) when there's nothing to check or no project root to
+ *  check it against — the route requires both. Rides the same 15s cadence as
+ *  `useContentClaims`. */
 export function useContentFileStatus(
   projectRoot: string | undefined,
-  published: PublishedArtifactView[],
+  artifactsInput: ContentFileStatusRequestArtifact[],
 ): UseQueryResult<ContentFileStatusResponse> {
-  const artifacts: ContentFileStatusRequestArtifact[] = published.map((p) => ({
+  // Re-derive rather than pass `artifactsInput` straight through — a caller
+  // may hand us `PublishedArtifactView[]` (structurally compatible, extra
+  // fields and all); the wire body must carry only the three fields the
+  // route reads, never `label`/`published_generation`/etc.
+  const artifacts: ContentFileStatusRequestArtifact[] = artifactsInput.map((p) => ({
     artifact_kind: p.artifact_kind,
     artifact_id: p.artifact_id,
     name: p.name,

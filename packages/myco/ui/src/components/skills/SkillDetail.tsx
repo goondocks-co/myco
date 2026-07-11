@@ -144,7 +144,7 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
       </Surface>
 
       {/* Publication claim — renders only when this generation is unpublished */}
-      <ClaimControl artifactKind="skill" artifactId={skill.id} />
+      <ClaimControl artifactKind="skill" artifactId={skill.id} name={skill.name} />
 
       {/* Metric tiles */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

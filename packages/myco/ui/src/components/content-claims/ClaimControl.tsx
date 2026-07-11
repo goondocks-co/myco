@@ -15,6 +15,7 @@ import {
   findClaimableArtifact,
   findPublishedArtifact,
   type ContentClaimArtifactKind,
+  type ContentFileStatusRequestArtifact,
 } from '../../hooks/use-content-claims';
 
 /**
@@ -37,15 +38,27 @@ import {
  * lock) — users publish content; the claim system is how the sausage is
  * made. Internal names (hooks, phase states, test ids) keep the mechanism
  * terms because they mirror the API surface.
+ *
+ * Also surfaces a stale-claim hint beside "Mark published" (a lineage-latest
+ * that moved on since the claim was taken), a load failure for the
+ * inventory fetch itself, and a "Mark published" mutation failure — none of
+ * these silently dropped the user on the floor before.
  */
 export function ClaimControl({
   artifactKind,
   artifactId,
+  name,
 }: {
   artifactKind: ContentClaimArtifactKind;
   artifactId: string;
+  /** The artifact's path-derivation key (skills: `skill_records.name`) —
+   *  optional. Only needed to answer "is the materialized file already on
+   *  disk" for the CLAIMABLE branch's Mark-published affordance (item 5);
+   *  omit it and that affordance simply never re-offers after a reload,
+   *  same as before this fix. */
+  name?: string;
 }) {
-  const { data } = useContentClaims();
+  const { data, isError: claimsError } = useContentClaims();
   const claimable = findClaimableArtifact(data, artifactKind, artifactId);
   const publishedEntry = findPublishedArtifact(data, artifactKind, artifactId);
   const myMachineId = useMyMachineId();
@@ -56,6 +69,22 @@ export function ClaimControl({
   const { phase, run, retryMaterialize, reset } = useClaimAndMaterialize();
   const fileStatus = useContentFileStatus(projectRoot, data?.published ?? []);
   const invalidateContentClaims = useInvalidateContentClaims();
+
+  // Item 5 (reload loses Mark published): this session's local `phase` resets
+  // on reload, so `phase.status === 'success'` can no longer prove a
+  // materialize happened here. The file-status batch (PR #669) independently
+  // confirms the expected file is already on disk — scoped to a single
+  // artifact, and only queried once there's something worth checking (a
+  // `name` was supplied AND this machine currently holds the claim; nobody
+  // else's reload should trigger a check on our behalf).
+  const claimableActiveClaim = claimable?.active_claim ?? null;
+  const claimableHeldByMe =
+    !!claimableActiveClaim && !!myMachineId && claimableActiveClaim.claimed_by === myMachineId;
+  const claimableFileStatusArtifacts: ContentFileStatusRequestArtifact[] =
+    name && claimableActiveClaim && claimableHeldByMe
+      ? [{ artifact_kind: artifactKind, artifact_id: artifactId, name }]
+      : [];
+  const claimableFileStatus = useContentFileStatus(projectRoot, claimableFileStatusArtifacts);
 
   // Same-generation republish auto-closes server-side (Task 1.4): once that
   // lands, this session's own repair is done — invalidate both queries so
@@ -74,7 +103,27 @@ export function ClaimControl({
   }, [phase, invalidateContentClaims, reset]);
 
   if (!claimable) {
-    if (!publishedEntry) return null;
+    if (!publishedEntry) {
+      // Fetch-error paper cut (item 4): a persistent /content-claims failure
+      // previously left this control returning null with no explanation —
+      // the whole publish affordance just silently vanished. Only surfaces
+      // when there's nothing else to render (a successful earlier fetch that
+      // later degrades keeps showing its last-known-good state, unaffected).
+      if (claimsError) {
+        return (
+          <Surface
+            level="low"
+            className="flex flex-col gap-2 p-4"
+            data-testid={`claim-control-${artifactKind}-${artifactId}`}
+          >
+            <p className="font-sans text-xs text-tertiary m-0" data-testid="claims-fetch-error">
+              Couldn't check publish status — try again shortly
+            </p>
+          </Surface>
+        );
+      }
+      return null;
+    }
 
     const activeClaim = publishedEntry.active_claim;
     const heldByMe = !!activeClaim && !!myMachineId && activeClaim.claimed_by === myMachineId;
@@ -166,6 +215,7 @@ export function ClaimControl({
             <Button
               size="sm"
               variant="outline"
+              disabled={!projectRoot}
               onClick={() => projectRoot && retryMaterialize(phase.claimId, projectRoot)}
             >
               Retry publish
@@ -205,6 +255,29 @@ export function ClaimControl({
   const materializing = phase.status === 'materializing' && phase.claimId === activeClaim?.id;
   const materializeFailed = phase.status === 'materialize-failed' && phase.claimId === activeClaim?.id;
   const justMaterialized = phase.status === 'success' && phase.claimId === activeClaim?.id;
+  // Item 1 — the Publish button's own in-flight window spans claiming ->
+  // materializing for THIS session's own `run()`, independent of whether
+  // `activeClaim` has caught up via refetch yet (mirrors the merged-state
+  // branch's `inFlight`/`showPublishButton` pattern above). The button used
+  // to gate on `!activeClaim` alone and disable only during 'claiming' — a
+  // second click during the materializing window, while `activeClaim` was
+  // still stale-null from before the claim POST resolved, re-fired `run()`
+  // and re-claimed mid-flight.
+  const publishInFlight = phase.status === 'claiming' || phase.status === 'materializing';
+  const showPublishButton = publishInFlight || !activeClaim;
+
+  // Item 5 — offer Mark published to the holder when the claim is active AND
+  // the file-status batch confirms the materialized file already matches
+  // (reload case), in addition to the existing THIS-session justMaterialized
+  // case.
+  const claimableFileStatusEntry = claimableFileStatus.isError
+    ? undefined
+    : claimableFileStatus.data?.statuses.find(
+        (s) => s.artifact_kind === artifactKind && s.artifact_id === artifactId,
+      );
+  const materializedFileMatches = claimableFileStatusEntry?.file_present === true;
+  const canMarkPublished =
+    !!activeClaim && heldByMe && !materializing && (justMaterialized || materializedFileMatches);
 
   return (
     <Surface
@@ -220,7 +293,7 @@ export function ClaimControl({
         </span>
       </div>
 
-      {activeClaim && (
+      {activeClaim && !publishInFlight && (
         <div
           className="flex flex-wrap items-center gap-2"
           data-testid={heldByMe ? 'claim-held-by-me' : 'claim-held-by-other'}
@@ -259,6 +332,7 @@ export function ClaimControl({
           <Button
             size="sm"
             variant="outline"
+            disabled={!projectRoot}
             onClick={() => projectRoot && retryMaterialize(phase.claimId, projectRoot)}
           >
             Retry publish
@@ -266,11 +340,21 @@ export function ClaimControl({
         </div>
       )}
 
-      {justMaterialized && activeClaim && heldByMe && (
+      {canMarkPublished && activeClaim && (
         <div className="flex flex-wrap items-center gap-2">
-          <p className="font-sans text-xs text-primary m-0" data-testid="materialize-success">
-            Published to {phase.path} — review and commit it
+          <p
+            className="font-sans text-xs text-primary m-0"
+            data-testid={justMaterialized ? 'materialize-success' : 'materialized-file-present'}
+          >
+            {justMaterialized
+              ? `Published to ${phase.path} — review and commit it`
+              : 'The published file is already in your checkout — review and commit it'}
           </p>
+          {activeClaim.stale && (
+            <span className="font-sans text-xs text-tertiary" data-testid="claim-stale-hint">
+              This has moved on since you started — make sure it's still current before marking published
+            </span>
+          )}
           <Button
             size="sm"
             disabled={markPublished.isPending}
@@ -279,18 +363,25 @@ export function ClaimControl({
           >
             {markPublished.isPending ? 'Marking…' : 'Mark published'}
           </Button>
+          {markPublished.isError && (
+            <span className="font-sans text-xs text-tertiary" data-testid="mark-published-error">
+              {markPublished.error instanceof Error
+                ? markPublished.error.message
+                : "Couldn't mark this published — try again"}
+            </span>
+          )}
         </div>
       )}
 
-      {!activeClaim && (
+      {showPublishButton && (
         <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
-            disabled={phase.status === 'claiming' || !projectRoot}
+            disabled={publishInFlight || !projectRoot}
             onClick={() => projectRoot && run({ artifactKind, artifactId, projectRoot })}
             data-testid="claim-and-materialize"
           >
-            {phase.status === 'claiming' ? 'Publishing…' : 'Publish'}
+            {publishInFlight ? 'Publishing…' : 'Publish'}
           </Button>
           {phase.status === 'claim-failed' && (
             <span className="font-sans text-xs text-tertiary" data-testid="claim-failed">

@@ -46,20 +46,29 @@ mock.module('../../packages/myco/ui/src/hooks/use-daemon', () => ({
   useDaemon: () => ({ data: { context: { request: { machine_id: 'machine-a' } } } }),
 }));
 
+// Mutable so a single test (item 2 — Retry publish visibly disabled once the
+// project root becomes unavailable) can simulate the active project being
+// deselected mid-session without a fresh mount (which would reset the local
+// phase state we need to still be in `materialize-failed`).
+let projectRootOverride: string | undefined = '/repo';
+
 mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
-  useActiveProjectSelection: () => ({
-    grove: { id: 'grove-a', name: 'Work', slug: 'work', mode: 'local', is_default: true, created_at: '', project_count: 1, projects: [] },
-    project: {
-      project_id: 'project-a',
-      name: 'Project A',
-      slug: 'project-a-123',
-      root: '/repo',
-      binding_id: null,
-      created_at: '',
-      updated_at: '',
-      manifest_state: 'present',
-    },
-  }),
+  useActiveProjectSelection: () =>
+    projectRootOverride === undefined
+      ? undefined
+      : {
+          grove: { id: 'grove-a', name: 'Work', slug: 'work', mode: 'local', is_default: true, created_at: '', project_count: 1, projects: [] },
+          project: {
+            project_id: 'project-a',
+            name: 'Project A',
+            slug: 'project-a-123',
+            root: projectRootOverride,
+            binding_id: null,
+            created_at: '',
+            updated_at: '',
+            manifest_state: 'present',
+          },
+        },
   useProjectScopedQueryKey: (key: unknown[]) => [...key, { projectSelection: 'grove-a:project-a' }],
 }));
 
@@ -70,6 +79,10 @@ const { ClaimControl } = await import('../../packages/myco/ui/src/components/con
 let activeClaim: ContentClaimView | null = null;
 let materializeShouldFail = false;
 let published = false;
+// Item 3 — a claim's `stale` flag comes straight off the fixture, same as
+// every other field; a dedicated switch lets a test flip it without hand-
+// building a whole ContentClaimView.
+let claimStale = false;
 
 function listResponse(): ContentClaimsListResponse {
   return {
@@ -104,25 +117,39 @@ function seedActiveClaim(claimedBy: string): void {
     state: 'active',
     released_at: null,
     published_at: null,
-    stale: false,
+    stale: claimStale,
   };
 }
 
-function renderControl() {
+/** A promise a test controls the resolution of — used to pause a mocked
+ *  claim/materialize mid-flight so an in-progress render (disabled buttons,
+ *  suppressed holder chip) can be asserted before letting it complete. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+function renderControl(props: { name?: string } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
+  const utils = render(
     <PowerProvider>
       <QueryClientProvider client={client}>
-        <ClaimControl artifactKind="skill" artifactId="skill-1" />
+        <ClaimControl artifactKind="skill" artifactId="skill-1" name={props.name} />
       </QueryClientProvider>
     </PowerProvider>,
   );
+  return { ...utils, client };
 }
 
 beforeEach(() => {
   activeClaim = null;
   materializeShouldFail = false;
   published = false;
+  claimStale = false;
+  projectRootOverride = '/repo';
   fetchJsonMock.mockReset();
   postJsonMock.mockReset();
 
@@ -252,6 +279,139 @@ describe('ClaimControl — unclaimed', () => {
     // Retry reused the claim from the failed attempt — no second claim POST.
     expect(postJsonMock.mock.calls.filter((c) => c[0] === '/content-claims').length).toBe(1);
   });
+
+  it('surfaces a Retry publish button that is visibly disabled once the project root becomes unavailable (item 2)', async () => {
+    materializeShouldFail = true;
+    const { rerender, client } = renderControl();
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('claim-and-materialize'));
+    await waitFor(() => expect(screen.getByTestId('materialize-failed')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /retry publish/i })).not.toBeDisabled();
+
+    // Simulate the active project being deselected while the failure is
+    // still showing — the button used to stay visibly clickable even though
+    // its onClick was a silent no-op (`projectRoot &&`) once root was gone.
+    // `rerender` reuses the same fiber (and the same QueryClient, so cached
+    // data survives) — only the mocked hook's return value changes.
+    projectRootOverride = undefined;
+    rerender(
+      <PowerProvider>
+        <QueryClientProvider client={client}>
+          <ClaimControl artifactKind="skill" artifactId="skill-1" />
+        </QueryClientProvider>
+      </PowerProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /retry publish/i })).toBeDisabled());
+  });
+
+  it('keeps Publish visible and disabled through claiming and materializing — the holder chip never shows mid-flight (item 1)', async () => {
+    const claimGate = deferred<void>();
+    const materializeGate = deferred<void>();
+    postJsonMock.mockImplementation(async (path: string) => {
+      if (path === '/content-claims') {
+        await claimGate.promise;
+        seedActiveClaim('machine-a');
+        return { ok: true, claim: activeClaim, content: {} };
+      }
+      if (path === '/content-claims/cclaim_aaaa/materialize') {
+        await materializeGate.promise;
+        return { ok: true, path: '.claude/skills/my-skill/SKILL.md', skill_name: 'my-skill', generation: 3 };
+      }
+      throw new Error(`unexpected POST ${path}`);
+    });
+
+    renderControl();
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('claim-and-materialize'));
+
+    // Claiming: the button stays in the DOM, disabled, labeled as in-flight.
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeDisabled());
+    expect(screen.getByTestId('claim-and-materialize')).toHaveTextContent('Publishing…');
+
+    await act(async () => {
+      claimGate.resolve();
+      await Promise.resolve();
+    });
+
+    // Materializing: still the SAME button, still visible+disabled — not
+    // swapped out for a holder/Release display, even though the server now
+    // has an active claim held by this machine. This is the exact
+    // double-click window the old `!activeClaim`/`phase.status==='claiming'`
+    // gating missed: once the claim POST resolved but before the inventory
+    // refetch caught up, `activeClaim` was still null, so the button
+    // rendered enabled during materializing.
+    await waitFor(() => expect(screen.getByTestId('materializing')).toBeInTheDocument());
+    expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument();
+    expect(screen.getByTestId('claim-and-materialize')).toBeDisabled();
+    expect(screen.queryByTestId('claim-held-by-me')).toBeNull();
+
+    await act(async () => {
+      materializeGate.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('materialize-success')).toBeInTheDocument());
+    expect(screen.queryByTestId('claim-and-materialize')).toBeNull();
+    expect(screen.getByTestId('claim-held-by-me')).toBeInTheDocument();
+  });
+
+  it('shows a hint beside Mark published when the held claim has drifted from lineage-latest (item 3)', async () => {
+    claimStale = true;
+    renderControl();
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('claim-and-materialize'));
+
+    await waitFor(() => expect(screen.getByTestId('mark-published')).toBeInTheDocument());
+    expect(screen.getByTestId('claim-stale-hint')).toBeInTheDocument();
+  });
+
+  it('shows no stale hint for a fresh claim', async () => {
+    renderControl();
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('claim-and-materialize'));
+
+    await waitFor(() => expect(screen.getByTestId('mark-published')).toBeInTheDocument());
+    expect(screen.queryByTestId('claim-stale-hint')).toBeNull();
+  });
+
+  it('surfaces a Mark published failure instead of silently doing nothing (item 4)', async () => {
+    renderControl();
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('claim-and-materialize'));
+    await waitFor(() => expect(screen.getByTestId('mark-published')).toBeInTheDocument());
+
+    postJsonMock.mockImplementation(async (path: string) => {
+      if (path === '/content-claims/cclaim_aaaa/published') {
+        throw new Error('not_holder');
+      }
+      throw new Error(`unexpected POST ${path}`);
+    });
+
+    fireEvent.click(screen.getByTestId('mark-published'));
+
+    await waitFor(() => expect(screen.getByTestId('mark-published-error')).toHaveTextContent('not_holder'));
+    // The claim is still active and held by this machine — the mutation
+    // failure didn't silently drop the affordance.
+    expect(screen.getByTestId('mark-published')).toBeInTheDocument();
+  });
+});
+
+describe('ClaimControl — fetch error', () => {
+  it('surfaces a persistent /content-claims failure instead of silently rendering nothing (item 4)', async () => {
+    fetchJsonMock.mockImplementation(async (path: string) => {
+      if (path === '/content-claims') throw new Error('network unreachable');
+      return {};
+    });
+
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('claims-fetch-error')).toBeInTheDocument());
+  });
 });
 
 describe('ClaimControl — claimed by another machine', () => {
@@ -312,6 +472,75 @@ describe('ClaimControl — release', () => {
   });
 });
 
+describe('ClaimControl — Mark published reappears after reload (item 5)', () => {
+  // Simulates reloading the page while already holding an active claim from
+  // a prior session — the local `phase` state is idle (never went through
+  // 'success' HERE), so `justMaterialized` alone can't offer Mark published.
+  // The file-status batch (PR #669) independently confirms the file is
+  // already on disk, closing the gap without re-materializing.
+  it('offers Mark published once file-status confirms the file is already on disk, with no local materialize this session', async () => {
+    seedActiveClaim('machine-a');
+    fetchJsonMock.mockImplementation(async (path: string) => {
+      if (path === '/content-claims') return listResponse();
+      if (path === '/content-claims/file-status') {
+        return { statuses: [{ artifact_kind: 'skill', artifact_id: 'skill-1', file_present: true }] };
+      }
+      return {};
+    });
+
+    renderControl({ name: 'my-skill' });
+
+    await waitFor(() => expect(screen.getByTestId('mark-published')).toBeInTheDocument());
+    expect(screen.getByTestId('materialized-file-present')).toHaveTextContent('already in your checkout');
+    // Distinct from the this-session testid — no local materialize happened.
+    expect(screen.queryByTestId('materialize-success')).toBeNull();
+  });
+
+  it('does not offer Mark published when no `name` prop was supplied — inert by default, same as before this fix', async () => {
+    seedActiveClaim('machine-a');
+    fetchJsonMock.mockImplementation(async (path: string) => {
+      if (path === '/content-claims') return listResponse();
+      if (path === '/content-claims/file-status') {
+        return { statuses: [{ artifact_kind: 'skill', artifact_id: 'skill-1', file_present: true }] };
+      }
+      return {};
+    });
+
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('claim-held-by-me')).toBeInTheDocument());
+    expect(screen.queryByTestId('mark-published')).toBeNull();
+    // Nothing was even batched — no `name` means nothing to check.
+    expect(fetchJsonMock.mock.calls.some((c) => c[0] === '/content-claims/file-status')).toBe(false);
+  });
+
+  it('does not offer Mark published when the file-status batch says the file is missing', async () => {
+    seedActiveClaim('machine-a');
+    fetchJsonMock.mockImplementation(async (path: string) => {
+      if (path === '/content-claims') return listResponse();
+      if (path === '/content-claims/file-status') {
+        return { statuses: [{ artifact_kind: 'skill', artifact_id: 'skill-1', file_present: false }] };
+      }
+      return {};
+    });
+
+    renderControl({ name: 'my-skill' });
+
+    await waitFor(() => expect(screen.getByTestId('claim-held-by-me')).toBeInTheDocument());
+    expect(screen.queryByTestId('mark-published')).toBeNull();
+  });
+
+  it('does not offer Mark published when the active claim is held by another machine', async () => {
+    seedActiveClaim('machine-b');
+    renderControl({ name: 'my-skill' });
+
+    await waitFor(() => expect(screen.getByTestId('claim-held-by-other')).toBeInTheDocument());
+    expect(screen.queryByTestId('mark-published')).toBeNull();
+    // Nothing to check on this machine's behalf when someone else holds it.
+    expect(fetchJsonMock.mock.calls.some((c) => c[0] === '/content-claims/file-status')).toBe(false);
+  });
+});
+
 /* ---------- Merged state: published-at-latest but missing from disk ---------- */
 
 /**
@@ -320,15 +549,9 @@ describe('ClaimControl — release', () => {
  * `published`, never `claimable`), plus a controllable file-status batch
  * response. Exercises the real `useContentFileStatus`/`findPublishedArtifact`
  * wiring against a mocked `lib/api`, matching this file's existing "exercise
- * the real hooks" convention.
+ * the real hooks" convention. (`deferred` is shared with the claimable-branch
+ * tests above — defined once near the top of the file.)
  */
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
 
 describe('ClaimControl — published but missing from the working tree (merged state)', () => {
   let mergedActiveClaim: ContentClaimView | null;
