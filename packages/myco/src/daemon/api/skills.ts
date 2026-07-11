@@ -41,8 +41,8 @@ import { validateSkillCandidateQualityContract } from '@myco/agent/skill-candida
 import { extractFrontmatterFields } from '@myco/agent/tools/skill-validator.js';
 import { isSafeSkillNameForFs } from '@myco/skills/names.js';
 import {
-  removePublishedSkillFileOrDirectory,
-  syncPublishedSkillSymlinks,
+  removePublishedSkillFileOrDirectoryIfLocal,
+  syncPublishedSkillSymlinksIfLocal,
 } from '@myco/skills/publication.js';
 
 export { isSafeSkillNameForFs };
@@ -374,7 +374,11 @@ export interface SkillDeleteDeps {
  * on a remote member's behalf) the host holds the Grove DB but NOT the
  * member's working tree, so the fs cascade below must never run — only the
  * DB delete (and its claim cancel, inside `deleteSkillRecordCascade`) does.
- * Mirrors the write-side gate at `agent/tools/skill-tools.ts:166-182`.
+ * `removePublishedSkillFileOrDirectoryIfLocal` / `syncPublishedSkillSymlinksIfLocal`
+ * (`skills/publication.ts`) are the single shared chokepoint for this
+ * residency check — the same wrappers gate the write-side path at
+ * `agent/tools/skill-tools.ts`, so the `if (hostServed) skip` guard exists
+ * in exactly one place rather than being reimplemented at each call site.
  */
 export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
   const { logger } = deps;
@@ -387,7 +391,7 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
     // Delete skill file and symlinks from disk if the DB delete succeeded
     if ((result.body as Record<string, unknown>)?.deleted) {
       const record = result.body as { name?: string };
-      if (record.name && !isHostServedRequest(req.requestContext)) {
+      if (record.name) {
         // Path-traversal gate: a peer-controlled skill name (rows arrive
         // via team-sync from the cloud Worker) reaching `fs.rmSync({
         // recursive: true, force: true })` is a destructive primitive
@@ -400,6 +404,11 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
           logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Refused skill cleanup: unsafe name shape', { name: record.name });
           return result;
         }
+        // Team Host residency gate — see the chokepoint note above. Both
+        // fs calls below route through the `*IfLocal` wrappers, which no-op
+        // when host-served instead of this handler re-checking `hostServed`
+        // around each call.
+        const hostServed = isHostServedRequest(req.requestContext);
         // Scope the fs cascade to the REQUEST project, not the daemon's
         // bootstrap anchor: `principal.tenancy.projectVaultDir` is the
         // caller-authorized vault that survived the context-switch auth gate
@@ -408,7 +417,7 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
         // never the anchor project's.
         const projectRoot = resolveProjectRoot(principal.tenancy.projectVaultDir);
         try {
-          const removeResult = removePublishedSkillFileOrDirectory(projectRoot, record.name);
+          const removeResult = removePublishedSkillFileOrDirectoryIfLocal(projectRoot, record.name, hostServed);
           if (!removeResult.ok) {
             logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Refused skill cleanup: resolved path escapes skills root', {
               name: record.name,
@@ -425,7 +434,7 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
         // (see symbionts/installer.ts), but the outer guard above means
         // we don't reach it with an unsafe name in the first place.
         try {
-          syncPublishedSkillSymlinks(projectRoot, record.name, { remove: true });
+          syncPublishedSkillSymlinksIfLocal(projectRoot, record.name, hostServed, { remove: true });
         } catch (err) {
           logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill symlinks', { name: record.name, error: String(err) });
         }

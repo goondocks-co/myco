@@ -114,3 +114,36 @@ export function syncPublishedSkillSymlinks(
   syncSkillSymlinks(projectRoot, skillName, options);
   return resolved;
 }
+
+/**
+ * Team Host residency chokepoint, delete side: on a host-served run the host
+ * holds the Grove DB but not the member's working tree, so the disk removal
+ * must no-op there. Both raw skill-DELETE paths — the agent tool
+ * (`agent/tools/skill-tools.ts`) and the daemon API
+ * (`daemon/api/skills.ts`) — route through this wrapper instead of each
+ * re-implementing an `if (hostServed) return` guard around
+ * `removePublishedSkillFileOrDirectory`.
+ */
+export function removePublishedSkillFileOrDirectoryIfLocal(
+  projectRoot: string,
+  skillName: string,
+  hostServed: boolean,
+  options?: { fileOnly?: boolean },
+): SkillArtifactResult {
+  if (hostServed) return resolvePublishedSkillPaths(projectRoot, skillName);
+  return removePublishedSkillFileOrDirectory(projectRoot, skillName, options);
+}
+
+/**
+ * Team Host residency chokepoint, symlink side — see
+ * `removePublishedSkillFileOrDirectoryIfLocal`.
+ */
+export function syncPublishedSkillSymlinksIfLocal(
+  projectRoot: string,
+  skillName: string,
+  hostServed: boolean,
+  options?: { remove?: boolean },
+): SkillArtifactResult {
+  if (hostServed) return resolvePublishedSkillPaths(projectRoot, skillName);
+  return syncPublishedSkillSymlinks(projectRoot, skillName, options);
+}
