@@ -18,7 +18,9 @@ import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { loadGroveConfig, loadMachineConfig, saveGroveConfig, saveMachineConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import { CONTENT_CLAIM_RETENTION_MS } from '@myco/constants.js';
+import { CONTENT_CLAIM_RETENTION_MS, ROUTED_EVENT_DEDUP_RETENTION_MS } from '@myco/constants.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
+import { resolveRoutedTranscriptPath, resolveRoutedTranscriptsDir } from '@myco/grove/paths.js';
 
 // ---------------------------------------------------------------------------
 // Test fixture: bring up a real Myco home with one Grove and an open DB
@@ -812,6 +814,193 @@ describe('content-claim-expiry power job', () => {
     expect(claimState('cclaim_expiring')).toBe('expired');
     expect(claimExists('cclaim_old_released')).toBe(false);
     expect(claimExists('cclaim_young_released')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// routed-transcript-cache-gc — consolidation Task C-1
+// ---------------------------------------------------------------------------
+
+describe('routed-transcript-cache-gc power job', () => {
+  let fx: GroveFixture;
+  let pm: FakeJobRunner;
+  let savedTeamHome: string | undefined;
+
+  beforeEach(() => {
+    fx = setupGrove();
+    pm = new FakeJobRunner();
+    savedTeamHome = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_TEAM_HOME = path.join(fx.workDir, 'team-home');
+  });
+
+  afterEach(() => {
+    if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = savedTeamHome;
+    fx.cleanup();
+  });
+
+  function seedSession(id: string, status: 'active' | 'completed', machineId: string): void {
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      upsertSession({
+        id,
+        agent: 'claude-code',
+        started_at: Math.floor(Date.now() / 1000),
+        created_at: Math.floor(Date.now() / 1000),
+        status,
+        machine_id: machineId,
+      });
+    });
+  }
+
+  /** Materialize a fake cache dir with one dummy transcript file, mirroring
+   *  what the C2 materializer would have written. Returns the session dir. */
+  function materializeCacheDir(machineId: string, sessionId: string): string {
+    const filePath = resolveRoutedTranscriptPath(machineId, sessionId, 'tx_dummy00000000000000000000000');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, '{"type":"assistant"}\n');
+    return path.dirname(filePath);
+  }
+
+  function cacheDirExists(machineId: string, sessionId: string): boolean {
+    return fs.existsSync(path.join(resolveRoutedTranscriptsDir(), machineId, sessionId));
+  }
+
+  it('registers a routed-transcript-cache-gc job that runs in idle and sleep', () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('routed-transcript-cache-gc');
+    expect(job.runIn).toEqual(['idle', 'sleep']);
+    expect(job.kind).toBe('housekeeping');
+  });
+
+  it('is a no-op when the cache root does not exist yet', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    await expect(pm.find('routed-transcript-cache-gc').fn()).resolves.toBeUndefined();
+  });
+
+  it('prunes a fully-mined, session-terminal session\'s cache tree', async () => {
+    seedSession('sess-done', 'completed', 'member_aaaa1111');
+    materializeCacheDir('member_aaaa1111', 'sess-done');
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_aaaa1111', 'sess-done')).toBe(false);
+  });
+
+  it('never touches an in-flight (active) session\'s cache tree', async () => {
+    seedSession('sess-active', 'active', 'member_bbbb2222');
+    materializeCacheDir('member_bbbb2222', 'sess-active');
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_bbbb2222', 'sess-active')).toBe(true);
+  });
+
+  it('leaves an orphaned cache directory alone when no session row matches anywhere', async () => {
+    materializeCacheDir('member_cccc3333', 'sess-unknown');
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_cccc3333', 'sess-unknown')).toBe(true);
+  });
+
+  it('never deletes on a machine_id mismatch between the row and the directory (defense in depth)', async () => {
+    // A completed session row exists under this id, but for a DIFFERENT
+    // machine than the directory's own path — must never be treated as the
+    // directory's owner.
+    seedSession('sess-mismatch', 'completed', 'member_real0000');
+    materializeCacheDir('member_spoofed1', 'sess-mismatch');
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_spoofed1', 'sess-mismatch')).toBe(true);
+  });
+
+  it('prunes multiple terminal trees and leaves multiple in-flight trees alone in one pass', async () => {
+    seedSession('sess-done-1', 'completed', 'member_aaaa1111');
+    seedSession('sess-done-2', 'completed', 'member_aaaa1111');
+    seedSession('sess-active-1', 'active', 'member_aaaa1111');
+    materializeCacheDir('member_aaaa1111', 'sess-done-1');
+    materializeCacheDir('member_aaaa1111', 'sess-done-2');
+    materializeCacheDir('member_aaaa1111', 'sess-active-1');
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_aaaa1111', 'sess-done-1')).toBe(false);
+    expect(cacheDirExists('member_aaaa1111', 'sess-done-2')).toBe(false);
+    expect(cacheDirExists('member_aaaa1111', 'sess-active-1')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// routed-event-dedup-prune — consolidation Task C-1
+// ---------------------------------------------------------------------------
+
+describe('routed-event-dedup-prune power job', () => {
+  let fx: GroveFixture;
+  let pm: FakeJobRunner;
+
+  beforeEach(() => {
+    fx = setupGrove();
+    pm = new FakeJobRunner();
+  });
+
+  afterEach(() => fx.cleanup());
+
+  function seedDedupRow(eventId: string, createdAtSeconds: number): void {
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      getDatabase().prepare(
+        `INSERT INTO routed_event_dedup (event_id, machine_id, kind, prompt_batch_id, created_at)
+         VALUES (?, 'machine-a', 'user_prompt', NULL, ?)`,
+      ).run(eventId, createdAtSeconds);
+    });
+  }
+
+  function dedupExists(eventId: string): boolean {
+    return withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      !!getDatabase().prepare(`SELECT 1 FROM routed_event_dedup WHERE event_id = ?`).get(eventId),
+    );
+  }
+
+  it('registers as idle/sleep housekeeping', () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('routed-event-dedup-prune');
+    expect(job.runIn).toEqual(['idle', 'sleep']);
+    expect(job.kind).toBe('housekeeping');
+  });
+
+  it('prunes a dedup row older than the retention window, keeps a younger one', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const now = Math.floor(Date.now() / 1000);
+    const retentionSeconds = Math.floor(ROUTED_EVENT_DEDUP_RETENTION_MS / 1000);
+
+    seedDedupRow('machine-a:old-event', now - retentionSeconds - 3600);
+    seedDedupRow('machine-a:young-event', now - 3600);
+
+    await pm.find('routed-event-dedup-prune').fn();
+
+    expect(dedupExists('machine-a:old-event')).toBe(false);
+    expect(dedupExists('machine-a:young-event')).toBe(true);
+  });
+
+  it('never touches a row inside the retention window', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const now = Math.floor(Date.now() / 1000);
+
+    seedDedupRow('machine-a:fresh-event', now - 10);
+
+    await pm.find('routed-event-dedup-prune').fn();
+
+    expect(dedupExists('machine-a:fresh-event')).toBe(true);
+  });
+
+  it('is a no-op when no rows are old enough to prune', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    await expect(pm.find('routed-event-dedup-prune').fn()).resolves.toBeUndefined();
   });
 });
 

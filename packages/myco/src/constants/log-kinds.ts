@@ -142,6 +142,10 @@ export const LOG_KINDS = {
   CONTENT_CLAIM_PRUNE: 'content_claim.prune',
   // Content claim system (Team Host PR-1) — member disk-truth file-status route
   CONTENT_CLAIM_FILE_STATUS: 'content_claim.file_status',
+  // Team Host — routed-transcripts cache GC (consolidation Task C-1)
+  ROUTED_TRANSCRIPT_CACHE_PRUNE: 'routed_transcript.cache_prune',
+  // Team Host — routed_event_dedup ledger age-based prune (consolidation Task C-1)
+  ROUTED_EVENT_DEDUP_PRUNE: 'routed_event_dedup.prune',
 
   // Backup
   BACKUP_START: 'backup.start',

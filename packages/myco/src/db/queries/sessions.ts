@@ -20,7 +20,7 @@ import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@
 const DEFAULT_LIST_LIMIT = 100;
 
 /** Session status value when a session is closed normally. */
-const STATUS_COMPLETED = 'completed';
+export const STATUS_COMPLETED = 'completed';
 
 /** Default session status for new sessions. */
 const DEFAULT_STATUS = 'active';

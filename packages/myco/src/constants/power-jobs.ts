@@ -71,6 +71,23 @@ export const POWER_JOB_NAMES = {
    * project-copy), so this sweep never assumes active implies unexpired.
    */
   CONTENT_CLAIM_EXPIRY: 'content-claim-expiry',
+  /**
+   * Team Host — routed-transcripts cache GC (consolidation Task C-1). Prunes
+   * `~/.myco-team/host/routed-transcripts/<machine>/<session>/` trees whose
+   * session is BOTH fully mined and session-terminal (`status = 'completed'`
+   * in the owning Grove). Never touches an in-flight or not-yet-terminal
+   * session's tree — the host may be the only durable copy of a routed
+   * session's transcript once the member rotates/trims its own file (data
+   * preservation).
+   */
+  ROUTED_TRANSCRIPT_CACHE_GC: 'routed-transcript-cache-gc',
+  /**
+   * Team Host — `routed_event_dedup` idempotency-ledger prune (consolidation
+   * Task C-1). Age-based (the ledger carries no `session_id` to gate on a
+   * terminal signal): deletes rows older than ROUTED_EVENT_DEDUP_RETENTION_MS
+   * (constants.ts — see that constant's doc for the retention reasoning).
+   */
+  ROUTED_EVENT_DEDUP_PRUNE: 'routed-event-dedup-prune',
 } as const;
 
 export type PowerJobName = (typeof POWER_JOB_NAMES)[keyof typeof POWER_JOB_NAMES];

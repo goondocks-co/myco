@@ -143,6 +143,32 @@ export const CONTENT_CLAIM_TTL_MS = 1 * MS_PER_DAY;
 /** Terminal claim rows (released/published/expired) are pruned past this age. */
 export const CONTENT_CLAIM_RETENTION_MS = 30 * MS_PER_DAY;
 
+// --- Routed capture idempotency + cache GC (Team Host, consolidation Task C-1) ---
+/**
+ * Retention for `routed_event_dedup` rows. The ledger is idempotency state,
+ * not history: a row's only job is to collapse a live-forward + buffer-replay
+ * double-delivery of the SAME source event_id into one host-side write
+ * (`db/queries/routed-event-dedup.ts`). It carries no `session_id`, so pruning
+ * is necessarily age-based rather than tied to a session-terminal signal
+ * (contrast the routed-transcripts cache GC below, which IS
+ * session-terminal-gated).
+ *
+ * The bound must outlive every realistic replay window. Today the member-side
+ * collector buffer an attached project replays from has NO enforced TTL
+ * (`capture/event-replay-drain.ts` docstring: "NO TTL / NO cap on pending" —
+ * consolidation Task C-2 adds member-side prune-on-ack for it), so there is
+ * no hard upper bound yet on how stale a legitimate replay could be. Pending
+ * that tighter bound, 30 days is a deliberately conservative interim choice:
+ * it matches CONTENT_CLAIM_RETENTION_MS (the sibling host-local
+ * terminal/idempotency-row retention already in production) and comfortably
+ * exceeds every OTHER buffer-survivability window this codebase already
+ * enforces (BUFFER_HARD_RETENTION_MS = 7d, TOMBSTONE_RETENTION_MS = 14d) —
+ * both of which describe a materially LESS durable queue (a local daemon's
+ * own buffers) than an attached member's currently-unbounded replay queue.
+ * Revisit once C-2 ships a real bound.
+ */
+export const ROUTED_EVENT_DEDUP_RETENTION_MS = 30 * MS_PER_DAY;
+
 /**
  * How long a session's buffer file must sit unmodified before the drain
  * job treats an open-row session as quiescent. Deliberately much wider

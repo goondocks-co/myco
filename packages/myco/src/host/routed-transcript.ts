@@ -306,3 +306,82 @@ export function hostSubstitutedTranscriptPath(params: {
   if (hostPath) return { transcriptPath: hostPath, action: 'substituted' };
   return { transcriptPath: undefined, action: 'degraded-missing' };
 }
+
+// ---------------------------------------------------------------------------
+// Consolidation Task C-1 — routed-transcripts cache GC
+// ---------------------------------------------------------------------------
+
+/** One materialized `<machine_id>/<session_id>` cache directory found under
+ *  the routed-transcripts root — a GC candidate for {@link listRoutedTranscriptSessionDirs}. */
+export interface RoutedTranscriptSessionDir {
+  machineId: string;
+  sessionId: string;
+  dirPath: string;
+}
+
+/**
+ * Enumerate every materialized `<machine_id>/<session_id>` directory under
+ * the routed-transcripts cache root (consolidation Task C-1). The GC power
+ * job (`daemon/power-jobs.ts`) walks this list once per tick and resolves
+ * each session's terminal status against the Grove DBs this daemon serves,
+ * pruning a tree ONLY when its session is confirmed `status = 'completed'`
+ * (fully mined + session-terminal — never age-based, unlike the sibling
+ * `routed_event_dedup` prune).
+ *
+ * A malformed path segment (fails {@link assertSafeCaptureSegment}) is
+ * skipped — it cannot be a directory the materializer itself wrote, since
+ * every write funnels through the same guard ({@link createFsRoutedTranscriptStore}),
+ * so treating it as inert here is safe. Returns an empty list when the cache
+ * root does not exist yet (nothing has been routed through this host).
+ */
+export function listRoutedTranscriptSessionDirs(): RoutedTranscriptSessionDir[] {
+  const root = resolveRoutedTranscriptsDir();
+  const out: RoutedTranscriptSessionDir[] = [];
+  let machineEntries: fs.Dirent[];
+  try {
+    machineEntries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const machineEntry of machineEntries) {
+    if (!machineEntry.isDirectory()) continue;
+    let machineId: string;
+    try {
+      machineId = assertSafeCaptureSegment(machineEntry.name, 'machine_id');
+    } catch {
+      continue;
+    }
+    const machineDir = path.join(root, machineEntry.name);
+    let sessionEntries: fs.Dirent[];
+    try {
+      sessionEntries = fs.readdirSync(machineDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const sessionEntry of sessionEntries) {
+      if (!sessionEntry.isDirectory()) continue;
+      let sessionId: string;
+      try {
+        sessionId = assertSafeCaptureSegment(sessionEntry.name, 'session_id');
+      } catch {
+        continue;
+      }
+      out.push({ machineId, sessionId, dirPath: path.join(machineDir, sessionEntry.name) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Delete one confirmed-terminal session's materialized transcript tree
+ * (every sibling `.jsonl`, including inert rotated files — C3). Best-effort:
+ * a concurrent removal or transient fs error never throws into the GC job's
+ * per-Grove loop.
+ */
+export function pruneRoutedTranscriptSessionDir(dirPath: string): void {
+  try {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  } catch {
+    /* best-effort — GC retries next tick */
+  }
+}
