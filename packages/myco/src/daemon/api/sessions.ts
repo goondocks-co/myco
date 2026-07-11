@@ -1,4 +1,5 @@
-import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, closeSession } from '@myco/db/queries/sessions.js';
+import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact } from '@myco/db/queries/sessions.js';
+import { completeSessionWithMining, type SessionCompletionMiner } from '../session-completion.js';
 import { listBatchesBySession, countBatchesBySession, countBatchesBySessions, getBatchById, hasHumanBatch, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities, countActivitiesBySessions } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
@@ -204,10 +205,14 @@ export interface SessionMutationDeps {
     unregister(sessionId: string): void;
     getSession(sessionId: string): unknown;
   };
+  /** The completion chokepoint's mining seam — the manual complete route
+   *  must converge the transcript before the status flip exactly like
+   *  SessionEnd does (`daemon/session-completion.ts`). */
+  transcriptMiner: SessionCompletionMiner;
 }
 
 export function createSessionMutationHandlers(deps: SessionMutationDeps) {
-  const { embeddingManager, resolveEmbeddingManager, vaultDir, logger, liveConfig, reconciler, registry } = deps;
+  const { embeddingManager, resolveEmbeddingManager, vaultDir, logger, liveConfig, reconciler, registry, transcriptMiner } = deps;
 
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
@@ -341,10 +346,17 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
 
     const wasActive = session.status === 'active';
     if (wasActive) {
-      // Route through the completion chokepoint so the manual-complete path
-      // also closes open batches (no perpetually-open turn) — scope already
-      // verified via getSession above.
-      closeSession(sessionId, session.ended_at ?? epochSeconds());
+      // Route through the daemon completion chokepoint
+      // (`daemon/session-completion.ts`): final transcript convergence first
+      // (the manual route is a SessionEnd mirror — completing an unmined
+      // session must mine its tail before the status flip, or the routed-
+      // transcript cache GC could prune unmined bytes), then the raw close,
+      // which also closes open batches (no perpetually-open turn) — scope
+      // already verified via getSession above.
+      completeSessionWithMining(sessionId, session.ended_at ?? epochSeconds(), {
+        transcriptMiner,
+        logger,
+      });
     }
 
     await triggerTitleSummary(sessionId, {

@@ -1315,6 +1315,11 @@ export async function main(): Promise<void> {
       const groveDbPath = resolveGroveDbPath(groveId);
       return fs.existsSync(groveDbPath) ? runtimeCache.getDatabase(groveDbPath) : null;
     },
+    // The completion chokepoint's mining seam: a resurrected-stale close
+    // mines the stamped transcript before the status flip, upholding the
+    // "completed implies mined" invariant the routed-transcript cache GC
+    // relies on (daemon/session-completion.ts).
+    transcriptMiner,
   });
   reconciler.runStartupReconciliation();
 
@@ -1773,7 +1778,7 @@ export async function main(): Promise<void> {
 
   const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
   server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry, transcriptMiner });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
@@ -2556,6 +2561,7 @@ export async function main(): Promise<void> {
     logger,
     liveConfig,
     machineId,
+    transcriptMiner,
     cache: runtimeCache,
     embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
     onCanopyMassAdd: (groveId, projectId) =>

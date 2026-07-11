@@ -533,12 +533,18 @@ export function updateSession(
  * Close a session — set status to 'completed', record the end time, and close
  * any still-open prompt batches.
  *
- * This is the single completion chokepoint: every path that completes a session
- * (SessionEnd, the manual API, the stale-session sweep) routes through here, so
- * the invariant "a completed session has no open turns" holds structurally.
- * Without the batch close, a session ended without a final Stop (e.g. a
- * plan-mode→execution run that never returned end_turn) keeps its last turn
- * open indefinitely.
+ * This is the RAW DB WRITE, not the daemon's completion chokepoint. Daemon
+ * paths that complete a session (SessionEnd, the manual API, the stale-session
+ * sweep) must route through `completeSessionWithMining`
+ * (`daemon/session-completion.ts`), which runs the final transcript-mining
+ * convergence BEFORE calling here — the invariant the Team Host
+ * routed-transcript cache GC relies on ("completed implies mined") lives in
+ * that wrapper, not in this function. Calling this directly is only correct
+ * where no transcript source can exist or mining is handled by the caller.
+ *
+ * The batch close IS structural here: without it, a session ended without a
+ * final Stop (e.g. a plan-mode→execution run that never returned end_turn)
+ * keeps its last turn open indefinitely.
  *
  * @returns the updated row, or null if the session does not exist.
  */

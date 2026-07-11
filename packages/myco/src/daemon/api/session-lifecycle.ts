@@ -19,7 +19,8 @@ import type { PowerManager } from '../power.js';
 import type { EventBuffer } from '@myco/capture/buffer.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from '../request-config.js';
-import { closeSession, updateSession, getSession } from '@myco/db/queries/sessions.js';
+import { updateSession } from '@myco/db/queries/sessions.js';
+import { completeSessionWithMining } from '../session-completion.js';
 import { ensureSession, ENSURE_SESSION_SOURCE } from '../session-lifecycle.js';
 import { notify } from '@myco/notifications/notify.js';
 import { epochSeconds } from '@myco/constants.js';
@@ -27,7 +28,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { CanopyJobsRegistry } from '../jobs/canopy-scan.js';
-import { assertGroveProjectId, isGroveEraId, ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
 import type { ProjectPowerStateTracker } from '../project-power-state.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
 import { primaryProductionRef } from '@myco/release-provenance/config.js';
@@ -256,31 +257,16 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     // same ID.
     reconciler.cleanStaleBuffers(session_id);
 
-    // Final convergence at the authoritative turn boundary. The per-turn Stop
-    // hook converges each COMPLETED turn, but a turn interrupted mid-response
-    // (the user steers/aborts, then the session ends) fires no clean Stop — so
-    // its response, though already complete in the transcript, was never
-    // attributed. SessionEnd is the last boundary at which we can lift it.
-    // Best-effort and idempotent: re-running over an already-attributed
-    // transcript is a no-op. Runs BEFORE closeSession so the converged rows are
-    // in place when the session is marked ended.
-    try {
-      const ending = getSession(session_id, ALL_PROJECTS_SCOPE);
-      if (ending?.agent && ending.transcript_path) {
-        transcriptMiner.reconcileAndAttributeResponses(session_id, {
-          agent: ending.agent,
-          transcriptPath: ending.transcript_path,
-        });
-      }
-    } catch (err) {
-      logger.warn(LOG_KINDS.LIFECYCLE_UNREGISTER, 'SessionEnd transcript convergence failed', {
-        session_id, error: errorMessage(err),
-      });
-    }
-
-    // Close the session in SQLite — this is the authoritative end-of-session.
-    // The Stop hook fires per-turn and does NOT close the session.
-    closeSession(session_id, epochSeconds());
+    // Close through the daemon completion chokepoint
+    // (`daemon/session-completion.ts`): final transcript convergence at the
+    // authoritative turn boundary — the per-turn Stop hook converges each
+    // COMPLETED turn, but a turn interrupted mid-response (the user
+    // steers/aborts, then the session ends) fires no clean Stop, so its
+    // response, though complete in the transcript, was never attributed;
+    // SessionEnd is the last boundary at which we can lift it — THEN the
+    // authoritative status flip. The Stop hook fires per-turn and does NOT
+    // close the session.
+    completeSessionWithMining(session_id, epochSeconds(), { transcriptMiner, logger });
 
     // Prune in-memory state
     sessionBuffers.delete(session_id);

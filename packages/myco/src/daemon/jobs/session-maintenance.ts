@@ -11,7 +11,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
-import { closeSession, deleteSessionCascade } from '@myco/db/queries/sessions.js';
+import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
+import { completeSessionWithMining, type SessionCompletionDeps } from '../session-completion.js';
 import { SESSION_TOMBSTONE_SOURCE, pruneSessionTombstones } from '@myco/db/queries/session-tombstones.js';
 import { removeBufferLockCompanion } from '@myco/capture/buffer.js';
 import { resolveBufferDirForProjectId } from '@myco/capture/buffer-location.js';
@@ -47,10 +48,20 @@ import { LOG_KINDS } from '../../constants/log-kinds.js';
  * swept normally — if it later receives a new event, `event-dispatch.ts`
  * upserts it back to `status='active'`, so marking completed is reversible.
  *
+ * Each swept session closes through the daemon completion chokepoint
+ * (`completeSessionWithMining`, `daemon/session-completion.ts`): a session
+ * swept here got no SessionEnd (crash, dropped member, lost hook), so its
+ * transcript tail since the last per-turn Stop is UNMINED — the chokepoint
+ * runs the final mining convergence before the status flip. Without it,
+ * "completed" would not imply "mined" and the Team Host routed-transcript
+ * cache GC could prune a host's only unmined transcript copy.
+ *
+ * @param completion the completion chokepoint's deps (mining seam + logger)
  * @param thresholdSeconds window of inactivity before a session is stale
  * @returns number of sessions completed
  */
 export function completeStaleActiveSessions(
+  completion: SessionCompletionDeps,
   thresholdSeconds: number = STALE_SESSION_THRESHOLD_MS / MS_PER_SECOND,
 ): number {
   const db = getDatabase();
@@ -78,13 +89,14 @@ export function completeStaleActiveSessions(
 
   if (staleIds.length === 0) return 0;
 
-  // closeSession is the completion chokepoint — it flips status, stamps
-  // ended_at, closes any still-open batch (so a session swept without a final
-  // Stop doesn't keep a perpetually-open turn), and enqueues the session for
-  // team sync. Done per-id in one transaction.
-  db.transaction(() => {
-    for (const id of staleIds) closeSession(id, now);
-  })();
+  // completeSessionWithMining is the daemon completion chokepoint — final
+  // transcript-mining convergence (file I/O, so deliberately NOT inside a
+  // wrapping transaction), then the raw close, which flips status, stamps
+  // ended_at, closes any still-open batch (so a session swept without a
+  // final Stop doesn't keep a perpetually-open turn), and enqueues the
+  // session for team sync. Per-id: one session's mining failure never blocks
+  // the rest of the sweep (the chokepoint catches and still closes).
+  for (const id of staleIds) completeSessionWithMining(id, now, completion);
 
   return staleIds.length;
 }
@@ -137,6 +149,13 @@ export interface SessionMaintenanceDeps {
   registeredSessionIds: () => string[];
   embeddingManager: EmbeddingManager;
   /**
+   * The completion chokepoint's mining seam (`daemon/session-completion.ts`).
+   * The stale sweep completes sessions that got no SessionEnd, so it MUST
+   * run the final transcript-mining convergence before each status flip —
+   * the routed-transcript cache GC's safety invariant depends on it.
+   */
+  transcriptMiner: SessionCompletionDeps['transcriptMiner'];
+  /**
    * Resolve the on-disk vault dir for a session's project so per-project
    * markdown and attachment cleanup targets the right tree. The argument
    * is the deleted session's `project_id`. Returning `null` skips the
@@ -169,7 +188,7 @@ export interface SessionMaintenanceDeps {
  * 2. Delete dead sessions (cascade)
  */
 export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promise<void> {
-  const { logger, registeredSessionIds, embeddingManager, resolveProjectVaultDir, staleThresholdMs } = deps;
+  const { logger, registeredSessionIds, embeddingManager, resolveProjectVaultDir, staleThresholdMs, transcriptMiner } = deps;
   const registered = registeredSessionIds();
 
   // Reclaim tombstones older than the retention window. Retention outlives
@@ -182,7 +201,7 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
 
   // Task 1: Complete stale sessions
   const thresholdSeconds = (staleThresholdMs ?? STALE_SESSION_THRESHOLD_MS) / MS_PER_SECOND;
-  const completed = completeStaleActiveSessions(thresholdSeconds);
+  const completed = completeStaleActiveSessions({ transcriptMiner, logger }, thresholdSeconds);
   if (completed > 0) {
     logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Completed stale sessions', { count: completed });
   }

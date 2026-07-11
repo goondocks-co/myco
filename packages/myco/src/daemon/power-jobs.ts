@@ -18,6 +18,7 @@ import { pruneOldAgentRuns } from '@myco/db/queries/runs.js';
 import { expireStaleContentClaims, pruneTerminalContentClaims } from '@myco/db/queries/content-claims.js';
 import { pruneRoutedEventDedup } from '@myco/db/queries/routed-event-dedup.js';
 import { getSession, STATUS_COMPLETED } from '@myco/db/queries/sessions.js';
+import type { SessionCompletionMiner } from './session-completion.js';
 import {
   listRoutedTranscriptSessionDirs,
   pruneRoutedTranscriptSessionDir,
@@ -104,6 +105,14 @@ export interface PowerJobDeps {
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
   machineId: string;
+  /**
+   * The completion chokepoint's mining seam (`daemon/session-completion.ts`),
+   * threaded into the session-maintenance stale sweep: a stale-swept session
+   * got no SessionEnd, so its transcript tail must be mined before the
+   * status flip — the routed-transcript cache GC's "completed implies mined"
+   * invariant depends on every completion path mining first.
+   */
+  transcriptMiner: SessionCompletionMiner;
   /**
    * Vault dir consulted for daemon-scope notification gating
    * (`notifications.enabled`, per-domain enabled flags). Daemon-scope
@@ -379,6 +388,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
         logger: groveLoggers.get(scope),
         registeredSessionIds: () => [...registry.sessions],
         embeddingManager: manager,
+        transcriptMiner: deps.transcriptMiner,
         resolveProjectVaultDir: projectVaultDirResolvers.get(scope).resolve,
         staleThresholdMs: liveConfig.current.daemon.stale_session_threshold_ms,
         ...(deps.reconciler
@@ -522,13 +532,18 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
   // BOTH fully mined and session-terminal, the host may be the only durable
   // copy of its transcript (the member can rotate/trim its own file at any
   // time), so this NEVER TTLs a tree by age. "Session-terminal" is
-  // `sessions.status = 'completed'`, set by `closeSession` at SessionEnd
-  // (`daemon/api/session-lifecycle.ts` handleUnregister) — which is also
-  // where the FINAL mining pass runs (`transcriptMiner.reconcileAndAttributeResponses`
-  // against the already host-substituted `transcript_path`, guaranteed
-  // caught-up by the member's `flushBeforeForward` before that terminal
-  // route is dispatched), so `status = 'completed'` doubles as the
-  // fully-mined signal for a routed session. The candidate list is walked
+  // `sessions.status = 'completed'`, and "completed implies fully mined"
+  // holds because EVERY daemon completion path — SessionEnd, the manual
+  // complete route, AND the stale-session sweep — routes through the
+  // completion chokepoint (`completeSessionWithMining`,
+  // `daemon/session-completion.ts`), which runs the final mining convergence
+  // against the stamped `transcript_path` (host-substituted for a routed
+  // session, and guaranteed caught-up at SessionEnd by the member's
+  // `flushBeforeForward` before that terminal route is dispatched) BEFORE
+  // the status flip. A completed session with NO stamped `transcript_path`
+  // had no mine source at close (degraded-missing at every Stop, or no Stop
+  // at all) — its tree may hold unmined bytes, so it is never pruned (kept
+  // forever; data preservation over disk). The candidate list is walked
   // ONCE per tick (bounded by the cache's own size, not total session
   // history) and resolved against every Grove this daemon serves — a
   // candidate whose session cannot be found in ANY served Grove is left
@@ -561,6 +576,10 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           if (session.machine_id !== candidate.machineId) continue;
           unresolved.delete(key); // owning Grove found regardless of status
           if (session.status !== STATUS_COMPLETED) continue; // still in flight — never touch
+          // No stamped transcript_path = the completion chokepoint had no
+          // mine source at close — the tree may hold unmined bytes. Keep it
+          // forever rather than guess (data preservation over disk).
+          if (!session.transcript_path) continue;
           pruneRoutedTranscriptSessionDir(candidate.dirPath);
           pruned += 1;
         }

@@ -153,6 +153,7 @@ describe('handleCompleteSession', () => {
       liveConfig: liveConfig as never,
       reconciler: { clearSession: vi.fn() },
       registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
+      transcriptMiner: { reconcileAndAttributeResponses: vi.fn(() => ({})) },
     });
   }
 
@@ -178,6 +179,76 @@ describe('handleCompleteSession', () => {
     const after = getSession('sess-active', ALL_PROJECTS_SCOPE);
     expect(after?.status).toBe('completed');
     expect(after?.ended_at).toBeGreaterThanOrEqual(now);
+  });
+
+  it('runs the final transcript-mining convergence before completing a session with a transcript source (unmined-tail case)', async () => {
+    // The manual complete route is a SessionEnd mirror: completing an
+    // unmined session must mine its tail through the completion chokepoint
+    // (`daemon/session-completion.ts`) BEFORE the status flip, or the
+    // routed-transcript cache GC's "completed implies mined" invariant
+    // breaks and the host's only transcript copy could be pruned unmined.
+    const now = epochNow();
+    upsertSession({
+      id: 'sess-manual-unmined',
+      agent: 'claude-code',
+      started_at: now,
+      created_at: now,
+      status: 'active',
+      transcript_path: '/routed/materialized/sess-manual-unmined.jsonl',
+    });
+
+    const minerCalls: Array<{ sessionId: string; agent: string; transcriptPath: string }> = [];
+    const handlers = createSessionMutationHandlers({
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
+      vaultDir: tmpDir,
+      logger: makeLogger() as never,
+      liveConfig: { current: { agent: { summary_batch_interval: 5, event_tasks_enabled: false } } } as never,
+      reconciler: { clearSession: vi.fn() },
+      registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
+      transcriptMiner: {
+        reconcileAndAttributeResponses(sessionId: string, input: { agent: string; transcriptPath: string }) {
+          minerCalls.push({ sessionId, ...input });
+          return {};
+        },
+      },
+    });
+    await handlers.handleCompleteSession(makeRequest({ params: { id: 'sess-manual-unmined' } }));
+
+    expect(minerCalls).toEqual([{
+      sessionId: 'sess-manual-unmined',
+      agent: 'claude-code',
+      transcriptPath: '/routed/materialized/sess-manual-unmined.jsonl',
+    }]);
+    expect(getSession('sess-manual-unmined', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
+  });
+
+  it('does not invoke the miner when re-completing an already-completed session', async () => {
+    const now = epochNow();
+    upsertSession({
+      id: 'sess-done-no-mine',
+      agent: 'claude-code',
+      started_at: now,
+      created_at: now,
+      status: 'completed',
+      ended_at: now,
+      transcript_path: '/routed/materialized/sess-done-no-mine.jsonl',
+    });
+
+    const miner = { reconcileAndAttributeResponses: vi.fn(() => ({})) };
+    const handlers = createSessionMutationHandlers({
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
+      vaultDir: tmpDir,
+      logger: makeLogger() as never,
+      liveConfig: { current: { agent: { summary_batch_interval: 5, event_tasks_enabled: false } } } as never,
+      reconciler: { clearSession: vi.fn() },
+      registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
+      transcriptMiner: miner,
+    });
+    await handlers.handleCompleteSession(makeRequest({ params: { id: 'sess-done-no-mine' } }));
+
+    expect(miner.reconcileAndAttributeResponses).not.toHaveBeenCalled();
   });
 
   it('is idempotent — re-completing a completed session does not rewrite ended_at', async () => {
@@ -249,6 +320,7 @@ describe('handleCompleteSession', () => {
       liveConfig: liveConfig as never,
       reconciler: reconcilerStub,
       registry: registryStub,
+      transcriptMiner: { reconcileAndAttributeResponses: vi.fn(() => ({})) },
     });
 
     await handlers.handleDeleteSession(makeRequest({ params: { id: 'sess-delete-clear-registry' } }));
@@ -289,6 +361,7 @@ describe('handleCompleteSession', () => {
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
       registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
+      transcriptMiner: { reconcileAndAttributeResponses: vi.fn(() => ({})) },
     });
     await handlers.handleDeleteSession(makeRequest({ params: { id: 'sess-cleanup-scope' } }));
     expect(seen).toBe(TEST_REQUEST_CONTEXT);
@@ -323,6 +396,7 @@ describe('handleDeleteSession — live-session guard', () => {
       liveConfig: { current: { agent: { summary_batch_interval: 5, event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
       registry: registryStub,
+      transcriptMiner: { reconcileAndAttributeResponses: vi.fn(() => ({})) },
     });
   }
 
@@ -532,6 +606,7 @@ describe('handleDeletePlan', () => {
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
       registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
+      transcriptMiner: { reconcileAndAttributeResponses: vi.fn(() => ({})) },
     });
   }
 
@@ -628,6 +703,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
       registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
+      transcriptMiner: { reconcileAndAttributeResponses: vi.fn(() => ({})) },
     });
   }
 
@@ -700,6 +776,7 @@ describe('handlePatchPlan — status updates', () => {
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
       registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
+      transcriptMiner: { reconcileAndAttributeResponses: vi.fn(() => ({})) },
     });
   }
 

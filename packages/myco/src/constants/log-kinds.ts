@@ -20,6 +20,9 @@ export const LOG_KINDS = {
   LIFECYCLE_UNREGISTER: 'lifecycle.unregister',
   LIFECYCLE_CLEANUP: 'lifecycle.cleanup',
   LIFECYCLE_AUTO_REGISTER: 'lifecycle.auto-register',
+  // The daemon-level completion chokepoint (daemon/session-completion.ts) —
+  // final transcript-mining convergence before the status flip.
+  SESSION_COMPLETE: 'lifecycle.complete',
 
   // Hooks (event ingestion)
   HOOKS_EVENT: 'hooks.event',

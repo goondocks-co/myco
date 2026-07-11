@@ -29,6 +29,7 @@ import {
 } from '@myco/db/queries/batches.js';
 import { listActivities, latestActivityTimestampForBatch } from '@myco/db/queries/activities.js';
 import { getSession, closeSession } from '@myco/db/queries/sessions.js';
+import { completeSessionWithMining, type SessionCompletionMiner } from './session-completion.js';
 import { hasSessionTombstone } from '@myco/db/queries/session-tombstones.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
@@ -146,6 +147,16 @@ export interface ReconcilerDeps {
    * runs unscoped against the ambient DB.
    */
   resolveGroveDb?: (groveId: string) => Database | null;
+  /**
+   * The completion chokepoint's mining seam (`daemon/session-completion.ts`).
+   * When present, the resurrected-stale close routes through
+   * `completeSessionWithMining` so a session resurrected from a historical
+   * buffer is mined against its stamped transcript before the status flip —
+   * the same "completed implies mined" invariant every other daemon
+   * completion path upholds. Optional: absent (some tests) the close is the
+   * raw `closeSession` write, as before.
+   */
+  transcriptMiner?: SessionCompletionMiner;
 }
 
 /** Outcome counts for one drain pass (log + test observability). */
@@ -213,7 +224,7 @@ export interface Reconciler {
  * `reconciledSessions` set so that each session is only reconciled once
  * per daemon lifetime.
  */
-export function createReconciler({ bufferDirs, logger, projectRoot, onSessionReconciled, eventDedupCache, registry, machineId, resolveGroveDb }: ReconcilerDeps): Reconciler {
+export function createReconciler({ bufferDirs, logger, projectRoot, onSessionReconciled, eventDedupCache, registry, machineId, resolveGroveDb, transcriptMiner }: ReconcilerDeps): Reconciler {
   // Converged map: session id → the buffer file identity (size, mtimeMs)
   // the last converged pass observed. A session whose CURRENT file
   // matches its entry is skipped (startup scan + register + event +
@@ -1024,11 +1035,18 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
 
     // A resurrected session whose newest buffered event predates the
     // stale-session threshold is historical recovery, not a live session:
-    // close it through the completion chokepoint immediately so the sweep
-    // never sees a zombie active minted by replay. (Such sessions were
+    // close it immediately so the sweep never sees a zombie active minted
+    // by replay. Routed through the daemon completion chokepoint
+    // (`completeSessionWithMining`) when the miner is wired so the
+    // resurrected transcript is mined before the status flip ("completed
+    // implies mined"); raw closeSession otherwise. (Such sessions were
     // also kept out of the in-memory registry at resurrection time.)
     if (resurrected && staleResurrection) {
-      closeSession(sessionId, epochSeconds());
+      if (transcriptMiner) {
+        completeSessionWithMining(sessionId, epochSeconds(), { transcriptMiner, logger });
+      } else {
+        closeSession(sessionId, epochSeconds());
+      }
       logger.info(LOG_KINDS.LIFECYCLE_RECONCILE, 'Reconciliation: resurrected session closed as stale', {
         session_id: sessionId,
       });

@@ -185,6 +185,8 @@ function buildDeps(fx: GroveFixture, overrides: Partial<Record<string, unknown>>
     logger: fx.logger,
     liveConfig: liveConfig as never,
     machineId: 'test-machine',
+    transcriptMiner: (overrides.transcriptMiner as PowerJobDeps['transcriptMiner'])
+      ?? { reconcileAndAttributeResponses: () => ({}) },
     daemonVaultDir: fx.workDir,
     cache: fx.cache,
     embeddingRuntimeFactory: fx.factory,
@@ -839,15 +841,28 @@ describe('routed-transcript-cache-gc power job', () => {
     fx.cleanup();
   });
 
-  function seedSession(id: string, status: 'active' | 'completed', machineId: string): void {
+  function seedSession(
+    id: string,
+    status: 'active' | 'completed',
+    machineId: string,
+    opts: { transcriptPath?: string | null; startedAt?: number } = {},
+  ): void {
+    const startedAt = opts.startedAt ?? Math.floor(Date.now() / 1000);
     withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
       upsertSession({
         id,
         agent: 'claude-code',
-        started_at: Math.floor(Date.now() / 1000),
-        created_at: Math.floor(Date.now() / 1000),
+        started_at: startedAt,
+        created_at: startedAt,
         status,
         machine_id: machineId,
+        // Default: a stamped transcript source — the shape every routed
+        // session that reached a successful Stop substitution has. The GC
+        // requires it (no stamp = the completion chokepoint had no mine
+        // source, tree kept forever); pass null to exercise that guard.
+        transcript_path: opts.transcriptPath === undefined
+          ? `/routed/materialized/${id}.jsonl`
+          : opts.transcriptPath,
       });
     });
   }
@@ -933,6 +948,74 @@ describe('routed-transcript-cache-gc power job', () => {
     expect(cacheDirExists('member_aaaa1111', 'sess-done-1')).toBe(false);
     expect(cacheDirExists('member_aaaa1111', 'sess-done-2')).toBe(false);
     expect(cacheDirExists('member_aaaa1111', 'sess-active-1')).toBe(true);
+  });
+
+  it('never prunes a completed session with NO stamped transcript_path (no mine source at close — tree kept)', async () => {
+    // A routed session that never got a successful Stop substitution
+    // (degraded-missing throughout, or no Stop at all) completes with
+    // transcript_path NULL — the completion chokepoint had nothing to mine
+    // against, so the tree may hold unmined bytes. The GC must keep it.
+    seedSession('sess-no-stamp', 'completed', 'member_dddd4444', { transcriptPath: null });
+    materializeCacheDir('member_dddd4444', 'sess-no-stamp');
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_dddd4444', 'sess-no-stamp')).toBe(true);
+  });
+
+  it('stale-sweep completion mines the unmined tail through the chokepoint, and only then may GC prune (the reviewer-caught failure case)', async () => {
+    // Failure mode this pins: member crashes mid-turn → no Stop/SessionEnd →
+    // the stale sweep completes the session. Pre-fix, that flip ran NO
+    // mining pass, and the GC — trusting "completed implies mined" — deleted
+    // the host's only transcript copy with the tail unmined. Now the sweep
+    // routes through completeSessionWithMining: the miner sees the stamped
+    // (host-materialized) transcript BEFORE the status flip, and only then
+    // does the GC prune the tree.
+    const staleStart = Math.floor(Date.now() / 1000) - 2 * 3600; // 2h ago > 60min threshold
+    const materializedDir = materializeCacheDir('member_eeee5555', 'sess-crashed');
+    const materializedFile = path.join(materializedDir, 'tx_dummy00000000000000000000000.jsonl');
+    seedSession('sess-crashed', 'active', 'member_eeee5555', {
+      transcriptPath: materializedFile,
+      startedAt: staleStart,
+    });
+    // One OLD prompt batch: keeps the session stale (batch beyond threshold)
+    // but NOT "dead" (dead = zero batches → cascade delete in the same
+    // maintenance run, which is not this test's subject).
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      getDatabase().prepare(
+        `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
+         VALUES ('sess-crashed', 1, ?, ?, 'active')`,
+      ).run(staleStart, staleStart);
+    });
+
+    const minerCalls: Array<{ sessionId: string; agent: string; transcriptPath: string }> = [];
+    registerPowerJobs(pm as never, buildDeps(fx, {
+      transcriptMiner: {
+        reconcileAndAttributeResponses(sessionId: string, input: { agent: string; transcriptPath: string }) {
+          minerCalls.push({ sessionId, ...input });
+          return {};
+        },
+      },
+    }));
+
+    // The stale sweep (session-maintenance job) completes the crashed
+    // session — routing through the completion chokepoint, which mines the
+    // stamped transcript first.
+    await pm.find('session-maintenance').fn();
+    expect(minerCalls).toEqual([{
+      sessionId: 'sess-crashed',
+      agent: 'claude-code',
+      transcriptPath: materializedFile,
+    }]);
+    const status = withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      (getDatabase().prepare(`SELECT status FROM sessions WHERE id = 'sess-crashed'`).get() as { status: string }).status,
+    );
+    expect(status).toBe('completed');
+
+    // Only now — completed AND mined — may the GC prune the tree.
+    await pm.find('routed-transcript-cache-gc').fn();
+    expect(cacheDirExists('member_eeee5555', 'sess-crashed')).toBe(false);
   });
 });
 
