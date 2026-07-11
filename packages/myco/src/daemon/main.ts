@@ -108,6 +108,7 @@ import { registerContentClaimRoutes } from './api/content-claims.js';
 import { registerContentClaimMaterializeRoute } from './api/content-claims-materialize.js';
 import { registerContentClaimFileStatusRoute } from './api/content-claims-file-status.js';
 import { registerDrainHealthRoute } from './api/drain-health.js';
+import { registerHostMembershipRoutes } from './api/host-membership.js';
 import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
 import { tenantRoute } from './api/route-helpers.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
@@ -1550,6 +1551,10 @@ export async function main(): Promise<void> {
   // derived-counters summary for the member's own dashboard. No new state —
   // reads the drains' already-persisted queue stores.
   registerDrainHealthRoute(server, { transcriptDrain, planDrain, eventReplayDrain });
+  // Team Host MEMBERSHIP lifecycle (consolidation Task D-2): join/leave/
+  // attach/detach as daemon API, the Team page's primary write surface (the
+  // CLI wrappers become a thin fallback over this same route set).
+  registerHostMembershipRoutes(server, { mycoHome, logger });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};

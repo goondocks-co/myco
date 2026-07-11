@@ -1,45 +1,86 @@
 /**
- * `myco attach <project>` / `myco detach <project>` CLI surface (Task A1).
+ * `myco attach <project>` / `myco detach <project>` CLI surface (Task A1;
+ * consolidation Task D-2: fallback posture).
  *
- * Thin argv parsing + human-readable output over the {@link attachCommand} /
- * {@link detachCommand} residency-mapping orchestration. Sibling to
- * `cli/join.ts`: same flag parser (shared via `cli/shared.ts#parseFlags`),
- * same print-only responsibility — the real work (identity resolution, error
- * mapping, the registry write) lives in `host/attach-command.ts`.
+ * Thin argv parsing + human-readable output over the daemon API
+ * (`POST /api/host-membership/attach|detach`, `daemon/api/host-membership.ts`),
+ * which itself wraps {@link attachCommand}/{@link detachCommand}
+ * (`host/attach-command.ts`). Chris's PR #667 review direction: membership
+ * "should frankly be only the UI and API, with the CLI being a secondary
+ * fallback" — this file used to call the orchestration functions in-process;
+ * it now drives the SAME daemon route the Team page's attach control posts
+ * to. Sibling to `cli/join.ts`: same flag parser (shared via
+ * `cli/shared.ts#parseFlags`), same print-only responsibility.
  */
-import { attachCommand, detachCommand } from '../host/attach-command.js';
-import { parseFlags } from './shared.js';
+import path from 'node:path';
+import { connectToGlobalDaemon, daemonErrorMessage, parseFlags } from './shared.js';
 
-export async function runAttach(args: string[]): Promise<void> {
-  const { positionals, flags } = parseFlags(args);
-  const result = attachCommand({
-    projectPath: positionals[0],
-    hostId: flags.get('host'),
-    groveId: flags.get('grove'),
-    projectId: flags.get('project-id'),
-  });
+const ATTACH_TIMEOUT_MS = 10_000;
+const DETACH_TIMEOUT_MS = 10_000;
 
-  if (result.alreadyAttached) {
-    console.log(`Project ${result.projectId} is already attached to host ${result.hostId} (${result.hostLabel}) — converged.`);
-  } else {
-    console.log(`Attached ${result.projectId} to Team Host ${result.hostId} (${result.hostLabel}).`);
-  }
-  console.log(`  Grove:    ${result.groveId}`);
-  console.log(`  Checkout: ${result.root}`);
-  for (const note of result.notes) console.log(`  NOTE: ${note}`);
+interface AttachResponseBody {
+  project_id: string;
+  grove_id: string;
+  host_id: string;
+  host_label: string;
+  root: string;
+  already_attached: boolean;
+  notes: string[];
 }
 
-export async function runDetach(args: string[]): Promise<void> {
-  const { positionals, flags } = parseFlags(args);
-  const result = detachCommand({
-    projectPath: positionals[0],
-    projectId: flags.get('project-id'),
-  });
+interface DetachResponseBody {
+  project_id: string;
+  detached_from_host_id: string | null;
+}
 
-  if (!result.detachedFromHostId) {
-    console.log(`Project ${result.projectId} is not attached to any host — nothing to detach.`);
+export async function runAttach(args: string[], vaultDir: string): Promise<void> {
+  const { positionals, flags } = parseFlags(args);
+  const projectRoot = path.resolve(positionals[0] ?? '.');
+
+  const client = await connectToGlobalDaemon(vaultDir);
+  const result = await client.post('/api/host-membership/attach', {
+    project_root: projectRoot,
+    host_id: flags.get('host'),
+    grove_id: flags.get('grove'),
+    project_id: flags.get('project-id'),
+  }, { timeoutMs: ATTACH_TIMEOUT_MS });
+
+  if (!result.ok) {
+    console.error(`attach failed: ${daemonErrorMessage(result.data) ?? 'the daemon did not respond'}`);
+    process.exit(1);
+  }
+
+  const body = result.data as AttachResponseBody;
+  if (body.already_attached) {
+    console.log(`Project ${body.project_id} is already attached to host ${body.host_id} (${body.host_label}) — converged.`);
+  } else {
+    console.log(`Attached ${body.project_id} to Team Host ${body.host_id} (${body.host_label}).`);
+  }
+  console.log(`  Grove:    ${body.grove_id}`);
+  console.log(`  Checkout: ${body.root}`);
+  for (const note of body.notes) console.log(`  NOTE: ${note}`);
+}
+
+export async function runDetach(args: string[], vaultDir: string): Promise<void> {
+  const { positionals, flags } = parseFlags(args);
+  const projectRoot = path.resolve(positionals[0] ?? '.');
+
+  const client = await connectToGlobalDaemon(vaultDir);
+  const result = await client.post('/api/host-membership/detach', {
+    project_root: projectRoot,
+    project_id: flags.get('project-id'),
+  }, { timeoutMs: DETACH_TIMEOUT_MS });
+
+  if (!result.ok) {
+    console.error(`detach failed: ${daemonErrorMessage(result.data) ?? 'the daemon did not respond'}`);
+    process.exit(1);
+  }
+
+  const body = result.data as DetachResponseBody;
+  if (!body.detached_from_host_id) {
+    console.log(`Project ${body.project_id} is not attached to any host — nothing to detach.`);
     return;
   }
-  console.log(`Detached ${result.projectId} from Team Host ${result.detachedFromHostId}.`);
+  console.log(`Detached ${body.project_id} from Team Host ${body.detached_from_host_id}.`);
   console.log('  Future requests for this project resolve to a local Grove again.');
 }

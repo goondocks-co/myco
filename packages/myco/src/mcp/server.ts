@@ -82,7 +82,19 @@ export function createMcpProtocolServer(tools: MycoTools, options: McpProtocolSe
         request_id: extra.requestId,
         status: 'ok',
       });
-      return { content: [{ type: 'text', text: serializeToolResult(name, result) }] };
+      return {
+        content: [{ type: 'text', text: serializeToolResult(name, result) }],
+        // Additive, spec-legal field (CallToolResultSchema#structuredContent):
+        // most MCP clients ignore it, so agent-facing `content` is unchanged.
+        // `myco tool call` (cli/tool.ts) reads this to recover the FULL raw
+        // tool result — `content` alone loses fidelity for shapes like
+        // myco_cortex digest, where `serializeToolResult` intentionally
+        // returns only the human-readable `content` string and drops
+        // `tier`/`fallback`/`generated_at`. Wrapped in `{ result }` so the
+        // record-typed schema accepts any underlying shape (array, primitive,
+        // or object) uniformly.
+        structuredContent: { result },
+      };
     } catch (err) {
       const error = err as Error;
       logger?.warn(LOG_KINDS.MCP_CALL, 'MCP tool call failed', {

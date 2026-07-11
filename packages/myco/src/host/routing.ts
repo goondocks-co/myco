@@ -192,8 +192,16 @@ export function refusalJson(payload: RefusalPayload): { status: number; body: Re
  * structured soft-fails (the `legacy_vault` precedent: code `-32004`, a
  * `data.code` discriminator) so MCP clients render a friendly message instead
  * of `tool_call_failed`.
+ *
+ * `id` must echo the request's JSON-RPC id whenever the caller has parsed the
+ * request body (the host-proxy `/mcp` peek path has): the MCP SDK's
+ * `JSONRPCMessageSchema` accepts a string/number response id but REJECTS
+ * `id: null`, so a refusal that fails to echo it throws a ZodError inside SDK
+ * clients before any friendly-message classification. The `null` default is
+ * correct only where no request id is knowable — an unparseable request, or a
+ * transport-level refusal written before any body read.
  */
-export function refusalMcpBody(payload: RefusalPayload): string {
+export function refusalMcpBody(payload: RefusalPayload, id: string | number | null = null): string {
   return JSON.stringify({
     jsonrpc: '2.0',
     error: {
@@ -201,7 +209,7 @@ export function refusalMcpBody(payload: RefusalPayload): string {
       message: payload.message,
       data: { code: payload.error, capability: payload.capability },
     },
-    id: null,
+    id,
   });
 }
 
@@ -394,6 +402,19 @@ const ROUTE_RULES: RouteRule[] = [
   //     has joined — machine-local diagnostic data with no Grove/project
   //     scope, never meaningful to answer on another machine's behalf. ---
   { method: 'GET', pattern: '/api/team-host/drain-health', stamp: 'localhost-only', capability: HOST_ADMIN },
+
+  // --- localhost-only: Team Host MEMBERSHIP lifecycle (consolidation Task
+  //     D-2, `daemon/api/host-membership.ts`). join/leave/attach/detach mutate
+  //     THIS machine's own local registry/team-home (`~/.myco-team/hosts/*`)
+  //     and, for join/leave, provision a per-user LaunchAgent — member-machine
+  //     admin actions with no Grove/project scope to proxy. `status` is the
+  //     read-only companion (host list + attach refs + affiliation hint) the
+  //     Team page polls; same posture, no new state. ---
+  { method: 'POST', pattern: '/api/host-membership/join', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-membership/leave', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-membership/attach', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-membership/detach', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'GET', pattern: '/api/host-membership/status', stamp: 'localhost-only', capability: HOST_ADMIN },
 ];
 
 /**

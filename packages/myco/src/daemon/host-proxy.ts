@@ -502,26 +502,26 @@ function hostUnreachablePayload(target: RemoteTarget): Record<string, unknown> {
   };
 }
 
-function respondHostUnreachable(res: http.ServerResponse, target: RemoteTarget, isMcp: boolean): void {
+function respondHostUnreachable(res: http.ServerResponse, target: RemoteTarget, isMcp: boolean, mcpId: JsonRpcId = null): void {
   if (isMcp) {
-    respondMcpJson(res, mcpSoftFail('host_unreachable', hostUnreachablePayload(target).message as string, target));
+    respondMcpJson(res, mcpSoftFail('host_unreachable', hostUnreachablePayload(target).message as string, target, mcpId));
     return;
   }
   respondRouterJson(res, 503, hostUnreachablePayload(target));
 }
 
-function respondHostAuthRejected(res: http.ServerResponse, target: RemoteTarget, isMcp: boolean): void {
+function respondHostAuthRejected(res: http.ServerResponse, target: RemoteTarget, isMcp: boolean, mcpId: JsonRpcId = null): void {
   const message = `Host ${target.host.label} rejected this machine's credentials. Re-join the host to refresh the bearer.`;
-  if (isMcp) { respondMcpJson(res, mcpSoftFail('host_auth_rejected', message, target)); return; }
+  if (isMcp) { respondMcpJson(res, mcpSoftFail('host_auth_rejected', message, target, mcpId)); return; }
   respondRouterJson(res, 502, { error: 'host_auth_rejected', host_id: target.host.host_id, message, retryable: false });
 }
 
-function respondVersionMismatch(res: http.ServerResponse, target: RemoteTarget, isMcp: boolean, hostReported?: number): void {
+function respondVersionMismatch(res: http.ServerResponse, target: RemoteTarget, isMcp: boolean, hostReported?: number, mcpId: JsonRpcId = null): void {
   const host = hostReported ?? target.host.protocol_version;
   const message =
     `Host ${target.host.label} requires Team-Host protocol v${host}; this machine speaks `
     + `v${HOST_PROTOCOL_VERSION}. Upgrade Myco to reconnect.`;
-  if (isMcp) { respondMcpJson(res, mcpSoftFail('host_protocol_mismatch', message, target)); return; }
+  if (isMcp) { respondMcpJson(res, mcpSoftFail('host_protocol_mismatch', message, target, mcpId)); return; }
   respondRouterJson(res, 409, {
     error: 'host_protocol_mismatch',
     host_id: target.host.host_id,
@@ -532,14 +532,58 @@ function respondVersionMismatch(res: http.ServerResponse, target: RemoteTarget, 
   });
 }
 
+/** A JSON-RPC request id as the refusal writers carry it: the request's own
+ *  id when it was parseable, else null (spec-correct for a response to an
+ *  unparseable request). */
+type JsonRpcId = string | number | null;
+
+/**
+ * Extract the JSON-RPC id from an (already-parsed) `/mcp` request body so a
+ * member-side refusal can ECHO it. This is load-bearing for the envelope's
+ * schema validity, not a nicety: the MCP SDK's `JSONRPCMessageSchema` accepts
+ * a response id that is a string, a number, or ABSENT — but `id: null` fails
+ * validation, so a refusal written with `id: null` for a parseable request
+ * threw a ZodError inside the SDK client before any McpError classification
+ * (a ~3.4KB validation dump instead of the designed friendly message), and
+ * made the stdio bridge treat the refusal as a transport failure (two wasted
+ * self-heal reconnect attempts). `id: null` remains only for the genuinely
+ * unparseable-request case, where the JSON-RPC spec itself prescribes it.
+ *
+ * A batch (array) takes the first element carrying a valid id — the SDK sends
+ * one message per tool-call POST, so this is a conservative edge case, same
+ * stance as `isCanopyMcpCall`'s batch handling.
+ */
+export function mcpRequestIdFromBody(parsed: unknown): JsonRpcId {
+  const idOf = (msg: unknown): JsonRpcId => {
+    if (!msg || typeof msg !== 'object') return null;
+    const id = (msg as Record<string, unknown>).id;
+    if (typeof id === 'number') return id;
+    if (typeof id === 'string' && id !== '') return id;
+    return null;
+  };
+  if (Array.isArray(parsed)) {
+    for (const msg of parsed) {
+      const id = idOf(msg);
+      if (id !== null) return id;
+    }
+    return null;
+  }
+  return idOf(parsed);
+}
+
 /** Wrap a member-side soft-fail in the JSON-RPC `-32004` envelope the `/mcp`
  *  layer already uses (the `legacy_vault`/refusal precedent) so MCP clients
- *  render a friendly message instead of `tool_call_failed`. */
-function mcpSoftFail(code: string, message: string, target: RemoteTarget): string {
+ *  render a friendly message instead of `tool_call_failed`. `id` must echo
+ *  the request's id whenever the request was parseable — see
+ *  {@link mcpRequestIdFromBody} for why (SDK schema validity). `id: null`
+ *  remains only for the unparseable-request case, which is what JSON-RPC
+ *  itself prescribes there — and no SDK client ever hits it, because the SDK
+ *  only sends parseable requests. */
+function mcpSoftFail(code: string, message: string, target: RemoteTarget, id: JsonRpcId): string {
   return JSON.stringify({
     jsonrpc: '2.0',
     error: { code: -32004, message, data: { code, host_id: target.host.host_id } },
-    id: null,
+    id,
   });
 }
 
@@ -616,19 +660,16 @@ export async function handleAttachedRequest(
   // Non-collect (serve, incl. /mcp): a synchronous proxy. Host-unreachable is a
   // real error surfaced from the dial/relay, never a hang or a local-DB fallback.
 
-  // Version pre-check before any dial: a stored host version outside the
-  // member's window never self-heals by retry (routing-layer §5.3).
-  if (!hostProtocolCompatible(target.host.protocol_version)) {
-    logVersionMismatchOnce(d.logger, target);
-    respondVersionMismatch(res, target, isMcp);
-    return;
-  }
-
+  // The one sanctioned `/mcp` envelope peek: read the small JSON-RPC body to
+  // degrade Canopy tool calls before they cross the wire, then forward the
+  // exact bytes. The RESPONSE still streams unbuffered. Read BEFORE the
+  // version pre-check so every member-side refusal writer below (version
+  // mismatch included) can echo the request's JSON-RPC id — a refusal that
+  // fails to echo it is schema-invalid for SDK clients (see
+  // mcpRequestIdFromBody).
   let bufferedBody: Buffer | null = null;
+  let mcpId: JsonRpcId = null;
   if (isMcp && methodHasBody(req.method)) {
-    // The one sanctioned `/mcp` envelope peek: read the small JSON-RPC body to
-    // degrade Canopy tool calls before they cross the wire, then forward the
-    // exact bytes. The RESPONSE still streams unbuffered.
     try {
       bufferedBody = await readRawBody(req);
     } catch {
@@ -638,13 +679,27 @@ export async function handleAttachedRequest(
     let parsed: unknown;
     try { parsed = bufferedBody.length ? JSON.parse(bufferedBody.toString('utf-8')) : undefined; }
     catch { parsed = undefined; }
-    if (isCanopyMcpCall(parsed)) {
-      respondMcpJson(res, refusalMcpBody(hostedCapabilityUnavailable('Code intelligence (Canopy)')));
+    mcpId = mcpRequestIdFromBody(parsed);
+
+    // Version pre-check before any dial: a stored host version outside the
+    // member's window never self-heals by retry (routing-layer §5.3).
+    if (!hostProtocolCompatible(target.host.protocol_version)) {
+      logVersionMismatchOnce(d.logger, target);
+      respondVersionMismatch(res, target, isMcp, undefined, mcpId);
       return;
     }
+    if (isCanopyMcpCall(parsed)) {
+      respondMcpJson(res, refusalMcpBody(hostedCapabilityUnavailable('Code intelligence (Canopy)'), mcpId));
+      return;
+    }
+  } else if (!hostProtocolCompatible(target.host.protocol_version)) {
+    // Same pre-check for non-/mcp serve routes (no body peek needed).
+    logVersionMismatchOnce(d.logger, target);
+    respondVersionMismatch(res, target, isMcp);
+    return;
   }
 
-  await forwardAndRelay(req, res, target, pathname, isMcp, bufferedBody, d);
+  await forwardAndRelay(req, res, target, pathname, isMcp, mcpId, bufferedBody, d);
 }
 
 /**
@@ -848,6 +903,7 @@ async function forwardAndRelay(
   target: RemoteTarget,
   pathname: string,
   isMcp: boolean,
+  mcpId: JsonRpcId,
   bufferedBody: Buffer | null,
   d: HostProxyDeps,
 ): Promise<void> {
@@ -892,7 +948,7 @@ async function forwardAndRelay(
       // not a verbatim relay (the caller must not learn the host bearer shape).
       if (proxyRes.statusCode === 401) {
         proxyRes.resume();
-        respondHostAuthRejected(res, target, isMcp);
+        respondHostAuthRejected(res, target, isMcp, mcpId);
         finish();
         return;
       }
@@ -928,7 +984,7 @@ async function forwardAndRelay(
       // Pre-response failure: overlay unreachable, connect timeout, ECONNREFUSED,
       // or headers timeout. All map to a clean host-unreachable (never a hang,
       // never a local-DB fallback).
-      if (!res.headersSent) respondHostUnreachable(res, target, isMcp);
+      if (!res.headersSent) respondHostUnreachable(res, target, isMcp, mcpId);
       else res.destroy();
       d.logger.warn('host proxy dial failed', {
         host_id: target.host.host_id,

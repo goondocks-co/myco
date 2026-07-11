@@ -4,6 +4,7 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { PowerProvider } from '../../packages/myco/ui/src/providers/power';
 
 const statusFixture = {
   connection_scope: 'grove' as const,
@@ -78,6 +79,23 @@ mock.module('../../packages/myco/ui/src/hooks/use-daemon', () => ({
   useDaemon: () => ({ data: undefined }),
 }));
 
+// Team Host membership (Task D-2) is now the Team page's unconditional
+// primary content (HostTab) — these tests exercise the demoted legacy Team
+// Sync tabs below it, so HostTab's own hooks are stubbed to their empty
+// state rather than hitting a real network/PowerProvider-dependent query.
+mock.module('../../packages/myco/ui/src/hooks/use-host-membership', () => ({
+  useHostMembershipStatus: () => ({ data: { hosts: [], hint: null }, isLoading: false }),
+  useJoinHost: () => ({ mutateAsync: async () => ({}), isPending: false }),
+  useLeaveHost: () => ({ mutateAsync: async () => ({}), isPending: false }),
+  useAttachProject: () => ({ mutateAsync: async () => ({}), isPending: false }),
+  useDetachProject: () => ({ mutateAsync: async () => ({}), isPending: false }),
+  useDrainHealth: () => ({ data: { hosts: [] }, isLoading: false }),
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-groves', () => ({
+  useGroves: () => ({ data: { groves: [] }, isLoading: false }),
+}));
+
 mock.module('../../packages/myco/ui/src/hooks/use-team-members', () => ({
   useTeamMembers: () => ({
     data: {
@@ -112,11 +130,13 @@ import { TeamPage } from '../../packages/myco/ui/src/pages/Team';
 function wrap(initial: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[initial]}>
-        <TeamPage />
-      </MemoryRouter>
-    </QueryClientProvider>
+    <PowerProvider>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[initial]}>
+          <TeamPage />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </PowerProvider>
   );
 }
 
@@ -133,14 +153,16 @@ function TeamMaintenanceRedirect() {
 function wrapWithRoutes(initial: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[initial]}>
-        <Routes>
-          <Route path="/g/:groveSlug/team" element={<TeamPage />} />
-          <Route path="/g/:groveSlug/team/maintenance" element={<TeamMaintenanceRedirect />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
+    <PowerProvider>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[initial]}>
+          <Routes>
+            <Route path="/g/:groveSlug/team" element={<TeamPage />} />
+            <Route path="/g/:groveSlug/team/maintenance" element={<TeamMaintenanceRedirect />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </PowerProvider>
   );
 }
 

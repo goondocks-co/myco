@@ -1,6 +1,7 @@
 import { usePowerQuery } from './use-power-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
+import { hostedDegradedInfo } from '../lib/degrade';
 
 export interface GitIdentity {
   branch: string;
@@ -12,11 +13,24 @@ export interface GitIdentity {
   head_sha: string;
 }
 
+/**
+ * `GET /api/git/status` is `degrade`-stamped for attached (hosted) projects
+ * (`host/routing.ts`) — every request against a hosted grove 409s. Left
+ * unguarded, the default poll interval plus React Query's default retry-3
+ * turned this into a console/network storm on every hosted project (observed
+ * live in the PR-1 smoke — the "known /api/git/status 409 storm" the
+ * degradation-UX work item names). Both knobs key off the SAME uniform
+ * detector (`hostedDegradedInfo`) the rest of the degraded-route UI uses:
+ * never retry the refusal, and stop polling once it's been seen — there is
+ * nothing to observe again until the project's attach state itself changes
+ * (a page reload / re-selection re-mounts the query).
+ */
 export function useGitIdentity() {
   return usePowerQuery<GitIdentity>({
     queryKey: ['git-identity'],
     queryFn: ({ signal }) => fetchJson<GitIdentity>('/git/status', { signal }),
-    refetchInterval: POLL_INTERVALS.GIT_IDENTITY,
+    refetchInterval: (query) => (hostedDegradedInfo(query.state.error) ? false : POLL_INTERVALS.GIT_IDENTITY),
+    retry: (failureCount, err) => (hostedDegradedInfo(err) ? false : failureCount < 3),
     pollCategory: 'standard',
   });
 }

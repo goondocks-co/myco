@@ -33,6 +33,7 @@ import { createFsPlanDrainStore } from '../capture/plan-drain.js';
 import { isGroveEraId } from '../grove/ids.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '../grove/paths.js';
 import { teamHostHintFromManifest } from './hint.js';
+import { codedMembershipError } from './membership-error.js';
 import {
   attachProject,
   detachProject,
@@ -135,7 +136,8 @@ export function attachCommand(options: AttachOptions): AttachResult {
 
   const host = getHost(hostId);
   if (!host) {
-    throw new Error(
+    throw codedMembershipError(
+      'not_joined',
       `Unknown host ${hostId} — this machine has no host record for it. Join it first with `
       + `\`myco join ${hostId}\`, then attach.`,
     );
@@ -198,10 +200,15 @@ export function detachCommand(options: DetachOptions): DetachResult {
 }
 
 /** Map the registry's typed attach refusals to actionable operator messages;
- *  pass anything else through unchanged. */
+ *  pass anything else through unchanged. Each mapped error carries a stable
+ *  `membershipCode` (see `membership-error.ts`) so the daemon API can put a
+ *  machine-readable code on the wire while the message stays CLI-voiced —
+ *  the Team page maps the code to its own outcome copy instead of rendering
+ *  "run `myco detach`" prose in a browser that has a Detach button. */
 function mapAttachError(err: unknown, hostId: string): Error {
   if (err instanceof ProjectRegisteredLocallyError) {
-    return new Error(
+    return codedMembershipError(
+      'project_registered_locally',
       `Cannot attach ${err.projectId}: it still has local Grove data (Grove ${err.groveId}). Adopting `
       + 'existing local history into a team host requires the residency-transition migration, which is '
       + 'not yet available (task A2). This command attaches a project going forward only — detach/migrate '
@@ -209,14 +216,16 @@ function mapAttachError(err: unknown, hostId: string): Error {
     );
   }
   if (err instanceof ProjectAttachedToOtherHostError) {
-    return new Error(
+    return codedMembershipError(
+      'project_attached_to_other_host',
       `Cannot attach ${err.projectId} to host ${err.attemptedHostId}: it is already attached to host `
       + `${err.existingHostId} (a project may be attached to only one host). Run \`myco detach\` for this `
       + 'project first if you mean to move it.',
     );
   }
   if (err instanceof Error && err.message.startsWith('Unknown host')) {
-    return new Error(
+    return codedMembershipError(
+      'not_joined',
       `Unknown host ${hostId} — this machine has no host record for it. Join it first with `
       + `\`myco join ${hostId}\`, then attach.`,
     );
