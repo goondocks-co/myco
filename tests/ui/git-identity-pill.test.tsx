@@ -85,6 +85,21 @@ describe('GitIdentityPill', () => {
     expect(screen.getByText('—')).toBeDefined();
   });
 
+  it('shows the uniform hosted-unavailable tooltip instead of a generic failure when degraded', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <GitIdentityPill
+          data={undefined}
+          isPending={false}
+          isError={true}
+          hostedUnavailable={{ capability: 'Git provenance', message: 'raw' }}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTitle("Git provenance isn't available for projects hosted on a Team Host yet.")).toBeDefined();
+  });
+
   it('links to release provenance settings when given a target', () => {
     renderLinkedIdentity({
       branch: 'main',

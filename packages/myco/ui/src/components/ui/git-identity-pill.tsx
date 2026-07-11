@@ -2,17 +2,26 @@ import { Link } from 'react-router-dom';
 import { GitBranch } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { gitIdentityInitials, type GitIdentity } from '../../hooks/use-git-identity';
+import { hostedUnavailableMessage, type HostedDegradedInfo } from '../../lib/degrade';
 
 export interface GitIdentityPillProps {
   data: GitIdentity | undefined;
   isPending: boolean;
   isError: boolean;
+  /** Set when `isError` is the uniform hosted-capability refusal
+   *  (`hostedDegradedInfo`) — renders the uniform plain-language tooltip
+   *  instead of a generic "Failed to load" (this isn't a transient failure,
+   *  it's a Team Host v1 limitation the user can't retry their way out of). */
+  hostedUnavailable?: HostedDegradedInfo | null;
   to?: string;
   className?: string;
 }
 
-export function GitIdentityPill({ data, isPending, isError, to, className }: GitIdentityPillProps) {
+export function GitIdentityPill({ data, isPending, isError, hostedUnavailable, to, className }: GitIdentityPillProps) {
   if (isPending || isError || !data) {
+    const title = hostedUnavailable
+      ? hostedUnavailableMessage(hostedUnavailable)
+      : isError ? 'Failed to load git state' : 'Loading git state';
     return (
       <button
         type="button"
@@ -22,7 +31,7 @@ export function GitIdentityPill({ data, isPending, isError, to, className }: Git
           'inline-flex items-center gap-2 rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 text-on-surface-variant',
           className,
         )}
-        title={isError ? 'Failed to load git state' : 'Loading git state'}
+        title={title}
       >
         <GitBranch className="h-3 w-3" />
         <span className="font-mono text-xs">—</span>
