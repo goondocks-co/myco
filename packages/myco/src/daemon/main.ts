@@ -1223,10 +1223,22 @@ export async function main(): Promise<void> {
   // plan push is outstanding.
   const planDrain = createPlanDrainQueue({ machineId, logger, planWatchConfig });
 
-  // Both capture drains plug the SAME two host-proxy seams (flush-before-terminal
-  // route + collect-event enqueue); fan each seam out to both so neither channel
-  // regresses the other. The transcript/plan drain modules stay independent — this
-  // is pure wiring composition, threaded into both dispatch chokepoints below.
+  // Team Host: the MEMBER-side attach-aware live-event replay drain (capture-push
+  // C5). When a host is unreachable the collect proxy buffers live capture events
+  // to the DB-free collector buffer; this drain enumerates the attach registry and
+  // re-forwards those buffered events over each host's proxy on reconnect. Its
+  // `pendingCount` inhibits deep sleep while capture is un-shipped, mirroring the
+  // transcript drain. Distinct from the LOCAL buffer reconciler, which enumerates
+  // local Groves only and never sees an attached project's buffer.
+  const eventReplayDrain = createEventReplayDrainQueue({ machineId, logger });
+
+  // Both capture drains plug the SAME host-proxy seams (flush-before-terminal
+  // route + collect-event enqueue + session-terminal prune); fan each seam out to
+  // every drain queue so neither channel regresses another. The drain modules stay
+  // independent — this is pure wiring composition, threaded into both dispatch
+  // chokepoints below. The event-replay drain has no flush/enqueue seam of its own
+  // (it is backstop-only — see its class doc) but DOES plug into the
+  // session-terminal prune (consolidation Task C-2, item 6).
   const transcriptProxyDeps = transcriptDrain.proxyDeps();
   const planProxyDeps = planDrain.proxyDeps();
   const captureProxyDeps = {
@@ -1238,16 +1250,15 @@ export async function main(): Promise<void> {
       transcriptProxyDeps.noteCollectEvent(target, event);
       planProxyDeps.noteCollectEvent(target, event);
     },
+    noteSessionEnded: async (target: RemoteTarget, sessionId: string): Promise<void> => {
+      transcriptProxyDeps.noteSessionEnded(target, sessionId);
+      planProxyDeps.noteSessionEnded(target, sessionId);
+      // The event-replay drain has no flushBeforeForward of its own — its
+      // noteSessionEnded performs its OWN catch-up drain before pruning (see
+      // its class doc), so it is the one leg here worth awaiting.
+      await eventReplayDrain.noteSessionEnded(target, sessionId);
+    },
   };
-
-  // Team Host: the MEMBER-side attach-aware live-event replay drain (capture-push
-  // C5). When a host is unreachable the collect proxy buffers live capture events
-  // to the DB-free collector buffer; this drain enumerates the attach registry and
-  // re-forwards those buffered events over each host's proxy on reconnect. Its
-  // `pendingCount` inhibits deep sleep while capture is un-shipped, mirroring the
-  // transcript drain. Distinct from the LOCAL buffer reconciler, which enumerates
-  // local Groves only and never sees an attached project's buffer.
-  const eventReplayDrain = createEventReplayDrainQueue({ machineId, logger });
 
   const server = new DaemonServer({
     vaultDir: bootstrapVaultDir,

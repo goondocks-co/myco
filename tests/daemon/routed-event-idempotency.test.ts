@@ -97,6 +97,93 @@ describe('routed-capture idempotency (host sink, §4a)', () => {
   });
 });
 
+// --- transaction atomicity (consolidation Task C-2, item 4 / C5-M3) --------
+//
+// The core write (batch/activity insert) and the dedup-ledger record used to
+// be two independent statements. A crash — or, as forced here, a constraint
+// failure — between them would leave the core write committed with nothing in
+// the ledger to catch a replay, so a later re-delivery of the SAME event id
+// would re-run the core write a second time (a duplicate batch/activity).
+// Wrapping both in one `db.transaction()` (event-handlers.ts) makes that
+// impossible: either both land, or neither does. Forces the SECOND write (the
+// ledger insert) to throw via the same `db.prepare` shim technique used by
+// `tests/db/queries/digest-extracts.test.ts` / `content-claims.test.ts`.
+
+describe('routed-capture atomicity: core write + dedup record commit together (item 4)', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(teardownTestDb);
+  beforeEach(() => { cleanTestDb(); seedSession({ id: 's1' }); });
+
+  async function withDedupInsertThrowing(fn: () => void): Promise<void> {
+    const { getDatabase } = await import('@myco/db/client.js');
+    const db = getDatabase();
+    const originalPrepare = db.prepare.bind(db);
+    (db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string) => {
+      const stmt = originalPrepare(sql);
+      if (/INSERT INTO routed_event_dedup/i.test(sql)) {
+        stmt.run = (() => {
+          (db as unknown as { prepare: typeof db.prepare }).prepare = originalPrepare;
+          throw new Error('simulated dedup-ledger write failure');
+        }) as typeof stmt.run;
+      }
+      return stmt;
+    }) as typeof db.prepare;
+    try {
+      fn();
+    } finally {
+      (db as unknown as { prepare: typeof db.prepare }).prepare = originalPrepare;
+    }
+  }
+
+  it('handleUserPrompt: a ledger-insert failure rolls back the batch it just opened', async () => {
+    const opts = { sourceEventId: eid('atomic-p1'), sourceMachineId: MACHINE };
+    await withDedupInsertThrowing(() => {
+      expect(() => handleUserPrompt('s1', 'do the thing', opts)).toThrow('simulated dedup-ledger write failure');
+    });
+    expect(batchCount('s1')).toBe(0); // the batch insert did NOT survive
+    expect(getRoutedEventDedup(eid('atomic-p1'))).toBeNull();
+
+    // Retry after the fault clears succeeds cleanly — nothing was left half-applied.
+    const retry = handleUserPrompt('s1', 'do the thing', opts);
+    expect(batchCount('s1')).toBe(1);
+    expect(getRoutedEventDedup(eid('atomic-p1'))?.prompt_batch_id).toBe(retry.batchId);
+  });
+
+  it('handleToolUse: a ledger-insert failure rolls back the activity it just inserted', async () => {
+    const args = ['s1', 'claude', 'Read', { file_path: '/x' }, undefined, '/root', undefined] as const;
+    await withDedupInsertThrowing(() => {
+      expect(() => handleToolUse(...args, eid('atomic-t1'), MACHINE)).toThrow('simulated dedup-ledger write failure');
+    });
+    expect(activityCount('s1')).toBe(0); // the activity insert did NOT survive
+    expect(getRoutedEventDedup(eid('atomic-t1'))).toBeNull();
+
+    handleToolUse(...args, eid('atomic-t1'), MACHINE); // retry succeeds
+    expect(activityCount('s1')).toBe(1);
+  });
+
+  it('handleToolFailure: a ledger-insert failure rolls back the activity it just inserted', async () => {
+    await withDedupInsertThrowing(() => {
+      expect(() =>
+        handleToolFailure('s1', 'claude', 'Bash', { cmd: 'x' }, 'boom', false, eid('atomic-f1'), MACHINE),
+      ).toThrow('simulated dedup-ledger write failure');
+    });
+    expect(activityCount('s1')).toBe(0);
+    expect(getRoutedEventDedup(eid('atomic-f1'))).toBeNull();
+
+    handleToolFailure('s1', 'claude', 'Bash', { cmd: 'x' }, 'boom', false, eid('atomic-f1'), MACHINE); // retry succeeds
+    expect(activityCount('s1')).toBe(1);
+  });
+
+  it('the local (no event id) path never opens a transaction around the write — unaffected by the shim', async () => {
+    await withDedupInsertThrowing(() => {
+      // No sourceEventId → handleUserPromptCore runs directly; the shimmed
+      // routed_event_dedup insert is never reached, so this must NOT throw.
+      expect(() => handleUserPrompt('s1', 'local prompt', {})).not.toThrow();
+    });
+    expect(batchCount('s1')).toBe(1);
+  });
+});
+
 // --- member-side id stamping (the load-bearing "identical id" property) ----
 
 describe('ensureEventId (member stamp, §4a)', () => {

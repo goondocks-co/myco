@@ -463,16 +463,62 @@ export class TranscriptDrainQueue {
     this.store.purgeHost(hostId);
   }
 
+  /**
+   * Session-terminal prune (consolidation Task C-2, item 1). Called from the
+   * host-proxy's `noteSessionEnded` seam right after `flushBeforeForward` has
+   * drained this host for the `/sessions/unregister` route — the member's
+   * only observable session-completion signal (it holds no local
+   * session-state for a routed session). Removes this session's entries that
+   * are demonstrably unreachable-or-caught-up:
+   *  - rotated (the file at `transcript_path` is a different inode now — the
+   *    same "inert" test `drainEntry` already applies), or
+   *  - fully acked (`stat.size <= acked_offset` — nothing left to ship).
+   * An entry the flush could NOT catch up (transport still failing, or the
+   * file briefly unreadable) is left completely alone — prune-only-acked;
+   * the backstop drain keeps retrying it regardless of session end. Because
+   * `pendingCount`/`drainHost` only ever iterate entries the STORE holds
+   * (never independently enumerate transcript files on disk), removing a
+   * caught-up entry here is safe: nothing re-discovers it as "still
+   * pending" the way a file-enumerated queue would.
+   */
+  noteSessionEnded(hostId: string, sessionId: string): void {
+    try {
+      for (const entry of this.store.listForHost(hostId)) {
+        if (entry.session_id !== sessionId) continue;
+        const stat = this.fileReader.stat(entry.transcript_path);
+        if (!stat) continue; // can't prove caught-up — leave for the next drain tick
+        const currentId = deriveTranscriptId({
+          machineId: this.machineId,
+          transcriptPath: entry.transcript_path,
+          inode: stat.inode,
+        });
+        const inert = currentId !== entry.transcript_id;
+        const caughtUp = stat.size <= entry.acked_offset;
+        if (inert || caughtUp) {
+          this.store.remove(entry.host_id, entry.session_id, entry.transcript_id);
+        }
+      }
+    } catch (err) {
+      this.logger?.warn('capture.transcript-drain', 'noteSessionEnded failed', {
+        host_id: hostId,
+        session_id: sessionId,
+        error: (err as Error).message,
+      });
+    }
+  }
+
   /** The deps object both dispatch chokepoints thread into `handleAttachedRequest`
-   *  (`daemon/server.ts`, `mcp/http.ts`): the flush-before-terminal-route seam and
-   *  the collect enqueue trigger. */
+   *  (`daemon/server.ts`, `mcp/http.ts`): the flush-before-terminal-route seam, the
+   *  collect enqueue trigger, and the session-terminal prune trigger. */
   proxyDeps(): {
     flushBeforeForward: (target: RemoteTarget) => Promise<void>;
     noteCollectEvent: (target: RemoteTarget, event: Record<string, unknown>) => void;
+    noteSessionEnded: (target: RemoteTarget, sessionId: string) => void;
   } {
     return {
       flushBeforeForward: (target) => this.flushBeforeForward(target),
       noteCollectEvent: (target, event) => this.noteCollect(target, event),
+      noteSessionEnded: (target, sessionId) => this.noteSessionEnded(target.host.host_id, sessionId),
     };
   }
 

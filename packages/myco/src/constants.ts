@@ -153,20 +153,31 @@ export const CONTENT_CLAIM_RETENTION_MS = 30 * MS_PER_DAY;
  * (contrast the routed-transcripts cache GC below, which IS
  * session-terminal-gated).
  *
- * The bound must outlive every realistic replay window. Today the uncapped
- * replay source is the EVENT-REPLAY drain queue over the attached-project
- * collector buffer (`capture/event-replay-drain.ts` docstring: "NO TTL / NO
- * cap on pending"); the member-side event-replay acked-entry prune
- * (consolidation Task C-2, item 6) is what will bound it. Until that prune
- * ships there is no hard upper bound on how stale a legitimate replay could
- * be, so 30 days is a deliberately conservative interim choice:
+ * The bound must outlive every realistic replay window. The uncapped replay
+ * source is the EVENT-REPLAY drain queue over the attached-project collector
+ * buffer (`capture/event-replay-drain.ts`). Consolidation Task C-2 (item 6)
+ * shipped that queue's member-side acked-entry prune
+ * (`EventReplayDrainQueue.noteSessionEnded`, called after the member observes
+ * `/sessions/unregister`) — but the bound it produces is CONDITIONAL, not
+ * universal: it closes the window to near-zero for a session that ends
+ * cleanly (SessionEnd observed, every buffered record acked), but a session
+ * that never reaches SessionEnd (member crash, force-quit, killed daemon) has
+ * no other prune path — its buffer + high-water entry sit exactly as
+ * unbounded as before (the queue's own docstring: "NO TTL / NO cap on
+ * pending"), and a reconnecting member can still replay it whenever it next
+ * comes online, with no upper bound on the gap. So 30 days remains the right
+ * conservative choice for THIS ledger, which must cover that worst case, not
+ * just the common clean-completion path:
  * it matches CONTENT_CLAIM_RETENTION_MS (the sibling host-local
  * terminal/idempotency-row retention already in production) and comfortably
  * exceeds every OTHER buffer-survivability window this codebase already
  * enforces (BUFFER_HARD_RETENTION_MS = 7d, TOMBSTONE_RETENTION_MS = 14d) —
  * both of which describe a materially LESS durable queue (a local daemon's
- * own buffers) than an attached member's currently-unbounded replay queue.
- * Revisit once the event-replay prune lands and produces a real bound.
+ * own buffers) than an attached member's crash-abandoned replay queue.
+ * Shrinking this window without a hard cap on the CRASH case (not just the
+ * clean-completion case) risks pruning a dedup row before a legitimately
+ * long-delayed replay arrives, producing the exact double-delivery this
+ * ledger exists to prevent — don't lower it on the strength of item 6 alone.
  */
 export const ROUTED_EVENT_DEDUP_RETENTION_MS = 30 * MS_PER_DAY;
 

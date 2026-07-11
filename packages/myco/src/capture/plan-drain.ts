@@ -456,15 +456,53 @@ export class PlanDrainQueue {
     this.store.purgeHost(hostId);
   }
 
+  /**
+   * Session-terminal prune (consolidation Task C-2, item 3 — the plan-drain
+   * equivalent of the transcript drain's `noteSessionEnded`). Called from the
+   * host-proxy's `noteSessionEnded` seam right after `flushBeforeForward` has
+   * drained this host for the `/sessions/unregister` route. Removes this
+   * session's entries that are demonstrably unreachable-or-caught-up:
+   *  - the plan file is gone (mirrors `drainEntry`'s existing missing-file
+   *    prune — content unreachable, nothing to ship), or
+   *  - unchanged since the last ack (`hashContent(content) === acked_hash`).
+   * An entry the flush could NOT catch up (transport still failing) is left
+   * completely alone — prune-only-acked; the backstop drain keeps retrying
+   * it regardless of session end.
+   */
+  noteSessionEnded(hostId: string, sessionId: string): void {
+    try {
+      for (const entry of this.store.listForHost(hostId)) {
+        if (entry.session_id !== sessionId) continue;
+        const content = this.fileReader.read(entry.plan_path);
+        if (content === null) {
+          this.store.remove(entry.host_id, entry.session_id, entry.plan_ref);
+          continue;
+        }
+        if (hashContent(content) === entry.acked_hash) {
+          this.store.remove(entry.host_id, entry.session_id, entry.plan_ref);
+        }
+      }
+    } catch (err) {
+      this.logger?.warn('capture.plan-drain', 'noteSessionEnded failed', {
+        host_id: hostId,
+        session_id: sessionId,
+        error: (err as Error).message,
+      });
+    }
+  }
+
   /** The deps object both dispatch chokepoints thread into `handleAttachedRequest`:
-   *  the flush-before-terminal-route seam and the collect enqueue trigger. */
+   *  the flush-before-terminal-route seam, the collect enqueue trigger, and the
+   *  session-terminal prune trigger. */
   proxyDeps(): {
     flushBeforeForward: (target: RemoteTarget) => Promise<void>;
     noteCollectEvent: (target: RemoteTarget, event: Record<string, unknown>) => void;
+    noteSessionEnded: (target: RemoteTarget, sessionId: string) => void;
   } {
     return {
       flushBeforeForward: (target) => this.flushBeforeForward(target),
       noteCollectEvent: (target, event) => this.noteCollect(target, event),
+      noteSessionEnded: (target, sessionId) => this.noteSessionEnded(target.host.host_id, sessionId),
     };
   }
 

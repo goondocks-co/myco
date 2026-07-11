@@ -48,7 +48,7 @@ import {
   HOST_PROXY_BODY_TIMEOUT_MS,
   HOST_PROXY_HEADERS_TIMEOUT_MS,
 } from '../constants.js';
-import { listBufferSessionIds } from './buffer.js';
+import { EventBuffer, listBufferSessionIds } from './buffer.js';
 import {
   DEFAULT_COLLECT_ROUTE,
   readCollectRoute,
@@ -108,6 +108,11 @@ export type AttachedTargetLister = () => AttachedReplayTarget[];
 export interface CollectBufferReader {
   listSessions(bufferDir: string): string[];
   readRecords(bufferDir: string, sessionId: string): Record<string, unknown>[];
+  /** Cheap change-detection signal for a session's buffer file (consolidation
+   *  Task C-2, item 5 — `pendingCount` used to re-parse every attached
+   *  session's full buffer on every poll, a hot path the deep-sleep-inhibitor
+   *  hits repeatedly). `null` when the file doesn't exist. */
+  statSession(bufferDir: string, sessionId: string): { size: number; mtimeMs: number } | null;
 }
 
 /** The durable high-water store seam over the machine-scoped queue dir. Default is
@@ -165,13 +170,30 @@ export function listAttachedReplayTargets(): AttachedReplayTarget[] {
 // Default collector-buffer reader
 // ---------------------------------------------------------------------------
 
+/** The collector-buffer file path for a session — shared by the reader and the
+ *  stat-based change-detection signal below. */
+function bufferFilePath(bufferDir: string, sessionId: string): string {
+  return path.join(bufferDir, `${sessionId}.jsonl`);
+}
+
+/** Cheap size+mtime probe for a session's buffer file (item 5's change-detection
+ *  signal) — `null` when the file doesn't exist yet. */
+function statBufferFile(bufferDir: string, sessionId: string): { size: number; mtimeMs: number } | null {
+  try {
+    const s = fs.statSync(bufferFilePath(bufferDir, sessionId));
+    return { size: s.size, mtimeMs: s.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
 /** Read a session's collector-buffer records in order, tolerant of an in-flight
  *  torn trailing line: parse each JSONL line and STOP at the first that fails to
  *  parse (a flock-atomic append still completing). The parsed prefix is index-
  *  stable — the high-water counts leading records — so stopping never mis-aligns
  *  the resume point; the torn line completes and is picked up next tick. */
 function readBufferRecords(bufferDir: string, sessionId: string): Record<string, unknown>[] {
-  const filePath = path.join(bufferDir, `${sessionId}.jsonl`);
+  const filePath = bufferFilePath(bufferDir, sessionId);
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, 'utf-8');
@@ -197,6 +219,7 @@ function readBufferRecords(bufferDir: string, sessionId: string): Record<string,
 const defaultBufferReader: CollectBufferReader = {
   listSessions: (bufferDir) => listBufferSessionIds(bufferDir),
   readRecords: (bufferDir, sessionId) => readBufferRecords(bufferDir, sessionId),
+  statSession: (bufferDir, sessionId) => statBufferFile(bufferDir, sessionId),
 };
 
 // ---------------------------------------------------------------------------
@@ -339,6 +362,11 @@ export interface EventReplayDrainDeps {
   transport?: EventReplayTransport;
   bufferReader?: CollectBufferReader;
   listTargets?: AttachedTargetLister;
+  /** Removes a session's collector-buffer file + lock companion (consolidation
+   *  Task C-2, item 6). Default reuses `EventBuffer.delete()` — the SAME
+   *  condemned-buffer-removal primitive `cleanStaleBuffers` uses for local
+   *  Groves. Injectable so tests can assert deletion without touching real fs. */
+  deleteSessionBuffer?: (bufferDir: string, sessionId: string) => void;
   logger?: Pick<DaemonLogger, 'warn'>;
 }
 
@@ -350,6 +378,7 @@ export class EventReplayDrainQueue {
   private readonly transport: EventReplayTransport;
   private readonly bufferReader: CollectBufferReader;
   private readonly listTargets: AttachedTargetLister;
+  private readonly deleteSessionBuffer: (bufferDir: string, sessionId: string) => void;
   private readonly logger?: Pick<DaemonLogger, 'warn'>;
 
   /** Reentrancy guard: the backstop job is the sole caller, but a slow drain must
@@ -358,12 +387,23 @@ export class EventReplayDrainQueue {
    *  wasteful). */
   private draining = false;
 
+  /** `pendingCount` change-detection cache (item 5): `bufferDir::sessionId` →
+   *  the size/mtime this drain last saw plus the record count it computed from
+   *  that state. A poll whose current stat matches the cache reuses `total`
+   *  instead of re-parsing the whole buffer — the common case between bursts
+   *  of activity, since `hold.pending` is polled far more often than a buffer
+   *  actually grows. Purely a runtime memo; never persisted, never a substitute
+   *  for the durable `ReplayStore` high-water. */
+  private readonly countCache = new Map<string, { size: number; mtimeMs: number; total: number }>();
+
   constructor(deps: EventReplayDrainDeps) {
     this.machineId = deps.machineId;
     this.store = deps.store ?? createFsReplayStore();
     this.transport = deps.transport ?? makeDefaultTransport(deps.machineId);
     this.bufferReader = deps.bufferReader ?? defaultBufferReader;
     this.listTargets = deps.listTargets ?? listAttachedReplayTargets;
+    this.deleteSessionBuffer = deps.deleteSessionBuffer
+      ?? ((bufferDir, sessionId) => new EventBuffer(bufferDir, sessionId).delete());
     this.logger = deps.logger;
   }
 
@@ -389,12 +429,19 @@ export class EventReplayDrainQueue {
 
   /** Count attached sessions with events past their acked high-water — the signal
    *  for the deep-sleep inhibitor (`hold.pending`) so the machine never sleeps on
-   *  un-shipped capture. Best-effort read; never throws. */
+   *  un-shipped capture. Best-effort read; never throws.
+   *
+   *  Item 5 (consolidation Task C-2): a full `readRecords` re-parse is skipped
+   *  when the buffer file's size+mtime match what this drain saw on the LAST
+   *  poll — `hold.pending` is checked far more often than a buffer actually
+   *  grows, so the common case becomes a cheap `statSync` instead of parsing
+   *  every JSONL line in every attached session's buffer on every tick. */
   pendingCount(): number {
     let n = 0;
     for (const attached of this.safeTargets()) {
       for (const sessionId of this.safeSessions(attached.bufferDir)) {
-        const total = this.bufferReader.readRecords(attached.bufferDir, sessionId).length;
+        const total = this.cachedRecordCount(attached.bufferDir, sessionId);
+        if (total === null) continue; // file vanished since listSessions — nothing to count
         const acked = this.store.get(attached.hostId, sessionId)?.acked_count ?? 0;
         if (total > acked) n += 1;
       }
@@ -405,14 +452,93 @@ export class EventReplayDrainQueue {
   /** Purge a detached project's high-water entries on a host (purge-on-detach). */
   purgeProject(hostId: string, projectId: string): void {
     this.store.purgeProject(hostId, projectId);
+    this.countCache.clear(); // conservative — the purged project's cache keys are unknown here
   }
 
   /** Purge every high-water entry for a host (host dropped entirely). */
   purgeHost(hostId: string): void {
     this.store.purgeHost(hostId);
+    this.countCache.clear();
+  }
+
+  /**
+   * Session-terminal prune (consolidation Task C-2, item 6). Called from the
+   * host-proxy's `noteSessionEnded` seam right after `flushBeforeForward` has
+   * drained the transcript/plan queues for this host's `/sessions/unregister`
+   * route.
+   *
+   * UNLIKE those two queues, this one has no `flushBeforeForward` of its own —
+   * it is deliberately backstop-only (driven purely by the JobRunner tick; see
+   * the class doc). That matters here: `bufferAppend` has ALREADY written the
+   * `/sessions/unregister` record itself to this session's buffer (the collect
+   * dispatch chokepoint appends every collect event before forwarding), so
+   * without an explicit drain right here, that record is virtually always
+   * still un-acked at the instant this one-shot check runs — the backstop
+   * tick that would normally ack it hasn't fired yet. A prune gated on
+   * "already caught up" would then almost NEVER fire, defeating the point.
+   * So this drains this ONE session synchronously first (mirroring what
+   * `flushBeforeForward` gives the other two queues for free), THEN checks.
+   *
+   * Also unlike the transcript/plan drains (`noteSessionEnded` there), this
+   * queue cannot prune the high-water entry ALONE even once caught up:
+   * `pendingCount`/`drainSession` both re-discover a session by enumerating
+   * the collector-buffer FILES (`listSessions`), not by iterating stored
+   * entries — and nothing else in this codebase ever deletes an attached
+   * project's buffer file (the header docstring's "blind spot"). Removing
+   * only the `ReplayEntry` would make the very next poll see the buffer's
+   * full record count against an (unrecorded) acked count of 0 — re-counted
+   * as pending, and the next backstop tick would re-forward every record —
+   * FOREVER, since the file never goes away on its own. So a caught-up
+   * session's prune deletes BOTH the buffer file (via `deleteSessionBuffer`,
+   * the same condemned-buffer primitive `EventBuffer.delete()` other cleanup
+   * paths use) and the `ReplayEntry` together, and only when every buffered
+   * record is acked. A session the drain could NOT catch up (host still
+   * unreachable) is left completely untouched — prune-only-acked; the
+   * backstop drain keeps retrying it regardless of session end.
+   */
+  async noteSessionEnded(target: RemoteTarget, sessionId: string): Promise<void> {
+    try {
+      const hostId = target.host.host_id;
+      const bufferDir = resolveProjectBufferDir(target.groveId, target.projectId);
+      if (hostProtocolCompatible(target.host.protocol_version)) {
+        await this.drainSession({ hostId, projectId: target.projectId, target, bufferDir }, sessionId);
+      }
+      const records = this.bufferReader.readRecords(bufferDir, sessionId);
+      if (records.length === 0) return; // nothing buffered (or already pruned) — no-op
+      const acked = this.store.get(hostId, sessionId)?.acked_count ?? 0;
+      if (acked < records.length) return; // still not caught up (host unreachable) — leave for the backstop
+      this.deleteSessionBuffer(bufferDir, sessionId);
+      this.store.remove(hostId, sessionId);
+      this.countCache.delete(`${bufferDir}::${sessionId}`);
+    } catch (err) {
+      this.logger?.warn(LOG_CATEGORY, 'noteSessionEnded failed', {
+        host_id: target.host.host_id,
+        session_id: sessionId,
+        error: (err as Error).message,
+      });
+    }
   }
 
   // --- internals ---
+
+  /** Item 5's cached record count for one session's buffer — `null` when the
+   *  file doesn't exist. Recomputes (and re-caches) only when the file's
+   *  size/mtime differ from the last observation. */
+  private cachedRecordCount(bufferDir: string, sessionId: string): number | null {
+    const stat = this.bufferReader.statSession(bufferDir, sessionId);
+    const key = `${bufferDir}::${sessionId}`;
+    if (!stat) {
+      this.countCache.delete(key);
+      return null;
+    }
+    const cached = this.countCache.get(key);
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      return cached.total;
+    }
+    const total = this.bufferReader.readRecords(bufferDir, sessionId).length;
+    this.countCache.set(key, { size: stat.size, mtimeMs: stat.mtimeMs, total });
+    return total;
+  }
 
   private safeTargets(): AttachedReplayTarget[] {
     try { return this.listTargets(); } catch { return []; }
