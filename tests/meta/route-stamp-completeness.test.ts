@@ -218,6 +218,11 @@ describe('route-stamp completeness gate', () => {
   });
 
   it('raw-route count is pinned (a NEW raw route must force an overlay-behavior decision)', () => {
+    // Count alone only catches a net change in call-site cardinality — e.g. a
+    // literal accidentally registered twice while another is removed leaves the
+    // count unchanged. The literal-SET assertion below is what catches an entry
+    // silently swapped for another; this check stays as the narrower guard
+    // against a duplicate registration masking that swap.
     expect(scan.rawCallCount, `found ${scan.rawCallCount} .registerRawRoute( call sites but expected `
       + `${KNOWN_RAW_ROUTES.size} (${[...KNOWN_RAW_ROUTES].join(', ')}). A new raw route bypasses the `
       + 'stamp table and is gated only in handleOverlayRequest — add it to KNOWN_RAW_ROUTES here and '
@@ -226,6 +231,32 @@ describe('route-stamp completeness gate', () => {
     for (const p of scan.rawLiteralPaths) {
       expect(KNOWN_RAW_ROUTES.has(p), `unexpected raw route '${p}' — confirm its overlay behavior and add it`).toBe(true);
     }
+  });
+
+  it('the raw-route literal set matches KNOWN_RAW_ROUTES exactly — no stale entry hides a removed/renamed route', () => {
+    // The count + per-literal membership check above only asserts ADDED raw
+    // routes are accounted for; a raw route silently REMOVED (or renamed) while
+    // something else takes its call-site slot leaves the count unchanged and
+    // every remaining literal still passes membership, so KNOWN_RAW_ROUTES would
+    // keep a stale entry indefinitely. Assert the full set both ways, mirroring
+    // the SERVE_DEFAULT_ROUTES staleness check above.
+    //
+    // '/api/host/enroll' is registered via the HOST_ENROLL_ROUTE constant, so
+    // REGISTER_RAW_LITERAL_RE never captures it (see the scanner note above) —
+    // exclude it from the literal-set comparison; the call-site COUNT check
+    // above still accounts for it.
+    const CONSTANT_REGISTERED_RAW_ROUTES: ReadonlySet<string> = new Set(['/api/host/enroll']);
+    const expectedLiterals = new Set([...KNOWN_RAW_ROUTES].filter((p) => !CONSTANT_REGISTERED_RAW_ROUTES.has(p)));
+    const actualLiterals = new Set(scan.rawLiteralPaths);
+
+    const missing = [...expectedLiterals].filter((p) => !actualLiterals.has(p));
+    const unexpected = [...actualLiterals].filter((p) => !expectedLiterals.has(p));
+
+    expect(missing, `KNOWN_RAW_ROUTES lists ${missing.join(', ')} but no matching .registerRawRoute( literal `
+      + 'was found in source — the route was removed/renamed without updating this gate (a stale entry '
+      + 'would otherwise hide a raw route silently disappearing).').toEqual([]);
+    expect(unexpected, `found raw route literal(s) ${unexpected.join(', ')} not in KNOWN_RAW_ROUTES — confirm `
+      + 'their overlay behavior and add them.').toEqual([]);
   });
 });
 
