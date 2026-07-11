@@ -19,7 +19,6 @@ import { Switch } from '../components/ui/switch';
 import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { SymbiontRow } from '../components/symbionts/SymbiontRow';
-import { OkfReadinessPanel } from '../components/symbionts/OkfReadinessPanel';
 import { fetchJson } from '../lib/api';
 import { useSymbionts } from '../hooks/use-symbionts';
 import { useActiveProjectSelection } from '../hooks/use-project-selection';
@@ -144,8 +143,6 @@ export default function Symbionts() {
               </Surface>
             </div>
           )}
-
-          <OkfReadinessPanel symbionts={symbionts} />
         </div>
       )}
     </PageContainer>

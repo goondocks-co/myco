@@ -191,7 +191,7 @@ function resolveCapabilities(projectRoot: string, groveId: string): Record<Capab
     const vaultDir = resolveProjectVaultDir(projectRoot);
     // A Team Host serving this project for a member has no local working
     // tree — degrade to machine+grove tiers (empty project tier) instead of
-    // throwing "myco.yaml not found" (same signal + mechanism as `okf.ts`).
+    // throwing "myco.yaml not found" (same signal + mechanism as `task-scheduling.ts`).
     // Without this, a served project's capabilities always render all-false
     // (the fail-closed catch below) instead of the machine+grove merge.
     const treeAvailable = fs.existsSync(projectRoot);

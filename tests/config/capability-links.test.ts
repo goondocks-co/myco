@@ -3,10 +3,8 @@ import { CAPABILITIES } from '../../packages/myco/src/config/capabilities';
 import { SETTINGS_GROUPS } from '../../packages/myco/ui/src/settings/manifest';
 
 // Capability links are either a settings-group hash (/settings#<group>) or a
-// dedicated top-level page route. Page routes are allowlisted here; the OKF
-// page itself ships in the UI plan (interim unknown-route <Link> renders
-// harmlessly — accepted by the master plan).
-const KNOWN_PAGE_ROUTES = new Set(['/okf']);
+// dedicated top-level page route. Page routes are allowlisted here.
+const KNOWN_PAGE_ROUTES = new Set<string>([]);
 
 describe('capability advancedSettingsLink routes resolve', () => {
   const groupIds = new Set(SETTINGS_GROUPS.map((g) => g.id));

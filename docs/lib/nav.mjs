@@ -18,7 +18,6 @@ export const NAV = [
       { slug: 'groves', title: 'Grove management' },
       { slug: 'skills', title: 'Skills' },
       { slug: 'canopy', title: 'Canopy' },
-      { slug: 'okf', title: 'OKF' },
       { slug: 'symbionts', title: 'Symbionts' },
       { slug: 'agent-harness', title: 'Agent harness' },
       { slug: 'agent-tools', title: 'Agent MCP tools' },

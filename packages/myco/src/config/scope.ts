@@ -7,7 +7,7 @@ export const TIER_PRECEDENCE: readonly Tier[] = ['machine', 'grove', 'project', 
 
 /** The opt-in per-project capabilities. A capability is a master config gate
  *  plus the settings it governs (declared in `capabilities.ts`). */
-export const CAPABILITY_IDS = ['cortex', 'canopy', 'skills', 'vault_evolution', 'okf'] as const;
+export const CAPABILITY_IDS = ['cortex', 'canopy', 'skills', 'vault_evolution'] as const;
 export type CapabilityId = (typeof CAPABILITY_IDS)[number];
 
 export interface ScopeEntry {
@@ -92,10 +92,6 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   // match wins, same pattern as agent.scheduled_tasks_enabled over `agent`).
   'cortex.canopy': { home: 'project', overridableBy: ['local'], gate: 'canopy' },
   'symbionts': { home: 'project', overridableBy: ['local'] },
-  // OKF capability: repo-visible knowledge bundle. Project-tier home (the
-  // bundle is a per-repo artifact the team opts into) with a Personal
-  // override for per-machine promote/demote, matching cortex.
-  'okf': { home: 'project', overridableBy: ['local'], gate: 'okf' },
   // internal
   'version': { home: 'project', overridableBy: [] },
   'config_version': { home: 'project', overridableBy: [] },

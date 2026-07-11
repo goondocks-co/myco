@@ -57,21 +57,8 @@ describe('capabilityEnabled', () => {
   });
 });
 
-describe('capabilityEnabled — okf defaultEnabled semantics', () => {
-  it('okf is disabled on a schema-parsed default config (Zod default false)', () => {
-    expect(capabilityEnabled(defaults(), 'okf')).toBe(false);
-  });
-
-  it('okf resolves DISABLED when the whole block is absent (defaultEnabled branch)', () => {
-    // A parse-built config always materializes okf.enabled === false, which
-    // exercises the Zod default, not defaultEnabled — delete the block so
-    // getAtPath returns undefined and the defaultEnabled fallback decides.
-    const cfg = defaults();
-    delete (cfg as unknown as Record<string, unknown>).okf;
-    expect(capabilityEnabled(cfg, 'okf')).toBe(false);
-  });
-
-  it('all four legacy capabilities still resolve absent gates to ENABLED', () => {
+describe('capabilityEnabled — defaultEnabled semantics', () => {
+  it('all four capabilities still resolve absent gates to ENABLED', () => {
     const cfg = defaults();
     const raw = cfg as unknown as Record<string, unknown>;
     delete raw.cortex;
@@ -87,15 +74,6 @@ describe('capabilityEnabled — okf defaultEnabled semantics', () => {
     for (const id of CAPABILITY_IDS as readonly CapabilityId[]) {
       expect(capabilityEnabled(defaults(), id)).toBe(CAPABILITIES[id].defaultEnabled ?? true);
     }
-  });
-
-  it('explicit okf.enabled true/false wins over the default', () => {
-    const on = defaults();
-    on.okf.enabled = true;
-    expect(capabilityEnabled(on, 'okf')).toBe(true);
-    const off = defaults();
-    off.okf.enabled = false;
-    expect(capabilityEnabled(off, 'okf')).toBe(false);
   });
 });
 

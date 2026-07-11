@@ -74,10 +74,10 @@ function isArtifactObject(entry: unknown): entry is FileStatusArtifactInput {
 
 /**
  * Disk-presence check for one requested artifact. Never throws: an unknown
- * kind degrades to `null` silently (a routine, expected shape — e.g. an
- * `okf_page` entry sent through the same batch, which this route does not
- * yet cover); a resolver refusal (traversal/absolute/empty name) or any
- * other per-artifact failure degrades to `null` with exactly one `warn` log.
+ * kind (only `skill` is ever recognized — the claim system's other historical
+ * kind is retired) degrades to `null` silently, a routine, expected shape;
+ * a resolver refusal (traversal/absolute/empty name) or any other
+ * per-artifact failure degrades to `null` with exactly one `warn` log.
  * Either way a bad entry never fails the batch.
  */
 function fileStatusForArtifact(

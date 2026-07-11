@@ -29,17 +29,12 @@ import {
   getContentPublication,
   upsertContentPublication,
 } from '@myco/db/queries/content-claims.js';
-import { getOkfPageRevisionAtGeneration } from '@myco/db/queries/okf.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
-import { MycoConfigSchema } from '@myco/config/schema.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@myco/grove/registry.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { assertGroveProjectId, createProjectId, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
-import { OkfStore } from '@myco/okf/store.js';
-import { renderOkfDocument } from '@myco/okf/serialize.js';
-import type { WikiPlan } from '@myco/okf/synthesis/plan.js';
 
 const noopProxyLogger = { warn(): void {}, error(): void {} };
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -165,71 +160,22 @@ describe('content claim materialize — local project', () => {
     return { skillId, claimId, name, content, generation };
   }
 
-  function okfPlan(pagePath: string): WikiPlan {
-    return {
-      generatedAt: new Date().toISOString(),
-      sinceRef: '',
-      pages: [{ path: pagePath, type: 'note', title: 'Foo', rationale: 'test page', sourceRefs: [] }],
-    };
-  }
-
   /**
-   * Writes one OKF page through the REAL `OkfStore` write path (so FK rows
-   * — `okf_generations` — and generation semantics are exactly what
-   * production produces), optionally evolving it to a second
-   * `page_generation` afterward, then claims one generation of it.
-   * `claimGeneration` defaults to the LATEST written generation; pass `1`
-   * with `evolvedBody` set to exercise generation pinning (an older claim
-   * surviving a later edit).
+   * Seeds a claim row for a residue-tolerance test: a pre-retirement
+   * `okf_page` claim, with no backing artifact — the materialize route no
+   * longer knows the kind at all, so it never reaches a content lookup.
+   * `artifactKind` is cast past its now-narrowed compile-time type; this
+   * simulates a row that survived from before the retirement.
    */
-  function seedOkfPage(opts: {
-    pagePath?: string;
-    body?: string;
-    evolvedBody?: string;
-    claimGeneration?: number;
-    claimedBy?: string;
-  } = {}) {
+  function seedUnsupportedKindClaim(opts: { claimedBy?: string } = {}) {
     const db = cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
-    const pagePath = opts.pagePath ?? 'architecture/foo';
-    const body = opts.body ?? 'Body text.';
-    const config = MycoConfigSchema.parse({ version: 3, okf: { enabled: true } });
     const now = epochNow();
-    let pageId = '';
-    let docPath = '';
-    let latestGeneration = 1;
     let claimId = '';
     withDatabase(db, () => {
-      const store = new OkfStore({
-        scope: projectScope(projectId as GroveProjectId),
-        projectId,
-        machineId: 'agent-test',
-        config,
-      });
-      const draft1 = store.createDraftGeneration({ runId: null, plan: okfPlan(pagePath) });
-      const written1 = store.writePage({ path: pagePath, type: 'note', title: 'Foo', description: 'A test page.', body });
-      store.finalizeGeneration(draft1.id);
-      pageId = written1.pageId;
-      docPath = written1.path;
-      latestGeneration = written1.pageGeneration;
-
-      if (opts.evolvedBody !== undefined) {
-        const draft2 = store.createDraftGeneration({ runId: null, plan: okfPlan(pagePath) });
-        const written2 = store.writePage({
-          path: pagePath,
-          type: 'note',
-          title: 'Foo',
-          description: 'A test page.',
-          body: opts.evolvedBody,
-        });
-        store.finalizeGeneration(draft2.id);
-        latestGeneration = written2.pageGeneration;
-      }
-
-      const claimGeneration = opts.claimGeneration ?? latestGeneration;
       const result = insertContentClaim({
-        artifactKind: 'okf_page',
-        artifactId: pageId,
-        generation: claimGeneration,
+        artifactKind: 'okf_page' as unknown as 'skill',
+        artifactId: 'page-legacy',
+        generation: 1,
         projectId,
         claimedBy: opts.claimedBy ?? 'machine-a',
         claimedAt: now,
@@ -239,7 +185,7 @@ describe('content claim materialize — local project', () => {
       if (!result.ok) throw new Error('test setup: unexpected already_claimed conflict');
       claimId = result.row.id;
     });
-    return { pageId, claimId, docPath, latestGeneration };
+    return { claimId };
   }
 
   test('materialize writes the SKILL.md and syncs agent symlinks at the member project root', async () => {
@@ -365,151 +311,22 @@ describe('content claim materialize — local project', () => {
     expect(fs.existsSync(path.join(projectRoot, CANONICAL_PROJECT_SKILLS_DIR, name))).toBe(false);
   });
 
-  test('materializes an okf_page claim byte-faithful to the claimed revision, under the default published wiki root', async () => {
-    const { pageId, claimId, docPath } = seedOkfPage({ body: 'Body text for foo.' });
+  test('residue tolerance: a claim of a retired kind (okf_page) -> 400 unsupported_artifact_kind, nothing written', async () => {
+    const { claimId } = seedUnsupportedKindClaim();
 
     const res = await handler()(req(claimId, projectRoot));
-    expect(res.status).toBe(200);
-    const body = res.body as { ok: boolean; path: string; page_path: string; generation: number };
-    expect(body).toMatchObject({ ok: true, page_path: docPath, generation: 1 });
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { code: string } }).error.code).toBe('unsupported_artifact_kind');
 
-    // Default `config.okf.maintain.output_path` is 'okf', relative to the project root.
-    const writtenPath = path.join(projectRoot, 'okf', docPath);
-    expect(body.path).toBe(writtenPath);
-
-    const db = cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
-    const revision = withDatabase(db, () => getOkfPageRevisionAtGeneration(pageId, 1))!;
-    const expected = renderOkfDocument({
-      path: docPath,
-      frontmatter: JSON.parse(revision.frontmatter),
-      body: revision.body,
-    });
-    expect(fs.readFileSync(writtenPath, 'utf-8')).toBe(expected.content);
-  });
-
-  test('a same-generation okf_page republish auto-closes the claim — the local publication read is kind-agnostic', async () => {
-    const { pageId, claimId, docPath } = seedOkfPage({ body: 'Body for the okf republish.' });
-    const db = cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
-    const priorPublishedAt = epochNow() - 3600;
-    withDatabase(db, () => {
-      upsertContentPublication({
-        artifact_kind: 'okf_page',
-        artifact_id: pageId,
-        published_generation: 1, // matches the claim's generation — a republish
-        published_at: priorPublishedAt,
-        published_by: 'machine-a',
-        machine_id: 'machine-a',
-      });
-    });
-
-    const res = await handler()(req(claimId, projectRoot));
-    expect(res.status).toBe(200);
-    const body = res.body as { ok: boolean; page_path: string; generation: number; auto_published: boolean };
-    expect(body).toMatchObject({ ok: true, page_path: docPath, generation: 1, auto_published: true });
-    expect(fs.existsSync(path.join(projectRoot, 'okf', docPath))).toBe(true);
-
-    const claimRow = withDatabase(db, () => getContentClaimById(claimId, projectScope(projectId as GroveProjectId)));
-    expect(claimRow?.state).toBe('published');
-
-    const publication = withDatabase(db, () => getContentPublication('okf_page', pageId));
-    expect(publication?.published_generation).toBe(1);
-    expect(publication?.published_at).toBeGreaterThan(priorPublishedAt);
-  });
-
-  test('a non-default config.okf.maintain.output_path resolves the published root — proves the config read, not the fallback', async () => {
-    // `output_path` is project-tier (config/scope.ts homes okf.* at 'project'),
-    // read from the project's own myco.yaml. A value the hard-coded fallback
-    // can never produce distinguishes a genuine config resolution from a
-    // silently-swallowed loader error degrading to the 'okf' default.
-    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
-    fs.writeFileSync(
-      path.join(projectRoot, '.myco', 'myco.yaml'),
-      'version: 3\nokf:\n  enabled: true\n  maintain:\n    output_path: wiki\n',
-    );
-    const { claimId, docPath } = seedOkfPage({ body: 'Body under a custom wiki root.' });
-
-    const res = await handler()(req(claimId, projectRoot));
-    expect(res.status).toBe(200);
-    const body = res.body as { ok: boolean; path: string };
-    expect(body.path).toBe(path.join(projectRoot, 'wiki', docPath));
-    expect(fs.existsSync(path.join(projectRoot, 'wiki', docPath))).toBe(true);
-    expect(fs.existsSync(path.join(projectRoot, 'okf'))).toBe(false);
-  });
-
-  test('a publish-eligibility finding blocks the write — nothing lands on disk', async () => {
-    const { claimId, docPath } = seedOkfPage({ body: 'See /Users/alice/notes.txt for the source.' });
-
-    const res = await handler()(req(claimId, projectRoot));
-    expect(res.status).toBe(422);
-    const body = res.body as { error: { code: string }; findings: Array<{ code: string; path: string }> };
-    expect(body.error.code).toBe('scan_blocked');
-    expect(body.findings.length).toBeGreaterThan(0);
-    expect(body.findings[0].code).toBe('absolute_local_path');
-
-    expect(fs.existsSync(path.join(projectRoot, 'okf', docPath))).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, 'okf'))).toBe(false);
-  });
-
-  test('generation pinning: an older claimed generation writes the OLD revision even after the page evolved', async () => {
-    const { pageId, claimId, docPath } = seedOkfPage({
-      body: 'Original body, generation 1.',
-      evolvedBody: 'Evolved body, generation 2.',
-      claimGeneration: 1,
-    });
-
-    const res = await handler()(req(claimId, projectRoot));
-    expect(res.status).toBe(200);
-    const body = res.body as { ok: boolean; generation: number };
-    expect(body.generation).toBe(1);
-
-    const writtenPath = path.join(projectRoot, 'okf', docPath);
-    const written = fs.readFileSync(writtenPath, 'utf-8');
-    expect(written).toContain('Original body, generation 1.');
-    expect(written).not.toContain('Evolved body, generation 2.');
-
-    // The page's own head has moved on to generation 2 — pinning is a
-    // property of the claimed content fetch, not of the page row.
-    const db = cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
-    const latest = withDatabase(db, () => getOkfPageRevisionAtGeneration(pageId, 2))!;
-    expect(latest.body).toBe('Evolved body, generation 2.');
-  });
-
-  test('current project root does not match the registered root -> loud root_mismatch, nothing written for an okf_page claim', async () => {
-    const { claimId, docPath } = seedOkfPage();
-    const movedRoot = path.join(tmp, 'moved-checkout-okf');
-    fs.mkdirSync(movedRoot, { recursive: true });
-    saveProjectManifest(resolveProjectVaultDir(movedRoot), { project: { id: projectId } });
-
-    const res = await handler()(req(claimId, movedRoot));
-    expect(res.status).toBe(409);
-    const body = res.body as { error: { code: string }; registered_root: string; current_root: string };
-    expect(body.error.code).toBe('root_mismatch');
-    expect(body.registered_root).toBe(projectRoot);
-    expect(body.current_root).toBe(path.resolve(movedRoot));
-    expect(fs.existsSync(path.join(movedRoot, 'okf', docPath))).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, 'okf', docPath))).toBe(false);
-  });
-
-  test('a host-served request context never reaches the okf_page writer', async () => {
-    const { claimId, docPath } = seedOkfPage();
-    const res = await handler()(req(claimId, projectRoot, { requestContext: { hostServed: true } as never }));
-    expect(res.status).toBe(404);
-    expect(fs.existsSync(path.join(projectRoot, 'okf', docPath))).toBe(false);
+    // Nothing was written anywhere a skill materialize could plausibly land,
+    // and the claim itself is untouched — still readable/releasable by the
+    // rest of the claim system (covered in `content-claims.test.ts`).
+    expect(fs.existsSync(path.join(projectRoot, CANONICAL_PROJECT_SKILLS_DIR))).toBe(false);
+    const claimRow = withDatabase(cache.getDatabase(resolveGroveDbPath(groveId, mycoHome)), () =>
+      getContentClaimById(claimId, projectScope(projectId as GroveProjectId)));
+    expect(claimRow?.state).toBe('active');
   });
 });
-
-/** A `ClaimSource` never exercises the OKF branch in these skill-only race
- *  tests — this stub proves it by throwing if the orchestration ever calls it. */
-async function unusedOkfPageContent(): Promise<never> {
-  throw new Error('getOkfPageContent must not be called for a skill claim');
-}
-
-/** `resolveOkfPublishedRootFn` is only invoked for an `okf_page` claim — this
- *  stub proves it by throwing if the orchestration ever calls it in a
- *  skill-only test. */
-async function unusedOkfPublishedRoot(): Promise<never> {
-  throw new Error('resolveOkfPublishedRootFn must not be called for a skill claim');
-}
 
 /** The re-assert race tests below never reach a successful write, so the
  *  post-write auto-close check never runs — these stubs prove it by throwing
@@ -546,12 +363,11 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
       async getSkillContent() {
         return { name: 'race-skill', content: '# race\n' };
       },
-      getOkfPageContent: unusedOkfPageContent,
       getPublishedGeneration: unusedGetPublishedGeneration,
       markPublished: unusedMarkPublished,
     };
 
-    const outcome = await materializeContentClaim('cclaim_race', tmp, source, unusedOkfPublishedRoot, noopProxyLogger);
+    const outcome = await materializeContentClaim('cclaim_race', tmp, source, noopProxyLogger);
     expect(outcome).toEqual({ ok: false, code: 'claim_no_longer_active' });
     expect(calls).toBe(2);
     expect(fs.existsSync(path.join(tmp, CANONICAL_PROJECT_SKILLS_DIR, 'race-skill'))).toBe(false);
@@ -562,39 +378,29 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
     const source: ClaimSource = {
       async getActiveClaim() { return null; },
       async getSkillContent() { contentFetched = true; return { name: 'x', content: 'x' }; },
-      getOkfPageContent: unusedOkfPageContent,
       getPublishedGeneration: unusedGetPublishedGeneration,
       markPublished: unusedMarkPublished,
     };
 
-    const outcome = await materializeContentClaim('cclaim_stale', tmp, source, unusedOkfPublishedRoot, noopProxyLogger);
+    const outcome = await materializeContentClaim('cclaim_stale', tmp, source, noopProxyLogger);
     expect(outcome).toEqual({ ok: false, code: 'claim_not_active' });
     expect(contentFetched).toBe(false);
   });
 
-  test('an okf_page claim: the claim goes inactive between fetch and the pre-write re-assert -> no write', async () => {
-    let calls = 0;
+  test('a claim of a retired kind (okf_page) never reaches the content fetch', async () => {
     let contentFetched = false;
     const source: ClaimSource = {
       async getActiveClaim(id) {
-        calls += 1;
-        if (calls === 1) return { id, artifactKind: 'okf_page', artifactId: 'page-race', generation: 1 };
-        return null;
+        return { id, artifactKind: 'okf_page', artifactId: 'page-race', generation: 1 };
       },
-      getSkillContent: async () => { throw new Error('getSkillContent must not be called for an okf_page claim'); },
-      async getOkfPageContent() {
-        contentFetched = true;
-        return { path: 'race.md', frontmatter: JSON.stringify({ type: 'note', title: 't', description: 'd', timestamp: '2026-01-01T00:00:00Z' }), body: 'race body' };
-      },
+      getSkillContent: async () => { contentFetched = true; return { name: 'x', content: 'x' }; },
       getPublishedGeneration: unusedGetPublishedGeneration,
       markPublished: unusedMarkPublished,
     };
 
-    const outcome = await materializeContentClaim('cclaim_okf_race', tmp, source, async () => tmp, noopProxyLogger);
-    expect(outcome).toEqual({ ok: false, code: 'claim_no_longer_active' });
-    expect(calls).toBe(2);
-    expect(contentFetched).toBe(true); // content WAS fetched — the re-assert runs after, per spec §4 step 3
-    expect(fs.existsSync(path.join(tmp, 'race.md'))).toBe(false);
+    const outcome = await materializeContentClaim('cclaim_okf_race', tmp, source, noopProxyLogger);
+    expect(outcome).toEqual({ ok: false, code: 'unsupported_artifact_kind' });
+    expect(contentFetched).toBe(false);
   });
 
   test('a same-generation republish whose mark-published call fails still returns the write outcome with autoPublished:false — and the orchestration adds no warn of its own', async () => {
@@ -615,12 +421,11 @@ describe('materializeContentClaim orchestration — the re-assert race', () => {
       async getSkillContent() {
         return { name: 'fail-mark-skill', content: '# fail\n' };
       },
-      getOkfPageContent: unusedOkfPageContent,
       async getPublishedGeneration() { return 1; }, // matches claim.generation -> a same-generation republish
       async markPublished() { return false; }, // failure AFTER the disk write landed; a real source logs this itself
     };
 
-    const outcome = await materializeContentClaim('cclaim_fail_mark', tmp, source, unusedOkfPublishedRoot, spyLogger);
+    const outcome = await materializeContentClaim('cclaim_fail_mark', tmp, source, spyLogger);
     expect(outcome.ok).toBe(true);
     if (outcome.ok && outcome.artifactKind === 'skill') {
       expect(outcome.autoPublished).toBe(false);

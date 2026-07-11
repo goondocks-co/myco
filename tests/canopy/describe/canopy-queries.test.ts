@@ -14,7 +14,6 @@ import {
   getCanopyEntryExports,
   setCanopyDescription,
   listCanopyEntries,
-  listFullCanopyEntries,
 } from '@myco/db/queries/canopy.js';
 import { setupTestDb, cleanTestDb, teardownTestDb, seedCanopyEntry } from '../../helpers/db.js';
 
@@ -327,40 +326,5 @@ describe('listCanopyEntries', () => {
 
     const rows = listCanopyEntries(db, PROJECT_A, { includeUndescribed: false, limit: 100 });
     expect(rows.map((r) => r.path)).toEqual(['a.ts']);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// listFullCanopyEntries
-// ---------------------------------------------------------------------------
-
-describe('listFullCanopyEntries', () => {
-  it('returns full CanopyEntry rows with the same predicate and ordering as listCanopyEntries', () => {
-    const db = getDatabase();
-    seedCanopyEntry(db, {
-      project_id: PROJECT_A, path: 'z.ts',
-      llm_description: 'z file', llm_updated_at: 100,
-      language: 'typescript', exports_json: '["x"]', imports_json: '["y"]',
-      token_estimate: 42,
-    });
-    seedCanopyEntry(db, { project_id: PROJECT_A, path: 'a.ts', llm_description: 'a file', llm_updated_at: 100 });
-    seedCanopyEntry(db, { project_id: PROJECT_A, path: 'pending.ts', llm_description: null, llm_updated_at: null });
-    seedCanopyEntry(db, { project_id: PROJECT_B, path: 'other.ts', llm_description: 'B', llm_updated_at: 1 });
-
-    const rows = listFullCanopyEntries(db, PROJECT_A, { includeUndescribed: false, limit: 100 });
-    expect(rows.map((r) => r.path)).toEqual(['a.ts', 'z.ts']);
-    // Full row shape: fields the thin CanopyListRow projection omits.
-    const z = rows.find((r) => r.path === 'z.ts')!;
-    expect(z.content_hash).toBeDefined();
-    expect(typeof z.size_bytes).toBe('number');
-    expect(typeof z.line_count).toBe('number');
-    expect(typeof z.mechanical_updated_at).toBe('number');
-    expect(z.project_id).toBe(PROJECT_A);
-
-    const all = listFullCanopyEntries(db, PROJECT_A, { includeUndescribed: true, limit: 100 });
-    expect(all.map((r) => r.path)).toEqual(['a.ts', 'pending.ts', 'z.ts']);
-
-    const limited = listFullCanopyEntries(db, PROJECT_A, { includeUndescribed: true, limit: 2 });
-    expect(limited).toHaveLength(2);
   });
 });

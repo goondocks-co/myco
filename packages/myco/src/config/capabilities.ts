@@ -31,12 +31,12 @@ export interface CapabilityDef {
   /** Settings route for advanced knobs (deep-linked from the panel; finalized in the UI plan). */
   advancedSettingsLink: string;
   /**
-   * Resolution when the master-gate path is absent from the config. Existing
-   * capabilities keep the implicit `true` (absent = enabled); OKF is the first
-   * off-by-default capability. Runtime configs come from the merged loader,
-   * which materializes every Zod default — so the schema's `.default(false)`
-   * is the real off-by-default mechanism and this field is defense-in-depth
-   * for raw/hand-built configs (spec-mandated).
+   * Resolution when the master-gate path is absent from the config. Every
+   * current capability keeps the implicit `true` (absent = enabled); this
+   * field exists for a future off-by-default capability. Runtime configs
+   * come from the merged loader, which materializes every Zod default — so
+   * a schema's `.default(false)` would be the real off-by-default mechanism
+   * and this field is defense-in-depth for raw/hand-built configs.
    */
   defaultEnabled?: boolean;
 }
@@ -75,17 +75,6 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityDef> = {
     scheduledTasks: ['vault-evolve', 'vault-seed'],
     advancedSettingsLink: '/settings#scheduled-tasks',
   },
-  okf: {
-    id: 'okf',
-    label: 'OKF',
-    masterGate: 'okf.enabled',
-    // Matches the universal precedent (all capabilities use []); the OKF page
-    // owns the advanced knobs, so UI grouping via memberGates buys nothing.
-    memberGates: [],
-    scheduledTasks: ['okf-synthesize'],
-    advancedSettingsLink: '/okf',
-    defaultEnabled: false,
-  },
 };
 
 /** Resolve the capability that governs a given agent task name, or null. */
@@ -103,8 +92,8 @@ export function governingCapability(taskName: string): CapabilityId | null {
 /**
  * Single authoritative capability gate. Fail-closed: a null/unloadable
  * config disables the capability. When the master-gate path is absent, the
- * capability's `defaultEnabled` decides — implicit `true` for the legacy
- * capabilities, `false` for OKF — matching the gate-honoring contract.
+ * capability's `defaultEnabled` decides — implicit `true` today for every
+ * capability, matching the gate-honoring contract.
  */
 export function capabilityEnabled(config: MycoConfig | null | undefined, capId: CapabilityId): boolean {
   if (!config) return false;

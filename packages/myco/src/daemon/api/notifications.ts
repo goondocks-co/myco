@@ -166,7 +166,7 @@ export async function handleCreateNotification(
   //
   // A Team Host serving this project for a member has no local working
   // tree — degrade to machine+grove tiers (empty project tier) instead of
-  // throwing "myco.yaml not found" (same signal + mechanism as `okf.ts`).
+  // throwing "myco.yaml not found" (same signal + mechanism as `task-scheduling.ts`).
   const treeAvailable = fs.existsSync(resolveProjectRoot(vaultDir));
   const config = loadMergedConfig(vaultDir, {
     groveId: principal.tenancy.groveId,

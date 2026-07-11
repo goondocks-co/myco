@@ -819,22 +819,6 @@ async function mycoSkills(
   return execMycoTool(directory, "myco_skills", input);
 }
 
-async function mycoOkf(
-  directory: string,
-  input: {
-    op?: string;
-    id?: string;
-    concept_id?: string;
-    markdown?: string;
-    expected_generation?: number;
-    old_id?: string;
-    new_id?: string;
-    reason?: string;
-  },
-): Promise<{ ok: boolean; data?: unknown }> {
-  return execMycoTool(directory, "myco_okf", input);
-}
-
 async function mycoAgent(
   directory: string,
   input: { op?: string; id?: string; task?: string; agent_id?: string; limit?: number },
@@ -1460,36 +1444,6 @@ export default function (pi: ExtensionAPI) {
       const result = await mycoAgent(currentCwd, params);
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Run query failed") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_okf",
-    label: "Myco OKF",
-    description: "Read and edit the project's Open Knowledge Format bundle (okf/). Editorial concepts only; regenerating the bundle is a user action.",
-    parameters: Type.Object({
-      op: Type.Optional(Type.String({ description: "status (default), validate, list, get, save_concept, or supersede_concept" })),
-      id: Type.Optional(Type.String({ description: "Concept id for op=get" })),
-      concept_id: Type.Optional(Type.String({ description: "Concept id for op=save_concept (must start with concepts/)" })),
-      markdown: Type.Optional(Type.String({ description: "Full YAML-frontmatter markdown for op=save_concept" })),
-      expected_generation: Type.Optional(Type.Number({ description: "bundle_generation from a prior status call, for op=save_concept" })),
-      old_id: Type.Optional(Type.String({ description: "Concept being superseded for op=supersede_concept" })),
-      new_id: Type.Optional(Type.String({ description: "Replacement concept for op=supersede_concept" })),
-      reason: Type.Optional(Type.String({ description: "Why the old concept was superseded" })),
-    }),
-    async execute(_toolCallId, params) {
-      const op = params.op ?? "status";
-      if (op === "get" && !params.id) {
-        return { content: [{ type: "text" as const, text: "id is required for op: get" }], details: {} };
-      }
-      if (op === "save_concept" && (!params.concept_id || !params.markdown)) {
-        return { content: [{ type: "text" as const, text: "concept_id and markdown are required for op: save_concept" }], details: {} };
-      }
-      const result = await mycoOkf(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "OKF operation failed") }], details: result.data ?? {} };
       }
       return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
     },

@@ -1,6 +1,6 @@
 /**
  * Content claim system daemon API (Team Host WS2) — the publication-lock
- * surface over DB-resident skills and OKF pages (design:
+ * surface over DB-resident skills (design:
  * docs/superpowers/specs/2026-07-09-content-claim-system-design.md §3).
  *
  *   GET  /api/content-claims                  claimable inventory + active claims + published artifacts
@@ -22,7 +22,6 @@ import { errorBody } from './error-envelope.js';
 import { epochSeconds, CONTENT_CLAIM_TTL_MS } from '@myco/constants.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import { getSkillRecord, listSkillRecords } from '@myco/db/queries/skill-records.js';
-import { getOkfPageById, listOkfPages } from '@myco/db/queries/okf.js';
 import {
   insertContentClaim,
   getContentClaimById,
@@ -35,7 +34,7 @@ import {
   type ContentClaimRow,
 } from '@myco/db/queries/content-claims.js';
 
-const VALID_ARTIFACT_KINDS: ReadonlySet<string> = new Set(['skill', 'okf_page']);
+const VALID_ARTIFACT_KINDS: ReadonlySet<string> = new Set(['skill']);
 const ARTIFACT_INVENTORY_LIMIT = 1000;
 
 function asRecord(body: unknown): Record<string, unknown> {
@@ -62,7 +61,10 @@ function requesterMachineId(req: RouteRequest, principal: RequestPrincipal): str
 }
 
 /** Current lineage-latest generation + a display label for one artifact, or
- *  null when it does not exist (or is not visible in this project's scope). */
+ *  null when it does not exist (or is not a recognized kind — including a
+ *  surviving pre-retirement `okf_page` claim's kind, which is now always
+ *  unknown here). A null return degrades every caller safely: `claimView`
+ *  reads it as `stale: false`, and claim creation 404s on it. */
 function resolveArtifact(
   kind: string,
   id: string,
@@ -71,10 +73,6 @@ function resolveArtifact(
   if (kind === 'skill') {
     const record = getSkillRecord(id, scope);
     return record ? { generation: record.generation, label: record.display_name || record.name } : null;
-  }
-  if (kind === 'okf_page') {
-    const page = getOkfPageById(scope, id);
-    return page ? { generation: page.generation, label: page.title || page.path } : null;
   }
   return null;
 }
@@ -98,8 +96,9 @@ function claimView(row: ContentClaimRow, currentGeneration: number | null): Reco
 }
 
 /** One artifact published at its current lineage-latest generation — the
- *  additive companion to `claimable`. Skills-only: a published `okf_page`
- *  emits no entry (spec §2(a)). */
+ *  additive companion to `claimable`. Skills-only construction: a
+ *  pre-retirement `okf_page` publication row is never iterated, so it emits
+ *  no entry (spec §2(a)). */
 interface PublishedArtifactView {
   artifact_kind: 'skill';
   artifact_id: string;
@@ -121,7 +120,6 @@ export async function handleContentClaimsList(
   const scope = scopeFor(principal);
 
   const skills = listSkillRecords({ scope, status: 'active', limit: ARTIFACT_INVENTORY_LIMIT });
-  const pages = listOkfPages(scope, 'active');
   const publicationByKey = new Map(
     listContentPublications().map((p) => [`${p.artifact_kind}:${p.artifact_id}`, p]),
   );
@@ -142,17 +140,15 @@ export async function handleContentClaimsList(
     const activeClaim = activeClaimByKey.get(key) ?? null;
     if (publishedGeneration === generation) {
       // already published at lineage-latest — surfaced via `published`, not `claimable`.
-      if (kind === 'skill') {
-        published.push({
-          artifact_kind: 'skill',
-          artifact_id: id,
-          name,
-          label,
-          published_generation: publishedGeneration,
-          lineage_generation: generation,
-          active_claim: activeClaim ? claimView(activeClaim, generation) : null,
-        });
-      }
+      published.push({
+        artifact_kind: 'skill',
+        artifact_id: id,
+        name,
+        label,
+        published_generation: publishedGeneration,
+        lineage_generation: generation,
+        active_claim: activeClaim ? claimView(activeClaim, generation) : null,
+      });
       return;
     }
     claimable.push({
@@ -167,9 +163,6 @@ export async function handleContentClaimsList(
 
   for (const record of skills) {
     addCandidate('skill', record.id, record.name, record.display_name || record.name, record.generation);
-  }
-  for (const page of pages) {
-    addCandidate('okf_page', page.id, page.path, page.title || page.path, page.generation);
   }
 
   return {
@@ -205,7 +198,7 @@ export async function handleContentClaimCreate(
   ) {
     return {
       status: 400,
-      body: errorBody('invalid_request', "artifact_kind ('skill'|'okf_page') and artifact_id are required"),
+      body: errorBody('invalid_request', "artifact_kind ('skill') and artifact_id are required"),
     };
   }
 

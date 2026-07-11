@@ -69,7 +69,6 @@ export interface TaskRunContext {
   cortex_instruction_input_hash?: string;
   canopy_map_inputs_hash?: string;
   skill_survey_watermark?: number;
-  okf_inputs_hash?: string;
 }
 
 /**
@@ -94,14 +93,10 @@ export const CORTEX_INSTRUCTIONS_TASK = 'cortex-instructions';
 export const CANOPY_DESCRIBE_TASK = 'canopy-describe';
 /** Task name for the canopy-map Tier 3 task. */
 export const CANOPY_MAP_TASK = 'canopy-map';
-/** Task name for the OKF portable-wiki synthesis task. */
-export const OKF_SYNTHESIZE_TASK = 'okf-synthesize';
 /** vault_report action that the render phase uses to persist the final map. */
 export const CANOPY_MAP_REPORT_ACTION = 'canopy_map';
 /** details.content key on the canopy_map vault_report payload. */
 export const CANOPY_MAP_CONTENT_KEY = 'content';
-/** okf_report action that both phases use to record a maintenance summary. */
-export const OKF_REPORT_ACTION = 'okf_maintain';
 
 function scopedOptions(scope: ProjectScope): { scope: ProjectScope } {
   return { scope };

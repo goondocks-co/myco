@@ -140,30 +140,5 @@ export function buildCapabilityChips(s: SymbiontInfo): CapabilityChipDescriptor[
     });
   }
 
-  // OKF chip is symbiont-derived ONLY — it reflects whether this symbiont
-  // can call Myco's OKF MCP tools, not whether OKF is enabled for the
-  // active project. Project-level OKF state (enabled/validation/pointer)
-  // lives exclusively in OkfReadinessPanel on the Symbionts page; mixing
-  // it into this pure function would make the chip depend on data this
-  // module never receives, and would misuse `ochre` (reserved for genuine
-  // warnings) for what is really just "not configured yet".
-  if (s.supportsMcp) {
-    chips.push({
-      id: 'okf',
-      label: 'OKF tools',
-      to: '/okf',
-      tone: 'sage',
-      title: 'This symbiont can call Myco OKF MCP tools',
-    });
-  } else {
-    chips.push({
-      id: 'okf',
-      label: 'OKF (CLI)',
-      to: '/okf',
-      tone: 'outline',
-      title: 'This symbiont falls back to the myco CLI / reading the OKF markdown directly',
-    });
-  }
-
   return chips;
 }

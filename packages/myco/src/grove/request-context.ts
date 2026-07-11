@@ -210,8 +210,8 @@ export interface MycoRequestContext {
    * mark, then carried untouched to the executor's tool surface.
    *
    * Residency constraint: on a host-served run the host holds the Grove DB
-   * but NOT the member's working tree, so committed-file publishes (skills/
-   * OKF) and project-tree reads must not touch a tree the host lacks. Read
+   * but NOT the member's working tree, so committed-file publishes (skills)
+   * and project-tree reads must not touch a tree the host lacks. Read
    * this through {@link isHostServedRequest}. Absent/false for every local
    * (non-overlay) run — behavior there is byte-identical to today.
    */

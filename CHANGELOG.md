@@ -84,14 +84,9 @@ All notable changes to Myco are documented here. Format follows [Keep a Changelo
 - Clean removal of Myco's contributions to every agent's global config, preserving user-pre-existing keys.
 - `--purge` additionally removes `~/.myco/` itself.
 
-#### Open Knowledge Format (OKF)
+#### Skills
 
-> Myco can now maintain project intelligence as an Open Knowledge Format bundle: a portable markdown directory containing spores, Canopy file knowledge, agent-maintained concepts, and maintenance guides. OKF is a top-level opt-in capability and does not replace the local vault.
-
-- Off by default — enable it per project from the Groves capability panel or the new dashboard **OKF** page. Nothing is generated until you opt in.
-- Scheduled maintenance keeps the published `okf/` bundle current; **Maintain Now** and `myco okf maintain` regenerate on demand, and `myco okf validate` checks the bundle against OKF conformance rules.
-- Connected agents co-maintain editorial concepts through the new `myco_okf` tool, while deterministic spore and Canopy projections stay source-owned.
-- A managed `AGENTS.md` pointer makes the bundle discoverable to any agent or teammate, even without Myco installed.
+- New bundled skill `myco-okf`: create and maintain an OKF-conformant project wiki from your project's Myco intelligence.
 
 #### Tests
 
