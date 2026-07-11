@@ -214,6 +214,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       machineId: 'attached-member-machine',
       mycoHome,
     });
+    registerContentClaimFileStatusRoute(memberServer, { logger: noopProxyLogger, mycoHome });
     await memberServer.start(0);
     memberBase = `http://127.0.0.1:${memberServer.port}`;
   });
@@ -263,6 +264,65 @@ describe('content claim materialize over the Team Host overlay', () => {
       `SELECT state FROM content_claims WHERE id = ?`,
     ).get(claimId) as { state: string } | undefined;
     expect(row?.state).toBe('active');
+  });
+
+  test('member materializes with real dashboard tenancy headers present (PR-669 residual: CI now represents the request shape the UI actually sends)', async () => {
+    // `materialize`/`file-status` are `localhost-only` (never proxied), so
+    // — unlike the `serve`/proxied `GET /api/content-claims` below, whose
+    // remote-classification branch never touches local context resolution
+    // at all — a request here DOES run the full local
+    // `resolveRouteRequestContext` before the handler, same as any other
+    // localhost-only route. The prior test above sent no headers at all;
+    // this one sends the SAME shape the passing GET test below already
+    // established as "the dashboard's real header shape" (`x-myco-project-id`
+    // + `x-myco-auth` — every `ClaimControl` action fires only once a
+    // `ProjectSelection` is active, so the UI's `fetchJson` always attaches
+    // these). Proves the handler's identity resolution — deliberately
+    // sourced from the JSON body's `project_root`, NOT `req.requestContext`
+    // (see this file's module docstring) — actually holds when realistic
+    // tenancy headers are present, not just in the headers-free shape every
+    // other test in this suite uses.
+    const res = await fetch(`${memberBase}/api/content-claims/${claimId}/materialize`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-project-id': projectId,
+        'x-myco-auth': memberServer.getAuthToken(),
+      },
+      body: JSON.stringify({ project_root: memberProjectRoot }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; skill_name: string; generation: number; auto_published: boolean };
+    expect(body).toMatchObject({ ok: true, skill_name: 'skill-1', generation: 1, auto_published: false });
+
+    const written = fs.readFileSync(
+      path.join(memberProjectRoot, CANONICAL_PROJECT_SKILLS_DIR, 'skill-1', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(written).toBe(CONTENT);
+  });
+
+  test('member checks file-status with real dashboard tenancy headers present (PR-669 residual, file-status half)', async () => {
+    // Sibling of the materialize case above — file-status shares the same
+    // `localhost-only` stamp and the same `resolveMemberProjectContext`
+    // prelude, so it is exposed to the identical local-context-resolution
+    // path a real dashboard request exercises.
+    const res = await fetch(`${memberBase}/api/content-claims/file-status`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-project-id': projectId,
+        'x-myco-auth': memberServer.getAuthToken(),
+      },
+      body: JSON.stringify({
+        project_root: memberProjectRoot,
+        artifacts: [{ artifact_kind: 'skill', artifact_id: 'skill-1', name: 'skill-1' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { statuses: Array<{ artifact_kind: string | null; artifact_id: string | null; file_present: boolean | null }> };
+    // Not yet materialized on the member tree in THIS test's fixture state.
+    expect(body.statuses).toEqual([{ artifact_kind: 'skill', artifact_id: 'skill-1', file_present: false }]);
   });
 
   test('member republishes a same-generation claim — auto-closes through the proxied mark-published call', async () => {

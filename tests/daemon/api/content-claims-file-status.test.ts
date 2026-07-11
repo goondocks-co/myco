@@ -17,8 +17,8 @@ import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
 
 interface FileStatusEntry {
-  artifact_kind: unknown;
-  artifact_id: unknown;
+  artifact_kind: string | null;
+  artifact_id: string | null;
   file_present: boolean | null;
 }
 
@@ -208,6 +208,21 @@ describe('content claim file-status — local project', () => {
     expect((res.body as { statuses: FileStatusEntry[] }).statuses).toEqual([
       { artifact_kind: 'okf_page', artifact_id: 'page-1', file_present: null },
     ]);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  test('non-string artifact_kind/artifact_id echo as null, not the raw value (FileStatusResult is string-or-null)', async () => {
+    const { h, warnSpy } = handler();
+    const res = await h(req(projectRoot, [
+      { artifact_kind: 42, artifact_id: { nested: true }, name: 'x' },
+    ]));
+
+    expect(res.status).toBe(200);
+    expect((res.body as { statuses: FileStatusEntry[] }).statuses).toEqual([
+      { artifact_kind: null, artifact_id: null, file_present: null },
+    ]);
+    // artifact_kind !== 'skill' short-circuits before the name check —
+    // same "routine, expected shape" no-warn path as the unknown-kind test.
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
