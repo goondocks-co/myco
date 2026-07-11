@@ -14,7 +14,7 @@ These context routes augment the agent's native memory and tools. Myco does not 
 
 ## Local MCP tools
 
-Eight local tools are available to any symbiont Myco has connected. When the project is connected to a Myco Collective, four additional `collective_*` tools are also registered.
+Seven local tools are available to any symbiont Myco has connected. When the project is connected to a Myco Collective, four additional `collective_*` tools are also registered.
 
 The MCP surface is intentionally limited to **read and editorial** operations — symbionts use Myco's project intelligence; they do not administer Myco. Administrative operations such as restart, update, backup, restore, and maintenance live in the **CLI** and **UI**. See [Actors and Boundaries](architecture/actors-and-boundaries.md).
 
@@ -36,26 +36,6 @@ Every vault-scoped tool accepts optional `grove_id` and `project_id` fields so a
 | `myco_skills` | List, inspect, or read auto-generated skills with their full lineage. |
 | `myco_spores` | List, retrieve, save, supersede, or consolidate spores using `op=list|get|save|supersede|consolidate`. |
 | `myco_agent` | Read agent run history using `op=runs|run` — token budget, cost, reasoning level, and per-run details. |
-| `myco_okf` | Read the project's OKF knowledge wiki and edit hand-authored pages under `concepts/` using `op=status|validate|list|get|save_concept|supersede_concept`. Regenerating the wiki is a scheduled background task, not something this surface can trigger. |
-
-### `myco_okf`
-
-The constrained symbiont surface over the OKF capability. The wiki itself —
-every page outside `concepts/` — is synthesized by Myco and read-only here;
-only pages under `concepts/` are agent-editable.
-
-- `op=status` — bundle metadata and the current `bundle_generation`. Read this before an edit and pass the generation back as `expected_generation`.
-- `op=validate` — check the published wiki against the OKF conformance rules.
-- `op=list` — enumerate the published pages.
-- `op=get` — return one page's markdown by bundle-relative `id` (e.g. `concepts/my-note`).
-- `op=save_concept` — create/update a hand-authored page. Requires `concept_id` (must start with `concepts/`) and `markdown` (a full YAML-frontmatter document with `type`, `title`, `description`, `timestamp`, and a stable identity — `myco_id` or `resource`). Pass `expected_generation` for optimistic concurrency; a mismatch returns `okf_generation_conflict`. Saving to a deterministic path returns `deterministic_path_not_editable`.
-- `op=supersede_concept` — mark `old_id` superseded by `new_id` with a `reason`.
-
-There is no `maintain`, output-root, or publish-acknowledgement op: regenerating
-or relocating the wiki is a user/scheduled action, and that omission from the
-schema is the authorization boundary for symbionts.
-
-See the [OKF guide](okf.md) for the user-facing workflow this tool supports.
 
 ## Cloud MCP tools
 
@@ -63,9 +43,10 @@ A separate, read-only tool surface for cloud agents (Anthropic Managed Agents, N
 
 ## Slash-command skills
 
-Myco ships two slash command skills that provide guided workflows. Type the command in your agent's prompt to activate. Beyond these, Myco **auto-generates project-specific skills** from your vault knowledge — see the [Skills docs](skills.md) for the full curation lifecycle.
+Myco ships slash command skills that provide guided workflows. Type the command in your agent's prompt to activate. Beyond these, Myco **auto-generates project-specific skills** from your vault knowledge — see the [Skills docs](skills.md) for the full curation lifecycle.
 
 | Command | Purpose |
 |---------|---------|
 | `/myco` | The primary skill for ongoing work. Use when making design decisions, debugging non-obvious issues, encountering gotchas, or needing context about prior work. Provides guidance on when and how to use each MCP tool. |
 | `/myco-rules` | Keep `AGENTS.md` minimal, durable, and canonical across agents. |
+| `/myco-okf` | Create and maintain an OKF-conformant project wiki — a portable, git-committed markdown knowledge base synthesized from your project's Myco intelligence — directly in the repo, no daemon feature required. |

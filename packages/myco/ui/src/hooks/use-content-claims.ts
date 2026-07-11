@@ -9,15 +9,15 @@ import { POLL_INTERVALS } from '../lib/constants';
 /**
  * Content-claim system hooks (design:
  * docs/superpowers/specs/2026-07-09-content-claim-system-design.md §3/§7) —
- * the publication-lock surface over DB-resident skills and OKF pages. One
- * inventory query backs every claim affordance on the Skills dashboard and
- * the OKF page; every mutation invalidates it so a claim/release/materialize
- * anywhere in the app is immediately visible everywhere it's rendered.
+ * the publication-lock surface over DB-resident skills. One inventory query
+ * backs every claim affordance on the Skills dashboard; every mutation
+ * invalidates it so a claim/release/materialize anywhere in the app is
+ * immediately visible everywhere it's rendered.
  */
 
 /* ---------- Types (mirrors daemon/api/content-claims.ts's wire shapes) ---------- */
 
-export type ContentClaimArtifactKind = 'skill' | 'okf_page';
+export type ContentClaimArtifactKind = 'skill';
 export type ContentClaimState = 'active' | 'released' | 'published' | 'expired';
 
 export interface ContentClaimView {
@@ -47,8 +47,7 @@ export interface ClaimableArtifact {
 }
 
 /** One artifact published at its current lineage-latest generation — the
- *  additive companion to `claimable` (design §2(a)). Skills-only: a
- *  published `okf_page` never emits an entry here. `name` is the
+ *  additive companion to `claimable` (design §2(a)). `name` is the
  *  path-derivation key (skills derive `.agents/skills/<name>/SKILL.md`);
  *  `label` is display-only. */
 export interface PublishedArtifactView {
@@ -98,8 +97,7 @@ export interface MarkContentClaimPublishedResponse {
 }
 
 export type MaterializeContentClaimResponse =
-  | { ok: true; path: string; skill_name: string; generation: number; auto_published: boolean }
-  | { ok: true; path: string; page_path: string; generation: number; auto_published: boolean };
+  { ok: true; path: string; skill_name: string; generation: number; auto_published: boolean };
 
 const CONTENT_CLAIMS_BASE_KEY = ['content-claims'] as const;
 

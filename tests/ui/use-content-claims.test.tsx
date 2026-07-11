@@ -123,12 +123,12 @@ describe('findClaimableArtifact', () => {
       ok: true,
       claimable: [
         { artifact_kind: 'skill', artifact_id: 'a', label: 'A', lineage_generation: 2, published_generation: 1, active_claim: null },
-        { artifact_kind: 'okf_page', artifact_id: 'p', label: 'P', lineage_generation: 3, published_generation: null, active_claim: null },
+        { artifact_kind: 'skill', artifact_id: 'b', label: 'B', lineage_generation: 3, published_generation: null, active_claim: null },
       ],
       active_claims: [],
     };
     expect(findClaimableArtifact(data, 'skill', 'a')?.label).toBe('A');
-    expect(findClaimableArtifact(data, 'okf_page', 'p')?.label).toBe('P');
+    expect(findClaimableArtifact(data, 'skill', 'b')?.label).toBe('B');
     expect(findClaimableArtifact(data, 'skill', 'missing')).toBeUndefined();
   });
 
