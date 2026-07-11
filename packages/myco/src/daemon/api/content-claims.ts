@@ -126,6 +126,28 @@ export async function handleContentClaimsList(
   const activeClaims = listActiveContentClaims(scope);
   const activeClaimByKey = new Map(activeClaims.map((c) => [`${c.artifact_kind}:${c.artifact_id}`, c]));
 
+  // `skills` above already loaded every active skill's generation in ONE
+  // query — reuse it for `active_claims` below instead of a per-claim
+  // `resolveArtifact` (→ `getSkillRecord`) round trip. This handler is
+  // dialed TWICE per remote materialize (`materializeContentClaim`'s
+  // re-assert-before-write step re-fetches the whole list), so an N+1 here
+  // is paid twice per member write, not once. A claim on a RETIRED skill
+  // (not in `skills`, `status: 'active'`-filtered) still falls back to
+  // `resolveArtifact`, memoized per artifact so a repeat miss costs one
+  // query, not one per occurrence.
+  const activeSkillGenerationById = new Map(
+    skills.map((record) => [record.id, { generation: record.generation, label: record.display_name || record.name }]),
+  );
+  const resolvedArtifactCache = new Map<string, { generation: number; label: string } | null>();
+  const resolveArtifactCached = (kind: string, id: string): { generation: number; label: string } | null => {
+    if (kind === 'skill' && activeSkillGenerationById.has(id)) return activeSkillGenerationById.get(id)!;
+    const key = `${kind}:${id}`;
+    if (resolvedArtifactCache.has(key)) return resolvedArtifactCache.get(key)!;
+    const resolved = resolveArtifact(kind, id, scope);
+    resolvedArtifactCache.set(key, resolved);
+    return resolved;
+  };
+
   const claimable: Array<Record<string, unknown>> = [];
   const published: PublishedArtifactView[] = [];
   const addCandidate = (
@@ -172,7 +194,7 @@ export async function handleContentClaimsList(
       claimable,
       published,
       active_claims: activeClaims.map((claim) => {
-        const artifact = resolveArtifact(claim.artifact_kind, claim.artifact_id, scope);
+        const artifact = resolveArtifactCached(claim.artifact_kind, claim.artifact_id);
         return claimView(claim, artifact?.generation ?? null);
       }),
     },

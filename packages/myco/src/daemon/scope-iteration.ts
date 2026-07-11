@@ -29,7 +29,6 @@
  *    A failure in one Grove must not poison the rest of the sweep.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from '@myco/db/client.js';
 import { withDatabase } from '@myco/db/client.js';
@@ -41,6 +40,7 @@ import {
   resolveGroveDir,
   resolveProjectVaultDir,
 } from '@myco/grove/paths.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import {
   listGroves,
   listRegisteredProjects,
@@ -371,7 +371,7 @@ function buildRegisteredProjectScope(input: {
   const projectRoot = path.resolve(input.project.root);
   const projectVaultDir = resolveProjectVaultDir(projectRoot);
   const projectId = assertGroveProjectId(input.project.project_id);
-  const treeAvailable = fs.existsSync(projectRoot);
+  const treeAvailable = projectTreeAvailable(projectVaultDir);
 
   if (!treeAvailable) {
     const key = `${input.grove.id}:${projectId}`;

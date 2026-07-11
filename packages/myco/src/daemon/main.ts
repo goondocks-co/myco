@@ -19,11 +19,11 @@ import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { hasEmbeddedUi } from './static.js';
 import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
 import * as updateInProgress from '@myco/upgrade/in-progress.js';
-import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
+import { resolveVaultDir, resolveProjectRoot, projectTreeAvailable } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
 import { runGlobalBootstrap, shouldRunGlobalBootstrap } from '../cli/bootstrap.js';
-import { resolveMycoHome, resolveGroveDbPath } from '../grove/paths.js';
+import { resolveMycoHome, resolveGroveDbPath, resolveProjectVaultDir } from '../grove/paths.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
@@ -107,6 +107,7 @@ import { createCortexHandlers } from './api/cortex.js';
 import { registerContentClaimRoutes } from './api/content-claims.js';
 import { registerContentClaimMaterializeRoute } from './api/content-claims-materialize.js';
 import { registerContentClaimFileStatusRoute } from './api/content-claims-file-status.js';
+import { registerDrainHealthRoute } from './api/drain-health.js';
 import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
 import { tenantRoute } from './api/route-helpers.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
@@ -1223,10 +1224,22 @@ export async function main(): Promise<void> {
   // plan push is outstanding.
   const planDrain = createPlanDrainQueue({ machineId, logger, planWatchConfig });
 
-  // Both capture drains plug the SAME two host-proxy seams (flush-before-terminal
-  // route + collect-event enqueue); fan each seam out to both so neither channel
-  // regresses the other. The transcript/plan drain modules stay independent — this
-  // is pure wiring composition, threaded into both dispatch chokepoints below.
+  // Team Host: the MEMBER-side attach-aware live-event replay drain (capture-push
+  // C5). When a host is unreachable the collect proxy buffers live capture events
+  // to the DB-free collector buffer; this drain enumerates the attach registry and
+  // re-forwards those buffered events over each host's proxy on reconnect. Its
+  // `pendingCount` inhibits deep sleep while capture is un-shipped, mirroring the
+  // transcript drain. Distinct from the LOCAL buffer reconciler, which enumerates
+  // local Groves only and never sees an attached project's buffer.
+  const eventReplayDrain = createEventReplayDrainQueue({ machineId, logger });
+
+  // Both capture drains plug the SAME host-proxy seams (flush-before-terminal
+  // route + collect-event enqueue + session-terminal prune); fan each seam out to
+  // every drain queue so neither channel regresses another. The drain modules stay
+  // independent — this is pure wiring composition, threaded into both dispatch
+  // chokepoints below. The event-replay drain has no flush/enqueue seam of its own
+  // (it is backstop-only — see its class doc) but DOES plug into the
+  // session-terminal prune (consolidation Task C-2, item 6).
   const transcriptProxyDeps = transcriptDrain.proxyDeps();
   const planProxyDeps = planDrain.proxyDeps();
   const captureProxyDeps = {
@@ -1238,16 +1251,15 @@ export async function main(): Promise<void> {
       transcriptProxyDeps.noteCollectEvent(target, event);
       planProxyDeps.noteCollectEvent(target, event);
     },
+    noteSessionEnded: async (target: RemoteTarget, sessionId: string): Promise<void> => {
+      transcriptProxyDeps.noteSessionEnded(target, sessionId);
+      planProxyDeps.noteSessionEnded(target, sessionId);
+      // The event-replay drain has no flushBeforeForward of its own — its
+      // noteSessionEnded performs its OWN catch-up drain before pruning (see
+      // its class doc), so it is the one leg here worth awaiting.
+      await eventReplayDrain.noteSessionEnded(target, sessionId);
+    },
   };
-
-  // Team Host: the MEMBER-side attach-aware live-event replay drain (capture-push
-  // C5). When a host is unreachable the collect proxy buffers live capture events
-  // to the DB-free collector buffer; this drain enumerates the attach registry and
-  // re-forwards those buffered events over each host's proxy on reconnect. Its
-  // `pendingCount` inhibits deep sleep while capture is un-shipped, mirroring the
-  // transcript drain. Distinct from the LOCAL buffer reconciler, which enumerates
-  // local Groves only and never sees an attached project's buffer.
-  const eventReplayDrain = createEventReplayDrainQueue({ machineId, logger });
 
   const server = new DaemonServer({
     vaultDir: bootstrapVaultDir,
@@ -1315,6 +1327,11 @@ export async function main(): Promise<void> {
       const groveDbPath = resolveGroveDbPath(groveId);
       return fs.existsSync(groveDbPath) ? runtimeCache.getDatabase(groveDbPath) : null;
     },
+    // The completion chokepoint's mining seam: a resurrected-stale close
+    // mines the stamped transcript before the status flip, upholding the
+    // "completed implies mined" invariant the routed-transcript cache GC
+    // relies on (daemon/session-completion.ts).
+    transcriptMiner,
   });
   reconciler.runStartupReconciliation();
 
@@ -1528,6 +1545,11 @@ export async function main(): Promise<void> {
     logger: proxyLoggerFrom(logger, LOG_KINDS.CONTENT_CLAIM_FILE_STATUS),
     mycoHome,
   });
+  // Team Host member drain health (consolidation Task C-5): the SAME three
+  // queue instances the backstop jobs below drive, exposing their `health()`
+  // derived-counters summary for the member's own dashboard. No new state —
+  // reads the drains' already-persisted queue stores.
+  registerDrainHealthRoute(server, { transcriptDrain, planDrain, eventReplayDrain });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};
@@ -1773,7 +1795,7 @@ export async function main(): Promise<void> {
 
   const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
   server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry, transcriptMiner });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
@@ -1824,6 +1846,13 @@ export async function main(): Promise<void> {
         return { skipped: true, reason: 'canopy-map regenerate requires a project-scoped daemon context' };
       }
       const projectRoot = requestContext.projectRoot;
+      // Whether this project's working tree is present on THIS machine —
+      // false for a Team Host serving a member's registered project. Fed
+      // into RunOptions.treeAvailable below (same signal + mechanism as
+      // `task-scheduling.ts` / `agent-runs.ts`'s handleRun) so a
+      // user-triggered regenerate for a served treeless project degrades
+      // its tree-requiring phases instead of running them un-degraded.
+      const treeAvailable = projectTreeAvailable(resolveProjectVaultDir(projectRoot));
       const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
 
       if (built.kind === 'skip') {
@@ -1844,6 +1873,7 @@ export async function main(): Promise<void> {
         embeddingManager,
         requestContext,
         logger,
+        treeAvailable,
       });
 
       // Fire-and-forget — caller already has the run id; we don't block
@@ -1872,6 +1902,8 @@ export async function main(): Promise<void> {
         throw new Error('canopy-describe regenerate requires a project-scoped daemon context');
       }
       const projectRoot = requestContext.projectRoot;
+      // See the identical comment in runCanopyMapTask above.
+      const treeAvailable = projectTreeAvailable(resolveProjectVaultDir(projectRoot));
       const built = await buildTaskInstruction(
         task,
         params,
@@ -1881,6 +1913,7 @@ export async function main(): Promise<void> {
         mycoConfig,
         () => teamSync.getTeamClient(),
         requestContext,
+        treeAvailable,
       );
 
       // Pre-generated and passed through RunOptions — reading the latest
@@ -1897,6 +1930,7 @@ export async function main(): Promise<void> {
         embeddingManager,
         requestContext,
         logger,
+        treeAvailable,
       });
 
       resultPromise.catch((err) => {
@@ -2556,6 +2590,7 @@ export async function main(): Promise<void> {
     logger,
     liveConfig,
     machineId,
+    transcriptMiner,
     cache: runtimeCache,
     embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
     onCanopyMassAdd: (groveId, projectId) =>

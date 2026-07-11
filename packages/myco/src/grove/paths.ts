@@ -247,6 +247,17 @@ export function resolveHostSecretsPath(hostId: string): string {
 export const ROUTED_TRANSCRIPTS_DIRNAME = 'routed-transcripts';
 
 /**
+ * Pure predicate for {@link assertSafeCaptureSegment}'s check: non-empty, no
+ * separators, no `.`/`..`, charset `[A-Za-z0-9._-]`. Exported so callers that
+ * need a boolean (e.g. a zod `.refine()` at a request-body schema boundary)
+ * can validate with the exact same rule the throwing assertion below and the
+ * path resolvers use — one definition, not a re-implemented regex per caller.
+ */
+export function isSafeCaptureSegment(value: string): boolean {
+  return !!value && value !== '.' && value !== '..' && /^[A-Za-z0-9._-]+$/.test(value);
+}
+
+/**
  * A filesystem-safe capture path segment: non-empty, no separators, no `.`/`..`,
  * charset `[A-Za-z0-9._-]`. Unlike the Grove/host/project ids, `machine_id` and
  * `session_id` are NOT brand-shaped era ids (machine_id is `{user}_{hash}`,
@@ -255,7 +266,7 @@ export const ROUTED_TRANSCRIPTS_DIRNAME = 'routed-transcripts';
  * intended directory — the traversal defense for wire-supplied path components.
  */
 export function assertSafeCaptureSegment(value: string, kind: string): string {
-  if (!value || value === '.' || value === '..' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+  if (!isSafeCaptureSegment(value)) {
     throw new Error(`Unsafe ${kind} path segment: ${JSON.stringify(value)}`);
   }
   return value;
@@ -278,8 +289,10 @@ export function resolveRoutedTranscriptsDir(): string {
  * `<routed-transcripts>/<machine_id>/<session_id>/<transcript_id>.jsonl`. Every
  * wire-supplied segment funnels through {@link assertSafeCaptureSegment} before
  * being joined, so a hostile `machine_id`/`session_id`/`transcript_id` cannot
- * escape the cache root via `..` or separators (defense in depth alongside the
- * ingest handler's own validation).
+ * escape the cache root via `..` or separators — defense in depth alongside the
+ * ingest handler's OWN zod-schema check (`TranscriptChunkBody` in
+ * `host/routed-transcript.ts`, which `.refine()`s each id against
+ * {@link isSafeCaptureSegment} before this function is ever called).
  */
 export function resolveRoutedTranscriptPath(
   machineId: string,

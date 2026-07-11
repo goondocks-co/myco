@@ -11,6 +11,7 @@
  * `/events/stop`, so plan content is present when the host's Stop backstop mines.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -124,6 +125,12 @@ const planEvent = (sessionId: string, planPath: string) => ({
   tool_input: { file_path: planPath },
   agent: 'claude-code',
 });
+
+/** Mirrors plan-drain.ts's private `hashContent` (sha256 hex) so tests can seed
+ *  a store entry's `acked_hash` to match — or deliberately mismatch — content. */
+function hashOf(content: string): string {
+  return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
+}
 
 const waitFor = async (pred: () => boolean, ms = 1000): Promise<void> => {
   const start = Date.now();
@@ -378,6 +385,136 @@ describe('durability discipline', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Session-terminal prune (consolidation Task C-2, item 3 — plan-drain
+// equivalent of the transcript drain's noteSessionEnded)
+// ---------------------------------------------------------------------------
+
+describe('noteSessionEnded prune (item 3 — prune only acked)', () => {
+  test('a fully-acked (unchanged since last ack) entry for the ended session is pruned', () => {
+    const files = memFiles();
+    files.set('/plans/x.md', 'content');
+    const store = memStore();
+    const t = target();
+    const ref = derivePlanRef('/plans/x.md');
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, fileReader: files.reader, ...noThrottle });
+    store.put({
+      host_id: HOST_A, session_id: 's', plan_ref: ref, project_id: t.projectId, grove_id: t.groveId,
+      plan_path: '/plans/x.md', acked_hash: hashOf('content'), updated_at: 'x', // caught up
+    });
+
+    q.noteSessionEnded(HOST_A, 's');
+
+    expect(store.get(HOST_A, 's', ref)).toBeNull();
+  });
+
+  test('a changed (un-acked) file is left untouched — prune-only-acked', () => {
+    const files = memFiles();
+    files.set('/plans/x.md', 'new content');
+    const store = memStore();
+    const t = target();
+    const ref = derivePlanRef('/plans/x.md');
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, fileReader: files.reader, ...noThrottle });
+    store.put({
+      host_id: HOST_A, session_id: 's', plan_ref: ref, project_id: t.projectId, grove_id: t.groveId,
+      plan_path: '/plans/x.md', acked_hash: hashOf('stale content'), updated_at: 'x', // stale — NOT caught up
+    });
+
+    q.noteSessionEnded(HOST_A, 's');
+
+    expect(store.get(HOST_A, 's', ref)).not.toBeNull();
+  });
+
+  test('a missing plan file is pruned (mirrors drainEntry\'s existing missing-file prune)', () => {
+    const files = memFiles(); // '/plans/x.md' never set — file is "gone"
+    const store = memStore();
+    const t = target();
+    const ref = derivePlanRef('/plans/x.md');
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, fileReader: files.reader, ...noThrottle });
+    store.put({
+      host_id: HOST_A, session_id: 's', plan_ref: ref, project_id: t.projectId, grove_id: t.groveId,
+      plan_path: '/plans/x.md', acked_hash: null, updated_at: 'x',
+    });
+
+    q.noteSessionEnded(HOST_A, 's');
+
+    expect(store.get(HOST_A, 's', ref)).toBeNull();
+  });
+
+  test('a different session on the same host is left alone', () => {
+    const files = memFiles();
+    files.set('/plans/other.md', 'content');
+    const store = memStore();
+    const t = target();
+    const ref = derivePlanRef('/plans/other.md');
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, fileReader: files.reader, ...noThrottle });
+    store.put({
+      host_id: HOST_A, session_id: 'other-session', plan_ref: ref, project_id: t.projectId, grove_id: t.groveId,
+      plan_path: '/plans/other.md', acked_hash: hashOf('content'), updated_at: 'x', // caught up
+    });
+
+    q.noteSessionEnded(HOST_A, 's'); // ends a DIFFERENT session
+
+    expect(store.get(HOST_A, 'other-session', ref)).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Atomic drain-entry write (consolidation Task C-2, item 2 — plan-drain
+// equivalent of the transcript drain's write-then-rename verification)
+// ---------------------------------------------------------------------------
+
+describe('fs drain-entry store atomicity (item 2 — write-then-rename)', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-drain-atomic-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('interrupt simulation: a torn `.tmp` leftover never corrupts a read, and the next real write self-heals it', () => {
+    const store = createFsPlanDrainStore(tmp);
+    const t = target();
+    const ref = derivePlanRef('/plans/x.md');
+    const entry: PlanDrainEntry = {
+      host_id: HOST_A, session_id: 's', plan_ref: ref, project_id: t.projectId, grove_id: t.groveId,
+      plan_path: '/plans/x.md', acked_hash: 'abc', updated_at: 'x',
+    };
+    store.put(entry);
+
+    const finalPath = path.join(tmp, HOST_A, 's', `${ref}.json`);
+    expect(fs.existsSync(finalPath)).toBe(true);
+    const tmpPath = `${finalPath}.tmp`;
+    fs.writeFileSync(tmpPath, '{"host_id":"' + HOST_A); // deliberately truncated JSON
+
+    expect(store.get(HOST_A, 's', ref)).toEqual(entry); // torn tmp is invisible to reads
+
+    const advanced = { ...entry, acked_hash: 'def' };
+    store.put(advanced);
+    expect(store.get(HOST_A, 's', ref)).toEqual(advanced);
+    expect(fs.existsSync(tmpPath)).toBe(false);
+  });
+
+  test('remove() reaps a torn `.tmp` sibling alongside the entry', () => {
+    const store = createFsPlanDrainStore(tmp);
+    const t = target();
+    const ref = derivePlanRef('/plans/x.md');
+    store.put({
+      host_id: HOST_A, session_id: 's', plan_ref: ref, project_id: t.projectId, grove_id: t.groveId,
+      plan_path: '/plans/x.md', acked_hash: 'abc', updated_at: 'x',
+    });
+    const finalPath = path.join(tmp, HOST_A, 's', `${ref}.json`);
+    const tmpPath = `${finalPath}.tmp`;
+    fs.writeFileSync(tmpPath, '{"torn'); // crash-mid-put leftover
+
+    store.remove(HOST_A, 's', ref);
+
+    expect(fs.existsSync(finalPath)).toBe(false);
+    expect(fs.existsSync(tmpPath)).toBe(false); // sibling reaped, not orphaned
+  });
+});
+
+// ---------------------------------------------------------------------------
 // pendingCount → JobRunner deep-sleep hold
 // ---------------------------------------------------------------------------
 
@@ -465,6 +602,8 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
   let authToken: string;
   let host: ReturnType<typeof fakeHost>;
   let files: ReturnType<typeof memFiles>;
+  let store: PlanDrainStore;
+  let q: PlanDrainQueue;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-cp1-'));
@@ -473,8 +612,9 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
     host = fakeHost();
     files = memFiles();
     files.set('/plans/x.md', '# routed plan\n\nshipped on Stop flush');
-    const q = new PlanDrainQueue({
-      machineId: MACHINE, planWatchConfig: WATCH, store: memStore(), transport: host.transport, fileReader: files.reader, ...noThrottle,
+    store = memStore();
+    q = new PlanDrainQueue({
+      machineId: MACHINE, planWatchConfig: WATCH, store, transport: host.transport, fileReader: files.reader, ...noThrottle,
     });
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
@@ -487,6 +627,7 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
     // chokepoint test uses. The local handlers never run for a routed request.
     server.registerRoute('POST', '/events', async () => ({ body: { ok: true } }));
     server.registerRoute('POST', '/events/stop', async () => ({ body: { ok: true } }));
+    server.registerRoute('POST', '/sessions/unregister', async () => ({ body: { ok: true } }));
     await server.start(0);
     base = `http://127.0.0.1:${server.port}`;
     authToken = server.getAuthToken();
@@ -531,5 +672,132 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
     await waitFor(() => host.calls.length > 0);
     expect(host.calls).toHaveLength(1);
     expect(host.calls[0].body).toMatchObject({ session_id: 's', plan_path: '/plans/x.md', content: '# routed plan\n\nshipped on Stop flush' });
+  });
+
+  test('/sessions/unregister flushes the plan content, then prunes the now-caught-up entry (item 3)', async () => {
+    const projectId = assertGroveProjectId(createProjectId());
+    const rec: HostRecord = {
+      host_id: createHostId(),
+      label: 'Mac Studio',
+      overlay_address: '127.0.0.1:59', // dead port: the background forward fails AFTER flush
+      protocol_version: 1,
+      created_at: new Date().toISOString(),
+      projects: [{ grove_id: createGroveId(), project_id: projectId }],
+    };
+    upsertHost(rec);
+    writeHostSecret(rec.host_id, HOST_BEARER_SECRET, 'host-bearer');
+
+    await fetch(`${base}/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-myco-project-id': projectId, 'x-myco-auth': authToken },
+      body: JSON.stringify(planEvent('ending-session', '/plans/x.md')),
+    });
+    expect(store.list()).toHaveLength(1); // enqueued, not yet shipped
+
+    const res = await fetch(`${base}/sessions/unregister`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-myco-project-id': projectId, 'x-myco-auth': authToken },
+      body: JSON.stringify({ session_id: 'ending-session' }),
+    });
+    expect(res.status).toBe(200);
+
+    await waitFor(() => host.calls.length > 0); // the flush shipped the content
+    expect(host.calls[0].body).toMatchObject({ session_id: 'ending-session', plan_path: '/plans/x.md' });
+    await waitFor(() => store.list().length === 0); // then noteSessionEnded pruned the caught-up entry
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drain health (consolidation Task C-5 — routed-capture observability)
+// ---------------------------------------------------------------------------
+
+describe('drain health (consolidation Task C-5)', () => {
+  test('a fully-shipped entry reports zero counters (no pendingUnits key)', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan');
+    const store = memStore();
+    const host = fakeHost();
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    const t = target();
+    q.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q.flushBeforeForward(t);
+
+    expect(q.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('a transport failure counts as failing AND host-unreachable, sized by the current content', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan body'); // 11 bytes
+    const store = memStore();
+    const t = target();
+    const throwing: PlanPostTransport = async () => { throw new Error('network down'); };
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q.flushBeforeForward(t);
+
+    expect(q.health().get(HOST_A)).toEqual({
+      pendingEntries: 1,
+      pendingUnits: Buffer.byteLength('# plan body', 'utf-8'),
+      failingEntries: 1,
+      hostUnreachableEntries: 1,
+    });
+  });
+
+  test('a rejected (unexpected) host response counts as failing but NOT host-unreachable', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan');
+    const store = memStore();
+    const t = target();
+    const rejecting: PlanPostTransport = async () => ({ status: 500 });
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: rejecting, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q.flushBeforeForward(t);
+
+    const counters = q.health().get(HOST_A);
+    expect(counters?.failingEntries).toBe(1);
+    expect(counters?.hostUnreachableEntries).toBe(0);
+  });
+
+  test('a later successful drain clears a prior failure', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan');
+    const store = memStore();
+    const t = target();
+
+    const throwing: PlanPostTransport = async () => { throw new Error('network down'); };
+    const q1 = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q1.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q1.flushBeforeForward(t);
+    expect(q1.health().get(HOST_A)?.failingEntries).toBe(1);
+
+    const host = fakeHost();
+    const q2 = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    await q2.flushBeforeForward(t);
+    expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('an inert (deleted-file) entry\'s stale failure never counts — no permanent false doctor warning (reviewer repro)', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan');
+    const store = memStore();
+    const t = target();
+
+    // 1. One transport failure recorded against the plan entry.
+    const throwing: PlanPostTransport = async () => { throw new Error('network down'); };
+    const q1 = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q1.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q1.flushBeforeForward(t);
+    expect(q1.health().get(HOST_A)?.hostUnreachableEntries).toBe(1);
+
+    // 2. The plan file is deleted — its content is unreachable forever;
+    //    drainEntry would remove the inert entry on the next LIVE cycle, but
+    //    the doctor path never runs one.
+    files.remove('/plans/x.md');
+
+    // 3. A FRESH queue over the same store (doctor's disk-only construction):
+    //    the stale failure must NOT read as failing/unreachable — otherwise
+    //    every doctor run warns forever while the daemon is down.
+    const q2 = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
   });
 });

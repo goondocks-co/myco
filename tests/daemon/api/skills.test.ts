@@ -669,4 +669,106 @@ describe('handleGetSkillRecord', () => {
     expect(body.lineage).toEqual([]);
     expect(body.usage_total).toBe(0);
   });
+
+  describe('?generation= fetch-by-generation (Task C-6 item 2)', () => {
+    it('omits requested_generation_content entirely when no ?generation= is sent (backward compat)', async () => {
+      const record = insertSkillRecord(makeSkillRecord({ id: 'skill-no-gen-param', name: 'no-gen-param' }));
+      insertLineage({
+        id: 'lin-no-gen-param',
+        project_id: TEST_PROJECT_ID,
+        skill_id: record.id,
+        generation: 1,
+        action: 'created',
+        rationale: 'Initial',
+        content_snapshot: '# v1',
+        created_at: epochNow(),
+      });
+
+      const result = await handleGetSkillRecord(
+        makeReq({ params: { id: 'skill-no-gen-param' } }),
+      );
+
+      expect(result.status).toBe(200);
+      expect(Object.keys(result.body as object)).not.toContain('requested_generation_content');
+    });
+
+    it('resolves a generation OUTSIDE the 50-row lineage window that a plain lineage-array search would miss', async () => {
+      // The content-claim remote materialize path (`getSkillContent`) can
+      // be pinned at a generation older than the top-50-by-generation-desc
+      // page `lineage` returns, once a skill has evolved past it. Seed 55
+      // generations so generation 1 sits well outside that window, then
+      // confirm the exact-generation lookup still finds it — proving the
+      // fix, not just the mechanism.
+      const record = insertSkillRecord(makeSkillRecord({ id: 'skill-deep-history', name: 'deep-history' }));
+      const now = epochNow();
+      for (let generation = 1; generation <= 55; generation += 1) {
+        insertLineage({
+          id: `lin-deep-${generation}`,
+          project_id: TEST_PROJECT_ID,
+          skill_id: record.id,
+          generation,
+          action: generation === 1 ? 'created' : 'updated',
+          rationale: `gen ${generation}`,
+          content_snapshot: `# v${generation}`,
+          created_at: now + generation,
+        });
+      }
+
+      const result = await handleGetSkillRecord(
+        makeReq({ params: { id: 'skill-deep-history' }, query: { generation: '1' } }),
+      );
+
+      expect(result.status).toBe(200);
+      const body = result.body as { lineage: Array<{ generation: number }>; requested_generation_content: string | null };
+      // The capped page itself does NOT include generation 1 — confirms
+      // this test actually exercises the outside-the-window case.
+      expect(body.lineage).toHaveLength(50);
+      expect(body.lineage.some((l) => l.generation === 1)).toBe(false);
+      // The dedicated field resolves it anyway.
+      expect(body.requested_generation_content).toBe('# v1');
+    });
+
+    it('resolves null (not a crash) for a ?generation= that does not exist on this skill', async () => {
+      const record = insertSkillRecord(makeSkillRecord({ id: 'skill-gen-miss', name: 'gen-miss' }));
+      insertLineage({
+        id: 'lin-gen-miss',
+        project_id: TEST_PROJECT_ID,
+        skill_id: record.id,
+        generation: 1,
+        action: 'created',
+        rationale: 'Initial',
+        content_snapshot: '# v1',
+        created_at: epochNow(),
+      });
+
+      const result = await handleGetSkillRecord(
+        makeReq({ params: { id: 'skill-gen-miss' }, query: { generation: '999' } }),
+      );
+
+      expect(result.status).toBe(200);
+      const body = result.body as { requested_generation_content: string | null };
+      expect(body.requested_generation_content).toBeNull();
+    });
+
+    it('ignores a malformed ?generation= (non-numeric) rather than resolving a bogus generation', async () => {
+      const record = insertSkillRecord(makeSkillRecord({ id: 'skill-gen-bogus', name: 'gen-bogus' }));
+      insertLineage({
+        id: 'lin-gen-bogus',
+        project_id: TEST_PROJECT_ID,
+        skill_id: record.id,
+        generation: 1,
+        action: 'created',
+        rationale: 'Initial',
+        content_snapshot: '# v1',
+        created_at: epochNow(),
+      });
+
+      const result = await handleGetSkillRecord(
+        makeReq({ params: { id: 'skill-gen-bogus' }, query: { generation: 'not-a-number' } }),
+      );
+
+      expect(result.status).toBe(200);
+      expect(Object.keys(result.body as object)).not.toContain('requested_generation_content');
+    });
+  });
 });

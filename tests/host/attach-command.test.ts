@@ -3,11 +3,13 @@
  * (Task A1) — the caller that makes `attachProject`/`detachProject` reachable.
  *
  * Hermetic isolation mirrors `tests/host/never-materialize.test.ts`: a per-test
- * tmpdir for MYCO_HOME (threaded explicitly via the command's `mycoHome` option
- * AND consulted by the local-row guard) plus a `MYCO_TEAM_HOME` env override for
- * the machine-global host/attach registry, so the real `~/.myco*` is never
- * touched. A checkout dir carries a committed `.myco/project.toml` whose
- * `project.id` is the routing key the attach mapping records.
+ * tmpdir for MYCO_HOME (threaded explicitly via `attachCommand`'s `mycoHome`
+ * option, which the never-materialize local-row guard consults — `detachCommand`
+ * has no local-row guard to check, so it takes no `mycoHome` option) plus a
+ * `MYCO_TEAM_HOME` env override for the machine-global host/attach registry, so
+ * the real `~/.myco*` is never touched. A checkout dir carries a committed
+ * `.myco/project.toml` whose `project.id` is the routing key the attach mapping
+ * records.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
@@ -129,7 +131,7 @@ describe('attach/detach command', () => {
     attachCommand({ projectPath: root, hostId: host.host_id, groveId: createGroveId(), mycoHome: home });
     expect(resolveAttach(projectId)).not.toBeNull();
 
-    const result = detachCommand({ projectPath: root, mycoHome: home });
+    const result = detachCommand({ projectPath: root });
 
     expect(result.detachedFromHostId).toBe(host.host_id);
     expect(resolveAttach(projectId)).toBeNull();
@@ -158,7 +160,7 @@ describe('attach/detach command', () => {
     });
     expect(store.listForHost(host.host_id)).toHaveLength(1);
 
-    detachCommand({ projectPath: root, mycoHome: home });
+    detachCommand({ projectPath: root });
 
     expect(store.listForHost(host.host_id)).toHaveLength(0);
   });
@@ -175,6 +177,27 @@ describe('attach/detach command', () => {
 
     expect(second.alreadyAttached).toBe(true);
     expect(getHost(host.host_id)?.projects).toHaveLength(1);
+  });
+
+  test('re-running `myco attach` backfills a pre-WS1 ref with no `root` (the operator-facing "attach refresh")', () => {
+    // Seeded directly, bypassing `attachCommand`/`attachProject`, to
+    // simulate a record from before `AttachRef.root` existed — every real
+    // attach today always sets `root`, so this is the only way to
+    // reproduce the stuck shape.
+    const host = makeHost();
+    const projectId = createProjectId();
+    const groveId = createGroveId();
+    upsertHost({ ...host, projects: [{ grove_id: groveId, project_id: projectId }] });
+    expect(resolveAttach(projectId)?.ref.root).toBeUndefined();
+
+    const root = makeCheckout(projectId);
+    const result = attachCommand({ projectPath: root, hostId: host.host_id, groveId, mycoHome: home });
+
+    expect(result.alreadyAttached).toBe(true);
+    expect(resolveAttach(projectId)?.ref.root).toBe(path.resolve(root));
+    // `member-project-context.ts`'s root-mismatch reconciliation is now
+    // live for this project: a `project_root` that no longer matches would
+    // be caught instead of silently skipped (`attach.ref.root && …`).
   });
 
   test('attach maps ProjectRegisteredLocallyError to a migration-needed (A2) message', () => {
@@ -217,7 +240,7 @@ describe('attach/detach command', () => {
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
 
-    const result = detachCommand({ projectPath: root, mycoHome: home });
+    const result = detachCommand({ projectPath: root });
 
     expect(result.detachedFromHostId).toBeNull();
     expect(result.projectId).toBe(projectId);
@@ -230,6 +253,18 @@ describe('attach/detach command', () => {
 
     expect(() => attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home }))
       .toThrow(/requires --grove/);
+  });
+
+  test('attach with a malformed --grove value fails format validation (mirrors --project-id)', () => {
+    const host = makeHost();
+    upsertHost(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+
+    expect(() => attachCommand({ projectPath: root, hostId: host.host_id, groveId: 'not-a-grove-id', mycoHome: home }))
+      .toThrow(/--grove must be a Grove id/);
+    // Nothing was recorded — the malformed id never reached the registry write.
+    expect(resolveAttach(projectId)).toBeNull();
   });
 
   test('attach to an unknown (not-joined) host fails with a join hint', () => {

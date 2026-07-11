@@ -23,6 +23,7 @@ import { tierAllowsPath, type Tier } from '../../config/scope.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../../utils/dot-path.js';
 import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import { projectTreeAvailable } from '../../vault/resolve.js';
 
 export async function handleGetConfig(vaultDir: string): Promise<RouteResponse> {
   const config = loadConfig(vaultDir);
@@ -38,7 +39,16 @@ export async function handleGetMergedConfig(
   vaultDir: string,
   options: { groveId?: string | null } = {},
 ): Promise<RouteResponse> {
-  const config = loadMergedConfig(vaultDir, { groveId: options.groveId ?? null });
+  // A Team Host operator can browse a served project's Settings page over
+  // localhost even though the member's working tree isn't on this machine
+  // — degrade to machine+grove tiers (empty project tier) instead of
+  // throwing "myco.yaml not found" (same signal + mechanism as
+  // `task-scheduling.ts`).
+  const treeAvailable = projectTreeAvailable(vaultDir);
+  const config = loadMergedConfig(vaultDir, {
+    groveId: options.groveId ?? null,
+    projectTierOptional: !treeAvailable,
+  });
   return { body: config };
 }
 

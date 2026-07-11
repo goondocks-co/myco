@@ -26,6 +26,7 @@ import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext } from
 import type { MycoConfig } from '../../config/schema.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import { capabilityEnabled } from '../../config/capabilities.js';
+import { projectTreeAvailable } from '../../vault/resolve.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -108,14 +109,24 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
       return { body };
     }
     const projectRoot = filesystemRootFromRequestContext(ctx);
+    // A Team Host running this project's PreToolUse hooks host-side has no
+    // local working tree for a served member project — degrade to
+    // machine+grove tiers (empty project tier) instead of throwing
+    // "myco.yaml not found" (same signal + mechanism as `task-scheduling.ts`).
+    // The catch below stays fail-closed for a GENUINELY unreadable config
+    // (corrupt YAML, permissions) — that case must not fall back to the
+    // bootstrap config, which could leak cross-tenant config or silently
+    // inject for a project whose config can't be trusted.
+    const treeAvailable = projectTreeAvailable(ctx.projectVaultDir);
     let projectConfig: MycoConfig | null = null;
     try {
-      projectConfig = loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId ?? null });
+      projectConfig = loadMergedConfig(ctx.projectVaultDir, {
+        groveId: ctx.groveId ?? null,
+        projectTierOptional: !treeAvailable,
+      });
     } catch {
-      // Project not yet initialized — treat as capability_off (fail-closed)
-      // rather than falling back to the bootstrap config, which could leak
-      // cross-tenant config or silently inject for projects whose config
-      // is temporarily unreadable.
+      // Project config genuinely unreadable — treat as capability_off
+      // (fail-closed) rather than falling back to the bootstrap config.
     }
     if (!capabilityEnabled(projectConfig, 'canopy')) {
       const body: InjectResponseBody = { inject: false, reason: 'capability_off' };

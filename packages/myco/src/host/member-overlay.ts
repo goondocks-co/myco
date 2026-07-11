@@ -678,7 +678,10 @@ export async function defaultResolveMemberOverlayIp(
  * `node:http` client can neither drive a `method: 'CONNECT'` request nor accept a
  * caller-supplied socket, which under the Bun-compiled daemon made this probe
  * silently ALWAYS return false instead of actually dialing. An outer timer bounds
- * the whole attempt, including a CONNECT the proxy never answers.
+ * the whole attempt, including a CONNECT the proxy never answers — that timer's
+ * handler destroys the in-flight probe request too (via `done`), not just the
+ * bridge port, so a hung CONNECT/GET never leaks the socket past this call's
+ * return the way a resolve-only timeout would.
  */
 export async function defaultCheckHostReachable(overlayAddress: string, proxyPort: number): Promise<boolean> {
   const { host, port } = splitOverlayAddress(overlayAddress);
@@ -686,20 +689,24 @@ export async function defaultCheckHostReachable(overlayAddress: string, proxyPor
   return await new Promise<boolean>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let probe: import('node:http').ClientRequest | undefined;
     const done = (v: boolean) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      probe?.destroy(); // release the one-shot tunnel on every exit path — success, error, AND outer timeout
       resolve(v);
     };
     timer = setTimeout(() => done(false), HOST_PROXY_CONNECT_TIMEOUT_MS);
     Promise.all([import('node:http'), acquireTunnelBridgePort(proxyPort, host, port)]).then(([http, bridgePort]) => {
-      const probe = http.request(
+      // The outer timer may have already fired while the dynamic import / bridge
+      // acquisition was in flight — don't open a request `done` no longer tracks.
+      if (settled) return;
+      probe = http.request(
         { host: '127.0.0.1', port: bridgePort, path: '/health', method: 'GET', headers: { host: `${host}:${port}` }, agent: false },
         (probeRes) => {
           probeRes.resume();
           done(true); // any response proves the tunnel + host listener are up
-          probe.destroy(); // release the one-shot tunnel immediately
         },
       );
       probe.once('error', () => done(false));

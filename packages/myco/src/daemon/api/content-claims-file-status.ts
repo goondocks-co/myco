@@ -51,8 +51,8 @@ interface FileStatusArtifactInput {
 }
 
 interface FileStatusResult {
-  artifact_kind: unknown;
-  artifact_id: unknown;
+  artifact_kind: string | null;
+  artifact_id: string | null;
   file_present: boolean | null;
 }
 
@@ -114,6 +114,14 @@ function fileStatusForArtifact(
   }
 }
 
+/** A request entry's `artifact_kind`/`artifact_id` echoed back typed, not
+ *  raw — a non-string value (number, object, array) has no valid identity
+ *  to echo and degrades to `null` rather than leaking an arbitrary JSON
+ *  shape into a `string | null` wire field. */
+function asEchoString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
 /**
  * One response entry per request entry, index-aligned. A non-object entry
  * (e.g. a literal `null` in the artifacts array) has no identity to echo —
@@ -128,8 +136,8 @@ function statusForEntry(currentRoot: string, entry: unknown, logger: ProxyLogger
     return { artifact_kind: null, artifact_id: null, file_present: null };
   }
   return {
-    artifact_kind: entry.artifact_kind ?? null,
-    artifact_id: entry.artifact_id ?? null,
+    artifact_kind: asEchoString(entry.artifact_kind),
+    artifact_id: asEchoString(entry.artifact_id),
     file_present: fileStatusForArtifact(currentRoot, entry, logger),
   };
 }

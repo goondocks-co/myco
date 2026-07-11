@@ -268,7 +268,13 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     requestMachineId: string,
     requestProductionRef: string | null,
     requestContext: MycoRequestContext | undefined,
-    hookTranscriptPath?: string,
+    // The RESOLVED transcript path to mine/stamp — the caller's C4
+    // substitution already ran (host-materialized file for a host-served
+    // session, the raw hook-reported path otherwise), so this is NOT always
+    // literally "what the hook said." Formerly named `hookTranscriptPath`,
+    // which implied the latter; renamed for accuracy. See `handleStopRoute`
+    // below for the pre-substitution `hookTranscriptPath` this is derived from.
+    transcriptPath?: string,
     lastAssistantMessage?: string,
     phases: readonly ('response' | 'transcript')[] = ['response', 'transcript'],
   ): Promise<void> {
@@ -287,7 +293,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const bufferEvents = sessionBuffers.get(sessionId)?.readAll() ?? [];
 
     if (runTranscriptPhase) {
-    const transcriptResult = transcriptMiner.getAllTurnsWithSource(sessionId, hookTranscriptPath);
+    const transcriptResult = transcriptMiner.getAllTurnsWithSource(sessionId, transcriptPath);
     allTurns = transcriptResult.turns;
     turnSource = transcriptResult.source;
 
@@ -324,11 +330,11 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Reconcile batch kinds against the transcript now that we have a stable
     // transcript path. This repairs any hook-race misclassifications (e.g.,
     // two consecutive initial batches where the second should be steering).
-    if (hookTranscriptPath) {
+    if (transcriptPath) {
       const agent = getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent;
       if (agent) {
         try {
-          transcriptMiner.reconcileBatchKinds(sessionId, { agent, transcriptPath: hookTranscriptPath });
+          transcriptMiner.reconcileBatchKinds(sessionId, { agent, transcriptPath });
         } catch (err) {
           logger.warn(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'reconcileBatchKinds failed', {
             session_id: sessionId,
@@ -463,8 +469,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // transcript_path; overwriting an already-set path with null on that
     // event would clobber the value the transcript-phase event will
     // provide (or has already provided) on the same session.
-    if (hookTranscriptPath) {
-      updateFields.transcript_path = hookTranscriptPath;
+    if (transcriptPath) {
+      updateFields.transcript_path = transcriptPath;
     }
     if (user) updateFields.user = user;
     if (!hasTitle && sessionTitleCache.has(sessionId)) {
@@ -479,8 +485,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     if (runTranscriptPhase && SKILL_USAGE_DETECTION_ENABLED) {
       try {
         let transcriptText: string | null = null;
-        if (hookTranscriptPath) {
-          try { transcriptText = fs.readFileSync(hookTranscriptPath, 'utf-8'); }
+        if (transcriptPath) {
+          try { transcriptText = fs.readFileSync(transcriptPath, 'utf-8'); }
           catch { /* file may not exist yet — fall through */ }
         }
         if (!transcriptText && allTurns.length > 0) {
@@ -845,6 +851,15 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       sessionId,
       memberTranscriptPath: hookTranscriptPath ?? undefined,
     });
+    // NOTE — /events-vs-Stop logging asymmetry: unlike the /events dispatch
+    // site (`event-dispatch.ts`, same C4 substitution), which logs at `debug`
+    // for every non-unchanged action, this site only logs the
+    // `degraded-missing` case (at `warn` — Stop is the terminal mine, so a
+    // missing file is more consequential than the same gap on a mid-turn
+    // event). A successful Stop substitution is silent. Stop fires once per
+    // turn rather than once per tool call, so the reduced log volume is a
+    // deliberate choice, not obviously a bug — noted so a future reader does
+    // not "fix" one site without checking the other's reasoning first.
     if (transcriptSubstitution.action === 'degraded-missing') {
       logger.warn(LOG_KINDS.HOOKS_STOP, 'Routed transcript not materialized on host at Stop — deferring mine to replay/re-enrich', {
         session_id: sessionId,

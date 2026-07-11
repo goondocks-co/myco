@@ -12,8 +12,10 @@ import {
   createGrove,
   registerProjectInGrove,
 } from '@myco/grove/registry';
-import { createCanopyDescribeBacklogReader } from '@myco/canopy/describe-backlog';
-import { getCanopyDescribeBacklog } from '@myco/db/queries/canopy';
+import { createCanopyDescribeBacklogReader, effectiveCanopyDescribeMaxAttempts } from '@myco/canopy/describe-backlog';
+import { getCanopyDescribeBacklog, DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS } from '@myco/db/queries/canopy';
+import { resolveGroveConfigPath } from '@myco/grove/paths';
+import { invalidateMergedConfigCache } from '@myco/config/loader';
 
 let home: string;
 let db: Database;
@@ -116,6 +118,38 @@ describe('canopy describe backlog reader', () => {
     expect(backlog).toEqual({ pending: 1, undescribed: 1, stale: 0, stuck: 0 });
   });
 
+  it('a served-treeless registered project (no local myco.yaml at all) still counts — degrades to the schema default (canopy on) instead of always excluding it (Task C-6 item 1)', () => {
+    // A Team Host owns this project's Grove row but the checkout — and so
+    // `.myco/myco.yaml` — lives on the member's machine, never this one.
+    // Before the fix, `loadMergedConfig` here had no `projectTierOptional`,
+    // so it always threw "myco.yaml not found" -> the catch degraded to
+    // `capabilityEnabled(null, 'canopy') === false` -> every served-treeless
+    // project was silently excluded from grove-wide counts regardless of
+    // its actual machine+grove-tier canopy setting. `cortex.canopy.enabled`
+    // defaults to `true` in the schema, so with the fix this project now
+    // degrades to machine+grove tiers (both empty here) and correctly
+    // counts as Canopy-enabled.
+    const grove = createGrove('Test Grove', home);
+    const treelessRoot = path.join(home, 'served-treeless-project');
+    // Deliberately never materialized on disk — no .myco/myco.yaml at all.
+    expect(fs.existsSync(treelessRoot)).toBe(false);
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_served_treeless',
+      projectName: 'served treeless',
+      projectRoot: treelessRoot,
+      bindingId: 'gbind_served_treeless',
+    }, home);
+
+    insertUndescribedEntry('proj_served_treeless', 'a.ts');
+
+    const reader = createCanopyDescribeBacklogReader({ mycoHome: home });
+    const backlog = withDatabase(db, () =>
+      reader.read(ALL_PROJECTS_SCOPE, { groveId: grove.id }),
+    );
+
+    expect(backlog).toEqual({ pending: 1, undescribed: 1, stale: 0, stuck: 0 });
+  });
+
   it('project-scoped reads report an empty backlog when Canopy is disabled', () => {
     const grove = createGrove('Test Grove', home);
     registerProjectInGrove(grove.id, {
@@ -196,5 +230,46 @@ describe('getCanopyDescribeBacklog — describe_attempts budget', () => {
 
     expect(getCanopyDescribeBacklog(db, projectScope('proj_a'), { maxAttempts: 4 }))
       .toEqual({ pending: 2, undescribed: 1, stale: 1, stuck: 0 });
+  });
+});
+
+describe('effectiveCanopyDescribeMaxAttempts — served-treeless degrade (Task C-6 item 1)', () => {
+  it('picks up a GROVE-tier max_attempts override for a served-treeless registered project', () => {
+    // `agent.tasks.canopy-describe.params.max_attempts` is Grove-tier
+    // (config/scope.ts: `agent` home is 'grove'), so it resolves from the
+    // machine's own Grove config regardless of the project's working tree
+    // — UNLESS `loadMergedConfig` throws before ever reaching the grove
+    // tier, which is exactly what happened before the fix: no
+    // `projectTierOptional` meant a served-treeless project's merge always
+    // threw "myco.yaml not found", the catch fell back to
+    // `DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS` unconditionally, and a real
+    // Grove-tier override for that project was silently ignored.
+    const grove = createGrove('Test Grove', home);
+    const treelessRoot = path.join(home, 'served-treeless-max-attempts');
+    expect(fs.existsSync(treelessRoot)).toBe(false);
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_served_treeless_maxattempts',
+      projectName: 'served treeless',
+      projectRoot: treelessRoot,
+      bindingId: 'gbind_served_treeless_maxattempts',
+    }, home);
+
+    const overrideValue = DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS + 7;
+    const groveConfigPath = resolveGroveConfigPath(grove.id, home);
+    fs.mkdirSync(path.dirname(groveConfigPath), { recursive: true });
+    fs.writeFileSync(
+      groveConfigPath,
+      `agent:\n  tasks:\n    canopy-describe:\n      params:\n        max_attempts: ${overrideValue}\n`,
+    );
+    invalidateMergedConfigCache();
+
+    const resolved = effectiveCanopyDescribeMaxAttempts(
+      projectScope('proj_served_treeless_maxattempts'),
+      grove.id,
+      home,
+    );
+
+    expect(resolved).toBe(overrideValue);
+    expect(resolved).not.toBe(DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS);
   });
 });

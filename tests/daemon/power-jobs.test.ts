@@ -18,7 +18,9 @@ import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { loadGroveConfig, loadMachineConfig, saveGroveConfig, saveMachineConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import { CONTENT_CLAIM_RETENTION_MS } from '@myco/constants.js';
+import { CONTENT_CLAIM_RETENTION_MS, ROUTED_EVENT_DEDUP_RETENTION_MS } from '@myco/constants.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
+import { resolveRoutedTranscriptPath, resolveRoutedTranscriptsDir } from '@myco/grove/paths.js';
 
 // ---------------------------------------------------------------------------
 // Test fixture: bring up a real Myco home with one Grove and an open DB
@@ -183,6 +185,8 @@ function buildDeps(fx: GroveFixture, overrides: Partial<Record<string, unknown>>
     logger: fx.logger,
     liveConfig: liveConfig as never,
     machineId: 'test-machine',
+    transcriptMiner: (overrides.transcriptMiner as PowerJobDeps['transcriptMiner'])
+      ?? { reconcileAndAttributeResponses: () => ({}) },
     daemonVaultDir: fx.workDir,
     cache: fx.cache,
     embeddingRuntimeFactory: fx.factory,
@@ -812,6 +816,348 @@ describe('content-claim-expiry power job', () => {
     expect(claimState('cclaim_expiring')).toBe('expired');
     expect(claimExists('cclaim_old_released')).toBe(false);
     expect(claimExists('cclaim_young_released')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// routed-transcript-cache-gc — consolidation Task C-1
+// ---------------------------------------------------------------------------
+
+describe('routed-transcript-cache-gc power job', () => {
+  let fx: GroveFixture;
+  let pm: FakeJobRunner;
+  let savedTeamHome: string | undefined;
+
+  beforeEach(() => {
+    fx = setupGrove();
+    pm = new FakeJobRunner();
+    savedTeamHome = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_TEAM_HOME = path.join(fx.workDir, 'team-home');
+  });
+
+  afterEach(() => {
+    if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = savedTeamHome;
+    fx.cleanup();
+  });
+
+  function seedSession(
+    id: string,
+    status: 'active' | 'completed',
+    machineId: string,
+    opts: { transcriptPath?: string | null; startedAt?: number; endedAt?: number } = {},
+  ): void {
+    const startedAt = opts.startedAt ?? Math.floor(Date.now() / 1000);
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      upsertSession({
+        id,
+        agent: 'claude-code',
+        started_at: startedAt,
+        created_at: startedAt,
+        status,
+        machine_id: machineId,
+        // Completed rows carry ended_at in production (closeSession stamps
+        // it) — the GC's quiescence guard compares tree mtimes against it.
+        ended_at: opts.endedAt
+          ?? (status === 'completed' ? Math.floor(Date.now() / 1000) : null),
+        // Default: a stamped transcript source — the shape every routed
+        // session that reached a successful Stop substitution has. The GC
+        // requires it (no stamp = the completion chokepoint had no mine
+        // source, tree kept forever); pass null to exercise that guard.
+        transcript_path: opts.transcriptPath === undefined
+          ? `/routed/materialized/${id}.jsonl`
+          : opts.transcriptPath,
+      });
+    });
+  }
+
+  /** Materialize a fake cache dir with one dummy transcript file, mirroring
+   *  what the C2 materializer would have written. Returns the session dir. */
+  function materializeCacheDir(machineId: string, sessionId: string): string {
+    const filePath = resolveRoutedTranscriptPath(machineId, sessionId, 'tx_dummy00000000000000000000000');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, '{"type":"assistant"}\n');
+    return path.dirname(filePath);
+  }
+
+  /** Back-date every mtime under a session cache dir (files + the dir
+   *  itself) so the tree reads as append-quiescent: newest write older than
+   *  the quiescence window AND predating the session's completion time. */
+  function ageCacheDir(machineId: string, sessionId: string, ageMs: number): void {
+    const dir = path.join(resolveRoutedTranscriptsDir(), machineId, sessionId);
+    const t = new Date(Date.now() - ageMs);
+    for (const name of fs.readdirSync(dir)) {
+      fs.utimesSync(path.join(dir, name), t, t);
+    }
+    fs.utimesSync(dir, t, t);
+  }
+
+  /** 10 min: past the 5-min quiescence window with margin. */
+  const QUIET_AGE_MS = 10 * 60 * 1000;
+
+  function cacheDirExists(machineId: string, sessionId: string): boolean {
+    return fs.existsSync(path.join(resolveRoutedTranscriptsDir(), machineId, sessionId));
+  }
+
+  it('registers a routed-transcript-cache-gc job that runs in idle and sleep', () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('routed-transcript-cache-gc');
+    expect(job.runIn).toEqual(['idle', 'sleep']);
+    expect(job.kind).toBe('housekeeping');
+  });
+
+  it('is a no-op when the cache root does not exist yet', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    await expect(pm.find('routed-transcript-cache-gc').fn()).resolves.toBeUndefined();
+  });
+
+  it('prunes a fully-mined, session-terminal, append-quiescent session\'s cache tree', async () => {
+    seedSession('sess-done', 'completed', 'member_aaaa1111');
+    materializeCacheDir('member_aaaa1111', 'sess-done');
+    ageCacheDir('member_aaaa1111', 'sess-done', QUIET_AGE_MS);
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_aaaa1111', 'sess-done')).toBe(false);
+  });
+
+  it('never touches an in-flight (active) session\'s cache tree', async () => {
+    seedSession('sess-active', 'active', 'member_bbbb2222');
+    materializeCacheDir('member_bbbb2222', 'sess-active');
+    ageCacheDir('member_bbbb2222', 'sess-active', QUIET_AGE_MS); // quiet, but status refuses
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_bbbb2222', 'sess-active')).toBe(true);
+  });
+
+  it('leaves an orphaned cache directory alone when no session row matches anywhere', async () => {
+    materializeCacheDir('member_cccc3333', 'sess-unknown');
+    ageCacheDir('member_cccc3333', 'sess-unknown', QUIET_AGE_MS); // quiet, but no owning row
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_cccc3333', 'sess-unknown')).toBe(true);
+  });
+
+  it('never deletes on a machine_id mismatch between the row and the directory (defense in depth)', async () => {
+    // A completed session row exists under this id, but for a DIFFERENT
+    // machine than the directory's own path — must never be treated as the
+    // directory's owner.
+    seedSession('sess-mismatch', 'completed', 'member_real0000');
+    materializeCacheDir('member_spoofed1', 'sess-mismatch');
+    ageCacheDir('member_spoofed1', 'sess-mismatch', QUIET_AGE_MS); // quiet, but mismatch refuses
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_spoofed1', 'sess-mismatch')).toBe(true);
+  });
+
+  it('prunes multiple terminal trees and leaves multiple in-flight trees alone in one pass', async () => {
+    seedSession('sess-done-1', 'completed', 'member_aaaa1111');
+    seedSession('sess-done-2', 'completed', 'member_aaaa1111');
+    seedSession('sess-active-1', 'active', 'member_aaaa1111');
+    materializeCacheDir('member_aaaa1111', 'sess-done-1');
+    materializeCacheDir('member_aaaa1111', 'sess-done-2');
+    materializeCacheDir('member_aaaa1111', 'sess-active-1');
+    ageCacheDir('member_aaaa1111', 'sess-done-1', QUIET_AGE_MS);
+    ageCacheDir('member_aaaa1111', 'sess-done-2', QUIET_AGE_MS);
+    ageCacheDir('member_aaaa1111', 'sess-active-1', QUIET_AGE_MS);
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_aaaa1111', 'sess-done-1')).toBe(false);
+    expect(cacheDirExists('member_aaaa1111', 'sess-done-2')).toBe(false);
+    expect(cacheDirExists('member_aaaa1111', 'sess-active-1')).toBe(true);
+  });
+
+  it('never prunes a completed session with NO stamped transcript_path (no mine source at close — tree kept)', async () => {
+    // A routed session that never got a successful Stop substitution
+    // (degraded-missing throughout, or no Stop at all) completes with
+    // transcript_path NULL — the completion chokepoint had nothing to mine
+    // against, so the tree may hold unmined bytes. The GC must keep it.
+    seedSession('sess-no-stamp', 'completed', 'member_dddd4444', { transcriptPath: null });
+    materializeCacheDir('member_dddd4444', 'sess-no-stamp');
+    ageCacheDir('member_dddd4444', 'sess-no-stamp', QUIET_AGE_MS); // quiet — only the stamp refuses
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_dddd4444', 'sess-no-stamp')).toBe(true);
+  });
+
+  it('late-append TOCTOU: refuses while the tree holds writes at/after completion or fresh writes; prunes once quiet with all bytes predating completion', async () => {
+    // The reviewer's worst case: session completed (and mined) an hour ago;
+    // the member reconnects and the drain backstop pushes tail bytes — a
+    // pure offset append that touches NO sessions row, fires no event, and
+    // triggers no re-mine. The fresh write must refuse the prune.
+    const anHourAgo = Math.floor(Date.now() / 1000) - 3600;
+    seedSession('sess-late-append', 'completed', 'member_ffff6666', { endedAt: anHourAgo });
+    const dir = materializeCacheDir('member_ffff6666', 'sess-late-append');
+    // The materialize write IS the late append: mtime ≈ now >= ended_at.
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+    expect(cacheDirExists('member_ffff6666', 'sess-late-append')).toBe(true); // refusal while fresh
+
+    // No re-mining machinery — the refusal alone is the guard. The tree
+    // prunes only once a future pass finds it QUIET with every write
+    // predating completion (here: back-dated to 2h ago, before ended_at
+    // and far past the quiescence window).
+    ageCacheDir('member_ffff6666', 'sess-late-append', 2 * 3600 * 1000);
+    await pm.find('routed-transcript-cache-gc').fn();
+    expect(cacheDirExists('member_ffff6666', 'sess-late-append')).toBe(false); // prune once quiet
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('refuses to prune within the quiescence window even when every write predates completion', async () => {
+    // Freshly-completed session: writes predate ended_at, but the newest is
+    // still inside the quiescence window of now — an append could be in
+    // flight (clock precision, a racing drain). Prune-only-when-quiet.
+    seedSession('sess-fresh-quiet', 'completed', 'member_gggg7777');
+    materializeCacheDir('member_gggg7777', 'sess-fresh-quiet');
+    // 2 min old: before ended_at (now) but inside the 5-min window.
+    ageCacheDir('member_gggg7777', 'sess-fresh-quiet', 2 * 60 * 1000);
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_gggg7777', 'sess-fresh-quiet')).toBe(true);
+  });
+
+  it('stale-sweep completion mines the unmined tail through the chokepoint, and only then may GC prune (the reviewer-caught failure case)', async () => {
+    // Failure mode this pins: member crashes mid-turn → no Stop/SessionEnd →
+    // the stale sweep completes the session. Pre-fix, that flip ran NO
+    // mining pass, and the GC — trusting "completed implies mined" — deleted
+    // the host's only transcript copy with the tail unmined. Now the sweep
+    // routes through completeSessionWithMining: the miner sees the stamped
+    // (host-materialized) transcript BEFORE the status flip, and only then
+    // does the GC prune the tree.
+    const staleStart = Math.floor(Date.now() / 1000) - 2 * 3600; // 2h ago > 60min threshold
+    const materializedDir = materializeCacheDir('member_eeee5555', 'sess-crashed');
+    const materializedFile = path.join(materializedDir, 'tx_dummy00000000000000000000000.jsonl');
+    seedSession('sess-crashed', 'active', 'member_eeee5555', {
+      transcriptPath: materializedFile,
+      startedAt: staleStart,
+    });
+    // One OLD prompt batch: keeps the session stale (batch beyond threshold)
+    // but NOT "dead" (dead = zero batches → cascade delete in the same
+    // maintenance run, which is not this test's subject).
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      getDatabase().prepare(
+        `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
+         VALUES ('sess-crashed', 1, ?, ?, 'active')`,
+      ).run(staleStart, staleStart);
+    });
+
+    const minerCalls: Array<{ sessionId: string; agent: string; transcriptPath: string }> = [];
+    registerPowerJobs(pm as never, buildDeps(fx, {
+      transcriptMiner: {
+        reconcileAndAttributeResponses(sessionId: string, input: { agent: string; transcriptPath: string }) {
+          minerCalls.push({ sessionId, ...input });
+          return {};
+        },
+      },
+    }));
+
+    // The stale sweep (session-maintenance job) completes the crashed
+    // session — routing through the completion chokepoint, which mines the
+    // stamped transcript first.
+    await pm.find('session-maintenance').fn();
+    expect(minerCalls).toEqual([{
+      sessionId: 'sess-crashed',
+      agent: 'claude-code',
+      transcriptPath: materializedFile,
+    }]);
+    const status = withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      (getDatabase().prepare(`SELECT status FROM sessions WHERE id = 'sess-crashed'`).get() as { status: string }).status,
+    );
+    expect(status).toBe('completed');
+
+    // Immediately after completion the tree is NOT provably quiet (its
+    // newest write is within the quiescence window and at/around ended_at)
+    // — the GC must refuse this pass.
+    await pm.find('routed-transcript-cache-gc').fn();
+    expect(cacheDirExists('member_eeee5555', 'sess-crashed')).toBe(true);
+
+    // Once quiet — every write back-dated to before completion and past the
+    // quiescence window — completed AND mined AND quiet allows the prune.
+    ageCacheDir('member_eeee5555', 'sess-crashed', QUIET_AGE_MS);
+    await pm.find('routed-transcript-cache-gc').fn();
+    expect(cacheDirExists('member_eeee5555', 'sess-crashed')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// routed-event-dedup-prune — consolidation Task C-1
+// ---------------------------------------------------------------------------
+
+describe('routed-event-dedup-prune power job', () => {
+  let fx: GroveFixture;
+  let pm: FakeJobRunner;
+
+  beforeEach(() => {
+    fx = setupGrove();
+    pm = new FakeJobRunner();
+  });
+
+  afterEach(() => fx.cleanup());
+
+  function seedDedupRow(eventId: string, createdAtSeconds: number): void {
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      getDatabase().prepare(
+        `INSERT INTO routed_event_dedup (event_id, machine_id, kind, prompt_batch_id, created_at)
+         VALUES (?, 'machine-a', 'user_prompt', NULL, ?)`,
+      ).run(eventId, createdAtSeconds);
+    });
+  }
+
+  function dedupExists(eventId: string): boolean {
+    return withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      !!getDatabase().prepare(`SELECT 1 FROM routed_event_dedup WHERE event_id = ?`).get(eventId),
+    );
+  }
+
+  it('registers as idle/sleep housekeeping', () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('routed-event-dedup-prune');
+    expect(job.runIn).toEqual(['idle', 'sleep']);
+    expect(job.kind).toBe('housekeeping');
+  });
+
+  it('prunes a dedup row older than the retention window, keeps a younger one', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const now = Math.floor(Date.now() / 1000);
+    const retentionSeconds = Math.floor(ROUTED_EVENT_DEDUP_RETENTION_MS / 1000);
+
+    seedDedupRow('machine-a:old-event', now - retentionSeconds - 3600);
+    seedDedupRow('machine-a:young-event', now - 3600);
+
+    await pm.find('routed-event-dedup-prune').fn();
+
+    expect(dedupExists('machine-a:old-event')).toBe(false);
+    expect(dedupExists('machine-a:young-event')).toBe(true);
+  });
+
+  it('never touches a row inside the retention window', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const now = Math.floor(Date.now() / 1000);
+
+    seedDedupRow('machine-a:fresh-event', now - 10);
+
+    await pm.find('routed-event-dedup-prune').fn();
+
+    expect(dedupExists('machine-a:fresh-event')).toBe(true);
+  });
+
+  it('is a no-op when no rows are old enough to prune', async () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    await expect(pm.find('routed-event-dedup-prune').fn()).resolves.toBeUndefined();
   });
 });
 

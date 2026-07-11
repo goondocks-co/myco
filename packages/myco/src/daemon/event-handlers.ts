@@ -267,16 +267,30 @@ export function handleUserPrompt(
     const seen = getRoutedEventDedup(eventId);
     if (seen) return { batchId: seen.prompt_batch_id ?? 0, promptNumber: 0 };
   }
-  const result = handleUserPromptCore(sessionId, prompt, options);
-  if (eventId) {
+  if (!eventId) return handleUserPromptCore(sessionId, prompt, options);
+
+  // Routed-capture atomicity (consolidation Task C-2, item 4 / C5-M3): the core
+  // batch write and the dedup-ledger record must commit together. Without the
+  // transaction, a crash between them leaves the batch written but unrecorded —
+  // a replay (at-least-once redelivery, or the member's own event-replay drain)
+  // would then re-run `handleUserPromptCore` a second time with nothing to catch
+  // it, opening a duplicate batch. bun:sqlite's `transaction()` nests safely via
+  // savepoints (already relied on elsewhere in this file — see
+  // `syncTranscriptPromptBatches`'s `insertTail` wrapping `insertBatchStateless`'s
+  // own transaction), so `handleUserPromptCore`'s internal transactional writes
+  // compose cleanly inside this outer one.
+  const db = getDatabase();
+  const tx = db.transaction(() => {
+    const result = handleUserPromptCore(sessionId, prompt, options);
     recordRoutedEventDedup({
       eventId,
       machineId: options.sourceMachineId,
       kind: 'user_prompt',
       promptBatchId: result.batchId,
     });
-  }
-  return result;
+    return result;
+  });
+  return tx();
 }
 
 function handleUserPromptCore(
@@ -482,7 +496,7 @@ export function handleToolUse(
       ?? (activityFilePath !== filePath ? consumePendingInjection(sessionId, filePath) : null);
   }
 
-  recordActivity({
+  const activityData: StatelessActivityInsert = {
     session_id: sessionId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -491,9 +505,21 @@ export function handleToolUse(
     timestamp: now,
     created_at: now,
     canopy_injection_tokens: injectionTokens,
-  });
+  };
 
-  if (sourceEventId) recordRoutedEventDedup({ eventId: sourceEventId, machineId: sourceMachineId, kind: 'tool_use' });
+  if (sourceEventId) {
+    // Routed-capture atomicity (consolidation Task C-2, item 4 / C5-M3): the
+    // activity insert and the dedup-ledger record must commit together — see
+    // the matching comment in `handleUserPrompt` for the full crash-then-replay
+    // failure mode this closes.
+    const db = getDatabase();
+    db.transaction(() => {
+      recordActivity(activityData);
+      recordRoutedEventDedup({ eventId: sourceEventId, machineId: sourceMachineId, kind: 'tool_use' });
+    })();
+  } else {
+    recordActivity(activityData);
+  }
 
   // `sessions.tool_count` cache bump is folded into the activity
   // insert itself — see `insertActivityWithBatch`.
@@ -536,7 +562,7 @@ export function handleToolFailure(
 
   ensureOpenBatch(sessionId);
 
-  recordActivity({
+  const activityData: StatelessActivityInsert = {
     session_id: sessionId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -546,9 +572,19 @@ export function handleToolFailure(
     error_message: error?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? (isInterrupt ? 'interrupted' : null),
     timestamp: now,
     created_at: now,
-  });
+  };
 
-  if (sourceEventId) recordRoutedEventDedup({ eventId: sourceEventId, machineId: sourceMachineId, kind: 'tool_failure' });
+  if (sourceEventId) {
+    // Routed-capture atomicity (consolidation Task C-2, item 4 / C5-M3) — see
+    // the matching comment in `handleUserPrompt`.
+    const db = getDatabase();
+    db.transaction(() => {
+      recordActivity(activityData);
+      recordRoutedEventDedup({ eventId: sourceEventId, machineId: sourceMachineId, kind: 'tool_failure' });
+    })();
+  } else {
+    recordActivity(activityData);
+  }
 }
 
 /**

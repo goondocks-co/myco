@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  assertSafeCaptureSegment,
+  isSafeCaptureSegment,
   pathsEquivalent,
   resolveGroveDbPath,
   resolveGroveDir,
@@ -115,5 +117,30 @@ describe('pathsEquivalent', () => {
 
   it('returns false when either path does not exist', () => {
     expect(pathsEquivalent(path.join(tmpRoot, 'absent-a'), path.join(tmpRoot, 'absent-b'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isSafeCaptureSegment / assertSafeCaptureSegment — traversal defense for
+// wire-supplied capture path components (machine_id/session_id/transcript_id).
+// isSafeCaptureSegment is the pure predicate assertSafeCaptureSegment throws
+// on, and the same one a zod `.refine()` at a request-body schema boundary
+// uses (host/routed-transcript.ts's TranscriptChunkBody) — one definition
+// shared by both the throwing assertion and any schema-level check.
+// ---------------------------------------------------------------------------
+
+describe('isSafeCaptureSegment / assertSafeCaptureSegment', () => {
+  it('accepts filesystem-safe segments', () => {
+    for (const ok of ['alice_a1b2c3d4', 'sess-1111-2222', 'tx_deadbeef', 'a', 'A.B_C-9']) {
+      expect(isSafeCaptureSegment(ok)).toBe(true);
+      expect(assertSafeCaptureSegment(ok, 'kind')).toBe(ok);
+    }
+  });
+
+  it('rejects empty, dot, dot-dot, separators, and out-of-charset values', () => {
+    for (const bad of ['', '.', '..', 'a/b', 'a\\b', '../etc', '/absolute', 'a b']) {
+      expect(isSafeCaptureSegment(bad)).toBe(false);
+      expect(() => assertSafeCaptureSegment(bad, 'machine_id')).toThrow(/Unsafe machine_id path segment/);
+    }
   });
 });

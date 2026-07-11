@@ -42,9 +42,57 @@ export interface HostActionRecord extends HostActionEvent {
 /** The JSONL file name under the host-control home. */
 const ACTION_LOG_FILENAME = 'action-log.jsonl';
 
+/**
+ * Rotate once the live file exceeds this size. A control-plane log of
+ * enroll/key-mint/evict/rotate events is low-volume (not a hot path like
+ * transcript capture), so a generous 1 MB default cap is thousands of events
+ * before the first rotation — but the file is append-only forever without
+ * one, so a long-lived host would otherwise grow it unbounded.
+ */
+const DEFAULT_ACTION_LOG_MAX_BYTES = 1_048_576;
+
+/** Numbered backups kept beyond the live file (`action-log.jsonl.1` newest .. `.N` oldest). */
+const DEFAULT_ACTION_LOG_MAX_BACKUPS = 3;
+
+export interface HostActionLogRotationOptions {
+  /** Override {@link DEFAULT_ACTION_LOG_MAX_BYTES} (tests exercise rotation without writing a real 1 MB). */
+  maxBytes?: number;
+  /** Override {@link DEFAULT_ACTION_LOG_MAX_BACKUPS}. */
+  maxBackups?: number;
+}
+
 /** Resolve the action-log path under the (default machine-global) host-control home. */
 export function hostActionLogPath(controlDir: string = resolveHostControlDir()): string {
   return path.join(controlDir, ACTION_LOG_FILENAME);
+}
+
+function hostActionLogBackupPath(controlDir: string, n: number): string {
+  return `${hostActionLogPath(controlDir)}.${n}`;
+}
+
+/**
+ * Rotate the live file to `.1`, shifting existing backups up to `maxBackups`
+ * and dropping the oldest. Mirrors `DaemonLogger`'s numbered-backup rotation
+ * (`daemon/logger.ts`), scaled down for a function-based, non-hot-path writer
+ * that has no persistent fd to manage. Missing live file (nothing written
+ * yet) is a no-op.
+ */
+function rotateActionLogIfNeeded(controlDir: string, options: HostActionLogRotationOptions): void {
+  const maxBytes = options.maxBytes ?? DEFAULT_ACTION_LOG_MAX_BYTES;
+  const maxBackups = options.maxBackups ?? DEFAULT_ACTION_LOG_MAX_BACKUPS;
+  const logPath = hostActionLogPath(controlDir);
+  let size: number;
+  try { size = fs.statSync(logPath).size; }
+  catch { return; }
+  if (size <= maxBytes) return;
+
+  for (let i = maxBackups - 1; i >= 1; i -= 1) {
+    const from = hostActionLogBackupPath(controlDir, i);
+    if (!fs.existsSync(from)) continue;
+    const to = hostActionLogBackupPath(controlDir, i + 1);
+    fs.renameSync(from, to);
+  }
+  fs.renameSync(logPath, hostActionLogBackupPath(controlDir, 1));
 }
 
 /**
@@ -54,23 +102,44 @@ export function hostActionLogPath(controlDir: string = resolveHostControlDir()):
  * must never break enrollment (the log is a diagnostic aid, not the trust
  * boundary), so callers on that path swallow errors.
  */
-export function appendHostAction(event: HostActionEvent, controlDir: string = resolveHostControlDir()): void {
+export function appendHostAction(
+  event: HostActionEvent,
+  controlDir: string = resolveHostControlDir(),
+  rotation: HostActionLogRotationOptions = {},
+): void {
   const record: HostActionRecord = { ts: new Date().toISOString(), ...event };
   fs.mkdirSync(controlDir, { recursive: true });
+  rotateActionLogIfNeeded(controlDir, rotation);
   fs.appendFileSync(hostActionLogPath(controlDir), `${JSON.stringify(record)}\n`, 'utf-8');
 }
 
-/** Read the action log oldest-first. Missing file → empty; unparseable lines skipped. */
-export function readHostActionLog(controlDir: string = resolveHostControlDir()): HostActionRecord[] {
-  let raw: string;
-  try { raw = fs.readFileSync(hostActionLogPath(controlDir), 'utf-8'); }
-  catch { return []; }
+/**
+ * Read the action log oldest-first, spanning rotated backups
+ * (`action-log.jsonl.N` oldest .. `.1`, then the live file) so a host that has
+ * rotated at least once does not silently lose history from the operator's
+ * view. Missing files → empty; unparseable lines skipped.
+ */
+export function readHostActionLog(
+  controlDir: string = resolveHostControlDir(),
+  rotation: HostActionLogRotationOptions = {},
+): HostActionRecord[] {
+  const maxBackups = rotation.maxBackups ?? DEFAULT_ACTION_LOG_MAX_BACKUPS;
   const records: HostActionRecord[] = [];
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try { records.push(JSON.parse(trimmed) as HostActionRecord); }
-    catch { /* skip a torn/partial line */ }
+  const parseFile = (filePath: string): void => {
+    let raw: string;
+    try { raw = fs.readFileSync(filePath, 'utf-8'); }
+    catch { return; }
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try { records.push(JSON.parse(trimmed) as HostActionRecord); }
+      catch { /* skip a torn/partial line */ }
+    }
+  };
+
+  for (let i = maxBackups; i >= 1; i -= 1) {
+    parseFile(hostActionLogBackupPath(controlDir, i));
   }
+  parseFile(hostActionLogPath(controlDir));
   return records;
 }

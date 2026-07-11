@@ -18,6 +18,12 @@ import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 const epochNow = () => Math.floor(Date.now() / MS_PER_SECOND);
 const STALE_THRESHOLD_S = STALE_SESSION_THRESHOLD_MS / MS_PER_SECOND;
 
+/** No-op completion deps — this suite asserts the sweep PREDICATE, not
+ *  mining (covered in tests/daemon/jobs/session-maintenance.test.ts). */
+const noopCompletion = {
+  transcriptMiner: { reconcileAndAttributeResponses: () => ({}) },
+};
+
 function seedSession(id: string, opts: {
   startedAt?: number;
   batchStartedAt?: number;
@@ -85,7 +91,7 @@ describe('completeStaleActiveSessions — activity-aware predicate', () => {
       activityTimestamp: fiveMinAgo,
     });
 
-    const swept = completeStaleActiveSessions();
+    const swept = completeStaleActiveSessions(noopCompletion);
 
     expect(swept).toBe(0);
     expect(getSession('active-tool-user', ALL_PROJECTS_SCOPE)?.status).toBe('active');
@@ -103,7 +109,7 @@ describe('completeStaleActiveSessions — activity-aware predicate', () => {
       activityTimestamp: eightyMinAgo,
     });
 
-    const swept = completeStaleActiveSessions();
+    const swept = completeStaleActiveSessions(noopCompletion);
 
     expect(swept).toBe(1);
     expect(getSession('fully-stale', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
@@ -119,7 +125,7 @@ describe('completeStaleActiveSessions — activity-aware predicate', () => {
       activityTimestamp: fiveMinAgo,
     });
 
-    const swept = completeStaleActiveSessions();
+    const swept = completeStaleActiveSessions(noopCompletion);
 
     expect(swept).toBe(0);
     expect(getSession('activity-only', ALL_PROJECTS_SCOPE)?.status).toBe('active');
@@ -133,7 +139,7 @@ describe('completeStaleActiveSessions — activity-aware predicate', () => {
       startedAt: twoHoursAgo,
     });
 
-    const swept = completeStaleActiveSessions();
+    const swept = completeStaleActiveSessions(noopCompletion);
 
     expect(swept).toBe(1);
     expect(getSession('no-data', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
@@ -149,7 +155,7 @@ describe('completeStaleActiveSessions — activity-aware predicate', () => {
       activityTimestamp: justNow,
     });
 
-    const swept = completeStaleActiveSessions();
+    const swept = completeStaleActiveSessions(noopCompletion);
 
     expect(swept).toBe(0);
     expect(getSession('fresh-activity-no-batch', ALL_PROJECTS_SCOPE)?.status).toBe('active');

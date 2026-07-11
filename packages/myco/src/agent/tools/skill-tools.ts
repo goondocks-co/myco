@@ -78,9 +78,9 @@ import {
 } from './skill-staging.js';
 import {
   publishedSkillRelativePath,
-  removePublishedSkillFileOrDirectory,
+  removePublishedSkillFileOrDirectoryIfLocal,
   resolvePublishedSkillPaths,
-  syncPublishedSkillSymlinks,
+  syncPublishedSkillSymlinksIfLocal,
   writePublishedSkillFile,
 } from '@myco/skills/publication.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
@@ -172,13 +172,11 @@ export function createSkillTools(deps: VaultToolDeps) {
   }
 
   function publishSkillSymlinks(root: string, name: string, options?: { remove?: boolean }): void {
-    if (hostServed) return;
-    syncPublishedSkillSymlinks(root, name, options);
+    syncPublishedSkillSymlinksIfLocal(root, name, hostServed, options);
   }
 
   function removePublishedSkillArtifacts(root: string, name: string, options?: { fileOnly?: boolean }): void {
-    if (hostServed) return;
-    removePublishedSkillFileOrDirectory(root, name, options);
+    removePublishedSkillFileOrDirectoryIfLocal(root, name, hostServed, options);
   }
 
   function hydrateIdentifiedPlanEntriesFromBundles(

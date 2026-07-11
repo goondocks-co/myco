@@ -3,28 +3,12 @@
  *
  * Thin argv parsing + human-readable output over the {@link attachCommand} /
  * {@link detachCommand} residency-mapping orchestration. Sibling to
- * `cli/join.ts`: same flag parser, same print-only responsibility — the real
- * work (identity resolution, error mapping, the registry write) lives in
- * `host/attach-command.ts`.
+ * `cli/join.ts`: same flag parser (shared via `cli/shared.ts#parseFlags`),
+ * same print-only responsibility — the real work (identity resolution, error
+ * mapping, the registry write) lives in `host/attach-command.ts`.
  */
 import { attachCommand, detachCommand } from '../host/attach-command.js';
-
-/** Parse `--flag value` / `--flag=value` / bare `--flag` into a map. Mirrors
- *  `cli/join.ts` exactly so the two member commands parse identically. */
-function parseFlags(args: string[]): { positionals: string[]; flags: Map<string, string> } {
-  const flags = new Map<string, string>();
-  const positionals: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!arg.startsWith('--')) { positionals.push(arg); continue; }
-    const eq = arg.indexOf('=');
-    if (eq > 2) { flags.set(arg.slice(2, eq), arg.slice(eq + 1)); continue; }
-    const next = args[i + 1];
-    if (next !== undefined && !next.startsWith('--')) { flags.set(arg.slice(2), next); i += 1; }
-    else flags.set(arg.slice(2), 'true');
-  }
-  return { positionals, flags };
-}
+import { parseFlags } from './shared.js';
 
 export async function runAttach(args: string[]): Promise<void> {
   const { positionals, flags } = parseFlags(args);

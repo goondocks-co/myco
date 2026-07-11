@@ -409,6 +409,7 @@ describe('Buffer reconciliation — tombstones + gate-checked resurrection', () 
       logger: silentLogger,
       registeredSessionIds: () => [] as string[],
       embeddingManager: embeddingStub,
+      transcriptMiner: { reconcileAndAttributeResponses: () => ({}) },
       resolveProjectVaultDir: () => null,
       hasUnconvergedBuffer: (id: string) => reconciler.hasUnconvergedBuffer(id),
     };
@@ -524,6 +525,7 @@ describe('Buffer reconciliation — tombstones + gate-checked resurrection', () 
       logger: silentLogger,
       registeredSessionIds: () => [],
       embeddingManager: { onRemoved: () => {} } as never,
+      transcriptMiner: { reconcileAndAttributeResponses: () => ({}) },
       resolveProjectVaultDir: () => null,
       hasUnconvergedBuffer: (id: string) => reconciler.hasUnconvergedBuffer(id),
     }));

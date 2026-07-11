@@ -44,6 +44,13 @@ import type { RemoteTarget } from '../host/routing.js';
 import { deriveTranscriptId, MAX_TRANSCRIPT_PUSH_BYTES } from '../host/routed-transcript.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
+import {
+  clearDrainFailure,
+  recordDrainFailure,
+  summarizeDrainHealth,
+  type DrainHealthCounters,
+  type FailureTrackedEntry,
+} from './drain-health.js';
 
 const NEWLINE = 0x0a;
 
@@ -51,7 +58,7 @@ const NEWLINE = 0x0a;
  *  host, plus the host-acked high-water offset. Keyed `(host_id, session_id,
  *  transcript_id)`; `transcript_id` folds in the file's inode (C3), so a
  *  rotation mints a NEW entry and the old one goes inert. */
-export interface DrainEntry {
+export interface DrainEntry extends FailureTrackedEntry {
   host_id: string;
   session_id: string;
   transcript_id: string;
@@ -185,7 +192,11 @@ export function createFsDrainStore(rootDir: string = resolveMemberTranscriptDrai
     },
     remove(hostId, sessionId, transcriptId) {
       if (!safeKey(hostId, sessionId, transcriptId)) return;
-      fs.rmSync(entryFilePath(rootDir, hostId, sessionId, transcriptId), { force: true });
+      const filePath = entryFilePath(rootDir, hostId, sessionId, transcriptId);
+      fs.rmSync(filePath, { force: true });
+      // Reap a torn `.tmp` sibling left by a crash mid-put (write-then-rename)
+      // — otherwise it outlives the entry it belonged to.
+      fs.rmSync(`${filePath}.tmp`, { force: true });
     },
     purgeHost(hostId) {
       if (!safeKey(hostId, 'x', 'x')) return;
@@ -195,7 +206,10 @@ export function createFsDrainStore(rootDir: string = resolveMemberTranscriptDrai
       if (!safeKey(hostId, 'x', 'x')) return;
       for (const filePath of walkFiles(path.join(rootDir, hostId))) {
         const entry = readEntryFile(filePath);
-        if (entry && entry.project_id === projectId) fs.rmSync(filePath, { force: true });
+        if (entry && entry.project_id === projectId) {
+          fs.rmSync(filePath, { force: true });
+          fs.rmSync(`${filePath}.tmp`, { force: true }); // torn-put sibling
+        }
       }
     },
   };
@@ -463,16 +477,62 @@ export class TranscriptDrainQueue {
     this.store.purgeHost(hostId);
   }
 
+  /**
+   * Session-terminal prune (consolidation Task C-2, item 1). Called from the
+   * host-proxy's `noteSessionEnded` seam right after `flushBeforeForward` has
+   * drained this host for the `/sessions/unregister` route — the member's
+   * only observable session-completion signal (it holds no local
+   * session-state for a routed session). Removes this session's entries that
+   * are demonstrably unreachable-or-caught-up:
+   *  - rotated (the file at `transcript_path` is a different inode now — the
+   *    same "inert" test `drainEntry` already applies), or
+   *  - fully acked (`stat.size <= acked_offset` — nothing left to ship).
+   * An entry the flush could NOT catch up (transport still failing, or the
+   * file briefly unreadable) is left completely alone — prune-only-acked;
+   * the backstop drain keeps retrying it regardless of session end. Because
+   * `pendingCount`/`drainHost` only ever iterate entries the STORE holds
+   * (never independently enumerate transcript files on disk), removing a
+   * caught-up entry here is safe: nothing re-discovers it as "still
+   * pending" the way a file-enumerated queue would.
+   */
+  noteSessionEnded(hostId: string, sessionId: string): void {
+    try {
+      for (const entry of this.store.listForHost(hostId)) {
+        if (entry.session_id !== sessionId) continue;
+        const stat = this.fileReader.stat(entry.transcript_path);
+        if (!stat) continue; // can't prove caught-up — leave for the next drain tick
+        const currentId = deriveTranscriptId({
+          machineId: this.machineId,
+          transcriptPath: entry.transcript_path,
+          inode: stat.inode,
+        });
+        const inert = currentId !== entry.transcript_id;
+        const caughtUp = stat.size <= entry.acked_offset;
+        if (inert || caughtUp) {
+          this.store.remove(entry.host_id, entry.session_id, entry.transcript_id);
+        }
+      }
+    } catch (err) {
+      this.logger?.warn('capture.transcript-drain', 'noteSessionEnded failed', {
+        host_id: hostId,
+        session_id: sessionId,
+        error: (err as Error).message,
+      });
+    }
+  }
+
   /** The deps object both dispatch chokepoints thread into `handleAttachedRequest`
-   *  (`daemon/server.ts`, `mcp/http.ts`): the flush-before-terminal-route seam and
-   *  the collect enqueue trigger. */
+   *  (`daemon/server.ts`, `mcp/http.ts`): the flush-before-terminal-route seam, the
+   *  collect enqueue trigger, and the session-terminal prune trigger. */
   proxyDeps(): {
     flushBeforeForward: (target: RemoteTarget) => Promise<void>;
     noteCollectEvent: (target: RemoteTarget, event: Record<string, unknown>) => void;
+    noteSessionEnded: (target: RemoteTarget, sessionId: string) => void;
   } {
     return {
       flushBeforeForward: (target) => this.flushBeforeForward(target),
       noteCollectEvent: (target, event) => this.noteCollect(target, event),
+      noteSessionEnded: (target, sessionId) => this.noteSessionEnded(target.host.host_id, sessionId),
     };
   }
 
@@ -598,6 +658,11 @@ export class TranscriptDrainQueue {
           session_id: entry.session_id,
           error: (err as Error).message,
         });
+        // Transport-level failure (connection refused, timeout, DNS) — the host
+        // itself could not be reached. Record it so `health()` can distinguish
+        // "host is down" from "host rejected the attempt" without reading logs.
+        recordDrainFailure(entry, 'unreachable', new Date().toISOString());
+        this.store.put(entry);
         return sent; // leave acked_offset unchanged (prune-only-acked); retry next tick
       }
       sent += 1;
@@ -611,18 +676,59 @@ export class TranscriptDrainQueue {
           this.logger?.warn('capture.transcript-drain', 'append reported no progress — stopping', {
             host_id: entry.host_id, session_id: entry.session_id, base,
           });
+          // The host answered but the exchange made no progress — reachable,
+          // not "rejected" outright, but a failing entry all the same.
+          recordDrainFailure(entry, 'rejected', new Date().toISOString());
+          this.store.put(entry);
           return sent;
         }
         entry.acked_offset = resp.size;
+        clearDrainFailure(entry);
         this.store.put(entry);
       } else {
         this.logger?.warn('capture.transcript-drain', 'unexpected host response — retry next tick', {
           host_id: entry.host_id, session_id: entry.session_id, status: resp.status,
         });
+        // The host was reachable (it answered) but the response was outside
+        // the offset contract — a failing entry, not a host-unreachable one.
+        recordDrainFailure(entry, 'rejected', new Date().toISOString());
+        this.store.put(entry);
         return sent;
       }
     }
     return sent;
+  }
+
+  /** Per-host drain health (consolidation Task C-5): un-shipped bytes/entries,
+   *  host-unreachable occurrences, and failing-entry counts, derived from the
+   *  SAME persisted queue state `drainAll`/`pendingCount` read — no new store,
+   *  no network call. Safe to call from a cold process (e.g. `myco doctor`)
+   *  since it only stats the transcript files and reads the entry store. */
+  health(): Map<string, DrainHealthCounters> {
+    const rows = this.store.list().map((entry) => {
+      const stat = this.fileReader.stat(entry.transcript_path);
+      let pending = false;
+      let pendingBytes = 0;
+      if (stat) {
+        const currentId = deriveTranscriptId({
+          machineId: this.machineId,
+          transcriptPath: entry.transcript_path,
+          inode: stat.inode,
+        });
+        if (currentId === entry.transcript_id && stat.size > entry.acked_offset) {
+          pending = true;
+          pendingBytes = stat.size - entry.acked_offset;
+        }
+      }
+      return {
+        host_id: entry.host_id,
+        pending,
+        pendingUnits: pendingBytes,
+        consecutive_failures: entry.consecutive_failures,
+        last_error_kind: entry.last_error_kind,
+      };
+    });
+    return summarizeDrainHealth(rows);
   }
 
   /**

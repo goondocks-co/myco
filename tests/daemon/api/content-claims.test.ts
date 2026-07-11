@@ -175,6 +175,36 @@ describe('content claim daemon API', () => {
       expect(body.active_claims[0]).toMatchObject({ claimed_by: 'machine-a', stale: true });
     });
 
+    it('active_claims resolution batches from the already-loaded active-skill list — a claim on a RETIRED skill (excluded from that list) still falls back correctly', async () => {
+      // `active_claims`'s generation lookup (Task C-6 item 1) reuses the
+      // single `listSkillRecords({status: 'active'})` result instead of a
+      // per-claim DB read — this only holds for `skill-1`, whose claim
+      // resolves via the batched map. `skill-2` is retired (excluded from
+      // that active-status list) AFTER being claimed, so its claim must
+      // fall back to a direct lookup and still resolve staleness correctly
+      // — proving the fallback path (not just the fast path) is correct.
+      seedSkill('skill-1');
+      seedSkill('skill-2');
+      await handleContentClaimCreate(req({ body: { artifact_kind: 'skill', artifact_id: 'skill-1' } }), principal('machine-a'));
+      await handleContentClaimCreate(req({ body: { artifact_kind: 'skill', artifact_id: 'skill-2' } }), principal('machine-b'));
+      updateSkillRecord('skill-1', { generation: 3 }, projectScope(PROJECT_ID as GroveProjectId));
+      updateSkillRecord('skill-2', { generation: 2, status: 'retired' }, projectScope(PROJECT_ID as GroveProjectId));
+
+      const res = await handleContentClaimsList(req(), principal());
+      const body = res.body as { active_claims: Array<Record<string, unknown>> };
+      expect(body.active_claims).toHaveLength(2);
+      const byId = new Map(body.active_claims.map((c) => [c.artifact_id, c]));
+      // skill-1: batched path (present in the active-skill map) — generation
+      // advanced 1 -> 3, so the claim (still generation 1) is stale.
+      expect(byId.get('skill-1')).toMatchObject({ claimed_by: 'machine-a', generation: 1, stale: true });
+      // skill-2: fallback path (retired -> absent from the active-skill
+      // map, resolved via the memoized `getSkillRecord` call instead) —
+      // generation advanced 1 -> 2, so the claim is ALSO correctly stale
+      // rather than silently reading as `stale: false` (a null-generation
+      // miss) or throwing.
+      expect(byId.get('skill-2')).toMatchObject({ claimed_by: 'machine-b', generation: 1, stale: true });
+    });
+
     it('surfaces a published-at-latest artifact in `published` with active_claim populated, and excludes it from `claimable`', async () => {
       seedSkill('skill-1');
       const created = await handleContentClaimCreate(
