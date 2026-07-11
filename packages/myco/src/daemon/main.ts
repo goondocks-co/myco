@@ -1846,6 +1846,13 @@ export async function main(): Promise<void> {
         return { skipped: true, reason: 'canopy-map regenerate requires a project-scoped daemon context' };
       }
       const projectRoot = requestContext.projectRoot;
+      // Whether this project's working tree is present on THIS machine —
+      // false for a Team Host serving a member's registered project. Fed
+      // into RunOptions.treeAvailable below (same signal + mechanism as
+      // `task-scheduling.ts` / `agent-runs.ts`'s handleRun) so a
+      // user-triggered regenerate for a served treeless project degrades
+      // its tree-requiring phases instead of running them un-degraded.
+      const treeAvailable = fs.existsSync(projectRoot);
       const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
 
       if (built.kind === 'skip') {
@@ -1866,6 +1873,7 @@ export async function main(): Promise<void> {
         embeddingManager,
         requestContext,
         logger,
+        treeAvailable,
       });
 
       // Fire-and-forget — caller already has the run id; we don't block
@@ -1894,6 +1902,8 @@ export async function main(): Promise<void> {
         throw new Error('canopy-describe regenerate requires a project-scoped daemon context');
       }
       const projectRoot = requestContext.projectRoot;
+      // See the identical comment in runCanopyMapTask above.
+      const treeAvailable = fs.existsSync(projectRoot);
       const built = await buildTaskInstruction(
         task,
         params,
@@ -1903,6 +1913,7 @@ export async function main(): Promise<void> {
         mycoConfig,
         () => teamSync.getTeamClient(),
         requestContext,
+        treeAvailable,
       );
 
       // Pre-generated and passed through RunOptions — reading the latest
@@ -1919,6 +1930,7 @@ export async function main(): Promise<void> {
         embeddingManager,
         requestContext,
         logger,
+        treeAvailable,
       });
 
       resultPromise.catch((err) => {

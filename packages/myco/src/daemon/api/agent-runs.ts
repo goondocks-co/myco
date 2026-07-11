@@ -240,11 +240,21 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     // override. The daemon's bearer key cannot follow a redirected URL.
     const executionOverrides = sanitizeExecutionOverrides(rawExecutionOverrides);
 
+    // Whether this run's project has a working tree on THIS machine —
+    // false for a Team Host serving a member's registered project. Reused
+    // below both for the config merge (`projectTierOptional`) and for
+    // `RunOptions.treeAvailable` / `buildTaskInstruction`'s tree-gated
+    // builders, so a user-triggered dispatch degrades identically to the
+    // scheduler's (`task-scheduling.ts`) — without this, a manually
+    // triggered skill-generate/evolve for a served treeless project would
+    // run its tree-requiring phases un-degraded and mkdir a phantom root.
+    const treeAvailable = treeAvailableForRequest(req, runVaultDir);
+
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
     const mycoConfig = loadMergedConfig(runVaultDir, {
       groveId: req.requestContext?.groveId ?? null,
-      projectTierOptional: !treeAvailableForRequest(req, runVaultDir),
+      projectTierOptional: !treeAvailable,
     });
 
     // Governed-task admission check, before the provider check.
@@ -286,11 +296,11 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
         : configuredTaskParams;
       try {
         const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir);
-        built = await buildTaskInstruction(task, taskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
+        built = await buildTaskInstruction(task, taskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext, treeAvailable);
       } catch {
         const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir);
         const fallbackTaskParams = force && task === SKILL_SURVEY_TASK ? { force: true } : undefined;
-        built = await buildTaskInstruction(task, fallbackTaskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
+        built = await buildTaskInstruction(task, fallbackTaskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext, treeAvailable);
       }
       instruction = built?.instruction;
       runContext = built?.context;
@@ -333,6 +343,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       dryRun,
       executionOverrides,
       logger,
+      treeAvailable,
     });
 
     resultPromise
@@ -560,9 +571,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     // Same governed-task admission as handleRun: resuming a governed task
     // must not bypass a capability the project has since disabled.
+    const resumeTreeAvailable = treeAvailableForRequest(req, runVaultDir);
     const resumeMycoConfig = loadMergedConfig(runVaultDir, {
       groveId: req.requestContext?.groveId ?? null,
-      projectTierOptional: !treeAvailableForRequest(req, runVaultDir),
+      projectTierOptional: !resumeTreeAvailable,
     });
     const capabilityError = capabilityGateError(resumeMycoConfig, run.task ?? undefined);
     if (capabilityError) return capabilityError;
@@ -578,6 +590,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       embeddingManager,
       requestContext: req.requestContext,
       logger,
+      treeAvailable: resumeTreeAvailable,
     });
 
     resultPromise
