@@ -159,14 +159,12 @@ const CONTENT_FILE_STATUS_BASE_KEY = [...CONTENT_CLAIMS_BASE_KEY, 'file-status']
 
 /** POST /api/content-claims/file-status — one batched disk-presence check
  *  against the active project's own working tree (design §2(b)). Takes the
- *  identity fields directly rather than `PublishedArtifactView[]` — the
- *  merged-state branch batches every published-at-latest artifact, but
- *  `ClaimControl`'s claimable branch also uses this (item 5, "does the
- *  materialized file already match") for a single not-yet-published
- *  artifact, which has no `PublishedArtifactView` to offer. Skipped entirely
- *  (no request fires) when there's nothing to check or no project root to
- *  check it against — the route requires both. Rides the same 15s cadence as
- *  `useContentClaims`. */
+ *  identity fields directly (`ContentFileStatusRequestArtifact` — exactly
+ *  the three fields the route reads) rather than `PublishedArtifactView[]`,
+ *  which remains structurally assignable for the merged-state caller.
+ *  Skipped entirely (no request fires) when there's nothing to check or no
+ *  project root to check it against — the route requires both. Rides the
+ *  same 15s cadence as `useContentClaims`. */
 export function useContentFileStatus(
   projectRoot: string | undefined,
   artifactsInput: ContentFileStatusRequestArtifact[],

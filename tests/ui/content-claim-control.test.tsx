@@ -29,17 +29,22 @@ import type { ContentClaimsListResponse, ContentClaimView } from '../../packages
 const fetchJsonMock = vi.fn();
 const postJsonMock = vi.fn();
 
+/** The ApiError class the component sees — hoisted so tests can throw REAL
+ *  instances of it (the component's `instanceof ApiError` checks, e.g. the
+ *  mark-published error-code mapping, only match this exact class). */
+class MockApiError extends Error {
+  constructor(public status: number, public body: unknown) {
+    super(`API error ${status}`);
+  }
+}
+
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchJson: (...args: unknown[]) => fetchJsonMock(...args),
   postJson: (...args: unknown[]) => postJsonMock(...args),
   putJson: async () => ({}),
   patchJson: async () => ({}),
   deleteJson: async () => ({}),
-  ApiError: class ApiError extends Error {
-    constructor(public status: number, public body: unknown) {
-      super(`API error ${status}`);
-    }
-  },
+  ApiError: MockApiError,
 }));
 
 mock.module('../../packages/myco/ui/src/hooks/use-daemon', () => ({
@@ -132,12 +137,12 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
-function renderControl(props: { name?: string } = {}) {
+function renderControl() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const utils = render(
     <PowerProvider>
       <QueryClientProvider client={client}>
-        <ClaimControl artifactKind="skill" artifactId="skill-1" name={props.name} />
+        <ClaimControl artifactKind="skill" artifactId="skill-1" />
       </QueryClientProvider>
     </PowerProvider>,
   );
@@ -358,6 +363,67 @@ describe('ClaimControl — unclaimed', () => {
     expect(screen.getByTestId('claim-held-by-me')).toBeInTheDocument();
   });
 
+  it('does not re-offer Publish at the materializing→success boundary while the claims refetch is still pending (item 1 regression)', async () => {
+    // The reviewer's repro: phase reaches 'success' while the claims-list
+    // refetch (which would set activeClaim) is gated — the claimId-matched
+    // display flags are all false in that window, so a gate built from THEM
+    // would re-show an enabled Publish mid-flow. The phase-only exclusions
+    // must keep it hidden until the refetch lands.
+    let gateRefetches = false;
+    const listGate = deferred<void>();
+    fetchJsonMock.mockImplementation(async (path: string) => {
+      if (path === '/content-claims') {
+        if (gateRefetches) await listGate.promise;
+        return listResponse();
+      }
+      return {};
+    });
+
+    renderControl();
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+
+    // From here on, every list refetch hangs — the phase machine outruns it.
+    gateRefetches = true;
+    fireEvent.click(screen.getByTestId('claim-and-materialize'));
+
+    await waitFor(() => {
+      expect(postJsonMock).toHaveBeenCalledWith('/content-claims/cclaim_aaaa/materialize', { project_root: '/repo' });
+    });
+    // Boundary: phase is 'success', activeClaim still null (refetch gated).
+    // Publish must be GONE — with the old activeClaim-based gate it stayed
+    // rendered and enabled here, and this waitFor would time out.
+    await waitFor(() => expect(screen.queryByTestId('claim-and-materialize')).toBeNull());
+    expect(screen.queryByTestId('mark-published')).toBeNull();
+    expect(postJsonMock.mock.calls.filter((c) => c[0] === '/content-claims').length).toBe(1);
+
+    // Refetch lands: the full success UI appears, still exactly one claim POST.
+    await act(async () => {
+      listGate.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByTestId('mark-published')).toBeInTheDocument());
+    expect(screen.getByTestId('materialize-success')).toBeInTheDocument();
+    expect(postJsonMock.mock.calls.filter((c) => c[0] === '/content-claims').length).toBe(1);
+  });
+
+  it('releasing after a successful publish resets the flow and re-offers Publish', async () => {
+    // The phase-only showPublishButton exclusions would pin the button
+    // hidden after a release if the terminal 'success' phase survived the
+    // release — the Release handler resets the phase machine alongside.
+    renderControl();
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('claim-and-materialize'));
+    await waitFor(() => expect(screen.getByTestId('release-claim')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('release-claim'));
+
+    await waitFor(() => {
+      expect(postJsonMock).toHaveBeenCalledWith('/content-claims/cclaim_aaaa/release', {});
+    });
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+    expect(screen.getByTestId('claim-and-materialize')).not.toBeDisabled();
+  });
+
   it('shows a hint beside Mark published when the held claim has drifted from lineage-latest (item 3)', async () => {
     claimStale = true;
     renderControl();
@@ -379,25 +445,52 @@ describe('ClaimControl — unclaimed', () => {
     expect(screen.queryByTestId('claim-stale-hint')).toBeNull();
   });
 
-  it('surfaces a Mark published failure instead of silently doing nothing (item 4)', async () => {
+  /** Drive the publish flow to the point where Mark published is offered,
+   *  then make the /published POST fail with `err`. */
+  async function reachMarkPublishedThenFailWith(err: Error): Promise<void> {
     renderControl();
     await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('claim-and-materialize'));
     await waitFor(() => expect(screen.getByTestId('mark-published')).toBeInTheDocument());
 
     postJsonMock.mockImplementation(async (path: string) => {
-      if (path === '/content-claims/cclaim_aaaa/published') {
-        throw new Error('not_holder');
-      }
+      if (path === '/content-claims/cclaim_aaaa/published') throw err;
       throw new Error(`unexpected POST ${path}`);
     });
 
     fireEvent.click(screen.getByTestId('mark-published'));
+    await waitFor(() => expect(screen.getByTestId('mark-published-error')).toBeInTheDocument());
+  }
 
-    await waitFor(() => expect(screen.getByTestId('mark-published-error')).toHaveTextContent('not_holder'));
+  it('surfaces a Mark published failure instead of silently doing nothing — raw message fallback for unrecognized errors (item 4)', async () => {
+    await reachMarkPublishedThenFailWith(new Error('disk full'));
+
+    expect(screen.getByTestId('mark-published-error')).toHaveTextContent('disk full');
     // The claim is still active and held by this machine — the mutation
     // failure didn't silently drop the affordance.
     expect(screen.getByTestId('mark-published')).toBeInTheDocument();
+  });
+
+  it('maps a lost publish window (claim_not_active) to outcome copy, never the raw API message', async () => {
+    await reachMarkPublishedThenFailWith(
+      new MockApiError(409, { error: { code: 'claim_not_active', message: 'claim cclaim_aaaa is no longer active' } }),
+    );
+
+    const errorEl = screen.getByTestId('mark-published-error');
+    expect(errorEl).toHaveTextContent('This publish window has ended');
+    expect(errorEl).not.toHaveTextContent('cclaim');
+    expect(errorEl).not.toHaveTextContent('API');
+  });
+
+  it('maps a not_holder refusal to outcome copy, never the raw API message', async () => {
+    await reachMarkPublishedThenFailWith(
+      new MockApiError(403, { error: { code: 'not_holder', message: 'only the claim holder may do this' } }),
+    );
+
+    const errorEl = screen.getByTestId('mark-published-error');
+    expect(errorEl).toHaveTextContent('Another machine holds this publish.');
+    expect(errorEl).not.toHaveTextContent('claim holder');
+    expect(errorEl).not.toHaveTextContent('API');
   });
 });
 
@@ -429,14 +522,18 @@ describe('ClaimControl — claimed by another machine', () => {
 
 describe('ClaimControl — mark published', () => {
   it('does not show Mark published merely from holding the claim — only after THIS session materializes', async () => {
-    // Simulates reloading the page while already holding an active claim
-    // (e.g. from a prior session): held-by-me renders, but the local phase
-    // state never went through 'success' here, so there is nothing to mark.
+    // Reloading the page while already holding an active claim (e.g. from a
+    // prior session): held-by-me renders, but the local phase state never
+    // went through 'success' here, so there is nothing provably written to
+    // mark — the recovery affordance for that window is Finish publishing
+    // (item 5), which re-runs the write and unlocks Mark published through
+    // the normal success flow.
     seedActiveClaim('machine-a');
     renderControl();
 
     await waitFor(() => expect(screen.getByTestId('claim-held-by-me')).toBeInTheDocument());
     expect(screen.queryByTestId('mark-published')).toBeNull();
+    expect(screen.getByTestId('finish-publishing')).toBeInTheDocument();
   });
 
   it('clicking Mark published posts to /content-claims/:id/published and the artifact leaves the inventory', async () => {
@@ -472,72 +569,63 @@ describe('ClaimControl — release', () => {
   });
 });
 
-describe('ClaimControl — Mark published reappears after reload (item 5)', () => {
+describe('ClaimControl — Finish publishing after a reload (item 5)', () => {
   // Simulates reloading the page while already holding an active claim from
   // a prior session — the local `phase` state is idle (never went through
-  // 'success' HERE), so `justMaterialized` alone can't offer Mark published.
-  // The file-status batch (PR #669) independently confirms the file is
-  // already on disk, closing the gap without re-materializing.
-  it('offers Mark published once file-status confirms the file is already on disk, with no local materialize this session', async () => {
+  // 'success' HERE), so Mark published cannot be offered: file PRESENCE
+  // can't prove the file carries the claimed generation (a pre-existing
+  // old-generation file would satisfy it while materialize never ran).
+  // Instead the holder gets "Finish publishing" — re-running the write is
+  // always generation-correct and idempotent, and Mark published follows
+  // through the normal this-session success flow.
+  it('offers Finish publishing (never Mark published) to the holder in the reload window', async () => {
     seedActiveClaim('machine-a');
-    fetchJsonMock.mockImplementation(async (path: string) => {
-      if (path === '/content-claims') return listResponse();
-      if (path === '/content-claims/file-status') {
-        return { statuses: [{ artifact_kind: 'skill', artifact_id: 'skill-1', file_present: true }] };
-      }
-      return {};
-    });
-
-    renderControl({ name: 'my-skill' });
-
-    await waitFor(() => expect(screen.getByTestId('mark-published')).toBeInTheDocument());
-    expect(screen.getByTestId('materialized-file-present')).toHaveTextContent('already in your checkout');
-    // Distinct from the this-session testid — no local materialize happened.
-    expect(screen.queryByTestId('materialize-success')).toBeNull();
-  });
-
-  it('does not offer Mark published when no `name` prop was supplied — inert by default, same as before this fix', async () => {
-    seedActiveClaim('machine-a');
-    fetchJsonMock.mockImplementation(async (path: string) => {
-      if (path === '/content-claims') return listResponse();
-      if (path === '/content-claims/file-status') {
-        return { statuses: [{ artifact_kind: 'skill', artifact_id: 'skill-1', file_present: true }] };
-      }
-      return {};
-    });
-
     renderControl();
 
-    await waitFor(() => expect(screen.getByTestId('claim-held-by-me')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('finish-publishing')).toBeInTheDocument());
+    expect(screen.getByTestId('publish-unfinished')).toBeInTheDocument();
     expect(screen.queryByTestId('mark-published')).toBeNull();
-    // Nothing was even batched — no `name` means nothing to check.
+    // File presence is deliberately not consulted — a pre-existing OLD
+    // generation file on disk must not unlock Mark published, so nothing
+    // about the offer depends on disk state (no file-status probe fires
+    // from the claimable branch at all).
     expect(fetchJsonMock.mock.calls.some((c) => c[0] === '/content-claims/file-status')).toBe(false);
   });
 
-  it('does not offer Mark published when the file-status batch says the file is missing', async () => {
+  it('clicking Finish publishing re-writes the HELD claim (no re-claim), then offers Mark published as designed', async () => {
     seedActiveClaim('machine-a');
-    fetchJsonMock.mockImplementation(async (path: string) => {
-      if (path === '/content-claims') return listResponse();
-      if (path === '/content-claims/file-status') {
-        return { statuses: [{ artifact_kind: 'skill', artifact_id: 'skill-1', file_present: false }] };
-      }
-      return {};
+    renderControl();
+    await waitFor(() => expect(screen.getByTestId('finish-publishing')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('finish-publishing'));
+
+    await waitFor(() => {
+      expect(postJsonMock).toHaveBeenCalledWith('/content-claims/cclaim_aaaa/materialize', { project_root: '/repo' });
     });
+    // The held claim was reused — no claim POST ever fires.
+    expect(postJsonMock.mock.calls.filter((c) => c[0] === '/content-claims').length).toBe(0);
 
-    renderControl({ name: 'my-skill' });
-
-    await waitFor(() => expect(screen.getByTestId('claim-held-by-me')).toBeInTheDocument());
-    expect(screen.queryByTestId('mark-published')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('mark-published')).toBeInTheDocument());
+    expect(screen.getByTestId('materialize-success')).toBeInTheDocument();
+    expect(screen.queryByTestId('finish-publishing')).toBeNull();
   });
 
-  it('does not offer Mark published when the active claim is held by another machine', async () => {
+  it('shows the stale hint (pointing at Release) beside Finish publishing when the claim has drifted', async () => {
+    claimStale = true;
+    seedActiveClaim('machine-a');
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('finish-publishing')).toBeInTheDocument());
+    expect(screen.getByTestId('claim-stale-hint')).toHaveTextContent(/Release and publish again/);
+  });
+
+  it('does not offer Finish publishing when the active claim is held by another machine', async () => {
     seedActiveClaim('machine-b');
-    renderControl({ name: 'my-skill' });
+    renderControl();
 
     await waitFor(() => expect(screen.getByTestId('claim-held-by-other')).toBeInTheDocument());
+    expect(screen.queryByTestId('finish-publishing')).toBeNull();
     expect(screen.queryByTestId('mark-published')).toBeNull();
-    // Nothing to check on this machine's behalf when someone else holds it.
-    expect(fetchJsonMock.mock.calls.some((c) => c[0] === '/content-claims/file-status')).toBe(false);
   });
 });
 
