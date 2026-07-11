@@ -1,5 +1,6 @@
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { loadConfig, loadMergedConfig, getEnabledSymbiontNames, TierConfigUnreadableError } from '../../config/loader.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import type { RouteHandler, RouteResponse } from '../router.js';
 import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-support.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
@@ -83,9 +84,23 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
   const manifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
 
+  // A Team Host serving this project for a member has no local working
+  // tree — degrade to machine+grove tiers (empty project tier) instead of
+  // throwing "myco.yaml not found" (same signal + mechanism as
+  // `task-scheduling.ts`), for consistency with every other swept site.
+  // Note: `symbionts:` is project-tier-owned with no schema default
+  // (`config/scope.ts`), so for a GENUINELY treeless project `enabledNames`
+  // still resolves to `null` either way — there's nothing at machine/grove
+  // tier for it to recover here today. The value is avoiding an
+  // unconditional throw+catch for the routine served-treeless case (matches
+  // the doctrine; keeps a future machine/grove-resolvable field from being
+  // silently lost the same way) rather than a currently-observable fix.
   let enabledNames: Set<string> | null = null;
   try {
-    enabledNames = getEnabledSymbiontNames(loadMergedConfig(vaultDir, { groveId: groveId ?? null }));
+    const treeAvailable = projectTreeAvailable(vaultDir);
+    enabledNames = getEnabledSymbiontNames(
+      loadMergedConfig(vaultDir, { groveId: groveId ?? null, projectTierOptional: !treeAvailable }),
+    );
   } catch { /* config not loadable */ }
 
   // Project-only view (no merge) — used to detect which symbionts have

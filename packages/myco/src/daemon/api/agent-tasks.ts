@@ -12,10 +12,9 @@
  *   DELETE /api/agent/tasks/:id      — delete a user task (built-ins blocked)
  */
 
-import fs from 'node:fs';
 import { stringify as stringifyYaml, parse as parseYaml } from 'yaml';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import { taskFromParsed } from '@myco/agent/loader.js';
 import { AgentTaskSchema } from '@myco/agent/schemas.js';
 import {
@@ -333,7 +332,7 @@ export async function handleGetTaskConfig(
   // A Team Host serving this project for a member has no local working
   // tree — degrade to machine+grove tiers (empty project tier) instead of
   // throwing "myco.yaml not found" (same signal + mechanism as `task-scheduling.ts`).
-  const treeAvailable = fs.existsSync(resolveProjectRoot(vaultDir));
+  const treeAvailable = projectTreeAvailable(vaultDir);
   const config = loadMergedConfig(vaultDir, {
     groveId: req.requestContext?.groveId ?? null,
     projectTierOptional: !treeAvailable,
