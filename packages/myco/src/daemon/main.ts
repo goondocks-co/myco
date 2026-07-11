@@ -19,11 +19,11 @@ import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { hasEmbeddedUi } from './static.js';
 import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
 import * as updateInProgress from '@myco/upgrade/in-progress.js';
-import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
+import { resolveVaultDir, resolveProjectRoot, projectTreeAvailable } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
 import { runGlobalBootstrap, shouldRunGlobalBootstrap } from '../cli/bootstrap.js';
-import { resolveMycoHome, resolveGroveDbPath } from '../grove/paths.js';
+import { resolveMycoHome, resolveGroveDbPath, resolveProjectVaultDir } from '../grove/paths.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
@@ -1852,7 +1852,7 @@ export async function main(): Promise<void> {
       // `task-scheduling.ts` / `agent-runs.ts`'s handleRun) so a
       // user-triggered regenerate for a served treeless project degrades
       // its tree-requiring phases instead of running them un-degraded.
-      const treeAvailable = fs.existsSync(projectRoot);
+      const treeAvailable = projectTreeAvailable(resolveProjectVaultDir(projectRoot));
       const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
 
       if (built.kind === 'skip') {
@@ -1903,7 +1903,7 @@ export async function main(): Promise<void> {
       }
       const projectRoot = requestContext.projectRoot;
       // See the identical comment in runCanopyMapTask above.
-      const treeAvailable = fs.existsSync(projectRoot);
+      const treeAvailable = projectTreeAvailable(resolveProjectVaultDir(projectRoot));
       const built = await buildTaskInstruction(
         task,
         params,

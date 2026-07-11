@@ -266,26 +266,31 @@ describe('content claim materialize over the Team Host overlay', () => {
     expect(row?.state).toBe('active');
   });
 
-  test('member materializes with real dashboard tenancy headers present (PR-669 residual: CI now represents the request shape the UI actually sends)', async () => {
+  test("member materializes with the dashboard's full tenancy-header shape (grove-id + project-id + auth) — drives the registered-context branch real traffic hits (PR-669 residual)", async () => {
     // `materialize`/`file-status` are `localhost-only` (never proxied), so
     // — unlike the `serve`/proxied `GET /api/content-claims` below, whose
     // remote-classification branch never touches local context resolution
     // at all — a request here DOES run the full local
     // `resolveRouteRequestContext` before the handler, same as any other
     // localhost-only route. The prior test above sent no headers at all;
-    // this one sends the SAME shape the passing GET test below already
-    // established as "the dashboard's real header shape" (`x-myco-project-id`
-    // + `x-myco-auth` — every `ClaimControl` action fires only once a
-    // `ProjectSelection` is active, so the UI's `fetchJson` always attaches
-    // these). Proves the handler's identity resolution — deliberately
-    // sourced from the JSON body's `project_root`, NOT `req.requestContext`
-    // (see this file's module docstring) — actually holds when realistic
-    // tenancy headers are present, not just in the headers-free shape every
-    // other test in this suite uses.
+    // this one sends the shape the dashboard ACTUALLY sends:
+    // `requestContextHeadersForSelection()` (ui/src/lib/selection.ts)
+    // always emits `x-myco-grove-id` PAIRED with `x-myco-project-id`, plus
+    // `x-myco-auth` — every `ClaimControl` action fires only once a
+    // `ProjectSelection` is active, so `fetchJson` always attaches all
+    // three. With grove-id present, `requestContextFromHttpHeaders` takes
+    // the REGISTERED branch (`resolveRegisteredRequestContext`) rather than
+    // the manifest-header branch a project-id-only request routes through —
+    // the fixture registers the grove locally, so this exercises the branch
+    // real dashboard traffic hits. Proves the handler's identity resolution
+    // — deliberately sourced from the JSON body's `project_root`, NOT
+    // `req.requestContext` (see this file's module docstring) — actually
+    // holds under that shape.
     const res = await fetch(`${memberBase}/api/content-claims/${claimId}/materialize`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        'x-myco-grove-id': groveId,
         'x-myco-project-id': projectId,
         'x-myco-auth': memberServer.getAuthToken(),
       },
@@ -302,15 +307,16 @@ describe('content claim materialize over the Team Host overlay', () => {
     expect(written).toBe(CONTENT);
   });
 
-  test('member checks file-status with real dashboard tenancy headers present (PR-669 residual, file-status half)', async () => {
+  test("member checks file-status with the dashboard's full tenancy-header shape (grove-id + project-id + auth) — PR-669 residual, file-status half", async () => {
     // Sibling of the materialize case above — file-status shares the same
     // `localhost-only` stamp and the same `resolveMemberProjectContext`
-    // prelude, so it is exposed to the identical local-context-resolution
-    // path a real dashboard request exercises.
+    // prelude, so it is exposed to the identical registered-branch
+    // local-context resolution a real dashboard request exercises.
     const res = await fetch(`${memberBase}/api/content-claims/file-status`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        'x-myco-grove-id': groveId,
         'x-myco-project-id': projectId,
         'x-myco-auth': memberServer.getAuthToken(),
       },

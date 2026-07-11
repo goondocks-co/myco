@@ -191,6 +191,17 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
   // working tree — degrade to machine+grove tiers (empty project tier)
   // instead of throwing "myco.yaml not found" (same signal + mechanism as
   // `task-scheduling.ts` / `power-jobs.ts`).
+  //
+  // Deliberately NOT the shared `projectTreeAvailable(vaultDir)` helper: that
+  // helper derives the probed root from the vault dir (`dirname(vaultDir)`),
+  // while this predicate prefers the request context's own `projectRoot`
+  // when one is present. The two agree for every registered/manifest-resolved
+  // context (`projectVaultDir` is always `<projectRoot>/.myco` there), but
+  // `resolveLegacyRequestContext` (grove/request-context.ts) permits a caller
+  // to pass `projectRoot` independently of `vaultDir` — for such a context
+  // the context's projectRoot is the authoritative "where the tree would
+  // be", and collapsing onto the helper would silently change which path is
+  // probed. Consolidate only if legacy contexts ever pin that invariant.
   const treeAvailableForRequest = (req: RouteRequest, runVaultDir: string): boolean =>
     fs.existsSync(req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir));
 
