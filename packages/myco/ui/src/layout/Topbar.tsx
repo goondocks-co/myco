@@ -7,6 +7,7 @@ import { CortexStatusPill } from '../components/ui/cortex-status-pill';
 import { useGitIdentity } from '../hooks/use-git-identity';
 import { useProjectPath } from '../hooks/use-project-selection';
 import { PageScopeBadge } from './PageScopeBadge';
+import { hostedDegradedInfo } from '../lib/degrade';
 
 const ROUTE_LABELS: Record<string, string> = {
   '/': 'Dashboard',
@@ -97,6 +98,7 @@ export function Topbar({
         data={gitIdentity.data}
         isPending={gitIdentity.isPending}
         isError={gitIdentity.isError}
+        hostedUnavailable={hostedDegradedInfo(gitIdentity.error)}
         to="/settings?configSection=release-provenance#release-provenance"
       />
 

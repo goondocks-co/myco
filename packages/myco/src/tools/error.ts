@@ -44,11 +44,24 @@ export type ToolErrorCode =
  * Typed error thrown by the shared tool dispatcher so transports (CLI, HTTP
  * MCP, stdio MCP) can read a stable `code` instead of pattern-matching on
  * message prose. Message text remains the human-readable detail.
+ *
+ * `data` mirrors `code` in the shape the MCP SDK's `Server` already looks for
+ * when it turns a thrown handler error into a JSON-RPC error response
+ * (`shared/protocol.js`: `...(error['data'] !== undefined && { data:
+ * error['data'] })`). A `ToolError.code` is a string, so the SDK's own
+ * `Number.isSafeInteger(error['code'])` check falls through to a generic
+ * `InternalError` (-32603) and would otherwise drop the code entirely on the
+ * wire. Setting `data` lets any MCP transport (the daemon's `/mcp` route, now
+ * that `myco tool call` is a client of it, and the stdio bridge) recover the
+ * original code without a bespoke non-MCP fallback route.
  */
 export class ToolError extends Error {
+  public readonly data: { code: ToolErrorCode };
+
   constructor(public readonly code: ToolErrorCode, message: string) {
     super(message);
     this.name = 'ToolError';
+    this.data = { code };
   }
 }
 

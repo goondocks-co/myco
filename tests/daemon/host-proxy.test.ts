@@ -18,9 +18,11 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 
+import { JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   handleAttachedRequest,
   isCanopyMcpCall,
+  mcpRequestIdFromBody,
   parseOverlayAddress,
   hostProtocolCompatible,
   __resetVersionMismatchLogForTests,
@@ -607,8 +609,109 @@ describe('host-proxy forwarder', () => {
     const parsed = await res.json();
     expect(parsed.error.code).toBe(-32004);
     expect(parsed.error.data.code).toBe('capability_unavailable_hosted');
+    // The refusal echoes the request's JSON-RPC id (schema validity for SDK
+    // clients — see the refusal-envelope block below).
+    expect(parsed.id).toBe(1);
     // The Canopy call never reached the host.
     expect(fixture.requests).toHaveLength(0);
+  });
+
+  // --- /mcp refusal envelopes: id echo + SDK schema validity ---
+  //
+  // The member-side soft-fail envelopes (host_unreachable / host_auth_rejected /
+  // host_protocol_mismatch) must ECHO the request's JSON-RPC id. The MCP SDK's
+  // JSONRPCMessageSchema accepts a string/number response id but REJECTS
+  // `id: null`, so an id:null refusal for a parseable request threw a ZodError
+  // inside every SDK consumer BEFORE McpError classification — the CLI dumped a
+  // ~3.4KB validation error instead of the designed message, and the stdio
+  // bridge treated the refusal as a transport failure (self-heal reconnect
+  // burn). Parsing each envelope with the REAL JSONRPCMessageSchema here is the
+  // bridge/client-level assertion: if it parses, the SDK classifies it as a
+  // proper JSON-RPC error response and no reconnect fires.
+
+  test('mcpRequestIdFromBody: number/string ids echo (0 included); notifications, garbage, and empty batches yield null', () => {
+    const call = (id: unknown) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 't' } });
+    expect(mcpRequestIdFromBody(call(42))).toBe(42);
+    expect(mcpRequestIdFromBody(call(0))).toBe(0); // falsy but valid — type-checked, not truthiness-checked
+    expect(mcpRequestIdFromBody(call('abc'))).toBe('abc');
+    expect(mcpRequestIdFromBody(call(''))).toBe(null);
+    expect(mcpRequestIdFromBody({ jsonrpc: '2.0', method: 'notifications/initialized' })).toBe(null);
+    expect(mcpRequestIdFromBody(undefined)).toBe(null);
+    expect(mcpRequestIdFromBody('garbage')).toBe(null);
+    expect(mcpRequestIdFromBody([call(undefined), call(7)])).toBe(7);
+    expect(mcpRequestIdFromBody([])).toBe(null);
+  });
+
+  test('/mcp host unreachable → refusal echoes the request id and parses under JSONRPCMessageSchema', async () => {
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    await close(fixture.server);
+    config.target = makeTarget(fixturePort); // same port, now dead
+
+    const res = await fetch(memberUrl('/mcp'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 42, method: 'tools/call', params: { name: 'myco_search', arguments: { query: 'x' } } }),
+    });
+    expect(res.status).toBe(200);
+    const parsed = await res.json();
+    expect(parsed.id).toBe(42);
+    expect(parsed.error.code).toBe(-32004);
+    expect(parsed.error.data.code).toBe('host_unreachable');
+    // The load-bearing property: the envelope is schema-valid for the SDK.
+    expect(() => JSONRPCMessageSchema.parse(parsed)).not.toThrow();
+    fixture = createFixture(); // restore for afterEach
+  });
+
+  test('/mcp unparseable request keeps id: null (JSON-RPC spec; no SDK client ever sends one)', async () => {
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    await close(fixture.server);
+    config.target = makeTarget(fixturePort); // dead port
+
+    const res = await fetch(memberUrl('/mcp'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not-json{{{',
+    });
+    expect(res.status).toBe(200);
+    const parsed = await res.json();
+    expect(parsed.id).toBe(null);
+    expect(parsed.error.data.code).toBe('host_unreachable');
+    fixture = createFixture(); // restore for afterEach
+  });
+
+  test('/mcp stored-version mismatch → refusal echoes the request id, never dials', async () => {
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    config.target = makeTarget(fixturePort, { protocolVersion: 99 });
+
+    const res = await fetch(memberUrl('/mcp'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'myco_search', arguments: { query: 'x' } } }),
+    });
+    expect(res.status).toBe(200);
+    const parsed = await res.json();
+    expect(parsed.id).toBe(7);
+    expect(parsed.error.data.code).toBe('host_protocol_mismatch');
+    expect(() => JSONRPCMessageSchema.parse(parsed)).not.toThrow();
+    expect(fixture.requests).toHaveLength(0);
+  });
+
+  test('/mcp host 401 → host_auth_rejected refusal echoes the request id', async () => {
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    fixture.setResponder((_req, res) => {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+    });
+    const res = await fetch(memberUrl('/mcp'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'myco_search', arguments: { query: 'x' } } }),
+    });
+    expect(res.status).toBe(200);
+    const parsed = await res.json();
+    expect(parsed.id).toBe(9);
+    expect(parsed.error.data.code).toBe('host_auth_rejected');
+    expect(() => JSONRPCMessageSchema.parse(parsed)).not.toThrow();
   });
 
   test('/mcp non-canopy tool call → proxied to the host', async () => {

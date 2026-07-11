@@ -7,6 +7,8 @@ import { PageHeader } from '../../components/ui/page-header';
 import { PageLoading } from '../../components/ui/page-loading';
 import { PageContainer } from '../../components/ui/page-container';
 import { TileTabs } from '../../components/ui/tile-tabs';
+import { Eyebrow } from '../../components/ui/eyebrow';
+import { HostTab } from './HostTab';
 import { TeamSelection } from './TeamSelection';
 import { StatusTab } from './StatusTab';
 import { SyncTab } from './SyncTab';
@@ -91,10 +93,22 @@ function PartialSyncBanner({ status }: { status: TeamStatusResponse }) {
 
 const TEAM_SELECTION_KEY = 'myco.team.selectedTeamId';
 
+/**
+ * Page transition (consolidation Task D-2): Team Host membership (join,
+ * per-project attach, drain health — `HostTab`) is now the PRIMARY content,
+ * unconditional. The legacy TEAM SYNC flow this replaces (SelectTeamView /
+ * TeamSelection / MembersTab against the cloud worker) demotes to a
+ * clearly-marked "Legacy" section BELOW it, visible only when team sync is
+ * already configured on this machine (`teams.length > 0`) — a machine with
+ * no team-sync history gets no "join a team" onboarding funnel here anymore,
+ * so there is never more than one "join" story competing for attention. The
+ * legacy section is scheduled for removal in E-2.
+ */
 export function TeamPage() {
   const [params, setParams] = useSearchParams();
   const { data: registry, isLoading: registryLoading } = useTeamRegistry();
   const teams = registry?.teams ?? [];
+  const legacyConfigured = teams.length > 0;
   const storedTeamId = typeof window !== 'undefined'
     ? window.localStorage.getItem(TEAM_SELECTION_KEY)
     : null;
@@ -107,42 +121,53 @@ export function TeamPage() {
       window.localStorage.setItem(TEAM_SELECTION_KEY, selectedTeamId);
     }
   }, [selectedTeamId, storedTeamId]);
+  // Only fetched once legacy team sync is actually configured — Team Host's
+  // primary content never depends on this cloud-worker round trip.
   const { data: status, isLoading: statusLoading } = useTeamStatus(
-    registryLoading ? undefined : selectedTeamId,
+    registryLoading || !legacyConfigured ? undefined : selectedTeamId,
   );
   const raw = params.get('tab') ?? 'teams';
   const tab: TabId = VALID_TABS.has(raw as TabId) ? (raw as TabId) : 'teams';
 
-  if (registryLoading || statusLoading) {
+  // A fast, machine-local read (the registry, not the cloud worker) — brief
+  // enough to gate the whole page so the legacy section doesn't visibly pop
+  // in a beat after Team Host renders.
+  if (registryLoading) {
     return (
       <PageLoading isLoading error={null} loadingText="Loading team…">
         <span />
       </PageLoading>
     );
   }
-  if (!status) return null;
 
-  const isConnected = status.enabled && status.worker_url;
-  const scopeName = status.grove?.name ?? status.project.name ?? 'this Grove';
+  const isConnected = Boolean(status?.enabled && status?.worker_url);
+  const scopeName = status?.grove?.name ?? status?.project.name ?? 'this Grove';
 
-  function renderTab() {
+  function renderLegacyTab() {
     // The Teams selection tab is always available — it manages registry
     // membership independent of the legacy per-Grove connection.
     if (tab === 'teams') return <TeamSelection />;
     // A team is auto-selected when any exist; this only renders when no teams are
     // registered yet — point the user to the Teams tab to join one.
     if (!selectedTeamId) return <SelectTeamView hasTeams={teams.length > 0} />;
+    if (statusLoading || !status) {
+      return (
+        <PageLoading isLoading error={null} loadingText="Loading team…">
+          <span />
+        </PageLoading>
+      );
+    }
     if (!isConnected) return <NotConnectedView scopeName={scopeName} />;
-    if (tab === 'sync') return <SyncTab status={status!} teamId={selectedTeamId} />;
+    if (tab === 'sync') return <SyncTab status={status} teamId={selectedTeamId} />;
     if (tab === 'members') return <MembersTab teamId={selectedTeamId} />;
-    return <StatusTab status={status!} />;
+    return <StatusTab status={status} />;
   }
 
-  // Team scope selector lives in the header's right slot (not above the tabs)
-  // so toggling it across tabs never shifts the tab row or content — the
-  // header height is driven by the title/subtitle. Hidden on the Teams tab,
-  // which is machine-scoped (manages all teams), not scoped to one team.
-  const teamScopeSelector = teams.length > 0 && tab !== 'teams' ? (
+  // Team scope selector lives beside the legacy section's own tab row (not
+  // the page header) — it selects among legacy TEAM SYNC teams, a concern
+  // scoped to that demoted subsection now, not the whole page. Hidden on the
+  // Teams tab, which is machine-scoped (manages all teams), not scoped to one.
+  const teamScopeSelector = tab !== 'teams' ? (
     <>
       <label htmlFor="team-scope" className="myco-eyebrow-sm text-on-surface-variant">Team</label>
       <select
@@ -169,29 +194,37 @@ export function TeamPage() {
 
   return (
     <PageContainer>
-      <PageHeader
-        title="Team"
-        subtitle="Sync your projects to shared team clouds"
-        actions={teamScopeSelector}
-      />
-      <VersionBlockBanner status={status} />
-      <PartialSyncBanner status={status} />
-      <TileTabs
-        tabs={TABS}
-        activeTab={tab}
-        onTabChange={(id) =>
-          setParams(
-            (prev) => {
-              const next = new URLSearchParams(prev);
-              next.set('tab', id);
-              return next;
-            },
-            { replace: true },
-          )
-        }
-        columns={4}
-      />
-      {renderTab()}
+      <PageHeader title="Team" subtitle="Route projects to a shared Team Host" />
+      <HostTab />
+      {legacyConfigured && (
+        <div className="mt-8 flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3 border-t border-outline-variant/20 pt-6">
+            <div className="flex items-center gap-2">
+              <Eyebrow tone="outline" size="sm">Legacy</Eyebrow>
+              <h2 className="myco-display-sm text-on-surface-variant m-0">Team Sync</h2>
+            </div>
+            <div className="flex items-center gap-2">{teamScopeSelector}</div>
+          </div>
+          {status && <VersionBlockBanner status={status} />}
+          {status && <PartialSyncBanner status={status} />}
+          <TileTabs
+            tabs={TABS}
+            activeTab={tab}
+            onTabChange={(id) =>
+              setParams(
+                (prev) => {
+                  const next = new URLSearchParams(prev);
+                  next.set('tab', id);
+                  return next;
+                },
+                { replace: true },
+              )
+            }
+            columns={4}
+          />
+          {renderLegacyTab()}
+        </div>
+      )}
     </PageContainer>
   );
 }

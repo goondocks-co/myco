@@ -73,6 +73,49 @@ export async function connectToDaemon(vaultDir: string): Promise<DaemonClient> {
   return client;
 }
 
+/**
+ * Connect to the daemon for MACHINE-GLOBAL commands that must work from any
+ * cwd, including one with no registered project at all (`join`/`leave`/
+ * `attach`/`detach` — Task D-2's daemon-API fallback wrappers). Deliberately
+ * skips {@link connectToDaemon}'s `requestContext: requestContextFromEnvironment(...)`:
+ * that call throws `UnknownRequestContextError` for a `vaultDir` with no Grove
+ * project id, which is the NORMAL case here (these commands sit above the
+ * `myco.yaml` gate precisely so they work before a project is registered).
+ * The routes these commands call (`/api/host-membership/*`) read identity
+ * from the POST body, not request-context headers, so no header derivation
+ * is needed anyway.
+ */
+export async function connectToGlobalDaemon(vaultDir: string): Promise<DaemonClient> {
+  const client = new DaemonClient(vaultDir);
+  const healthy = await client.ensureRunning();
+  if (!healthy) {
+    console.error('Failed to connect to daemon');
+    process.exit(1);
+  }
+  return client;
+}
+
+/**
+ * Extract a human-readable message from a daemon API error body. Recognizes
+ * the structured `{ error: { code, message } }` envelope (`error-envelope.ts`
+ * `errorBody`, used by newer routes including `host-membership.ts`) alongside
+ * the older ad hoc shapes (`{ status }` / `{ message }` / `{ error: string }`)
+ * so one helper covers both generations without every CLI wrapper re-deriving
+ * its own parsing.
+ */
+export function daemonErrorMessage(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const obj = body as Record<string, unknown>;
+  if (obj.error && typeof obj.error === 'object') {
+    const err = obj.error as Record<string, unknown>;
+    if (typeof err.message === 'string') return err.message;
+  }
+  if (typeof obj.status === 'string') return obj.status;
+  if (typeof obj.message === 'string') return obj.message;
+  if (typeof obj.error === 'string') return obj.error;
+  return null;
+}
+
 /** Load .env from cwd (not script location — that's the plugin install dir). */
 export function loadEnv(): void {
   const envPath = path.resolve(process.cwd(), '.env');
