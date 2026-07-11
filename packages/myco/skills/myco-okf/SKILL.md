@@ -42,6 +42,27 @@ re-derive by re-reading source cold, and it's already written in prose. Use
 it as your outline; use the source tree to verify and fill gaps, not as your
 starting point.
 
+## Content doctrine: present tense, current system
+
+Wiki pages describe the CURRENT system, in present tense, for readers who
+use or build on it. The vault is your *source material*, not your *genre* —
+the vault speaks in history (decisions, migrations, dead ends); the wiki
+must not. A page must never contain:
+
+- **Internal project history or decision narratives** — no retirement
+  stories, no migration timelines, no phrasing shaped like
+  `as of <date>, X was replaced by Y`. That history lives in the Myco
+  vault (spores, sessions, plans); the wiki is not its mirror.
+- **References to features that no longer exist.** If a page's subject
+  ceased to exist, delete the page or re-scope it to what exists now —
+  never convert it into a retrospective about what used to be there.
+- **Self-referential provenance** — no "this page was produced by…", no
+  generator credits, no notes about which run created or updated a page.
+
+Write every page as if it were written fresh today by someone describing
+what the subsystem IS. A reader should not be able to reconstruct the
+project's internal timeline from the wiki — only how the system works now.
+
 ## Procedure
 
 ### 1. Establish the wiki root
@@ -62,6 +83,12 @@ Pinned convention:
 To check a candidate directory: sample a few of its `.md` files (skip
 `index.md`/`log.md`) and confirm they open with `---` frontmatter carrying a
 non-empty `type`. If most do, it's the wiki.
+
+While establishing the root, if you find non-content state files left
+behind by prior generator tooling (e.g. a `.myco-okf-maintain.json`
+marker, or any similar machine-state sidecar), flag them to the user as
+non-content files that are safe to delete. Do not silently keep them, and
+do not delete them without saying so — the user decides.
 
 ### 2. Pull vault intelligence first
 
@@ -115,6 +142,12 @@ claim (a file path, a spore, a decision) rather than quoting large blocks of
 source or tool output verbatim — a page that's 90% pasted JSON or a raw file
 dump is the failure mode this skill exists to avoid.
 
+When a citation names a spore or session, use the short hash-prefix form
+(e.g. `spore ff43e7a6`), never the raw UUID a tool returns. A raw UUID is
+exactly what the pre-commit scanner flags as a raw session identifier —
+cite short and human-readable up front instead of tripping the scan and
+redacting afterwards.
+
 `type` is a free string — pick values that describe the page's role and
 stay consistent within one wiki. Reasonable starting set: `overview`,
 `component`, `decision`, `howto`, `gotcha`, `reference`. Not enforced, not
@@ -138,6 +171,20 @@ regenerate its `index.md` following the exact algorithm in
 sorted by title, a `Subdirectories` section when applicable, no frontmatter.
 Regenerate deterministically from the current page set; don't hand-edit an
 index incrementally, or it will drift from what the pages actually say.
+
+This applies equally to an **adopted** wiki: regenerate its indexes to THIS
+skill's algorithm and wording even where the existing indexes were built
+differently — bring them into conformance rather than preserving legacy
+phrasing. The index format is deterministic precisely so maintenance can
+change hands without forking the style.
+
+**`log.md`** (optional; reserved, no frontmatter): a reverse-chronological
+maintenance log at the wiki root. If the wiki keeps one, add one dated line
+per skill run at the top summarizing what changed — e.g.
+`- <YYYY-MM-DD>: added 3 component pages, refreshed the capture overview` —
+matching the style of the existing entries if there are any. It records
+*that* the wiki changed and *what*, never why the underlying system changed
+(that's the content doctrine's line to hold).
 
 ### 6. Scan before advising a commit
 
@@ -205,6 +252,10 @@ Walk this list against your actual output before reporting done:
 - [ ] Wiki root: adopted an existing conformant directory, or created
       `okf/`, or asked the user when candidates were ambiguous — never
       silently created a second root.
+- [ ] Every page reads present-tense about the current system — no project
+      history or decision narratives, no references to removed features,
+      no self-referential provenance; pages whose subject no longer exists
+      were deleted or re-scoped, not turned into retrospectives.
 - [ ] Every non-reserved `.md` you touched has parseable frontmatter with
       non-empty `type`, `title`, `description`, `timestamp`, in canonical
       key order.
@@ -213,7 +264,11 @@ Walk this list against your actual output before reporting done:
 - [ ] Every internal link is relative; no `/`-rooted links.
 - [ ] `index.md`/`log.md` (where present) carry no frontmatter.
 - [ ] `index.md` regenerated for every touched directory, grouped by type,
-      sorted per the reference doc's algorithm.
+      sorted per the reference doc's algorithm — adopted wikis brought into
+      conformance, not left in legacy phrasing.
+- [ ] If the wiki keeps a `log.md`, this run added its one dated line;
+      orphaned generator-state files were flagged to the user, not silently
+      kept or deleted.
 - [ ] The scan script (or its checklist fallback) ran clean, or every
       finding was resolved or explicitly called out to the user.
 
