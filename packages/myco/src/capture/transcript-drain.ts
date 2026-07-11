@@ -44,6 +44,13 @@ import type { RemoteTarget } from '../host/routing.js';
 import { deriveTranscriptId, MAX_TRANSCRIPT_PUSH_BYTES } from '../host/routed-transcript.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
+import {
+  clearDrainFailure,
+  recordDrainFailure,
+  summarizeDrainHealth,
+  type DrainHealthCounters,
+  type FailureTrackedEntry,
+} from './drain-health.js';
 
 const NEWLINE = 0x0a;
 
@@ -51,7 +58,7 @@ const NEWLINE = 0x0a;
  *  host, plus the host-acked high-water offset. Keyed `(host_id, session_id,
  *  transcript_id)`; `transcript_id` folds in the file's inode (C3), so a
  *  rotation mints a NEW entry and the old one goes inert. */
-export interface DrainEntry {
+export interface DrainEntry extends FailureTrackedEntry {
   host_id: string;
   session_id: string;
   transcript_id: string;
@@ -651,6 +658,11 @@ export class TranscriptDrainQueue {
           session_id: entry.session_id,
           error: (err as Error).message,
         });
+        // Transport-level failure (connection refused, timeout, DNS) — the host
+        // itself could not be reached. Record it so `health()` can distinguish
+        // "host is down" from "host rejected the attempt" without reading logs.
+        recordDrainFailure(entry, 'unreachable', new Date().toISOString());
+        this.store.put(entry);
         return sent; // leave acked_offset unchanged (prune-only-acked); retry next tick
       }
       sent += 1;
@@ -664,18 +676,59 @@ export class TranscriptDrainQueue {
           this.logger?.warn('capture.transcript-drain', 'append reported no progress — stopping', {
             host_id: entry.host_id, session_id: entry.session_id, base,
           });
+          // The host answered but the exchange made no progress — reachable,
+          // not "rejected" outright, but a failing entry all the same.
+          recordDrainFailure(entry, 'rejected', new Date().toISOString());
+          this.store.put(entry);
           return sent;
         }
         entry.acked_offset = resp.size;
+        clearDrainFailure(entry);
         this.store.put(entry);
       } else {
         this.logger?.warn('capture.transcript-drain', 'unexpected host response — retry next tick', {
           host_id: entry.host_id, session_id: entry.session_id, status: resp.status,
         });
+        // The host was reachable (it answered) but the response was outside
+        // the offset contract — a failing entry, not a host-unreachable one.
+        recordDrainFailure(entry, 'rejected', new Date().toISOString());
+        this.store.put(entry);
         return sent;
       }
     }
     return sent;
+  }
+
+  /** Per-host drain health (consolidation Task C-5): un-shipped bytes/entries,
+   *  host-unreachable occurrences, and failing-entry counts, derived from the
+   *  SAME persisted queue state `drainAll`/`pendingCount` read — no new store,
+   *  no network call. Safe to call from a cold process (e.g. `myco doctor`)
+   *  since it only stats the transcript files and reads the entry store. */
+  health(): Map<string, DrainHealthCounters> {
+    const rows = this.store.list().map((entry) => {
+      const stat = this.fileReader.stat(entry.transcript_path);
+      let pending = false;
+      let pendingBytes = 0;
+      if (stat) {
+        const currentId = deriveTranscriptId({
+          machineId: this.machineId,
+          transcriptPath: entry.transcript_path,
+          inode: stat.inode,
+        });
+        if (currentId === entry.transcript_id && stat.size > entry.acked_offset) {
+          pending = true;
+          pendingBytes = stat.size - entry.acked_offset;
+        }
+      }
+      return {
+        host_id: entry.host_id,
+        pending,
+        pendingUnits: pendingBytes,
+        consecutive_failures: entry.consecutive_failures,
+        last_error_kind: entry.last_error_kind,
+      };
+    });
+    return summarizeDrainHealth(rows);
   }
 
   /**

@@ -112,6 +112,147 @@ export function checkTeamHostHint(vaultDir: string): DoctorCheck | null {
   return { name: 'Team Host', status: 'warn', detail, fixable: false };
 }
 
+/**
+ * Team Host reachability — live-probes every host this machine has joined,
+ * over the overlay (WS5 carried item: "surface `myco doctor` checks for host
+ * reachability"). Reuses the SAME probe `joinHost` runs right after
+ * enrollment (`defaultCheckHostReachable`, `host/member-overlay.ts`) — that
+ * function's own docstring points here ("verify with `myco doctor` after the
+ * overlay settles"), so this check is that promise kept.
+ *
+ * Machine-global, not vault-scoped (the host/attach registry lives under
+ * `~/.myco-team`, independent of any project). Returns no rows when this
+ * machine has joined no host — that is a healthy, common state, not a
+ * warning.
+ */
+export async function checkTeamHostReachability(): Promise<DoctorCheck[]> {
+  const { readHostRegistry } = await import('../host/registry.js');
+  const { defaultCheckHostReachable } = await import('../host/member-overlay.js');
+
+  const hosts = readHostRegistry();
+  if (hosts.length === 0) return [];
+
+  const checks: DoctorCheck[] = [];
+  for (const host of hosts) {
+    const name = checks.length === 0 ? 'Team Host' : '';
+    if (host.proxy_port === undefined) {
+      checks.push({
+        name,
+        status: 'warn',
+        detail: `${host.label} (${host.host_id}): no local proxy port on record — re-join with \`myco join\` to repair`,
+        fixable: false,
+      });
+      continue;
+    }
+    let reachable: boolean;
+    try {
+      reachable = await defaultCheckHostReachable(host.overlay_address, host.proxy_port);
+    } catch {
+      reachable = false;
+    }
+    checks.push({
+      name,
+      status: reachable ? 'ok' : 'warn',
+      detail: reachable
+        ? `${host.label} (${host.host_id}) reachable over the overlay`
+        : `${host.label} (${host.host_id}) not reachable over the overlay — check the host daemon is running and the overlay connection is up`,
+      fixable: false,
+    });
+  }
+  return checks;
+}
+
+/** Human-readable byte count, e.g. "4.2 KB". */
+function formatDrainBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** One drain's counters rendered for a doctor row, or `null` when that drain
+ *  has nothing pending and nothing failing for this host (the common case —
+ *  omitted rather than printed as a redundant "0 pending, 0 failing"). */
+function summarizeDrainForDoctor(
+  label: string,
+  counters: import('../capture/drain-health.js').DrainHealthCounters | undefined,
+  unit: 'bytes' | 'records',
+): { text: string; hasFailure: boolean } | null {
+  const c = counters ?? { pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 };
+  if (c.pendingEntries === 0 && c.failingEntries === 0) return null;
+
+  const bits: string[] = [];
+  if (c.pendingEntries > 0) {
+    const sized = c.pendingUnits !== undefined
+      ? ` (${unit === 'bytes' ? formatDrainBytes(c.pendingUnits) : `${c.pendingUnits} record${c.pendingUnits === 1 ? '' : 's'}`} unshipped)`
+      : '';
+    bits.push(`${c.pendingEntries} pending${sized}`);
+  }
+  if (c.failingEntries > 0) {
+    const unreachable = c.hostUnreachableEntries > 0 ? `, ${c.hostUnreachableEntries} host-unreachable` : '';
+    bits.push(`${c.failingEntries} failing${unreachable}`);
+  }
+  return { text: `${label} ${bits.join(', ')}`, hasFailure: c.failingEntries > 0 };
+}
+
+/**
+ * Team Host member drain health — the `myco doctor` half of consolidation
+ * Task C-5 (routed-capture observability). Reads the SAME persisted queue
+ * state `GET /api/team-host/drain-health` reads (`daemon/api/drain-health.ts`)
+ * via fresh, disk-only queue instances — pure fs reads, no daemon connection
+ * and no network call, so this reports honestly even when the daemon isn't
+ * running. Machine-global: returns no rows when this machine has joined no
+ * host.
+ *
+ * A host with un-shipped bytes/records but zero failing entries is a normal
+ * transient state (capture mid-turn, not yet drained this tick) and reports
+ * `ok`; only a nonzero failing-entry count — the drain has actually been
+ * unable to make progress — reports `warn`.
+ */
+export async function checkTeamHostDrainHealth(): Promise<DoctorCheck[]> {
+  const { readHostRegistry } = await import('../host/registry.js');
+  const hosts = readHostRegistry();
+  if (hosts.length === 0) return [];
+
+  const { getMachineId } = await import('../machine-id.js');
+  const { createTranscriptDrainQueue } = await import('../capture/transcript-drain.js');
+  const { createPlanDrainQueue } = await import('../capture/plan-drain.js');
+  const { createEventReplayDrainQueue } = await import('../capture/event-replay-drain.js');
+
+  const machineId = getMachineId();
+  const transcriptDrain = createTranscriptDrainQueue({ machineId });
+  // `planWatchConfig` is only consulted by `noteCollect` (live capture-event
+  // enqueue) — never by `health()` — so a stub is safe here; doctor never
+  // enqueues.
+  const planDrain = createPlanDrainQueue({ machineId, planWatchConfig: { watchDirs: [], projectRoot: '' } });
+  const eventReplayDrain = createEventReplayDrainQueue({ machineId });
+
+  const transcriptHealth = transcriptDrain.health();
+  const planHealth = planDrain.health();
+  const eventReplayHealth = eventReplayDrain.health();
+
+  const checks: DoctorCheck[] = [];
+  for (const host of hosts) {
+    const name = checks.length === 0 ? 'Drain health' : '';
+    const rows = [
+      summarizeDrainForDoctor('transcript', transcriptHealth.get(host.host_id), 'bytes'),
+      summarizeDrainForDoctor('plan', planHealth.get(host.host_id), 'bytes'),
+      summarizeDrainForDoctor('event replay', eventReplayHealth.get(host.host_id), 'records'),
+    ].filter((r): r is { text: string; hasFailure: boolean } => r !== null);
+
+    if (rows.length === 0) {
+      checks.push({ name, status: 'ok', detail: `${host.label}: nothing pending, no failures`, fixable: false });
+      continue;
+    }
+    checks.push({
+      name,
+      status: rows.some((r) => r.hasFailure) ? 'warn' : 'ok',
+      detail: `${host.label}: ${rows.map((r) => r.text).join('; ')}`,
+      fixable: false,
+    });
+  }
+  return checks;
+}
+
 /** Check that the SQLite database exists and can be queried. */
 async function checkDatabase(vaultDir: string): Promise<DoctorCheck> {
   const { resolveDaemonDataPaths } = await import('@myco/daemon/data-paths.js');
@@ -638,6 +779,12 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   // `myco.yaml` yet — exactly the scenario this hint exists for.
   const teamHostHint = checkTeamHostHint(vaultDir);
   if (teamHostHint) checks.push(teamHostHint);
+
+  // Machine-global, not vault-scoped (the host/attach registry lives under
+  // `~/.myco-team`) — run regardless of whether this directory has a
+  // `myco.yaml`, same as the hint above.
+  checks.push(...await checkTeamHostReachability());
+  checks.push(...await checkTeamHostDrainHealth());
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:

@@ -107,6 +107,7 @@ import { createCortexHandlers } from './api/cortex.js';
 import { registerContentClaimRoutes } from './api/content-claims.js';
 import { registerContentClaimMaterializeRoute } from './api/content-claims-materialize.js';
 import { registerContentClaimFileStatusRoute } from './api/content-claims-file-status.js';
+import { registerDrainHealthRoute } from './api/drain-health.js';
 import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
 import { tenantRoute } from './api/route-helpers.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
@@ -1544,6 +1545,11 @@ export async function main(): Promise<void> {
     logger: proxyLoggerFrom(logger, LOG_KINDS.CONTENT_CLAIM_FILE_STATUS),
     mycoHome,
   });
+  // Team Host member drain health (consolidation Task C-5): the SAME three
+  // queue instances the backstop jobs below drive, exposing their `health()`
+  // derived-counters summary for the member's own dashboard. No new state —
+  // reads the drains' already-persisted queue stores.
+  registerDrainHealthRoute(server, { transcriptDrain, planDrain, eventReplayDrain });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};

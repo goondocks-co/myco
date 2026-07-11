@@ -44,6 +44,13 @@ import type { RemoteTarget } from '../host/routing.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import { isPlanWriteEvent, type PlanWatchConfig } from '../daemon/plan-capture.js';
 import type { DaemonLogger } from '../daemon/logger.js';
+import {
+  clearDrainFailure,
+  recordDrainFailure,
+  summarizeDrainHealth,
+  type DrainHealthCounters,
+  type FailureTrackedEntry,
+} from './drain-health.js';
 
 /** Stable, filesystem-safe queue key for one plan file (its member-local path).
  *  Whole-file channel → keyed by path (no inode/offset like the transcript id). */
@@ -60,7 +67,7 @@ function hashContent(content: string): string {
 
 /** One persisted work-queue entry: a plan file the member is shipping to a host,
  *  plus the host-acked content hash. Keyed `(host_id, session_id, plan_ref)`. */
-export interface PlanDrainEntry {
+export interface PlanDrainEntry extends FailureTrackedEntry {
   host_id: string;
   session_id: string;
   plan_ref: string;
@@ -644,12 +651,16 @@ export class PlanDrainQueue {
         session_id: entry.session_id,
         error: (err as Error).message,
       });
+      // Transport-level failure — the host itself could not be reached.
+      recordDrainFailure(entry, 'unreachable', new Date().toISOString());
+      this.store.put(entry);
       return 0; // leave acked_hash unchanged (prune-only-acked); retry next tick
     }
 
     if (resp.status === 200) {
       entry.acked_hash = hash;
       entry.updated_at = new Date().toISOString();
+      clearDrainFailure(entry);
       this.store.put(entry);
     } else {
       this.logger?.warn('capture.plan-drain', 'unexpected host response — retry next tick', {
@@ -657,8 +668,30 @@ export class PlanDrainQueue {
         session_id: entry.session_id,
         status: resp.status,
       });
+      // The host was reachable (it answered) but rejected the push.
+      recordDrainFailure(entry, 'rejected', new Date().toISOString());
+      this.store.put(entry);
     }
     return 1;
+  }
+
+  /** Per-host drain health (consolidation Task C-5): un-shipped entries/bytes,
+   *  host-unreachable occurrences, and failing-entry counts, derived from the
+   *  SAME persisted queue state `drainAll`/`pendingCount` read — no new store,
+   *  no network call. */
+  health(): Map<string, DrainHealthCounters> {
+    const rows = this.store.list().map((entry) => {
+      const content = this.fileReader.read(entry.plan_path);
+      const pending = content !== null && hashContent(content) !== entry.acked_hash;
+      return {
+        host_id: entry.host_id,
+        pending,
+        pendingUnits: pending && content !== null ? Buffer.byteLength(content, 'utf-8') : undefined,
+        consecutive_failures: entry.consecutive_failures,
+        last_error_kind: entry.last_error_kind,
+      };
+    });
+    return summarizeDrainHealth(rows);
   }
 }
 

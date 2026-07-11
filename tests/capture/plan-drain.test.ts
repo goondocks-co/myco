@@ -706,3 +706,73 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
     await waitFor(() => store.list().length === 0); // then noteSessionEnded pruned the caught-up entry
   });
 });
+
+// ---------------------------------------------------------------------------
+// Drain health (consolidation Task C-5 — routed-capture observability)
+// ---------------------------------------------------------------------------
+
+describe('drain health (consolidation Task C-5)', () => {
+  test('a fully-shipped entry reports zero counters (no pendingUnits key)', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan');
+    const store = memStore();
+    const host = fakeHost();
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    const t = target();
+    q.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q.flushBeforeForward(t);
+
+    expect(q.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('a transport failure counts as failing AND host-unreachable, sized by the current content', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan body'); // 11 bytes
+    const store = memStore();
+    const t = target();
+    const throwing: PlanPostTransport = async () => { throw new Error('network down'); };
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q.flushBeforeForward(t);
+
+    expect(q.health().get(HOST_A)).toEqual({
+      pendingEntries: 1,
+      pendingUnits: Buffer.byteLength('# plan body', 'utf-8'),
+      failingEntries: 1,
+      hostUnreachableEntries: 1,
+    });
+  });
+
+  test('a rejected (unexpected) host response counts as failing but NOT host-unreachable', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan');
+    const store = memStore();
+    const t = target();
+    const rejecting: PlanPostTransport = async () => ({ status: 500 });
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: rejecting, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q.flushBeforeForward(t);
+
+    const counters = q.health().get(HOST_A);
+    expect(counters?.failingEntries).toBe(1);
+    expect(counters?.hostUnreachableEntries).toBe(0);
+  });
+
+  test('a later successful drain clears a prior failure', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan');
+    const store = memStore();
+    const t = target();
+
+    const throwing: PlanPostTransport = async () => { throw new Error('network down'); };
+    const q1 = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q1.noteCollect(t, planEvent('s', '/plans/x.md'));
+    await q1.flushBeforeForward(t);
+    expect(q1.health().get(HOST_A)?.failingEntries).toBe(1);
+
+    const host = fakeHost();
+    const q2 = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    await q2.flushBeforeForward(t);
+    expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+});

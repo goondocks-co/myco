@@ -65,10 +65,18 @@ import { readHostRegistry, readHostSecrets } from '../host/registry.js';
 import type { RemoteTarget } from '../host/routing.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
+import {
+  clearDrainFailure,
+  recordDrainFailure,
+  summarizeDrainHealth,
+  type DrainHealthCounters,
+  type DrainHealthRow,
+  type FailureTrackedEntry,
+} from './drain-health.js';
 
 /** One persisted high-water entry: how many of an attached session's collector-
  *  buffer records the host has already acked. Keyed `(host_id, session_id)`. */
-export interface ReplayEntry {
+export interface ReplayEntry extends FailureTrackedEntry {
   host_id: string;
   project_id: string;
   session_id: string;
@@ -638,6 +646,12 @@ export class EventReplayDrainQueue {
           route,
           error: (err as Error).message,
         });
+        // Transport-level failure — the host itself could not be reached.
+        // Persisted even though `acked` hasn't advanced: this may be the
+        // FIRST attempt for this session (no `ReplayEntry` yet), and without
+        // recording it here `health()` has nothing to read for a session that
+        // has never once succeeded.
+        this.persistFailure(attached, sessionId, acked, 'unreachable');
         break; // leave high-water; retry next tick (no attempt counter, no backoff)
       }
       sent += 1;
@@ -651,6 +665,8 @@ export class EventReplayDrainQueue {
           route,
           status,
         });
+        // The host was reachable (it answered) but rejected the record.
+        this.persistFailure(attached, sessionId, acked, 'rejected');
         break; // do NOT advance past a rejected record; retry next tick
       }
     }
@@ -658,13 +674,63 @@ export class EventReplayDrainQueue {
   }
 
   private persist(attached: AttachedReplayTarget, sessionId: string, ackedCount: number): void {
-    this.store.put({
+    const entry: ReplayEntry = {
       host_id: attached.hostId,
       project_id: attached.projectId,
       session_id: sessionId,
       acked_count: ackedCount,
       updated_at: new Date().toISOString(),
-    });
+    };
+    clearDrainFailure(entry);
+    this.store.put(entry);
+  }
+
+  /** Record a failed forward attempt, preserving whatever `acked_count` this
+   *  session already stands at (0 if this is its first-ever attempt — a
+   *  session can fail before it has ever synced a single record, and without
+   *  writing SOMETHING here `health()` would have no entry to read for it). */
+  private persistFailure(
+    attached: AttachedReplayTarget,
+    sessionId: string,
+    ackedCount: number,
+    kind: 'unreachable' | 'rejected',
+  ): void {
+    const entry: ReplayEntry = {
+      host_id: attached.hostId,
+      project_id: attached.projectId,
+      session_id: sessionId,
+      acked_count: ackedCount,
+      updated_at: new Date().toISOString(),
+    };
+    recordDrainFailure(entry, kind, entry.updated_at);
+    this.store.put(entry);
+  }
+
+  /** Per-host drain health (consolidation Task C-5): un-shipped
+   *  entries/records, host-unreachable occurrences, and failing-entry counts,
+   *  derived from the SAME attach-registry enumeration + persisted high-water
+   *  store `pendingCount` reads — no new store, no network call. Scoped to
+   *  sessions whose collector-buffer file still exists (mirrors
+   *  `pendingCount`'s enumeration): a session pruned by `noteSessionEnded`
+   *  is fully acked by definition and correctly reports nothing. */
+  health(): Map<string, DrainHealthCounters> {
+    const rows: DrainHealthRow[] = [];
+    for (const attached of this.safeTargets()) {
+      for (const sessionId of this.safeSessions(attached.bufferDir)) {
+        const total = this.cachedRecordCount(attached.bufferDir, sessionId);
+        if (total === null) continue;
+        const entry = this.store.get(attached.hostId, sessionId);
+        const acked = entry?.acked_count ?? 0;
+        rows.push({
+          host_id: attached.hostId,
+          pending: total > acked,
+          pendingUnits: Math.max(0, total - acked),
+          consecutive_failures: entry?.consecutive_failures,
+          last_error_kind: entry?.last_error_kind,
+        });
+      }
+    }
+    return summarizeDrainHealth(rows);
   }
 }
 

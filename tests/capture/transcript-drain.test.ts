@@ -802,3 +802,92 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
     expect(cp2SessionEndedCalls).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Drain health (consolidation Task C-5 — routed-capture observability)
+// ---------------------------------------------------------------------------
+
+describe('drain health (consolidation Task C-5)', () => {
+  test('a fully-shipped entry reports zero counters (no pendingUnits key)', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'x1\n', 1);
+    const store = memStore();
+    const host = multiFakeHost();
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    const t = target();
+    q.noteCollect(t, { session_id: 's', transcript_path: p });
+    await q.flushBeforeForward(t);
+
+    expect(q.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('a transport failure counts as failing AND host-unreachable, with pending bytes sized', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'q1\nq2\n', 1); // 6 bytes
+    const store = memStore();
+    const t = target();
+    const throwing: TranscriptPostTransport = async () => { throw new Error('network down'); };
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(t, { session_id: 's', transcript_path: p });
+    await q.flushBeforeForward(t);
+
+    expect(q.health().get(HOST_A)).toEqual({
+      pendingEntries: 1,
+      pendingUnits: 6,
+      failingEntries: 1,
+      hostUnreachableEntries: 1,
+    });
+  });
+
+  test('a rejected (unexpected) host response counts as failing but NOT host-unreachable', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'q1\n', 1);
+    const store = memStore();
+    const t = target();
+    const rejecting: TranscriptPostTransport = async () => ({ status: 500, size: null });
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: rejecting, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(t, { session_id: 's', transcript_path: p });
+    await q.flushBeforeForward(t);
+
+    const counters = q.health().get(HOST_A);
+    expect(counters?.failingEntries).toBe(1);
+    expect(counters?.hostUnreachableEntries).toBe(0);
+  });
+
+  test('a later successful drain clears a prior failure', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'q1\nq2\n', 1);
+    const store = memStore();
+    const t = target();
+
+    const throwing: TranscriptPostTransport = async () => { throw new Error('network down'); };
+    const q1 = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: throwing, fileReader: files.reader, ...noThrottle });
+    q1.noteCollect(t, { session_id: 's', transcript_path: p });
+    await q1.flushBeforeForward(t);
+    expect(q1.health().get(HOST_A)?.failingEntries).toBe(1);
+
+    const host = multiFakeHost();
+    const q2 = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    await q2.flushBeforeForward(t);
+    expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('health aggregates per host — a second host with no entries is simply absent from the map', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'a\n', 1);
+    const store = memStore();
+    const host = multiFakeHost();
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(target({ hostId: HOST_A }), { session_id: 's', transcript_path: p });
+    await q.flushBeforeForward(target({ hostId: HOST_A }));
+
+    const health = q.health();
+    expect(health.has(HOST_A)).toBe(true);
+    expect(health.has(HOST_B)).toBe(false);
+  });
+});

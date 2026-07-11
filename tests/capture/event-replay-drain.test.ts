@@ -260,11 +260,17 @@ describe('at-least-once (prune/advance only after ack)', () => {
       listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
     });
     await q.drainAll();
-    expect(store.get(HOST_A, 'sess-1')).toBeNull(); // nothing acked
+    // Nothing acked — but a failure IS recorded (consolidation Task C-5: a
+    // session that has never once succeeded still needs a persisted entry for
+    // `health()` to read; see the "drain health" describe block below).
+    expect(store.get(HOST_A, 'sess-1')!.acked_count).toBe(0);
+    expect(store.get(HOST_A, 'sess-1')!.consecutive_failures).toBe(1);
+    expect(store.get(HOST_A, 'sess-1')!.last_error_kind).toBe('unreachable');
     expect(q.pendingCount()).toBe(1);
     fail = false;
     await q.drainAll();
     expect(store.get(HOST_A, 'sess-1')!.acked_count).toBe(1);
+    expect(store.get(HOST_A, 'sess-1')!.consecutive_failures).toBe(0); // recovered
     expect(q.pendingCount()).toBe(0);
   });
 });
@@ -776,7 +782,10 @@ describe('default transport wire shape', () => {
     });
     await q.drainAll();
     expect(seen).toHaveLength(1);
-    expect(store.get(HOST_A, 'sess-1')).toBeNull(); // not acked
+    // Not acked — but a "rejected" failure IS recorded (consolidation Task
+    // C-5), distinct from a transport-level "unreachable" failure.
+    expect(store.get(HOST_A, 'sess-1')!.acked_count).toBe(0);
+    expect(store.get(HOST_A, 'sess-1')!.last_error_kind).toBe('rejected');
   });
 });
 
@@ -845,5 +854,81 @@ describe('never-materialize + attach-registry enumeration (real fs)', () => {
     const q = createEventReplayDrainQueue({ machineId: MACHINE, transport: sink.transport });
     await q.drainAll();
     expect(sink.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drain health (consolidation Task C-5 — routed-capture observability)
+// ---------------------------------------------------------------------------
+
+describe('drain health (consolidation Task C-5)', () => {
+  test('a fully-acked session reports zero counters (no pendingUnits key)', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-ok';
+    buf.append(dir, 'sess-1', evt());
+    const sink = recordingSink();
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), transport: sink.transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+
+    expect(q.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('a transport throw on a session\'s FIRST attempt still shows up in health (no prior ReplayEntry to update)', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-throw';
+    buf.append(dir, 'sess-1', evt());
+    buf.append(dir, 'sess-1', evt({ prompt: 'p2' }));
+    const throwing: EventReplayTransport = async () => { throw new Error('unreachable'); };
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), transport: throwing, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+
+    expect(q.health().get(HOST_A)).toEqual({
+      pendingEntries: 1,
+      pendingUnits: 2,
+      failingEntries: 1,
+      hostUnreachableEntries: 1,
+    });
+  });
+
+  test('a rejected (non-2xx) forward counts as failing but NOT host-unreachable', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-reject';
+    buf.append(dir, 'sess-1', evt());
+    const sink = recordingSink();
+    sink.setStatus(() => 500);
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), transport: sink.transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+
+    const counters = q.health().get(HOST_A);
+    expect(counters?.failingEntries).toBe(1);
+    expect(counters?.hostUnreachableEntries).toBe(0);
+  });
+
+  test('a later successful drain clears a prior failure', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-recover';
+    buf.append(dir, 'sess-1', evt());
+    const store = memStore();
+    let fail = true;
+    const transport: EventReplayTransport = async () => { if (fail) throw new Error('unreachable'); return { status: 200 }; };
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+    expect(q.health().get(HOST_A)?.failingEntries).toBe(1);
+
+    fail = false;
+    await q.drainAll();
+    expect(q.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
   });
 });
