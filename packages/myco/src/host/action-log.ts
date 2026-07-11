@@ -90,8 +90,7 @@ function rotateActionLogIfNeeded(controlDir: string, options: HostActionLogRotat
     const from = hostActionLogBackupPath(controlDir, i);
     if (!fs.existsSync(from)) continue;
     const to = hostActionLogBackupPath(controlDir, i + 1);
-    if (i + 1 > maxBackups) fs.unlinkSync(from);
-    else fs.renameSync(from, to);
+    fs.renameSync(from, to);
   }
   fs.renameSync(logPath, hostActionLogBackupPath(controlDir, 1));
 }

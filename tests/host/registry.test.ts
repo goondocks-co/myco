@@ -153,6 +153,22 @@ describe('host registry', () => {
     expect(getHost(host.host_id)?.projects).toHaveLength(1);
   });
 
+  test('re-attach with a rootless ref never clobbers a previously recorded `root`', () => {
+    // A caller that re-attaches without a `root` (e.g. an older client, or a
+    // call site that hasn't been updated to pass one) must not blow away a
+    // `root` a prior attach already recorded — the backfill/refresh branch
+    // is for BACKFILLING root from undefined, never for erasing it.
+    const host = makeHost();
+    upsertHost(host);
+    attachProject(host.host_id, { grove_id: 'grove-10', project_id: 'proj-10', root: '/checkouts/proj-10' });
+    expect(resolveAttach('proj-10')?.ref.root).toBe('/checkouts/proj-10');
+
+    attachProject(host.host_id, { grove_id: 'grove-10', project_id: 'proj-10' });
+
+    expect(resolveAttach('proj-10')?.ref.root).toBe('/checkouts/proj-10');
+    expect(getHost(host.host_id)?.projects).toHaveLength(1);
+  });
+
   test('re-attach to the same host never refreshes `grove_id` — a Grove change requires an explicit detach first', () => {
     const host = makeHost();
     upsertHost(host);

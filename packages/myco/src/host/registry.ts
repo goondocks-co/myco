@@ -167,7 +167,7 @@ export function attachProject(
     // as requiring an explicit detach first, and this function must not
     // silently move which Grove serves the project.
     const existingRef = record.projects[existingIdx];
-    if (existingRef.root !== ref.root) {
+    if (ref.root && existingRef.root !== ref.root) {
       const projects = [...record.projects];
       projects[existingIdx] = { ...existingRef, root: ref.root };
       upsertHost({ ...record, projects });

@@ -302,7 +302,12 @@ export type ClaimAndMaterializePhase =
   | { status: 'claiming' }
   | { status: 'claim-failed'; message: string; holder: ContentClaimView | null }
   | { status: 'materializing'; claimId: string }
-  | { status: 'materialize-failed'; claimId: string; message: string }
+  // `error` carries the raw thrown value (an `ApiError` for a route
+  // failure) alongside the display-ready `message` — `materializeErrorCopy`
+  // (ClaimControl.tsx) inspects `error.code` to render outcome copy for
+  // specific failure classes (e.g. `host_unreachable`), falling back to the
+  // generic `message`-based template for everything else.
+  | { status: 'materialize-failed'; claimId: string; message: string; error: unknown }
   | { status: 'success'; claimId: string; path: string; autoPublished: boolean };
 
 function messageFor(err: unknown, fallback: string): string {
@@ -329,7 +334,7 @@ export function useClaimAndMaterialize() {
         const result = await materialize.mutateAsync({ claimId, projectRoot });
         setPhase({ status: 'success', claimId, path: result.path, autoPublished: result.auto_published });
       } catch (err) {
-        setPhase({ status: 'materialize-failed', claimId, message: messageFor(err, 'Publishing failed') });
+        setPhase({ status: 'materialize-failed', claimId, message: messageFor(err, 'Publishing failed'), error: err });
       }
     },
     [materialize],

@@ -83,6 +83,10 @@ const { ClaimControl } = await import('../../packages/myco/ui/src/components/con
 
 let activeClaim: ContentClaimView | null = null;
 let materializeShouldFail = false;
+// Overridable by a test that needs a specific thrown error shape (e.g. a
+// real `MockApiError` carrying an `error.code`) instead of the plain-Error
+// default — reset in `beforeEach` so tests don't leak into each other.
+let materializeFailureError: Error = new Error('root_mismatch: attached checkout root does not match');
 let published = false;
 // Item 3 — a claim's `stale` flag comes straight off the fixture, same as
 // every other field; a dedicated switch lets a test flip it without hand-
@@ -152,6 +156,7 @@ function renderControl() {
 beforeEach(() => {
   activeClaim = null;
   materializeShouldFail = false;
+  materializeFailureError = new Error('root_mismatch: attached checkout root does not match');
   published = false;
   claimStale = false;
   projectRootOverride = '/repo';
@@ -172,7 +177,7 @@ beforeEach(() => {
       return { ok: true, claim: activeClaim, content: {} };
     }
     if (path === '/content-claims/cclaim_aaaa/materialize') {
-      if (materializeShouldFail) throw new Error('root_mismatch: attached checkout root does not match');
+      if (materializeShouldFail) throw materializeFailureError;
       return { ok: true, path: '.claude/skills/my-skill/SKILL.md', skill_name: 'my-skill', generation: 3 };
     }
     if (path === '/content-claims/cclaim_aaaa/release') {
@@ -283,6 +288,41 @@ describe('ClaimControl — unclaimed', () => {
     });
     // Retry reused the claim from the failed attempt — no second claim POST.
     expect(postJsonMock.mock.calls.filter((c) => c[0] === '/content-claims').length).toBe(1);
+  });
+
+  it('maps a host_unreachable materialize failure (C-6 503) to outcome copy — never "writing the file failed" or the raw API suffix', async () => {
+    materializeShouldFail = true;
+    materializeFailureError = new MockApiError(503, {
+      error: {
+        code: 'host_unreachable',
+        message: 'The Team Host could not be reached. Check your connection and try again.',
+      },
+    });
+    renderControl();
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('claim-and-materialize'));
+
+    await waitFor(() => expect(screen.getByTestId('materialize-failed')).toBeInTheDocument());
+    const errorEl = screen.getByTestId('materialize-failed');
+    expect(errorEl).toHaveTextContent("Your Team Host can't be reached right now");
+    expect(errorEl).not.toHaveTextContent('API');
+    expect(errorEl).not.toHaveTextContent('writing the file failed');
+    // The claim is still active and held by this machine — nothing was
+    // silently dropped just because the copy changed shape.
+    expect(screen.getByTestId('claim-held-by-me')).toBeInTheDocument();
+  });
+
+  it('keeps the generic "writing the file failed" fallback for an unrecognized materialize error code', async () => {
+    materializeShouldFail = true;
+    materializeFailureError = new MockApiError(500, { error: { code: 'some_other_code', message: 'boom' } });
+    renderControl();
+    await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('claim-and-materialize'));
+
+    await waitFor(() => expect(screen.getByTestId('materialize-failed')).toBeInTheDocument());
+    expect(screen.getByTestId('materialize-failed')).toHaveTextContent("Couldn't finish publishing — writing the file failed:");
   });
 
   it('surfaces a Retry publish button that is visibly disabled once the project root becomes unavailable (item 2)', async () => {

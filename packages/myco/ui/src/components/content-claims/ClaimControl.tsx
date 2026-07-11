@@ -35,6 +35,24 @@ function markPublishedErrorCopy(err: unknown): string {
   return err instanceof Error ? err.message : "Couldn't mark this published — try again";
 }
 
+/** Rendered copy for a failed materialize (the file-write half of Publish).
+ *  `host_unreachable` (C-6's 503 — the Team Host couldn't be reached to
+ *  validate the claim) gets its own outcome copy: nothing was written, so
+ *  neither the "writing the file failed" framing nor the raw `(API 503)`
+ *  mechanism suffix belong here. Every other code — recognized or not —
+ *  keeps the existing generic template built from the phase's own
+ *  already-derived `message`, the same fallback precedent as
+ *  `markPublishedErrorCopy`. */
+function materializeErrorCopy(err: unknown, message: string): string {
+  if (err instanceof ApiError) {
+    const code = (err.body as { error?: { code?: string } } | undefined)?.error?.code;
+    if (code === 'host_unreachable') {
+      return "Your Team Host can't be reached right now — check the connection and try again.";
+    }
+  }
+  return `Couldn't finish publishing — writing the file failed: ${message}`;
+}
+
 /**
  * The full claim affordance for one artifact (spec §7): the unpublished
  * badge, "Publish" (one user action — POST claim then POST materialize,
@@ -208,7 +226,7 @@ export function ClaimControl({
         {materializeFailed && (
           <div className="flex flex-wrap items-center gap-2" data-testid="materialize-failed">
             <p className="font-sans text-xs text-tertiary m-0">
-              Couldn't finish publishing — writing the file failed: {phase.message}
+              {materializeErrorCopy(phase.error, phase.message)}
             </p>
             <Button
               size="sm"
@@ -340,7 +358,7 @@ export function ClaimControl({
       {materializeFailed && (
         <div className="flex flex-wrap items-center gap-2" data-testid="materialize-failed">
           <p className="font-sans text-xs text-tertiary m-0">
-            Couldn't finish publishing — writing the file failed: {phase.message}
+            {materializeErrorCopy(phase.error, phase.message)}
           </p>
           <Button
             size="sm"
