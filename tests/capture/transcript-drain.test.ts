@@ -554,6 +554,42 @@ describe('fs drain-entry store atomicity (item 2 — write-then-rename)', () => 
     // reading must return the last fully-committed entry, never a partial one.
     expect(store.get(HOST_A, 's', tid)).toEqual(entry);
   });
+
+  test('remove() reaps a torn `.tmp` sibling alongside the entry', () => {
+    const store = createFsDrainStore(tmp);
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: '/m/s.jsonl', inode: 1 });
+    store.put({
+      host_id: HOST_A, session_id: 's', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: '/m/s.jsonl', acked_offset: 4, updated_at: 'x',
+    });
+    const finalPath = path.join(tmp, HOST_A, 's', `${tid}.json`);
+    const tmpPath = `${finalPath}.tmp`;
+    fs.writeFileSync(tmpPath, '{"torn'); // crash-mid-put leftover
+
+    store.remove(HOST_A, 's', tid);
+
+    expect(fs.existsSync(finalPath)).toBe(false);
+    expect(fs.existsSync(tmpPath)).toBe(false); // sibling reaped, not orphaned
+  });
+
+  test('purgeProject reaps `.tmp` siblings of the purged entries', () => {
+    const store = createFsDrainStore(tmp);
+    const t = target();
+    const tid = deriveTranscriptId({ machineId: MACHINE, transcriptPath: '/m/s.jsonl', inode: 1 });
+    store.put({
+      host_id: HOST_A, session_id: 's', transcript_id: tid, project_id: t.projectId,
+      grove_id: t.groveId, transcript_path: '/m/s.jsonl', acked_offset: 4, updated_at: 'x',
+    });
+    const finalPath = path.join(tmp, HOST_A, 's', `${tid}.json`);
+    const tmpPath = `${finalPath}.tmp`;
+    fs.writeFileSync(tmpPath, '{"torn');
+
+    store.purgeProject(HOST_A, t.projectId as string);
+
+    expect(fs.existsSync(finalPath)).toBe(false);
+    expect(fs.existsSync(tmpPath)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -672,6 +708,9 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
   let hostHits: number;
   let overlayAddress: string;
   let dialCalls: number;
+  let cp2FlushCalls: number;
+  let cp2NoteCalls: number;
+  let cp2SessionEndedCalls: number;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-drain-cp2-'));
@@ -684,6 +723,9 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
 
     hostHits = 0;
     dialCalls = 0;
+    cp2FlushCalls = 0;
+    cp2NoteCalls = 0;
+    cp2SessionEndedCalls = 0;
     hostServer = http.createServer((req, res) => {
       req.resume();
       req.on('end', () => {
@@ -698,11 +740,19 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
 
     const handler = createStreamableMcpHttpHandler(vaultDir, {
       resolveDatabase: () => ({} as never),
-      // The capture deps threaded at chokepoint 2. A spy `dial` proves the
-      // handler forwards hostProxyDeps into handleAttachedRequest (the /mcp path
-      // is serve-only, so it exercises the dial rather than the flush).
+      // The FULL capture-deps shape threaded at chokepoint 2 — the same object
+      // shape main.ts's captureProxyDeps carries. A spy `dial` proves the
+      // handler forwards hostProxyDeps into handleAttachedRequest; the three
+      // capture seams are spied so their (non-)firing on the serve-only /mcp
+      // path is asserted rather than assumed. Passing all of them here also
+      // pins the seam names at compile time (a renamed/typo'd field is a TS
+      // excess-property error), so chokepoint-2 wiring can't silently drift
+      // from chokepoint-1's.
       hostProxyDeps: {
         dial: (t, opts) => { dialCalls += 1; return defaultDial(t, opts); },
+        flushBeforeForward: async () => { cp2FlushCalls += 1; },
+        noteCollectEvent: () => { cp2NoteCalls += 1; },
+        noteSessionEnded: async () => { cp2SessionEndedCalls += 1; },
       },
     });
     member = http.createServer((req, res) => { void handler(req, res); });
@@ -743,5 +793,12 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
     await res.text();
     expect(dialCalls).toBe(1); // the threaded dial was used
     expect(hostHits).toBe(1);
+    // The /mcp path is serve-only — none of the capture seams may fire here.
+    // They are threaded (typed + accepted above) so the guarantee cannot
+    // silently regress if /mcp ever carries a flush/collect/terminal route,
+    // but on today's serve classification they must stay silent.
+    expect(cp2FlushCalls).toBe(0);
+    expect(cp2NoteCalls).toBe(0);
+    expect(cp2SessionEndedCalls).toBe(0);
   });
 });

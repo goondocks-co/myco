@@ -443,23 +443,39 @@ describe('noteSessionEnded prune (item 6 — prune only acked, buffer file inclu
   // test hermetic with no real network attempt.
   const unreachable: EventReplayTransport = async () => { throw new Error('unreachable in test'); };
 
+  /** In-memory analog of `EventBuffer.deleteIfSync`'s contract for the
+   *  injected seam: re-read the buffer, consult `shouldDelete` against that
+   *  read, delete only on approval. Records every call for assertions. */
+  function memLockedDelete(buf: ReturnType<typeof memBuffer>) {
+    const calls: Array<{ dir: string; sessionId: string; approved: boolean }> = [];
+    const fn = (dir: string, sessionId: string, shouldDelete: (records: Record<string, unknown>[]) => boolean): boolean => {
+      if (!buf.reader.statSession(dir, sessionId)) return false; // file gone
+      const approved = shouldDelete(buf.reader.readRecords(dir, sessionId));
+      calls.push({ dir, sessionId, approved });
+      if (!approved) return false;
+      buf.remove(dir, sessionId);
+      return true;
+    };
+    return { fn, calls };
+  }
+
   test('a fully-acked session is pruned: BOTH the high-water entry AND the buffer file are removed', async () => {
     const buf = memBuffer();
     buf.append(bufferDir, 'sa', evt({ session_id: 'sa' }));
     buf.append(bufferDir, 'sa', stop({ session_id: 'sa' }));
     const store = memStore();
     store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 2, updated_at: 'x' }); // fully acked
-    const deleted: Array<{ dir: string; sessionId: string }> = [];
+    const del = memLockedDelete(buf);
     const q = new EventReplayDrainQueue({
       machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
-      deleteSessionBuffer: (dir, sessionId) => { buf.remove(dir, sessionId); deleted.push({ dir, sessionId }); },
+      deleteSessionBuffer: del.fn,
     });
     const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
 
     await q.noteSessionEnded(t.target, 'sa');
 
     expect(store.get(HOST_A, 'sa')).toBeNull();
-    expect(deleted).toEqual([{ dir: bufferDir, sessionId: 'sa' }]);
+    expect(del.calls).toEqual([{ dir: bufferDir, sessionId: 'sa', approved: true }]);
     expect(buf.reader.listSessions(bufferDir)).not.toContain('sa');
   });
 
@@ -469,16 +485,16 @@ describe('noteSessionEnded prune (item 6 — prune only acked, buffer file inclu
     buf.append(bufferDir, 'sa', stop({ session_id: 'sa' }));
     const store = memStore();
     store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // NOT fully acked
-    let deleteCalled = false;
+    const del = memLockedDelete(buf);
     const q = new EventReplayDrainQueue({
       machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
-      deleteSessionBuffer: () => { deleteCalled = true; },
+      deleteSessionBuffer: del.fn,
     });
     const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
 
     await q.noteSessionEnded(t.target, 'sa');
 
-    expect(deleteCalled).toBe(false);
+    expect(del.calls).toHaveLength(0); // refused at the pre-check — locked delete never attempted
     expect(store.get(HOST_A, 'sa')!.acked_count).toBe(1); // unchanged — the catch-up drain couldn't reach the host
     expect(buf.reader.listSessions(bufferDir)).toContain('sa'); // buffer file untouched
   });
@@ -490,28 +506,58 @@ describe('noteSessionEnded prune (item 6 — prune only acked, buffer file inclu
     const store = memStore();
     store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // one record un-acked
     const sink = recordingSink();
-    let deleteCalled = false;
+    const del = memLockedDelete(buf);
     const q = new EventReplayDrainQueue({
       machineId: MACHINE, store, bufferReader: buf.reader, transport: sink.transport,
-      deleteSessionBuffer: (dir, sessionId) => { buf.remove(dir, sessionId); deleteCalled = true; },
+      deleteSessionBuffer: del.fn,
     });
     const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
 
     await q.noteSessionEnded(t.target, 'sa');
 
     expect(sink.calls).toHaveLength(1); // the drain sent the un-acked tail record
-    expect(deleteCalled).toBe(true); // now caught up → pruned
+    expect(del.calls).toEqual([{ dir: bufferDir, sessionId: 'sa', approved: true }]); // now caught up → pruned
     expect(store.get(HOST_A, 'sa')).toBeNull();
+  });
+
+  test('a straggler append landing between the pre-check and the locked delete is refused by the in-lock re-check (entry survives)', async () => {
+    const buf = memBuffer();
+    buf.append(bufferDir, 'sa', evt({ session_id: 'sa' }));
+    const store = memStore();
+    store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // covers record 0
+    // Locked-delete fake that lands a straggler append at the exact moment the
+    // lock is acquired — BEFORE the re-read — simulating the hook-fallback
+    // writer that got the flock first. The in-lock shouldDelete then sees the
+    // straggler and must refuse.
+    let deleted = false;
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
+      deleteSessionBuffer: (dir, sessionId, shouldDelete) => {
+        buf.append(dir, sessionId, evt({ session_id: sessionId, prompt: 'straggler' })); // lands first
+        const approved = shouldDelete(buf.reader.readRecords(dir, sessionId)); // re-read AFTER it landed
+        if (!approved) return false;
+        buf.remove(dir, sessionId);
+        deleted = true;
+        return true;
+      },
+    });
+    const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
+
+    await q.noteSessionEnded(t.target, 'sa'); // pre-check passes (1 record, acked 1)...
+
+    expect(deleted).toBe(false); // ...but the in-lock re-check refused
+    expect(store.get(HOST_A, 'sa')).not.toBeNull(); // entry survives → backstop will forward the straggler
+    expect(buf.reader.readRecords(bufferDir, 'sa')).toHaveLength(2); // straggler intact
   });
 
   test('a session with no high-water entry at all (nothing ever drained) still prunes once its catch-up drain succeeds', async () => {
     const buf = memBuffer();
     buf.append(bufferDir, 'sa', evt({ session_id: 'sa' }));
     const store = memStore();
-    let deleteCalled = false;
+    const del = memLockedDelete(buf);
     const q = new EventReplayDrainQueue({
       machineId: MACHINE, store, bufferReader: buf.reader, transport: recordingSink().transport,
-      deleteSessionBuffer: () => { deleteCalled = true; },
+      deleteSessionBuffer: del.fn,
     });
     const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
 
@@ -521,23 +567,23 @@ describe('noteSessionEnded prune (item 6 — prune only acked, buffer file inclu
     // drain sends the one buffered record and advances to fully-caught-up —
     // this case behaves identically to any other un-acked session once the
     // drain succeeds.
-    expect(deleteCalled).toBe(true);
+    expect(del.calls).toEqual([{ dir: bufferDir, sessionId: 'sa', approved: true }]);
     expect(store.get(HOST_A, 'sa')).toBeNull();
   });
 
   test('an empty buffer (nothing ever buffered for the session) is a true no-op', async () => {
     const buf = memBuffer(); // '/buf' has no session 'sa' at all
     const store = memStore();
-    let deleteCalled = false;
+    const del = memLockedDelete(buf);
     const q = new EventReplayDrainQueue({
       machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
-      deleteSessionBuffer: () => { deleteCalled = true; },
+      deleteSessionBuffer: del.fn,
     });
     const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
 
     await q.noteSessionEnded(t.target, 'sa');
 
-    expect(deleteCalled).toBe(false);
+    expect(del.calls).toHaveLength(0);
     expect(store.get(HOST_A, 'sa')).toBeNull();
   });
 
@@ -548,9 +594,10 @@ describe('noteSessionEnded prune (item 6 — prune only acked, buffer file inclu
     const store = memStore();
     store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' }); // caught up
     store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sb', acked_count: 1, updated_at: 'x' }); // also caught up
+    const del = memLockedDelete(buf);
     const q = new EventReplayDrainQueue({
       machineId: MACHINE, store, bufferReader: buf.reader, transport: unreachable,
-      deleteSessionBuffer: (dir, sessionId) => buf.remove(dir, sessionId),
+      deleteSessionBuffer: del.fn,
     });
     const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir });
 
@@ -561,7 +608,7 @@ describe('noteSessionEnded prune (item 6 — prune only acked, buffer file inclu
     expect(buf.reader.listSessions(bufferDir)).toEqual(['sb']);
   });
 
-  test('a real-fs deleteSessionBuffer default removes the .jsonl file (EventBuffer.delete semantics)', async () => {
+  test('a real-fs default deleteSessionBuffer removes the .jsonl file under the flock (EventBuffer.deleteIfSync semantics)', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-bufdel-home-'));
     const tmpTeam = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-bufdel-team-'));
     const savedHome = process.env.MYCO_HOME;
@@ -582,12 +629,86 @@ describe('noteSessionEnded prune (item 6 — prune only acked, buffer file inclu
       await q.noteSessionEnded(t.target, 'sa');
 
       expect(fs.existsSync(filePath)).toBe(false);
+      expect(fs.existsSync(path.join(realBufferDir, '.sa.lock'))).toBe(false); // lock companion reaped
       expect(store.get(HOST_A, 'sa')).toBeNull();
     } finally {
       if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
       if (savedTeam === undefined) delete process.env.MYCO_TEAM_HOME; else process.env.MYCO_TEAM_HOME = savedTeam;
       fs.rmSync(tmpHome, { recursive: true, force: true });
       fs.rmSync(tmpTeam, { recursive: true, force: true });
+    }
+  });
+
+  test('REAL-FS straggler: a record appended after the drain-queue pre-check state is refused by the default locked delete (never destroyed)', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-straggler-home-'));
+    const tmpTeam = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-straggler-team-'));
+    const savedHome = process.env.MYCO_HOME;
+    const savedTeam = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_HOME = tmpHome;
+    process.env.MYCO_TEAM_HOME = tmpTeam;
+    try {
+      const realBufferDir = resolveProjectBufferDir(GROVE_A, PROJ_A);
+      const acked = evt({ session_id: 'sa' });
+      new EventBuffer(realBufferDir, 'sa').append(acked); // record 0 — acked below
+      const store = memStore();
+      store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 1, updated_at: 'x' });
+
+      // The race, made deterministic: the drain queue's own reader is pinned to
+      // the PRE-STRAGGLER view (1 record — what the queue saw when it decided
+      // to prune), while the hook-fallback appender has ALREADY landed a
+      // second record on the real file via the real locked append.
+      new EventBuffer(realBufferDir, 'sa').append(evt({ session_id: 'sa', prompt: 'straggler' }));
+      const staleReader: CollectBufferReader = {
+        listSessions: () => ['sa'],
+        readRecords: () => [acked], // stale: pre-straggler view
+        statSession: () => ({ size: 1, mtimeMs: 1 }),
+      };
+
+      // Default deleteSessionBuffer → the REAL EventBuffer.deleteIfSync: real
+      // flock, real in-lock re-read of the real file.
+      const q = createEventReplayDrainQueue({
+        machineId: MACHINE, store, bufferReader: staleReader, transport: unreachable,
+      });
+      const t = mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: realBufferDir });
+
+      await q.noteSessionEnded(t.target, 'sa'); // stale pre-check passes (1 record, acked 1)...
+
+      // ...but the locked re-read saw the straggler and REFUSED. The bytes
+      // survive, the entry survives, the backstop forwards the straggler later.
+      const filePath = path.join(realBufferDir, 'sa.jsonl');
+      expect(fs.existsSync(filePath)).toBe(true);
+      expect(new EventBuffer(realBufferDir, 'sa').readAll()).toHaveLength(2);
+      expect(store.get(HOST_A, 'sa')).not.toBeNull();
+    } finally {
+      if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
+      if (savedTeam === undefined) delete process.env.MYCO_TEAM_HOME; else process.env.MYCO_TEAM_HOME = savedTeam;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpTeam, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fs replay-store hygiene (consolidation Task C-2 review minor: torn `.tmp`
+// siblings must not outlive the entry they belonged to)
+// ---------------------------------------------------------------------------
+
+describe('fs replay store — torn `.tmp` sibling reap', () => {
+  test('remove() reaps a torn `.tmp` sibling alongside the entry', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-store-tmp-'));
+    try {
+      const store = createFsReplayStore(tmp);
+      store.put({ host_id: HOST_A, project_id: PROJ_A, session_id: 'sa', acked_count: 3, updated_at: 'x' });
+      const finalPath = path.join(tmp, HOST_A, 'sa.json');
+      const tmpPath = `${finalPath}.tmp`;
+      fs.writeFileSync(tmpPath, '{"torn'); // crash-mid-put leftover
+
+      store.remove(HOST_A, 'sa');
+
+      expect(fs.existsSync(finalPath)).toBe(false);
+      expect(fs.existsSync(tmpPath)).toBe(false); // sibling reaped, not orphaned
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 });

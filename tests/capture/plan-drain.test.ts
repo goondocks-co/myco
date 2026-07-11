@@ -494,6 +494,24 @@ describe('fs drain-entry store atomicity (item 2 — write-then-rename)', () => 
     expect(store.get(HOST_A, 's', ref)).toEqual(advanced);
     expect(fs.existsSync(tmpPath)).toBe(false);
   });
+
+  test('remove() reaps a torn `.tmp` sibling alongside the entry', () => {
+    const store = createFsPlanDrainStore(tmp);
+    const t = target();
+    const ref = derivePlanRef('/plans/x.md');
+    store.put({
+      host_id: HOST_A, session_id: 's', plan_ref: ref, project_id: t.projectId, grove_id: t.groveId,
+      plan_path: '/plans/x.md', acked_hash: 'abc', updated_at: 'x',
+    });
+    const finalPath = path.join(tmp, HOST_A, 's', `${ref}.json`);
+    const tmpPath = `${finalPath}.tmp`;
+    fs.writeFileSync(tmpPath, '{"torn'); // crash-mid-put leftover
+
+    store.remove(HOST_A, 's', ref);
+
+    expect(fs.existsSync(finalPath)).toBe(false);
+    expect(fs.existsSync(tmpPath)).toBe(false); // sibling reaped, not orphaned
+  });
 });
 
 // ---------------------------------------------------------------------------

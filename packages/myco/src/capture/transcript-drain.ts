@@ -185,7 +185,11 @@ export function createFsDrainStore(rootDir: string = resolveMemberTranscriptDrai
     },
     remove(hostId, sessionId, transcriptId) {
       if (!safeKey(hostId, sessionId, transcriptId)) return;
-      fs.rmSync(entryFilePath(rootDir, hostId, sessionId, transcriptId), { force: true });
+      const filePath = entryFilePath(rootDir, hostId, sessionId, transcriptId);
+      fs.rmSync(filePath, { force: true });
+      // Reap a torn `.tmp` sibling left by a crash mid-put (write-then-rename)
+      // — otherwise it outlives the entry it belonged to.
+      fs.rmSync(`${filePath}.tmp`, { force: true });
     },
     purgeHost(hostId) {
       if (!safeKey(hostId, 'x', 'x')) return;
@@ -195,7 +199,10 @@ export function createFsDrainStore(rootDir: string = resolveMemberTranscriptDrai
       if (!safeKey(hostId, 'x', 'x')) return;
       for (const filePath of walkFiles(path.join(rootDir, hostId))) {
         const entry = readEntryFile(filePath);
-        if (entry && entry.project_id === projectId) fs.rmSync(filePath, { force: true });
+        if (entry && entry.project_id === projectId) {
+          fs.rmSync(filePath, { force: true });
+          fs.rmSync(`${filePath}.tmp`, { force: true }); // torn-put sibling
+        }
       }
     },
   };

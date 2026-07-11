@@ -279,7 +279,11 @@ export function createFsReplayStore(rootDir: string = resolveMemberEventReplayDr
     },
     remove(hostId, sessionId) {
       if (!safeKey(hostId, sessionId)) return;
-      fs.rmSync(entryFilePath(rootDir, hostId, sessionId), { force: true });
+      const filePath = entryFilePath(rootDir, hostId, sessionId);
+      fs.rmSync(filePath, { force: true });
+      // Reap a torn `.tmp` sibling left by a crash mid-put (write-then-rename)
+      // — otherwise it outlives the entry it belonged to.
+      fs.rmSync(`${filePath}.tmp`, { force: true });
     },
     purgeHost(hostId) {
       if (!safeKey(hostId, 'x')) return;
@@ -289,7 +293,10 @@ export function createFsReplayStore(rootDir: string = resolveMemberEventReplayDr
       if (!safeKey(hostId, 'x')) return;
       for (const filePath of walkFiles(path.join(rootDir, hostId))) {
         const entry = readEntryFile(filePath);
-        if (entry && entry.project_id === projectId) fs.rmSync(filePath, { force: true });
+        if (entry && entry.project_id === projectId) {
+          fs.rmSync(filePath, { force: true });
+          fs.rmSync(`${filePath}.tmp`, { force: true }); // torn-put sibling
+        }
       }
     },
     list() {
@@ -362,11 +369,24 @@ export interface EventReplayDrainDeps {
   transport?: EventReplayTransport;
   bufferReader?: CollectBufferReader;
   listTargets?: AttachedTargetLister;
-  /** Removes a session's collector-buffer file + lock companion (consolidation
-   *  Task C-2, item 6). Default reuses `EventBuffer.delete()` — the SAME
-   *  condemned-buffer-removal primitive `cleanStaleBuffers` uses for local
-   *  Groves. Injectable so tests can assert deletion without touching real fs. */
-  deleteSessionBuffer?: (bufferDir: string, sessionId: string) => void;
+  /** LOCKED conditional removal of a session's collector-buffer file
+   *  (consolidation Task C-2, item 6). Implementations MUST hold the same
+   *  per-session flock `EventBuffer.append()` takes, RE-READ the buffer
+   *  inside the lock, and delete only when `shouldDelete` approves the
+   *  re-read records — the hook-fallback subprocess (`hooks/send-event.ts`
+   *  buffering via `resolveProjectBufferDirFromRoot`) is a real cross-process
+   *  appender to this exact file for attached projects, and an unlocked
+   *  check-then-delete destroys a straggler append landing between the check
+   *  and the unlink (never-acked, never-forwarded bytes, unrecoverable once
+   *  the high-water entry is removed with the file). Default is
+   *  `EventBuffer.deleteIfSync`, which is exactly that contract. Returns
+   *  true when the file was deleted. Injectable so unit tests can drive the
+   *  refusal semantics against an in-memory buffer. */
+  deleteSessionBuffer?: (
+    bufferDir: string,
+    sessionId: string,
+    shouldDelete: (records: Record<string, unknown>[]) => boolean,
+  ) => boolean;
   logger?: Pick<DaemonLogger, 'warn'>;
 }
 
@@ -378,7 +398,11 @@ export class EventReplayDrainQueue {
   private readonly transport: EventReplayTransport;
   private readonly bufferReader: CollectBufferReader;
   private readonly listTargets: AttachedTargetLister;
-  private readonly deleteSessionBuffer: (bufferDir: string, sessionId: string) => void;
+  private readonly deleteSessionBuffer: (
+    bufferDir: string,
+    sessionId: string,
+    shouldDelete: (records: Record<string, unknown>[]) => boolean,
+  ) => boolean;
   private readonly logger?: Pick<DaemonLogger, 'warn'>;
 
   /** Reentrancy guard: the backstop job is the sole caller, but a slow drain must
@@ -403,7 +427,7 @@ export class EventReplayDrainQueue {
     this.bufferReader = deps.bufferReader ?? defaultBufferReader;
     this.listTargets = deps.listTargets ?? listAttachedReplayTargets;
     this.deleteSessionBuffer = deps.deleteSessionBuffer
-      ?? ((bufferDir, sessionId) => new EventBuffer(bufferDir, sessionId).delete());
+      ?? ((bufferDir, sessionId, shouldDelete) => new EventBuffer(bufferDir, sessionId).deleteIfSync(shouldDelete));
     this.logger = deps.logger;
   }
 
@@ -489,12 +513,25 @@ export class EventReplayDrainQueue {
    * full record count against an (unrecorded) acked count of 0 — re-counted
    * as pending, and the next backstop tick would re-forward every record —
    * FOREVER, since the file never goes away on its own. So a caught-up
-   * session's prune deletes BOTH the buffer file (via `deleteSessionBuffer`,
-   * the same condemned-buffer primitive `EventBuffer.delete()` other cleanup
-   * paths use) and the `ReplayEntry` together, and only when every buffered
-   * record is acked. A session the drain could NOT catch up (host still
-   * unreachable) is left completely untouched — prune-only-acked; the
-   * backstop drain keeps retrying it regardless of session end.
+   * session's prune deletes BOTH the buffer file AND the `ReplayEntry`
+   * together, and only when every buffered record is acked. A session the
+   * drain could NOT catch up (host still unreachable) is left completely
+   * untouched — prune-only-acked; the backstop drain keeps retrying it
+   * regardless of session end.
+   *
+   * DELETE-UNDER-LOCK (the straggler-append invariant): the file removal
+   * goes through {@link EventReplayDrainDeps.deleteSessionBuffer} (default
+   * `EventBuffer.deleteIfSync`), which holds the SAME per-session flock
+   * `EventBuffer.append()` takes, RE-READS the buffer inside the lock, and
+   * re-runs the acked check against THAT read before unlinking. The
+   * pre-check below is only a cheap early-out; the decision that authorizes
+   * the unlink is the locked re-read's. A straggler append (hook-fallback
+   * subprocess racing this prune) therefore either lands before the lock —
+   * the locked re-read counts it, the check refuses, the entry stays and the
+   * backstop retries later — or blocks on the flock until the delete
+   * decision is made. An unlocked check-then-delete here destroyed exactly
+   * that straggler: never-acked, never-forwarded bytes, unrecoverable once
+   * the `ReplayEntry` went with the file.
    */
   async noteSessionEnded(target: RemoteTarget, sessionId: string): Promise<void> {
     try {
@@ -503,11 +540,19 @@ export class EventReplayDrainQueue {
       if (hostProtocolCompatible(target.host.protocol_version)) {
         await this.drainSession({ hostId, projectId: target.projectId, target, bufferDir }, sessionId);
       }
+      // Cheap unlocked early-out only — the authoritative check is the locked
+      // re-read inside deleteSessionBuffer below.
       const records = this.bufferReader.readRecords(bufferDir, sessionId);
       if (records.length === 0) return; // nothing buffered (or already pruned) — no-op
       const acked = this.store.get(hostId, sessionId)?.acked_count ?? 0;
       if (acked < records.length) return; // still not caught up (host unreachable) — leave for the backstop
-      this.deleteSessionBuffer(bufferDir, sessionId);
+      const deleted = this.deleteSessionBuffer(bufferDir, sessionId, (lockedRecords) => {
+        // Runs INSIDE the flock against the re-read state the unlink will act
+        // on. Re-fetch the acked count too — the outer read is pre-lock.
+        const ackedNow = this.store.get(hostId, sessionId)?.acked_count ?? 0;
+        return ackedNow >= lockedRecords.length;
+      });
+      if (!deleted) return; // straggler landed (or file gone) — entry stays; backstop retries
       this.store.remove(hostId, sessionId);
       this.countCache.delete(`${bufferDir}::${sessionId}`);
     } catch (err) {
