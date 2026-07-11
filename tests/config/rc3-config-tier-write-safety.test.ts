@@ -315,8 +315,8 @@ describe('RC-3 — config tier write safety', () => {
       expect(capabilityEnabled(merged, id)).toBe(false);
     }
 
-    // Empty file: capabilities resolve to their declared defaults (legacy
-    // capabilities default on; okf is off-by-default via defaultEnabled).
+    // Empty file: capabilities resolve to their declared defaults (every
+    // current capability defaults on).
     fs.writeFileSync(localPath(), '');
     invalidateMergedConfigCache();
     const mergedEmpty = loadMergedConfig(vaultDir, { groveId: null, mycoHome });

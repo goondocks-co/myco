@@ -141,7 +141,7 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
   // so clients can render the correct confirmation UI. Missing any one of
   // these is a regression.
   it('annotated tools declare the full MCP annotation shape', () => {
-    const required = ['myco_cortex', 'myco_plans', 'myco_sessions', 'myco_spores', 'myco_agent', 'myco_okf'];
+    const required = ['myco_cortex', 'myco_plans', 'myco_sessions', 'myco_spores', 'myco_agent'];
     for (const name of required) {
       const tool = TOOL_DEFINITIONS.find((t) => t.name === name);
       expect(tool, `Tool ${name} missing from TOOL_DEFINITIONS`).toBeDefined();

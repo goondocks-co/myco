@@ -25,7 +25,6 @@ import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
 import { runGlobalBootstrap, shouldRunGlobalBootstrap } from '../cli/bootstrap.js';
 import { resolveMycoHome, resolveGroveDbPath } from '../grove/paths.js';
 import { loadManifests } from '../symbionts/detect.js';
-import { createOkfReconcileReaction } from './okf-reconcile-reaction.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
   handleGetGroveConfig,
@@ -105,7 +104,6 @@ import {
   createSubagentContextHandler,
 } from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
-import { registerOkfRoutes } from './api/okf.js';
 import { registerContentClaimRoutes } from './api/content-claims.js';
 import { registerContentClaimMaterializeRoute } from './api/content-claims-materialize.js';
 import { registerContentClaimFileStatusRoute } from './api/content-claims-file-status.js';
@@ -1518,7 +1516,6 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/cortex/instructions/refresh', tenantRoute(cortexTenant, cortexHandlers.handleRefreshInstructions));
   server.registerRoute('POST', '/api/cortex/prompt-builder', tenantRoute(cortexTenant, cortexHandlers.handleBuildPrompt));
   server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', tenantRoute(cortexTenant, cortexHandlers.handleGetPromptResult));
-  registerOkfRoutes(server, cortexTenant);
   registerContentClaimRoutes(server, cortexTenant);
   registerContentClaimMaterializeRoute(server, {
     cache: runtimeCache,
@@ -1559,12 +1556,6 @@ export async function main(): Promise<void> {
   // touched, but machine-scoped `capture.*` settings affect every project's
   // managed files — so reconciliation is a periodic all-projects PowerManager
   // sweep (POWER_JOB_NAMES.MANAGED_FILES_RECONCILE) instead.
-  //
-  // `okf.*` is the exception: it is project-scoped, so a write CAN reconcile
-  // the one written project immediately — the AGENTS.md OKF pointer follows a
-  // capability flip without waiting for the sweep (which remains the
-  // convergence backstop, 5-minute per-project throttle).
-  reactions.on(['okf'], createOkfReconcileReaction());
 
   // Refresh the in-memory plan-watch list on capture changes.
   reactions.on(['capture'], createPlanWatchReaction({

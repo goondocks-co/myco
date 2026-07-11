@@ -4,7 +4,7 @@ type MycoDotPath = string | readonly string[];
 
 type MycoTier = 'machine' | 'grove' | 'project' | 'local';
 
-type MycoCapabilityId = 'cortex' | 'canopy' | 'skills' | 'vault_evolution' | 'okf';
+type MycoCapabilityId = 'cortex' | 'canopy' | 'skills' | 'vault_evolution';
 
 type MycoReasoningLevel = 'low' | 'default' | 'high';
 
@@ -128,12 +128,6 @@ interface MycoConfigShape {
   vault_evolution?: {
     enabled?: boolean;
   };
-  okf?: {
-    enabled?: boolean;
-    maintain?: {
-      managed_agents_md_pointer?: boolean;
-    };
-  };
   cortex?: {
     enabled?: boolean;
     instructions: {
@@ -203,7 +197,7 @@ declare module '@myco/config/schema' {
 
 declare module '@myco/config/scope' {
   export type Tier = MycoTier;
-  export const CAPABILITY_IDS: readonly ['cortex', 'canopy', 'skills', 'vault_evolution', 'okf'];
+  export const CAPABILITY_IDS: readonly ['cortex', 'canopy', 'skills', 'vault_evolution'];
   export type CapabilityId = typeof CAPABILITY_IDS[number];
   export interface ScopeEntry extends MycoScopeEntryShape {}
   export function scopePolicyForPath(path: string): ScopeEntry;

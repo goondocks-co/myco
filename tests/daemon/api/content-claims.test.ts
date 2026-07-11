@@ -1,15 +1,27 @@
 /**
  * Content claim system daemon API handlers — real store, real rows, no
- * transport: seeds skill/OKF-page rows directly through their own query
- * modules and asserts the HTTP envelopes the handlers return.
+ * transport: seeds skill rows directly through their own query module and
+ * asserts the HTTP envelopes the handlers return.
+ *
+ * `seedOkfPage` survives here only to back the residue tests — a
+ * pre-retirement `okf_page` publication/claim row must still read safely
+ * even though the claim system no longer creates new claims for that kind,
+ * and the OKF module (including its query helpers) is gone. This seeds the
+ * `okf_pages` row directly via SQL rather than through the retired
+ * `insertOkfPage` helper.
  */
 
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
+import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSkillRecord, updateSkillRecord, deleteSkillRecordCascade } from '@myco/db/queries/skill-records.js';
-import { insertOkfPage } from '@myco/db/queries/okf.js';
-import { getContentPublication, upsertContentPublication } from '@myco/db/queries/content-claims.js';
+import {
+  getContentPublication,
+  upsertContentPublication,
+  insertContentClaim,
+  expireStaleContentClaims,
+} from '@myco/db/queries/content-claims.js';
 import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 import type { RequestPrincipal } from '@myco/daemon/request-principal.js';
@@ -57,20 +69,17 @@ function seedSkill(id: string, overrides: { generation?: number; name?: string }
 
 function seedOkfPage(id: string, overrides: { generation?: number; path?: string } = {}): void {
   const now = epochNow();
-  insertOkfPage({
-    id,
-    project_id: PROJECT_ID,
-    machine_id: 'machine-a',
-    path: overrides.path ?? `concepts/${id}`,
-    type: 'concept',
-    title: id,
-    description: '',
-    tags: '[]',
-    status: 'active',
-    generation: overrides.generation ?? 1,
-    created_at: now,
-    updated_at: now,
-  });
+  // Raw insert (the retired `insertOkfPage` helper is gone with the OKF
+  // module) — the `okf_pages` table itself survives for residue reads.
+  getDatabase().prepare(
+    `INSERT INTO okf_pages (
+       id, project_id, machine_id, path, type, title, description, tags,
+       status, generation, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id, PROJECT_ID, 'machine-a', overrides.path ?? `concepts/${id}`, 'concept', id,
+    '', '[]', 'active', overrides.generation ?? 1, now, now,
+  );
 }
 
 describe('content claim daemon API', () => {
@@ -86,18 +95,14 @@ describe('content claim daemon API', () => {
   // ---------------------------------------------------------------------------
 
   describe('handleContentClaimsList', () => {
-    it('lists never-published skills and pages as claimable', async () => {
+    it('lists never-published skills as claimable', async () => {
       seedSkill('skill-1');
-      seedOkfPage('page-1');
 
       const res = await handleContentClaimsList(req(), principal());
       expect(res.status).toBe(200);
       const body = res.body as { claimable: Array<Record<string, unknown>>; active_claims: unknown[] };
-      expect(body.claimable).toHaveLength(2);
-      const skillEntry = body.claimable.find((c) => c.artifact_kind === 'skill');
-      expect(skillEntry).toMatchObject({ artifact_id: 'skill-1', lineage_generation: 1, published_generation: null, active_claim: null });
-      const pageEntry = body.claimable.find((c) => c.artifact_kind === 'okf_page');
-      expect(pageEntry).toMatchObject({ artifact_id: 'page-1', lineage_generation: 1, published_generation: null, active_claim: null });
+      expect(body.claimable).toHaveLength(1);
+      expect(body.claimable[0]).toMatchObject({ artifact_kind: 'skill', artifact_id: 'skill-1', lineage_generation: 1, published_generation: null, active_claim: null });
       expect(body.active_claims).toHaveLength(0);
     });
 
@@ -286,16 +291,6 @@ describe('content claim daemon API', () => {
       expect(body.content).toMatchObject({ artifact_kind: 'skill', artifact_id: 'skill-1', generation: 4 });
     });
 
-    it('claims an OKF page at its current lineage-latest generation -> 201', async () => {
-      seedOkfPage('page-1', { generation: 2 });
-      const res = await handleContentClaimCreate(
-        req({ body: { artifact_kind: 'okf_page', artifact_id: 'page-1' } }),
-        principal('machine-a'),
-      );
-      expect(res.status).toBe(201);
-      expect((res.body as { claim: { generation: number } }).claim.generation).toBe(2);
-    });
-
     it('a second claim while active -> 409 already_claimed with holder identity', async () => {
       seedSkill('skill-1');
       await handleContentClaimCreate(req({ body: { artifact_kind: 'skill', artifact_id: 'skill-1' } }), principal('machine-a'));
@@ -326,6 +321,16 @@ describe('content claim daemon API', () => {
         principal(),
       );
       expect(bad.status).toBe(400);
+    });
+
+    it('400 invalid_request for the retired okf_page kind — no new claim is created for it', async () => {
+      seedOkfPage('page-1');
+      const res = await handleContentClaimCreate(
+        req({ body: { artifact_kind: 'okf_page', artifact_id: 'page-1' } }),
+        principal(),
+      );
+      expect(res.status).toBe(400);
+      expect((res.body as { error: { code: string } }).error.code).toBe('invalid_request');
     });
   });
 
@@ -470,6 +475,76 @@ describe('content claim daemon API', () => {
       const res = await handleContentClaimPublished(req({ params: { id: claimId } }), principal('machine-b'));
       expect(res.status).toBe(403);
       expect(getContentPublication('skill', 'skill-1')).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Residue tolerance — a pre-retirement `okf_page` claim row, seeded directly
+  // (the API itself can no longer create one — see the 400 test above), must
+  // keep reading and releasing safely. `insertContentClaim`'s `artifactKind`
+  // is cast past its now-narrowed compile-time type: this row simulates one
+  // that was legitimately created before the retirement, not a live write path.
+  // ---------------------------------------------------------------------------
+
+  describe('residue tolerance — a surviving okf_page claim row', () => {
+    function seedOkfPageClaim(overrides: { expiresAt?: number } = {}) {
+      seedOkfPage('page-legacy');
+      const now = epochNow();
+      const result = insertContentClaim({
+        artifactKind: 'okf_page' as unknown as 'skill',
+        artifactId: 'page-legacy',
+        generation: 1,
+        projectId: PROJECT_ID,
+        claimedBy: 'machine-a',
+        claimedAt: now,
+        expiresAt: overrides.expiresAt ?? now + 3600,
+        machineId: 'machine-a',
+      });
+      if (!result.ok) throw new Error('test setup: unexpected already_claimed conflict');
+      return result.row;
+    }
+
+    it('surfaces in `active_claims` as kind-agnostic and never-stale, and never in `claimable`', async () => {
+      const claim = seedOkfPageClaim();
+
+      const res = await handleContentClaimsList(req(), principal());
+      expect(res.status).toBe(200);
+      const body = res.body as { claimable: unknown[]; active_claims: Array<Record<string, unknown>> };
+      // The unknown kind is never iterated into `claimable` (only skill
+      // records are), but the raw active claim row still surfaces.
+      expect(body.claimable).toHaveLength(0);
+      expect(body.active_claims).toHaveLength(1);
+      expect(body.active_claims[0]).toMatchObject({
+        id: claim.id,
+        artifact_kind: 'okf_page',
+        state: 'active',
+        // resolveArtifact('okf_page', ...) is unknown -> null -> currentGeneration
+        // null -> claimView's staleness check short-circuits to false.
+        stale: false,
+      });
+    });
+
+    it('release works — kind-independent', async () => {
+      const claim = seedOkfPageClaim();
+
+      const res = await handleContentClaimRelease(req({ params: { id: claim.id } }), principal('machine-a'));
+      expect(res.status).toBe(200);
+      expect((res.body as { claim: { state: string } }).claim.state).toBe('released');
+
+      const after = await handleContentClaimsList(req(), principal());
+      expect((after.body as { active_claims: unknown[] }).active_claims).toHaveLength(0);
+    });
+
+    it('expires via the same TTL sweep as any other kind', async () => {
+      const past = epochNow() - 10;
+      const claim = seedOkfPageClaim({ expiresAt: past });
+
+      const flipped = expireStaleContentClaims(epochNow());
+      expect(flipped).toBeGreaterThanOrEqual(1);
+
+      const after = await handleContentClaimsList(req(), principal());
+      const active = (after.body as { active_claims: Array<{ id: string }> }).active_claims;
+      expect(active.find((c) => c.id === claim.id)).toBeUndefined();
     });
   });
 });

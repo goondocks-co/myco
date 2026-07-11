@@ -2,7 +2,7 @@
 
 /**
  * ClaimControl (B6) — the shared claim affordance rendered on the Skills
- * detail page and the OKF "Publish" panel: the unpublished badge, "Publish"
+ * detail page: the unpublished badge, "Publish"
  * (one user action, two calls per spec §4), "Release" for the holder, "Mark
  * published" once THIS session's materialize has succeeded (closes the
  * publish loop, spec §3 step 6), and a holder+age display when someone else

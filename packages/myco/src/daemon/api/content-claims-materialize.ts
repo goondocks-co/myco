@@ -38,9 +38,9 @@
  * (mirroring `attached-config.ts`'s `fetchHostGroveConfig`) rather than
  * proxying the whole request — the member needs the claim state and content
  * snapshot as data to decide whether to write, not a relayed response body.
- * One `dialHostJson` transport backs every remote call below (skill content,
- * OKF content, and the republish auto-close's mark-published POST) — a
- * second one must never be added.
+ * One `dialHostJson` transport backs every remote call below (skill content
+ * and the republish auto-close's mark-published POST) — a second one must
+ * never be added.
  *
  * Republish auto-close (spec §2(c)): after a successful write, if the
  * claim's own generation equals the artifact's already-recorded
@@ -51,17 +51,15 @@
  * publish or a materialize at a newer generation leaves the claim `active`
  * for the existing manual Mark-published flow.
  *
- * Two artifact kinds write through the SAME orchestration (spec §0: "one
- * mechanism, unified across skills + OKF + kin"): `skill` runs the two
- * existing chokepoints in `skills/publication.ts`; `okf_page` runs the new
- * `okf/materialize.ts` writer, resolving its published-wiki destination root
- * from the member's own project-tier config (`config.okf.maintain.output_path`
- * — VCS-tracked, so it reads identically whether the project is local or
- * attached; only the grove tier the merged read also touches needs a host
- * fetch, via the same `fetchHostGroveConfig` `attached-config.ts` uses).
+ * `skill` is the only artifact kind this route materializes — it runs the
+ * two existing chokepoints in `skills/publication.ts`. A claim carrying any
+ * other `artifact_kind` (including a surviving pre-retirement `okf_page`
+ * row — data preservation keeps such rows in the table) falls through to
+ * `unsupported_artifact_kind` (400): the row itself stays readable elsewhere
+ * in the claim system (list/release/expiry), it simply cannot be
+ * materialized.
  */
 import http from 'node:http';
-import path from 'node:path';
 
 import {
   HOST_PROTOCOL_HEADER,
@@ -71,7 +69,6 @@ import {
   HOST_PROXY_MAX_BUFFERED_BODY_BYTES,
   epochSeconds,
 } from '@myco/constants.js';
-import { loadMergedConfig, loadAttachedMergedConfig } from '@myco/config/loader.js';
 import { withDatabase, type Database } from '@myco/db/client.js';
 import {
   getContentClaimById,
@@ -80,26 +77,16 @@ import {
 } from '@myco/db/queries/content-claims.js';
 import { getSkillContentAtGeneration } from '@myco/db/queries/skill-lineage.js';
 import { getSkillRecord } from '@myco/db/queries/skill-records.js';
-import { getOkfPageById, getOkfPageRevisionAtGeneration } from '@myco/db/queries/okf.js';
 import { assertGroveProjectId, projectScope, type ProjectScope } from '@myco/grove/ids.js';
-import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context.js';
 import { remoteTargetFor, type RemoteTarget } from '@myco/host/routing.js';
 import { writePublishedSkillFile, syncPublishedSkillSymlinks } from '@myco/skills/publication.js';
-import { materializeOkfPage, type OkfPageContent } from '@myco/okf/materialize.js';
-import type { PublishFinding } from '@myco/okf/publish-eligibility.js';
-import { fetchHostGroveConfig } from '../attached-config.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import type { Dialer, ProxyLogger } from '../host-proxy.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
 import { resolveMemberProjectContext } from './member-project-context.js';
-
-/** OKF's project-tier default (`config/schema.ts`'s `OkfMaintainSchema.output_path`),
- *  repeated here only as the fallback when config cannot be resolved at all —
- *  a missing/corrupt myco.yaml must degrade the published root, never fail
- *  the whole materialize request over an unrelated config read. */
-const OKF_DEFAULT_OUTPUT_PATH = 'okf';
 
 // ---------------------------------------------------------------------------
 // Claim/content source abstraction — LOCAL (in-process DB) and REMOTE (dial
@@ -128,7 +115,6 @@ export interface ClaimSource {
    *  fetch, once immediately before the write (spec §4 step 3). */
   getActiveClaim(claimId: string): Promise<ResolvedClaim | null>;
   getSkillContent(artifactId: string, generation: number): Promise<SkillContent | null>;
-  getOkfPageContent(artifactId: string, generation: number): Promise<OkfPageContent | null>;
   /** The durable `published_generation` already on record for this artifact,
    *  or null if it has never been published. Read AFTER a successful write to
    *  decide republish auto-close (spec §2(c)): never throws — a resolution
@@ -171,14 +157,6 @@ function localClaimSource(
         if (!record) return null;
         const content = getSkillContentAtGeneration(artifactId, generation);
         return content ? { name: record.name, content } : null;
-      });
-    },
-    async getOkfPageContent(artifactId, generation) {
-      return withDatabase(db, () => {
-        const page = getOkfPageById(scope, artifactId);
-        if (!page) return null;
-        const revision = getOkfPageRevisionAtGeneration(page.id, generation);
-        return revision ? { path: page.path, frontmatter: revision.frontmatter, body: revision.body } : null;
       });
     },
     async getPublishedGeneration(artifactKind, artifactId) {
@@ -242,11 +220,6 @@ interface ContentClaimsListBody {
 interface SkillRecordBody {
   name?: string;
   lineage?: Array<{ generation: number; content_snapshot: string }>;
-}
-
-interface OkfPageRevisionsBody {
-  path?: string;
-  revisions?: Array<{ page_generation: number; frontmatter: string; body: string }>;
 }
 
 /**
@@ -391,23 +364,6 @@ function remoteClaimSource(target: RemoteTarget, dial: Dialer, logger: ProxyLogg
       const snapshot = result.body.lineage?.find((l) => l.generation === generation)?.content_snapshot;
       return snapshot ? { name: result.body.name, content: snapshot } : null;
     },
-    async getOkfPageContent(artifactId, generation) {
-      const result = await dialHostJson<OkfPageRevisionsBody>(
-        target,
-        `/api/okf/pages/by-id/${encodeURIComponent(artifactId)}`,
-        dial,
-      );
-      if (!result) {
-        logger.warn('materialize: host unreachable while fetching okf page content', {
-          host_id: target.host.host_id,
-          artifact_id: artifactId,
-        });
-        return null;
-      }
-      if (result.status !== 200 || !result.body.path) return null;
-      const revision = result.body.revisions?.find((r) => r.page_generation === generation);
-      return revision ? { path: result.body.path, frontmatter: revision.frontmatter, body: revision.body } : null;
-    },
     async getPublishedGeneration(artifactKind, artifactId) {
       return lastPublicationByKey?.get(`${artifactKind}:${artifactId}`) ?? null;
     },
@@ -441,15 +397,11 @@ type MaterializeFailureCode =
   | 'unsupported_artifact_kind'
   | 'content_unavailable'
   | 'unsafe_skill_name'
-  | 'path_escape'
-  | 'render_failed'
-  | 'scan_blocked';
+  | 'path_escape';
 
 export type MaterializeOutcome =
   | { ok: true; artifactKind: 'skill'; path: string; skillName: string; generation: number; autoPublished: boolean }
-  | { ok: true; artifactKind: 'okf_page'; path: string; pagePath: string; generation: number; autoPublished: boolean }
-  | { ok: false; code: Exclude<MaterializeFailureCode, 'scan_blocked'> }
-  | { ok: false; code: 'scan_blocked'; findings: PublishFinding[] };
+  | { ok: false; code: MaterializeFailureCode };
 
 /**
  * Republish auto-close (spec §2(c)): after a successful write, close the
@@ -498,55 +450,24 @@ async function attemptAutoClose(
 }
 
 /**
- * Resolve the member's published-wiki root for an OKF write:
- * `<currentRoot>/<config.okf.maintain.output_path>`. `output_path` is
- * project-tier (VCS-tracked — `config/schema.ts`'s `ProjectConfigSchema`),
- * so it reads identically for a local or an attached project; only the
- * merged read's grove tier differs — LOCAL resolves it from this machine's
- * own Grove file, ATTACHED fetches it from the host via the same
- * `fetchHostGroveConfig` `attached-config.ts` uses (no second dial
- * transport). Any resolution failure (missing/corrupt myco.yaml, host
- * unreachable for the grove tier) degrades to the schema default rather
- * than failing the whole materialize request over a config read that is
- * orthogonal to whether the claimed content exists.
- */
-async function resolveOkfPublishedRoot(
-  currentRoot: string,
-  loadConfig: () => Promise<{ okf: { maintain: { output_path: string } } }>,
-  logger: ProxyLogger,
-): Promise<string> {
-  try {
-    const config = await loadConfig();
-    return path.resolve(currentRoot, config.okf.maintain.output_path);
-  } catch (err) {
-    logger.warn('materialize: falling back to the default published OKF wiki path', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return path.resolve(currentRoot, OKF_DEFAULT_OUTPUT_PATH);
-  }
-}
-
-/**
  * Fetch claim + snapshot, re-assert the claim is still `active` immediately
  * before writing (spec §4 step 3 — closes the race where the claim
  * expires/is released/is reassigned between the fetch and the write; if it
  * fires between THIS check and the actual write below, the file still lands
- * — acceptable-by-design, git resolves it), then write through the ONE
- * disk-writing path for the claimed artifact kind:
+ * — acceptable-by-design, git resolves it), then write through the two
+ * existing chokepoints, in order: `writePublishedSkillFile` then
+ * `syncPublishedSkillSymlinks` (`skills/publication.ts`, the same order
+ * `skill-tools.ts`'s hostServed-gated wrappers encode).
  *
- *   - `skill`    — the two existing chokepoints, in order: `writePublishedSkillFile`
- *                  then `syncPublishedSkillSymlinks` (`skills/publication.ts`, the
- *                  same order `skill-tools.ts`'s hostServed-gated wrappers encode).
- *   - `okf_page` — `okf/materialize.ts`'s `materializeOkfPage`, the one
- *                  file-writing code path for DB-resident OKF content (spec §4 step 5).
- *
- * `resolveOkfPublishedRoot` is lazy (called only for an `okf_page` claim) so
- * a skill materialize never pays for a config read it doesn't need.
+ * A claim whose `artifactKind` is not `skill` — including a surviving
+ * pre-retirement `okf_page` row — falls through to `unsupported_artifact_kind`
+ * without touching the filesystem; the row itself stays readable elsewhere in
+ * the claim system (list/release/expiry), it simply cannot be materialized.
  *
  * After a successful write, {@link attemptAutoClose} runs the republish
- * auto-close check for both artifact kinds — the disk write is already
- * committed by that point, so its result never changes whether this function
- * returns `ok: true`, only the `autoPublished` flag carried on it.
+ * auto-close check — the disk write is already committed by that point, so
+ * its result never changes whether this function returns `ok: true`, only
+ * the `autoPublished` flag carried on it.
  *
  * Exported as a test seam alongside {@link ClaimSource}.
  */
@@ -554,7 +475,6 @@ export async function materializeContentClaim(
   claimId: string,
   currentRoot: string,
   source: ClaimSource,
-  resolveOkfPublishedRootFn: () => Promise<string>,
   logger: ProxyLogger,
 ): Promise<MaterializeOutcome> {
   const initial = await source.getActiveClaim(claimId);
@@ -590,64 +510,21 @@ export async function materializeContentClaim(
     };
   }
 
-  if (initial.artifactKind === 'okf_page') {
-    const content = await source.getOkfPageContent(initial.artifactId, initial.generation);
-    if (!content) return { ok: false, code: 'content_unavailable' };
-
-    const reasserted = await source.getActiveClaim(claimId);
-    if (!reasserted) return { ok: false, code: 'claim_no_longer_active' };
-
-    const publishedRoot = await resolveOkfPublishedRootFn();
-    const written = materializeOkfPage(publishedRoot, content);
-    if (!written.ok) {
-      return written.reason === 'scan_blocked'
-        ? { ok: false, code: 'scan_blocked', findings: written.findings }
-        : { ok: false, code: written.reason };
-    }
-    const autoPublished = await attemptAutoClose(
-      source,
-      logger,
-      claimId,
-      initial.artifactKind,
-      initial.artifactId,
-      initial.generation,
-    );
-    return {
-      ok: true,
-      artifactKind: 'okf_page',
-      path: written.absolutePath,
-      pagePath: written.relativePath,
-      generation: initial.generation,
-      autoPublished,
-    };
-  }
-
   return { ok: false, code: 'unsupported_artifact_kind' };
 }
 
 function responseForOutcome(outcome: MaterializeOutcome): RouteResponse {
   if (outcome.ok) {
-    return outcome.artifactKind === 'skill'
-      ? {
-          status: 200,
-          body: {
-            ok: true,
-            path: outcome.path,
-            skill_name: outcome.skillName,
-            generation: outcome.generation,
-            auto_published: outcome.autoPublished,
-          },
-        }
-      : {
-          status: 200,
-          body: {
-            ok: true,
-            path: outcome.path,
-            page_path: outcome.pagePath,
-            generation: outcome.generation,
-            auto_published: outcome.autoPublished,
-          },
-        };
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        path: outcome.path,
+        skill_name: outcome.skillName,
+        generation: outcome.generation,
+        auto_published: outcome.autoPublished,
+      },
+    };
   }
   switch (outcome.code) {
     case 'claim_not_active':
@@ -666,7 +543,7 @@ function responseForOutcome(outcome: MaterializeOutcome): RouteResponse {
     case 'unsupported_artifact_kind':
       return {
         status: 400,
-        body: errorBody('unsupported_artifact_kind', 'Only skill and okf_page artifacts are materialized by this route.'),
+        body: errorBody('unsupported_artifact_kind', 'Only skill artifacts are materialized by this route.'),
       };
     case 'content_unavailable':
       return {
@@ -682,19 +559,6 @@ function responseForOutcome(outcome: MaterializeOutcome): RouteResponse {
       return {
         status: 400,
         body: errorBody('path_escape', 'The resolved path escapes the published artifact root.'),
-      };
-    case 'render_failed':
-      return {
-        status: 422,
-        body: errorBody('render_failed', 'The claimed OKF revision could not be rendered to a published document.'),
-      };
-    case 'scan_blocked':
-      return {
-        status: 422,
-        body: {
-          ...errorBody('scan_blocked', 'The publish-eligibility scan found a blocking issue; nothing was written.'),
-          findings: outcome.findings,
-        },
       };
   }
 }
@@ -740,22 +604,7 @@ export function createContentClaimMaterializeHandler(deps: ContentClaimMateriali
         return { status: 404, body: errorBody('project_not_registered', `Malformed project id ${projectId}`) };
       }
       const source = remoteClaimSource(target, deps.dial, deps.logger, deps.machineId);
-      const outcome = await materializeContentClaim(
-        claimId,
-        currentRoot,
-        source,
-        () =>
-          resolveOkfPublishedRoot(
-            currentRoot,
-            () =>
-              loadAttachedMergedConfig(resolveProjectVaultDir(currentRoot), {
-                mycoHome: deps.mycoHome,
-                fetchGroveDoc: async () => (await fetchHostGroveConfig(target, deps.dial, deps.logger)).doc,
-              }),
-            deps.logger,
-          ),
-        deps.logger,
-      );
+      const outcome = await materializeContentClaim(claimId, currentRoot, source, deps.logger);
       return responseForOutcome(outcome);
     }
 
@@ -768,23 +617,7 @@ export function createContentClaimMaterializeHandler(deps: ContentClaimMateriali
       return { status: 404, body: errorBody('project_not_registered', `Malformed project id ${projectId}`) };
     }
     const source = localClaimSource(db, scope, deps.machineId, deps.logger);
-    const outcome = await materializeContentClaim(
-      claimId,
-      currentRoot,
-      source,
-      () =>
-        resolveOkfPublishedRoot(
-          currentRoot,
-          async () =>
-            loadMergedConfig(resolveProjectVaultDir(currentRoot), {
-              groveId: registered.grove.id,
-              mycoHome: deps.mycoHome,
-              projectTierOptional: true,
-            }),
-          deps.logger,
-        ),
-      deps.logger,
-    );
+    const outcome = await materializeContentClaim(claimId, currentRoot, source, deps.logger);
     return responseForOutcome(outcome);
   };
 }

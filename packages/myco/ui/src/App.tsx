@@ -8,7 +8,6 @@ import Mycelium from './pages/Mycelium';
 import Symbionts from './pages/Symbionts';
 import Agent from './pages/Agent';
 import Skills from './pages/Skills';
-import Okf from './pages/Okf';
 import Settings from './pages/Settings';
 import GroveDashboard from './pages/GroveDashboard';
 import Operations from './pages/Operations';
@@ -74,7 +73,6 @@ export default function App() {
         <Route path="agent" element={<Agent />} />
         <Route path="agent/:id" element={<Agent />} />
         <Route path="skills" element={<Skills />} />
-        <Route path="okf" element={<Okf />} />
         {/* Project-scoped /settings is consolidated into the unified
             /settings page. Forward inbound bookmarks, preserving the
             `?configField=`/`?configSection=` deep-link params so the
@@ -109,7 +107,6 @@ export default function App() {
       <Route path="/agent" element={<LegacyProjectRedirect suffix="/agent" />} />
       <Route path="/agent/:id" element={<LegacyProjectRedirect suffixFromPath />} />
       <Route path="/skills" element={<LegacyProjectRedirect suffix="/skills" />} />
-      <Route path="/okf" element={<LegacyProjectRedirect suffix="/okf" />} />
       <Route path="/operations" element={<LegacyGroveRedirect suffix="/operations" />} />
       <Route path="/team" element={<LegacyGroveRedirect suffix="/team" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
