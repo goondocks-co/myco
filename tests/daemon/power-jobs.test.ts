@@ -845,7 +845,7 @@ describe('routed-transcript-cache-gc power job', () => {
     id: string,
     status: 'active' | 'completed',
     machineId: string,
-    opts: { transcriptPath?: string | null; startedAt?: number } = {},
+    opts: { transcriptPath?: string | null; startedAt?: number; endedAt?: number } = {},
   ): void {
     const startedAt = opts.startedAt ?? Math.floor(Date.now() / 1000);
     withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
@@ -856,6 +856,10 @@ describe('routed-transcript-cache-gc power job', () => {
         created_at: startedAt,
         status,
         machine_id: machineId,
+        // Completed rows carry ended_at in production (closeSession stamps
+        // it) — the GC's quiescence guard compares tree mtimes against it.
+        ended_at: opts.endedAt
+          ?? (status === 'completed' ? Math.floor(Date.now() / 1000) : null),
         // Default: a stamped transcript source — the shape every routed
         // session that reached a successful Stop substitution has. The GC
         // requires it (no stamp = the completion chokepoint had no mine
@@ -876,6 +880,21 @@ describe('routed-transcript-cache-gc power job', () => {
     return path.dirname(filePath);
   }
 
+  /** Back-date every mtime under a session cache dir (files + the dir
+   *  itself) so the tree reads as append-quiescent: newest write older than
+   *  the quiescence window AND predating the session's completion time. */
+  function ageCacheDir(machineId: string, sessionId: string, ageMs: number): void {
+    const dir = path.join(resolveRoutedTranscriptsDir(), machineId, sessionId);
+    const t = new Date(Date.now() - ageMs);
+    for (const name of fs.readdirSync(dir)) {
+      fs.utimesSync(path.join(dir, name), t, t);
+    }
+    fs.utimesSync(dir, t, t);
+  }
+
+  /** 10 min: past the 5-min quiescence window with margin. */
+  const QUIET_AGE_MS = 10 * 60 * 1000;
+
   function cacheDirExists(machineId: string, sessionId: string): boolean {
     return fs.existsSync(path.join(resolveRoutedTranscriptsDir(), machineId, sessionId));
   }
@@ -892,9 +911,10 @@ describe('routed-transcript-cache-gc power job', () => {
     await expect(pm.find('routed-transcript-cache-gc').fn()).resolves.toBeUndefined();
   });
 
-  it('prunes a fully-mined, session-terminal session\'s cache tree', async () => {
+  it('prunes a fully-mined, session-terminal, append-quiescent session\'s cache tree', async () => {
     seedSession('sess-done', 'completed', 'member_aaaa1111');
     materializeCacheDir('member_aaaa1111', 'sess-done');
+    ageCacheDir('member_aaaa1111', 'sess-done', QUIET_AGE_MS);
     registerPowerJobs(pm as never, buildDeps(fx));
 
     await pm.find('routed-transcript-cache-gc').fn();
@@ -905,6 +925,7 @@ describe('routed-transcript-cache-gc power job', () => {
   it('never touches an in-flight (active) session\'s cache tree', async () => {
     seedSession('sess-active', 'active', 'member_bbbb2222');
     materializeCacheDir('member_bbbb2222', 'sess-active');
+    ageCacheDir('member_bbbb2222', 'sess-active', QUIET_AGE_MS); // quiet, but status refuses
     registerPowerJobs(pm as never, buildDeps(fx));
 
     await pm.find('routed-transcript-cache-gc').fn();
@@ -914,6 +935,7 @@ describe('routed-transcript-cache-gc power job', () => {
 
   it('leaves an orphaned cache directory alone when no session row matches anywhere', async () => {
     materializeCacheDir('member_cccc3333', 'sess-unknown');
+    ageCacheDir('member_cccc3333', 'sess-unknown', QUIET_AGE_MS); // quiet, but no owning row
     registerPowerJobs(pm as never, buildDeps(fx));
 
     await pm.find('routed-transcript-cache-gc').fn();
@@ -927,6 +949,7 @@ describe('routed-transcript-cache-gc power job', () => {
     // directory's owner.
     seedSession('sess-mismatch', 'completed', 'member_real0000');
     materializeCacheDir('member_spoofed1', 'sess-mismatch');
+    ageCacheDir('member_spoofed1', 'sess-mismatch', QUIET_AGE_MS); // quiet, but mismatch refuses
     registerPowerJobs(pm as never, buildDeps(fx));
 
     await pm.find('routed-transcript-cache-gc').fn();
@@ -941,6 +964,9 @@ describe('routed-transcript-cache-gc power job', () => {
     materializeCacheDir('member_aaaa1111', 'sess-done-1');
     materializeCacheDir('member_aaaa1111', 'sess-done-2');
     materializeCacheDir('member_aaaa1111', 'sess-active-1');
+    ageCacheDir('member_aaaa1111', 'sess-done-1', QUIET_AGE_MS);
+    ageCacheDir('member_aaaa1111', 'sess-done-2', QUIET_AGE_MS);
+    ageCacheDir('member_aaaa1111', 'sess-active-1', QUIET_AGE_MS);
     registerPowerJobs(pm as never, buildDeps(fx));
 
     await pm.find('routed-transcript-cache-gc').fn();
@@ -957,11 +983,51 @@ describe('routed-transcript-cache-gc power job', () => {
     // against, so the tree may hold unmined bytes. The GC must keep it.
     seedSession('sess-no-stamp', 'completed', 'member_dddd4444', { transcriptPath: null });
     materializeCacheDir('member_dddd4444', 'sess-no-stamp');
+    ageCacheDir('member_dddd4444', 'sess-no-stamp', QUIET_AGE_MS); // quiet — only the stamp refuses
     registerPowerJobs(pm as never, buildDeps(fx));
 
     await pm.find('routed-transcript-cache-gc').fn();
 
     expect(cacheDirExists('member_dddd4444', 'sess-no-stamp')).toBe(true);
+  });
+
+  it('late-append TOCTOU: refuses while the tree holds writes at/after completion or fresh writes; prunes once quiet with all bytes predating completion', async () => {
+    // The reviewer's worst case: session completed (and mined) an hour ago;
+    // the member reconnects and the drain backstop pushes tail bytes — a
+    // pure offset append that touches NO sessions row, fires no event, and
+    // triggers no re-mine. The fresh write must refuse the prune.
+    const anHourAgo = Math.floor(Date.now() / 1000) - 3600;
+    seedSession('sess-late-append', 'completed', 'member_ffff6666', { endedAt: anHourAgo });
+    const dir = materializeCacheDir('member_ffff6666', 'sess-late-append');
+    // The materialize write IS the late append: mtime ≈ now >= ended_at.
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+    expect(cacheDirExists('member_ffff6666', 'sess-late-append')).toBe(true); // refusal while fresh
+
+    // No re-mining machinery — the refusal alone is the guard. The tree
+    // prunes only once a future pass finds it QUIET with every write
+    // predating completion (here: back-dated to 2h ago, before ended_at
+    // and far past the quiescence window).
+    ageCacheDir('member_ffff6666', 'sess-late-append', 2 * 3600 * 1000);
+    await pm.find('routed-transcript-cache-gc').fn();
+    expect(cacheDirExists('member_ffff6666', 'sess-late-append')).toBe(false); // prune once quiet
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('refuses to prune within the quiescence window even when every write predates completion', async () => {
+    // Freshly-completed session: writes predate ended_at, but the newest is
+    // still inside the quiescence window of now — an append could be in
+    // flight (clock precision, a racing drain). Prune-only-when-quiet.
+    seedSession('sess-fresh-quiet', 'completed', 'member_gggg7777');
+    materializeCacheDir('member_gggg7777', 'sess-fresh-quiet');
+    // 2 min old: before ended_at (now) but inside the 5-min window.
+    ageCacheDir('member_gggg7777', 'sess-fresh-quiet', 2 * 60 * 1000);
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_gggg7777', 'sess-fresh-quiet')).toBe(true);
   });
 
   it('stale-sweep completion mines the unmined tail through the chokepoint, and only then may GC prune (the reviewer-caught failure case)', async () => {
@@ -1013,7 +1079,15 @@ describe('routed-transcript-cache-gc power job', () => {
     );
     expect(status).toBe('completed');
 
-    // Only now — completed AND mined — may the GC prune the tree.
+    // Immediately after completion the tree is NOT provably quiet (its
+    // newest write is within the quiescence window and at/around ended_at)
+    // — the GC must refuse this pass.
+    await pm.find('routed-transcript-cache-gc').fn();
+    expect(cacheDirExists('member_eeee5555', 'sess-crashed')).toBe(true);
+
+    // Once quiet — every write back-dated to before completion and past the
+    // quiescence window — completed AND mined AND quiet allows the prune.
+    ageCacheDir('member_eeee5555', 'sess-crashed', QUIET_AGE_MS);
     await pm.find('routed-transcript-cache-gc').fn();
     expect(cacheDirExists('member_eeee5555', 'sess-crashed')).toBe(false);
   });

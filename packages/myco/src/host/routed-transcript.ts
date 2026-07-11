@@ -373,6 +373,46 @@ export function listRoutedTranscriptSessionDirs(): RoutedTranscriptSessionDir[] 
 }
 
 /**
+ * Newest write timestamp (ms) under one materialized session directory —
+ * the GC's append-quiescence signal. Considers every direct child file
+ * (`.jsonl` transcripts, their `.lock` companions) AND the directory's own
+ * mtime (bumped by entry creation, i.e. a post-completion ROTATION landing a
+ * brand-new `<tid>.jsonl` the file scan alone could race). Returns null when
+ * the directory is unreadable — the caller treats that as "not provably
+ * quiet" and keeps the tree.
+ *
+ * This exists because the ingest route above appends purely by offset and
+ * never touches the sessions row: bytes can land AFTER the session
+ * completed (a reconnecting member's drain backstop pushing a crashed
+ * session's tail), so session status alone cannot prove the tree is done
+ * growing — only observed write-quiescence can.
+ */
+export function newestRoutedTranscriptMtimeMs(dirPath: string): number | null {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  let newest: number | null = null;
+  try {
+    newest = fs.statSync(dirPath).mtimeMs;
+  } catch {
+    /* dir stat raced a removal — file scan below may still resolve */
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    try {
+      const mtimeMs = fs.statSync(path.join(dirPath, entry.name)).mtimeMs;
+      if (newest === null || mtimeMs > newest) newest = mtimeMs;
+    } catch {
+      /* file vanished mid-scan — skip */
+    }
+  }
+  return newest;
+}
+
+/**
  * Delete one confirmed-terminal session's materialized transcript tree
  * (every sibling `.jsonl`, including inert rotated files — C3). Best-effort:
  * a concurrent removal or transient fs error never throws into the GC job's

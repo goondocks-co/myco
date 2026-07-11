@@ -21,6 +21,7 @@ import { getSession, STATUS_COMPLETED } from '@myco/db/queries/sessions.js';
 import type { SessionCompletionMiner } from './session-completion.js';
 import {
   listRoutedTranscriptSessionDirs,
+  newestRoutedTranscriptMtimeMs,
   pruneRoutedTranscriptSessionDir,
 } from '@myco/host/routed-transcript.js';
 import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';
@@ -37,6 +38,7 @@ import {
   CAPTURE_BUFFER_DRAIN_INTERVAL_MS,
   CONTENT_CLAIM_RETENTION_MS,
   ROUTED_EVENT_DEDUP_RETENTION_MS,
+  ROUTED_TRANSCRIPT_GC_QUIESCENCE_MS,
   epochSeconds,
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -543,7 +545,11 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
   // the status flip. A completed session with NO stamped `transcript_path`
   // had no mine source at close (degraded-missing at every Stop, or no Stop
   // at all) — its tree may hold unmined bytes, so it is never pruned (kept
-  // forever; data preservation over disk). The candidate list is walked
+  // forever; data preservation over disk). Pruning additionally requires
+  // APPEND QUIESCENCE (the late-append TOCTOU guard — see the in-loop
+  // comment): the tree's newest write must predate the session's completion
+  // AND be older than ROUTED_TRANSCRIPT_GC_QUIESCENCE_MS. The candidate
+  // list is walked
   // ONCE per tick (bounded by the cache's own size, not total session
   // history) and resolved against every Grove this daemon serves — a
   // candidate whose session cannot be found in ANY served Grove is left
@@ -580,6 +586,20 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           // mine source at close — the tree may hold unmined bytes. Keep it
           // forever rather than guess (data preservation over disk).
           if (!session.transcript_path) continue;
+          // Late-append TOCTOU guard (prune-only-when-quiet): the transcript
+          // ingest route appends purely by offset and never touches the
+          // sessions row, so a reconnecting member's drain backstop can land
+          // tail bytes AFTER the stale sweep completed (and mined) this
+          // session — no event, no reactivation, no new mining trigger.
+          // Refuse when the tree's newest write is at/after the session's
+          // completion time (bytes newer than the last mine) OR within the
+          // quiescence window of now (an append may be in flight). A null
+          // ended_at (legacy/imported row) or unreadable dir is never
+          // provably quiet — keep the tree.
+          const newestWriteMs = newestRoutedTranscriptMtimeMs(candidate.dirPath);
+          if (newestWriteMs === null || session.ended_at === null) continue;
+          if (newestWriteMs >= session.ended_at * 1000) continue;
+          if (Date.now() - newestWriteMs < ROUTED_TRANSCRIPT_GC_QUIESCENCE_MS) continue;
           pruneRoutedTranscriptSessionDir(candidate.dirPath);
           pruned += 1;
         }

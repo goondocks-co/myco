@@ -179,6 +179,26 @@ export const ROUTED_EVENT_DEDUP_RETENTION_MS = 30 * MS_PER_DAY;
 export const BUFFER_QUIESCENCE_IDLE_MS = 5 * 60 * 1000;
 
 /**
+ * How long a routed session's materialized cache tree must sit unmodified
+ * (newest mtime under `<machine>/<session>/`) before the routed-transcript
+ * cache GC will prune it. Closes the late-append TOCTOU: the transcript
+ * ingest route (`host/routed-transcript.ts` POST /routed-capture/transcript)
+ * appends purely by offset and never touches the sessions row, so a
+ * reconnecting member's drain backstop can land tail bytes AFTER the stale
+ * sweep completed (and mined) the session — with no event, no reactivation,
+ * and no new mining trigger. The GC therefore refuses to prune any tree
+ * whose newest write is at/after the session's completion time OR within
+ * this window of now (prune-only-when-quiet discipline).
+ *
+ * A named sibling of BUFFER_QUIESCENCE_IDLE_MS rather than a reuse: the
+ * gates share the "no write in flight" meaning and the same 5-minute
+ * width today, but they guard different queues (member collector buffer
+ * vs host transcript cache) and must stay independently tunable — widening
+ * one gate should never silently widen the other.
+ */
+export const ROUTED_TRANSCRIPT_GC_QUIESCENCE_MS = 5 * 60 * 1000;
+
+/**
  * Maximum sessions one drain pass converges, mirroring the drain.slice
  * bound on EMBEDDING_RECONCILE — a backlog spread across many sessions
  * drains across passes instead of monopolizing one tick. Hitting the cap
