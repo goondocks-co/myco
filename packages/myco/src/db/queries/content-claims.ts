@@ -1,10 +1,16 @@
 /**
  * Content claim system query helpers (Team Host WS2).
  *
- * `content_claims` is the publication lock over a DB-resident artifact
- * (skill or OKF page); `content_publications` is the durable "what was last
- * published" marker. Both are grove-resident and deliberately NOT team-sync
- * tables (the `routed_event_dedup` posture) — see `schema-ddl.ts`.
+ * `content_claims` is the publication lock over a DB-resident skill artifact;
+ * `content_publications` is the durable "what was last published" marker.
+ * Both are grove-resident and deliberately NOT team-sync tables (the
+ * `routed_event_dedup` posture) — see `schema-ddl.ts`.
+ *
+ * A pre-retirement `okf_page` claim row can still be present in a real DB
+ * (data preservation — never rewritten); every read/release path below stays
+ * kind-agnostic (`string`, not `ContentClaimArtifactKind`) so such a row
+ * keeps reading and releasing safely. Only `ContentClaimInsert` — new claim
+ * creation — is narrowed to the current kind set.
  *
  * All SQL for these two tables lives here. Upper layers (the daemon API,
  * the expiry power job) call these functions and never prepare SQL inline.
@@ -24,7 +30,7 @@ import { epochSeconds } from '@myco/constants.js';
 // Types
 // ---------------------------------------------------------------------------
 
-export type ContentClaimArtifactKind = 'skill' | 'okf_page';
+export type ContentClaimArtifactKind = 'skill';
 export type ContentClaimState = 'active' | 'released' | 'published' | 'expired';
 
 export interface ContentClaimRow {
@@ -227,9 +233,14 @@ export function releaseContentClaim(id: string, releasedAt: number): ContentClai
  * a delete-triggered cancel rather than a holder-initiated release is the
  * caller's own log line, not the stored row. A no-op (returns null) when the
  * artifact has no active claim.
+ *
+ * `artifactKind` is deliberately `string`, not `ContentClaimArtifactKind`:
+ * release is kind-independent (residue tolerance), and a pre-retirement
+ * `okf_page` delete path (`okf/store.ts`) still calls this with that literal
+ * until the module itself is removed.
  */
 export function cancelActiveContentClaimForArtifact(
-  artifactKind: ContentClaimArtifactKind,
+  artifactKind: string,
   artifactId: string,
   cancelledAt: number,
 ): ContentClaimRow | null {

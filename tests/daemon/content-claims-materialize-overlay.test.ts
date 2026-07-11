@@ -32,7 +32,6 @@ import { registerContentClaimRoutes } from '@myco/daemon/api/content-claims.js';
 import { registerContentClaimMaterializeRoute } from '@myco/daemon/api/content-claims-materialize.js';
 import { registerContentClaimFileStatusRoute } from '@myco/daemon/api/content-claims-file-status.js';
 import { handleGetSkillRecord } from '@myco/daemon/api/skills.js';
-import { handleOkfPageRevisionsById } from '@myco/daemon/api/okf.js';
 import { tenantRoute } from '@myco/daemon/api/route-helpers.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
 import { defaultDial } from '@myco/daemon/host-proxy.js';
@@ -40,20 +39,15 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { insertContentClaim, upsertContentPublication } from '@myco/db/queries/content-claims.js';
-import { getOkfPageRevisionAtGeneration } from '@myco/db/queries/okf.js';
 import { getDatabase, initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@myco/grove/registry.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
-import { assertGroveProjectId, createProjectId, createHostId, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
+import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove/ids.js';
 import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
-import { MycoConfigSchema } from '@myco/config/schema.js';
-import { OkfStore } from '@myco/okf/store.js';
-import { renderOkfDocument } from '@myco/okf/serialize.js';
-import type { WikiPlan } from '@myco/okf/synthesis/plan.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const HOST_BEARER = 'test-content-claims-materialize-host-bearer';
@@ -70,9 +64,6 @@ describe('content claim materialize over the Team Host overlay', () => {
   let projectId: string;
   let groveId: string;
   let claimId: string;
-  let okfClaimId: string;
-  let okfPageId: string;
-  let okfDocPath: string;
   let hostProjectRoot: string;
   let memberProjectRoot: string;
   let hostBearerRecord: HostRecord;
@@ -106,11 +97,6 @@ describe('content claim materialize over the Team Host overlay', () => {
     hostProjectRoot = path.join(tmp, 'host-project'); // the host's own idea of the tree — must never be touched
     fs.mkdirSync(hostProjectRoot, { recursive: true });
     registerProjectInGrove(grove.id, { projectId, projectName: 'Work project', projectRoot: hostProjectRoot }, mycoHome);
-    // The OKF read routes (`daemon/api/okf.ts`'s `contextFor`) resolve merged
-    // config from the host project's own myco.yaml — a real host project
-    // always has one (`myco init`), so the fixture needs one too.
-    fs.mkdirSync(path.join(hostProjectRoot, '.myco'), { recursive: true });
-    fs.writeFileSync(path.join(hostProjectRoot, '.myco', 'myco.yaml'), 'version: 3\nokf:\n  enabled: true\n');
 
     registerAgent({ id: 'agent-test', name: 'Test Agent', created_at: Math.floor(Date.now() / 1000) });
     const now = Math.floor(Date.now() / 1000);
@@ -149,43 +135,7 @@ describe('content claim materialize over the Team Host overlay', () => {
     if (!created.ok) throw new Error('test setup: unexpected already_claimed conflict');
     claimId = created.row.id;
 
-    // --- the host's REAL OKF page + claim, same Grove DB, for the OKF dial-through test ---
-    const okfStore = new OkfStore({
-      scope: projectScope(projectId as GroveProjectId),
-      projectId,
-      machineId: 'agent-test',
-      config: MycoConfigSchema.parse({ version: 3, okf: { enabled: true } }),
-    });
-    const okfPlan: WikiPlan = {
-      generatedAt: new Date().toISOString(),
-      sinceRef: '',
-      pages: [{ path: 'architecture/foo', type: 'note', title: 'Foo', rationale: 'test', sourceRefs: [] }],
-    };
-    const okfDraft = okfStore.createDraftGeneration({ runId: null, plan: okfPlan });
-    const okfWritten = okfStore.writePage({
-      path: 'architecture/foo',
-      type: 'note',
-      title: 'Foo',
-      description: 'A test page.',
-      body: 'OKF body materialized over the overlay.',
-    });
-    okfStore.finalizeGeneration(okfDraft.id);
-    okfPageId = okfWritten.pageId;
-    okfDocPath = okfWritten.path;
-    const okfClaim = insertContentClaim({
-      artifactKind: 'okf_page',
-      artifactId: okfPageId,
-      generation: 1,
-      projectId,
-      claimedBy: 'attached-member-machine',
-      claimedAt: now,
-      expiresAt: now + 3600,
-      machineId: 'attached-member-machine',
-    });
-    if (!okfClaim.ok) throw new Error('test setup: unexpected already_claimed conflict');
-    okfClaimId = okfClaim.row.id;
-
-    // --- host daemon: real overlay listener, real content-claim + skill-record + okf routes ---
+    // --- host daemon: real overlay listener, real content-claim + skill-record routes ---
     const hostLogger = new DaemonLogger(path.join(tmp, 'host-logs'));
     hostServer = new DaemonServer({
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
@@ -204,11 +154,6 @@ describe('content claim materialize over the Team Host overlay', () => {
       'GET',
       '/api/skill-records/:id',
       tenantRoute({ machineId: 'host-machine', logger: hostLogger }, handleGetSkillRecord),
-    );
-    hostServer.registerRoute(
-      'GET',
-      '/api/okf/pages/by-id/:id',
-      tenantRoute({ machineId: 'host-machine', logger: hostLogger }, handleOkfPageRevisionsById),
     );
     hostCache = new GroveRuntimeCache();
     registerContentClaimMaterializeRoute(hostServer, {
@@ -437,82 +382,6 @@ describe('content claim materialize over the Team Host overlay', () => {
     }
   });
 
-  test('member materializes an attached okf_page claim by dialing the host directly — byte-faithful, lands on the MEMBER tree only', async () => {
-    // Pin the okf_page half of the auto-close asymmetry: even with a
-    // same-generation publication row on record, an attached okf_page never
-    // auto-closes — the inventory's `published[]` array (the attached
-    // branch's only publication read) is skills-only by design (spec §2(a)),
-    // so the remote source resolves no published generation for the page.
-    upsertContentPublication({
-      artifact_kind: 'okf_page',
-      artifact_id: okfPageId,
-      published_generation: 1, // matches the claim's generation — would auto-close on the LOCAL branch
-      published_at: Math.floor(Date.now() / 1000) - 3600,
-      published_by: 'attached-member-machine',
-      machine_id: 'attached-member-machine',
-    });
-
-    const res = await fetch(`${memberBase}/api/content-claims/${okfClaimId}/materialize`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project_root: memberProjectRoot }),
-    });
-    expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; path: string; page_path: string; generation: number; auto_published: boolean };
-    expect(body).toMatchObject({ ok: true, page_path: okfDocPath, generation: 1, auto_published: false });
-
-    const revision = getOkfPageRevisionAtGeneration(okfPageId, 1)!;
-    const expected = renderOkfDocument({
-      path: okfDocPath,
-      frontmatter: JSON.parse(revision.frontmatter),
-      body: revision.body,
-    });
-    // This member checkout has NO myco.yaml, so the attached config read
-    // throws and the published root degrades to the schema default ('okf',
-    // relative to the project root) — the graceful-degradation path. The
-    // non-default-root test below covers the genuine config resolution.
-    const written = fs.readFileSync(path.join(memberProjectRoot, 'okf', okfDocPath), 'utf-8');
-    expect(written).toBe(expected.content);
-
-    // The host's own project tree was never touched (B1).
-    expect(fs.existsSync(path.join(hostProjectRoot, 'okf'))).toBe(false);
-
-    // No auto-close fired: the claim on the host's Grove DB stays active for
-    // the manual Mark-published flow.
-    const claimRow = getDatabase().prepare(
-      `SELECT state FROM content_claims WHERE id = ?`,
-    ).get(okfClaimId) as { state: string } | undefined;
-    expect(claimRow?.state).toBe('active');
-  });
-
-  test('attached member with a non-default output_path in its own myco.yaml materializes there — proves the attached config resolution, not the fallback', async () => {
-    // `output_path` is project-tier (config/scope.ts homes okf.* at
-    // 'project'), so it structurally CANNOT arrive via the host grove-config
-    // fetch — `pruneToTier(groveRaw, 'grove')` strips okf.* from the host
-    // doc. The member-resolved value comes from the member checkout's own
-    // committed myco.yaml through `loadAttachedMergedConfig` (which still
-    // dials the host for the grove tier along the way). A 'wiki' landing spot
-    // is unreachable by the hard-coded 'okf' fallback, so this proves the
-    // attached loader ran end-to-end rather than silently degrading.
-    fs.writeFileSync(
-      path.join(memberProjectRoot, '.myco', 'myco.yaml'),
-      'version: 3\nokf:\n  enabled: true\n  maintain:\n    output_path: wiki\n',
-    );
-
-    const res = await fetch(`${memberBase}/api/content-claims/${okfClaimId}/materialize`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project_root: memberProjectRoot }),
-    });
-    expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; path: string; page_path: string };
-    expect(body.path).toBe(path.join(memberProjectRoot, 'wiki', okfDocPath));
-    expect(fs.existsSync(path.join(memberProjectRoot, 'wiki', okfDocPath))).toBe(true);
-    expect(fs.existsSync(path.join(memberProjectRoot, 'okf'))).toBe(false);
-    expect(fs.existsSync(path.join(hostProjectRoot, 'okf'))).toBe(false);
-    expect(fs.existsSync(path.join(hostProjectRoot, 'wiki'))).toBe(false);
-  });
-
   test('root mismatch against AttachRef.root -> loud error naming both paths, nothing written', async () => {
     const wrongRoot = path.join(tmp, 'wrong-checkout');
     fs.mkdirSync(wrongRoot, { recursive: true });
@@ -529,36 +398,6 @@ describe('content claim materialize over the Team Host overlay', () => {
     expect(body.attached_root).toBe(memberProjectRoot);
     expect(body.current_root).toBe(path.resolve(wrongRoot));
     expect(fs.existsSync(path.join(wrongRoot, CANONICAL_PROJECT_SKILLS_DIR))).toBe(false);
-  });
-
-  test('member materializes an attached okf_page claim when the HOST has no local working tree for the served project (F1)', async () => {
-    // Team Host shape: the host's registered project root doesn't exist on
-    // the host's own filesystem (the checkout lives on some OTHER member's
-    // machine) — only the Grove DB (content) is authoritative here. Before
-    // the fix, `GET /api/okf/pages/by-id/:id` 500'd resolving this project's
-    // config (`okf.ts`'s `contextFor` required a present `myco.yaml`), so
-    // `remoteClaimSource.getOkfPageContent` saw a non-200 and the whole
-    // materialize failed 422 `content_unavailable` even though the page body
-    // existed in the Grove DB the whole time.
-    fs.rmSync(hostProjectRoot, { recursive: true, force: true });
-
-    const res = await fetch(`${memberBase}/api/content-claims/${okfClaimId}/materialize`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project_root: memberProjectRoot }),
-    });
-    expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; path: string; page_path: string; generation: number };
-    expect(body).toMatchObject({ ok: true, page_path: okfDocPath, generation: 1 });
-
-    const revision = getOkfPageRevisionAtGeneration(okfPageId, 1)!;
-    const expected = renderOkfDocument({
-      path: okfDocPath,
-      frontmatter: JSON.parse(revision.frontmatter),
-      body: revision.body,
-    });
-    const written = fs.readFileSync(path.join(memberProjectRoot, 'okf', okfDocPath), 'utf-8');
-    expect(written).toBe(expected.content);
   });
 
   test('an overlay-origin hit on the materialize path is refused at the transport boundary — the writers are never reached', async () => {
