@@ -73,7 +73,6 @@ export interface AttachResult {
 export interface DetachOptions {
   projectPath?: string;
   projectId?: string;
-  mycoHome?: string;
 }
 
 export interface DetachResult {
@@ -129,6 +128,9 @@ export function attachCommand(options: AttachOptions): AttachResult {
       + "project. The host's Grove id is not derivable locally; get it from the host operator or the "
       + "host's Groves page.",
     );
+  }
+  if (!isGroveEraId(groveId, 'grove')) {
+    throw new Error(`--grove must be a Grove id (grove_<32 hex chars>), got ${JSON.stringify(groveId)}.`);
   }
 
   const host = getHost(hostId);

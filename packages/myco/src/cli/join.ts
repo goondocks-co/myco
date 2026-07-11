@@ -8,24 +8,12 @@
  *
  * The command NAME is load-bearing: the Task 1.4 affiliation hint tells users to
  * run exactly `myco join <host_id>`.
+ *
+ * Flag parser is shared via `cli/shared.ts#parseFlags` — `cli/attach.ts` (the
+ * sibling member command) uses the same one so the two parse identically.
  */
 import { joinHost, leaveHost } from '../host/member-overlay.js';
-
-/** Parse `--flag value` / `--flag=value` / bare `--flag` into a map. */
-function parseFlags(args: string[]): { positionals: string[]; flags: Map<string, string> } {
-  const flags = new Map<string, string>();
-  const positionals: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!arg.startsWith('--')) { positionals.push(arg); continue; }
-    const eq = arg.indexOf('=');
-    if (eq > 2) { flags.set(arg.slice(2, eq), arg.slice(eq + 1)); continue; }
-    const next = args[i + 1];
-    if (next !== undefined && !next.startsWith('--')) { flags.set(arg.slice(2), next); i += 1; }
-    else flags.set(arg.slice(2), 'true');
-  }
-  return { positionals, flags };
-}
+import { parseFlags } from './shared.js';
 
 const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> --server-url <headscale-url> --overlay-address <100.64.x.y:port>
 
