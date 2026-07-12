@@ -36,13 +36,15 @@ import {
   HOST_SERVE_BEARER_SECRET,
 } from '../constants.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
-import { readSecrets, writeSecret } from '../config/secrets.js';
+import { readSecrets, writeSecret, loadLayeredSecrets } from '../config/secrets.js';
+import { loadMergedConfig } from '../config/loader.js';
 import type { MachineConfig } from '../config/schema.js';
 import { listGroves } from '../grove/registry.js';
-import { resolveMycoHome } from '../grove/paths.js';
+import { resolveMycoHome, resolveGroveDir } from '../grove/paths.js';
 import { timingSafeStringEqual } from '../grove/request-context.js';
 import { isAutoBackupDue } from '../backup/service.js';
 import { getMachineId } from '../machine-id.js';
+import { missingKeyReason } from '../agent/harness/provider-health.js';
 
 /** The resolved host-serve enablement passed to `DaemonServer`. `null` means
  *  host serving is OFF and no second listener binds. */
@@ -344,6 +346,61 @@ export function resolveServedGroveBackupHealth(
   try {
     const stale = isAutoBackupDue({ groveId: designation.servedGroveId, machineId: getMachineId(), mycoHome });
     return { kind: stale ? 'stale' : 'ok', servedGroveId: designation.servedGroveId };
+  } catch {
+    return { kind: 'not_applicable' };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Served-grove team-key posture (`myco doctor`, server-mode design spec §5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Team-key posture for the served Grove — `missing_key` when the Grove's
+ * effective agent provider is a cloud type (anthropic/openai/openrouter)
+ * requiring a stored key and neither the served Grove's `secrets.env`, the
+ * machine `secrets.env`, nor the inherited process env supplies it. This is
+ * the SAME condition {@link probeProviderAvailable} suppresses scheduled LLM
+ * dispatch on — this classifier exists so the same signal is queryable
+ * on-demand (`myco doctor`) instead of only discoverable by watching every
+ * scheduled tick get silently skipped.
+ */
+export type ServedGroveKeyHealth =
+  | { kind: 'not_applicable' }
+  | { kind: 'missing_key'; servedGroveId: string }
+  | { kind: 'ok'; servedGroveId: string };
+
+/**
+ * Classify this machine's served-grove team-key posture. `not_applicable`
+ * covers every case where the question doesn't apply: serving is off,
+ * undesignated, dangling (all three are {@link resolveServedGroveDesignationHealth}'s
+ * job to report), or no explicit cloud provider is configured for the Grove
+ * (the claude-sdk default needs no stored key). Pure read, never throws.
+ */
+export function resolveServedGroveKeyHealth(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ServedGroveKeyHealth {
+  const designation = resolveServedGroveDesignationHealth(machineConfig, mycoHome);
+  if (designation.kind !== 'ok') return { kind: 'not_applicable' };
+
+  try {
+    const groveDir = resolveGroveDir(designation.servedGroveId, mycoHome);
+    // Same layering the scheduler applies before a dispatch against this
+    // Grove (machine, then Grove — Grove wins on conflict) so this
+    // classifier can never disagree with what a real dispatch would see.
+    loadLayeredSecrets([mycoHome, groveDir]);
+    const mycoConfig = loadMergedConfig(groveDir, {
+      groveId: designation.servedGroveId,
+      mycoHome,
+      projectTierOptional: true,
+    });
+    const provider = mycoConfig.agent.provider;
+    if (!provider) return { kind: 'not_applicable' };
+    const reason = missingKeyReason({ type: provider.type });
+    return reason === 'missing_key'
+      ? { kind: 'missing_key', servedGroveId: designation.servedGroveId }
+      : { kind: 'ok', servedGroveId: designation.servedGroveId };
   } catch {
     return { kind: 'not_applicable' };
   }

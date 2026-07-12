@@ -32,7 +32,7 @@ import {
 import type { ServiceManager, ServiceStatus, InstallResult } from '@myco/service/types.js';
 
 import { loadMachineConfig, saveMachineConfig, loadGroveConfig, saveGroveConfig } from '@myco/config/loader.js';
-import { readSecrets } from '@myco/config/secrets.js';
+import { readSecrets, writeSecret } from '@myco/config/secrets.js';
 import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
 import { resolveGroveDir, resolveGroveConfigPath, resolveGroveDbPath } from '@myco/grove/paths.js';
 import { createGrove } from '@myco/grove/registry.js';
@@ -41,8 +41,8 @@ import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { createGroveBackup, seedGroveBackupDefaults } from '@myco/backup/service.js';
 import { getMachineId } from '@myco/machine-id.js';
-import { resolveServedGroveBackupHealth } from '@myco/daemon/host-serve.js';
-import { checkServedGroveBackupStaleness } from '@myco/cli/doctor.js';
+import { resolveServedGroveBackupHealth, resolveServedGroveKeyHealth } from '@myco/daemon/host-serve.js';
+import { checkServedGroveBackupStaleness, checkServedGroveKeyHealth } from '@myco/cli/doctor.js';
 
 // ---------------------------------------------------------------------------
 // Shared hermetic MYCO_HOME / MYCO_TEAM_HOME fixture (mirrors
@@ -413,5 +413,99 @@ describe('resolveServedGroveBackupHealth / checkServedGroveBackupStaleness (doct
     designate(grove.id);
 
     expect(resolveServedGroveBackupHealth(loadMachineConfig(home()), home())).toEqual({ kind: 'stale', servedGroveId: grove.id });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Served-grove team-key posture (Task 7 — server-mode design spec §5): the
+// same "no team key configured" condition the scheduler's
+// `gateScheduledDispatch` suppresses dispatch on, surfaced on demand for an
+// operator running `myco doctor`.
+// ---------------------------------------------------------------------------
+
+describe('resolveServedGroveKeyHealth / checkServedGroveKeyHealth (doctor)', () => {
+  const { home } = withHermeticHomes();
+
+  // Isolate from whatever the host shell happens to export — these tests
+  // assert on the ABSENCE of a key, so a real ANTHROPIC_API_KEY in the
+  // ambient dev/CI environment must never leak in.
+  const KEY_ENV_VARS = ['ANTHROPIC_API_KEY', 'MYCO_OPENAI_API_KEY', 'OPENAI_API_KEY', 'MYCO_OPENROUTER_API_KEY'];
+  let savedKeyEnv: Record<string, string | undefined>;
+  beforeEach(() => {
+    savedKeyEnv = {};
+    for (const k of KEY_ENV_VARS) { savedKeyEnv[k] = process.env[k]; delete process.env[k]; }
+  });
+  afterEach(() => {
+    for (const k of KEY_ENV_VARS) {
+      if (savedKeyEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedKeyEnv[k];
+    }
+  });
+
+  function designate(groveId: string): void {
+    const machine = loadMachineConfig(home());
+    saveMachineConfig({
+      ...machine,
+      daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: groveId } },
+    }, home());
+  }
+
+  function setGroveProvider(groveId: string, type: 'anthropic' | 'openai' | 'openrouter' | 'ollama'): void {
+    const grove = loadGroveConfig(groveId, home());
+    saveGroveConfig(groveId, { ...grove, agent: { ...grove.agent, provider: { type } } }, home());
+  }
+
+  it('serving disabled → not_applicable, no doctor row', async () => {
+    expect(resolveServedGroveKeyHealth(loadMachineConfig(home()), home())).toEqual({ kind: 'not_applicable' });
+    expect(await checkServedGroveKeyHealth(home())).toBeNull();
+  });
+
+  it('enabled, undesignated → not_applicable, no doctor row', async () => {
+    const machine = loadMachineConfig(home());
+    saveMachineConfig({ ...machine, daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: null } } }, home());
+
+    expect(resolveServedGroveKeyHealth(loadMachineConfig(home()), home())).toEqual({ kind: 'not_applicable' });
+    expect(await checkServedGroveKeyHealth(home())).toBeNull();
+  });
+
+  it('designated, no explicit provider configured → not_applicable (claude-sdk subscription default needs no key)', async () => {
+    const grove = createGrove('Team Host', home());
+    designate(grove.id);
+
+    expect(resolveServedGroveKeyHealth(loadMachineConfig(home()), home())).toEqual({ kind: 'not_applicable' });
+    expect(await checkServedGroveKeyHealth(home())).toBeNull();
+  });
+
+  it('designated, cloud provider configured, no key anywhere → missing_key, doctor warns naming the served grove', async () => {
+    const grove = createGrove('Team Host', home());
+    designate(grove.id);
+    setGroveProvider(grove.id, 'anthropic');
+
+    expect(resolveServedGroveKeyHealth(loadMachineConfig(home()), home())).toEqual({ kind: 'missing_key', servedGroveId: grove.id });
+
+    const check = await checkServedGroveKeyHealth(home());
+    expect(check).not.toBeNull();
+    expect(check!.status).toBe('warn');
+    expect(check!.detail).toContain(grove.id);
+    expect(check!.detail).toContain('no team key configured');
+  });
+
+  it('designated, cloud provider configured, key present in the grove secrets.env → ok, no doctor row', async () => {
+    const grove = createGrove('Team Host', home());
+    designate(grove.id);
+    setGroveProvider(grove.id, 'anthropic');
+    writeSecret(resolveGroveDir(grove.id, home()), 'ANTHROPIC_API_KEY', 'sk-ant-team-key');
+
+    expect(resolveServedGroveKeyHealth(loadMachineConfig(home()), home())).toEqual({ kind: 'ok', servedGroveId: grove.id });
+    expect(await checkServedGroveKeyHealth(home())).toBeNull();
+  });
+
+  it('designated, local provider (ollama) configured → ok — never needs a stored key', async () => {
+    const grove = createGrove('Team Host', home());
+    designate(grove.id);
+    setGroveProvider(grove.id, 'ollama');
+
+    expect(resolveServedGroveKeyHealth(loadMachineConfig(home()), home())).toEqual({ kind: 'ok', servedGroveId: grove.id });
+    expect(await checkServedGroveKeyHealth(home())).toBeNull();
   });
 });

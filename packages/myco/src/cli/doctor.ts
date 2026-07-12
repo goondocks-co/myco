@@ -226,6 +226,38 @@ export async function checkServedGroveBackupStaleness(mycoHome?: string): Promis
   };
 }
 
+/**
+ * Served-grove team-key posture — surfaces a served Grove whose configured
+ * cloud provider has no key resolvable from Grove secrets, machine secrets,
+ * or the process env (server-mode design spec §5: "a keyless box would fail
+ * every scheduled LLM dispatch"). The scheduler itself never fails these
+ * runs (`gateScheduledDispatch` skips them with a log line, not a failure
+ * notification) — this on-demand check is how an operator running
+ * `myco doctor` sees the same "no team key configured" status without
+ * tailing daemon logs. Same "pure classifier + check() wraps it" shape as
+ * {@link checkServedGroveBackupStaleness}.
+ *
+ * Machine-global, not vault-scoped. Returns null (no row) whenever there's
+ * nothing actionable: serving is off, undesignated, dangling (covered by
+ * {@link checkServedGroveDesignation} instead), no explicit cloud provider
+ * is configured, or a key is present.
+ */
+export async function checkServedGroveKeyHealth(mycoHome?: string): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { resolveServedGroveKeyHealth } = await import('../daemon/host-serve.js');
+
+  const health = resolveServedGroveKeyHealth(loadMachineConfig(mycoHome), mycoHome ?? resolveMycoHome());
+  if (health.kind !== 'missing_key') return null;
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail:
+      `The served Grove (${health.servedGroveId}) has no team key configured — scheduled agent tasks against it `
+      + 'are skipped until a provider key is added to its secrets (Team page, or `writeSecret` on the box).',
+    fixable: false,
+  };
+}
+
 /** Human-readable byte count, e.g. "4.2 KB". */
 function formatDrainBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -853,6 +885,8 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   if (servedGroveDesignation) checks.push(servedGroveDesignation);
   const servedGroveBackupStaleness = await checkServedGroveBackupStaleness();
   if (servedGroveBackupStaleness) checks.push(servedGroveBackupStaleness);
+  const servedGroveKeyHealth = await checkServedGroveKeyHealth();
+  if (servedGroveKeyHealth) checks.push(servedGroveKeyHealth);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:

@@ -99,7 +99,7 @@ describe('executeMapPhase accounting hook', () => {
       runId: 'r',
       agentId: 'a',
       provider: { type: 'lmstudio', baseUrl: 'http://x:1234', model: 'm' },
-      probeAvailable: async () => true,
+      probeAvailable: async () => ({ available: true }),
     });
     expect(res.written).toBe(1);
     expect(res.skipped).toBe(1);
@@ -128,7 +128,7 @@ describe('executeMapPhase accounting hook', () => {
       runId: 'r',
       agentId: 'a',
       provider: { type: 'lmstudio', baseUrl: 'http://x:1234', model: 'm' },
-      probeAvailable: async () => true,
+      probeAvailable: async () => ({ available: true }),
     });
     expect(res.providerUnavailable).toBe(true);
     expect(res.unavailable).toBe(1);
@@ -162,7 +162,7 @@ describe('executeMapPhase accounting hook', () => {
       runId: 'r',
       agentId: 'a',
       provider: { type: 'lmstudio', baseUrl: 'http://x:1234', model: 'm' },
-      probeAvailable: async () => true,
+      probeAvailable: async () => ({ available: true }),
     });
     expect(res.failed).toBe(1);
     expect(res.providerUnavailable).toBe(false);
@@ -196,7 +196,7 @@ describe('executeMapPhase accounting hook', () => {
       runId: 'r',
       agentId: 'a',
       provider: { type: 'lmstudio', baseUrl: 'http://x:1234', model: 'm' },
-      probeAvailable: async () => true,
+      probeAvailable: async () => ({ available: true }),
     });
     expect(res.skipped).toBe(1);
     expect(res.unavailable).toBe(1);

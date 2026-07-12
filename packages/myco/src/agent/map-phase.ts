@@ -17,7 +17,7 @@ import { interpolate } from '@myco/utils/interpolate.js';
 import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 import { aggregateUsage } from './executor-state.js';
 import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
-import { probeProviderAvailable } from './harness/provider-health.js';
+import { probeProviderAvailable, type ProviderAvailability } from './harness/provider-health.js';
 import { isConnectionError } from './harness/classify-error.js';
 import {
   HarnessExecutionError,
@@ -54,11 +54,12 @@ export interface ExecuteMapPhaseInput {
   runAbortController?: AbortController;
   /**
    * Provider reachability probe, run once before the source fetch. Injectable
-   * for tests; defaults to {@link probeProviderAvailable}. When it returns
-   * false the phase short-circuits with `providerUnavailable: true` and zero
-   * items — no source fetch, no per-item harness calls against a dead endpoint.
+   * for tests; defaults to {@link probeProviderAvailable}. When it resolves
+   * `available: false` the phase short-circuits with `providerUnavailable:
+   * true` and zero items — no source fetch, no per-item harness calls
+   * against a dead endpoint or a cloud provider missing its key.
    */
-  probeAvailable?: (p: ProviderConfig | undefined) => Promise<boolean>;
+  probeAvailable?: (p: ProviderConfig | undefined) => Promise<ProviderAvailability>;
 }
 
 export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapPhaseResult> {
@@ -73,9 +74,10 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
 
   throwIfRunAborted(runAbortController);
   const probe = input.probeAvailable ?? probeProviderAvailable;
-  if (!(await probe(provider))) {
+  const availability = await probe(provider);
+  if (!availability.available) {
     logger?.info('agent.map.provider-unavailable', `Map phase "${phase.name}" skipped — provider unavailable`, {
-      runId, phase: phase.name,
+      runId, phase: phase.name, reason: availability.reason,
     });
     return {
       itemCount: 0,
