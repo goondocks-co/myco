@@ -72,12 +72,3 @@ cortex:
       patterns: []
     inject_on_pre_tool_use: true
     min_file_bytes: 800
-okf:
-  enabled: true
-  maintain:
-    output_path: okf
-    scope:
-      repo: true
-      git: true
-      vault: true
-    managed_agents_md_pointer: true

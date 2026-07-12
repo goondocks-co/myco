@@ -207,6 +207,19 @@ it to `~/.myco/bin/myco` does any managed-path-specific bug appear.
 For minor version upgrades, verify that restarting the daemon
 produces zero pending migrations — the install path change should not trigger schema drift.
 
+### UI-Embed Staleness Trap
+
+`packages/myco/src/ui-assets.generated.ts` is a TRACKED base64 embed of the built
+dashboard, not throwaway codegen. `npm run build:binary`
+(`packages/myco/scripts/build-single-target.mjs`) bundles
+`packages/myco/src/ui-assets.generated.ts` AS CHECKED IN — it does not rebuild the
+UI. Any PR that changes the dashboard UI must deliberately regenerate and commit
+`packages/myco/src/ui-assets.generated.ts` (`npm run build:ui`) first, because CI's
+`check` job and any bare `build:binary` invocation consume whatever is already
+committed. A rig/dogfood binary built without regenerating this file ships the OLD
+dashboard silently — verify it was regenerated before trusting a binary built after
+a UI change or a revert.
+
 ## Procedure D: Beta Rollout Sequencing for Upgrade-Path Fixes
 
 When the bug being fixed is in the upgrade path itself, auto-adopt cannot deliver the fix.

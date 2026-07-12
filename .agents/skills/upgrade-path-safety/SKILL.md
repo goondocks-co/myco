@@ -71,6 +71,15 @@ because the old plist has `KeepAlive: true`. This is an environment hygiene issu
 not a code bug. Check `launchctl list | grep myco` and unload the old plist before
 declaring the revert complete.
 
+**Gotcha — `packages/myco/src/ui-assets.generated.ts` silently stale after revert:**
+This file is a TRACKED base64 embed of the built dashboard. `npm run build:binary`
+(`packages/myco/scripts/build-single-target.mjs`) bundles it AS CHECKED IN — it does
+not rebuild the UI. If `packages/myco/src/ui-assets.generated.ts` is reverted as part
+of a clean-state revert but a rig/dogfood binary is then deployed, the binary ships
+the OLD dashboard silently. Regenerate and commit
+`packages/myco/src/ui-assets.generated.ts` (`npm run build:ui`) before trusting any
+binary built after a revert.
+
 ## Procedure B: CI as Primary Validation Gate
 
 **Why:** When local tests are flaky during upgrade-path work, CI on a clean machine
@@ -284,3 +293,11 @@ var set.
   `make dev-link-worktree` pin to be skipped. Always use `make dev-link-worktree`
   (not `make dev-link`) when operating in a git worktree — the two have different
   pin-file placements.
+
+- **Restart-intent double-bounce.** Observed live on the dev daemon after
+  `make dev-link` + restart: the CLI restart writes a restart-intent file
+  (restart-reason/intent, `requested_at` stamp), the supervisor restarts the
+  daemon, and a second restart cycle follows (double-bounce) rather than settling
+  after one restart. If an upgrade or restart validation step assumes a single
+  restart completes the transition, check the daemon's service logs for a second
+  bounce before declaring the restart clean.
