@@ -1,11 +1,21 @@
 #!/bin/sh
 # Myco installer — https://myco.sh
 # Usage: curl -fsSL https://myco.sh/install.sh | sh
+#        curl -fsSL https://myco.sh/install.sh | sh -s -- --serve --server-url https://host.example:8080
 #
 # Env overrides:
-#   MYCO_CHANNEL   — "stable" (default) or "beta"
-#   MYCO_BIN_DIR   — destination directory (default: ~/.myco/bin)
-#   GITHUB_TOKEN   — or GH_TOKEN — avoid GitHub API rate limits
+#   MYCO_CHANNEL       — "stable" (default) or "beta"
+#   MYCO_BIN_DIR       — destination directory (default: ~/.myco/bin)
+#   GITHUB_TOKEN       — or GH_TOKEN — avoid GitHub API rate limits
+#   MYCO_TEAM_AGENT_KEY — optional, only consulted with --serve: the team's LLM
+#                         provider API key, stored in the served Grove's
+#                         secrets.env (never in YAML, never logged in full)
+#
+# --serve options (a serving box is a full Myco instance — nothing above is
+# skipped; --serve is additive: enable Team Host serving after install):
+#   --serve                 Stand up this machine as a Team Host after install
+#   --server-url <url>      REQUIRED with --serve — the address members dial
+#   --hostname <name>       This host's node name on the tailnet (optional)
 set -eu
 
 REPO="goondocks-co/myco"
@@ -25,6 +35,47 @@ info()    { printf "${CYAN}%s${NC}\n"   "$1"; }
 success() { printf "${GREEN}%s${NC}\n"  "$1"; }
 warn()    { printf "${YELLOW}%s${NC}\n" "$1"; }
 error()   { printf "${RED}%s${NC}\n"    "$1" >&2; }
+
+# ---------------------------------------------------------------------------
+# --serve flag parsing (additive — no effect on the default install path
+# below unless --serve is actually passed)
+# ---------------------------------------------------------------------------
+SERVE=0
+SERVE_SERVER_URL=""
+SERVE_HOSTNAME=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --serve)
+      SERVE=1
+      shift
+      ;;
+    --server-url)
+      SERVE_SERVER_URL="${2:-}"
+      shift 2
+      ;;
+    --server-url=*)
+      SERVE_SERVER_URL="${1#--server-url=}"
+      shift
+      ;;
+    --hostname)
+      SERVE_HOSTNAME="${2:-}"
+      shift 2
+      ;;
+    --hostname=*)
+      SERVE_HOSTNAME="${1#--hostname=}"
+      shift
+      ;;
+    *)
+      error "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+if [ "$SERVE" = "1" ] && [ -z "$SERVE_SERVER_URL" ]; then
+  error "--serve requires --server-url <https://host:8080> — the address members dial to reach the control plane."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Token helpers — DRY, no eval, token never echoed/logged
@@ -316,3 +367,85 @@ else
   echo "    myco open"
 fi
 echo ""
+
+# ---------------------------------------------------------------------------
+# --serve: fetch the myco-team binary + run the composite enable
+#
+# A serving box is a full Myco instance — everything above already ran
+# unmodified. This section is purely additive and only runs with --serve; a
+# failure here never fails the base install (myco itself is already usable —
+# re-run `myco-team host enable` manually to retry Team Host setup).
+# ---------------------------------------------------------------------------
+if [ "$SERVE" = "1" ]; then
+  info "Setting up Team Host serving (--serve)..."
+  echo ""
+
+  TEAM_ASSET="myco-team-${TARGET}"
+  if command -v jq >/dev/null 2>&1; then
+    TEAM_TAG="$(jq -r '
+      [ .[] | select(.tag_name | test("^myco-team/v")) | select(.prerelease == false) | .tag_name ]
+      | sort | last // empty
+    ' "$RELEASES_FILE")" || TEAM_TAG=""
+  else
+    TEAM_TAG="$(grep -o '"tag_name": *"myco-team/v[^"]*"' "$RELEASES_FILE" \
+           | sed 's/"tag_name": *"//;s/"//' \
+           | grep -v -- '-' \
+           | sort -rV \
+           | head -1)" || TEAM_TAG=""
+  fi
+
+  if [ -z "$TEAM_TAG" ]; then
+    warn "No myco-team release found for this channel — skipping Team Host setup."
+    warn "Install it manually later: npm install -g @goondocks/myco-team"
+  else
+    TEAM_ENCODED_TAG="$(printf '%s' "$TEAM_TAG" | sed 's|/|%2F|g')"
+    TEAM_DL="https://github.com/${REPO}/releases/download/${TEAM_ENCODED_TAG}"
+    TEAM_TMP="$(mktemp -d "${BIN_DIR}/.myco-team-install-XXXXXX")"
+
+    if gh_curl "${TEAM_DL}/${TEAM_ASSET}" -o "${TEAM_TMP}/myco-team" 2>/dev/null \
+       && gh_curl "${TEAM_DL}/SHA256SUMS" -o "${TEAM_TMP}/SHA256SUMS" 2>/dev/null; then
+      TEAM_EXPECTED="$(awk -v a="$TEAM_ASSET" '
+        { hash=$1; rest=substr($0, index($0,$2)); gsub(/^\*/, "", rest);
+          gsub(/^[[:space:]]+/, "", rest);
+          if (rest == a) print hash }
+      ' "${TEAM_TMP}/SHA256SUMS")"
+      TEAM_ACTUAL="$(${SHA_CMD} "${TEAM_TMP}/myco-team" | awk '{print $1}')"
+
+      if [ -n "$TEAM_EXPECTED" ] && [ "$TEAM_EXPECTED" = "$TEAM_ACTUAL" ]; then
+        chmod +x "${TEAM_TMP}/myco-team"
+        mv "${TEAM_TMP}/myco-team" "${BIN_DIR}/myco-team"
+        if [ "$os" = "darwin" ]; then
+          xattr -d com.apple.quarantine "${BIN_DIR}/myco-team" 2>/dev/null || true
+        fi
+        success "myco-team installed to ${BIN_DIR}/myco-team"
+        echo ""
+
+        # --designate-default --emit-join: enable, designate this box's default
+        # Grove as the served Grove, mint a one-time setup key, and print the
+        # complete ready-to-paste `myco join …` command. MYCO_TEAM_AGENT_KEY (if
+        # set in the environment) flows through unchanged — the composite
+        # orchestrator reads it and stores it in the served Grove's secrets.env.
+        info "Running: myco-team host enable --server-url ${SERVE_SERVER_URL} --designate-default --emit-join"
+        if [ -n "$SERVE_HOSTNAME" ]; then
+          if ! "${BIN_DIR}/myco-team" host enable --server-url "$SERVE_SERVER_URL" --hostname "$SERVE_HOSTNAME" --designate-default --emit-join; then
+            warn "Team Host enable did not complete. Re-run manually:"
+            echo "    ${BIN_DIR}/myco-team host enable --server-url $SERVE_SERVER_URL --hostname $SERVE_HOSTNAME --designate-default --emit-join"
+          fi
+        else
+          if ! "${BIN_DIR}/myco-team" host enable --server-url "$SERVE_SERVER_URL" --designate-default --emit-join; then
+            warn "Team Host enable did not complete. Re-run manually:"
+            echo "    ${BIN_DIR}/myco-team host enable --server-url $SERVE_SERVER_URL --designate-default --emit-join"
+          fi
+        fi
+      else
+        warn "myco-team checksum verification failed — skipping Team Host setup."
+        warn "Install it manually later: npm install -g @goondocks/myco-team"
+      fi
+    else
+      warn "Could not download myco-team for ${TARGET} — skipping Team Host setup."
+      warn "Install it manually later: npm install -g @goondocks/myco-team"
+    fi
+    rm -rf "$TEAM_TMP"
+  fi
+  echo ""
+fi

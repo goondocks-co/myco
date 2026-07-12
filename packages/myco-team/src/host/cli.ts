@@ -4,10 +4,17 @@
  * Thin argv parsing + human-readable output over the {@link hostEnable} /
  * {@link hostDisable} orchestration. All real seams (network fetcher, command
  * runner, service manager) default inside the orchestrator; this layer only
- * parses flags and prints.
+ * parses flags and prints — except for the `--designate-default --emit-join`
+ * composite ({@link hostEnableAndEmitJoin}, Task 6), which is the `--serve`
+ * installer flag's own orchestrator and needs its own injectable seams
+ * (confirm-before-remint) for the same reason {@link hostEnable} does.
  */
+import { resolveGroveDir, resolveMycoHome } from '@myco/grove/paths.js';
+import { resolveGlobalDaemonPort } from '@myco/daemon/service-state.js';
+import { writeSecret } from '@myco/config/secrets.js';
+import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
 import { evictDevice, listDevices, mintSetupKey, rotateBearer } from './devices.js';
-import { hostDisable, hostEnable } from './overlay.js';
+import { hostDisable, hostEnable, type HostEnableDeps, type HostEnableOptions, type HostEnableResult } from './overlay.js';
 import { readHostState } from './state.js';
 
 function parseFlags(args: string[]): Map<string, string> {
@@ -24,11 +31,138 @@ function parseFlags(args: string[]): Map<string, string> {
   return flags;
 }
 
+// ---------------------------------------------------------------------------
+// `--designate-default --emit-join` composite (Task 6 — the `--serve`
+// installer flag's orchestrator; server-mode design spec §3 steps 4-6)
+// ---------------------------------------------------------------------------
+
+/** First-8+last-4 masking, matching the masked-echo contract secrets are
+ *  never printed in full under (server-mode design spec §5/§6). */
+function maskTeamAgentKey(secret: string): string {
+  const PREFIX = 8;
+  const SUFFIX = 4;
+  if (secret.length <= PREFIX + SUFFIX) return '*'.repeat(secret.length);
+  return `${secret.slice(0, PREFIX)}${'*'.repeat(secret.length - PREFIX - SUFFIX)}${secret.slice(-SUFFIX)}`;
+}
+
+/** Real TTY y/N prompt — mirrors the readline pattern already used elsewhere
+ *  in this package (`../cli.ts` `teamCreate`). A non-TTY caller (CI, a piped
+ *  install script) gets `false` — never a hang waiting on stdin. */
+async function defaultConfirmRemint(message: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  const readline = await import('node:readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise<string>((resolve) => {
+    rl.question(`${message} [y/N] `, (reply) => resolve(reply));
+  });
+  rl.close();
+  return /^y(es)?$/i.test(answer.trim());
+}
+
+export interface ComposeEnableOptions extends HostEnableOptions {
+  /**
+   * The team's LLM provider API key (server-mode design spec §5), optionally
+   * supplied via env `MYCO_TEAM_AGENT_KEY`. Lands in the served Grove's
+   * `secrets.env` via `writeSecret` — NEVER in YAML.
+   */
+  teamAgentKey?: string;
+  /** One-time setup-key lifetime for the emitted join command. Default: `mintSetupKey`'s own default (`'1h'`). */
+  setupKeyExpiration?: string;
+}
+
+export interface ComposeEnableDeps extends HostEnableDeps {
+  /**
+   * Confirm before minting a fresh one-time setup key when this machine was
+   * ALREADY a Team Host before this call (server-mode design spec §3:
+   * "prompts before minting a fresh join key … not a silent side effect of
+   * every re-run"). Default: a real TTY y/N prompt. Return true to proceed
+   * with a fresh mint.
+   */
+  confirmRemint?: (message: string) => Promise<boolean>;
+}
+
+export interface ComposeEnableResult {
+  enable: HostEnableResult;
+  /** The full ready-to-paste `myco join …` command, or null when the operator declined re-mint on a re-run. */
+  joinCommand: string | null;
+  /** Masked (first-8+last-4) echo of the team key that was written, or null when none was supplied. */
+  teamAgentKeyMasked: string | null;
+}
+
+/**
+ * `host enable --designate-default --emit-join`: enable (Task 3's default
+ * designation path) → optionally seed the team's provider key into the
+ * served Grove's secrets → mint a one-time setup key (prompting first on a
+ * re-run) → the complete ready-to-paste join command. This is the `--serve`
+ * installer flag's own orchestrator (server-mode design spec §3 steps 4-6),
+ * seam-injectable the same way {@link hostEnable} is so it unit-tests with no
+ * network, no sudo, and no real TTY.
+ */
+export async function hostEnableAndEmitJoin(
+  options: ComposeEnableOptions,
+  deps: ComposeEnableDeps = {},
+): Promise<ComposeEnableResult> {
+  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  // Captured BEFORE `hostEnable` runs — "re-run" means this machine was
+  // already a Team Host, not that this specific composite call happened
+  // before (a `host enable` first, then `--emit-join` later, still counts).
+  const alreadyEnabled = readHostState() !== null;
+
+  const enable = await hostEnable(
+    {
+      serverUrl: options.serverUrl,
+      hostname: options.hostname,
+      listenAddr: options.listenAddr,
+      headscaleUser: options.headscaleUser,
+      keyExpiration: options.keyExpiration,
+      groveDesignation: options.groveDesignation ?? 'default',
+    },
+    deps,
+  );
+
+  let teamAgentKeyMasked: string | null = null;
+  const teamAgentKey = options.teamAgentKey?.trim();
+  if (teamAgentKey) {
+    const groveDir = resolveGroveDir(enable.servedGroveId, mycoHome);
+    writeSecret(groveDir, TEAM_AGENT_KEY_SECRET, teamAgentKey);
+    teamAgentKeyMasked = maskTeamAgentKey(teamAgentKey);
+  }
+
+  let shouldMint = true;
+  if (alreadyEnabled) {
+    const confirm = deps.confirmRemint ?? defaultConfirmRemint;
+    shouldMint = await confirm('Team Host is already enabled on this machine. Mint a fresh one-time join key?');
+  }
+  if (!shouldMint) {
+    return { enable, joinCommand: null, teamAgentKeyMasked };
+  }
+
+  const key = await mintSetupKey({ expiration: options.setupKeyExpiration }, { runner: deps.runner });
+  const port = resolveGlobalDaemonPort(mycoHome);
+  const joinCommand = `myco join ${enable.hostId} --key ${key} --server-url ${enable.serverUrl} --overlay-address ${enable.overlayAddress}:${port}`;
+  return { enable, joinCommand, teamAgentKeyMasked };
+}
+
+/** Human-readable printout for `host enable`, shared by the bare and composite paths. */
+function printEnableResult(result: HostEnableResult): void {
+  console.log('\nTeam Host enabled.');
+  console.log(`  Host ID:       ${result.hostId}`);
+  console.log(`  Overlay IP:    ${result.overlayAddress}`);
+  console.log(`  Control plane: ${result.serverUrl}`);
+  console.log(`  Served Grove:  ${result.servedGroveId}`);
+  console.log(`  headscale:     v${result.headscaleVersion}`);
+  console.log(`  tailscale:     v${result.tailscaleVersion}`);
+  console.log(`  Daemon:        ${result.daemonRestarted ? 'restarted (overlay listener binding)' : 'restart pending — see notes'}`);
+  for (const note of result.notes) console.log(`  NOTE: ${note}`);
+}
+
 const HOST_HELP = `Usage: myco-team host <command>
 
 Commands:
   enable --server-url <https://host:8080> [--hostname <name>] [--listen-addr <addr>]
                                           [--user <headscale-user>] [--key-expiration <dur>]
+                                          [--designate-default] [--emit-join]
+                                          [--team-key <key>] [--setup-key-expiration <dur>]
   disable
   status
   key mint [--expiration <dur>]        Mint a one-time setup key to hand a joiner.
@@ -41,6 +175,13 @@ pinned headscale + tailscale binaries, supervises both as root services (they
 survive reboot), joins the host node, and wires the local daemon to serve its
 Grove(s) over the overlay. Root is required — you may be prompted for your sudo
 password. --server-url is the address members dial to reach the control plane.
+
+--designate-default --emit-join is the --serve installer flag's composite path:
+enable, designate the box's default Grove as the served Grove, optionally store the
+team's LLM provider key (--team-key, or env MYCO_TEAM_AGENT_KEY) in that Grove's
+secrets, mint a one-time setup key, and print the complete ready-to-paste
+"myco join ..." command. On a re-run (this machine was already a Team Host),
+prompts before minting another key — re-emission is deliberate, not automatic.
 
 disable tears both services down and stops serving. status prints the current
 host state.
@@ -64,22 +205,38 @@ export async function runHostCommand(args: string[]): Promise<void> {
       console.error('host enable requires --server-url <https://host:8080>.');
       process.exit(2);
     }
-    const result = await hostEnable({
+    const enableOptions: HostEnableOptions = {
       serverUrl,
       hostname: flags.get('hostname'),
       listenAddr: flags.get('listen-addr'),
       headscaleUser: flags.get('user'),
       keyExpiration: flags.get('key-expiration'),
-    });
-    console.log('\nTeam Host enabled.');
-    console.log(`  Host ID:       ${result.hostId}`);
-    console.log(`  Overlay IP:    ${result.overlayAddress}`);
-    console.log(`  Control plane: ${result.serverUrl}`);
-    console.log(`  Served Grove:  ${result.servedGroveId}`);
-    console.log(`  headscale:     v${result.headscaleVersion}`);
-    console.log(`  tailscale:     v${result.tailscaleVersion}`);
-    console.log(`  Daemon:        ${result.daemonRestarted ? 'restarted (overlay listener binding)' : 'restart pending — see notes'}`);
-    for (const note of result.notes) console.log(`  NOTE: ${note}`);
+      groveDesignation: flags.has('designate-default') ? 'default' : undefined,
+    };
+
+    if (flags.has('emit-join')) {
+      const teamAgentKey = flags.get('team-key') ?? process.env[TEAM_AGENT_KEY_SECRET];
+      const composite = await hostEnableAndEmitJoin({
+        ...enableOptions,
+        teamAgentKey,
+        setupKeyExpiration: flags.get('setup-key-expiration'),
+      });
+      printEnableResult(composite.enable);
+      if (composite.teamAgentKeyMasked) {
+        console.log(`  Team key:      ${composite.teamAgentKeyMasked} (written to the served Grove's secrets.env)`);
+      }
+      console.log('');
+      if (composite.joinCommand) {
+        console.log('Join command (hand this to a member — it works once):\n');
+        console.log(`  ${composite.joinCommand}\n`);
+      } else {
+        console.log('Join key mint skipped. Run `myco-team host key mint` when ready to add a member.');
+      }
+      return;
+    }
+
+    const result = await hostEnable(enableOptions);
+    printEnableResult(result);
     return;
   }
 

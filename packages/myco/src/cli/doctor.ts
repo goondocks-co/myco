@@ -197,6 +197,35 @@ export async function checkServedGroveDesignation(mycoHome?: string): Promise<Do
   };
 }
 
+/**
+ * Served-grove backup staleness — surfaces a served Grove with no successful
+ * backup within its configured interval (server-mode design spec §8: "the
+ * served grove is the sole copy of all attached-project team knowledge …
+ * doctor surfaces backup staleness for a served grove as a first-class
+ * warning"). Same "pure classifier + check() wraps it" shape as
+ * {@link checkServedGroveDesignation}.
+ *
+ * Machine-global, not vault-scoped. Returns null (no row) whenever there's
+ * nothing actionable: serving is off, undesignated, dangling (covered by
+ * {@link checkServedGroveDesignation} instead), or the backup is fresh.
+ */
+export async function checkServedGroveBackupStaleness(mycoHome?: string): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { resolveServedGroveBackupHealth } = await import('../daemon/host-serve.js');
+
+  const health = resolveServedGroveBackupHealth(loadMachineConfig(mycoHome), mycoHome ?? resolveMycoHome());
+  if (health.kind !== 'stale') return null;
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail:
+      `The served Grove (${health.servedGroveId}) has no successful backup within its configured interval — `
+      + 'it is the sole copy of all attached-project team knowledge. Check the auto-backup PowerJob is running '
+      + '(myco doctor from the box, or `myco service start`), or create a manual backup now.',
+    fixable: false,
+  };
+}
+
 /** Human-readable byte count, e.g. "4.2 KB". */
 function formatDrainBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -822,6 +851,8 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   checks.push(...await checkTeamHostDrainHealth());
   const servedGroveDesignation = await checkServedGroveDesignation();
   if (servedGroveDesignation) checks.push(servedGroveDesignation);
+  const servedGroveBackupStaleness = await checkServedGroveBackupStaleness();
+  if (servedGroveBackupStaleness) checks.push(servedGroveBackupStaleness);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:

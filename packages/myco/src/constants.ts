@@ -636,6 +636,16 @@ export const HOST_BEARER_SECRET = 'MYCO_HOST_BEARER';
  * Distinct key + storage location, one shared value — the single flat-trust host bearer (spec §8/§9).
  */
 export const HOST_SERVE_BEARER_SECRET = 'MYCO_HOST_SERVE_BEARER';
+/**
+ * Secrets key for the team's LLM provider API key, stored in the SERVED
+ * GROVE's `secrets.env` (server-mode design spec §5 — team credentials are
+ * Grove-scoped, never machine-scoped, so they never mix with the operator's
+ * personal provider keys). Same string as the `--serve`/`host enable
+ * --emit-join` env var it is optionally read from (`MYCO_TEAM_AGENT_KEY`).
+ * Distinct from the legacy Team-Sync {@link TEAM_API_KEY_SECRET}, which
+ * lives in the team-sync registry's own store, not a Grove.
+ */
+export const TEAM_AGENT_KEY_SECRET = 'MYCO_TEAM_AGENT_KEY';
 
 /**
  * Wire protocol for member-daemon ↔ host-daemon overlay traffic. Bump on any

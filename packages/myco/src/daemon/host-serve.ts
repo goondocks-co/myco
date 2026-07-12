@@ -41,6 +41,8 @@ import type { MachineConfig } from '../config/schema.js';
 import { listGroves } from '../grove/registry.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { timingSafeStringEqual } from '../grove/request-context.js';
+import { isAutoBackupDue } from '../backup/service.js';
+import { getMachineId } from '../machine-id.js';
 
 /** The resolved host-serve enablement passed to `DaemonServer`. `null` means
  *  host serving is OFF and no second listener binds. */
@@ -304,6 +306,46 @@ export function resolveServedGroveDesignationHealth(
     return exists ? { kind: 'ok', servedGroveId } : { kind: 'dangling', servedGroveId };
   } catch {
     return { kind: 'dangling', servedGroveId };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Served-grove backup staleness (`myco doctor`, server-mode design spec §8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Backup staleness, classified independent of the daemon boot path — used by
+ * `myco doctor` to surface a served Grove with no successful backup within
+ * its configured interval. The served Grove is the sole copy of all
+ * attached-project team knowledge (spec §8), so a stale backup is a
+ * first-class warning, not an afterthought.
+ */
+export type ServedGroveBackupHealth =
+  | { kind: 'not_applicable' }
+  | { kind: 'stale'; servedGroveId: string }
+  | { kind: 'ok'; servedGroveId: string };
+
+/**
+ * Classify this machine's served-grove backup posture using the SAME
+ * bookkeeping the auto-backup PowerJob itself gates on ({@link isAutoBackupDue}
+ * — newest backup for this machine older than the Grove's configured
+ * `auto_interval_hours`, or none exists). `not_applicable` covers every case
+ * where staleness isn't a meaningful question: serving is off, undesignated,
+ * or the designation is dangling (all three are {@link resolveServedGroveDesignationHealth}'s
+ * job to report). Pure read, never throws.
+ */
+export function resolveServedGroveBackupHealth(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ServedGroveBackupHealth {
+  const designation = resolveServedGroveDesignationHealth(machineConfig, mycoHome);
+  if (designation.kind !== 'ok') return { kind: 'not_applicable' };
+
+  try {
+    const stale = isAutoBackupDue({ groveId: designation.servedGroveId, machineId: getMachineId(), mycoHome });
+    return { kind: stale ? 'stale' : 'ok', servedGroveId: designation.servedGroveId };
+  } catch {
+    return { kind: 'not_applicable' };
   }
 }
 

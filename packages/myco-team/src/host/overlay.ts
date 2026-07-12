@@ -26,6 +26,7 @@ import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import { resolveHostControlDir, resolveMycoHome } from '@myco/grove/paths.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { createGrove, ensureDefaultGrove, loadGroveRecord, resolveDefaultGrove } from '@myco/grove/registry.js';
+import { seedGroveBackupDefaults } from '@myco/backup/service.js';
 import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager } from '@myco/service/types.js';
 
@@ -371,6 +372,13 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   // Only clear a create-fresh marker once the designation it points at is
   // actually durable — see `clearDesignationIntent`'s ordering contract.
   clearDesignationIntent(controlDir);
+  // Seed the served Grove's backup defaults now that the designation is
+  // durable (server-mode design spec §8 — backups default-on for the served
+  // Grove). Skipped for a dangling designation (the Grove doesn't exist on
+  // this machine, e.g. an unresolved warning above) — nothing to seed.
+  if (loadGroveRecord(designation.groveId, mycoHome)) {
+    seedGroveBackupDefaults(designation.groveId, mycoHome);
+  }
   const restart = await restartDaemonForHostServe(mycoHome, deps.serviceManager ?? getServiceManager());
   log(restart.detail);
   if (!restart.restarted) notes.push(restart.detail);
