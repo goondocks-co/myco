@@ -535,6 +535,18 @@ const HostServeSchema = z.object({
    */
   host_id: z.string().nullable().default(null),
   label: z.string().nullable().default(null),
+  /**
+   * The one Grove this host serves to team members (v1: one served Grove per
+   * host, server-mode design spec §2). Null until the enable / `--serve` flow
+   * designates one. `enabled: true` with `served_grove_id: null` still
+   * RESOLVES here — fail-closed enforcement (a null designation serves
+   * nothing) is the dispatch filter's job, not this config's; this field
+   * only carries the designation and (at boot, `resolveHostServeConfig`)
+   * validates it names a Grove that actually exists. Immutable once set
+   * outside an explicit disable → re-enable cycle; the disable branch of
+   * `writeHostServeConfig` clears it back to null.
+   */
+  served_grove_id: z.string().nullable().default(null),
 }).strict();
 
 /**

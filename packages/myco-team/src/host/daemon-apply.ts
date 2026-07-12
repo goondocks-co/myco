@@ -35,6 +35,10 @@ export interface HostServeApply {
    *  enrollment endpoint (Task 2.4) can self-report them. Cleared on disable. */
   hostId?: string | null;
   label?: string | null;
+  /** The one Grove this host serves (server-mode design spec §2). Cleared on
+   *  disable — `host disable` un-serves the box entirely (spec §8), so a stale
+   *  designation must not survive a disable → re-enable cycle unexamined. */
+  servedGroveId?: string | null;
 }
 
 /**
@@ -61,6 +65,7 @@ export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = r
           overlay_address: apply.enabled ? apply.overlayAddress : null,
           host_id: apply.enabled ? (apply.hostId ?? null) : null,
           label: apply.enabled ? (apply.label ?? null) : null,
+          served_grove_id: apply.enabled ? (apply.servedGroveId ?? null) : null,
         },
       },
     },

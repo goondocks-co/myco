@@ -38,6 +38,7 @@ import {
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { readSecrets, writeSecret } from '../config/secrets.js';
 import type { MachineConfig } from '../config/schema.js';
+import { listGroves } from '../grove/registry.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { timingSafeStringEqual } from '../grove/request-context.js';
 
@@ -63,6 +64,11 @@ export interface HostServeRuntime {
   /** Human-readable host label (the host's tailnet node name). Same provenance +
    *  fallback as {@link hostId}. */
   label?: string;
+  /** The one Grove this host serves (`host_serve.served_grove_id`), surfaced so
+   *  Task 2's dispatch filter can refuse any overlay request whose resolved Grove
+   *  doesn't match. Absent when the designation is unset (null) — a fail-closed
+   *  outcome the filter enforces, not this module (see {@link resolveHostServeConfig}). */
+  servedGroveId?: string;
 }
 
 /** A refusal the overlay gate emits before dispatch: status + JSON body, plus
@@ -182,9 +188,16 @@ interface HostServeLogger {
 /**
  * Resolve the machine's host-serve enablement into a {@link HostServeRuntime}
  * the server binds a second listener from, or `null` (host serving off). Never
- * throws: an enabled-but-misconfigured host (absent/invalid address, un-mintable
- * bearer) yields `null` plus exactly one clear log — never a crash, never a
- * fallback bind (Task 2.3 item 1).
+ * throws: an enabled-but-misconfigured host (absent/invalid address, dangling
+ * `served_grove_id`, un-mintable bearer) yields `null` plus exactly one clear
+ * log — never a crash, never a fallback bind (Task 2.3 item 1).
+ *
+ * A `served_grove_id` naming no Grove on this machine is a dangling
+ * designation (server-mode design spec §2: "referential integrity … a loud
+ * startup error … never a silent total-refusal outage on a box that looks
+ * healthy") and refuses the same way the address gate does. A `null`
+ * designation is NOT dangling — it still resolves; the dispatch filter
+ * (Task 2) is what makes an undesignated host serve nothing.
  */
 export function resolveHostServeConfig(options: {
   machineConfig: MachineConfig;
@@ -204,13 +217,26 @@ export function resolveHostServeConfig(options: {
     return null;
   }
 
+  const mycoHome = options.mycoHome ?? resolveMycoHome();
+
+  const servedGroveId = hostServe.served_grove_id;
+  if (servedGroveId && !listGroves(mycoHome).some((grove) => grove.id === servedGroveId)) {
+    options.logger?.warn(
+      LOG_KINDS.HOST_SERVE,
+      'Team Host serve is enabled but served_grove_id names no Grove on this machine — a dangling designation, host serving stays off',
+      { served_grove_id: servedGroveId },
+    );
+    return null;
+  }
+
   try {
-    const bearer = resolveHostServeBearer(options.mycoHome ?? resolveMycoHome());
+    const bearer = resolveHostServeBearer(mycoHome);
     return {
       overlayAddress: (address as string).trim(),
       bearer,
       hostId: hostServe.host_id ?? undefined,
       label: hostServe.label ?? undefined,
+      servedGroveId: servedGroveId ?? undefined,
     };
   } catch (err) {
     options.logger?.warn(

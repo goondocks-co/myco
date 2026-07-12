@@ -207,7 +207,13 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(result.errors).toEqual([]);
     // host_serve cleared.
     const machine = loadMachineConfig(process.env.MYCO_HOME);
-    expect(machine.daemon.host_serve).toEqual({ enabled: false, overlay_address: null, host_id: null, label: null });
+    expect(machine.daemon.host_serve).toEqual({
+      enabled: false,
+      overlay_address: null,
+      host_id: null,
+      label: null,
+      served_grove_id: null,
+    });
     // Both services torn down.
     expect(calls.some((c) => c.join(' ').includes('uninstall-system-daemon'))).toBe(true);
     expect(calls.some((c) => c.includes('bootout'))).toBe(true);
