@@ -181,8 +181,8 @@ async function provisionTailscaleDarwin(
       + 'Confirm the Homebrew prefix and that the tailscale formula linked its binaries.',
     );
   }
-  verifyLanded(tailscaleBin);
-  verifyLanded(tailscaledBin);
+  await verifyLanded(tailscaleBin);
+  await verifyLanded(tailscaledBin);
   log(`tailscale (brew) located: ${tailscaledBin}`);
   return { tailscaleBin, tailscaledBin, source: 'brew' };
 }
@@ -197,16 +197,16 @@ async function provisionTailscaleLinux(
   const tailscaleBin = path.join(binDir, 'tailscale');
   const tailscaledBin = path.join(binDir, 'tailscaled');
   // Idempotent: both binaries already extracted and whole → skip the re-fetch.
-  if (fs.existsSync(tailscaleBin) && fs.existsSync(tailscaledBin)) {
+  if (await pathExists(tailscaleBin) && await pathExists(tailscaledBin)) {
     try {
-      verifyLanded(tailscaleBin);
-      verifyLanded(tailscaledBin);
+      await verifyLanded(tailscaleBin);
+      await verifyLanded(tailscaledBin);
       log(`tailscale ${TAILSCALE_VERSION} already extracted in ${binDir} — skipping download.`);
       return { tailscaleBin, tailscaledBin, source: 'download' };
     } catch { /* a partial prior extraction — fall through and re-fetch */ }
   }
 
-  fs.mkdirSync(binDir, { recursive: true });
+  await fs.promises.mkdir(binDir, { recursive: true });
   const tarballName = tailscaleLinuxTarballName(target);
   const tarball = await downloadCapped(fetcher, tailscaleLinuxTarballUrl(target), tarballName);
   // pkgs.tailscale.com publishes a sidecar `<tarball>.sha256` (single hash).
@@ -220,7 +220,7 @@ async function provisionTailscaleLinux(
   }
 
   const tarPath = path.join(binDir, tarballName);
-  fs.writeFileSync(tarPath, tarball);
+  await fs.promises.writeFile(tarPath, tarball);
   // Extract just the two binaries (they live under `tailscale_<v>_<arch>/`).
   const extract = await runner.run('tar', ['-xzf', tarPath, '-C', binDir, '--strip-components=1',
     `tailscale_${TAILSCALE_VERSION}_${target.arch}/tailscale`,
@@ -228,10 +228,10 @@ async function provisionTailscaleLinux(
   if (extract.exitCode !== 0) {
     throw new Error(`Failed to extract ${tarballName} (exit ${extract.exitCode}): ${extract.stdout.trim()}`);
   }
-  fs.chmodSync(tailscaleBin, 0o755);
-  fs.chmodSync(tailscaledBin, 0o755);
-  verifyLanded(tailscaleBin);
-  verifyLanded(tailscaledBin);
+  await fs.promises.chmod(tailscaleBin, 0o755);
+  await fs.promises.chmod(tailscaledBin, 0o755);
+  await verifyLanded(tailscaleBin);
+  await verifyLanded(tailscaledBin);
   log(`tailscale ${TAILSCALE_VERSION} extracted to ${binDir}`);
   return { tailscaleBin, tailscaledBin, source: 'download' };
 }
@@ -255,20 +255,20 @@ export function sha256(bytes: Uint8Array): string {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
-export function placeExecutable(dest: string, bytes: Uint8Array): void {
+export async function placeExecutable(dest: string, bytes: Uint8Array): Promise<void> {
   // Same-dir temp + rename → the final placement is atomic (never a torn/partial
   // binary at `dest`, guarding against the spike's partial-copy flake).
   const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, bytes);
-  fs.chmodSync(tmp, 0o755);
-  fs.renameSync(tmp, dest);
+  await fs.promises.writeFile(tmp, bytes);
+  await fs.promises.chmod(tmp, 0o755);
+  await fs.promises.rename(tmp, dest);
 }
 
 /** Re-stat a just-placed binary: exists, non-empty, executable. Throws otherwise. */
-export function verifyLanded(binPath: string): void {
+export async function verifyLanded(binPath: string): Promise<void> {
   let stat: fs.Stats;
   try {
-    stat = fs.statSync(binPath);
+    stat = await fs.promises.stat(binPath);
   } catch {
     throw new Error(`binary did not land at ${binPath} — refusing to use a missing binary.`);
   }
@@ -282,6 +282,17 @@ export function verifyLanded(binPath: string): void {
 
 export function firstExisting(candidates: string[]): string | null {
   return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
+
+/** Async existence check (no throw either way) — used on the Linux idempotency
+ *  path so it never blocks the daemon main loop during first-time provisioning. */
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.promises.access(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function probeVersion(

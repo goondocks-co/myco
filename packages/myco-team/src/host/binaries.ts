@@ -175,7 +175,7 @@ async function provisionHeadscale(
   }
 
   if (fs.existsSync(dest) && sha256(fs.readFileSync(dest)).toLowerCase() === expected.toLowerCase()) {
-    verifyLanded(dest);
+    await verifyLanded(dest);
     log(`headscale ${HEADSCALE_VERSION} already provisioned at ${dest} (checksum match) — skipping download.`);
     return dest;
   }
@@ -186,8 +186,8 @@ async function provisionHeadscale(
     throw new Error(`Headscale ${assetName} checksum mismatch (expected ${expected}, got ${actual}) — refusing to install.`);
   }
 
-  placeExecutable(dest, bytes);
-  verifyLanded(dest);
+  await placeExecutable(dest, bytes);
+  await verifyLanded(dest);
   log(`headscale ${HEADSCALE_VERSION} verified + placed at ${dest}`);
   return dest;
 }

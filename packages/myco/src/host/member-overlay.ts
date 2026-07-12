@@ -49,6 +49,7 @@ import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import { acquireTunnelBridgePort } from '@myco/daemon/host-proxy.js';
 
 import {
+  ENROLLMENT_RETRY_BACKOFFS_MS,
   HOST_BEARER_SECRET,
   HOST_ENROLL_ROUTE,
   HOST_PROTOCOL_HEADER,
@@ -323,6 +324,37 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
  *  manual bridge or a test injects its own client. */
 export const realEnrollmentClient: EnrollmentClient = createEnrollmentClient();
 
+/** Default backoff wait — a plain `setTimeout` wrapped as a Promise. Tests inject
+ *  `deps.sleep` so retry backoff never costs real wall-clock time. */
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Bounded retry-with-backoff around a single {@link EnrollmentClient.enroll} call
+ * (design spec §4, step 5) — ONLY the transport call is retried, nothing before or
+ * after it in `joinHost`. {@link ENROLLMENT_RETRY_BACKOFFS_MS} bounds it at 3
+ * attempts total (2s then 4s between them, none before the first or after the
+ * last); the final attempt's failure is rethrown UNCHANGED so the caller sees the
+ * same error a non-retrying `enroll` would have thrown.
+ */
+async function enrollWithRetry(
+  client: EnrollmentClient,
+  ctx: EnrollmentContext,
+  sleep: (ms: number) => Promise<void>,
+  log: (message: string) => void,
+): Promise<HostEnrollment> {
+  const backoffs = ENROLLMENT_RETRY_BACKOFFS_MS;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.enroll(ctx);
+    } catch (err) {
+      if (attempt >= backoffs.length) throw err;
+      const delayMs = backoffs[attempt]!;
+      log(`Enrollment attempt ${attempt + 1} failed (${(err as Error).message}) — retrying in ${delayMs}ms…`);
+      await sleep(delayMs);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Options / deps / result
 // ---------------------------------------------------------------------------
@@ -370,6 +402,9 @@ export interface MemberOverlayDeps {
   resolveMemberOverlayIp?: (runner: CommandRunner, tailscaleBin: string, socketPath: string) => Promise<string | null>;
   /** Best-effort reachability probe to the host over the overlay (never fatal). */
   checkHostReachable?: (overlayAddress: string, proxyPort: number) => Promise<boolean>;
+  /** Backoff wait between enrollment retry attempts (tests inject a no-real-wait
+   *  fake). Default a plain `setTimeout` wrapped as a Promise. */
+  sleep?: (ms: number) => Promise<void>;
   logger?: (message: string) => void;
 }
 
@@ -495,7 +530,10 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
   log(`Member overlay IP on host ${hostId}: ${memberOverlayIp}`);
 
   // 5. Enroll: obtain the host's overlay address + serve-bearer (Task 2.4 seam).
-  const enrollment = await enrollmentClient.enroll({
+  //    Bounded retry-with-backoff (design spec §4) — a transient overlay/DERP-
+  //    settling failure shouldn't burn the whole join.
+  const sleep = deps.sleep ?? defaultSleep;
+  const enrollment = await enrollWithRetry(enrollmentClient, {
     hostId,
     hostRef: options.hostRef.trim(),
     serverUrl: options.serverUrl?.trim(),
@@ -507,7 +545,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     bearer: options.bearer?.trim(),
     protocolVersion: options.protocolVersion,
     label: options.label?.trim(),
-  });
+  }, sleep, log);
 
   // 6. Best-effort reachability probe through THIS host's proxy port (never fatal).
   const reachProbe = deps.checkHostReachable ?? defaultCheckHostReachable;

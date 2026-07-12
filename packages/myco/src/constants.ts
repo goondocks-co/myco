@@ -680,6 +680,16 @@ export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
 export const HOST_ENROLL_ROUTE = '/api/host/enroll';
 
 /**
+ * Step-5 enrollment retry-with-backoff (server-mode design spec §4): a
+ * transient overlay/DERP-settling failure shouldn't burn a whole `myco join`
+ * run — enrollment is a one-shot POST that can lose the race against the
+ * overlay finishing settling. Delays between attempts only (none before the
+ * first, none after the last exhausts) — 3 attempts total, 2s then 4s apart.
+ * The final attempt's failure surfaces to the caller unchanged.
+ */
+export const ENROLLMENT_RETRY_BACKOFFS_MS = [2000, 4000] as const;
+
+/**
  * Base for the local HTTP-CONNECT proxy port each joined host's userspace
  * tailscaled exposes (`--outbound-http-proxy-listen=localhost:<port>`), recorded
  * on that host's {@link HostRecord} as `proxy_port` and dialed by
