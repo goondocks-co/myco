@@ -229,7 +229,7 @@ else
   else
     TAG="$(grep -o '"tag_name": *"myco/v[^"]*"' "$RELEASES_FILE" \
            | sed 's/"tag_name": *"//;s/"//' \
-           | grep -v -- '-' \
+           | grep -vE 'v[0-9]+\.[0-9]+\.[0-9]+-' \
            | sort -rV \
            | head -1)" || TAG=""
   fi
@@ -389,7 +389,7 @@ if [ "$SERVE" = "1" ]; then
   else
     TEAM_TAG="$(grep -o '"tag_name": *"myco-team/v[^"]*"' "$RELEASES_FILE" \
            | sed 's/"tag_name": *"//;s/"//' \
-           | grep -v -- '-' \
+           | grep -vE 'v[0-9]+\.[0-9]+\.[0-9]+-' \
            | sort -rV \
            | head -1)" || TEAM_TAG=""
   fi
