@@ -241,6 +241,25 @@ export function createStreamableMcpHttpHandler(
       throw err;
     }
     if (!resolved.ok) {
+      // Team Host overlay posture: `resolved.body` (the `legacy_vault` 503,
+      // see `legacyVaultBody`) carries the host's absolute filesystem
+      // `vault_dir` plus local-user-oriented dashboard guidance — safe for a
+      // loopback caller on the operator's own machine, but a path-disclosure
+      // and posture leak to a bearer-holding overlay member, and it fires
+      // BEFORE the served-grove filter below ever runs. An overlay caller
+      // gets the same uniform 404 `not_found` refusal shape the filter emits
+      // a few lines down instead; loopback keeps the descriptive 503
+      // unchanged (see `(e) loopback requests are entirely unaffected` in
+      // `tests/daemon/host-serve-grove-filter.test.ts`).
+      if (isOverlayRequest(req)) {
+        res.statusCode = 404;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          error: 'not_found',
+          message: 'This request resolved no Grove; the host serves exactly one designated Grove over the overlay.',
+        }));
+        return;
+      }
       res.statusCode = 503;
       res.setHeader('Content-Type', 'application/json');
       res.end(resolved.body);

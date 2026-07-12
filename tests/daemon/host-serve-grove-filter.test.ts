@@ -246,6 +246,8 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       headers: overlayHeaders(),
     });
     expect(res.status).toBe(404);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('not_found');
   });
 
   test('(c) /mcp: a caller-tenancy request with no grove id resolves a null Grove and is refused (null branch closed, not fail-open)', async () => {
@@ -352,5 +354,43 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
     });
     expect(res.status).toBe(404);
+  });
+
+  // -- (g) legacy-vault branch: overlay gets the uniform 404, no vault_dir leak --
+  //
+  // `resolveRequestContextOrLegacy`'s not-ok exit (the `legacy_vault` 503, see
+  // `legacyVaultBody` in `mcp/http.ts`) fires BEFORE the served-grove filter
+  // above ever runs, and its body carries the host's absolute filesystem
+  // `vault_dir` plus local-user dashboard guidance. A request with no
+  // `x-myco-*` context headers at all resolves synthesized (not caller)
+  // tenancy and takes exactly this branch — over the overlay it must never
+  // leak the path; over loopback the descriptive 503 stays intact.
+
+  test('(g) /mcp: an overlay request hitting the legacy-vault branch is refused with the uniform 404 (no vault_dir leak)', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, {
+      method: 'POST',
+      headers: overlayHeaders({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    expect(res.status).toBe(404);
+    const rawBody = await res.text();
+    expect(rawBody).not.toContain('vault_dir');
+    expect(rawBody).not.toContain('.myco');
+    const body = JSON.parse(rawBody) as { error: string };
+    expect(body.error).toBe('not_found');
+  });
+
+  test('(g) /mcp: the same legacy-vault branch over loopback still returns the descriptive legacy_vault 503 (posture preserved for local users)', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: { data: { code: string; vault_dir: string } } };
+    expect(body.error.data.code).toBe('legacy_vault');
+    expect(body.error.data.vault_dir).toBeTruthy();
   });
 });
