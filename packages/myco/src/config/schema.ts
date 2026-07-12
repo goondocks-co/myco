@@ -542,9 +542,13 @@ const HostServeSchema = z.object({
    * RESOLVES here — fail-closed enforcement (a null designation serves
    * nothing) is the dispatch filter's job, not this config's; this field
    * only carries the designation and (at boot, `resolveHostServeConfig`)
-   * validates it names a Grove that actually exists. Immutable once set
-   * outside an explicit disable → re-enable cycle; the disable branch of
-   * `writeHostServeConfig` clears it back to null.
+   * validates it names a Grove that actually exists. The disable branch of
+   * `writeHostServeConfig` clears it back to null. Designation is intended
+   * to be stable for a serving instance — the enable/re-designation wiring
+   * that enforces stability outside an explicit disable → re-enable cycle
+   * lands with the designation-lifecycle work; today `writeHostServeConfig`
+   * overwrites rather than merges this field, so that stability is not yet
+   * an enforced invariant.
    */
   served_grove_id: z.string().nullable().default(null),
 }).strict();

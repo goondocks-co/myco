@@ -219,14 +219,31 @@ export function resolveHostServeConfig(options: {
 
   const mycoHome = options.mycoHome ?? resolveMycoHome();
 
-  const servedGroveId = hostServe.served_grove_id;
-  if (servedGroveId && !listGroves(mycoHome).some((grove) => grove.id === servedGroveId)) {
-    options.logger?.warn(
-      LOG_KINDS.HOST_SERVE,
-      'Team Host serve is enabled but served_grove_id names no Grove on this machine — a dangling designation, host serving stays off',
-      { served_grove_id: servedGroveId },
-    );
-    return null;
+  // Empty/whitespace-only is treated as absent, same as null — the runtime
+  // must never carry a meaningless empty-string designation.
+  const servedGroveId = hostServe.served_grove_id?.trim() || undefined;
+  if (servedGroveId) {
+    try {
+      if (!listGroves(mycoHome).some((grove) => grove.id === servedGroveId)) {
+        options.logger?.warn(
+          LOG_KINDS.HOST_SERVE,
+          'Team Host serve is enabled but served_grove_id names no Grove on this machine — a dangling designation, host serving stays off',
+          { served_grove_id: servedGroveId },
+        );
+        return null;
+      }
+    } catch (err) {
+      // listGroves() walks + TOML-parses every grove.toml on the machine — an
+      // unrelated corrupt/unreadable grove throws here. Treat "threw while
+      // checking" the same as "grove missing": disable serving loudly, never
+      // let it crash daemon boot (this function's never-throws contract).
+      options.logger?.warn(
+        LOG_KINDS.HOST_SERVE,
+        'Team Host serve is enabled but served_grove_id could not be validated against the Grove registry — host serving stays off',
+        { served_grove_id: servedGroveId, error: (err as Error).message },
+      );
+      return null;
+    }
   }
 
   try {
@@ -236,7 +253,7 @@ export function resolveHostServeConfig(options: {
       bearer,
       hostId: hostServe.host_id ?? undefined,
       label: hostServe.label ?? undefined,
-      servedGroveId: servedGroveId ?? undefined,
+      servedGroveId,
     };
   } catch (err) {
     options.logger?.warn(

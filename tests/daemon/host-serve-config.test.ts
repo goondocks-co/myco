@@ -21,6 +21,7 @@ import { readSecrets } from '@myco/config/secrets';
 import { HOST_SERVE_BEARER_SECRET } from '@myco/constants';
 import { LOG_KINDS } from '@myco/constants/log-kinds';
 import { createGrove } from '@myco/grove/registry';
+import { resolveGroveMetadataPath } from '@myco/grove/paths';
 
 function machineConfig(hostServe?: {
   enabled?: boolean;
@@ -200,6 +201,48 @@ describe('resolveHostServeConfig', () => {
     expect(rt).not.toBeNull();
     expect(rt!.servedGroveId).toBeUndefined();
     expect(warnings).toHaveLength(0);
+  });
+
+  test('enabled with served_grove_id: "" (empty string) normalizes to absent, same as null', () => {
+    const rt = resolveHostServeConfig({
+      machineConfig: machineConfig({
+        enabled: true,
+        overlay_address: '100.64.0.5',
+        served_grove_id: '   ',
+      }),
+      mycoHome: home,
+      logger,
+    });
+    expect(rt).not.toBeNull();
+    expect(rt!.servedGroveId).toBeUndefined();
+    expect(warnings).toHaveLength(0);
+  });
+
+  test('listGroves() throwing (corrupt UNRELATED grove.toml on the machine) → null + one warning, never throws', () => {
+    // An unrelated grove with unreadable/corrupt metadata must not crash the
+    // boot check for a completely different served_grove_id — listGroves()
+    // walks + TOML-parses EVERY grove on the machine, so one bad grove.toml
+    // throws while resolving an unrelated designation too.
+    const corrupt = createGrove('Corrupt', home);
+    fs.writeFileSync(resolveGroveMetadataPath(corrupt.id, home), '[grove\nid = "unterminated', 'utf-8');
+
+    let rt: ReturnType<typeof resolveHostServeConfig>;
+    expect(() => {
+      rt = resolveHostServeConfig({
+        machineConfig: machineConfig({
+          enabled: true,
+          overlay_address: '100.64.0.5',
+          served_grove_id: 'grove_' + '9'.repeat(32),
+        }),
+        mycoHome: home,
+        logger,
+      });
+    }).not.toThrow();
+
+    expect(rt!).toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].kind).toBe(LOG_KINDS.HOST_SERVE);
+    expect(warnings[0].message).toMatch(/served_grove_id/);
   });
 });
 
