@@ -167,6 +167,36 @@ export async function checkTeamHostReachability(): Promise<DoctorCheck[]> {
   });
 }
 
+/**
+ * Team Host served-grove designation health — surfaces a DANGLING
+ * designation (`served_grove_id` names no Grove on this machine) on demand.
+ * The daemon already logs this once at boot (`resolveHostServeConfig`,
+ * `daemon/host-serve.ts`); this is the on-demand counterpart for an operator
+ * running `myco doctor` without tailing daemon logs, following the same
+ * "pure classifier + check() wraps it" shape as {@link checkTeamHostHint}.
+ *
+ * Machine-global, not vault-scoped (`daemon.host_serve` lives in
+ * `~/.myco/config.yaml`). Returns null (no row) whenever there's nothing
+ * actionable: serving is off, undesignated (fail-closed, not an error), or
+ * the designation names a Grove that actually exists.
+ */
+export async function checkServedGroveDesignation(mycoHome?: string): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { resolveServedGroveDesignationHealth } = await import('../daemon/host-serve.js');
+
+  const health = resolveServedGroveDesignationHealth(loadMachineConfig(mycoHome), mycoHome ?? resolveMycoHome());
+  if (health.kind !== 'dangling') return null;
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail:
+      `served_grove_id ${health.servedGroveId} names no Grove on this machine — a dangling designation. `
+      + 'Team Host serving stays off until this is resolved: restore the Grove from backup, or '
+      + 'disable and re-enable Team Host serving to designate a different one.',
+    fixable: false,
+  };
+}
+
 /** Human-readable byte count, e.g. "4.2 KB". */
 function formatDrainBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -790,6 +820,8 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   // `myco.yaml`, same as the hint above.
   checks.push(...await checkTeamHostReachability());
   checks.push(...await checkTeamHostDrainHealth());
+  const servedGroveDesignation = await checkServedGroveDesignation();
+  if (servedGroveDesignation) checks.push(servedGroveDesignation);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:

@@ -267,6 +267,47 @@ export function resolveHostServeConfig(options: {
 }
 
 // ---------------------------------------------------------------------------
+// Served-grove designation health (`myco doctor`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Designation health, classified independent of the daemon boot path — used
+ * by `myco doctor` so a dangling designation (`served_grove_id` names no
+ * Grove on this machine) surfaces on demand, not only via the one-time log
+ * {@link resolveHostServeConfig} emits at startup, which scrolls past.
+ */
+export type ServedGroveDesignationHealth =
+  | { kind: 'not_serving' }
+  | { kind: 'undesignated' }
+  | { kind: 'dangling'; servedGroveId: string }
+  | { kind: 'ok'; servedGroveId: string };
+
+/**
+ * Classify this machine's served-grove designation against the actual Grove
+ * registry. Pure read, never throws — mirrors the same referential-
+ * integrity check {@link resolveHostServeConfig} runs at boot: a corrupt or
+ * unreadable UNRELATED Grove on the machine classifies as `dangling` rather
+ * than propagating the error to the caller.
+ */
+export function resolveServedGroveDesignationHealth(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ServedGroveDesignationHealth {
+  const hostServe = machineConfig.daemon.host_serve;
+  if (!hostServe.enabled) return { kind: 'not_serving' };
+
+  const servedGroveId = hostServe.served_grove_id?.trim() || undefined;
+  if (!servedGroveId) return { kind: 'undesignated' };
+
+  try {
+    const exists = listGroves(mycoHome).some((grove) => grove.id === servedGroveId);
+    return exists ? { kind: 'ok', servedGroveId } : { kind: 'dangling', servedGroveId };
+  } catch {
+    return { kind: 'dangling', servedGroveId };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The transport-boundary gate (bearer / lifecycle / version)
 // ---------------------------------------------------------------------------
 

@@ -75,6 +75,7 @@ export async function runHostCommand(args: string[]): Promise<void> {
     console.log(`  Host ID:       ${result.hostId}`);
     console.log(`  Overlay IP:    ${result.overlayAddress}`);
     console.log(`  Control plane: ${result.serverUrl}`);
+    console.log(`  Served Grove:  ${result.servedGroveId}`);
     console.log(`  headscale:     v${result.headscaleVersion}`);
     console.log(`  tailscale:     v${result.tailscaleVersion}`);
     console.log(`  Daemon:        ${result.daemonRestarted ? 'restarted (overlay listener binding)' : 'restart pending — see notes'}`);
