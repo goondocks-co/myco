@@ -2070,6 +2070,11 @@ export async function main(): Promise<void> {
     // inert here today, but both chokepoints thread the real deps so the
     // guarantee can never silently regress if /mcp ever carries a flush route.
     hostProxyDeps: captureProxyDeps,
+    // Chokepoint 2 of the served-grove fail-closed filter (Task 2). Same
+    // `hostServe` resolved above and threaded into `DaemonServer` — required
+    // so `servedGroveRefusal` can run here too, since /mcp bypasses router
+    // dispatch (chokepoint 1) entirely.
+    hostServe,
   }));
 
   // --- Backup routes ---

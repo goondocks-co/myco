@@ -36,6 +36,7 @@ import {
   overlayBearerRejection,
   overlayLifecycleRefused,
   overlayVersionRejection,
+  servedGroveRefusal,
   type HostServeRuntime,
 } from './host-serve.js';
 import { appendHostAction } from '../host/action-log.js';
@@ -767,6 +768,26 @@ export class DaemonServer {
           ...this.resolveRouteRequestContext(match.params, req.headers),
           hostServed: isOverlayRequest(req),
         };
+        // Team Host served-grove filter (Task 2), chokepoint 1 of 2 (see
+        // `mcp/http.ts` for chokepoint 2). The bearer/lifecycle/version gate
+        // above proves overlay ADMISSION only — it says nothing about WHICH
+        // Grove a member may reach. Without this, a bearer-holding member
+        // could send `x-myco-grove-id` naming ANY Grove this host owns,
+        // including the operator's own personal Groves. Runs immediately
+        // after the Grove context resolves, before any handler/DB touch.
+        if (isOverlayRequest(req)) {
+          const groveRefusal = this.hostServe
+            ? servedGroveRefusal(this.hostServe, requestContext.groveId)
+            // Unreachable in practice (the overlay listener — and hence
+            // isOverlayRequest — only marks requests when hostServe is set),
+            // but fail closed exactly like handleOverlayRequest's own
+            // null-hostServe branch, never serve unauthenticated.
+            : { status: 503, body: { error: 'host_serve_unavailable' } };
+          if (groveRefusal) {
+            this.writeOverlayRefusal(res, groveRefusal.status, groveRefusal.body, versionHeader, groveRefusal.headers);
+            return;
+          }
+        }
         // Long-running ops (move, vacuum) take a per-project pause in
         // `projects.toml`; while set, every writer for that project must
         // be refused. Reads stay open so the UI can still surface "this

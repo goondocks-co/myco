@@ -88,7 +88,11 @@ describe('content claims over the Team Host overlay', () => {
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: hostLogger,
       daemonStateAuthority: stubAuthority,
-      hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER },
+      // servedGroveId designates `grove` as the ONE Grove this host serves —
+      // required since Task 2's servedGroveRefusal fail-closed filter now
+      // refuses every overlay request when the designation is absent, even
+      // one naming a real, owned Grove.
+      hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, servedGroveId: grove.id },
     });
     registerContentClaimRoutes(hostServer, { machineId: 'host-machine', logger: hostLogger });
     await hostServer.start(0);

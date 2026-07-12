@@ -65,9 +65,10 @@ export interface HostServeRuntime {
    *  fallback as {@link hostId}. */
   label?: string;
   /** The one Grove this host serves (`host_serve.served_grove_id`), surfaced so
-   *  Task 2's dispatch filter can refuse any overlay request whose resolved Grove
-   *  doesn't match. Absent when the designation is unset (null) — a fail-closed
-   *  outcome the filter enforces, not this module (see {@link resolveHostServeConfig}). */
+   *  {@link servedGroveRefusal} can refuse any overlay request whose resolved
+   *  Grove doesn't match. Absent when the designation is unset (null) — a
+   *  fail-closed outcome the filter enforces, not this module (see
+   *  {@link resolveHostServeConfig}). */
   servedGroveId?: string;
 }
 
@@ -314,6 +315,70 @@ const OVERLAY_REFUSED_LIFECYCLE_ROUTES = new Set<string>(['/api/shutdown']);
 /** True when `pathname` is an operator/lifecycle raw route the overlay refuses. */
 export function overlayLifecycleRefused(pathname: string): boolean {
   return OVERLAY_REFUSED_LIFECYCLE_ROUTES.has(pathname);
+}
+
+// ---------------------------------------------------------------------------
+// Served-grove filter (Task 2) — the dual-homed dispatch chokepoint gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-closed served-grove gate for overlay requests. Refuses when serving has
+ * no designation, when the resolved context has no grove, or when the grove is
+ * not THE served grove. Returns null only for an exact designation match.
+ *
+ * This is the ONE dispatch-boundary check that closes the gap the blanket
+ * bearer/lifecycle/version gate above leaves open: the bearer proves overlay
+ * ADMISSION, not which Grove a member may reach. Without this filter, a
+ * bearer-holding member could send `x-myco-grove-id` naming ANY Grove this
+ * host owns — including the operator's own personal Groves — and the host
+ * would happily resolve and open that Grove's DB (server-mode design spec §2,
+ * the one Critical finding in the spec's independent review).
+ *
+ * MUST be called at BOTH overlay dispatch chokepoints — router routes
+ * (`daemon/server.ts`, after `resolveRouteRequestContext`) and the raw `/mcp`
+ * route (`mcp/http.ts`, after `resolveRequestContextOrLegacy`) — immediately
+ * after the request's Grove context is resolved and BEFORE any dispatch. A
+ * single-homed filter leaves the other chokepoint's full tool/route surface
+ * open against any Grove on the box.
+ *
+ * The null-grove branch is explicit and unconditional — this function never
+ * takes the `if (groveId && ...)` shape, which would fail OPEN for any
+ * grove-less overlay request (a machine-level/no-tenancy route slipping past
+ * a truthiness check). Every branch below is a distinct, named refusal reason;
+ * only the exact-match branch returns null.
+ */
+export function servedGroveRefusal(
+  runtime: HostServeRuntime,
+  resolvedGroveId: string | null,
+): OverlayGateRefusal | null {
+  if (!runtime.servedGroveId) {
+    return {
+      status: 404,
+      body: {
+        error: 'not_found',
+        message: 'This host is not designated to serve any Grove.',
+      },
+    };
+  }
+  if (resolvedGroveId === null) {
+    return {
+      status: 404,
+      body: {
+        error: 'not_found',
+        message: 'This request resolved no Grove; the host serves exactly one designated Grove over the overlay.',
+      },
+    };
+  }
+  if (resolvedGroveId !== runtime.servedGroveId) {
+    return {
+      status: 404,
+      body: {
+        error: 'not_found',
+        message: 'This Grove is not the one Grove this host serves over the overlay.',
+      },
+    };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

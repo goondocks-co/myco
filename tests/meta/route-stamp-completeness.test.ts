@@ -51,7 +51,12 @@ const KNOWN_RAW_ROUTES: ReadonlySet<string> = new Set<string>([
   '/health', // liveness — bearer+version gated over the overlay
   '/api/version', // version probe — bearer+version gated
   '/api/shutdown', // lifecycle — overlayLifecycleRefused (404 over the overlay)
-  '/mcp', // the host serves its own Grove's MCP locally (correct)
+  '/mcp', // bypasses classifyRouteStamp entirely; gated by the dual-homed
+          // served-grove filter (servedGroveRefusal, Task 2) at its own
+          // chokepoint in mcp/http.ts — the host serves ONLY its one
+          // designated served_grove_id over the overlay, never "any Grove
+          // this host owns" (see daemon/server.ts's router chokepoint for
+          // the mirror check)
   '/api/host/enroll', // bearer-EXEMPT enrollment; overlay-only (constant-registered)
 ]);
 
