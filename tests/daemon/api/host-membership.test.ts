@@ -175,22 +175,22 @@ describe('POST /api/host-membership/leave', () => {
 });
 
 describe('POST /api/host-membership/attach', () => {
-  test('maps project_root/grove_id/host_id and the result to snake_case', async () => {
+  test('maps project_root/host_id and the result to snake_case (no grove_id in the request — the daemon sources it from the host record)', async () => {
     let seen: unknown;
     const handler = createHostMembershipAttachHandler({
       attach: (options) => {
         seen = options;
         return {
-          projectId: 'proj_x', groveId: options.groveId!, hostId: options.hostId!,
+          projectId: 'proj_x', groveId: 'grove_x', hostId: options.hostId!,
           hostLabel: 'Mac Studio', root: '/checkout', alreadyAttached: false, notes: [],
         };
       },
       mycoHome: '/tmp/myco-home',
     });
-    const res = await handler(req({ project_root: '/checkout', host_id: 'host_abc', grove_id: 'grove_x' }));
+    const res = await handler(req({ project_root: '/checkout', host_id: 'host_abc' }));
 
     expect(seen).toEqual({
-      projectPath: '/checkout', hostId: 'host_abc', groveId: 'grove_x', projectId: undefined, mycoHome: '/tmp/myco-home',
+      projectPath: '/checkout', hostId: 'host_abc', projectId: undefined, mycoHome: '/tmp/myco-home',
     });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -202,25 +202,32 @@ describe('POST /api/host-membership/attach', () => {
   test('missing project_root is rejected client-side (never calls attach)', async () => {
     let called = false;
     const handler = createHostMembershipAttachHandler({ attach: () => { called = true; throw new Error('unreachable'); } });
-    expect((await handler(req({ grove_id: 'g' }))).status).toBe(400);
+    expect((await handler(req({ host_id: 'host_abc' }))).status).toBe(400);
     expect(called).toBe(false);
   });
 
-  test('missing grove_id is NOT pre-validated here — it passes through to attachCommand, whose own richer message surfaces', async () => {
+  test('a CODED host_predates_served_grove refusal surfaces its stable code — attachCommand throws it when the host has no served_grove_id', async () => {
     const handler = createHostMembershipAttachHandler({
-      attach: () => { throw new Error("attach requires --grove <groveId> — the id of the Grove on host host_abc that will serve this project."); },
+      attach: () => {
+        throw codedMembershipError(
+          'host_predates_served_grove',
+          'Host host_abc predates served-grove designation; update the host (run `myco update` on that '
+          + 'machine, then re-enable Team Host serving) and re-join with `myco join host_abc`, then retry attach.',
+        );
+      },
       mycoHome: '/tmp/myco-home',
     });
     const res = await handler(req({ project_root: '/checkout', host_id: 'host_abc' }));
     expect(res.status).toBe(400);
-    expect((res.body as { error: { message: string } }).error.message).toContain('attach requires --grove');
+    expect((res.body as { error: { code: string } }).error.code).toBe('host_predates_served_grove');
+    expect((res.body as { error: { message: string } }).error.message).toContain('update the host');
   });
 
   test('an UNCODED attach error maps to 400 with the route fallback code', async () => {
     const handler = createHostMembershipAttachHandler({
       attach: () => { throw new Error('Could not determine the project id for /checkout.'); },
     });
-    const res = await handler(req({ project_root: '/checkout', grove_id: 'g' }));
+    const res = await handler(req({ project_root: '/checkout' }));
     expect(res.status).toBe(400);
     expect((res.body as { error: { code: string } }).error.code).toBe('attach_failed');
   });
@@ -240,7 +247,7 @@ describe('POST /api/host-membership/attach', () => {
         );
       },
     });
-    const res = await handler(req({ project_root: '/checkout', grove_id: 'g' }));
+    const res = await handler(req({ project_root: '/checkout' }));
     expect(res.status).toBe(400);
     expect((res.body as { error: { code: string } }).error.code).toBe('project_registered_locally');
   });
@@ -318,12 +325,51 @@ describe('GET /api/host-membership/status', () => {
     expect(res.body).toEqual({
       hosts: [{
         host_id: host.host_id, label: host.label, overlay_address: host.overlay_address,
-        proxy_port: host.proxy_port, protocol_version: host.protocol_version, created_at: host.created_at,
-        projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout' }],
+        proxy_port: host.proxy_port, protocol_version: host.protocol_version,
+        served_grove_id: null, created_at: host.created_at,
+        projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout', mismatch: null }],
       }],
       hint: null,
     });
     expect(JSON.stringify(res.body)).not.toContain('bearer');
+  });
+
+  test('a ref whose grove_id no longer matches the host\'s served_grove_id is flagged attach_grove_mismatch (spec §2 existing-refs mitigation (c))', async () => {
+    const servedGroveId = createGroveId();
+    const staleGroveId = createGroveId();
+    const matchingProjectId = createProjectId();
+    const staleProjectId = createProjectId();
+    const host = makeHost({
+      served_grove_id: servedGroveId,
+      projects: [
+        { grove_id: servedGroveId, project_id: matchingProjectId, root: '/checkout-a' },
+        { grove_id: staleGroveId, project_id: staleProjectId, root: '/checkout-b' },
+      ],
+    });
+    upsertHost(host);
+
+    const handler = createHostMembershipStatusHandler();
+    const res = await handler(req({}, {}));
+    const body = res.body as { hosts: { served_grove_id: string | null; projects: { project_id: string; mismatch: string | null }[] }[] };
+    expect(body.hosts[0]!.served_grove_id).toBe(servedGroveId);
+    const matching = body.hosts[0]!.projects.find((p) => p.project_id === matchingProjectId);
+    const stale = body.hosts[0]!.projects.find((p) => p.project_id === staleProjectId);
+    expect(matching?.mismatch).toBeNull();
+    expect(stale?.mismatch).toBe('attach_grove_mismatch');
+  });
+
+  test('served_grove_id unknown (host predates designation) → no ref is flagged, not even one that would mismatch once it IS known', async () => {
+    const host = makeHost({
+      served_grove_id: undefined,
+      projects: [{ grove_id: createGroveId(), project_id: createProjectId(), root: '/checkout' }],
+    });
+    upsertHost(host);
+
+    const handler = createHostMembershipStatusHandler();
+    const res = await handler(req({}, {}));
+    const body = res.body as { hosts: { served_grove_id: string | null; projects: { mismatch: string | null }[] }[] };
+    expect(body.hosts[0]!.served_grove_id).toBeNull();
+    expect(body.hosts[0]!.projects[0]!.mismatch).toBeNull();
   });
 
   test('project_root with an unresolved hint (host not joined) surfaces the hint', async () => {

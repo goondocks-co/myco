@@ -33,6 +33,7 @@ import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { assertGroveProjectId, createGroveId, createProjectId } from '@myco/grove/ids';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
+import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION } from '@myco/constants';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const HOST_BEARER = 'test-host-serve-bearer-0123456789abcdef';
@@ -237,23 +238,23 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   test('missing version header → 409 protocol_version_unsupported (both bounds + host header)', async () => {
     const res = await fetch(`${overlay}/api/sessions`, { headers: { Authorization: bearer() } });
     expect(res.status).toBe(409);
-    expect(res.headers.get('x-myco-host-protocol')).toBe('1');
+    expect(res.headers.get('x-myco-host-protocol')).toBe(String(HOST_PROTOCOL_VERSION));
     const body = await res.json();
     expect(body.error).toBe('protocol_version_unsupported');
-    expect(body.host_protocol_version).toBe(1);
-    expect(body.host_min_compat_version).toBe(1);
+    expect(body.host_protocol_version).toBe(HOST_PROTOCOL_VERSION);
+    expect(body.host_min_compat_version).toBe(HOST_MIN_COMPAT_VERSION);
     expect(sessionsHandlerCalls).toBe(0);
   });
 
   test('version above the window → 409 with both bounds', async () => {
     const res = await fetch(`${overlay}/api/sessions`, {
-      headers: { Authorization: bearer(), 'x-myco-host-protocol': '2' },
+      headers: { Authorization: bearer(), 'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION + 1) },
     });
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toBe('protocol_version_unsupported');
-    expect(body.host_protocol_version).toBe(1);
-    expect(body.host_min_compat_version).toBe(1);
+    expect(body.host_protocol_version).toBe(HOST_PROTOCOL_VERSION);
+    expect(body.host_min_compat_version).toBe(HOST_MIN_COMPAT_VERSION);
   });
 
   test('version below the window → 409', async () => {

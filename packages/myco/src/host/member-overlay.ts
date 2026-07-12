@@ -112,6 +112,13 @@ export interface HostEnrollment {
   protocol_version: number;
   /** The shared host serve-bearer, stored under {@link HOST_BEARER_SECRET}. */
   bearer: string;
+  /** The host's self-reported served Grove (protocol v2). `undefined` when the
+   *  host predates served-grove designation — its enrollment response carried
+   *  no `served_grove_id` field at all (distinct from the host reporting one
+   *  explicitly as absent). Persisted onto the {@link HostRecord} at join
+   *  (step 7) and later consulted by `attachCommand` as the ONE grove source
+   *  for a new attach ref — no `--grove` flag. */
+  served_grove_id?: string;
   /** Projects the host pre-associates at enrollment (usually empty — attach is a
    *  separate step, done via `myco attach` in v1, a UI in Phase E). Preserved onto
    *  the record if present. */
@@ -185,13 +192,17 @@ export const stubEnrollmentClient: EnrollmentClient = {
 
 /** The wire response the host enrollment endpoint returns (mirrors the host-side
  *  `buildHostEnrollmentPayload`). host_id/label may be empty on a host enabled before
- *  Task 2.4 wrote them, so the client falls back to what it already knows. */
+ *  Task 2.4 wrote them, so the client falls back to what it already knows.
+ *  `served_grove_id` is `undefined` when the KEY is absent (a pre-v2 host that
+ *  never sends the field), `null` when a v2 host reports it explicitly as
+ *  undesignated — both collapse to "no grove source" on {@link HostEnrollment}. */
 interface HostEnrollmentResponse {
   host_id?: string;
   label?: string;
   overlay_address?: string;
   protocol_version?: number;
   bearer?: string;
+  served_grove_id?: string | null;
   projects?: AttachRef[];
 }
 
@@ -301,6 +312,7 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
         overlay_address: parsed.overlay_address,
         protocol_version: parsed.protocol_version ?? ctx.protocolVersion ?? HOST_PROTOCOL_VERSION,
         bearer: parsed.bearer,
+        served_grove_id: parsed.served_grove_id ?? undefined,
         projects: parsed.projects,
       };
     },
@@ -505,8 +517,29 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     : 'Host daemon not confirmed reachable yet — verify with `myco doctor` after the overlay settles.');
   if (!hostReachable) notes.push('host daemon not confirmed reachable over the overlay');
 
-  // 7. Write THIS host's HostRecord (+ bearer). Merge onto any existing record so a
-  //    converging re-join preserves attached projects + created_at.
+  // 7. host_id reconciliation — WARN, never re-key (server-mode design spec §4).
+  //    The host's self-reported id can differ from the operator-typed one (a
+  //    typo, or a host renamed since an earlier affiliation hint); adopting it
+  //    would require re-keying this host's already-provisioned per-host
+  //    tailscaled instance (socket/statedir/label, all derived from the TYPED
+  //    id above) before enrollment ever ran — out of scope for v1. The typed
+  //    id stays the record key unconditionally; a mismatch only ever produces
+  //    a note, never a silent rewrite.
+  if (enrollment.host_id && enrollment.host_id !== hostId) {
+    const warning =
+      `Host self-reported id "${enrollment.host_id}" differs from the typed id "${hostId}" — `
+      + `keeping "${hostId}" as the host record key (Myco never re-keys a joined host silently). `
+      + 'Verify this is the host you meant to join.';
+    notes.push(warning);
+    log(`WARNING: ${warning}`);
+  }
+
+  // 8. Write THIS host's HostRecord (+ bearer). Merge onto any existing record so a
+  //    converging re-join preserves attached projects + created_at. served_grove_id
+  //    falls back to the existing record's value when this join's enrollment didn't
+  //    report one (e.g. the manual bridge, which has no host metadata) — a real
+  //    designation, once learned, is never clobbered by an enrollment that simply
+  //    didn't carry it.
   const existing = getHost(hostId);
   const record: HostRecord = {
     host_id: hostId,
@@ -514,6 +547,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     overlay_address: enrollment.overlay_address,
     proxy_port: proxyPort,
     protocol_version: enrollment.protocol_version,
+    served_grove_id: enrollment.served_grove_id ?? existing?.served_grove_id,
     created_at: existing?.created_at ?? new Date().toISOString(),
     projects: existing?.projects ?? enrollment.projects ?? [],
   };

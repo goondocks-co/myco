@@ -25,6 +25,7 @@ import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { readHostActionLog } from '@myco/host/action-log';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const HOST_BEARER = 'test-host-serve-bearer-0123456789abcdef';
@@ -78,9 +79,12 @@ describe('Team Host enrollment endpoint (/api/host/enroll)', () => {
     const body = await res.json();
     expect(body.bearer).toBe(HOST_BEARER);
     expect(body.overlay_address).toBe(`127.0.0.1:${server.overlayPort}`);
-    expect(body.protocol_version).toBe(1);
+    expect(body.protocol_version).toBe(HOST_PROTOCOL_VERSION);
     expect(body.host_id).toBe(HOST_ID);
     expect(body.label).toBe(HOST_LABEL);
+    // This fixture's hostServe carries no servedGroveId — undesignated
+    // reports as `null`, present but empty (protocol v2), never absent.
+    expect(body.served_grove_id).toBeNull();
     expect(body.projects).toEqual([]);
   });
 

@@ -647,8 +647,15 @@ export const HOST_SERVE_BEARER_SECRET = 'MYCO_HOST_SERVE_BEARER';
  * member accepts from a host, mirroring the sync
  * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]` discipline.
  */
-export const HOST_PROTOCOL_VERSION = 1;
-/** Oldest host protocol a member still talks to (inclusive window with HOST_PROTOCOL_VERSION). */
+export const HOST_PROTOCOL_VERSION = 2;
+/**
+ * Oldest host protocol a member still talks to (inclusive window with
+ * HOST_PROTOCOL_VERSION). Stays at 1: the v2 addition (enrollment
+ * self-reports `served_grove_id`) is additive, not breaking — an updated
+ * member talking to a v1 host simply gets no `served_grove_id` in the
+ * enrollment payload and surfaces `host_predates_served_grove` at attach
+ * time rather than being version-gated out of joining at all.
+ */
 export const HOST_MIN_COMPAT_VERSION = 1;
 
 /**

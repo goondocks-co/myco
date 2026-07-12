@@ -35,7 +35,7 @@ import {
   createProjectId,
 } from '@myco/grove/ids';
 import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
-import { HOST_BEARER_SECRET } from '@myco/constants';
+import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 
@@ -161,7 +161,7 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
     expect(hostHits[0].headers['x-myco-project-id']).toBe(projectId);
     expect(hostHits[0].headers['x-myco-auth']).toBeUndefined();
     expect(hostHits[0].headers.authorization).toBe('Bearer host-bearer');
-    expect(hostHits[0].headers['x-myco-host-protocol']).toBe('1');
+    expect(hostHits[0].headers['x-myco-host-protocol']).toBe(String(HOST_PROTOCOL_VERSION));
     // Local handler never ran; no local Grove DB opened.
     expect(sessionsHandlerCalls).toBe(0);
     expect(dbOpens).toBe(0);

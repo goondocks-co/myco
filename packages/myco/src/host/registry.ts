@@ -52,6 +52,17 @@ export interface HostRecord {
   overlay_address: string;
   proxy_port?: number;
   protocol_version: number;
+  /**
+   * The host's self-reported served Grove (enrollment protocol v2,
+   * server-mode design spec §2), learned at join time
+   * (`host/member-overlay.ts` `joinHost` step 7) and consulted by
+   * `attachCommand` as the ONE source of the Grove a new attach ref uses —
+   * the member never types a grove id. Absent when the host predates
+   * served-grove designation (its enrollment response carried no
+   * `served_grove_id` field at all) or when a join has not yet happened
+   * over the current protocol.
+   */
+  served_grove_id?: string;
   created_at: string;
   projects: AttachRef[];
 }

@@ -27,6 +27,7 @@ import {
 } from '@myco/grove/registry.js';
 import { getHost, resolveAttach, upsertHost, type HostRecord } from '@myco/host/registry.js';
 import { attachCommand, detachCommand } from '@myco/host/attach-command.js';
+import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { createFsDrainStore } from '@myco/capture/transcript-drain.js';
 
 let home: string;
@@ -51,12 +52,17 @@ afterEach(() => {
   clearProjectManifestCache();
 });
 
+/** Defaults to a served_grove_id (protocol v2) — most tests exercise the
+ *  post-designation contract where attach sources the Grove automatically.
+ *  Tests exercising `host_predates_served_grove` pass `served_grove_id:
+ *  undefined` explicitly to simulate a host that never reported one. */
 function makeHost(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
     host_id: createHostId(),
     label: 'Mac Studio',
     overlay_address: '100.64.0.1:7433',
-    protocol_version: 1,
+    protocol_version: 2,
+    served_grove_id: createGroveId(),
     created_at: new Date().toISOString(),
     projects: [],
     ...overrides,
@@ -77,34 +83,32 @@ function makeCheckout(projectId: string, hintHostId?: string): string {
 }
 
 describe('attach/detach command', () => {
-  test('attach records the ref (project id from the manifest, grove from the flag)', () => {
+  test('attach records the ref (project id from the manifest, grove sourced from the host record — no flag)', () => {
     const host = makeHost();
     upsertHost(host);
     const projectId = createProjectId();
-    const groveId = createGroveId();
     const root = makeCheckout(projectId);
 
-    const result = attachCommand({ projectPath: root, hostId: host.host_id, groveId, mycoHome: home });
+    const result = attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
 
     expect(result.alreadyAttached).toBe(false);
     expect(result.projectId).toBe(projectId);
-    expect(result.groveId).toBe(groveId);
+    expect(result.groveId).toBe(host.served_grove_id);
     expect(result.hostId).toBe(host.host_id);
 
     const resolved = resolveAttach(projectId);
     expect(resolved?.host.host_id).toBe(host.host_id);
-    expect(resolved?.ref).toEqual({ grove_id: groveId, project_id: projectId, root: path.resolve(root) });
+    expect(resolved?.ref).toEqual({ grove_id: host.served_grove_id, project_id: projectId, root: path.resolve(root) });
   });
 
   test('attach accepts an explicit --project-id override', () => {
     const host = makeHost();
     upsertHost(host);
     const projectId = createProjectId();
-    const groveId = createGroveId();
     // Checkout manifest carries a DIFFERENT id; the override wins.
     const root = makeCheckout(createProjectId());
 
-    attachCommand({ projectPath: root, hostId: host.host_id, groveId, projectId, mycoHome: home });
+    attachCommand({ projectPath: root, hostId: host.host_id, projectId, mycoHome: home });
 
     expect(resolveAttach(projectId)?.host.host_id).toBe(host.host_id);
   });
@@ -113,11 +117,10 @@ describe('attach/detach command', () => {
     const host = makeHost();
     upsertHost(host);
     const projectId = createProjectId();
-    const groveId = createGroveId();
     const root = makeCheckout(projectId, host.host_id);
 
     // No --host: resolved from the committed affiliation hint.
-    const result = attachCommand({ projectPath: root, groveId, mycoHome: home });
+    const result = attachCommand({ projectPath: root, mycoHome: home });
 
     expect(result.hostId).toBe(host.host_id);
     expect(resolveAttach(projectId)?.host.host_id).toBe(host.host_id);
@@ -128,7 +131,7 @@ describe('attach/detach command', () => {
     upsertHost(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
-    attachCommand({ projectPath: root, hostId: host.host_id, groveId: createGroveId(), mycoHome: home });
+    attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
     expect(resolveAttach(projectId)).not.toBeNull();
 
     const result = detachCommand({ projectPath: root });
@@ -143,7 +146,7 @@ describe('attach/detach command', () => {
     upsertHost(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
-    attachCommand({ projectPath: root, hostId: host.host_id, groveId: createGroveId(), mycoHome: home });
+    attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
 
     // Seed a durable drain entry for this project on this host (as the drain
     // would after shipping a delta), then assert detach clears it.
@@ -169,11 +172,10 @@ describe('attach/detach command', () => {
     const host = makeHost();
     upsertHost(host);
     const projectId = createProjectId();
-    const groveId = createGroveId();
     const root = makeCheckout(projectId);
 
-    attachCommand({ projectPath: root, hostId: host.host_id, groveId, mycoHome: home });
-    const second = attachCommand({ projectPath: root, hostId: host.host_id, groveId, mycoHome: home });
+    attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
+    const second = attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
 
     expect(second.alreadyAttached).toBe(true);
     expect(getHost(host.host_id)?.projects).toHaveLength(1);
@@ -186,12 +188,11 @@ describe('attach/detach command', () => {
     // reproduce the stuck shape.
     const host = makeHost();
     const projectId = createProjectId();
-    const groveId = createGroveId();
-    upsertHost({ ...host, projects: [{ grove_id: groveId, project_id: projectId }] });
+    upsertHost({ ...host, projects: [{ grove_id: host.served_grove_id!, project_id: projectId }] });
     expect(resolveAttach(projectId)?.ref.root).toBeUndefined();
 
     const root = makeCheckout(projectId);
-    const result = attachCommand({ projectPath: root, hostId: host.host_id, groveId, mycoHome: home });
+    const result = attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
 
     expect(result.alreadyAttached).toBe(true);
     expect(resolveAttach(projectId)?.ref.root).toBe(path.resolve(root));
@@ -214,7 +215,7 @@ describe('attach/detach command', () => {
     upsertHost(host);
     const root = makeCheckout(projectId);
 
-    expect(() => attachCommand({ projectPath: root, hostId: host.host_id, groveId: createGroveId(), mycoHome: home }))
+    expect(() => attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home }))
       .toThrow(/still has local Grove data.*task A2/s);
     // The guard wrote nothing.
     expect(resolveAttach(projectId)).toBeNull();
@@ -227,9 +228,9 @@ describe('attach/detach command', () => {
     upsertHost(hostB);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
-    attachCommand({ projectPath: root, hostId: hostA.host_id, groveId: createGroveId(), mycoHome: home });
+    attachCommand({ projectPath: root, hostId: hostA.host_id, mycoHome: home });
 
-    expect(() => attachCommand({ projectPath: root, hostId: hostB.host_id, groveId: createGroveId(), mycoHome: home }))
+    expect(() => attachCommand({ projectPath: root, hostId: hostB.host_id, mycoHome: home }))
       .toThrow(new RegExp(`already attached to host ${hostA.host_id}`));
     // hostA keeps sole ownership.
     expect(resolveAttach(projectId)?.host.host_id).toBe(hostA.host_id);
@@ -246,25 +247,18 @@ describe('attach/detach command', () => {
     expect(result.projectId).toBe(projectId);
   });
 
-  test('attach without --grove fails with an actionable error', () => {
-    const host = makeHost();
+  test('attach to a host that predates served-grove designation refuses with host_predates_served_grove ("update the host")', () => {
+    const host = makeHost({ served_grove_id: undefined });
     upsertHost(host);
     const root = makeCheckout(createProjectId());
 
     expect(() => attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home }))
-      .toThrow(/requires --grove/);
-  });
-
-  test('attach with a malformed --grove value fails format validation (mirrors --project-id)', () => {
-    const host = makeHost();
-    upsertHost(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-
-    expect(() => attachCommand({ projectPath: root, hostId: host.host_id, groveId: 'not-a-grove-id', mycoHome: home }))
-      .toThrow(/--grove must be a Grove id/);
-    // Nothing was recorded — the malformed id never reached the registry write.
-    expect(resolveAttach(projectId)).toBeNull();
+      .toThrow(/predates served-grove designation; update the host/);
+    try {
+      attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
+    } catch (err) {
+      expect(membershipErrorCode(err)).toBe('host_predates_served_grove');
+    }
   });
 
   test('attach to an unknown (not-joined) host fails with a join hint', () => {
@@ -272,7 +266,7 @@ describe('attach/detach command', () => {
     const root = makeCheckout(projectId);
     const unknownHost = createHostId();
 
-    expect(() => attachCommand({ projectPath: root, hostId: unknownHost, groveId: createGroveId(), mycoHome: home }))
+    expect(() => attachCommand({ projectPath: root, hostId: unknownHost, mycoHome: home }))
       .toThrow(new RegExp(`Unknown host ${unknownHost}.*myco join`, 's'));
   });
 
@@ -282,7 +276,7 @@ describe('attach/detach command', () => {
     // A checkout with no committed manifest and no --project-id override.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-attach-noid-'));
 
-    expect(() => attachCommand({ projectPath: root, hostId: host.host_id, groveId: createGroveId(), mycoHome: home }))
+    expect(() => attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home }))
       .toThrow(/Could not determine the project id/);
   });
 });

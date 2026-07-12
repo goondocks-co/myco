@@ -23,7 +23,20 @@ export type MembershipErrorCode =
   | 'project_registered_locally'
   | 'project_attached_to_other_host'
   | 'not_joined'
-  | 'protocol_mismatch';
+  | 'protocol_mismatch'
+  /** Attach has no Grove source: the joined host's `HostRecord` carries no
+   *  `served_grove_id` because it predates served-grove designation (its
+   *  enrollment response never included the field). Surfaced by
+   *  `attachCommand` (`host/attach-command.ts`) — see the "update the host"
+   *  copy in `mapAttachError`. */
+  | 'host_predates_served_grove'
+  /** An existing `AttachRef.grove_id` no longer matches the host's
+   *  `served_grove_id` (server-mode design spec §2 existing-refs mitigation
+   *  (c)) — surfaced read-only by the membership status probe
+   *  (`GET /api/host-membership/status`), not thrown from a mutation, so a
+   *  member with a stale ref sees it flagged rather than having drains fail
+   *  opaquely. */
+  | 'attach_grove_mismatch';
 
 /** Build an Error carrying a stable membership code alongside its
  *  (CLI-voiced) message. The message still prints verbatim in terminals;

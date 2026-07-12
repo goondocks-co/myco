@@ -214,7 +214,7 @@ describe('AttachProjectPanel', () => {
     expect(screen.queryByText('Route a project through a Team Host')).not.toBeInTheDocument();
   });
 
-  it('takes an operator-typed project path (never a picker of already-locally-registered projects), and submits project_root/host_id/grove_id', async () => {
+  it('takes an operator-typed project path (never a picker of already-locally-registered projects), and submits project_root/host_id — no grove id (the daemon sources it from the host record)', async () => {
     statusFixture = {
       hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
@@ -229,12 +229,11 @@ describe('AttachProjectPanel', () => {
 
     fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/fresh' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_abc' } });
-    fireEvent.change(screen.getByLabelText('Grove id (on the host)'), { target: { value: 'grove_y' } });
     expect(submit).not.toBeDisabled();
     fireEvent.click(submit);
 
     await waitFor(() => expect(attachMutateAsync).toHaveBeenCalledWith({
-      project_root: '/checkout/fresh', host_id: 'host_abc', grove_id: 'grove_y',
+      project_root: '/checkout/fresh', host_id: 'host_abc',
     }));
     await waitFor(() => expect(screen.getByTestId('host-attach-success')).toBeInTheDocument());
   });
@@ -259,7 +258,6 @@ describe('AttachProjectPanel', () => {
 
     fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/used' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_abc' } });
-    fireEvent.change(screen.getByLabelText('Grove id (on the host)'), { target: { value: 'grove_y' } });
     fireEvent.click(screen.getByRole('button', { name: /attach project/i }));
 
     await waitFor(() => expect(screen.getByTestId('host-attach-error')).toHaveTextContent(/already has local Myco data/));

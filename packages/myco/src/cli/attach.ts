@@ -41,7 +41,6 @@ export async function runAttach(args: string[], vaultDir: string): Promise<void>
   const result = await client.post('/api/host-membership/attach', {
     project_root: projectRoot,
     host_id: flags.get('host'),
-    grove_id: flags.get('grove'),
     project_id: flags.get('project-id'),
   }, { timeoutMs: ATTACH_TIMEOUT_MS });
 

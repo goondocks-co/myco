@@ -20,6 +20,10 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
     "This machine hasn't joined that host yet. Join it first using the form above, then attach.",
   protocol_mismatch:
     'This machine and the host are running different Myco versions. Update Myco on both, then try again.',
+  host_predates_served_grove:
+    "This host hasn't reported which Grove it serves yet — update Myco on the host machine, then re-join and try attaching again.",
+  attach_grove_mismatch:
+    "This project's attach record points at a Grove the host no longer serves. Detach and re-attach to route it to the host's current Grove.",
 };
 
 function apiErrorCode(err: ApiError): string | null {

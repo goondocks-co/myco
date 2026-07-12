@@ -261,21 +261,21 @@ function HostCard({ host }: { host: HostMembershipHost }) {
 // Grove state and would be refused with `ProjectRegisteredLocallyError`).
 // The operator types the checkout path directly, exactly like `myco attach
 // <project>` — same "typed, honestly unverified" posture as the join form's
-// host id, and the same principle applied to the Grove id (no local source
-// knows a host's Grove list; WS5/E-0 territory).
+// host id. There is no Grove picker: a host serves exactly one designated
+// Grove and self-reports it at join, so attach sources it from the joined
+// host record — the operator never supplies one.
 // ---------------------------------------------------------------------------
 
 function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
   const attach = useAttachProject();
   const [projectRoot, setProjectRoot] = useState('');
   const [hostId, setHostId] = useState('');
-  const [groveId, setGroveId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   if (hosts.length === 0) return null;
 
-  const canSubmit = Boolean(projectRoot.trim() && hostId.trim() && groveId.trim()) && !attach.isPending;
+  const canSubmit = Boolean(projectRoot.trim() && hostId.trim()) && !attach.isPending;
 
   const handleAttach = async () => {
     setError(null);
@@ -284,13 +284,11 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
       const result = await attach.mutateAsync({
         project_root: projectRoot.trim(),
         host_id: hostId.trim(),
-        grove_id: groveId.trim(),
       });
       setSuccess(result.already_attached
         ? `${result.project_id} is already attached to ${result.host_label}.`
         : `Project attached — new work now routes to ${result.host_label}.`);
       setProjectRoot('');
-      setGroveId('');
     } catch (err) {
       setError(membershipErrorCopy(err));
     }
@@ -300,8 +298,8 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
     <Panel tone="sage" eyebrow={<IconEyebrow Icon={Link2}>Attach</IconEyebrow>} title="Route a project through a Team Host">
       <p className="text-xs text-on-surface-variant m-0 mb-3">
         Attach a checkout that hasn't been used with Myco yet — going forward only, so a project that already has
-        local Grove history is refused (migrate it off its local Grove first). The path and Grove id below aren't
-        verified here; get the Grove id from the host operator or the host's Groves page.
+        local Grove history is refused (migrate it off its local Grove first). The path below isn't verified here.
+        The host's served Grove is used automatically — no Grove id to supply.
       </p>
       <div className="flex flex-col gap-2">
         <label className={labelClass} htmlFor="host-attach-project">Project path</label>
@@ -311,8 +309,6 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
           <option value="">Select a joined host…</option>
           {hosts.map((h) => <option key={h.host_id} value={h.host_id}>{h.label} ({h.host_id})</option>)}
         </select>
-        <label className={labelClass} htmlFor="host-attach-grove">Grove id (on the host)</label>
-        <input id="host-attach-grove" className={inputClass} value={groveId} onChange={(e) => setGroveId(e.target.value)} placeholder="grove_…" />
         <div className="flex justify-end">
           <Button size="sm" disabled={!canSubmit} onClick={handleAttach}>
             {attach.isPending ? 'Attaching…' : 'Attach project'}

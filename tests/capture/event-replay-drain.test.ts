@@ -41,7 +41,7 @@ import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
 import { upsertHost, writeHostSecret } from '@myco/host/registry';
 import { listGroves } from '@myco/grove/registry';
 import type { RemoteTarget } from '@myco/host/routing';
-import { HOST_BEARER_SECRET, HOST_PROTOCOL_HEADER } from '@myco/constants';
+import { HOST_BEARER_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 
 const MACHINE = 'alice_a1b2c3d4';
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -762,7 +762,7 @@ describe('default transport wire shape', () => {
     expect(seen[0].method).toBe('POST');
     expect(seen[0].url).toBe('/events');
     expect(seen[0].headers.authorization).toBe('Bearer bearer-x');
-    expect(seen[0].headers[HOST_PROTOCOL_HEADER]).toBe('1');
+    expect(seen[0].headers[HOST_PROTOCOL_HEADER]).toBe(String(HOST_PROTOCOL_VERSION));
     expect(seen[0].headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe(PROJ_A);
     expect(seen[0].headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe(GROVE_A);
     expect(seen[0].headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe(MACHINE);

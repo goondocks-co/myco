@@ -461,6 +461,15 @@ export interface HostEnrollmentPayload {
   protocol_version: number;
   /** The shared host serve-bearer (the secret enrollment delivers over the overlay). */
   bearer: string;
+  /**
+   * This host's one served Grove (protocol v2, server-mode design spec §2).
+   * `null` when serving is enabled but undesignated — a distinct wire state
+   * from the field being ABSENT entirely, which is how a pre-v2 host's
+   * enrollment response looks and is what tells a joining member "this host
+   * predates served-grove designation" (`member-overlay.ts`
+   * `HostEnrollmentResponse.served_grove_id`).
+   */
+  served_grove_id: string | null;
   /** Pre-associated projects — always empty in v1 (attach is a separate UI step). */
   projects: never[];
 }
@@ -478,6 +487,7 @@ export function buildHostEnrollmentPayload(runtime: HostServeRuntime, overlayPor
     overlay_address: `${runtime.overlayAddress}:${overlayPort}`,
     protocol_version: HOST_PROTOCOL_VERSION,
     bearer: runtime.bearer,
+    served_grove_id: runtime.servedGroveId ?? null,
     projects: [],
   };
 }
