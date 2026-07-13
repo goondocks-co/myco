@@ -258,6 +258,36 @@ export async function checkServedGroveKeyHealth(mycoHome?: string): Promise<Doct
   };
 }
 
+/**
+ * External MCP listener/funnel coherence (Task 10, server-mode design spec
+ * §7) — surfaces the ONE inconsistency a pure config/secrets read can
+ * detect: the toggle says enabled but no access token was ever minted, so
+ * the listener cannot authenticate any caller. Same "pure classifier +
+ * check() wraps it" shape as the other served-grove checks in this file.
+ *
+ * Does NOT verify the listener is actually bound on this daemon process or
+ * that Tailscale Funnel is actually fronting it — those are live-process
+ * observables outside a doctor CLI run's reach; Funnel itself is
+ * rig-validated (Task 12). Returns null when there's nothing actionable:
+ * the toggle is off, or a token exists.
+ */
+export async function checkExternalMcpCoherence(mycoHome?: string): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { resolveExternalMcpCoherence } = await import('../daemon/host-serve.js');
+
+  const coherence = resolveExternalMcpCoherence(loadMachineConfig(mycoHome), mycoHome ?? resolveMycoHome());
+  if (coherence.kind !== 'missing_token') return null;
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail:
+      `The external read-only MCP listener is enabled (port ${coherence.port}) but no access token exists — `
+      + 'it cannot authenticate any caller in this state. Re-run the Team page enable toggle to mint one, '
+      + 'or disable exposure until it can.',
+    fixable: false,
+  };
+}
+
 /** Human-readable byte count, e.g. "4.2 KB". */
 function formatDrainBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -887,6 +917,8 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   if (servedGroveBackupStaleness) checks.push(servedGroveBackupStaleness);
   const servedGroveKeyHealth = await checkServedGroveKeyHealth();
   if (servedGroveKeyHealth) checks.push(servedGroveKeyHealth);
+  const externalMcpCoherence = await checkExternalMcpCoherence();
+  if (externalMcpCoherence) checks.push(externalMcpCoherence);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:

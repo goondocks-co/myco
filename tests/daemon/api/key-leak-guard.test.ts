@@ -357,6 +357,37 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
     writeSecret(resolveGroveDir(grove.id, process.env.MYCO_HOME!), 'ANTHROPIC_API_KEY', TEAM_SENTINEL_EXISTING);
 
     const base = `http://127.0.0.1:${overlayServer.overlayPort}`;
+
+    // ---------------------------------------------------------------------
+    // The external MCP token's TWO deliberate reveal surfaces (Task 10
+    // obligation): rotate mints-and-reveals; the enable-toggle reveals
+    // whatever token currently exists (mint-if-absent — a pre-existing
+    // token from rotate above is NOT re-minted, but IS still handed back,
+    // since the member enabling exposure needs the raw value to configure
+    // an external agent). Both responses MUST carry the SAME raw token.
+    // ---------------------------------------------------------------------
+    const rotateRes = await fetch(`${base}/api/team/mcp-token/rotate`, {
+      method: 'POST',
+      headers: overlayHeaders(),
+    });
+    const rotateBody = await rotateRes.json() as { token: string; tokenHash: string };
+    const currentToken = rotateBody.token;
+    expect(typeof currentToken, 'POST /api/team/mcp-token/rotate did not reveal the raw token').toBe('string');
+    expect(currentToken.length).toBeGreaterThan(0);
+    const storedAfterRotate = readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+    expect(currentToken).toBe(storedAfterRotate);
+
+    const enableRes = await fetch(`${base}/api/team/external-mcp/toggle`, {
+      method: 'PUT',
+      headers: { ...overlayHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    });
+    const enableBody = await enableRes.json() as { token: string; enabled: boolean };
+    expect(enableBody.enabled).toBe(true);
+    expect(enableBody.token, 'PUT /api/team/external-mcp/toggle enable did not reveal the SAME mint-if-absent token').toBe(currentToken);
+    // mint-if-absent must NOT have rotated it.
+    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(currentToken);
+
     const requests: Array<{ method: string; path: string; body?: unknown }> = [
       { method: 'GET', path: '/api/team/config' },
       { method: 'PUT', path: '/api/team/config', body: { patch: { agent: { provider: { type: 'anthropic' } } } } },
@@ -366,7 +397,10 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       // via an unrelated field must not cause it to be echoed either.
       { method: 'PUT', path: '/api/team/secrets/openai', body: { secret: TEAM_SENTINEL_NEW, leak: TEAM_SENTINEL_EXISTING } },
       { method: 'DELETE', path: '/api/team/secrets/anthropic' },
-      { method: 'POST', path: '/api/team/mcp-token/rotate' },
+      // Status/disable — neither is a reveal surface: GET never echoes the
+      // raw token (only its hash), and disable mints/reveals nothing.
+      { method: 'GET', path: '/api/team/external-mcp' },
+      { method: 'PUT', path: '/api/team/external-mcp/toggle', body: { enabled: false } },
       // Unknown-provider and missing-secret error paths must not echo anything either.
       { method: 'PUT', path: '/api/team/secrets/not-a-provider', body: { secret: TEAM_SENTINEL_NEW } },
       { method: 'PUT', path: '/api/team/secrets/anthropic', body: {} },
@@ -375,8 +409,6 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       { method: 'PUT', path: '/api/team/agent-tasks/vault-evolve/config', body: { maxTurns: 9 } },
     ];
 
-    let mintedTokenResponseCount = 0;
-    let rotateResponseText: string | undefined;
     for (const r of requests) {
       const init: RequestInit = { method: r.method, headers: overlayHeaders() };
       if (r.body !== undefined) {
@@ -387,20 +419,8 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       const text = await res.text();
       expect(text, `${r.method} ${r.path} leaked the existing team key`).not.toContain(TEAM_SENTINEL_EXISTING);
       expect(text, `${r.method} ${r.path} leaked the new team key`).not.toContain(TEAM_SENTINEL_NEW);
-      if (r.path === '/api/team/mcp-token/rotate') {
-        mintedTokenResponseCount += 1;
-        rotateResponseText = text;
-      }
+      expect(text, `${r.method} ${r.path} leaked the external MCP token outside its two reveal surfaces`).not.toContain(currentToken);
     }
-    expect(mintedTokenResponseCount).toBe(1);
-
-    // The minted external MCP token is never echoed either, over the SAME
-    // route class the rest of this test exercises: assert non-containment of
-    // the raw stored token against the actual rotate response body, not just
-    // that a token got minted.
-    const mintedToken = readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
-    expect(mintedToken).toBeDefined();
-    expect(rotateResponseText, 'POST /api/team/mcp-token/rotate leaked the raw minted token').not.toContain(mintedToken!);
   });
 
   it('pins the masked-secret shape (first-8+last-4) on the PUT response — the merge gate\'s echo contract', async () => {

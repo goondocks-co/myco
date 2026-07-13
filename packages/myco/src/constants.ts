@@ -656,11 +656,24 @@ export const TEAM_AGENT_KEY_SECRET = 'MYCO_TEAM_AGENT_KEY';
  * (server-mode design spec §7 — a THIRD credential, distinct from the loopback
  * daemon token and the member serve-bearer). Server-minted at ≥122 bits,
  * rotatable by any team member via the `team-write` `POST
- * /api/team/mcp-token/rotate` route (Task 8's thin seam; Task 10 builds the
- * listener that authenticates against it). Never echoed raw over that route —
- * only a non-secret change-detection hash is returned.
+ * /api/team/mcp-token/rotate` route, and mint-if-absent at `PUT
+ * /api/team/external-mcp/toggle` enable (Task 10's dedicated listener
+ * authenticates against it with a constant-time compare). The raw value is
+ * revealed exactly once, in the response of whichever of those two routes
+ * just minted or rotated it — the ONLY reveal surface; every other route
+ * (including `GET /api/team/external-mcp`) echoes only a non-secret
+ * change-detection hash.
  */
 export const HOST_EXTERNAL_MCP_TOKEN_SECRET = 'MYCO_HOST_EXTERNAL_MCP_TOKEN';
+/**
+ * Default loopback port the external MCP listener binds when a member
+ * enables exposure without picking one (`daemon.external_mcp.port`,
+ * server-mode design spec §7). Distinct from the daemon's own port and the
+ * overlay listener's port — `tailscale funnel <port>` fronts exactly this
+ * one on the public internet, so it must be a fixed, known value a member
+ * can point Funnel at deterministically across restarts.
+ */
+export const EXTERNAL_MCP_DEFAULT_PORT = 8743;
 
 /**
  * Wire protocol for member-daemon ↔ host-daemon overlay traffic. Bump on any

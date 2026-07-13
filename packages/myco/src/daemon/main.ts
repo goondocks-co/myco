@@ -8,6 +8,7 @@
 
 import { DaemonServer } from './server.js';
 import { resolveHostServeConfig } from './host-serve.js';
+import { ExternalMcpListener, defaultFunnelRunner } from './external-listener.js';
 import type { RouteRequest } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger, type Logger } from './logger.js';
@@ -1209,6 +1210,34 @@ export async function main(): Promise<void> {
     logger,
   });
 
+  // External read-only MCP (Task 10, server-mode design spec §7): one
+  // dedicated listener instance for the daemon's lifetime. Constructed
+  // unconditionally (like the overlay listener, its BIND is what's
+  // conditional) so `PUT /api/team/external-mcp/toggle` always has a live
+  // instance to bind/unbind. `resolveDatabase` mirrors the loopback `/mcp`
+  // handler's wiring below so both surfaces reuse the SAME cached DB
+  // handles rather than opening a private one per external call.
+  const externalMcpListener = new ExternalMcpListener({
+    vaultDir: bootstrapVaultDir,
+    hostServe,
+    resolveDatabase: (databasePath) => databasePath === dataPaths.databasePath
+      ? db
+      : runtimeCache.getDatabase(databasePath),
+    logger,
+    mycoHome,
+  });
+  // Re-bind from persisted config on boot when the toggle is already on —
+  // a restart must never leave `enabled: true` pointed at a dead port while
+  // Funnel is still fronting it. Never blocks/crashes boot: a bind failure
+  // logs (inside `bind`) and leaves the listener unbound, exactly like the
+  // overlay listener's own never-throws boot contract.
+  if (hostServe?.servedGroveId) {
+    const externalMcpConfig = loadMachineConfig(mycoHome).daemon.external_mcp;
+    if (externalMcpConfig.enabled) {
+      void externalMcpListener.bind(externalMcpConfig.port);
+    }
+  }
+
   // Team Host: the MEMBER-side transcript-content drain (capture-push C1). Ships
   // an attached session's transcript byte-deltas over the overlay to the host
   // materializer (C2), offset-authoritative + multi-host. Its `proxyDeps()` are
@@ -1716,6 +1745,9 @@ export async function main(): Promise<void> {
     onConfigWrite: async (touchedPaths: string[], groveId: string) => {
       await applyConfigWriteReactions(touchedPaths, { vaultDir: bootstrapVaultDir, groveId });
     },
+    // Task 10: the toggle route binds/unbinds the SAME listener instance
+    // boot re-bind above uses, and fronts it with the real Funnel CLI.
+    externalMcp: { listener: externalMcpListener, runFunnel: defaultFunnelRunner },
   };
   registerTeamConfigRoutes(server, teamWriteDeps);
   // Per-task table (spec §6.3) — the team-write counterpart to the
@@ -2924,6 +2956,7 @@ export async function main(): Promise<void> {
       });
     }
     registry.destroy();
+    await externalMcpListener.unbind();
     await server.stop();
     runtimeCache.closeAll();
     vectorStore.close();

@@ -30,6 +30,7 @@ import type http from 'node:http';
 
 import {
   HOST_ENROLL_ROUTE,
+  HOST_EXTERNAL_MCP_TOKEN_SECRET,
   HOST_MIN_COMPAT_VERSION,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
@@ -442,6 +443,46 @@ export function resolveServedGroveKeyHealthIsolated(
       if (!before.has(key)) delete process.env[key];
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// External MCP config/token coherence (`myco doctor`, server-mode design
+// spec §7)
+// ---------------------------------------------------------------------------
+
+/**
+ * External MCP config/secret coherence — the config-layer half of "doctor
+ * reports funnel/listener coherence" (Task 10). `missing_token` is the ONE
+ * inconsistency this pure, file-based classifier can actually detect: the
+ * toggle says enabled but no token has ever been minted (e.g. a hand-edited
+ * `config.yaml`, or a secrets.env wiped out from under a running daemon) —
+ * the listener cannot possibly authenticate a caller in that state.
+ *
+ * What this does NOT (and structurally cannot) verify without a live
+ * process or shelling to `tailscale`: whether THIS daemon actually has the
+ * listener bound right now, and whether Funnel is actually fronting the
+ * port. Those are live-daemon/live-tailscaled observables — the Funnel
+ * frontend is rig-validated in Task 12, not unit-testable, and daemon doctor
+ * checks are deliberately process-independent (pure reads over
+ * `~/.myco/config.yaml` + `secrets.env`, same as every other check in this
+ * file). `ok` covers "config says enabled and a token exists" — a stronger
+ * claim than that is out of scope for this classifier.
+ */
+export type ExternalMcpCoherence =
+  | { kind: 'not_enabled' }
+  | { kind: 'missing_token'; port: number }
+  | { kind: 'ok'; port: number };
+
+export function resolveExternalMcpCoherence(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ExternalMcpCoherence {
+  const externalMcp = machineConfig.daemon.external_mcp;
+  if (!externalMcp.enabled) return { kind: 'not_enabled' };
+
+  const token = readSecrets(mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+  if (!token || !token.trim()) return { kind: 'missing_token', port: externalMcp.port };
+  return { kind: 'ok', port: externalMcp.port };
 }
 
 // ---------------------------------------------------------------------------

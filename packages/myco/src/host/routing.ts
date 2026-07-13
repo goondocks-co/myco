@@ -334,6 +334,9 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'PUT', pattern: '/api/team/secrets/:provider', stamp: 'team-write', capability: TEAM_WRITE },
   { method: 'DELETE', pattern: '/api/team/secrets/:provider', stamp: 'team-write', capability: TEAM_WRITE },
   { method: 'POST', pattern: '/api/team/mcp-token/rotate', stamp: 'team-write', capability: TEAM_WRITE },
+  // Task 10: external read-only MCP toggle/status (server-mode design spec §7).
+  { method: 'GET', pattern: '/api/team/external-mcp', stamp: 'team-write', capability: TEAM_WRITE },
+  { method: 'PUT', pattern: '/api/team/external-mcp/toggle', stamp: 'team-write', capability: TEAM_WRITE },
   // Per-task table (spec §6.3): the bespoke `/api/agent/tasks/:id/config` is
   // config-lock stamped above, so the Team page's per-task overrides reach
   // the served grove through this parallel team-write pair instead.

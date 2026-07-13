@@ -54,6 +54,11 @@ const ALLOWLIST: readonly string[] = [
   // `myco-team host enable` and the operator Team page (Task 2.1 / Phase 3),
   // never a generic per-field Settings card.
   'daemon.host_serve.',
+  // External read-only MCP opt-in (Task 10, server-mode design spec §7) —
+  // operator control-plane, configured via the Team page's enable/disable
+  // toggle (`PUT /api/team/external-mcp/toggle`), never a generic per-field
+  // Settings card. Same posture as `daemon.host_serve.` above.
+  'daemon.external_mcp.',
 ];
 
 function isAllowlisted(key: string): boolean {
