@@ -109,6 +109,7 @@ import { registerContentClaimMaterializeRoute } from './api/content-claims-mater
 import { registerContentClaimFileStatusRoute } from './api/content-claims-file-status.js';
 import { registerDrainHealthRoute } from './api/drain-health.js';
 import { registerHostMembershipRoutes } from './api/host-membership.js';
+import { registerTeamConfigRoutes } from './api/team-config.js';
 import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
 import { tenantRoute } from './api/route-helpers.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
@@ -1702,6 +1703,18 @@ export async function main(): Promise<void> {
       });
     }
     return response;
+  });
+
+  // `team-write` route class (Task 8): the served grove's team config/secrets,
+  // reached by a member through their own daemon's proxy. Only ever answers
+  // for real on the one machine designated as this Grove's Team Host —
+  // elsewhere `hostServe` is null and every handler refuses `not_serving`.
+  registerTeamConfigRoutes(server, {
+    hostServe,
+    mycoHome,
+    onConfigWrite: async (touchedPaths, groveId) => {
+      await applyConfigWriteReactions(touchedPaths, { vaultDir: bootstrapVaultDir, groveId });
+    },
   });
 
   // Machine-tier config (~/.myco/config.yaml) — port, log policy, update

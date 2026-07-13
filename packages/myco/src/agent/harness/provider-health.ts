@@ -35,7 +35,7 @@ export interface ProviderAvailability {
 // actually reads at call time (`agent/harness/openai.ts`'s
 // PROVIDER_CLIENT_CONFIG_RESOLVERS, `agent/provider.ts`'s ANTHROPIC_API_KEY)
 // so this check can never drift from what a dispatch would actually use.
-const KEYED_CLOUD_PROVIDER_ENV: Partial<Record<ProviderType, string[]>> = {
+export const KEYED_CLOUD_PROVIDER_ENV: Partial<Record<ProviderType, string[]>> = {
   anthropic: ['ANTHROPIC_API_KEY'],
   openai: [OPENAI_API_KEY_ENV, 'OPENAI_API_KEY'],
   openrouter: [OPENROUTER_API_KEY_ENV],

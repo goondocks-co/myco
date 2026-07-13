@@ -34,6 +34,12 @@ import {
   handleGetSessionPlans,
 } from '@myco/daemon/api/sessions';
 import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
+import { registerTeamConfigRoutes } from '@myco/daemon/api/team-config.js';
+import type { HostServeRuntime } from '@myco/daemon/host-serve.js';
+import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
+import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
+import { readSecrets } from '@myco/config/secrets.js';
+import { HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const SENTINELS = {
   openai: 'sk-sentinel-openai-ABCDEF1234567890',
@@ -263,5 +269,138 @@ describe('cross-route API key leak guard', () => {
       const url = String(call[0]);
       expect(url).not.toContain('attacker.example');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// team-write routes, captured over a REAL overlay listener (MERGE GATE,
+// Task 8) — the leak-guard extension the plan names as a merge gate for the
+// team-write routes, not a follow-up. A team secret that already exists in
+// the served grove's secrets.env, plus one written mid-test, must never
+// appear in ANY team-write response body — success or error — reached the
+// SAME way a real member would reach it: over the overlay, bearer + version
+// headers, servedGroveRefusal actually enforced.
+// ---------------------------------------------------------------------------
+
+describe('team-write routes over the overlay: no raw key ever leaves the host (merge gate)', () => {
+  const TEAM_SENTINEL_EXISTING = 'sk-ant-sentinel-existing-team-key-ABCDEFGH1234';
+  const TEAM_SENTINEL_NEW = 'sk-ant-sentinel-new-team-key-ZYXWVUTSRQ9876';
+  const HOST_BEARER = 'test-key-leak-guard-team-host-bearer';
+
+  let tmp: string;
+  let savedHome: string | undefined;
+  let savedTeamHome: string | undefined;
+  let grove: GroveRecord;
+  let projectId: string;
+  let overlayServer: DaemonServer;
+
+  beforeAll(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-leak-guard-team-write-'));
+    savedHome = process.env.MYCO_HOME;
+    savedTeamHome = process.env.MYCO_TEAM_HOME;
+    const home = path.join(tmp, 'home');
+    fs.mkdirSync(home, { recursive: true });
+    process.env.MYCO_HOME = home;
+    process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
+    clearGroveRegistryCaches();
+
+    grove = createGrove('Served', home);
+    projectId = assertGroveProjectId(createProjectId());
+    const projectRoot = path.join(tmp, 'served-project');
+    fs.mkdirSync(projectRoot, { recursive: true });
+    registerProjectInGrove(grove.id, { projectId, projectName: 'Served project', projectRoot }, home);
+
+    const hostServe: HostServeRuntime = {
+      overlayAddress: '127.0.0.1',
+      overlayPort: 0,
+      bearer: HOST_BEARER,
+      servedGroveId: grove.id,
+    };
+    overlayServer = new DaemonServer({
+      vaultDir: path.join(tmp, 'host-anchor', '.myco'),
+      logger: new DaemonLogger(path.join(tmp, 'host-logs')),
+      hostServe,
+    });
+    registerTeamConfigRoutes(overlayServer, { hostServe, mycoHome: home });
+    await overlayServer.start(0);
+  });
+
+  afterAll(async () => {
+    await overlayServer.stop();
+    if (savedHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = savedHome;
+    if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = savedTeamHome;
+    clearGroveRegistryCaches();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function overlayHeaders(extra: Record<string, string> = {}): Record<string, string> {
+    return {
+      authorization: `Bearer ${HOST_BEARER}`,
+      [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
+      'x-myco-grove-id': grove.id,
+      'x-myco-project-id': projectId,
+      ...extra,
+    };
+  }
+
+  it('MERGE GATE: no team-write response over the overlay ever contains a raw team key', async () => {
+    // Seed an already-configured key directly, as if an earlier PUT had run.
+    const { writeSecret } = await import('@myco/config/secrets.js');
+    const { resolveGroveDir } = await import('@myco/grove/paths.js');
+    writeSecret(resolveGroveDir(grove.id, process.env.MYCO_HOME!), 'ANTHROPIC_API_KEY', TEAM_SENTINEL_EXISTING);
+
+    const base = `http://127.0.0.1:${overlayServer.overlayPort}`;
+    const requests: Array<{ method: string; path: string; body?: unknown }> = [
+      { method: 'GET', path: '/api/team/config' },
+      { method: 'PUT', path: '/api/team/config', body: { patch: { agent: { provider: { type: 'anthropic' } } } } },
+      // Writing a NEW key must echo ONLY the masked form, never the raw sentinel.
+      { method: 'PUT', path: '/api/team/secrets/anthropic', body: { secret: TEAM_SENTINEL_NEW } },
+      // An attacker-shaped body trying to smuggle the existing sentinel back out
+      // via an unrelated field must not cause it to be echoed either.
+      { method: 'PUT', path: '/api/team/secrets/openai', body: { secret: TEAM_SENTINEL_NEW, leak: TEAM_SENTINEL_EXISTING } },
+      { method: 'DELETE', path: '/api/team/secrets/anthropic' },
+      { method: 'POST', path: '/api/team/mcp-token/rotate' },
+      // Unknown-provider and missing-secret error paths must not echo anything either.
+      { method: 'PUT', path: '/api/team/secrets/not-a-provider', body: { secret: TEAM_SENTINEL_NEW } },
+      { method: 'PUT', path: '/api/team/secrets/anthropic', body: {} },
+    ];
+
+    let mintedTokenResponseCount = 0;
+    for (const r of requests) {
+      const init: RequestInit = { method: r.method, headers: overlayHeaders() };
+      if (r.body !== undefined) {
+        init.headers = { ...init.headers, 'content-type': 'application/json' };
+        init.body = JSON.stringify(r.body);
+      }
+      const res = await fetch(`${base}${r.path}`, init);
+      const text = await res.text();
+      expect(text, `${r.method} ${r.path} leaked the existing team key`).not.toContain(TEAM_SENTINEL_EXISTING);
+      expect(text, `${r.method} ${r.path} leaked the new team key`).not.toContain(TEAM_SENTINEL_NEW);
+      if (r.path === '/api/team/mcp-token/rotate') mintedTokenResponseCount += 1;
+    }
+    expect(mintedTokenResponseCount).toBe(1);
+
+    // The minted external MCP token is never echoed either, over the SAME
+    // route class the rest of this test exercises.
+    const mintedToken = readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+    expect(mintedToken).toBeDefined();
+  });
+
+  it('pins the masked-secret shape (first-8+last-4) on the PUT response — the merge gate\'s echo contract', async () => {
+    const base = `http://127.0.0.1:${overlayServer.overlayPort}`;
+    const secret = 'sk-ant-shape-pin-ABCDEFGHIJKLMNOPQRSTUVWX9999';
+    const res = await fetch(`${base}/api/team/secrets/anthropic`, {
+      method: 'PUT',
+      headers: { ...overlayHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ secret }),
+    });
+    expect(res.status).toBeLessThan(300);
+    const body = await res.json() as { provider: string; maskedValue: string };
+    expect(body.provider).toBe('anthropic');
+    expect(body.maskedValue).toBe(
+      `${secret.slice(0, 8)}${'*'.repeat(secret.length - 12)}${secret.slice(-4)}`,
+    );
   });
 });

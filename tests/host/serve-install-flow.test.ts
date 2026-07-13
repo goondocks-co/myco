@@ -307,17 +307,36 @@ describe('hostEnableAndEmitJoin', () => {
   // (d) optional team key → served grove secrets.env, masked echo only
   // -------------------------------------------------------------------------
 
-  it('(d) team key lands in the served grove secrets.env via writeSecret, never in YAML', async () => {
+  it('(d) team key lands in the served grove secrets.env under the PROVIDER-STANDARD name (never TEAM_AGENT_KEY_SECRET, the transport-only name), never in YAML', async () => {
     const { deps } = buildDeps();
     const teamKey = 'sk-testkey1234567890ABCDEFGH';
     const result = await hostEnableAndEmitJoin({ ...OPTS, teamAgentKey: teamKey }, deps);
 
     const groveDir = resolveGroveDir(result.enable.servedGroveId, home());
     const secrets = readSecrets(groveDir);
-    expect(secrets[TEAM_AGENT_KEY_SECRET]).toBe(teamKey);
+    // Default provider is anthropic (spec §5's API-key path) — stored under
+    // ANTHROPIC_API_KEY, the SAME name `missingKeyReason`/`probeProviderAvailable`
+    // read, per KEYED_CLOUD_PROVIDER_ENV (Task 8's cross-task alignment fix).
+    expect(secrets.ANTHROPIC_API_KEY).toBe(teamKey);
+    // The CLI-flag/env-var TRANSPORT name is never the storage key.
+    expect(secrets[TEAM_AGENT_KEY_SECRET]).toBeUndefined();
 
     const rawGroveYaml = fs.readFileSync(resolveGroveConfigPath(result.enable.servedGroveId, home()), 'utf-8');
     expect(rawGroveYaml).not.toContain(teamKey);
+  });
+
+  it('(d) --team-key-provider selects a different provider-standard storage name', async () => {
+    const { deps } = buildDeps();
+    const teamKey = 'sk-testkey1234567890ABCDEFGH';
+    const result = await hostEnableAndEmitJoin(
+      { ...OPTS, teamAgentKey: teamKey, teamKeyProvider: 'openai' },
+      deps,
+    );
+
+    const groveDir = resolveGroveDir(result.enable.servedGroveId, home());
+    const secrets = readSecrets(groveDir);
+    expect(secrets.MYCO_OPENAI_API_KEY).toBe(teamKey);
+    expect(secrets.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
   it('(d) team key echo is masked (first-8+last-4) — the raw value never appears in the result', async () => {
@@ -338,7 +357,9 @@ describe('hostEnableAndEmitJoin', () => {
 
     expect(result.teamAgentKeyMasked).toBeNull();
     const groveDir = resolveGroveDir(result.enable.servedGroveId, home());
-    expect(readSecrets(groveDir)[TEAM_AGENT_KEY_SECRET]).toBeUndefined();
+    const secrets = readSecrets(groveDir);
+    expect(secrets[TEAM_AGENT_KEY_SECRET]).toBeUndefined();
+    expect(secrets.ANTHROPIC_API_KEY).toBeUndefined();
   });
 });
 

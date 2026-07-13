@@ -406,6 +406,38 @@ export function resolveServedGroveKeyHealth(
   }
 }
 
+/**
+ * Same classification as {@link resolveServedGroveKeyHealth}, isolated from the
+ * daemon's long-lived `process.env`. The underlying classifier calls
+ * `loadLayeredSecrets`, which — despite the "pure read" framing in its own
+ * docstring — ADDS any grove/machine secret not already present in
+ * `process.env` (it never overwrites an already-set var, but it does mutate
+ * the process for anything new). That is harmless for a one-shot `myco doctor`
+ * run, but a daemon ROUTE built on this classifier gets POLLED repeatedly (the
+ * Team page) — a bare call would permanently layer the served Grove's secrets
+ * into the daemon process on the FIRST poll and then never notice a later
+ * deletion (the stale value stays "already set" and is never reloaded).
+ *
+ * This wrapper snapshots the env key set before calling the real classifier
+ * and deletes anything newly added afterward, so a route mounting this
+ * function never leaves residue between polls. `myco doctor` (a one-shot
+ * process) keeps calling {@link resolveServedGroveKeyHealth} directly — the
+ * isolation cost is only worth paying where the process outlives the check.
+ */
+export function resolveServedGroveKeyHealthIsolated(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ServedGroveKeyHealth {
+  const before = new Set(Object.keys(process.env));
+  try {
+    return resolveServedGroveKeyHealth(machineConfig, mycoHome);
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!before.has(key)) delete process.env[key];
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The transport-boundary gate (bearer / lifecycle / version)
 // ---------------------------------------------------------------------------

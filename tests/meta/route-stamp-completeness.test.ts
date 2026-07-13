@@ -301,6 +301,17 @@ describe('route-stamp completeness matcher self-test', () => {
     expect(matchRouteRule('GET', '/api/database/details')).toBeUndefined();
   });
 
+  it('team-write routes (Task 8) resolve to the explicit team-write stamp, never the serve default', () => {
+    expect(matchRouteRule('GET', '/api/team/config')?.stamp).toBe('team-write');
+    expect(matchRouteRule('PUT', '/api/team/config')?.stamp).toBe('team-write');
+    expect(matchRouteRule('PUT', samplePath('/api/team/secrets/:provider'))?.stamp).toBe('team-write');
+    expect(matchRouteRule('DELETE', samplePath('/api/team/secrets/:provider'))?.stamp).toBe('team-write');
+    expect(matchRouteRule('POST', '/api/team/mcp-token/rotate')?.stamp).toBe('team-write');
+    // The coarse legacy team-sync prefix rules are unaffected — still localhost-only.
+    expect(matchRouteRule('GET', '/api/team/status')?.stamp).toBe('localhost-only');
+    expect(matchRouteRule('POST', '/api/team/join')?.stamp).toBe('localhost-only');
+  });
+
   it('stripComments blanks a `.registerRoute(` that only appears in a comment', () => {
     const commented = '// server.registerRoute(\'GET\', \'/api/ghost\', h) in a comment must not count\n';
     expect([...stripComments(commented).matchAll(REGISTER_ROUTE_RE)].length).toBe(0);

@@ -637,15 +637,30 @@ export const HOST_BEARER_SECRET = 'MYCO_HOST_BEARER';
  */
 export const HOST_SERVE_BEARER_SECRET = 'MYCO_HOST_SERVE_BEARER';
 /**
- * Secrets key for the team's LLM provider API key, stored in the SERVED
- * GROVE's `secrets.env` (server-mode design spec §5 — team credentials are
- * Grove-scoped, never machine-scoped, so they never mix with the operator's
- * personal provider keys). Same string as the `--serve`/`host enable
- * --emit-join` env var it is optionally read from (`MYCO_TEAM_AGENT_KEY`).
+ * TRANSPORT name only — the `--serve`/`host enable --emit-join` CLI flag
+ * (`--team-key`) and its env-var fallback (`process.env[TEAM_AGENT_KEY_SECRET]`)
+ * for the team's LLM provider API key at enable time. This is NOT the name the
+ * key is stored under: `hostEnableAndEmitJoin` writes it into the served
+ * Grove's `secrets.env` under the PROVIDER-STANDARD env name
+ * (`KEYED_CLOUD_PROVIDER_ENV`, `agent/harness/provider-health.ts` — anthropic by
+ * default) so `probeProviderAvailable`/`missingKeyReason` actually read it. A
+ * key stored under this transport name instead would never be found by a real
+ * dispatch (Task 8's cross-task invariant, fixing exactly that hazard).
  * Distinct from the legacy Team-Sync {@link TEAM_API_KEY_SECRET}, which
  * lives in the team-sync registry's own store, not a Grove.
  */
 export const TEAM_AGENT_KEY_SECRET = 'MYCO_TEAM_AGENT_KEY';
+/**
+ * Secrets key for the external read-only MCP's access token, stored
+ * machine-scoped in `~/.myco/secrets.env` beside {@link HOST_SERVE_BEARER_SECRET}
+ * (server-mode design spec §7 — a THIRD credential, distinct from the loopback
+ * daemon token and the member serve-bearer). Server-minted at ≥122 bits,
+ * rotatable by any team member via the `team-write` `POST
+ * /api/team/mcp-token/rotate` route (Task 8's thin seam; Task 10 builds the
+ * listener that authenticates against it). Never echoed raw over that route —
+ * only a non-secret change-detection hash is returned.
+ */
+export const HOST_EXTERNAL_MCP_TOKEN_SECRET = 'MYCO_HOST_EXTERNAL_MCP_TOKEN';
 
 /**
  * Wire protocol for member-daemon ↔ host-daemon overlay traffic. Bump on any

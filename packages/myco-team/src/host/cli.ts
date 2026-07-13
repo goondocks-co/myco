@@ -13,6 +13,7 @@ import { resolveGroveDir, resolveMycoHome } from '@myco/grove/paths.js';
 import { resolveGlobalDaemonPort } from '@myco/daemon/service-state.js';
 import { writeSecret } from '@myco/config/secrets.js';
 import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
+import { KEYED_CLOUD_PROVIDER_ENV } from '@myco/agent/harness/provider-health.js';
 import { evictDevice, listDevices, mintSetupKey, rotateBearer } from './devices.js';
 import { hostDisable, hostEnable, type HostEnableDeps, type HostEnableOptions, type HostEnableResult } from './overlay.js';
 import { readHostState } from './state.js';
@@ -62,10 +63,20 @@ async function defaultConfirmRemint(message: string): Promise<boolean> {
 export interface ComposeEnableOptions extends HostEnableOptions {
   /**
    * The team's LLM provider API key (server-mode design spec §5), optionally
-   * supplied via env `MYCO_TEAM_AGENT_KEY`. Lands in the served Grove's
-   * `secrets.env` via `writeSecret` — NEVER in YAML.
+   * supplied via env `MYCO_TEAM_AGENT_KEY` (the TRANSPORT name only — see
+   * {@link TEAM_AGENT_KEY_SECRET}). Lands in the served Grove's
+   * `secrets.env` via `writeSecret` under the PROVIDER-STANDARD env name
+   * ({@link teamKeyProvider}, `KEYED_CLOUD_PROVIDER_ENV`) — NEVER in YAML,
+   * and never under the transport name itself (a real dispatch never reads
+   * that name).
    */
   teamAgentKey?: string;
+  /**
+   * Which provider's standard env name the key is stored under (default:
+   * `'anthropic'` — the API-key path spec §5 documents). Only meaningful
+   * when `teamAgentKey` is supplied.
+   */
+  teamKeyProvider?: keyof typeof KEYED_CLOUD_PROVIDER_ENV;
   /** One-time setup-key lifetime for the emitted join command. Default: `mintSetupKey`'s own default (`'1h'`). */
   setupKeyExpiration?: string;
 }
@@ -124,7 +135,13 @@ export async function hostEnableAndEmitJoin(
   const teamAgentKey = options.teamAgentKey?.trim();
   if (teamAgentKey) {
     const groveDir = resolveGroveDir(enable.servedGroveId, mycoHome);
-    writeSecret(groveDir, TEAM_AGENT_KEY_SECRET, teamAgentKey);
+    // Stored under the PROVIDER-STANDARD env name (never TEAM_AGENT_KEY_SECRET,
+    // which is only the CLI-flag/env-var transport name a real dispatch never
+    // reads — see TEAM_AGENT_KEY_SECRET's docstring, constants.ts). Default
+    // provider 'anthropic' per spec §5's API-key path.
+    const provider = options.teamKeyProvider ?? 'anthropic';
+    const envKey = KEYED_CLOUD_PROVIDER_ENV[provider]?.[0] ?? KEYED_CLOUD_PROVIDER_ENV.anthropic![0];
+    writeSecret(groveDir, envKey, teamAgentKey);
     teamAgentKeyMasked = maskTeamAgentKey(teamAgentKey);
   }
 
@@ -162,7 +179,8 @@ Commands:
   enable --server-url <https://host:8080> [--hostname <name>] [--listen-addr <addr>]
                                           [--user <headscale-user>] [--key-expiration <dur>]
                                           [--designate-default] [--emit-join]
-                                          [--team-key <key>] [--setup-key-expiration <dur>]
+                                          [--team-key <key>] [--team-key-provider <anthropic|openai|openrouter>]
+                                          [--setup-key-expiration <dur>]
   disable
   status
   key mint [--expiration <dur>]        Mint a one-time setup key to hand a joiner.
@@ -178,10 +196,12 @@ password. --server-url is the address members dial to reach the control plane.
 
 --designate-default --emit-join is the --serve installer flag's composite path:
 enable, designate the box's default Grove as the served Grove, optionally store the
-team's LLM provider key (--team-key, or env MYCO_TEAM_AGENT_KEY) in that Grove's
-secrets, mint a one-time setup key, and print the complete ready-to-paste
-"myco join ..." command. On a re-run (this machine was already a Team Host),
-prompts before minting another key — re-emission is deliberate, not automatic.
+team's LLM provider key (--team-key, or env MYCO_TEAM_AGENT_KEY — both are just the
+transport for the value) under --team-key-provider's standard env name in that
+Grove's secrets (default: anthropic), mint a one-time setup key, and print the
+complete ready-to-paste "myco join ..." command. On a re-run (this machine was
+already a Team Host), prompts before minting another key — re-emission is
+deliberate, not automatic.
 
 disable tears both services down and stops serving. status prints the current
 host state.
@@ -216,9 +236,14 @@ export async function runHostCommand(args: string[]): Promise<void> {
 
     if (flags.has('emit-join')) {
       const teamAgentKey = flags.get('team-key') ?? process.env[TEAM_AGENT_KEY_SECRET];
+      const teamKeyProviderFlag = flags.get('team-key-provider');
+      const teamKeyProvider = teamKeyProviderFlag && teamKeyProviderFlag in KEYED_CLOUD_PROVIDER_ENV
+        ? (teamKeyProviderFlag as keyof typeof KEYED_CLOUD_PROVIDER_ENV)
+        : undefined;
       const composite = await hostEnableAndEmitJoin({
         ...enableOptions,
         teamAgentKey,
+        teamKeyProvider,
         setupKeyExpiration: flags.get('setup-key-expiration'),
       });
       printEnableResult(composite.enable);
