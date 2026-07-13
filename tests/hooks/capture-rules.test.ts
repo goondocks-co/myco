@@ -623,3 +623,20 @@ describe('rewrite_prompt with strip_envelope', () => {
     });
   });
 });
+
+describe('structural envelope predicates — fail-safe classifier', () => {
+  it('a human prompt merely mentioning <tag> stays human under the fail-safe', () => {
+    const manifests = [{ name: 'x', capture: { rules: [
+      { event: 'user_prompt', scope: 'this_agent', when: { prompt_is_enclosing_envelope: true }, action: 'classify', set_origin: 'system' },
+    ] } }] as any;
+    const d = evaluateUserPromptRules(manifests, 'x', { prompt: 'why does <div> break here? explain.' });
+    expect(d).toEqual({ action: 'pass', prompt: 'why does <div> break here? explain.' });
+  });
+  it('a whole-message unknown envelope classifies system (fail-safe)', () => {
+    const manifests = [{ name: 'x', capture: { rules: [
+      { event: 'user_prompt', scope: 'this_agent', when: { prompt_is_enclosing_envelope: true }, action: 'classify', set_origin: 'system' },
+    ] } }] as any;
+    const d = evaluateUserPromptRules(manifests, 'x', { prompt: '<brand-new>x</brand-new>' });
+    expect(d).toMatchObject({ action: 'pass', origin: 'system' });
+  });
+});
