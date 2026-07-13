@@ -223,6 +223,18 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "prompts": {
         "shapes": [
           {
+            "name": "agent_message",
+            "match": {
+              "type": "user",
+              "fieldNotEquals": {
+                "isMeta": true
+              }
+            },
+            "textAt": "message.content",
+            "textStartsWith": "<agent-message",
+            "dedupeBy": "uuid"
+          },
+          {
             "name": "teammate_message",
             "match": {
               "type": "user",

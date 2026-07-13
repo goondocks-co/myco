@@ -157,6 +157,21 @@ capture:
       # teammate-messages match here first with `dedupeBy: uuid` (one batch
       # per discrete teammate dispatch). The `set_origin: agent_dispatch` rule
       # above then tags the resulting batch correctly.
+      #
+      # `<agent-message from="…">` is the renamed successor to
+      # `<teammate-message>` (Claude Code's agent-team rename). Same envelope
+      # shape, same shared-promptId leak, so it needs its own `textStartsWith`
+      # entry ahead of `teammate_message` — listed first here (before the
+      # older tag) since it's the current name. `teammate_message` stays
+      # below for older transcripts still on record.
+      - name: agent_message
+        match:
+          type: user
+          fieldNotEquals:
+            isMeta: true
+        textAt: message.content
+        textStartsWith: "<agent-message"
+        dedupeBy: uuid
       - name: teammate_message
         match:
           type: user
