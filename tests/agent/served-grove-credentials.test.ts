@@ -273,6 +273,24 @@ describe('served-grove secrets loading + keyless-preflight suppression', () => {
         .toEqual({ kind: 'missing_key', servedGroveId: grove.id });
     });
 
+    it('a key taken over by an external writer survives a file delete — relinquish beats the delete pass', () => {
+      // Layer K so layering owns it.
+      fs.writeFileSync(path.join(groveDir, 'secrets.env'), 'ANTHROPIC_API_KEY=layered-value\n');
+      loadLayeredSecrets([machineHome, groveDir]);
+      expect(process.env.ANTHROPIC_API_KEY).toBe('layered-value');
+
+      // External writer takes the key over directly in the env.
+      process.env.ANTHROPIC_API_KEY = 'external-override';
+
+      // The secret is then deleted from every layered file. The next
+      // layering call must relinquish ownership FIRST (env value is no
+      // longer the one layering wrote), so the delete pass never touches
+      // the externally-set value — it is protected env now, and kept.
+      deleteSecrets(groveDir, ['ANTHROPIC_API_KEY']);
+      loadLayeredSecrets([machineHome, groveDir]);
+      expect(process.env.ANTHROPIC_API_KEY).toBe('external-override');
+    });
+
     it('a boot-env var set before any layering is never clobbered or deleted by layering', () => {
       // Inherited shell/launchd env — never written by layering, so layering
       // must neither overwrite it with a file value nor delete it when the

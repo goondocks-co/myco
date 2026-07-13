@@ -175,7 +175,10 @@ export function loadSecrets(vaultDir: string): void {
  * var (which layering must never touch). An entry is honored only while the
  * env still holds the recorded value: if any other writer changed or set
  * the key since, ownership is relinquished and the key becomes protected
- * external env like any other.
+ * external env like any other. Unobservable-by-design edge: an external
+ * writer that sets a key to the EXACT value layering wrote is
+ * indistinguishable from layering itself, so ownership is retained and a
+ * later file delete removes the key.
  */
 const layeredSecretOwnership = new WeakMap<NodeJS.ProcessEnv, Map<string, string>>();
 
