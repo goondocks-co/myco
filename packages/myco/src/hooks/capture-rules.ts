@@ -27,11 +27,10 @@ import { getAtPath } from '../utils/dot-path.js';
 import { DEFAULT_SYMBIONT_NAME } from '../constants.js';
 
 /**
- * True when `prompt` (trimmed) BEGINS with a `<tag …>` open for one of `tags`.
- * Matches the tag NAME only, so attributes (`from="…"`) don't defeat it — this
- * is what the old `prompt_starts_with: "<teammate-message "` missed for the
- * renamed `<agent-message from="…">`. Start-match (not whole-message) preserves
- * current behavior for prefix-style envelopes like `<environment_context>`.
+ * Matches the tag NAME at the start of the (trimmed) prompt, ignoring attributes,
+ * so a tag with attributes like `from="…"` still matches. Start-match (not
+ * whole-message) so it also catches prefix-style envelopes. Returns true if
+ * `prompt` begins with `<tag` for any tag in `tags`.
  */
 export function envelopeTagAtStart(prompt: string, tags: string[]): boolean {
   const s = prompt.trimStart();
@@ -45,7 +44,12 @@ export function envelopeTagAtStart(prompt: string, tags: string[]): boolean {
 
 // Whole trimmed message is one balanced (or self-closing) envelope. Greedy to
 // the LAST matching close-tag (nested same-tag whole-message envelopes match);
-// attributes containing '>' don't break detection; no catastrophic backtracking.
+// attributes containing '>' are handled for the open/close form; the self-closing
+// form does not support '>' inside attributes (fails toward human, which is safe);
+// Known limitation: two sibling same-name tags concatenated also match and would
+// be classified non-human under the fail-safe — an accepted case within the
+// fail-safe's hide-by-default tradeoff (content is preserved, just hidden).
+// No catastrophic backtracking.
 const ENCLOSING_ENVELOPE = /^<([A-Za-z][\w-]*)(\s[^>]*)?>[\s\S]*<\/\1>$|^<([A-Za-z][\w-]*)(\s[^>]*)?\/>$/;
 
 /** True when the ENTIRE trimmed prompt is a single XML envelope (fail-safe classifier). */
