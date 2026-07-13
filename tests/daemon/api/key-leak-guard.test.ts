@@ -368,6 +368,7 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
     ];
 
     let mintedTokenResponseCount = 0;
+    let rotateResponseText: string | undefined;
     for (const r of requests) {
       const init: RequestInit = { method: r.method, headers: overlayHeaders() };
       if (r.body !== undefined) {
@@ -378,14 +379,20 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       const text = await res.text();
       expect(text, `${r.method} ${r.path} leaked the existing team key`).not.toContain(TEAM_SENTINEL_EXISTING);
       expect(text, `${r.method} ${r.path} leaked the new team key`).not.toContain(TEAM_SENTINEL_NEW);
-      if (r.path === '/api/team/mcp-token/rotate') mintedTokenResponseCount += 1;
+      if (r.path === '/api/team/mcp-token/rotate') {
+        mintedTokenResponseCount += 1;
+        rotateResponseText = text;
+      }
     }
     expect(mintedTokenResponseCount).toBe(1);
 
     // The minted external MCP token is never echoed either, over the SAME
-    // route class the rest of this test exercises.
+    // route class the rest of this test exercises: assert non-containment of
+    // the raw stored token against the actual rotate response body, not just
+    // that a token got minted.
     const mintedToken = readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
     expect(mintedToken).toBeDefined();
+    expect(rotateResponseText, 'POST /api/team/mcp-token/rotate leaked the raw minted token').not.toContain(mintedToken!);
   });
 
   it('pins the masked-secret shape (first-8+last-4) on the PUT response — the merge gate\'s echo contract', async () => {

@@ -18,6 +18,30 @@ import { evictDevice, listDevices, mintSetupKey, rotateBearer } from './devices.
 import { hostDisable, hostEnable, type HostEnableDeps, type HostEnableOptions, type HostEnableResult } from './overlay.js';
 import { readHostState } from './state.js';
 
+const VALID_TEAM_KEY_PROVIDERS = Object.keys(KEYED_CLOUD_PROVIDER_ENV) as Array<keyof typeof KEYED_CLOUD_PROVIDER_ENV>;
+
+/**
+ * Validates `--team-key-provider` against `KEYED_CLOUD_PROVIDER_ENV`'s OWN
+ * properties — never the bare `in` operator, which also matches inherited
+ * `Object.prototype` keys (`toString`, `hasOwnProperty`, …) and would let a
+ * typo like that silently pass validation. Returns `undefined` when no flag
+ * was supplied (the `hostEnableAndEmitJoin` anthropic default applies
+ * downstream); throws when a flag WAS supplied but isn't a recognized
+ * provider, so the CLI can fail loudly — before any enable/mint/store side
+ * effect — instead of silently storing the key under the wrong provider's
+ * env name (the permanent keyless-suppression hazard this route class
+ * exists to prevent).
+ */
+export function resolveTeamKeyProviderFlag(flagValue: string | undefined): keyof typeof KEYED_CLOUD_PROVIDER_ENV | undefined {
+  if (flagValue === undefined) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(KEYED_CLOUD_PROVIDER_ENV, flagValue)) {
+    throw new Error(
+      `Unrecognized --team-key-provider "${flagValue}". Valid providers: ${VALID_TEAM_KEY_PROVIDERS.join(', ')}.`,
+    );
+  }
+  return flagValue as keyof typeof KEYED_CLOUD_PROVIDER_ENV;
+}
+
 function parseFlags(args: string[]): Map<string, string> {
   const flags = new Map<string, string>();
   for (let i = 0; i < args.length; i += 1) {
@@ -236,10 +260,13 @@ export async function runHostCommand(args: string[]): Promise<void> {
 
     if (flags.has('emit-join')) {
       const teamAgentKey = flags.get('team-key') ?? process.env[TEAM_AGENT_KEY_SECRET];
-      const teamKeyProviderFlag = flags.get('team-key-provider');
-      const teamKeyProvider = teamKeyProviderFlag && teamKeyProviderFlag in KEYED_CLOUD_PROVIDER_ENV
-        ? (teamKeyProviderFlag as keyof typeof KEYED_CLOUD_PROVIDER_ENV)
-        : undefined;
+      let teamKeyProvider: keyof typeof KEYED_CLOUD_PROVIDER_ENV | undefined;
+      try {
+        teamKeyProvider = resolveTeamKeyProviderFlag(flags.get('team-key-provider'));
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exit(2);
+      }
       const composite = await hostEnableAndEmitJoin({
         ...enableOptions,
         teamAgentKey,
