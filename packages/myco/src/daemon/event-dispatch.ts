@@ -481,6 +481,17 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       });
     }
 
+    // Any genuine activity flips a completed session back to active —
+    // "completed" is just "inactive", never terminal. Runs for every event
+    // type and for already-registered and rehydrated sessions alike, which
+    // the auto-register branch above skips.
+    if (reactivateSessionIfCompleted(event.session_id, projectScopeFromRequestContext(req.requestContext))) {
+      logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Reactivated completed session on new activity', {
+        session_id: event.session_id,
+        type: event.type,
+      });
+    }
+
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
       powerManager.recordActivity();
@@ -513,16 +524,6 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         logger.info(LOG_KINDS.HOOKS_PROMPT, 'User prompt received', promptLogPayload);
       } else {
         logger.debug(LOG_KINDS.HOOKS_PROMPT, 'User prompt received', promptLogPayload);
-      }
-      // Flip a completed session back to active on genuine user activity.
-      // The auto-register branch above only reactivates when the session
-      // isn't in the in-memory registry (e.g., after daemon restart) —
-      // without this, a manually-completed or stale-swept session stays
-      // hidden from intelligence-task queries even after the user resumes.
-      if (reactivateSessionIfCompleted(event.session_id, projectScopeFromRequestContext(req.requestContext))) {
-        logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Reactivated completed session on new activity', {
-          session_id: event.session_id,
-        });
       }
       try {
         // Defensive layer: the registry-gated auto-register above is an
