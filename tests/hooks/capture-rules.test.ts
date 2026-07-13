@@ -640,3 +640,86 @@ describe('structural envelope predicates — fail-safe classifier', () => {
     expect(d).toMatchObject({ action: 'pass', origin: 'system' });
   });
 });
+
+// Regression coverage for the real claude-code manifest (via the generated
+// hook config, not a synthetic stand-in). The renamed `<agent-message
+// from="…">` envelope (successor to `<teammate-message>`) previously matched
+// no `prompt_starts_with` rule and fell through to `pass` with the default
+// 'human' origin — a real teammate report leaking into the Sessions UI as a
+// human prompt. Structural `prompt_envelope_tag_in` classification plus the
+// `prompt_is_enclosing_envelope` fail-safe closes that gap for any future
+// rename too.
+describe('claude-code manifest — structural envelope classification (real config)', () => {
+  // A populated transcriptPath is required in every case here: with it
+  // missing/undefined, codex's own `any_agent`-scoped ephemeral-sub-invocation
+  // rule (packages/myco/src/symbionts/manifests/codex.yaml Layer 2) fires
+  // first, because `claude-code` is DEFAULT_SYMBIONT_NAME and that rule's
+  // scope crosses manifest boundaries specifically for the default agent.
+  const transcriptPath = '/Users/me/.claude/projects/foo/transcript.jsonl';
+
+  it('claude <agent-message from=…> classifies agent_dispatch (the leak)', () => {
+    const d = evaluateUserPromptRules('claude-code', {
+      prompt: '<agent-message from="rev-consplan">verdict</agent-message>',
+      transcriptPath,
+    });
+    expect(d).toMatchObject({ origin: 'agent_dispatch' });
+  });
+  it('claude <command-message> still drops (drop wins, ordered first)', () => {
+    const d = evaluateUserPromptRules('claude-code', {
+      prompt: '<command-message>x</command-message>',
+      transcriptPath,
+    });
+    expect(d).toEqual({ action: 'drop', reason: 'claude-code-slash-command-dispatch' });
+  });
+  it('claude <task-notification> stays system (origin preserved)', () => {
+    const d = evaluateUserPromptRules('claude-code', {
+      prompt: '<task-notification>done</task-notification>',
+      transcriptPath,
+    });
+    expect(d).toMatchObject({ origin: 'system' });
+  });
+  it('unknown claude envelope falls to the system fail-safe', () => {
+    const d = evaluateUserPromptRules('claude-code', {
+      prompt: '<future-thing>y</future-thing>',
+      transcriptPath,
+    });
+    expect(d).toMatchObject({ origin: 'system' });
+  });
+});
+
+// Same regression shape for codex: the `<subagent_notification>` classify
+// rule must still tag agent_dispatch, the AGENTS.md drop and file-preamble
+// rewrite must still run ahead of the fail-safe, and an unrecognized
+// whole-message envelope must fall through to the system fail-safe rather
+// than leaking as a human prompt.
+describe('codex manifest — structural envelope classification (real config)', () => {
+  // A populated transcriptPath is required here too: codex's own Layer 2
+  // ephemeral-sub-invocation rule (transcript_path_missing: true) applies
+  // whenever owningAgent === detectedAgent, regardless of its any_agent
+  // scope, and would otherwise drop every case below before reaching the
+  // classify/drop/rewrite rules under test.
+  const transcriptPath = '/Users/me/.codex/sessions/2026/04/11/rollout-abc.jsonl';
+
+  it('codex <subagent_notification> classifies agent_dispatch', () => {
+    const d = evaluateUserPromptRules('codex', {
+      prompt: '<subagent_notification>done</subagent_notification>',
+      transcriptPath,
+    });
+    expect(d).toMatchObject({ origin: 'agent_dispatch' });
+  });
+  it('codex AGENTS.md injection still drops (drop wins, ordered first)', () => {
+    const d = evaluateUserPromptRules('codex', { prompt: '# AGENTS.md instructions\n...', transcriptPath });
+    expect(d).toEqual({ action: 'drop', reason: 'agents-md-context-injection' });
+  });
+  it('codex file-preamble rewrite still runs ahead of the fail-safe', () => {
+    const d = evaluateUserPromptRules('codex', {
+      prompt: '# Files mentioned by the user:\n## foo.png: /tmp/foo.png\n## My request for Codex:\nreal request',
+      transcriptPath,
+    });
+    expect(d).toEqual({ action: 'rewrite', prompt: 'real request', reason: 'codex-desktop-file-preamble' });
+  });
+  it('unknown codex envelope falls to the system fail-safe', () => {
+    const d = evaluateUserPromptRules('codex', { prompt: '<future-thing>y</future-thing>', transcriptPath });
+    expect(d).toMatchObject({ origin: 'system' });
+  });
+});

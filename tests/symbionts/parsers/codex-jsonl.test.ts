@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
-import { systemEnvelopePrefixes } from '@myco/symbionts/envelope-prefixes.js';
+import { systemEnvelopePrefixes, systemEnvelopeTags } from '@myco/symbionts/envelope-prefixes.js';
 
 /**
  * Build a JSONL string from an array of entry objects.
@@ -414,13 +414,17 @@ describe('CodexJsonlParser', () => {
 describe('CodexJsonlParser — system envelope folding (RC-B)', () => {
   const envelopeParser = new CodexJsonlParser({
     envelopePrefixes: systemEnvelopePrefixes('codex'),
+    envelopeTags: systemEnvelopeTags('codex'),
   });
 
-  it('manifest-derived prefixes cover the codex envelope set', () => {
-    const prefixes = systemEnvelopePrefixes('codex');
-    expect(prefixes).toContain('<skill>');
-    expect(prefixes).toContain('<subagent_notification>');
-    expect(prefixes).toContain('<environment_context>');
+  it('manifest-derived tags cover the codex envelope set', () => {
+    // codex.yaml expresses these as structural prompt_envelope_tag_in rules,
+    // not prompt_starts_with, so they're harvested by systemEnvelopeTags —
+    // not systemEnvelopePrefixes (which stays empty for codex now).
+    const tags = systemEnvelopeTags('codex');
+    expect(tags).toContain('skill');
+    expect(tags).toContain('subagent_notification');
+    expect(tags).toContain('environment_context');
   });
 
   it('folds a skill-expansion user message into the current turn (production shape)', () => {

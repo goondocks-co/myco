@@ -32,7 +32,7 @@ import { DEFAULT_SYMBIONT_NAME } from '../constants.js';
  * whole-message) so it also catches prefix-style envelopes. Returns true if
  * `prompt` begins with `<tag` for any tag in `tags`.
  */
-export function envelopeTagAtStart(prompt: string, tags: string[]): boolean {
+export function envelopeTagAtStart(prompt: string, tags: readonly string[]): boolean {
   const s = prompt.trimStart();
   for (const tag of tags) {
     if (!s.startsWith('<' + tag)) continue;

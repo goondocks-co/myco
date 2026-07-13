@@ -1,6 +1,7 @@
 import type { TranscriptParser } from './types.js';
 import type { TranscriptTurn, TranscriptImage } from '../adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../../constants.js';
+import { envelopeTagAtStart } from '../../hooks/capture-rules.js';
 
 /** Parse a data URL (data:<mime>;base64,<data>) into media type and base64 data. */
 function parseDataUrl(url: string): { mediaType: string; data: string } | null {
@@ -45,6 +46,14 @@ export interface CodexJsonlParserOptions {
    * human batch without a summary.
    */
   envelopePrefixes?: readonly string[];
+  /**
+   * Envelope tag names (manifest-derived — see `symbionts/envelope-prefixes.ts`
+   * `systemEnvelopeTags`) matched with the same attribute-robust,
+   * start-of-message predicate the capture-rules engine uses
+   * (`envelopeTagAtStart`), rather than a literal string prefix. Folds the
+   * same way `envelopePrefixes` does.
+   */
+  envelopeTags?: readonly string[];
 }
 
 /**
@@ -84,13 +93,15 @@ export function extractCodexPromptText(content: unknown): string {
  * - Images are data URLs in "input_image" blocks (data:<mime>;base64,<data>), not structured source objects
  * - Codex Desktop wraps prompts with file-mention preambles and <image> tags when screenshots are attached — these are stripped
  * - Non-conversation entries (event_msg, session_meta, turn_context, reasoning) are skipped
- * - System-envelope user messages (manifest-declared prefixes) fold into the current turn
+ * - System-envelope user messages (manifest-declared prefixes and envelope tags) fold into the current turn
  */
 export class CodexJsonlParser implements TranscriptParser {
   private readonly envelopePrefixes: readonly string[];
+  private readonly envelopeTags: readonly string[];
 
   constructor(options: CodexJsonlParserOptions = {}) {
     this.envelopePrefixes = options.envelopePrefixes ?? [];
+    this.envelopeTags = options.envelopeTags ?? [];
   }
 
   parseTurns(content: string): TranscriptTurn[] {
@@ -141,7 +152,12 @@ export class CodexJsonlParser implements TranscriptParser {
         // system-origin batch separately); the turn stays open so the
         // assistant output that follows lands on the prompt that opened it.
         const firstRawText = blocks.find((b) => b.type === 'input_text' && b.text?.trim())?.text ?? '';
-        if (this.envelopePrefixes.some((p) => firstRawText.startsWith(p))) continue;
+        if (
+          this.envelopePrefixes.some((p) => firstRawText.startsWith(p)) ||
+          envelopeTagAtStart(firstRawText, this.envelopeTags)
+        ) {
+          continue;
+        }
 
         if (current) turns.push(current);
 
