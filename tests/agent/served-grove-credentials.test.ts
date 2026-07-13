@@ -29,9 +29,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadLayeredSecrets } from '@myco/config/secrets.js';
+import { loadLayeredSecrets, writeSecret, deleteSecrets } from '@myco/config/secrets.js';
 import { __resetProviderHealthCache } from '@myco/agent/harness/provider-health.js';
 import { gateScheduledDispatch } from '@myco/daemon/task-scheduling.js';
+import { resolveServedGroveKeyHealth } from '@myco/daemon/host-serve.js';
+import { loadMachineConfig, saveMachineConfig, loadGroveConfig, saveGroveConfig } from '@myco/config/loader.js';
+import { createGrove } from '@myco/grove/registry.js';
+import { resolveGroveDir } from '@myco/grove/paths.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
 import type { DaemonLogger } from '@myco/daemon/logger.js';
 
@@ -206,6 +210,81 @@ describe('served-grove secrets loading + keyless-preflight suppression', () => {
       expect(second).toBe('proceed');
       expect(calls2).toHaveLength(0);
       expect(process.env.ANTHROPIC_API_KEY).toBe('added-mid-schedule');
+    });
+  });
+
+  describe('fix round 1: repeated layering refreshes the keys it owns (update/delete without restart)', () => {
+    it('key value UPDATED in grove secrets.env between ticks → next dispatch sees the NEW value', () => {
+      fs.writeFileSync(path.join(groveDir, 'secrets.env'), 'ANTHROPIC_API_KEY=team-key-v1\n');
+      loadLayeredSecrets([machineHome, groveDir]);
+      expect(process.env.ANTHROPIC_API_KEY).toBe('team-key-v1');
+
+      // Rotation via PUT /api/team/secrets/:provider lands as a writeSecret
+      // overwrite of the same provider-standard env name.
+      writeSecret(groveDir, 'ANTHROPIC_API_KEY', 'team-key-v2');
+      loadLayeredSecrets([machineHome, groveDir]);
+      expect(process.env.ANTHROPIC_API_KEY).toBe('team-key-v2');
+    });
+
+    it('key DELETED between ticks → env entry removed, next dispatch suppresses with missing_key', async () => {
+      fs.writeFileSync(path.join(groveDir, 'secrets.env'), 'ANTHROPIC_API_KEY=team-key-revoked\n');
+      loadLayeredSecrets([machineHome, groveDir]);
+      expect(process.env.ANTHROPIC_API_KEY).toBe('team-key-revoked');
+
+      // Revocation via DELETE /api/team/secrets/:provider lands as
+      // deleteSecrets of every alias for the provider.
+      deleteSecrets(groveDir, ['ANTHROPIC_API_KEY']);
+      loadLayeredSecrets([machineHome, groveDir]);
+      expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+
+      const { logger, calls } = stubLogger();
+      const decision = await gateScheduledDispatch({
+        provider: { type: 'anthropic', model: 'claude-sonnet-4-6' } as any,
+        taskName: 'vault-evolve',
+        projectId: TEST_PROJECT_ID,
+        logger,
+      });
+      expect(decision).toBe('missing_key');
+      expect(calls.filter((c) => c.level === 'warn' || c.level === 'error')).toHaveLength(0);
+    });
+
+    it('key DELETED between polls → keyHealth reports missing_key (Team page/doctor see the revoked state)', () => {
+      // Real designation fixture — the classifier itself calls
+      // loadLayeredSecrets, so this reproduces the long-lived-daemon route
+      // poll: first poll layers the key into process.env, then the key is
+      // revoked on disk and the next poll must NOT keep reporting ok off
+      // the stale env value.
+      const grove = createGrove('Served', machineHome);
+      const machine = loadMachineConfig(machineHome);
+      saveMachineConfig({
+        ...machine,
+        daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id } },
+      }, machineHome);
+      const groveCfg = loadGroveConfig(grove.id, machineHome);
+      saveGroveConfig(grove.id, { ...groveCfg, agent: { ...groveCfg.agent, provider: { type: 'anthropic' } } }, machineHome);
+      const servedDir = resolveGroveDir(grove.id, machineHome);
+      writeSecret(servedDir, 'ANTHROPIC_API_KEY', 'sk-ant-to-be-revoked');
+
+      expect(resolveServedGroveKeyHealth(loadMachineConfig(machineHome), machineHome))
+        .toEqual({ kind: 'ok', servedGroveId: grove.id });
+
+      deleteSecrets(servedDir, ['ANTHROPIC_API_KEY']);
+      expect(resolveServedGroveKeyHealth(loadMachineConfig(machineHome), machineHome))
+        .toEqual({ kind: 'missing_key', servedGroveId: grove.id });
+    });
+
+    it('a boot-env var set before any layering is never clobbered or deleted by layering', () => {
+      // Inherited shell/launchd env — never written by layering, so layering
+      // must neither overwrite it with a file value nor delete it when the
+      // file entry disappears.
+      process.env.ANTHROPIC_API_KEY = 'boot-inherited-value';
+      fs.writeFileSync(path.join(groveDir, 'secrets.env'), 'ANTHROPIC_API_KEY=grove-file-value\n');
+      loadLayeredSecrets([machineHome, groveDir]);
+      expect(process.env.ANTHROPIC_API_KEY).toBe('boot-inherited-value');
+
+      fs.rmSync(path.join(groveDir, 'secrets.env'));
+      loadLayeredSecrets([machineHome, groveDir]);
+      expect(process.env.ANTHROPIC_API_KEY).toBe('boot-inherited-value');
     });
   });
 });

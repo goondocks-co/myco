@@ -387,8 +387,12 @@ export function resolveServedGroveKeyHealth(
   try {
     const groveDir = resolveGroveDir(designation.servedGroveId, mycoHome);
     // Same layering the scheduler applies before a dispatch against this
-    // Grove (machine, then Grove — Grove wins on conflict) so this
-    // classifier can never disagree with what a real dispatch would see.
+    // Grove, with the same semantics: boot/shell env vars are protected
+    // (never overwritten or deleted); keys layering itself wrote are
+    // refreshed from the files on every call — grove file wins over machine
+    // file, and a key deleted from both files is removed from the env. So
+    // this classifier can never disagree with what a real dispatch would
+    // see, including after a Team-page update or delete.
     loadLayeredSecrets([mycoHome, groveDir]);
     const mycoConfig = loadMergedConfig(groveDir, {
       groveId: designation.servedGroveId,
@@ -409,20 +413,22 @@ export function resolveServedGroveKeyHealth(
 /**
  * Same classification as {@link resolveServedGroveKeyHealth}, isolated from the
  * daemon's long-lived `process.env`. The underlying classifier calls
- * `loadLayeredSecrets`, which — despite the "pure read" framing in its own
- * docstring — ADDS any grove/machine secret not already present in
- * `process.env` (it never overwrites an already-set var, but it does mutate
- * the process for anything new). That is harmless for a one-shot `myco doctor`
- * run, but a daemon ROUTE built on this classifier gets POLLED repeatedly (the
- * Team page) — a bare call would permanently layer the served Grove's secrets
- * into the daemon process on the FIRST poll and then never notice a later
- * deletion (the stale value stays "already set" and is never reloaded).
+ * `loadLayeredSecrets`, which mutates the process env: it adds/refreshes the
+ * keys it owns and deletes owned keys whose file entries disappeared (boot
+ * env stays protected). Those refresh semantics already keep repeated bare
+ * calls ACCURATE — a stale classification can no longer latch — so this
+ * wrapper is pure env hygiene, not a correctness requirement: a polled route
+ * (the Team page) should not leave the served Grove's secrets sitting in the
+ * daemon's env between polls when nothing else needs them there.
  *
- * This wrapper snapshots the env key set before calling the real classifier
- * and deletes anything newly added afterward, so a route mounting this
- * function never leaves residue between polls. `myco doctor` (a one-shot
- * process) keeps calling {@link resolveServedGroveKeyHealth} directly — the
- * isolation cost is only worth paying where the process outlives the check.
+ * The wrapper snapshots the env key set before calling the real classifier
+ * and deletes anything newly added afterward. Keys it removes were recorded
+ * as layering-owned; the next layering call sees the changed (unset) value,
+ * relinquishes the stale ownership entry, and re-adds the key from the files
+ * — so wrapper cleanup and the ownership registry never fight. `myco doctor`
+ * (a one-shot process) keeps calling {@link resolveServedGroveKeyHealth}
+ * directly — the isolation cost is only worth paying where the process
+ * outlives the check.
  */
 export function resolveServedGroveKeyHealthIsolated(
   machineConfig: MachineConfig,
