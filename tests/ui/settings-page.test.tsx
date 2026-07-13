@@ -68,6 +68,7 @@ mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
 }));
 
 mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
+  useIsTeamConfigTarget: () => false,
   useScopedConfig: () => ({
     effective: projectEffective,
     local: {},

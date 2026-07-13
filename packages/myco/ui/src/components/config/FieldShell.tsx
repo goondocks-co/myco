@@ -12,7 +12,7 @@ import { type ReactNode } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { ScopeBadge } from './ScopePill';
 
-type FieldScope = 'personal' | 'project' | 'grove' | 'machine';
+type FieldScope = 'personal' | 'project' | 'grove' | 'machine' | 'team';
 
 export interface FieldShellProps {
   id?: string;

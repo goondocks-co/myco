@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Server, Link2, AlertTriangle, Activity } from 'lucide-react';
 import { Panel } from '../../components/ui/panel';
 import { IconEyebrow } from '../../components/ui/icon-eyebrow';
@@ -8,6 +8,8 @@ import { AccentSurface } from '../../components/ui/accent-surface';
 import { cn } from '../../lib/cn';
 import { membershipErrorCopy } from '../../lib/membership-copy';
 import { useActiveProjectSelection } from '../../hooks/use-project-selection';
+import { TeamSettingsPanel } from '../../components/team/TeamSettingsPanel';
+import type { TeamConfigTarget } from '../../hooks/use-scoped-config';
 import {
   useHostMembershipStatus,
   useJoinHost,
@@ -322,6 +324,76 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Team settings — per-host selection (spec §6). Previously HostTab listed
+// hosts with no notion of "which host am I configuring." "This machine" is
+// always offered first (this box may itself be a Team Host); each joined
+// host with at least one attached project is offered too, using that host's
+// FIRST attach ref purely as the wire carrier that routes a team-write
+// request to it (`classifyRoute` resolves the destination host from the
+// carrier project's attach ref — there is no per-request host header). The
+// value edited is grove-wide, not project-specific, so which attached
+// project carries the request makes no functional difference. A joined host
+// with no attached project yet has no carrier available and is left out —
+// attach a project to it first.
+// ---------------------------------------------------------------------------
+
+const SELF_TEAM_TARGET_ID = 'self';
+
+interface TeamSettingsOption {
+  id: string;
+  label: string;
+  target: TeamConfigTarget;
+}
+
+function teamSettingsOptions(hosts: HostMembershipHost[]): TeamSettingsOption[] {
+  const options: TeamSettingsOption[] = [
+    { id: SELF_TEAM_TARGET_ID, label: 'This machine', target: { carrier: null } },
+  ];
+  for (const host of hosts) {
+    const ref = host.projects[0];
+    if (!ref) continue;
+    options.push({
+      // Distinct from the plain host label used elsewhere on this page
+      // (e.g. HostCard) so the two never collide as exact-text matches.
+      id: host.host_id,
+      label: `${host.label} (${host.host_id})`,
+      target: { carrier: { groveId: ref.grove_id, projectId: ref.project_id } },
+    });
+  }
+  return options;
+}
+
+function TeamSettingsSection({ hosts }: { hosts: HostMembershipHost[] }) {
+  const options = useMemo(() => teamSettingsOptions(hosts), [hosts]);
+  const [selectedId, setSelectedId] = useState(SELF_TEAM_TARGET_ID);
+  const selected = options.find((o) => o.id === selectedId) ?? options[0]!;
+
+  return (
+    <div className="flex flex-col gap-3">
+      {options.length > 1 && (
+        <div className="flex items-center gap-2">
+          <label className={labelClass} htmlFor="team-settings-host">Configure team for</label>
+          <select
+            id="team-settings-host"
+            className={inputClass}
+            value={selected.id}
+            onChange={(e) => setSelectedId(e.target.value)}
+          >
+            {options.map((o) => (
+              <option key={o.id} value={o.id}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
+      {/* Remount on target change — the reused forms hold local draft state
+          keyed to whatever grove they last loaded; a fresh mount avoids a
+          stale draft bleeding across hosts. */}
+      <TeamSettingsPanel key={selected.id} target={selected.target} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Top-level tab — Team Host membership. Always renders (no legacy-team gate):
 // this IS the primary story now (Chris's PR #667 review direction).
 // ---------------------------------------------------------------------------
@@ -348,6 +420,7 @@ export function HostTab() {
       )}
       <AttachProjectPanel hosts={hosts} />
       {hosts.length > 0 && <DrainHealthPanel />}
+      <TeamSettingsSection hosts={hosts} />
     </div>
   );
 }

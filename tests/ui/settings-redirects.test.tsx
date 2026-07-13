@@ -150,6 +150,10 @@ mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => {
     promoteField: vi.fn().mockResolvedValue(undefined),
   });
   return {
+    useIsTeamConfigTarget: () => false,
+    useTeamConfigTargetOrNull: () => null,
+    TeamConfigTargetProvider: ({ children }: { children: unknown }) => children,
+    teamCarrierHeaders: () => ({}),
     useScopedConfig: scopedConfigStub,
     useScopedConfigForSelection: scopedConfigStub,
   };

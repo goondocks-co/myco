@@ -13,6 +13,7 @@ const effectiveAppearance = {
 };
 
 mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
+  useIsTeamConfigTarget: () => false,
   useScopedConfig: () => ({
     effective: { appearance: effectiveAppearance },
     setField: setFieldMock,

@@ -1,0 +1,228 @@
+// @vitest-environment jsdom
+
+/**
+ * `TeamSettingsPanel` (Task 9) — mounts the SAME `AgentProviderCard` /
+ * `EmbeddingCard` forms the project Settings page uses, bound to a served
+ * grove through Task 8's team routes instead of the ambient project
+ * selection. Unlike `tests/ui/settings-page.test.tsx` (which mocks
+ * `use-scoped-config` wholesale), this file mocks only `lib/api` and leaves
+ * the real `use-scoped-config` / `use-provider-secrets` team wiring in
+ * place — so these tests prove the actual request shapes (path, body,
+ * headers) a save produces, not a mocked shell. Heavy provider-UI internals
+ * unrelated to team wiring (model discovery, reasoning profiles) are
+ * stubbed to keep the surface focused.
+ */
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { vi } from '../helpers/vi-shim.js';
+
+const fetchJsonMock = vi.fn();
+const putJsonMock = vi.fn();
+const postJsonMock = vi.fn();
+const deleteJsonMock = vi.fn();
+
+mock.module('../../packages/myco/ui/src/lib/api', () => ({
+  fetchJson: (...args: unknown[]) => fetchJsonMock(...args),
+  putJson: (...args: unknown[]) => putJsonMock(...args),
+  postJson: (...args: unknown[]) => postJsonMock(...args),
+  deleteJson: (...args: unknown[]) => deleteJsonMock(...args),
+  patchJson: vi.fn(),
+  fetchMergedConfig: vi.fn().mockResolvedValue({}),
+  fetchLocalConfig: vi.fn().mockResolvedValue({}),
+  writeScopedConfig: vi.fn().mockResolvedValue({}),
+  clearLocalConfigKeys: vi.fn().mockResolvedValue({}),
+  ApiError: class ApiError extends Error {
+    status: number;
+    body: unknown;
+    constructor(status: number, body: unknown) {
+      super(`API error ${status}`);
+      this.status = status;
+      this.body = body;
+    }
+  },
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
+  useActiveProjectSelection: () => null,
+  useProjectScopedQueryKey: (key: unknown) => key,
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-grove-config', () => ({
+  useUpdateGroveConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+mock.module('../../packages/myco/ui/src/hooks/use-machine-config', () => ({
+  useUpdateMachineConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-providers', () => ({
+  useProviders: () => ({ data: { providers: [{ type: 'anthropic', label: 'Anthropic', models: [] }] }, isPending: false }),
+  useTestProvider: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false, isSuccess: false, isError: false }),
+  defaultBaseUrlForProvider: () => '',
+  maybeInferHarnessFromProviderType: () => 'claude-sdk',
+  REASONING_LEVELS: ['low', 'default', 'high'],
+}));
+
+const providerDraft = {
+  type: 'openai', harness: 'claude-sdk', model: '', localBackend: '', baseUrl: '',
+  contextLength: undefined, reasoningLow: '', reasoningDefault: '', reasoningHigh: '',
+};
+
+mock.module('../../packages/myco/ui/src/hooks/use-provider-config-draft', () => ({
+  draftToNormalizedProviderConfig: () => ({ type: 'openai', model: '' }),
+  providerDraftFromSource: () => providerDraft,
+  useProviderConfigDraft: () => ({
+    draft: providerDraft,
+    savedDraft: providerDraft,
+    isDirty: false,
+    clearDraft: vi.fn(),
+    resetDraft: vi.fn(),
+    handleHarnessChange: vi.fn(),
+    handleProviderChange: vi.fn(),
+    handleModelChange: vi.fn(),
+    handleLocalBackendChange: vi.fn(),
+    handleReasoningChange: vi.fn(),
+    handleBaseUrlChange: vi.fn(),
+    handleContextLengthChange: vi.fn(),
+  }),
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-models', () => ({
+  useModels: () => ({ data: { models: [] }, isPending: false }),
+}));
+
+mock.module('../../packages/myco/ui/src/components/providers/ProviderModelSelector', () => ({
+  ProviderModelSelector: () => null,
+}));
+mock.module('../../packages/myco/ui/src/components/providers/ReasoningProfiles', () => ({
+  ReasoningProfiles: () => null,
+}));
+mock.module('../../packages/myco/ui/src/components/providers/AdvancedModelPin', () => ({
+  AdvancedModelPin: () => null,
+}));
+
+import { TeamSettingsPanel } from '../../packages/myco/ui/src/components/team/TeamSettingsPanel';
+import type { TeamConfigTarget } from '../../packages/myco/ui/src/hooks/use-scoped-config';
+
+const CARRIER_TARGET: TeamConfigTarget = { carrier: { groveId: 'grove_x', projectId: 'proj_x' } };
+const SELF_TARGET: TeamConfigTarget = { carrier: null };
+
+function renderPanel(target: TeamConfigTarget = CARRIER_TARGET) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <TeamSettingsPanel target={target} />
+    </QueryClientProvider>,
+  );
+}
+
+function stubTeamConfig(keyHealth: 'ok' | 'missing_key') {
+  fetchJsonMock.mockImplementation(async (path: string) => {
+    if (path === '/team/config') {
+      return {
+        groveId: 'grove_x',
+        config: {
+          agent: { provider: { type: 'openai', model: '' }, harness: 'claude-sdk' },
+          embedding: { provider: 'ollama', model: '', base_url: '' },
+        },
+        keyHealth,
+      };
+    }
+    throw new Error(`unexpected fetchJson call: ${path}`);
+  });
+}
+
+beforeEach(() => {
+  fetchJsonMock.mockReset();
+  putJsonMock.mockReset();
+  postJsonMock.mockReset();
+  deleteJsonMock.mockReset();
+});
+
+describe('TeamSettingsPanel', () => {
+  it('renders the reused Agent + Embedding forms bound to the team target and requests /team/config with carrier headers', async () => {
+    stubTeamConfig('missing_key');
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText(/no team key configured/i)).toBeInTheDocument());
+    expect(fetchJsonMock).toHaveBeenCalledWith('/team/config', expect.objectContaining({
+      headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' },
+    }));
+    expect(screen.getByText('Myco Agent')).toBeInTheDocument();
+    expect(screen.getByText('Embedding')).toBeInTheDocument();
+  });
+
+  it('shows "A team key is configured." when keyHealth is ok', async () => {
+    stubTeamConfig('ok');
+    renderPanel();
+    await waitFor(() => expect(screen.getByText(/a team key is configured/i)).toBeInTheDocument());
+  });
+
+  it('a "This machine" target (no carrier) sends explicit empty grove/project headers', async () => {
+    stubTeamConfig('missing_key');
+    renderPanel(SELF_TARGET);
+
+    await waitFor(() => expect(fetchJsonMock).toHaveBeenCalledWith('/team/config', expect.objectContaining({
+      headers: { 'x-myco-grove-id': '', 'x-myco-project-id': '' },
+    })));
+  });
+
+  it('saving a provider key PUTs /team/secrets/:provider with carrier headers and echoes the masked value only — never the raw key', async () => {
+    stubTeamConfig('missing_key');
+    putJsonMock.mockResolvedValue({ provider: 'openai', maskedValue: 'sk-1234****WXYZ' });
+
+    renderPanel();
+
+    const input = await screen.findByPlaceholderText(/paste api key/i);
+    fireEvent.change(input, { target: { value: 'sk-1234REALSECRETVALUEWXYZ' } });
+    fireEvent.click(screen.getByRole('button', { name: /save key/i }));
+
+    await waitFor(() => expect(putJsonMock).toHaveBeenCalledWith(
+      '/team/secrets/openai',
+      { secret: 'sk-1234REALSECRETVALUEWXYZ' },
+      { headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' } },
+    ));
+
+    await waitFor(() => expect(screen.getByText(/sk-1234\*+WXYZ/)).toBeInTheDocument());
+    expect(screen.getByText(/from team secrets/i)).toBeInTheDocument();
+    expect(screen.queryByText('sk-1234REALSECRETVALUEWXYZ')).not.toBeInTheDocument();
+  });
+
+  it('deleting a provider key DELETEs /team/secrets/:provider (via fetchJson) and clears the masked echo', async () => {
+    // The team DELETE path goes through fetchJson directly (deleteJson has no
+    // headers param) — extend the /team/config stub to also answer the
+    // DELETE call.
+    fetchJsonMock.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (path === '/team/config') {
+        return {
+          groveId: 'grove_x',
+          config: {
+            agent: { provider: { type: 'openai', model: '' }, harness: 'claude-sdk' },
+            embedding: { provider: 'ollama', model: '', base_url: '' },
+          },
+          keyHealth: 'missing_key',
+        };
+      }
+      if (path === '/team/secrets/openai' && init?.method === 'DELETE') {
+        return { provider: 'openai', maskedValue: null };
+      }
+      throw new Error(`unexpected fetchJson call: ${path}`);
+    });
+    putJsonMock.mockResolvedValue({ provider: 'openai', maskedValue: 'sk-1234****WXYZ' });
+
+    renderPanel();
+
+    const input = await screen.findByPlaceholderText(/paste api key/i);
+    fireEvent.change(input, { target: { value: 'sk-1234REALSECRETVALUEWXYZ' } });
+    fireEvent.click(screen.getByRole('button', { name: /save key/i }));
+    await waitFor(() => expect(screen.getByText(/from team secrets/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /clear key/i }));
+
+    await waitFor(() => expect(fetchJsonMock).toHaveBeenCalledWith(
+      '/team/secrets/openai',
+      { method: 'DELETE', headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' } },
+    ));
+    await waitFor(() => expect(screen.queryByText(/from team secrets/i)).not.toBeInTheDocument());
+  });
+});

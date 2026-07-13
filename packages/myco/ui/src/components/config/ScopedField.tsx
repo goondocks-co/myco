@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { getAtPath } from '@myco/utils/dot-path';
 import { configFieldId } from '@myco/config/focus';
-import { useScopedConfig, type Scope } from '../../hooks/use-scoped-config';
+import { useIsTeamConfigTarget, useScopedConfig, type Scope } from '../../hooks/use-scoped-config';
 import { useMarkRestartDirty } from './restart-gate';
 import { ScopePill } from './ScopePill';
 import { FieldShell } from './FieldShell';
@@ -53,12 +53,15 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
 }: ScopedFieldProps<P, T>) {
   const { effective: effectiveConfig, local, setField, resetField } = useScopedConfig();
   const markRestartDirty = useMarkRestartDirty();
+  const isTeamTarget = useIsTeamConfigTarget();
 
   // Scope flows from the registry, never from props. The home tier is the
   // write target; the Personal affordance renders only when the policy lists
-  // `local` in `overridableBy`.
+  // `local` in `overridableBy` AND the field isn't bound to a served grove —
+  // grove-homed Personal overrides are refused by design (spec §6), so a
+  // team target always suppresses the opt-in regardless of the registry.
   const policy = scopePolicyForPath(path);
-  const allowsPersonal = policy.overridableBy.includes('local');
+  const allowsPersonal = policy.overridableBy.includes('local') && !isTeamTarget;
   const writeScope = policy.home as Scope;
 
   // Re-derive each render so values stay in sync; use a ref in commit so the
@@ -136,9 +139,10 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
     />
   ) : undefined;
 
-  // When no Personal pill renders (registry locks the field to its home tier),
-  // show a static home-tier badge instead.
-  const staticBadge = HOME_TIER_STATIC_BADGE[policy.home] ?? 'project';
+  // When no Personal pill renders (registry locks the field to its home tier,
+  // or a team target suppressed it), show a static badge instead — "Team"
+  // when bound to a served grove, else the home-tier badge.
+  const staticBadge = isTeamTarget ? 'team' : (HOME_TIER_STATIC_BADGE[policy.home] ?? 'project');
 
   return (
     <div id={configFieldId(path)} data-config-field={path} className="rounded-md transition-all duration-300">
