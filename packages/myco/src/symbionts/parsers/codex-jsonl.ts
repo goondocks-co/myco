@@ -1,7 +1,7 @@
 import type { TranscriptParser } from './types.js';
 import type { TranscriptTurn, TranscriptImage } from '../adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../../constants.js';
-import { envelopeTagAtStart } from '../../hooks/capture-rules.js';
+import { envelopeTagAtStart, isEnclosingEnvelope } from '../../hooks/capture-rules.js';
 
 /** Parse a data URL (data:<mime>;base64,<data>) into media type and base64 data. */
 function parseDataUrl(url: string): { mediaType: string; data: string } | null {
@@ -151,10 +151,20 @@ export class CodexJsonlParser implements TranscriptParser {
         // The envelope's text is dropped here (the walker records it as a
         // system-origin batch separately); the turn stays open so the
         // assistant output that follows lands on the prompt that opened it.
+        //
+        // The `isEnclosingEnvelope` check mirrors the classify engine's own
+        // fail-safe (`prompt_is_enclosing_envelope` — capture-rules.ts) so an
+        // envelope tag not yet enumerated in `envelopeTags` still folds
+        // instead of opening a spurious turn that would strand the real
+        // prompt's assistant response. Scoped to parsers that have envelope
+        // folding configured at all — a parser built with no manifest-derived
+        // tags/prefixes has no folding behavior to extend.
         const firstRawText = blocks.find((b) => b.type === 'input_text' && b.text?.trim())?.text ?? '';
+        const envelopeFoldingConfigured = this.envelopePrefixes.length > 0 || this.envelopeTags.length > 0;
         if (
           this.envelopePrefixes.some((p) => firstRawText.startsWith(p)) ||
-          envelopeTagAtStart(firstRawText, this.envelopeTags)
+          envelopeTagAtStart(firstRawText, this.envelopeTags) ||
+          (envelopeFoldingConfigured && isEnclosingEnvelope(firstRawText))
         ) {
           continue;
         }

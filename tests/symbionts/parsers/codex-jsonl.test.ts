@@ -492,6 +492,26 @@ describe('CodexJsonlParser — system envelope folding (RC-B)', () => {
     expect(turns[0].aiResponse).toBe('Answer');
   });
 
+  it('folds an unknown whole-message enclosing envelope mid-turn (fail-safe symmetry)', () => {
+    // Mirrors the classify engine's `prompt_is_enclosing_envelope` fail-safe:
+    // a tag not present in the manifest's enumerated envelopeTags list still
+    // folds as long as the ENTIRE trimmed prompt is one balanced XML envelope.
+    // Without this, an unrecognized future envelope would classify correctly
+    // as non-human but still open a new turn here, stranding the real
+    // prompt's assistant response.
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: 'Investigate the flaky test' }], '2026-06-12T10:00:00Z'),
+      messageItem('user', [{ type: 'input_text', text: '<future-thing>context</future-thing>' }], '2026-06-12T10:00:01Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'Found the root cause.' }], '2026-06-12T10:00:30Z'),
+    ]);
+
+    const turns = envelopeParser.parseTurns(content);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].prompt).toBe('Investigate the flaky test');
+    expect(turns[0].aiResponse).toBe('Found the root cause.');
+  });
+
   it('without configured prefixes, envelope folding is off (default construction)', () => {
     const bare = new CodexJsonlParser();
     const content = toJsonl([

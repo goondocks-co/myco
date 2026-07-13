@@ -109,8 +109,8 @@ capture:
       action: classify
       set_origin: system
       reason: claude-code-autonomous-loop
-    # Agent-to-agent envelopes → agent_dispatch (attribute-robust; covers the
-    # renamed <agent-message from="…"> that the old <teammate-message prefix missed).
+    # Agent-to-agent report envelopes → agent_dispatch; matched by tag name so
+    # attributes like from="…" don't affect it.
     - event: user_prompt
       scope: this_agent
       when:
