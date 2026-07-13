@@ -35,6 +35,7 @@ import {
 } from '@myco/daemon/api/sessions';
 import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 import { registerTeamConfigRoutes } from '@myco/daemon/api/team-config.js';
+import { registerTeamAgentTaskRoutes } from '@myco/daemon/api/team-agent-tasks.js';
 import type { HostServeRuntime } from '@myco/daemon/host-serve.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
@@ -322,6 +323,10 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       hostServe,
     });
     registerTeamConfigRoutes(overlayServer, { hostServe, mycoHome: home });
+    // Per-task table (spec §6.3) — carries no secrets, so it needs no leak
+    // assertions of its own, but is registered + swept here for uniformity
+    // with the rest of the team-write route class.
+    registerTeamAgentTaskRoutes(overlayServer, { hostServe, mycoHome: home });
     await overlayServer.start(0);
   });
 
@@ -365,6 +370,9 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       // Unknown-provider and missing-secret error paths must not echo anything either.
       { method: 'PUT', path: '/api/team/secrets/not-a-provider', body: { secret: TEAM_SENTINEL_NEW } },
       { method: 'PUT', path: '/api/team/secrets/anthropic', body: {} },
+      // Per-task table (spec §6.3): no secret payload, swept for uniformity only.
+      { method: 'GET', path: '/api/team/agent-tasks/vault-evolve/config' },
+      { method: 'PUT', path: '/api/team/agent-tasks/vault-evolve/config', body: { maxTurns: 9 } },
     ];
 
     let mintedTokenResponseCount = 0;

@@ -13,6 +13,11 @@
  *   PUT/DELETE /api/team/secrets/:provider — write-only, masked-echo-only
  *   POST      /api/team/mcp-token/rotate  — Task 10's external-MCP token seam
  *
+ * The per-task table's team-write routes (`GET/PUT
+ * /api/team/agent-tasks/:id/config`, spec §6.3) live in the sibling module
+ * `team-agent-tasks.ts` — they reuse `resolveServedGroveIdOrRefusal`/
+ * `isRefusal` exported below rather than duplicating the derivation.
+ *
  * Config writes funnel through the SAME `handlePutGroveConfig` /
  * `updateTierConfigRaw` pipeline `PUT /api/grove-config` uses (single-write-path
  * rule) — this module adds no parallel YAML writer. Secrets never touch YAML:
@@ -107,8 +112,10 @@ export interface TeamConfigRouteDeps {
  *  designated to serve one. Every handler below starts here — deriving the
  *  Grove from `hostServe.servedGroveId` (never a request header) is what
  *  makes "team config" mean THE served grove regardless of which project a
- *  caller's request happens to carry in context. */
-function resolveServedGroveIdOrRefusal(deps: TeamConfigRouteDeps): string | RouteResponse {
+ *  caller's request happens to carry in context. Exported so sibling
+ *  team-write modules (`team-agent-tasks.ts`) share the SAME derivation
+ *  rather than re-implementing it. */
+export function resolveServedGroveIdOrRefusal(deps: TeamConfigRouteDeps): string | RouteResponse {
   const groveId = deps.hostServe?.servedGroveId;
   if (!groveId) {
     return {
@@ -119,7 +126,7 @@ function resolveServedGroveIdOrRefusal(deps: TeamConfigRouteDeps): string | Rout
   return groveId;
 }
 
-function isRefusal(value: string | RouteResponse): value is RouteResponse {
+export function isRefusal(value: string | RouteResponse): value is RouteResponse {
   return typeof value !== 'string';
 }
 

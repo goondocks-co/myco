@@ -6,6 +6,7 @@ import { Button } from '../ui/button';
 import { AccentSurface } from '../ui/accent-surface';
 import { AgentProviderCard } from '../settings/AgentProviderCard';
 import { EmbeddingCard } from '../settings/EmbeddingCard';
+import { TeamTaskProviderConfig } from './TeamTaskProviderConfig';
 import {
   TeamConfigTargetProvider,
   useScopedConfig,
@@ -106,20 +107,13 @@ function RotateAccessTokenButton() {
 
 /**
  * Team settings — the served grove's grove-tier config, edited from a
- * member's Team page through Task 8's team routes (server-mode design spec
- * §6). Reuses the SAME forms the Settings page mounts for a normal project
- * (`AgentProviderCard`, `EmbeddingCard`) unmodified: they read/write through
- * `useScopedConfig()`, which resolves to the team routes for any component
- * rendered inside `TeamConfigTargetProvider` below — no forked copies.
- *
- * Per-task provider overrides (`TaskProviderConfig`) are NOT mounted here.
- * That component's bespoke hooks call `PUT /api/agent/tasks/:id/config`,
- * which is `config-lock` stamped and refuses attached-project writes by
- * design (server-mode design spec §6) — Task 8 shipped no team-write
- * equivalent for it. Wiring it correctly needs a new routed endpoint with
- * the same leak-guard-gated review Task 8's five routes got; that is
- * explicitly out of scope for this UI task and tracked as a follow-up rather
- * than shipped unreviewed.
+ * member's Team page through the team routes (server-mode design spec §6).
+ * Reuses the SAME forms the Settings page mounts for a normal project
+ * (`AgentProviderCard`, `EmbeddingCard`, `TaskProviderConfig` via
+ * `TeamTaskProviderConfig`) unmodified: they read/write through
+ * `useScopedConfig()` / `useTaskConfig()` / `useUpdateTaskConfig()`, which
+ * all resolve to the team routes for any component rendered inside
+ * `TeamConfigTargetProvider` below — no forked copies.
  */
 export function TeamSettingsPanel({ target }: TeamSettingsPanelProps) {
   return (
@@ -134,6 +128,9 @@ export function TeamSettingsPanel({ target }: TeamSettingsPanelProps) {
         </Panel>
         <AgentProviderCard />
         <EmbeddingCard />
+        <Panel tone="sage" title="Per-task overrides">
+          <TeamTaskProviderConfig />
+        </Panel>
         <Panel tone="sage" title="External access">
           <p className="text-xs text-on-surface-variant m-0 mb-3">
             Rotating replaces the token used by tools outside the team's machines. Existing

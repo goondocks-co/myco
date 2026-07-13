@@ -55,12 +55,42 @@ mock.module('../../packages/myco/ui/src/hooks/use-machine-config', () => ({
   useUpdateMachineConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
+const updateTaskConfigMutateMock = vi.fn();
+
+// Hoisted so every mock call returns the SAME reference — real `useQuery`
+// (and the real `useAgentTasks`/`useTask`) keep `data` referentially stable
+// across renders until it actually changes; a mock that hands back a fresh
+// object/array every call breaks that invariant and can infinite-loop a
+// `useEffect` keyed on the object (`TaskProviderConfig`'s config-sync effect
+// hit exactly this before these were hoisted).
+const STUB_TASK_CONFIG_DATA = {
+  taskId: 'vault-evolve', config: null, capability: null, capabilityEnabled: true, effectiveScheduleEnabled: false,
+};
+const STUB_TASK = { name: 'vault-evolve', displayName: 'Vault Evolve', description: '', agent: 'myco-agent', prompt: '', isDefault: false };
+const STUB_TASKS_RESPONSE = { tasks: [STUB_TASK] };
+const STUB_TASK_DETAIL_RESPONSE = { task: STUB_TASK };
+const STUB_INHERITED_EXECUTION = {};
+
 mock.module('../../packages/myco/ui/src/hooks/use-providers', () => ({
   useProviders: () => ({ data: { providers: [{ type: 'anthropic', label: 'Anthropic', models: [] }] }, isPending: false }),
   useTestProvider: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false, isSuccess: false, isError: false }),
+  // Per-task table (TeamTaskProviderConfig / TaskProviderConfig) — stubbed
+  // here since the real branching behavior is proven at the hook level in
+  // tests/ui/team-task-provider-config.test.tsx; this file only needs the
+  // table to render and mount the reused form.
+  useTaskConfig: () => ({ data: STUB_TASK_CONFIG_DATA }),
+  useUpdateTaskConfig: () => ({ mutate: updateTaskConfigMutateMock, isPending: false }),
+  getInheritedExecution: () => STUB_INHERITED_EXECUTION,
+  parseProviderType: (value: string) => value,
+  resolveReasoningModel: () => '',
   defaultBaseUrlForProvider: () => '',
   maybeInferHarnessFromProviderType: () => 'claude-sdk',
   REASONING_LEVELS: ['low', 'default', 'high'],
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-agent', () => ({
+  useAgentTasks: () => ({ data: STUB_TASKS_RESPONSE, isPending: false }),
+  useTask: () => ({ data: STUB_TASK_DETAIL_RESPONSE }),
 }));
 
 const providerDraft = {
@@ -137,6 +167,7 @@ beforeEach(() => {
   putJsonMock.mockReset();
   postJsonMock.mockReset();
   deleteJsonMock.mockReset();
+  updateTaskConfigMutateMock.mockReset();
 });
 
 describe('TeamSettingsPanel', () => {
@@ -224,5 +255,19 @@ describe('TeamSettingsPanel', () => {
       { method: 'DELETE', headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' } },
     ));
     await waitFor(() => expect(screen.queryByText(/from team secrets/i)).not.toBeInTheDocument());
+  });
+
+  it('mounts the per-task table (TaskProviderConfig) for the served grove, task picker + reused form', async () => {
+    stubTeamConfig('missing_key');
+    renderPanel();
+
+    // Task picker lists the (unscoped, build-vendored) task defs and defaults
+    // to the first one; the reused TaskProviderConfig form mounts beneath it,
+    // wired to `useTaskConfig`/`useUpdateTaskConfig` (proven to branch to the
+    // team-write route at the hook level in
+    // tests/ui/team-task-provider-config.test.tsx).
+    await waitFor(() => expect(screen.getByText('Vault Evolve')).toBeInTheDocument());
+    expect(screen.getByText('Task Config')).toBeInTheDocument();
+    expect(updateTaskConfigMutateMock).not.toHaveBeenCalled();
   });
 });

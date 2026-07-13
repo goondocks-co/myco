@@ -334,6 +334,11 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'PUT', pattern: '/api/team/secrets/:provider', stamp: 'team-write', capability: TEAM_WRITE },
   { method: 'DELETE', pattern: '/api/team/secrets/:provider', stamp: 'team-write', capability: TEAM_WRITE },
   { method: 'POST', pattern: '/api/team/mcp-token/rotate', stamp: 'team-write', capability: TEAM_WRITE },
+  // Per-task table (spec §6.3): the bespoke `/api/agent/tasks/:id/config` is
+  // config-lock stamped above, so the Team page's per-task overrides reach
+  // the served grove through this parallel team-write pair instead.
+  { method: 'GET', pattern: '/api/team/agent-tasks/:id/config', stamp: 'team-write', capability: TEAM_WRITE },
+  { method: 'PUT', pattern: '/api/team/agent-tasks/:id/config', stamp: 'team-write', capability: TEAM_WRITE },
 
   // --- config-carve: per-tier member-side config (routing-layer §6.3). The
   //     member assembles/serves these from its own machine/project/personal

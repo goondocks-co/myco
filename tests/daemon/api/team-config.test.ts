@@ -25,7 +25,7 @@ import http from 'node:http';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
-import { classifyRoute } from '@myco/host/routing';
+import { classifyRoute, matchRouteRule } from '@myco/host/routing';
 import type { HostServeRuntime } from '@myco/daemon/host-serve';
 import { resolveServedGroveKeyHealthIsolated } from '@myco/daemon/host-serve';
 import {
@@ -36,6 +36,11 @@ import {
   handleRotateExternalMcpToken,
   registerTeamConfigRoutes,
 } from '@myco/daemon/api/team-config';
+import {
+  handleGetTeamTaskConfig,
+  handlePutTeamTaskConfig,
+  registerTeamAgentTaskRoutes,
+} from '@myco/daemon/api/team-agent-tasks';
 import {
   assertGroveProjectId,
   createGroveId,
@@ -48,6 +53,7 @@ import { resolveGroveConfigPath, resolveGroveDir, resolveMycoHome } from '@myco/
 import { readSecrets, writeSecret } from '@myco/config/secrets';
 import { loadMachineConfig, loadGroveConfig, saveMachineConfig } from '@myco/config/loader';
 import { HOST_BEARER_SECRET, HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
+import type { RouteRequest } from '@myco/daemon/router';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 
@@ -109,6 +115,8 @@ describe('(a) classifyRoute: team-write routes to the host for an attached proje
     { method: 'PUT', pathname: '/api/team/secrets/anthropic' },
     { method: 'DELETE', pathname: '/api/team/secrets/anthropic' },
     { method: 'POST', pathname: '/api/team/mcp-token/rotate' },
+    { method: 'GET', pathname: '/api/team/agent-tasks/vault-evolve/config' },
+    { method: 'PUT', pathname: '/api/team/agent-tasks/vault-evolve/config' },
   ];
 
   for (const route of TEAM_WRITE_ROUTES) {
@@ -136,6 +144,26 @@ describe('(a) classifyRoute: team-write routes to the host for an attached proje
 
   test('tmp dir created (fixture sanity)', () => {
     expect(fs.existsSync(tmp())).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (per-task d) completeness guard: the new per-task routes resolve to the
+// explicit team-write stamp, never fall through to the `serve` default.
+// ---------------------------------------------------------------------------
+
+describe('(per-task d) route-stamp completeness: per-task team-write routes never fall through to serve', () => {
+  test('GET/PUT /api/team/agent-tasks/:id/config resolve to the explicit team-write stamp', () => {
+    expect(matchRouteRule('GET', '/api/team/agent-tasks/_id/config')?.stamp).toBe('team-write');
+    expect(matchRouteRule('PUT', '/api/team/agent-tasks/_id/config')?.stamp).toBe('team-write');
+  });
+
+  test('the coarse legacy /api/team/* prefix rules do not shadow the exact :id/config match', () => {
+    // Sanity: the legacy prefix rules are GET/POST only (no PUT), so a PUT
+    // here with no explicit ROUTE_RULES entry would silently fall through to
+    // `serve` rather than `team-write` — this pins that the explicit :param
+    // rule, not the coarse prefix, is what resolves it.
+    expect(matchRouteRule('PUT', '/api/team/agent-tasks/_id/config')).toBeDefined();
   });
 });
 
@@ -213,6 +241,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
       hostServe,
     });
     registerTeamConfigRoutes(server, { hostServe, mycoHome: process.env.MYCO_HOME! });
+    registerTeamAgentTaskRoutes(server, { hostServe, mycoHome: process.env.MYCO_HOME! });
     await server.start(0);
     servers.push(server);
     return server;
@@ -271,6 +300,61 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
     expect(res.status).toBe(200);
     const body = await res.json() as { groveId: string };
     expect(body.groveId).toBe(servedGrove.id);
+  });
+
+  // -------------------------------------------------------------------------
+  // Per-task table (spec §6.3): the same served-grove admission, exercised
+  // over the SAME real overlay fixture as GET /api/team/config above.
+  // -------------------------------------------------------------------------
+
+  test('GET /api/team/agent-tasks/vault-evolve/config: the served grove passes through', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/agent-tasks/vault-evolve/config`, {
+      headers: overlayHeaders({ 'x-myco-grove-id': servedGrove.id, 'x-myco-project-id': servedProjectId }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { taskId: string };
+    expect(body.taskId).toBe('vault-evolve');
+  });
+
+  test('GET /api/team/agent-tasks/vault-evolve/config: a foreign (personal) grove is refused 404', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/agent-tasks/vault-evolve/config`, {
+      headers: overlayHeaders({ 'x-myco-grove-id': personalGrove.id, 'x-myco-project-id': personalProjectId }),
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('not_found');
+  });
+
+  test('GET /api/team/agent-tasks/vault-evolve/config: no grove header resolves null grove -> refused', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/agent-tasks/vault-evolve/config`, {
+      headers: overlayHeaders(),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test('GET /api/team/agent-tasks/vault-evolve/config: host has no designation -> refused for every grove', async () => {
+    const server = await buildHostServer(undefined);
+    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/agent-tasks/vault-evolve/config`, {
+      headers: overlayHeaders({ 'x-myco-grove-id': servedGrove.id, 'x-myco-project-id': servedProjectId }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test('PUT /api/team/agent-tasks/vault-evolve/config: loopback (non-overlay) requests are unaffected', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/team/agent-tasks/vault-evolve/config`, {
+      method: 'PUT',
+      headers: { 'x-myco-auth': server.getAuthToken(), 'content-type': 'application/json' },
+      body: JSON.stringify({ maxTurns: 11 }),
+    });
+    // Not overlay-gated, but still resolves via hostServe.servedGroveId directly.
+    expect(res.status).toBeLessThan(300);
+    const body = await res.json() as { taskId: string; config: { maxTurns?: number } | null };
+    expect(body.taskId).toBe('vault-evolve');
+    expect(body.config?.maxTurns).toBe(11);
   });
 });
 
@@ -362,6 +446,85 @@ describe('(c) PUT /api/team/config writes the served grove tier via the single w
     const res = await handleGetTeamConfig({ hostServe: null, mycoHome: home() });
     expect(res.status).toBe(404);
     expect((res.body as { error: { code: string } }).error.code).toBe('not_serving');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (per-task c) PUT /api/team/agent-tasks/:id/config writes agent.tasks.<id>
+// via the SAME single write path PUT /api/agent/tasks/:id/config uses when a
+// Grove is bound (`handleUpdateTaskConfig`, agent-tasks.ts).
+// ---------------------------------------------------------------------------
+
+describe('(per-task c) PUT /api/team/agent-tasks/:id/config writes the served grove tier', () => {
+  const { home } = withHermeticHomes();
+  let grove: GroveRecord;
+
+  beforeEach(() => {
+    grove = createGrove('Served', home());
+  });
+
+  function deps(): { hostServe: HostServeRuntime; mycoHome: string } {
+    return {
+      hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id },
+      mycoHome: home(),
+    };
+  }
+
+  function req(overrides: Partial<RouteRequest> = {}): RouteRequest {
+    return {
+      params: { id: 'vault-evolve' },
+      query: {},
+      body: undefined,
+      pathname: '/api/team/agent-tasks/vault-evolve/config',
+      ...overrides,
+    } as RouteRequest;
+  }
+
+  test('patch lands on disk in grove.yaml under agent.tasks.<id> and is readable via loadGroveConfig', async () => {
+    const { response, touchedPaths, groveId } = await handlePutTeamTaskConfig(
+      deps(),
+      req({ body: { maxTurns: 17 } }),
+    );
+    expect(response.status ?? 200).toBeLessThan(300);
+    expect(touchedPaths).toContain('agent.tasks.vault-evolve');
+    expect(groveId).toBe(grove.id);
+
+    const onDisk = loadGroveConfig(grove.id, home());
+    expect(onDisk.agent.tasks?.['vault-evolve']?.maxTurns).toBe(17);
+
+    const rawYaml = fs.readFileSync(resolveGroveConfigPath(grove.id, home()), 'utf-8');
+    expect(rawYaml).toContain('vault-evolve');
+  });
+
+  test('GET reflects the write through handleGetTeamTaskConfig', async () => {
+    await handlePutTeamTaskConfig(deps(), req({ body: { maxTurns: 21 } }));
+    const res = await handleGetTeamTaskConfig(deps(), req());
+    expect(res.status ?? 200).toBeLessThan(300);
+    const body = res.body as { taskId: string; config: { maxTurns?: number } | null };
+    expect(body.taskId).toBe('vault-evolve');
+    expect(body.config?.maxTurns).toBe(21);
+  });
+
+  test('no served-grove designation -> not_serving refusal, nothing written', async () => {
+    const { response, touchedPaths, groveId } = await handlePutTeamTaskConfig(
+      { hostServe: null, mycoHome: home() },
+      req({ body: { maxTurns: 5 } }),
+    );
+    expect(response.status).toBe(404);
+    expect((response.body as { error: { code: string } }).error.code).toBe('not_serving');
+    expect(touchedPaths).toEqual([]);
+    expect(groveId).toBeNull();
+  });
+
+  test('GET with no served-grove designation -> not_serving refusal', async () => {
+    const res = await handleGetTeamTaskConfig({ hostServe: null, mycoHome: home() }, req());
+    expect(res.status).toBe(404);
+    expect((res.body as { error: { code: string } }).error.code).toBe('not_serving');
+  });
+
+  test('unknown task id -> task_not_found on GET', async () => {
+    const res = await handleGetTeamTaskConfig(deps(), req({ params: { id: 'does-not-exist-task' } }));
+    expect(res.status).toBe(404);
   });
 });
 

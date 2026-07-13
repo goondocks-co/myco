@@ -110,6 +110,7 @@ import { registerContentClaimFileStatusRoute } from './api/content-claims-file-s
 import { registerDrainHealthRoute } from './api/drain-health.js';
 import { registerHostMembershipRoutes } from './api/host-membership.js';
 import { registerTeamConfigRoutes } from './api/team-config.js';
+import { registerTeamAgentTaskRoutes } from './api/team-agent-tasks.js';
 import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
 import { tenantRoute } from './api/route-helpers.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
@@ -1709,13 +1710,17 @@ export async function main(): Promise<void> {
   // reached by a member through their own daemon's proxy. Only ever answers
   // for real on the one machine designated as this Grove's Team Host —
   // elsewhere `hostServe` is null and every handler refuses `not_serving`.
-  registerTeamConfigRoutes(server, {
+  const teamWriteDeps = {
     hostServe,
     mycoHome,
-    onConfigWrite: async (touchedPaths, groveId) => {
+    onConfigWrite: async (touchedPaths: string[], groveId: string) => {
       await applyConfigWriteReactions(touchedPaths, { vaultDir: bootstrapVaultDir, groveId });
     },
-  });
+  };
+  registerTeamConfigRoutes(server, teamWriteDeps);
+  // Per-task table (spec §6.3) — the team-write counterpart to the
+  // config-lock-stamped `/api/agent/tasks/:id/config` registered below.
+  registerTeamAgentTaskRoutes(server, teamWriteDeps);
 
   // Machine-tier config (~/.myco/config.yaml) — port, log policy, update
   // channel. One daemon per machine, so the route is global (no scope
