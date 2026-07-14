@@ -69,6 +69,15 @@ export interface RemoteTarget {
   projectId: GroveProjectId;
   /** Grove id from the attach record — the hosted Grove's identity, not a local row. */
   groveId: string;
+  /**
+   * This project's member-local checkout root, carried from `AttachRef.root`
+   * (`host/registry.ts`). Per-request — NOT the daemon's bootstrap-anchor
+   * project root — so a multi-project member's collect-time root-relative
+   * matching (e.g. `capture/plan-drain.ts` `noteCollect`) scopes to the
+   * project the request is actually about. Absent for attach records
+   * created before `root` was added to `AttachRef`.
+   */
+  root?: string;
   host: {
     host_id: string;
     label: string;
@@ -719,12 +728,13 @@ export function overlayHostStampRefusal(method: string, pathname: string): Refus
  *  state (`daemon/api/content-claims-materialize.ts`). */
 export function remoteTargetFor(
   projectId: GroveProjectId,
-  attach: { host: { host_id: string; label: string; overlay_address: string; protocol_version: number; proxy_port?: number }; ref: { grove_id: string } },
+  attach: { host: { host_id: string; label: string; overlay_address: string; protocol_version: number; proxy_port?: number }; ref: { grove_id: string; root?: string } },
 ): RemoteTarget {
   const bearer = readHostSecrets(attach.host.host_id)[HOST_BEARER_SECRET] ?? '';
   return {
     projectId,
     groveId: attach.ref.grove_id,
+    root: attach.ref.root,
     host: {
       host_id: attach.host.host_id,
       label: attach.host.label,

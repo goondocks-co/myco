@@ -627,9 +627,21 @@ export class EventReplayDrainQueue {
    */
   private async drainSession(attached: AttachedReplayTarget, sessionId: string): Promise<number> {
     const records = this.bufferReader.readRecords(attached.bufferDir, sessionId);
-    let acked = this.store.get(attached.hostId, sessionId)?.acked_count ?? 0;
+    const stored = this.store.get(attached.hostId, sessionId);
+    let acked = stored?.acked_count ?? 0;
     if (acked > records.length) acked = records.length; // buffer shrank (unexpected) — clamp
-    if (records.length <= acked) return 0; // caught up
+    if (records.length <= acked) {
+      // Caught up — not a live transport attempt, so it can't itself confirm
+      // the host is still unreachable. Clear a stale failure recorded on a
+      // PAST attempt so a since-recovered host stops reading "unreachable"
+      // forever on a session with nothing left to send. Skip the store write
+      // when there is no failure on record.
+      if (stored && ((stored.consecutive_failures ?? 0) > 0 || stored.last_error_kind)) {
+        clearDrainFailure(stored);
+        this.store.put(stored);
+      }
+      return 0; // caught up
+    }
 
     let sent = 0;
     for (let i = acked; i < records.length; i += 1) {
