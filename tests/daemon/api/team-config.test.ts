@@ -744,13 +744,65 @@ describe('GET /api/team/external-mcp + PUT .../toggle — mint-if-absent, bind/u
     expect(machine.daemon.external_mcp.port).toBe(body.port);
   });
 
-  test('enable twice: mint-if-absent never rotates an already-existing token', async () => {
+  test('enable twice: mint-if-absent never rotates an already-existing token, and re-enable does NOT re-reveal it', async () => {
     const first = await handlePutExternalMcpToggle(deps(), { enabled: true });
-    const firstToken = (first.body as { token: string }).token;
+    const firstBody = first.body as { token: string; tokenHash: string };
+    expect(typeof firstBody.token).toBe('string');
+    expect(firstBody.token.length).toBeGreaterThan(0);
+
     const second = await handlePutExternalMcpToggle(deps(), { enabled: true });
-    const secondToken = (second.body as { token: string }).token;
-    expect(secondToken).toBe(firstToken);
+    const secondBody = second.body as { token?: string; tokenHash: string };
+    // The strict reveal property (Task 10 Fix Round 1): a re-enable of an
+    // already-token'd listener returns tokenHash only — the raw token is
+    // NEVER re-revealed. A member who lost it must use rotate.
+    expect(secondBody.token).toBeUndefined();
+    expect(secondBody.tokenHash).toBe(firstBody.tokenHash);
+
+    const stored = readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+    expect(stored).toBe(firstBody.token);
     expect(listener.bindCalls.length).toBe(2); // re-enable re-binds (idempotent on the listener side)
+  });
+
+  test('port out of the schema range -> 400 BEFORE any side effect (no mint, no bind, no persist)', async () => {
+    const res = await handlePutExternalMcpToggle(deps(), { enabled: true, port: 80 });
+    expect(res.status).toBe(400);
+    expect(listener.bindCalls).toEqual([]);
+    expect(readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBeUndefined();
+    const machine = loadMachineConfig(home());
+    expect(machine.daemon.external_mcp.enabled).toBe(false);
+  });
+
+  test('port: 0 is rejected (below the schema floor), never persistable', async () => {
+    const res = await handlePutExternalMcpToggle(deps(), { enabled: true, port: 0 });
+    expect(res.status).toBe(400);
+    const machine = loadMachineConfig(home());
+    expect(machine.daemon.external_mcp.enabled).toBe(false);
+    expect(machine.daemon.external_mcp.port).not.toBe(0);
+  });
+
+  test('port above the schema ceiling -> 400', async () => {
+    const res = await handlePutExternalMcpToggle(deps(), { enabled: true, port: 70000 });
+    expect(res.status).toBe(400);
+  });
+
+  test('persists the ACTUALLY-bound port, not the raw requested value', async () => {
+    const boundPort = 9999;
+    const rebindingListener: ExternalMcpListenerControl = {
+      async bind() { return { ok: true, port: boundPort }; },
+      async unbind() {},
+      isBound: true,
+      port: boundPort,
+    };
+    const res = await handlePutExternalMcpToggle(
+      { hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id }, mycoHome: home(), externalMcp: { listener: rebindingListener, runFunnel } },
+      { enabled: true, port: 5000 },
+    );
+    expect(res.status ?? 200).toBeLessThan(300);
+    const body = res.body as { port: number };
+    expect(body.port).toBe(boundPort);
+    const machine = loadMachineConfig(home());
+    expect(machine.daemon.external_mcp.port).toBe(boundPort);
+    expect(funnelCalls.some((c) => c.port === boundPort)).toBe(true);
   });
 
   test('disable: turns Funnel off, unbinds, persists enabled:false, reveals nothing', async () => {

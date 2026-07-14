@@ -359,13 +359,36 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
     const base = `http://127.0.0.1:${overlayServer.overlayPort}`;
 
     // ---------------------------------------------------------------------
-    // The external MCP token's TWO deliberate reveal surfaces (Task 10
-    // obligation): rotate mints-and-reveals; the enable-toggle reveals
-    // whatever token currently exists (mint-if-absent — a pre-existing
-    // token from rotate above is NOT re-minted, but IS still handed back,
-    // since the member enabling exposure needs the raw value to configure
-    // an external agent). Both responses MUST carry the SAME raw token.
+    // The external MCP token's TWO deliberate reveal surfaces (Task 10 Fix
+    // Round 1, strict property): a FRESH mint — first enable, or rotate —
+    // reveals the raw token. A RE-ENABLE of an already-token'd listener
+    // does NOT re-reveal it (idempotent bind, unchanged hash) — a member
+    // who lost the token must use rotate. This merge gate pins that exact
+    // asymmetry, not just "some reveal surface exists somewhere".
     // ---------------------------------------------------------------------
+    const firstEnableRes = await fetch(`${base}/api/team/external-mcp/toggle`, {
+      method: 'PUT',
+      headers: { ...overlayHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    });
+    const firstEnableBody = await firstEnableRes.json() as { token: string; enabled: boolean };
+    expect(firstEnableBody.enabled).toBe(true);
+    expect(typeof firstEnableBody.token, 'the first enable (fresh mint) did not reveal the raw token').toBe('string');
+    expect(firstEnableBody.token.length).toBeGreaterThan(0);
+    const mintedToken = firstEnableBody.token;
+    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(mintedToken);
+
+    const reEnableRes = await fetch(`${base}/api/team/external-mcp/toggle`, {
+      method: 'PUT',
+      headers: { ...overlayHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    });
+    const reEnableBody = await reEnableRes.json() as { token?: string; tokenHash: string; enabled: boolean };
+    expect(reEnableBody.enabled).toBe(true);
+    expect(reEnableBody.token, 're-enable of an already-token\'d listener must NOT re-reveal the raw token').toBeUndefined();
+    // mint-if-absent (via the re-enable) must NOT have rotated it either.
+    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(mintedToken);
+
     const rotateRes = await fetch(`${base}/api/team/mcp-token/rotate`, {
       method: 'POST',
       headers: overlayHeaders(),
@@ -374,19 +397,9 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
     const currentToken = rotateBody.token;
     expect(typeof currentToken, 'POST /api/team/mcp-token/rotate did not reveal the raw token').toBe('string');
     expect(currentToken.length).toBeGreaterThan(0);
+    expect(currentToken, 'rotate must always mint a FRESH token, never echo the prior one').not.toBe(mintedToken);
     const storedAfterRotate = readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
     expect(currentToken).toBe(storedAfterRotate);
-
-    const enableRes = await fetch(`${base}/api/team/external-mcp/toggle`, {
-      method: 'PUT',
-      headers: { ...overlayHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ enabled: true }),
-    });
-    const enableBody = await enableRes.json() as { token: string; enabled: boolean };
-    expect(enableBody.enabled).toBe(true);
-    expect(enableBody.token, 'PUT /api/team/external-mcp/toggle enable did not reveal the SAME mint-if-absent token').toBe(currentToken);
-    // mint-if-absent must NOT have rotated it.
-    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(currentToken);
 
     const requests: Array<{ method: string; path: string; body?: unknown }> = [
       { method: 'GET', path: '/api/team/config' },
@@ -397,9 +410,12 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       // via an unrelated field must not cause it to be echoed either.
       { method: 'PUT', path: '/api/team/secrets/openai', body: { secret: TEAM_SENTINEL_NEW, leak: TEAM_SENTINEL_EXISTING } },
       { method: 'DELETE', path: '/api/team/secrets/anthropic' },
-      // Status/disable — neither is a reveal surface: GET never echoes the
-      // raw token (only its hash), and disable mints/reveals nothing.
+      // Status/re-enable/disable — NONE of these are reveal surfaces: GET
+      // never echoes the raw token (only its hash); a re-enable AFTER
+      // rotate (an already-token'd listener again) must not re-reveal the
+      // freshly-rotated token either; disable mints/reveals nothing.
       { method: 'GET', path: '/api/team/external-mcp' },
+      { method: 'PUT', path: '/api/team/external-mcp/toggle', body: { enabled: true } },
       { method: 'PUT', path: '/api/team/external-mcp/toggle', body: { enabled: false } },
       // Unknown-provider and missing-secret error paths must not echo anything either.
       { method: 'PUT', path: '/api/team/secrets/not-a-provider', body: { secret: TEAM_SENTINEL_NEW } },
@@ -419,7 +435,8 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       const text = await res.text();
       expect(text, `${r.method} ${r.path} leaked the existing team key`).not.toContain(TEAM_SENTINEL_EXISTING);
       expect(text, `${r.method} ${r.path} leaked the new team key`).not.toContain(TEAM_SENTINEL_NEW);
-      expect(text, `${r.method} ${r.path} leaked the external MCP token outside its two reveal surfaces`).not.toContain(currentToken);
+      expect(text, `${r.method} ${r.path} leaked the current external MCP token outside its two fresh-mint reveal surfaces`).not.toContain(currentToken);
+      expect(text, `${r.method} ${r.path} leaked the rotated-out external MCP token`).not.toContain(mintedToken);
     }
   });
 

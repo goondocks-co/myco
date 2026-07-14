@@ -564,7 +564,7 @@ const HostServeSchema = z.object({
  * machine `secrets.env` under `HOST_EXTERNAL_MCP_TOKEN_SECRET` (secrets
  * never in YAML).
  */
-const ExternalMcpSchema = z.object({
+export const ExternalMcpSchema = z.object({
   enabled: z.boolean().default(false),
   port: z.number().int().min(1024).max(65535).default(EXTERNAL_MCP_DEFAULT_PORT),
 }).strict();

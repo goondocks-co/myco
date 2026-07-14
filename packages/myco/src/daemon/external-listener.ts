@@ -22,6 +22,23 @@
  * `mcp/external-surface.ts`'s allowlist wrapper is the only thing narrowing
  * what is reachable here.
  *
+ * Tenancy is derived by this listener, never required of the caller (server-
+ * mode design spec §1: groves are never team-facing, a fortiori never
+ * external-facing). The Grove is ALWAYS `hostServe.servedGroveId` — a caller
+ * sends NO `x-myco-grove-id`/`x-myco-project-id` headers at all and still
+ * dispatches successfully, with grove-wide semantics mirroring the retired
+ * worker contract (`packages/myco-team/worker/src/mcp/server.ts`): each
+ * allowlisted tool's own optional `project_id` ARGUMENT (the existing
+ * grove-internal scope-pivot every MCP tool already accepts, `tools/
+ * call-context.ts`) remains the project selector. Tenancy headers, if
+ * present, are validated instead of trusted: any `x-myco-grove-id` that
+ * isn't the served grove, or any `x-myco-project-id` that isn't registered
+ * in it, refuses with the SAME uniform 404 this transport always uses for
+ * "not reachable here" — collapsing what would otherwise be a foreign-vs-
+ * unknown-vs-not-served existence oracle into one indistinguishable
+ * refusal. A hostile header can never redirect resolution to another Grove:
+ * `servedGroveRefusal` still runs as defense in depth after resolution.
+ *
  * Binding is opt-in and persisted (`daemon.external_mcp` config): the
  * `PUT /api/team/external-mcp/toggle` route (`api/team-config.ts`) calls
  * `bind`/`unbind` live, and `daemon/main.ts` calls `bind` again at boot when
@@ -37,12 +54,13 @@ import { createMycoTools } from '../tools/index.js';
 import {
   ForeignGroveError,
   isCallerTenancy,
+  REQUEST_CONTEXT_HEADERS,
   requestContextFromHttpHeaders,
   UnauthorizedRequestContextError,
   UnknownRequestContextError,
   type MycoRequestContext,
 } from '../grove/request-context.js';
-import { servedGroveRefusal, type HostServeRuntime } from './host-serve.js';
+import { servedGroveRefusal, type HostServeRuntime, type OverlayGateRefusal } from './host-serve.js';
 import { createMcpProtocolServer } from '../mcp/server.js';
 import { createExternalTools } from '../mcp/external-surface.js';
 import { readSecrets } from '../config/secrets.js';
@@ -111,6 +129,17 @@ function parseBearer(header: string | string[] | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const match = raw.match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : null;
+}
+
+/** First value of a possibly-repeated header, trimmed; `undefined` when absent
+ *  or blank. Used to read `x-myco-grove-id` BEFORE the shared request-context
+ *  resolver runs, so this listener can decide "caller supplied a Grove" vs.
+ *  "default to the served Grove" without duplicating header-array handling. */
+function firstHeaderValue(header: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(header) ? header[0] : header;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function writeJson(res: http.ServerResponse, status: number, body: unknown): void {
@@ -189,17 +218,31 @@ export class ExternalMcpListener {
       };
       server.once('error', onBindError);
 
-      server.listen(port, '127.0.0.1', DAEMON_HTTP_LISTEN_BACKLOG, () => {
-        server.removeListener('error', onBindError);
-        server.on('error', (err) => {
-          this.logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener socket error', { error: (err as Error).message });
+      try {
+        server.listen(port, '127.0.0.1', DAEMON_HTTP_LISTEN_BACKLOG, () => {
+          server.removeListener('error', onBindError);
+          server.on('error', (err) => {
+            this.logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener socket error', { error: (err as Error).message });
+          });
+          const addr = server.address() as { port: number };
+          this.server = server;
+          this.boundPort = addr.port;
+          this.logger.info(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener bound', { port: this.boundPort });
+          resolve({ ok: true, port: this.boundPort });
         });
-        const addr = server.address() as { port: number };
-        this.server = server;
-        this.boundPort = addr.port;
-        this.logger.info(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener bound', { port: this.boundPort });
-        resolve({ ok: true, port: this.boundPort });
-      });
+      } catch (err) {
+        // `server.listen` throws SYNCHRONOUSLY (never emits 'error') for some
+        // invalid inputs — e.g. a port outside 0-65535. Uncaught, that throw
+        // would surface as a REJECTED promise from `bind`, breaking the
+        // documented "never throws" contract (this method's own docstring,
+        // and every caller — the toggle route, boot re-bind — that awaits it
+        // expecting a resolved `{ ok: false }` on failure, never a throw).
+        server.removeListener('error', onBindError);
+        try { server.close(); } catch { /* not listening */ }
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener failed to bind (synchronous)', { port, error: message });
+        resolve({ ok: false, error: message });
+      }
     });
   }
 
@@ -231,9 +274,50 @@ export class ExternalMcpListener {
       return;
     }
 
+    // `hostServe` is null only in the unreachable case noted on the field's
+    // docstring; fail closed rather than dispatch. Checked BEFORE tenancy
+    // resolution — the served Grove id is the default this listener derives
+    // tenancy from, so there is nothing to resolve without it.
+    const hostServe = this.deps.hostServe;
+    if (!hostServe?.servedGroveId) {
+      writeJson(res, 503, { error: 'host_serve_unavailable' });
+      return;
+    }
+    const servedGroveId = hostServe.servedGroveId;
+
+    // A single uniform refusal reused for EVERY "this doesn't resolve to the
+    // served Grove" reason — genuinely unknown grove/project id, a grove_id
+    // that names a real Grove owned by ANOTHER daemon, and a grove_id that
+    // names a real Grove this daemon owns but does not serve all collapse
+    // into the SAME status/body. This is deliberate: distinguishing them
+    // would let a caller probe which Grove ids exist on this host at all
+    // (the reviewed 403-vs-404 grove-existence oracle). `hostServe.
+    // servedGroveId` is already known truthy (checked above), so
+    // `servedGroveRefusal`'s null-runtime branch can never fire and this
+    // always returns a real refusal — the `!` reflects that invariant,
+    // not an unchecked assumption.
+    const servedGroveOnlyRefusal = (): OverlayGateRefusal => servedGroveRefusal(hostServe, null)!;
+
+    // Groves are never external-facing (server-mode design spec §1): the
+    // caller does not need to name a Grove at all. When they don't, this
+    // listener supplies the served Grove itself. When they DO supply
+    // `x-myco-grove-id`, it is validated (must equal the served Grove)
+    // rather than trusted — never resolved against the registry first,
+    // so a foreign/unknown grove_id can never distinguish "exists
+    // elsewhere" from "doesn't exist" before this listener even looks.
+    const presentedGroveId = firstHeaderValue(req.headers[REQUEST_CONTEXT_HEADERS.groveId]);
+    if (presentedGroveId !== undefined && presentedGroveId !== servedGroveId) {
+      const refusal = servedGroveOnlyRefusal();
+      writeJson(res, refusal.status, refusal.body);
+      return;
+    }
+    const headers: http.IncomingHttpHeaders = presentedGroveId === undefined
+      ? { ...req.headers, [REQUEST_CONTEXT_HEADERS.groveId]: servedGroveId }
+      : req.headers;
+
     let requestContext: MycoRequestContext;
     try {
-      requestContext = requestContextFromHttpHeaders(req.headers, this.deps.vaultDir, {
+      requestContext = requestContextFromHttpHeaders(headers, this.deps.vaultDir, {
         // The external token above is this listener's own trust boundary;
         // it does not additionally require the loopback daemon bearer on
         // context-switch headers (a no-op when no daemon token is configured
@@ -247,12 +331,14 @@ export class ExternalMcpListener {
         writeJson(res, 401, { error: 'unauthorized_context_switch', message: err.message });
         return;
       }
-      if (err instanceof ForeignGroveError) {
-        writeJson(res, 403, { error: 'foreign_grove', message: err.message, grove_id: err.groveId });
-        return;
-      }
-      if (err instanceof UnknownRequestContextError) {
-        writeJson(res, 404, { error: 'unknown_tenancy', message: err.message });
+      // ForeignGroveError (a real Grove, owned by another daemon) and
+      // UnknownRequestContextError (no such Grove/project, or a project not
+      // registered in the served Grove) both fold into the SAME uniform
+      // refusal as an out-of-scope grove_id header above — never a distinct
+      // 403, never the caller's own id echoed back.
+      if (err instanceof ForeignGroveError || err instanceof UnknownRequestContextError) {
+        const refusal = servedGroveOnlyRefusal();
+        writeJson(res, refusal.status, refusal.body);
         return;
       }
       throw err;
@@ -261,24 +347,25 @@ export class ExternalMcpListener {
     // The served-grove filter (Task 2's proven fail-closed gate, reused
     // here as this listener's own chokepoint): refuses unless the resolved
     // Grove is EXACTLY the one this host serves — never "any Grove this
-    // host owns". `hostServe` is null only in the unreachable case noted on
-    // the field's docstring; fail closed rather than dispatch.
-    if (!this.deps.hostServe) {
-      writeJson(res, 503, { error: 'host_serve_unavailable' });
-      return;
-    }
-    const refusal = servedGroveRefusal(this.deps.hostServe, requestContext.groveId);
+    // host owns". Defense in depth: every path above already enforces this,
+    // so this should never actually fire, but a hostile header must never
+    // be able to redirect resolution to another Grove even if a bug
+    // upstream let a mismatched groveId through.
+    const refusal = servedGroveRefusal(hostServe, requestContext.groveId);
     if (refusal) {
       writeJson(res, refusal.status, refusal.body);
       return;
     }
 
+    // Defense in depth, not a live branch: every path above stamps
+    // `tenancySource: 'caller'` (either the caller's own headers or this
+    // listener's served-grove default), so this can never actually be
+    // false. Kept because the cost is one boolean check and the invariant
+    // is exactly what makes the tool-runtime's own `requireCallerTenancy`
+    // gate (`tools/index.ts`) redundant-safe here.
     if (!isCallerTenancy(requestContext)) {
-      writeJson(res, 503, {
-        error: 'legacy_vault',
-        message: 'This request supplied no caller tenancy (x-myco-grove-id/x-myco-project-id headers). '
-          + 'External MCP callers must name the served Grove and a project registered in it.',
-      });
+      const legacyRefusal = servedGroveOnlyRefusal();
+      writeJson(res, legacyRefusal.status, legacyRefusal.body);
       return;
     }
 

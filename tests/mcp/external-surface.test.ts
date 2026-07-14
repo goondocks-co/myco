@@ -15,11 +15,19 @@
  *   (e) toggle-off state -> listener unbound (connection refused)
  *   (f) restart with the toggle already on -> re-binds
  *
+ * Fix Round 1 (server-mode spec §1 — groves are never external-facing) adds:
+ * headerless requests succeed with grove-wide tenancy; a tool-call
+ * `project_id` ARGUMENT (not a header) still selects a project; any
+ * tenancy header naming something other than the served Grove — unknown,
+ * real-but-foreign, or a project not registered in the served Grove — all
+ * collapse into the SAME uniform 404 (no existence oracle).
+ *
  * Real HTTP against the real listener (`ExternalMcpListener`), never a
  * hand-rolled request object — mirrors `tests/mcp/http.test.ts`'s pattern.
  */
 import { afterEach, beforeEach, describe, expect, it, test } from 'bun:test';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -291,6 +299,33 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     return { 'x-myco-grove-id': grove.id, 'x-myco-project-id': projectId };
   }
 
+  test('bind() never throws, even when the underlying http.Server#listen() throws synchronously (Fix Round 1)', async () => {
+    // Node's http.Server#listen CAN throw synchronously (never emits
+    // 'error') for some invalid inputs — e.g. RangeError for a port
+    // outside 0-65535. bind()'s docstring promises "never throws": every
+    // caller (the toggle route, boot re-bind) awaits it expecting a
+    // resolved `{ ok: false }` on failure, never a rejected promise. Force
+    // that exact shape by making `http.createServer()`'s returned server
+    // throw from `.listen()`, since the real port-range values that trigger
+    // this in Node aren't reliably reproducible across every http
+    // implementation the test suite runs under.
+    listener = newListener();
+    const originalCreateServer = http.createServer;
+    const patchedCreateServer = ((...args: Parameters<typeof http.createServer>) => {
+      const server = originalCreateServer(...args);
+      server.listen = () => { throw new RangeError('synthetic synchronous listen failure'); };
+      return server;
+    }) as typeof http.createServer;
+    (http as { createServer: typeof http.createServer }).createServer = patchedCreateServer;
+    try {
+      const result = await listener.bind(12345);
+      expect(result.ok).toBe(false);
+    } finally {
+      (http as { createServer: typeof http.createServer }).createServer = originalCreateServer;
+    }
+    expect(listener.isBound).toBe(false);
+  });
+
   test('(d) serves /mcp only — /health and /api/* are 404, indistinguishable from any other unregistered path', async () => {
     listener = newListener();
     const bound = await listener.bind(0);
@@ -506,23 +541,110 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     expect(res.status).toBe(404);
   });
 
-  test('no headers at all (no caller tenancy) -> 404 not_found, never a silent anchor default', async () => {
-    // Headerless resolves to no Grove at all (the fallback vault carries no
-    // project.toml), so the served-grove filter's null-grove branch refuses
-    // BEFORE any caller-tenancy question is reached — the same uniform 404
-    // shape an overlay caller with no resolved Grove gets (`host-serve.ts`'s
-    // `servedGroveRefusal`), never the anchor-vault-path-disclosing
-    // `legacy_vault` 503 the loopback `/mcp` uses for a local caller.
+  test('no headers at all -> 200: tenancy defaults to the served Grove (server-mode spec §1, Fix Round 1)', async () => {
+    // Groves are never external-facing: a caller with no
+    // x-myco-grove-id/x-myco-project-id headers at all still dispatches
+    // successfully. tools/list still shows exactly the six allowlisted
+    // tools, and an allowlisted call succeeds end to end.
+    const capturedGets: CapturedGet[] = [];
+    listener = newListener(capturedGets);
+    const bound = await listener.bind(0);
+    if (!bound.ok) throw new Error('bind failed');
+    const url = new URL(`http://127.0.0.1:${bound.port}/mcp`);
+
+    const client = new Client({ name: 'external-test', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+    });
+    await client.connect(transport);
+
+    const listed = await client.listTools();
+    expect(listed.tools.map((t) => t.name).sort()).toEqual([
+      'myco_cortex', 'myco_plans', 'myco_search', 'myco_sessions', 'myco_skills', 'myco_spores',
+    ]);
+
+    const digest = await client.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
+    expect(digest.content[0]).toEqual({ type: 'text', text: 'external digest' });
+
+    // The served Grove was resolved WITHOUT a caller-supplied grove_id — the
+    // internal loopback call (`/api/digest`) carries the derived grove_id
+    // but no project_id (grove-wide, not any one project).
+    const digestCall = capturedGets.find((c) => c.endpoint === '/api/digest');
+    expect(digestCall?.options?.headers?.['x-myco-grove-id']).toBe(grove.id);
+    expect(digestCall?.options?.headers?.['x-myco-project-id']).toBeUndefined();
+
+    // myco_plans list dispatches in-process against the served Grove's own
+    // DB (grove-wide scope) — no error, even with zero plans saved.
+    const plans = await client.callTool({ name: 'myco_plans', arguments: { op: 'list' } });
+    expect(plans.isError).not.toBe(true);
+
+    await client.close();
+  });
+
+  test('no grove_id header, but a tool-call project_id ARGUMENT -> pivots to that project (mirrors the worker contract)', async () => {
+    // The worker's contract: project_id is a per-CALL selector, not a
+    // transport-level header requirement. The same `project_id` tool
+    // argument every allowlisted tool already accepts (`tools/
+    // call-context.ts`'s scope pivot) works with zero tenancy headers.
+    listener = newListener();
+    const bound = await listener.bind(0);
+    if (!bound.ok) throw new Error('bind failed');
+    const url = new URL(`http://127.0.0.1:${bound.port}/mcp`);
+    const client = new Client({ name: 'external-test', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+    });
+    await client.connect(transport);
+
+    const plans = await client.callTool({ name: 'myco_plans', arguments: { op: 'list', project_id: projectId } });
+    expect(plans.isError).not.toBe(true);
+
+    await client.close();
+  });
+
+  test('an x-myco-project-id header naming a project NOT registered in the served Grove -> the SAME uniform 404', async () => {
+    const foreignProjectId = assertGroveProjectId(createProjectId());
     listener = newListener();
     const bound = await listener.bind(0);
     if (!bound.ok) throw new Error('bind failed');
     const res = await fetch(`http://127.0.0.1:${bound.port}/mcp`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        'x-myco-grove-id': grove.id,
+        'x-myco-project-id': foreignProjectId,
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(res.status).toBe(404);
     const payload = await res.json() as { error?: string };
     expect(payload.error).toBe('not_found');
+  });
+
+  test('a genuinely unknown x-myco-grove-id -> the SAME uniform 404 as a real-but-foreign grove_id (no existence oracle)', async () => {
+    const otherGrove = createGrove('Other', mycoHome);
+    listener = newListener();
+    const bound = await listener.bind(0);
+    if (!bound.ok) throw new Error('bind failed');
+    const base = `http://127.0.0.1:${bound.port}`;
+
+    const unknownRes = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'x-myco-grove-id': 'grove_deadbeefdeadbeefdeadbeefdeadbeef' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    const unknownBody = await unknownRes.json() as { error?: string };
+
+    const knownButUnservedRes = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'x-myco-grove-id': otherGrove.id },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    const knownButUnservedBody = await knownButUnservedRes.json() as { error?: string };
+
+    expect(unknownRes.status).toBe(404);
+    expect(knownButUnservedRes.status).toBe(404);
+    expect(unknownBody.error).toBe(knownButUnservedBody.error);
   });
 });

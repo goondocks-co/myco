@@ -34,6 +34,7 @@ import crypto from 'node:crypto';
 
 import { loadMachineConfig, saveMachineConfig } from '../../config/loader.js';
 import { deleteSecrets, readSecrets, writeSecret } from '../../config/secrets.js';
+import { ExternalMcpSchema } from '../../config/schema.js';
 import { resolveGroveDir, resolveMycoHome } from '../../grove/paths.js';
 import { KEYED_CLOUD_PROVIDER_ENV } from '../../agent/harness/provider-health.js';
 import { EXTERNAL_MCP_DEFAULT_PORT, HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../../constants.js';
@@ -337,13 +338,22 @@ interface ExternalMcpTogglePutBody {
  * Funnel on. The bind is attempted FIRST; a bind failure (port already in
  * use) refuses without touching persisted config or Funnel, so `enabled:
  * true` in config is never written unless the listener actually came up.
+ * The raw token is returned ONLY when THIS call freshly minted it (first
+ * enable, or enable after a secrets wipe) — a re-enable of an already-token'd
+ * listener returns `tokenHash` only, never the raw value (Task 10 Fix Round
+ * 1: re-enable is an idempotent bind, not a reveal; a member who lost the
+ * token uses rotate, the deliberate reveal surface for that case).
  *
  * Disable: Funnel off → unbind → persist `enabled: false` (the port setting
  * is preserved so a later re-enable reuses it unless overridden).
  *
  * Both branches persist through `saveMachineConfig` (the one write path for
  * machine-tier config) so a restart with the toggle left on re-binds
- * (`daemon/main.ts`) before Funnel traffic could reach a dead port.
+ * (`daemon/main.ts`) before Funnel traffic could reach a dead port. The
+ * ENABLE branch persists the ACTUALLY-bound port (`bindResult.port`), never
+ * the raw request value — `bind(0)` (an ephemeral port, real callers never
+ * request it but tests do) would otherwise persist `0`, a port nothing is
+ * listening on.
  */
 export async function handlePutExternalMcpToggle(
   deps: TeamConfigRouteDeps,
@@ -359,9 +369,25 @@ export async function handlePutExternalMcpToggle(
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const machine = loadMachineConfig(mycoHome);
-  const requestedPort = typeof payload.port === 'number' && Number.isInteger(payload.port)
-    ? payload.port
-    : machine.daemon.external_mcp.port || EXTERNAL_MCP_DEFAULT_PORT;
+
+  // Range-validate BEFORE any side effect (mint, bind, persist, Funnel) —
+  // the SAME bounds `ExternalMcpSchema` enforces on load, so a bad port can
+  // never be persisted via this route and then silently coerced/rejected on
+  // the next daemon boot. `port: 0` (below the schema's 1024 floor) is
+  // rejected here, never reaches `bind`.
+  let requestedPort: number;
+  if (payload.port !== undefined) {
+    const parsedPort = ExternalMcpSchema.shape.port.safeParse(payload.port);
+    if (!parsedPort.success) {
+      return {
+        status: 400,
+        body: errorBody('invalid_port', 'port must be an integer between 1024 and 65535'),
+      };
+    }
+    requestedPort = parsedPort.data;
+  } else {
+    requestedPort = machine.daemon.external_mcp.port || EXTERNAL_MCP_DEFAULT_PORT;
+  }
 
   function persist(enabled: boolean, port: number): void {
     saveMachineConfig({
@@ -380,19 +406,33 @@ export async function handlePutExternalMcpToggle(
 
   // Mint-if-absent — never overwrite an existing token (that is rotate's job).
   const existing = readSecrets(mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
-  const token = existing && existing.trim() ? existing.trim() : crypto.randomBytes(32).toString('hex');
-  if (!existing || !existing.trim()) writeSecret(mycoHome, HOST_EXTERNAL_MCP_TOKEN_SECRET, token);
+  const freshlyMinted = !existing || !existing.trim();
+  const token = freshlyMinted ? crypto.randomBytes(32).toString('hex') : existing!.trim();
+  if (freshlyMinted) writeSecret(mycoHome, HOST_EXTERNAL_MCP_TOKEN_SECRET, token);
 
+  let boundPort = requestedPort;
   if (deps.externalMcp) {
     const bindResult = await deps.externalMcp.listener.bind(requestedPort);
     if (!bindResult.ok) {
       return { status: 500, body: errorBody('bind_failed', `Could not bind the external MCP listener: ${bindResult.error}`) };
     }
+    boundPort = bindResult.port;
   }
-  persist(true, requestedPort);
-  const funnel = deps.externalMcp ? await deps.externalMcp.runFunnel(requestedPort, true) : undefined;
+  persist(true, boundPort);
+  const funnel = deps.externalMcp ? await deps.externalMcp.runFunnel(boundPort, true) : undefined;
 
-  return { body: { enabled: true, port: requestedPort, token, tokenHash: nonSecretTokenHash(token), funnel } };
+  const responseBody: { enabled: true; port: number; tokenHash: string; funnel: unknown; token?: string } = {
+    enabled: true,
+    port: boundPort,
+    tokenHash: nonSecretTokenHash(token),
+    funnel,
+  };
+  // The ONE reveal condition on this route: only a call that itself minted
+  // the token gets the raw value back. A re-enable of an already-token'd
+  // listener never echoes it — see `tests/daemon/api/key-leak-guard.test.ts`.
+  if (freshlyMinted) responseBody.token = token;
+
+  return { body: responseBody };
 }
 
 // ---------------------------------------------------------------------------
