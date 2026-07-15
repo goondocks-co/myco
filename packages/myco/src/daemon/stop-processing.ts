@@ -756,7 +756,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
           // (parent, threadId) target from the transcript's own meta and is
           // a no-op (skippedReason: 'subagent-parent-missing') when the
           // parent session doesn't exist yet — never materializes it.
-          transcriptMiner.reconcileAndAttributeResponses(sessionId, {
+          const result = transcriptMiner.reconcileAndAttributeResponses(sessionId, {
             agent: detectedAgent,
             transcriptPath: hookTranscriptPath,
           });
@@ -768,12 +768,24 @@ export function createStopProcessor(deps: StopProcessorDeps): {
           const deleted = sessionId !== thread.parentSessionId
             ? cleanupInvalidCapturedSession(sessionId)
             : false;
-          logger.info(LOG_KINDS.HOOKS_STOP, 'Stop reattributed — sub-agent transcript mined into parent thread', {
-            session_id: sessionId,
-            parent_session_id: thread.parentSessionId,
-            thread_id: thread.threadId,
-            deleted_existing_session: deleted,
-          });
+
+          // Log only after we know whether the mine succeeded or was skipped.
+          if (result.skippedReason) {
+            logger.info(LOG_KINDS.HOOKS_STOP, 'Stop for sub-agent thread skipped', {
+              session_id: sessionId,
+              parent_session_id: thread.parentSessionId,
+              skipped_reason: result.skippedReason,
+            });
+          } else {
+            logger.info(LOG_KINDS.HOOKS_STOP, 'Stop reattributed — sub-agent transcript mined into parent thread', {
+              session_id: sessionId,
+              parent_session_id: thread.parentSessionId,
+              thread_id: thread.threadId,
+              inserted: result.inserted,
+              reclassified: result.reclassified,
+              deleted_existing_session: deleted,
+            });
+          }
           return { body: { ok: true, reattributed: thread.parentSessionId } };
         }
         const deleted = cleanupInvalidCapturedSession(sessionId);
