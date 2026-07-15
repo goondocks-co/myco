@@ -140,6 +140,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "maxTurns": 20,
         "reasoningLevel": "low",
         "required": true,
+        "requiresProjectTree": true,
         "onItemError": "skip"
       }
     ],
@@ -387,6 +388,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "purpose": "Writes STALE/MERGE/NARROW classification updates to vault_skill_records properties (last_assessed_at, knowledge_watermark, last_classification, last_assessed_generation, file_fingerprints) for assessed skills. vault_skill_candidates is read-only triage input in this phase — it is consulted for merge/narrow signals but never created, updated, or deleted here.",
         "postCondition": "skill-evolve-assess",
+        "requiresProjectTree": true,
         "onItemError": "skip"
       },
       {
@@ -948,6 +950,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "key": "seedDecision",
           "equals": "proceed"
         },
+        "requiresProjectTree": true,
         "onItemError": "skip"
       },
       {
@@ -972,6 +975,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "key": "seedDecision",
           "equals": "proceed"
         },
+        "requiresProjectTree": true,
         "onItemError": "skip"
       },
       {

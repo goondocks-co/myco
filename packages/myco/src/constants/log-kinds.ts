@@ -113,6 +113,8 @@ export const LOG_KINDS = {
   SERVER_ERROR: 'server.error',
   // Team Host — the overlay-facing transport boundary (second listener + gate).
   HOST_SERVE: 'host.serve',
+  // External read-only MCP — the dedicated Funnel-fronted listener (server-mode design spec §7).
+  EXTERNAL_MCP: 'external.mcp',
 
   // Session maintenance job
   MAINTENANCE_SESSION: 'maintenance.session',

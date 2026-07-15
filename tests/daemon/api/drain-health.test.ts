@@ -14,6 +14,8 @@ import path from 'node:path';
 import { createDrainHealthHandler } from '@myco/daemon/api/drain-health.js';
 import { upsertHost, type HostRecord } from '@myco/host/registry.js';
 import type { DrainHealthCounters } from '@myco/capture/drain-health.js';
+import { PlanDrainQueue, type PlanDrainStore, type PlanDrainEntry, type PlanFileReader, type PlanPostTransport } from '@myco/capture/plan-drain.js';
+import type { RemoteTarget } from '@myco/host/routing.js';
 
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HOST_B = 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -104,6 +106,72 @@ describe('GET /api/team-host/drain-health', () => {
     expect(body.hosts.map((h) => h.host_id).sort()).toEqual([HOST_A, HOST_B].sort());
     const hostB = body.hosts.find((h) => h.host_id === HOST_B)!;
     expect(hostB.drains.transcript).toEqual({ pending_entries: 0, failing_entries: 0, host_unreachable_entries: 0 });
+  });
+
+  test('end-to-end: a real plan-drain queue that recovered on a caught-up pass reports healthy through the route, not a stale unreachable count', async () => {
+    // A REAL PlanDrainQueue (not the fakeQueue canned-Map double the other
+    // tests use) — the wire-mapping layer must not reintroduce staleness
+    // even when the underlying queue's health() is doing real work.
+    upsertHost(host(HOST_A, 'mac-studio'));
+    const files = new Map<string, string>();
+    files.set('/plans/x.md', '# plan');
+    const fileReader: PlanFileReader = { read: (p) => files.get(p) ?? null };
+    const entries = new Map<string, PlanDrainEntry>();
+    const store: PlanDrainStore = {
+      list: () => [...entries.values()],
+      listForHost: (h) => [...entries.values()].filter((e) => e.host_id === h),
+      get: (h, s, r) => entries.get(`${h}|${s}|${r}`) ?? null,
+      put: (e) => { entries.set(`${e.host_id}|${e.session_id}|${e.plan_ref}`, { ...e }); },
+      remove: (h, s, r) => { entries.delete(`${h}|${s}|${r}`); },
+      purgeHost: () => {},
+      purgeProject: () => {},
+    };
+    const target: RemoteTarget = {
+      projectId: 'proj_0123456789abcdef0123456789abcdef' as RemoteTarget['projectId'],
+      groveId: 'grove_0123456789abcdef0123456789abcdef',
+      host: { host_id: HOST_A, label: 'H', overlay_address: '127.0.0.1:9', protocol_version: 1 },
+      bearer: 'b',
+    };
+
+    // Seed an entry that is ALREADY caught up (acked_hash matches the
+    // current file content — computed the same way plan-drain.ts does:
+    // sha256 hex of the UTF-8 content) but still carries a stale failure
+    // from a past incident, e.g. recorded on a request the host has since
+    // separately caught up through another path.
+    const crypto = await import('node:crypto');
+    const ackedHash = crypto.createHash('sha256').update('# plan', 'utf-8').digest('hex');
+    store.put({
+      host_id: HOST_A, session_id: 's', plan_ref: 'pl_seeded0000000000000000000000000',
+      project_id: 'proj_0123456789abcdef0123456789abcdef', grove_id: 'grove_0123456789abcdef0123456789abcdef',
+      plan_path: '/plans/x.md', acked_hash: ackedHash, updated_at: '2020-01-01T00:00:00.000Z',
+      consecutive_failures: 3, last_error_kind: 'unreachable', last_error_at: '2020-01-01T00:00:00.000Z',
+    });
+
+    const transport: PlanPostTransport = async () => { throw new Error('should not be called — caught up already'); };
+    const planDrain = new PlanDrainQueue({
+      machineId: 'alice_a1b2c3d4',
+      planWatchConfig: { watchDirs: ['/plans'], projectRoot: '/' },
+      store, transport, fileReader,
+      now: () => 1000, intervalMs: 100_000,
+      setTimer: (() => 0) as unknown as (fn: () => void, ms: number) => ReturnType<typeof setTimeout>,
+      clearTimer: () => {},
+    });
+    await planDrain.flushBeforeForward(target); // caught up — a genuine no-op pass
+
+    const handler = createDrainHealthHandler({
+      transcriptDrain: fakeQueue({}),
+      planDrain,
+      eventReplayDrain: fakeQueue({}),
+    });
+    const res = await handler({ params: {}, query: {}, body: {}, pathname: '/api/team-host/drain-health' });
+    const body = res.body as { hosts: Array<{ host_id: string; drains: Record<string, Record<string, unknown>> }> };
+    expect(body.hosts[0].drains.plan).toEqual({ pending_entries: 0, failing_entries: 0, host_unreachable_entries: 0 });
+
+    // The STORED entry itself is clean, not just the health() aggregation —
+    // the stale-clear fix, not the pre-existing pending-gate.
+    const stored = store.get(HOST_A, 's', 'pl_seeded0000000000000000000000000');
+    expect(stored?.consecutive_failures).toBe(0);
+    expect(stored?.last_error_kind).toBeNull();
   });
 
   test('no joined hosts → an empty hosts array', async () => {

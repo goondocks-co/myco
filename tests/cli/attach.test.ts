@@ -49,17 +49,17 @@ describe('myco attach / myco detach (daemon API fallback)', () => {
     errSpy.mockRestore();
   });
 
-  it('attach resolves the checkout path client-side and POSTs project_root/host_id/grove_id', async () => {
+  it('attach resolves the checkout path client-side and POSTs project_root/host_id (no grove_id — the daemon sources it from the host record)', async () => {
     fakeDaemon.postResult = {
       ok: true,
       data: { project_id: 'proj_x', grove_id: 'grove_x', host_id: 'host_abc', host_label: 'Mac Studio', root: '/checkout', already_attached: false, notes: [] },
     };
-    await runAttach(['/checkout', '--host', 'host_abc', '--grove', 'grove_x'], '/tmp/vault');
+    await runAttach(['/checkout', '--host', 'host_abc'], '/tmp/vault');
 
     expect(fakeDaemon.postCalls).toHaveLength(1);
     const call = fakeDaemon.postCalls[0]!;
     expect(call.endpoint).toBe('/api/host-membership/attach');
-    expect(call.body).toEqual({ project_root: path.resolve('/checkout'), host_id: 'host_abc', grove_id: 'grove_x', project_id: undefined });
+    expect(call.body).toEqual({ project_root: path.resolve('/checkout'), host_id: 'host_abc', project_id: undefined });
     expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Attached proj_x to Team Host host_abc'))).toBe(true);
   });
 
@@ -68,7 +68,7 @@ describe('myco attach / myco detach (daemon API fallback)', () => {
       ok: true,
       data: { project_id: 'proj_x', grove_id: 'g', host_id: 'h', host_label: 'l', root: process.cwd(), already_attached: false, notes: [] },
     };
-    await runAttach(['--host', 'h', '--grove', 'g'], '/tmp/vault');
+    await runAttach(['--host', 'h'], '/tmp/vault');
     expect(fakeDaemon.postCalls[0]!.body).toMatchObject({ project_root: path.resolve('.') });
   });
 
@@ -77,7 +77,7 @@ describe('myco attach / myco detach (daemon API fallback)', () => {
       ok: true,
       data: { project_id: 'proj_x', grove_id: 'g', host_id: 'h', host_label: 'l', root: '/checkout', already_attached: true, notes: [] },
     };
-    await runAttach(['/checkout', '--host', 'h', '--grove', 'g'], '/tmp/vault');
+    await runAttach(['/checkout', '--host', 'h'], '/tmp/vault');
     expect(logSpy.mock.calls.some((c) => String(c[0]).includes('already attached'))).toBe(true);
   });
 
@@ -87,7 +87,7 @@ describe('myco attach / myco detach (daemon API fallback)', () => {
       throw new Error('__exit__');
     }) as never);
 
-    await expect(runAttach(['/checkout', '--host', 'host_abc', '--grove', 'g'], '/tmp/vault')).rejects.toThrow('__exit__');
+    await expect(runAttach(['/checkout', '--host', 'host_abc'], '/tmp/vault')).rejects.toThrow('__exit__');
     expect(errSpy.mock.calls.some((c) => String(c[0]).includes('Unknown host host_abc'))).toBe(true);
 
     exitSpy.mockRestore();

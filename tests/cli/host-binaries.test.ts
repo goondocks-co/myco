@@ -14,7 +14,7 @@ import {
   TAILSCALE_VERSION,
   type BinaryFetcher,
   type CommandRunner,
-} from '../../packages/myco-team/src/host/binaries.js';
+} from '@myco/team-host/binaries.js';
 
 const sha256 = (b: Uint8Array) => crypto.createHash('sha256').update(b).digest('hex');
 const bytes = (s: string) => new TextEncoder().encode(s);
@@ -172,6 +172,68 @@ describe('provisionOverlayBinaries', () => {
     await expect(provisionOverlayBinaries({
       target, fetcher, runner, binDir, brewBinDirs: [brewDir],
     })).rejects.toThrow(/brew install --formula tailscale failed/);
+  });
+
+  it('skips brew entirely when tailscale/tailscaled are already present (no PATH dependency)', async () => {
+    fs.writeFileSync(path.join(brewDir, 'tailscale'), 'ts', { mode: 0o755 });
+    fs.writeFileSync(path.join(brewDir, 'tailscaled'), 'tsd', { mode: 0o755 });
+    const brewCalls: string[][] = [];
+    const runner: CommandRunner = {
+      async run(command: string, args: string[]) {
+        if (command.endsWith('brew')) { brewCalls.push([command, ...args]); return { stdout: '', exitCode: 127 }; }
+        if (args[0] === 'version' && command.endsWith('headscale')) return { stdout: `v${HEADSCALE_VERSION}\n`, exitCode: 0 };
+        if (args[0] === 'version') return { stdout: `${TAILSCALE_VERSION}\n`, exitCode: 0 };
+        return { stdout: '', exitCode: 0 };
+      },
+    };
+    const fetcher = fakeFetcher({
+      [headscaleAssetUrl(target)]: headscaleBytes,
+      [`https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/checksums.txt`]:
+        checksums(headscaleAssetName(target), sha256(headscaleBytes)),
+    });
+
+    const result = await provisionOverlayBinaries({ target, fetcher, runner, binDir, brewBinDirs: [brewDir] });
+
+    expect(result.tailscaleBin).toBe(path.join(brewDir, 'tailscale'));
+    expect(result.tailscaledBin).toBe(path.join(brewDir, 'tailscaled'));
+    // brew (even a broken/PATH-less one, exit 127) is never invoked once the
+    // binaries are already on disk — the non-interactive-shell exit-127 case.
+    expect(brewCalls).toHaveLength(0);
+  });
+
+  it('resolves brew at its known Homebrew-prefix path instead of relying on PATH', async () => {
+    // A non-interactive shell (headless serve box) has no `brew` on PATH — a
+    // bare `brew` invocation would exit 127 (ENOENT). Homebrew itself lives in
+    // the same prefix as the linked tailscale/tailscaled binaries, so the
+    // resolver locates `<brewBinDir>/brew` directly rather than shelling the
+    // bare command name. Neither tailscale nor tailscaled exist on disk yet,
+    // so this forces the brew list/install path (not the already-present skip).
+    const resolvedBrewBin = path.join(brewDir, 'brew');
+    fs.writeFileSync(resolvedBrewBin, '#!/bin/sh\n', { mode: 0o755 });
+    const runner: CommandRunner = {
+      async run(command: string, args: string[]) {
+        if (command === 'brew') return { stdout: '', exitCode: 127 }; // ENOENT: not on PATH
+        if (command === resolvedBrewBin && args[0] === 'list') {
+          // brew reports the formula already linked at the known prefix.
+          fs.writeFileSync(path.join(brewDir, 'tailscale'), 'ts', { mode: 0o755 });
+          fs.writeFileSync(path.join(brewDir, 'tailscaled'), 'tsd', { mode: 0o755 });
+          return { stdout: 'tailscale', exitCode: 0 };
+        }
+        if (args[0] === 'version' && command.endsWith('headscale')) return { stdout: `v${HEADSCALE_VERSION}\n`, exitCode: 0 };
+        if (args[0] === 'version') return { stdout: `${TAILSCALE_VERSION}\n`, exitCode: 0 };
+        return { stdout: '', exitCode: 0 };
+      },
+    };
+    const fetcher = fakeFetcher({
+      [headscaleAssetUrl(target)]: headscaleBytes,
+      [`https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/checksums.txt`]:
+        checksums(headscaleAssetName(target), sha256(headscaleBytes)),
+    });
+
+    const result = await provisionOverlayBinaries({ target, fetcher, runner, binDir, brewBinDirs: [brewDir] });
+
+    expect(result.tailscaleBin).toBe(path.join(brewDir, 'tailscale'));
+    expect(result.source).toEqual({ headscale: 'download', tailscale: 'brew' });
   });
 
   it('extracts the linux tarball via tar and verifies against the .sha256 sidecar', async () => {

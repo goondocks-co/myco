@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { hostDisable, hostEnable, type HostEnableDeps } from '../../packages/myco-team/src/host/overlay.js';
-import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '../../packages/myco-team/src/host/binaries.js';
-import { HEADSCALE_SERVICE_LABEL } from '../../packages/myco-team/src/host/system-service.js';
-import { readHostState } from '../../packages/myco-team/src/host/state.js';
+import { hostDisable, hostEnable, type HostEnableDeps } from '@myco/team-host/overlay.js';
+import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '@myco/team-host/binaries.js';
+import { HEADSCALE_SERVICE_LABEL } from '@myco/team-host/system-service.js';
+import { readHostState } from '@myco/team-host/state.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import type { ServiceManager, ServiceStatus, InstallResult } from '@myco/service/types.js';
@@ -139,6 +139,11 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(up).toEqual(['sudo', path.join(brewDir, 'tailscale'), 'up',
       '--login-server', 'https://host.example:8080', '--auth-key', 'onetimekeyvalue123', '--hostname', 'testhost']);
 
+    // The headscale admin socket is root-owned — the key-mint calls (users
+    // create/list, preauthkeys create) all route through sudo.
+    const mintCall = calls.find((c) => c.join(' ').includes('preauthkeys create'))!;
+    expect(mintCall[0]).toBe('sudo');
+
     // Daemon wired: machine-tier host_serve written with the 100.64 IP + the host
     // id/label the enrollment endpoint self-reports (Task 2.4).
     const machine = loadMachineConfig(process.env.MYCO_HOME);
@@ -207,13 +212,32 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(result.errors).toEqual([]);
     // host_serve cleared.
     const machine = loadMachineConfig(process.env.MYCO_HOME);
-    expect(machine.daemon.host_serve).toEqual({ enabled: false, overlay_address: null, host_id: null, label: null });
+    expect(machine.daemon.host_serve).toEqual({
+      enabled: false,
+      overlay_address: null,
+      host_id: null,
+      label: null,
+      served_grove_id: null,
+    });
     // Both services torn down.
     expect(calls.some((c) => c.join(' ').includes('uninstall-system-daemon'))).toBe(true);
     expect(calls.some((c) => c.includes('bootout'))).toBe(true);
     expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(false);
     // State removed.
     expect(readHostState()).toBeNull();
+  });
+
+  it('resolves the node id via the default headscale client, sudo\'d (no resolveNodeId override)', async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const { deps: d, calls } = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)], resolveNodeId: undefined });
+
+    const result = await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
+
+    expect(result.hostId).toBeDefined();
+    const state = readHostState()!;
+    expect(state.node_id).toBe('9'); // from overlayRunner's `nodes list` fixture
+    const nodesListCall = calls.find((c) => c.join(' ').includes('nodes list'))!;
+    expect(nodesListCall[0]).toBe('sudo');
   });
 
   it('disable is safe when never enabled (idempotent teardown)', async () => {

@@ -95,10 +95,11 @@ function memStore(): PlanDrainStore {
   };
 }
 
-function target(opts: { hostId?: string; proxyPort?: number; overlay?: string; projectId?: string; groveId?: string } = {}): RemoteTarget {
+function target(opts: { hostId?: string; proxyPort?: number; overlay?: string; projectId?: string; groveId?: string; root?: string } = {}): RemoteTarget {
   return {
     projectId: (opts.projectId ?? 'proj_0123456789abcdef0123456789abcdef') as RemoteTarget['projectId'],
     groveId: opts.groveId ?? 'grove_0123456789abcdef0123456789abcdef',
+    root: opts.root,
     host: {
       host_id: opts.hostId ?? HOST_A,
       label: 'H',
@@ -207,6 +208,62 @@ describe('plan-write detection + content-hash dedup', () => {
     const t = target();
     q.noteCollect(t, { session_id: 's', type: 'tool_use', tool_name: 'Write', tool_input: { file_path: '/src/index.ts' } });
     q.noteCollect(t, { session_id: 's', type: 'tool_use', tool_name: 'Read', tool_input: { file_path: '/plans/x.md' } });
+    expect(q.pendingCount()).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-request root scoping (C7) — a multi-project member's non-anchor
+// attached project must classify plan writes against ITS OWN root, never
+// the daemon's bootstrap-anchor root the queue was constructed with.
+// ---------------------------------------------------------------------------
+
+describe('per-request root scoping (non-anchor attached project)', () => {
+  // Bound at construction to the bootstrap-anchor project — deliberately
+  // NOT the non-anchor project this test's target represents. Relative
+  // watchDirs (the realistic default — `agent.tasks`/`capture.plan_dirs`
+  // config, e.g. `.agents/plans`) so root actually participates in the
+  // match, unlike the absolute '/plans' fixture used elsewhere in this file.
+  const ANCHOR_WATCH: PlanWatchConfig = { watchDirs: ['.agents/plans'], projectRoot: '/anchor-project', extensions: ['.md'] };
+
+  test('a plan write under the NON-ANCHOR project root is classified using target.root, not the anchor root', () => {
+    const files = memFiles();
+    files.set('/other-project/.agents/plans/x.md', '# Plan\n\nbody');
+    const host = fakeHost();
+    const q = new PlanDrainQueue({
+      machineId: MACHINE, planWatchConfig: ANCHOR_WATCH, store: memStore(),
+      transport: host.transport, fileReader: files.reader, ...noThrottle,
+    });
+    // Attached to a DIFFERENT project than the anchor — its own checkout root.
+    const t = target({ projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', root: '/other-project' });
+
+    q.noteCollect(t, planEvent('s', '/other-project/.agents/plans/x.md'));
+
+    // Classified relative to the REQUEST's root: '/other-project/.agents/plans'
+    // is a plan dir for THIS project, even though it falls outside the
+    // anchor's '/anchor-project/.agents/plans' watch dir.
+    expect(q.pendingCount()).toBe(1);
+  });
+
+  test('without a root on the target (pre-root attach record), the anchor root is still the fallback', () => {
+    const files = memFiles();
+    files.set('/anchor-project/.agents/plans/x.md', '# Plan\n\nbody');
+    const q = new PlanDrainQueue({
+      machineId: MACHINE, planWatchConfig: ANCHOR_WATCH, store: memStore(), fileReader: files.reader, ...noThrottle,
+    });
+    const t = target(); // no root — legacy attach record
+    q.noteCollect(t, planEvent('s', '/anchor-project/.agents/plans/x.md'));
+    expect(q.pendingCount()).toBe(1);
+  });
+
+  test('a write that only matches the WRONG (anchor) root is correctly rejected when scoped by target.root', () => {
+    const files = memFiles();
+    const q = new PlanDrainQueue({
+      machineId: MACHINE, planWatchConfig: ANCHOR_WATCH, store: memStore(), fileReader: files.reader, ...noThrottle,
+    });
+    const t = target({ projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', root: '/other-project' });
+    // Under the ANCHOR's plans dir, not the request project's — must NOT enqueue.
+    q.noteCollect(t, planEvent('s', '/anchor-project/.agents/plans/x.md'));
     expect(q.pendingCount()).toBe(0);
   });
 });
@@ -799,5 +856,33 @@ describe('drain health (consolidation Task C-5)', () => {
     //    every doctor run warns forever while the daemon is down.
     const q2 = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: throwing, fileReader: files.reader, ...noThrottle });
     expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
+  });
+
+  test('a caught-up (unchanged-content) pass clears a stale failure on the STORED entry, with no transport attempt', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', '# plan');
+    const store = memStore();
+    const t = target();
+    const hash = hashOf('# plan');
+
+    // Seed an entry that is ALREADY caught up (acked_hash matches current
+    // content) but still carries a stale failure from a past incident —
+    // the state a genuinely-recovered entry is left in before this fix.
+    store.put({
+      host_id: HOST_A, session_id: 's', plan_ref: derivePlanRef('/plans/x.md'),
+      project_id: 'proj_0123456789abcdef0123456789abcdef', grove_id: 'grove_0123456789abcdef0123456789abcdef',
+      plan_path: '/plans/x.md', acked_hash: hash, updated_at: '2020-01-01T00:00:00.000Z',
+      consecutive_failures: 3, last_error_kind: 'unreachable', last_error_at: '2020-01-01T00:00:00.000Z',
+    });
+
+    const host = fakeHost();
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    await q.flushBeforeForward(t);
+
+    // No POST happened — this was a genuine no-op, not a retry that happened to succeed.
+    expect(host.calls).toHaveLength(0);
+    const entry = store.get(HOST_A, 's', derivePlanRef('/plans/x.md'));
+    expect(entry?.consecutive_failures).toBe(0);
+    expect(entry?.last_error_kind).toBeNull();
   });
 });

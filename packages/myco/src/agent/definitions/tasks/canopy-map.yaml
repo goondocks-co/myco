@@ -52,6 +52,11 @@ phases:
     reasoningLevel: low
     maxTurns: 20
     required: true
+    # `fs_read` confirms a file's role against its canopy_entries description —
+    # on a scheduled run for a registered project with no working tree (Team
+    # Host) that path doesn't exist. Skip rather than error; a skip here does
+    # not fail the run (infra omission, not a content failure).
+    requiresProjectTree: true
     tools:
       - vault_search_canopy
       - vault_search_fts

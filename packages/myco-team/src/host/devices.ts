@@ -1,11 +1,14 @@
 /**
- * Operator control plane (Task 2.4) — key minting + Devices (list / evict) +
- * bearer rotation, wrapping the headscale CLI behind the {@link CommandRunner}
- * seam so it unit-tests with no real control plane.
+ * Operator control plane (Task 2.4) — Devices (list / evict) + bearer rotation,
+ * wrapping the headscale CLI behind the {@link CommandRunner} seam so it
+ * unit-tests with no real control plane. Key minting (`mintSetupKey`) moved to
+ * `@myco/team-host/control-plane.js` (decision-48174c9f — host operator CLI
+ * orchestration lives in the main `myco` binary now); it is re-exported below
+ * so existing importers of this module keep resolving it from here.
  *
- * These are the OPERATOR/MEMBER trust boundary in the flesh: they run ONLY as the
- * `myco-team host` CLI on the host's localhost (spec §8 — "Operator (host localhost):
- * the control plane, exclusively"). They are NOT daemon routes and are never served
+ * These are the OPERATOR/MEMBER trust boundary in the flesh: they run ONLY as a
+ * local CLI on the host's localhost (spec §8 — "Operator (host localhost): the
+ * control plane, exclusively"). They are NOT daemon routes and are never served
  * over the overlay, so a member (who reaches only the daemon's overlay listener)
  * structurally cannot mint keys or evict devices — the localhost trust boundary is
  * reused, not re-implemented as RBAC. Eviction = overlay device removal, the v1
@@ -18,68 +21,12 @@ import { resolveHostControlDir, resolveMycoHome } from '@myco/grove/paths.js';
 import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager } from '@myco/service/types.js';
 
-import type { CommandRunner } from './binaries.js';
-import { headscaleLayout, mintPreauthKey } from './headscale-config.js';
-import { realRunner } from './run.js';
-import { restartDaemonForHostServe } from './daemon-apply.js';
-import { readHostState, type HostState } from './state.js';
+import { realRunner } from '@myco/team-host/run.js';
+import { restartDaemonForHostServe } from '@myco/team-host/daemon-apply.js';
+import { headscaleBase, type ControlPlaneDeps, NotAHostError } from '@myco/team-host/control-plane.js';
 
-/** Seams every control-plane op shares. Defaults are the real implementations. */
-export interface ControlPlaneDeps {
-  runner?: CommandRunner;
-  /** The host state (headscale bin, config path, user). Default: on-disk state. */
-  state?: HostState | null;
-  /** The host-control home (action log + headscale layout). Default: machine-global. */
-  controlDir?: string;
-}
-
-/** Thrown when a control-plane op runs on a machine that is not a Team Host. */
-export class NotAHostError extends Error {
-  constructor() {
-    super('This machine is not a Team Host — run `myco-team host enable` first.');
-    this.name = 'NotAHostError';
-  }
-}
-
-/** Resolve the headscale invocation base (bin + config) from host state, or throw. */
-function headscaleBase(deps: ControlPlaneDeps): { bin: string; configPath: string; user: string; controlDir: string } {
-  const controlDir = deps.controlDir ?? resolveHostControlDir();
-  const state = deps.state === undefined ? readHostState() : deps.state;
-  if (!state) throw new NotAHostError();
-  return {
-    bin: state.headscale_bin,
-    configPath: headscaleLayout(controlDir).configPath,
-    user: state.headscale_user,
-    controlDir,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// key mint
-// ---------------------------------------------------------------------------
-
-/**
- * Mint a ONE-TIME setup key for the operator to hand a joiner (spec §8). Wraps
- * Task 2.1's {@link mintPreauthKey} (`headscale preauthkeys create`). Logs the mint
- * (user + expiration) — NEVER the key value.
- */
-export async function mintSetupKey(
-  options: { expiration?: string } = {},
-  deps: ControlPlaneDeps = {},
-): Promise<string> {
-  const base = headscaleBase(deps);
-  const runner = deps.runner ?? realRunner;
-  const expiration = options.expiration ?? '1h';
-  const key = await mintPreauthKey({
-    headscaleBin: base.bin,
-    configPath: base.configPath,
-    user: base.user,
-    expiration,
-    runner,
-  });
-  appendHostAction({ action: 'key-mint', subject: base.user, detail: { expiration } }, base.controlDir);
-  return key;
-}
+export { mintSetupKey } from '@myco/team-host/control-plane.js';
+export { type ControlPlaneDeps, NotAHostError };
 
 // ---------------------------------------------------------------------------
 // devices list / evict
@@ -97,11 +44,12 @@ export interface Device {
   online: boolean;
 }
 
-/** List enrolled overlay nodes (`headscale nodes list --output json`, pinned v0.29). */
+/** List enrolled overlay nodes (`headscale nodes list --output json`, pinned v0.29).
+ *  The admin socket is root-owned, so the call is sudo'd (same as key minting). */
 export async function listDevices(deps: ControlPlaneDeps = {}): Promise<Device[]> {
   const base = headscaleBase(deps);
   const runner = deps.runner ?? realRunner;
-  const res = await runner.run(base.bin, ['--config', base.configPath, 'nodes', 'list', '--output', 'json']);
+  const res = await runner.run('sudo', [base.bin, '--config', base.configPath, 'nodes', 'list', '--output', 'json']);
   if (res.exitCode !== 0) {
     throw new Error(`headscale nodes list failed (exit ${res.exitCode}): ${res.stdout.trim()}`);
   }
@@ -117,7 +65,7 @@ export async function evictDevice(id: string, deps: ControlPlaneDeps = {}): Prom
   if (!id?.trim()) throw new Error('evict requires a device <id> (from `myco-team host devices list`).');
   const base = headscaleBase(deps);
   const runner = deps.runner ?? realRunner;
-  const res = await runner.run(base.bin, ['--config', base.configPath, 'nodes', 'delete', '-i', id.trim(), '--force']);
+  const res = await runner.run('sudo', [base.bin, '--config', base.configPath, 'nodes', 'delete', '-i', id.trim(), '--force']);
   if (res.exitCode !== 0) {
     throw new Error(`headscale nodes delete -i ${id} failed (exit ${res.exitCode}): ${res.stdout.trim()}`);
   }

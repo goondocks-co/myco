@@ -167,6 +167,127 @@ export async function checkTeamHostReachability(): Promise<DoctorCheck[]> {
   });
 }
 
+/**
+ * Team Host served-grove designation health — surfaces a DANGLING
+ * designation (`served_grove_id` names no Grove on this machine) on demand.
+ * The daemon already logs this once at boot (`resolveHostServeConfig`,
+ * `daemon/host-serve.ts`); this is the on-demand counterpart for an operator
+ * running `myco doctor` without tailing daemon logs, following the same
+ * "pure classifier + check() wraps it" shape as {@link checkTeamHostHint}.
+ *
+ * Machine-global, not vault-scoped (`daemon.host_serve` lives in
+ * `~/.myco/config.yaml`). Returns null (no row) whenever there's nothing
+ * actionable: serving is off, undesignated (fail-closed, not an error), or
+ * the designation names a Grove that actually exists.
+ */
+export async function checkServedGroveDesignation(mycoHome?: string): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { resolveServedGroveDesignationHealth } = await import('../daemon/host-serve.js');
+
+  const health = resolveServedGroveDesignationHealth(loadMachineConfig(mycoHome), mycoHome ?? resolveMycoHome());
+  if (health.kind !== 'dangling') return null;
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail:
+      `served_grove_id ${health.servedGroveId} names no Grove on this machine — a dangling designation. `
+      + 'Team Host serving stays off until this is resolved: restore the Grove from backup, or '
+      + 'disable and re-enable Team Host serving to designate a different one.',
+    fixable: false,
+  };
+}
+
+/**
+ * Served-grove backup staleness — surfaces a served Grove with no successful
+ * backup within its configured interval (server-mode design spec §8: "the
+ * served grove is the sole copy of all attached-project team knowledge …
+ * doctor surfaces backup staleness for a served grove as a first-class
+ * warning"). Same "pure classifier + check() wraps it" shape as
+ * {@link checkServedGroveDesignation}.
+ *
+ * Machine-global, not vault-scoped. Returns null (no row) whenever there's
+ * nothing actionable: serving is off, undesignated, dangling (covered by
+ * {@link checkServedGroveDesignation} instead), or the backup is fresh.
+ */
+export async function checkServedGroveBackupStaleness(mycoHome?: string): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { resolveServedGroveBackupHealth } = await import('../daemon/host-serve.js');
+
+  const health = resolveServedGroveBackupHealth(loadMachineConfig(mycoHome), mycoHome ?? resolveMycoHome());
+  if (health.kind !== 'stale') return null;
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail:
+      `The served Grove (${health.servedGroveId}) has no successful backup within its configured interval — `
+      + 'it is the sole copy of all attached-project team knowledge. Check the auto-backup PowerJob is running '
+      + '(myco doctor from the box, or `myco service start`), or create a manual backup now.',
+    fixable: false,
+  };
+}
+
+/**
+ * Served-grove team-key posture — surfaces a served Grove whose configured
+ * cloud provider has no key resolvable from Grove secrets, machine secrets,
+ * or the process env (server-mode design spec §5: "a keyless box would fail
+ * every scheduled LLM dispatch"). The scheduler itself never fails these
+ * runs (`gateScheduledDispatch` skips them with a log line, not a failure
+ * notification) — this on-demand check is how an operator running
+ * `myco doctor` sees the same "no team key configured" status without
+ * tailing daemon logs. Same "pure classifier + check() wraps it" shape as
+ * {@link checkServedGroveBackupStaleness}.
+ *
+ * Machine-global, not vault-scoped. Returns null (no row) whenever there's
+ * nothing actionable: serving is off, undesignated, dangling (covered by
+ * {@link checkServedGroveDesignation} instead), no explicit cloud provider
+ * is configured, or a key is present.
+ */
+export async function checkServedGroveKeyHealth(mycoHome?: string): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { resolveServedGroveKeyHealth } = await import('../daemon/host-serve.js');
+
+  const health = resolveServedGroveKeyHealth(loadMachineConfig(mycoHome), mycoHome ?? resolveMycoHome());
+  if (health.kind !== 'missing_key') return null;
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail:
+      `The served Grove (${health.servedGroveId}) has no team key configured — scheduled agent tasks against it `
+      + 'are skipped until a provider key is added to its secrets (Team page, or `writeSecret` on the box).',
+    fixable: false,
+  };
+}
+
+/**
+ * External MCP listener/funnel coherence (Task 10, server-mode design spec
+ * §7) — surfaces the ONE inconsistency a pure config/secrets read can
+ * detect: the toggle says enabled but no access token was ever minted, so
+ * the listener cannot authenticate any caller. Same "pure classifier +
+ * check() wraps it" shape as the other served-grove checks in this file.
+ *
+ * Does NOT verify the listener is actually bound on this daemon process or
+ * that Tailscale Funnel is actually fronting it — those are live-process
+ * observables outside a doctor CLI run's reach; Funnel itself is
+ * rig-validated (Task 12). Returns null when there's nothing actionable:
+ * the toggle is off, or a token exists.
+ */
+export async function checkExternalMcpCoherence(mycoHome?: string): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { resolveExternalMcpCoherence } = await import('../daemon/host-serve.js');
+
+  const coherence = resolveExternalMcpCoherence(loadMachineConfig(mycoHome), mycoHome ?? resolveMycoHome());
+  if (coherence.kind !== 'missing_token') return null;
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail:
+      `The external read-only MCP listener is enabled (port ${coherence.port}) but no access token exists — `
+      + 'it cannot authenticate any caller in this state. Re-run the Team page enable toggle to mint one, '
+      + 'or disable exposure until it can.',
+    fixable: false,
+  };
+}
+
 /** Human-readable byte count, e.g. "4.2 KB". */
 function formatDrainBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -790,6 +911,14 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   // `myco.yaml`, same as the hint above.
   checks.push(...await checkTeamHostReachability());
   checks.push(...await checkTeamHostDrainHealth());
+  const servedGroveDesignation = await checkServedGroveDesignation();
+  if (servedGroveDesignation) checks.push(servedGroveDesignation);
+  const servedGroveBackupStaleness = await checkServedGroveBackupStaleness();
+  if (servedGroveBackupStaleness) checks.push(servedGroveBackupStaleness);
+  const servedGroveKeyHealth = await checkServedGroveKeyHealth();
+  if (servedGroveKeyHealth) checks.push(servedGroveKeyHealth);
+  const externalMcpCoherence = await checkExternalMcpCoherence();
+  if (externalMcpCoherence) checks.push(externalMcpCoherence);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:

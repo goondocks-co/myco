@@ -317,6 +317,14 @@ phases:
     maxTurns: 14
     required: true
     postCondition: skill-evolve-assess
+    # fs_read/code_grep give this phase final-judgment access to the actual
+    # codebase — on a scheduled run for a registered project with no working
+    # tree (Team Host) that surface doesn't exist. Skip rather than error; a
+    # skip here does not fail the run (infra omission, not a content
+    # failure). `act` already carries this stamp and depends on `assess`, so
+    # the downstream write phase was already skipping — this closes the gap
+    # for `assess` itself.
+    requiresProjectTree: true
     dependsOn:
       - inventory
 

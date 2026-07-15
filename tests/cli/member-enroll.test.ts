@@ -19,7 +19,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import { HOST_ENROLL_ROUTE, HOST_PROTOCOL_HEADER } from '@myco/constants';
+import { HOST_ENROLL_ROUTE, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
@@ -54,7 +54,7 @@ describe('member enrollment client — unit (injected transport)', () => {
     };
     const enrollment = await createEnrollmentClient(transport).enroll(ctx());
     expect(captured?.path).toBe(HOST_ENROLL_ROUTE);
-    expect(captured?.headers[HOST_PROTOCOL_HEADER]).toBe('1');
+    expect(captured?.headers[HOST_PROTOCOL_HEADER]).toBe(String(HOST_PROTOCOL_VERSION));
     expect(captured?.proxyPort).toBe(41080);
     // Body carries member identity for the host's action log.
     expect(JSON.parse(captured!.body)).toMatchObject({ member_hostname: 'my-laptop', member_overlay_ip: '100.64.0.9' });
@@ -145,7 +145,7 @@ describe('member enrollment client — end-to-end through the CONNECT proxy', ()
     }));
     expect(enrollment.bearer).toBe(HOST_BEARER);
     expect(enrollment.overlay_address).toBe(`127.0.0.1:${server.overlayPort}`);
-    expect(enrollment.protocol_version).toBe(1);
+    expect(enrollment.protocol_version).toBe(HOST_PROTOCOL_VERSION);
     expect(enrollment.host_id).toBe('host_e2e');
   });
 

@@ -1,11 +1,21 @@
 #!/bin/sh
 # Myco installer — https://myco.sh
 # Usage: curl -fsSL https://myco.sh/install.sh | sh
+#        curl -fsSL https://myco.sh/install.sh | sh -s -- --serve --server-url https://host.example:8080
 #
 # Env overrides:
-#   MYCO_CHANNEL   — "stable" (default) or "beta"
-#   MYCO_BIN_DIR   — destination directory (default: ~/.myco/bin)
-#   GITHUB_TOKEN   — or GH_TOKEN — avoid GitHub API rate limits
+#   MYCO_CHANNEL       — "stable" (default) or "beta"
+#   MYCO_BIN_DIR       — destination directory (default: ~/.myco/bin)
+#   GITHUB_TOKEN       — or GH_TOKEN — avoid GitHub API rate limits
+#   MYCO_TEAM_AGENT_KEY — optional, only consulted with --serve: the team's LLM
+#                         provider API key, stored in the served Grove's
+#                         secrets.env (never in YAML, never logged in full)
+#
+# --serve options (a serving box is a full Myco instance — nothing above is
+# skipped; --serve is additive: enable Team Host serving after install):
+#   --serve                 Stand up this machine as a Team Host after install
+#   --server-url <url>      REQUIRED with --serve — the address members dial
+#   --hostname <name>       This host's node name on the tailnet (optional)
 set -eu
 
 REPO="goondocks-co/myco"
@@ -25,6 +35,47 @@ info()    { printf "${CYAN}%s${NC}\n"   "$1"; }
 success() { printf "${GREEN}%s${NC}\n"  "$1"; }
 warn()    { printf "${YELLOW}%s${NC}\n" "$1"; }
 error()   { printf "${RED}%s${NC}\n"    "$1" >&2; }
+
+# ---------------------------------------------------------------------------
+# --serve flag parsing (additive — no effect on the default install path
+# below unless --serve is actually passed)
+# ---------------------------------------------------------------------------
+SERVE=0
+SERVE_SERVER_URL=""
+SERVE_HOSTNAME=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --serve)
+      SERVE=1
+      shift
+      ;;
+    --server-url)
+      SERVE_SERVER_URL="${2:-}"
+      shift 2
+      ;;
+    --server-url=*)
+      SERVE_SERVER_URL="${1#--server-url=}"
+      shift
+      ;;
+    --hostname)
+      SERVE_HOSTNAME="${2:-}"
+      shift 2
+      ;;
+    --hostname=*)
+      SERVE_HOSTNAME="${1#--hostname=}"
+      shift
+      ;;
+    *)
+      error "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+if [ "$SERVE" = "1" ] && [ -z "$SERVE_SERVER_URL" ]; then
+  error "--serve requires --server-url <https://host:8080> — the address members dial to reach the control plane."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Token helpers — DRY, no eval, token never echoed/logged
@@ -178,7 +229,7 @@ else
   else
     TAG="$(grep -o '"tag_name": *"myco/v[^"]*"' "$RELEASES_FILE" \
            | sed 's/"tag_name": *"//;s/"//' \
-           | grep -v -- '-' \
+           | grep -vE 'v[0-9]+\.[0-9]+\.[0-9]+-' \
            | sort -rV \
            | head -1)" || TAG=""
   fi
@@ -316,3 +367,37 @@ else
   echo "    myco open"
 fi
 echo ""
+
+# ---------------------------------------------------------------------------
+# --serve: run the composite enable on the just-installed myco binary
+#
+# A serving box is a full Myco instance — everything above already ran
+# unmodified (including `myco service install`). Host-serve operator ops
+# live in the one binary (decision-48174c9f) — no second fetch, no separate
+# package. This section is purely additive and only runs with --serve; a
+# failure here never fails the base install (myco itself is already usable —
+# re-run `myco host enable` manually to retry Team Host setup).
+# ---------------------------------------------------------------------------
+if [ "$SERVE" = "1" ]; then
+  info "Setting up Team Host serving (--serve)..."
+  echo ""
+
+  # --designate-default --emit-join: enable, designate this box's default
+  # Grove as the served Grove, mint a one-time setup key, and print the
+  # complete ready-to-paste `myco join …` command. MYCO_TEAM_AGENT_KEY (if
+  # set in the environment) flows through unchanged — the composite
+  # orchestrator reads it and stores it in the served Grove's secrets.env.
+  info "Running: myco host enable --server-url ${SERVE_SERVER_URL} --designate-default --emit-join"
+  if [ -n "$SERVE_HOSTNAME" ]; then
+    if ! "${BIN_DIR}/myco" host enable --server-url "$SERVE_SERVER_URL" --hostname "$SERVE_HOSTNAME" --designate-default --emit-join; then
+      warn "Team Host enable did not complete. Re-run manually:"
+      echo "    ${BIN_DIR}/myco host enable --server-url $SERVE_SERVER_URL --hostname $SERVE_HOSTNAME --designate-default --emit-join"
+    fi
+  else
+    if ! "${BIN_DIR}/myco" host enable --server-url "$SERVE_SERVER_URL" --designate-default --emit-join; then
+      warn "Team Host enable did not complete. Re-run manually:"
+      echo "    ${BIN_DIR}/myco host enable --server-url $SERVE_SERVER_URL --designate-default --emit-join"
+    fi
+  fi
+  echo ""
+fi

@@ -303,6 +303,22 @@ describe('agent loader', () => {
       expect(act?.required).toBe(true);
     });
 
+    it('declares skill-evolve assess as requiring the project tree too (WS1 coverage completion — reads via fs_read/code_grep)', () => {
+      // assess carries fs_read/code_grep for final-judgment drift checks
+      // against the real codebase — the same tree dependency act already
+      // carries. Without this stamp a scheduled run for a registered
+      // project with no working tree (Team Host) would invoke the harness
+      // against a nonexistent projectRoot instead of skipping cleanly.
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const se = tasks.find((t) => t.name === 'skill-evolve');
+      const assess = se?.phases?.find((phase) => phase.name === 'assess');
+
+      expect(assess?.tools).toContain('fs_read');
+      expect(assess?.tools).toContain('code_grep');
+      expect(assess?.requiresProjectTree).toBe(true);
+      expect(assess?.required).toBe(true);
+    });
+
     it('declares both skill-generate phases as requiring the project tree (staging + finalize write into it)', () => {
       // draft stages SKILL.md under <projectRoot>/.myco/staging/skills/ via
       // vault_stage_skill; validate re-stages and promotes to
@@ -320,6 +336,35 @@ describe('agent loader', () => {
       expect(validate?.requiresProjectTree).toBe(true);
       expect(draft?.required).toBe(true);
       expect(validate?.required).toBe(true);
+    });
+
+    it('declares canopy-map render as requiring the project tree (WS1 coverage completion — fs_read confirms a file\'s role)', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const cm = tasks.find((t) => t.name === 'canopy-map');
+      const render = cm?.phases?.find((phase) => phase.name === 'render');
+
+      expect(render?.tools).toContain('fs_read');
+      expect(render?.requiresProjectTree).toBe(true);
+      expect(render?.required).toBe(true);
+    });
+
+    it('declares vault-seed orient and explore-themes as requiring the project tree (WS1 coverage completion — filesystem exploration)', () => {
+      // vault-seed is manual-trigger-only, but any task can be dispatched
+      // via POST /api/agent/run against a registered project with no
+      // working tree (Team Host) — treeAvailable is forwarded generically
+      // there, not just on the scheduler path.
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const vs = tasks.find((t) => t.name === 'vault-seed');
+      const orient = vs?.phases?.find((phase) => phase.name === 'orient');
+      const exploreThemes = vs?.phases?.find((phase) => phase.name === 'explore-themes');
+
+      expect(orient?.tools).toContain('fs_read');
+      expect(orient?.requiresProjectTree).toBe(true);
+      expect(orient?.required).toBe(true);
+      expect(exploreThemes?.tools).toContain('fs_read');
+      expect(exploreThemes?.tools).toContain('code_grep');
+      expect(exploreThemes?.requiresProjectTree).toBe(true);
+      expect(exploreThemes?.required).toBe(true);
     });
 
     it('loads skill-evolve inventory as a writable state/report phase', () => {

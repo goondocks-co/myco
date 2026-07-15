@@ -381,6 +381,13 @@ export class TranscriptDrainQueue {
    * member-side analog of the live-reconcile tick + Stop). Ensures a queue entry
    * exists for the event's transcript at its current high-water and schedules a
    * throttled mid-turn drain. Best-effort: never throws into the collect path.
+   *
+   * Root scoping (C7, carried — audited, no change needed here): unlike
+   * `plan-drain.ts`'s `noteCollect`, this method never resolves a relative path
+   * against a project root — `event.transcript_path` is always the absolute path
+   * the coding-agent hook itself reports, and `this.fileReader.stat` reads it
+   * as-is. `target.root` (per-request, from `AttachRef.root`) has no consumer
+   * here for that reason.
    */
   noteCollect(target: RemoteTarget, event: Record<string, unknown>): void {
     try {
@@ -614,7 +621,15 @@ export class TranscriptDrainQueue {
     let sent = 0;
     for (let iter = 0; iter < MAX_DRAIN_ITERATIONS; iter += 1) {
       const stat = this.fileReader.stat(entry.transcript_path);
-      if (!stat) return sent; // file missing — retry next tick while it exists
+      // File missing, caught up, or holding for a complete line are all
+      // genuine no-op passes — none of them is a live transport attempt, so
+      // none can tell us the host is still unreachable. Clear any stale
+      // failure recorded by a PAST attempt: an entry idling here (never
+      // retried again until new bytes or a new enqueue arrive) would
+      // otherwise keep reading as "unreachable" forever after the host
+      // actually recovered. A genuinely still-down host re-fails the very
+      // next attempt that has real bytes to send.
+      if (!stat) return this.noOpDrained(entry, sent); // file missing — retry next tick while it exists
 
       const currentId = deriveTranscriptId({
         machineId: this.machineId,
@@ -631,7 +646,7 @@ export class TranscriptDrainQueue {
       }
 
       const base = entry.acked_offset;
-      if (base >= stat.size) return sent; // caught up
+      if (base >= stat.size) return this.noOpDrained(entry, sent); // caught up
 
       const windowLen = Math.min(this.chunkCap, stat.size - base);
       const buf = this.fileReader.readSlice(entry.transcript_path, base, windowLen);
@@ -639,7 +654,7 @@ export class TranscriptDrainQueue {
       const reachedEof = base + buf.length >= stat.size;
 
       const sendLen = this.pickSendLength(buf, reachedEof, flush);
-      if (sendLen === 0) return sent; // only an incomplete final line — wait for it to complete
+      if (sendLen === 0) return this.noOpDrained(entry, sent); // only an incomplete final line — wait for it to complete
 
       const bytes = buf.subarray(0, sendLen).toString('base64');
       let resp: TranscriptChunkResponse;
@@ -695,6 +710,19 @@ export class TranscriptDrainQueue {
         this.store.put(entry);
         return sent;
       }
+    }
+    return sent;
+  }
+
+  /** Clear a stale failure recorded on a PAST attempt before returning from a
+   *  genuine no-op pass (file missing, caught up, holding for a complete
+   *  line — none of them a live transport attempt). Skips the store write
+   *  when the entry has no failure on record, so the common healthy-entry
+   *  path costs nothing extra. */
+  private noOpDrained(entry: DrainEntry, sent: number): number {
+    if ((entry.consecutive_failures ?? 0) > 0 || entry.last_error_kind) {
+      clearDrainFailure(entry);
+      this.store.put(entry);
     }
     return sent;
   }

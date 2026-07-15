@@ -636,6 +636,44 @@ export const HOST_BEARER_SECRET = 'MYCO_HOST_BEARER';
  * Distinct key + storage location, one shared value — the single flat-trust host bearer (spec §8/§9).
  */
 export const HOST_SERVE_BEARER_SECRET = 'MYCO_HOST_SERVE_BEARER';
+/**
+ * TRANSPORT name only — the `--serve`/`host enable --emit-join` CLI flag
+ * (`--team-key`) and its env-var fallback (`process.env[TEAM_AGENT_KEY_SECRET]`)
+ * for the team's LLM provider API key at enable time. This is NOT the name the
+ * key is stored under: `hostEnableAndEmitJoin` writes it into the served
+ * Grove's `secrets.env` under the PROVIDER-STANDARD env name
+ * (`KEYED_CLOUD_PROVIDER_ENV`, `agent/harness/provider-health.ts` — anthropic by
+ * default) so `probeProviderAvailable`/`missingKeyReason` actually read it. A
+ * key stored under this transport name instead would never be found by a real
+ * dispatch (Task 8's cross-task invariant, fixing exactly that hazard).
+ * Distinct from the legacy Team-Sync {@link TEAM_API_KEY_SECRET}, which
+ * lives in the team-sync registry's own store, not a Grove.
+ */
+export const TEAM_AGENT_KEY_SECRET = 'MYCO_TEAM_AGENT_KEY';
+/**
+ * Secrets key for the external read-only MCP's access token, stored
+ * machine-scoped in `~/.myco/secrets.env` beside {@link HOST_SERVE_BEARER_SECRET}
+ * (server-mode design spec §7 — a THIRD credential, distinct from the loopback
+ * daemon token and the member serve-bearer). Server-minted at ≥122 bits,
+ * rotatable by any team member via the `team-write` `POST
+ * /api/team/mcp-token/rotate` route, and mint-if-absent at `PUT
+ * /api/team/external-mcp/toggle` enable (Task 10's dedicated listener
+ * authenticates against it with a constant-time compare). The raw value is
+ * revealed exactly once, in the response of whichever of those two routes
+ * just minted or rotated it — the ONLY reveal surface; every other route
+ * (including `GET /api/team/external-mcp`) echoes only a non-secret
+ * change-detection hash.
+ */
+export const HOST_EXTERNAL_MCP_TOKEN_SECRET = 'MYCO_HOST_EXTERNAL_MCP_TOKEN';
+/**
+ * Default loopback port the external MCP listener binds when a member
+ * enables exposure without picking one (`daemon.external_mcp.port`,
+ * server-mode design spec §7). Distinct from the daemon's own port and the
+ * overlay listener's port — `tailscale funnel <port>` fronts exactly this
+ * one on the public internet, so it must be a fixed, known value a member
+ * can point Funnel at deterministically across restarts.
+ */
+export const EXTERNAL_MCP_DEFAULT_PORT = 8743;
 
 /**
  * Wire protocol for member-daemon ↔ host-daemon overlay traffic. Bump on any
@@ -647,8 +685,15 @@ export const HOST_SERVE_BEARER_SECRET = 'MYCO_HOST_SERVE_BEARER';
  * member accepts from a host, mirroring the sync
  * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]` discipline.
  */
-export const HOST_PROTOCOL_VERSION = 1;
-/** Oldest host protocol a member still talks to (inclusive window with HOST_PROTOCOL_VERSION). */
+export const HOST_PROTOCOL_VERSION = 2;
+/**
+ * Oldest host protocol a member still talks to (inclusive window with
+ * HOST_PROTOCOL_VERSION). Stays at 1: the v2 addition (enrollment
+ * self-reports `served_grove_id`) is additive, not breaking — an updated
+ * member talking to a v1 host simply gets no `served_grove_id` in the
+ * enrollment payload and surfaces `host_predates_served_grove` at attach
+ * time rather than being version-gated out of joining at all.
+ */
 export const HOST_MIN_COMPAT_VERSION = 1;
 
 /**
@@ -671,6 +716,16 @@ export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
  * different capabilities on different transports (live host overlay vs D1 replica).
  */
 export const HOST_ENROLL_ROUTE = '/api/host/enroll';
+
+/**
+ * Step-5 enrollment retry-with-backoff (server-mode design spec §4): a
+ * transient overlay/DERP-settling failure shouldn't burn a whole `myco join`
+ * run — enrollment is a one-shot POST that can lose the race against the
+ * overlay finishing settling. Delays between attempts only (none before the
+ * first, none after the last exhausts) — 3 attempts total, 2s then 4s apart.
+ * The final attempt's failure surfaces to the caller unchanged.
+ */
+export const ENROLLMENT_RETRY_BACKOFFS_MS = [2000, 4000] as const;
 
 /**
  * Base for the local HTTP-CONNECT proxy port each joined host's userspace

@@ -150,6 +150,10 @@ mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => {
     promoteField: vi.fn().mockResolvedValue(undefined),
   });
   return {
+    useIsTeamConfigTarget: () => false,
+    useTeamConfigTargetOrNull: () => null,
+    TeamConfigTargetProvider: ({ children }: { children: unknown }) => children,
+    teamCarrierHeaders: () => ({}),
     useScopedConfig: scopedConfigStub,
     useScopedConfigForSelection: scopedConfigStub,
   };
@@ -186,6 +190,8 @@ mock.module('../../packages/myco/ui/src/hooks/use-providers', () => ({
   useTestProvider: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false, isSuccess: false, isError: false }),
   useTaskConfig: () => ({ data: undefined, isPending: false }),
   useUpdateTaskConfig: () => ({ mutate: vi.fn(), isPending: false }),
+  getExecution: () => ({}),
+  getInheritedExecution: () => ({}),
   defaultBaseUrlForProvider: () => '',
   inferHarnessFromProviderType: () => 'claude-code-sdk',
   maybeInferHarnessFromProviderType: () => 'claude-code-sdk',

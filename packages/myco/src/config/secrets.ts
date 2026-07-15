@@ -168,34 +168,73 @@ export function loadSecrets(vaultDir: string): void {
 }
 
 /**
+ * Per-env-object registry of the keys `loadLayeredSecrets` has written,
+ * mapped to the exact value it wrote. Ownership is what distinguishes a
+ * file-backed secret (which repeated layering must keep in sync with the
+ * files — updates AND deletions) from an inherited shell/launchd/boot env
+ * var (which layering must never touch). An entry is honored only while the
+ * env still holds the recorded value: if any other writer changed or set
+ * the key since, ownership is relinquished and the key becomes protected
+ * external env like any other. Unobservable-by-design edge: an external
+ * writer that sets a key to the EXACT value layering wrote is
+ * indistinguishable from layering itself, so ownership is retained and a
+ * later file delete removes the key.
+ */
+const layeredSecretOwnership = new WeakMap<NodeJS.ProcessEnv, Map<string, string>>();
+
+/**
  * Load several secrets.env stores as one layered view.
  *
- * The order is low-to-high precedence: later directories override earlier
- * directories, while environment variables that were already set before this
- * call still win over every file-backed secret. This lets legacy project
- * secrets remain a fallback while machine and Grove stores take precedence
- * without clobbering an explicit shell/launchd environment.
+ * Precedence within a call is low-to-high: later directories override
+ * earlier directories (e.g. Grove secrets over machine secrets).
+ *
+ * Across calls, protection means "not written by layering", not "currently
+ * set": env vars that were inherited from the shell/launchd/boot environment
+ * (or set by any writer other than this function) are never overwritten and
+ * never deleted. Keys THIS function set, however, are refreshed on every
+ * call — a value updated in a layered file replaces the env value, and a key
+ * that no longer appears in ANY of the layered files is removed from the env
+ * entirely. That keeps a long-lived daemon honest about secret rotation and
+ * revocation (e.g. the Team page's PUT/DELETE on the served grove's
+ * `secrets.env`) without a restart, while an explicit external env var still
+ * wins over every file-backed secret exactly as before.
  */
 export function loadLayeredSecrets(
   secretsDirs: string[],
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  const protectedEnvKeys = new Set(
-    Object.entries(env)
-      .filter(([, value]) => value !== undefined && value !== '')
-      .map(([key]) => key),
-  );
-  const merged: Record<string, string> = {};
+  const owned = layeredSecretOwnership.get(env) ?? new Map<string, string>();
+  layeredSecretOwnership.set(env, owned);
 
+  // Relinquish ownership of any key whose current env value is no longer
+  // the one layering wrote — an external writer took it over, and from here
+  // on it is protected exactly like boot env.
+  for (const [key, written] of [...owned]) {
+    if (env[key] !== written) owned.delete(key);
+  }
+
+  const merged: Record<string, string> = {};
   for (const dir of secretsDirs) {
     tightenSecretsPermissions(dir);
     Object.assign(merged, readSecrets(dir));
   }
 
-  for (const [key, value] of Object.entries(merged)) {
-    if (!protectedEnvKeys.has(key)) {
-      env[key] = value;
+  // Owned keys that vanished from every layered file: the secret was deleted
+  // or rotated away on disk — remove it from the env so a revoked key stops
+  // working and a keyless state is observable (missing_key, not stale-ok).
+  for (const key of [...owned.keys()]) {
+    if (!(key in merged)) {
+      delete env[key];
+      owned.delete(key);
     }
+  }
+
+  for (const [key, value] of Object.entries(merged)) {
+    const current = env[key];
+    const isExternallySet = current !== undefined && current !== '' && !owned.has(key);
+    if (isExternallySet) continue;
+    env[key] = value;
+    owned.set(key, value);
   }
 }
 

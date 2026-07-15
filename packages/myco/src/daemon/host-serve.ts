@@ -30,16 +30,22 @@ import type http from 'node:http';
 
 import {
   HOST_ENROLL_ROUTE,
+  HOST_EXTERNAL_MCP_TOKEN_SECRET,
   HOST_MIN_COMPAT_VERSION,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
   HOST_SERVE_BEARER_SECRET,
 } from '../constants.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
-import { readSecrets, writeSecret } from '../config/secrets.js';
+import { readSecrets, writeSecret, loadLayeredSecrets } from '../config/secrets.js';
+import { loadMergedConfig } from '../config/loader.js';
 import type { MachineConfig } from '../config/schema.js';
-import { resolveMycoHome } from '../grove/paths.js';
+import { listGroves } from '../grove/registry.js';
+import { resolveMycoHome, resolveGroveDir } from '../grove/paths.js';
 import { timingSafeStringEqual } from '../grove/request-context.js';
+import { isAutoBackupDue } from '../backup/service.js';
+import { getMachineId } from '../machine-id.js';
+import { missingKeyReason } from '../agent/harness/provider-health.js';
 
 /** The resolved host-serve enablement passed to `DaemonServer`. `null` means
  *  host serving is OFF and no second listener binds. */
@@ -63,6 +69,12 @@ export interface HostServeRuntime {
   /** Human-readable host label (the host's tailnet node name). Same provenance +
    *  fallback as {@link hostId}. */
   label?: string;
+  /** The one Grove this host serves (`host_serve.served_grove_id`), surfaced so
+   *  {@link servedGroveRefusal} can refuse any overlay request whose resolved
+   *  Grove doesn't match. Absent when the designation is unset (null) — a
+   *  fail-closed outcome the filter enforces, not this module (see
+   *  {@link resolveHostServeConfig}). */
+  servedGroveId?: string;
 }
 
 /** A refusal the overlay gate emits before dispatch: status + JSON body, plus
@@ -182,9 +194,16 @@ interface HostServeLogger {
 /**
  * Resolve the machine's host-serve enablement into a {@link HostServeRuntime}
  * the server binds a second listener from, or `null` (host serving off). Never
- * throws: an enabled-but-misconfigured host (absent/invalid address, un-mintable
- * bearer) yields `null` plus exactly one clear log — never a crash, never a
- * fallback bind (Task 2.3 item 1).
+ * throws: an enabled-but-misconfigured host (absent/invalid address, dangling
+ * `served_grove_id`, un-mintable bearer) yields `null` plus exactly one clear
+ * log — never a crash, never a fallback bind (Task 2.3 item 1).
+ *
+ * A `served_grove_id` naming no Grove on this machine is a dangling
+ * designation (server-mode design spec §2: "referential integrity … a loud
+ * startup error … never a silent total-refusal outage on a box that looks
+ * healthy") and refuses the same way the address gate does. A `null`
+ * designation is NOT dangling — it still resolves; the dispatch filter
+ * (Task 2) is what makes an undesignated host serve nothing.
  */
 export function resolveHostServeConfig(options: {
   machineConfig: MachineConfig;
@@ -204,13 +223,43 @@ export function resolveHostServeConfig(options: {
     return null;
   }
 
+  const mycoHome = options.mycoHome ?? resolveMycoHome();
+
+  // Empty/whitespace-only is treated as absent, same as null — the runtime
+  // must never carry a meaningless empty-string designation.
+  const servedGroveId = hostServe.served_grove_id?.trim() || undefined;
+  if (servedGroveId) {
+    try {
+      if (!listGroves(mycoHome).some((grove) => grove.id === servedGroveId)) {
+        options.logger?.warn(
+          LOG_KINDS.HOST_SERVE,
+          'Team Host serve is enabled but served_grove_id names no Grove on this machine — a dangling designation, host serving stays off',
+          { served_grove_id: servedGroveId },
+        );
+        return null;
+      }
+    } catch (err) {
+      // listGroves() walks + TOML-parses every grove.toml on the machine — an
+      // unrelated corrupt/unreadable grove throws here. Treat "threw while
+      // checking" the same as "grove missing": disable serving loudly, never
+      // let it crash daemon boot (this function's never-throws contract).
+      options.logger?.warn(
+        LOG_KINDS.HOST_SERVE,
+        'Team Host serve is enabled but served_grove_id could not be validated against the Grove registry — host serving stays off',
+        { served_grove_id: servedGroveId, error: (err as Error).message },
+      );
+      return null;
+    }
+  }
+
   try {
-    const bearer = resolveHostServeBearer(options.mycoHome ?? resolveMycoHome());
+    const bearer = resolveHostServeBearer(mycoHome);
     return {
       overlayAddress: (address as string).trim(),
       bearer,
       hostId: hostServe.host_id ?? undefined,
       label: hostServe.label ?? undefined,
+      servedGroveId,
     };
   } catch (err) {
     options.logger?.warn(
@@ -220,6 +269,223 @@ export function resolveHostServeConfig(options: {
     );
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Served-grove designation health (`myco doctor`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Designation health, classified independent of the daemon boot path — used
+ * by `myco doctor` so a dangling designation (`served_grove_id` names no
+ * Grove on this machine) surfaces on demand, not only via the one-time log
+ * {@link resolveHostServeConfig} emits at startup, which scrolls past.
+ */
+export type ServedGroveDesignationHealth =
+  | { kind: 'not_serving' }
+  | { kind: 'undesignated' }
+  | { kind: 'dangling'; servedGroveId: string }
+  | { kind: 'ok'; servedGroveId: string };
+
+/**
+ * Classify this machine's served-grove designation against the actual Grove
+ * registry. Pure read, never throws — mirrors the same referential-
+ * integrity check {@link resolveHostServeConfig} runs at boot: a corrupt or
+ * unreadable UNRELATED Grove on the machine classifies as `dangling` rather
+ * than propagating the error to the caller.
+ */
+export function resolveServedGroveDesignationHealth(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ServedGroveDesignationHealth {
+  const hostServe = machineConfig.daemon.host_serve;
+  if (!hostServe.enabled) return { kind: 'not_serving' };
+
+  const servedGroveId = hostServe.served_grove_id?.trim() || undefined;
+  if (!servedGroveId) return { kind: 'undesignated' };
+
+  try {
+    const exists = listGroves(mycoHome).some((grove) => grove.id === servedGroveId);
+    return exists ? { kind: 'ok', servedGroveId } : { kind: 'dangling', servedGroveId };
+  } catch {
+    return { kind: 'dangling', servedGroveId };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Served-grove backup staleness (`myco doctor`, server-mode design spec §8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Backup staleness, classified independent of the daemon boot path — used by
+ * `myco doctor` to surface a served Grove with no successful backup within
+ * its configured interval. The served Grove is the sole copy of all
+ * attached-project team knowledge (spec §8), so a stale backup is a
+ * first-class warning, not an afterthought.
+ */
+export type ServedGroveBackupHealth =
+  | { kind: 'not_applicable' }
+  | { kind: 'stale'; servedGroveId: string }
+  | { kind: 'ok'; servedGroveId: string };
+
+/**
+ * Classify this machine's served-grove backup posture using the SAME
+ * bookkeeping the auto-backup PowerJob itself gates on ({@link isAutoBackupDue}
+ * — newest backup for this machine older than the Grove's configured
+ * `auto_interval_hours`, or none exists). `not_applicable` covers every case
+ * where staleness isn't a meaningful question: serving is off, undesignated,
+ * or the designation is dangling (all three are {@link resolveServedGroveDesignationHealth}'s
+ * job to report). Pure read, never throws.
+ */
+export function resolveServedGroveBackupHealth(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ServedGroveBackupHealth {
+  const designation = resolveServedGroveDesignationHealth(machineConfig, mycoHome);
+  if (designation.kind !== 'ok') return { kind: 'not_applicable' };
+
+  try {
+    const stale = isAutoBackupDue({ groveId: designation.servedGroveId, machineId: getMachineId(), mycoHome });
+    return { kind: stale ? 'stale' : 'ok', servedGroveId: designation.servedGroveId };
+  } catch {
+    return { kind: 'not_applicable' };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Served-grove team-key posture (`myco doctor`, server-mode design spec §5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Team-key posture for the served Grove — `missing_key` when the Grove's
+ * effective agent provider is a cloud type (anthropic/openai/openrouter)
+ * requiring a stored key and neither the served Grove's `secrets.env`, the
+ * machine `secrets.env`, nor the inherited process env supplies it. This is
+ * the SAME condition {@link probeProviderAvailable} suppresses scheduled LLM
+ * dispatch on — this classifier exists so the same signal is queryable
+ * on-demand (`myco doctor`) instead of only discoverable by watching every
+ * scheduled tick get silently skipped.
+ */
+export type ServedGroveKeyHealth =
+  | { kind: 'not_applicable' }
+  | { kind: 'missing_key'; servedGroveId: string }
+  | { kind: 'ok'; servedGroveId: string };
+
+/**
+ * Classify this machine's served-grove team-key posture. `not_applicable`
+ * covers every case where the question doesn't apply: serving is off,
+ * undesignated, dangling (all three are {@link resolveServedGroveDesignationHealth}'s
+ * job to report), or no explicit cloud provider is configured for the Grove
+ * (the claude-sdk default needs no stored key). Never throws — but NOT a
+ * pure read: it calls `loadLayeredSecrets`, which mutates `process.env`
+ * (see {@link resolveServedGroveKeyHealthIsolated}, the poll-safe wrapper
+ * that undoes that side effect for a long-lived caller).
+ */
+export function resolveServedGroveKeyHealth(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ServedGroveKeyHealth {
+  const designation = resolveServedGroveDesignationHealth(machineConfig, mycoHome);
+  if (designation.kind !== 'ok') return { kind: 'not_applicable' };
+
+  try {
+    const groveDir = resolveGroveDir(designation.servedGroveId, mycoHome);
+    // Same layering the scheduler applies before a dispatch against this
+    // Grove, with the same semantics: boot/shell env vars are protected
+    // (never overwritten or deleted); keys layering itself wrote are
+    // refreshed from the files on every call — grove file wins over machine
+    // file, and a key deleted from both files is removed from the env. So
+    // this classifier can never disagree with what a real dispatch would
+    // see, including after a Team-page update or delete.
+    loadLayeredSecrets([mycoHome, groveDir]);
+    const mycoConfig = loadMergedConfig(groveDir, {
+      groveId: designation.servedGroveId,
+      mycoHome,
+      projectTierOptional: true,
+    });
+    const provider = mycoConfig.agent.provider;
+    if (!provider) return { kind: 'not_applicable' };
+    const reason = missingKeyReason({ type: provider.type });
+    return reason === 'missing_key'
+      ? { kind: 'missing_key', servedGroveId: designation.servedGroveId }
+      : { kind: 'ok', servedGroveId: designation.servedGroveId };
+  } catch {
+    return { kind: 'not_applicable' };
+  }
+}
+
+/**
+ * Same classification as {@link resolveServedGroveKeyHealth}, isolated from the
+ * daemon's long-lived `process.env`. The underlying classifier calls
+ * `loadLayeredSecrets`, which mutates the process env: it adds/refreshes the
+ * keys it owns and deletes owned keys whose file entries disappeared (boot
+ * env stays protected). Those refresh semantics already keep repeated bare
+ * calls ACCURATE — a stale classification can no longer latch — so this
+ * wrapper is pure env hygiene, not a correctness requirement: a polled route
+ * (the Team page) should not leave the served Grove's secrets sitting in the
+ * daemon's env between polls when nothing else needs them there.
+ *
+ * The wrapper snapshots the env key set before calling the real classifier
+ * and deletes anything newly added afterward. Keys it removes were recorded
+ * as layering-owned; the next layering call sees the changed (unset) value,
+ * relinquishes the stale ownership entry, and re-adds the key from the files
+ * — so wrapper cleanup and the ownership registry never fight. `myco doctor`
+ * (a one-shot process) keeps calling {@link resolveServedGroveKeyHealth}
+ * directly — the isolation cost is only worth paying where the process
+ * outlives the check.
+ */
+export function resolveServedGroveKeyHealthIsolated(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ServedGroveKeyHealth {
+  const before = new Set(Object.keys(process.env));
+  try {
+    return resolveServedGroveKeyHealth(machineConfig, mycoHome);
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!before.has(key)) delete process.env[key];
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// External MCP config/token coherence (`myco doctor`, server-mode design
+// spec §7)
+// ---------------------------------------------------------------------------
+
+/**
+ * External MCP config/secret coherence — the config-layer half of "doctor
+ * reports funnel/listener coherence" (Task 10). `missing_token` is the ONE
+ * inconsistency this pure, file-based classifier can actually detect: the
+ * toggle says enabled but no token has ever been minted (e.g. a hand-edited
+ * `config.yaml`, or a secrets.env wiped out from under a running daemon) —
+ * the listener cannot possibly authenticate a caller in that state.
+ *
+ * What this does NOT (and structurally cannot) verify without a live
+ * process or shelling to `tailscale`: whether THIS daemon actually has the
+ * listener bound right now, and whether Funnel is actually fronting the
+ * port. Those are live-daemon/live-tailscaled observables — the Funnel
+ * frontend is rig-validated in Task 12, not unit-testable, and daemon doctor
+ * checks are deliberately process-independent (pure reads over
+ * `~/.myco/config.yaml` + `secrets.env`, same as every other check in this
+ * file). `ok` covers "config says enabled and a token exists" — a stronger
+ * claim than that is out of scope for this classifier.
+ */
+export type ExternalMcpCoherence =
+  | { kind: 'not_enabled' }
+  | { kind: 'missing_token'; port: number }
+  | { kind: 'ok'; port: number };
+
+export function resolveExternalMcpCoherence(
+  machineConfig: MachineConfig,
+  mycoHome: string = resolveMycoHome(),
+): ExternalMcpCoherence {
+  const externalMcp = machineConfig.daemon.external_mcp;
+  if (!externalMcp.enabled) return { kind: 'not_enabled' };
+
+  const token = readSecrets(mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+  if (!token || !token.trim()) return { kind: 'missing_token', port: externalMcp.port };
+  return { kind: 'ok', port: externalMcp.port };
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +540,70 @@ export function overlayLifecycleRefused(pathname: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Served-grove filter (Task 2) — the dual-homed dispatch chokepoint gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-closed served-grove gate for overlay requests. Refuses when serving has
+ * no designation, when the resolved context has no grove, or when the grove is
+ * not THE served grove. Returns null only for an exact designation match.
+ *
+ * This is the ONE dispatch-boundary check that closes the gap the blanket
+ * bearer/lifecycle/version gate above leaves open: the bearer proves overlay
+ * ADMISSION, not which Grove a member may reach. Without this filter, a
+ * bearer-holding member could send `x-myco-grove-id` naming ANY Grove this
+ * host owns — including the operator's own personal Groves — and the host
+ * would happily resolve and open that Grove's DB (server-mode design spec §2,
+ * the one Critical finding in the spec's independent review).
+ *
+ * MUST be called at BOTH overlay dispatch chokepoints — router routes
+ * (`daemon/server.ts`, after `resolveRouteRequestContext`) and the raw `/mcp`
+ * route (`mcp/http.ts`, after `resolveRequestContextOrLegacy`) — immediately
+ * after the request's Grove context is resolved and BEFORE any dispatch. A
+ * single-homed filter leaves the other chokepoint's full tool/route surface
+ * open against any Grove on the box.
+ *
+ * The null-grove branch is explicit and unconditional — this function never
+ * takes the `if (groveId && ...)` shape, which would fail OPEN for any
+ * grove-less overlay request (a machine-level/no-tenancy route slipping past
+ * a truthiness check). Every branch below is a distinct, named refusal reason;
+ * only the exact-match branch returns null.
+ */
+export function servedGroveRefusal(
+  runtime: HostServeRuntime,
+  resolvedGroveId: string | null,
+): OverlayGateRefusal | null {
+  if (!runtime.servedGroveId) {
+    return {
+      status: 404,
+      body: {
+        error: 'not_found',
+        message: 'This host is not designated to serve any Grove.',
+      },
+    };
+  }
+  if (resolvedGroveId === null) {
+    return {
+      status: 404,
+      body: {
+        error: 'not_found',
+        message: 'This request resolved no Grove; the host serves exactly one designated Grove over the overlay.',
+      },
+    };
+  }
+  if (resolvedGroveId !== runtime.servedGroveId) {
+    return {
+      status: 404,
+      body: {
+        error: 'not_found',
+        message: 'This Grove is not the one Grove this host serves over the overlay.',
+      },
+    };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Enrollment — the ONE bearer-exempt overlay route (Task 2.4)
 // ---------------------------------------------------------------------------
 
@@ -312,6 +642,15 @@ export interface HostEnrollmentPayload {
   protocol_version: number;
   /** The shared host serve-bearer (the secret enrollment delivers over the overlay). */
   bearer: string;
+  /**
+   * This host's one served Grove (protocol v2, server-mode design spec §2).
+   * `null` when serving is enabled but undesignated — a distinct wire state
+   * from the field being ABSENT entirely, which is how a pre-v2 host's
+   * enrollment response looks and is what tells a joining member "this host
+   * predates served-grove designation" (`member-overlay.ts`
+   * `HostEnrollmentResponse.served_grove_id`).
+   */
+  served_grove_id: string | null;
   /** Pre-associated projects — always empty in v1 (attach is a separate UI step). */
   projects: never[];
 }
@@ -329,6 +668,7 @@ export function buildHostEnrollmentPayload(runtime: HostServeRuntime, overlayPor
     overlay_address: `${runtime.overlayAddress}:${overlayPort}`,
     protocol_version: HOST_PROTOCOL_VERSION,
     bearer: runtime.bearer,
+    served_grove_id: runtime.servedGroveId ?? null,
     projects: [],
   };
 }

@@ -20,6 +20,11 @@ export interface HostMembershipProjectRef {
   grove_id: string;
   project_id: string;
   root: string | null;
+  /** `'attach_grove_mismatch'` when this ref's `grove_id` no longer matches
+   *  the host's `served_grove_id` (server-mode design spec §2 existing-refs
+   *  mitigation); `null` when it matches or the host's designation isn't
+   *  known yet. */
+  mismatch: 'attach_grove_mismatch' | null;
 }
 
 export interface HostMembershipHost {
@@ -28,6 +33,9 @@ export interface HostMembershipHost {
   overlay_address: string;
   proxy_port: number | null;
   protocol_version: number;
+  /** The host's self-reported served Grove (protocol v2). `null` when the
+   *  host predates served-grove designation or hasn't designated one yet. */
+  served_grove_id: string | null;
   created_at: string;
   projects: HostMembershipProjectRef[];
 }
@@ -136,7 +144,6 @@ export function useLeaveHost() {
 export interface AttachProjectInput {
   project_root: string;
   host_id?: string;
-  grove_id: string;
   project_id?: string;
 }
 

@@ -1,7 +1,7 @@
 /**
- * `myco attach <project> --host <hostId> --grove <groveId>` /
- * `myco detach <project>` — the operator surface that records (and clears) a
- * project's residency mapping in the machine-global attach registry.
+ * `myco attach <project> --host <hostId>` / `myco detach <project>` — the
+ * operator surface that records (and clears) a project's residency mapping in
+ * the machine-global attach registry.
  *
  * This is the A1 ship-path unblocker: `attachProject`/`detachProject`
  * (`host/registry.ts`) were reachable only from tests, so no project could
@@ -17,10 +17,16 @@
  * project id from the committed `.myco/project.toml` `project.id`, and
  * `classifyRoute` feeds THAT id to `resolveAttach`. So the AttachRef's
  * `project_id` is read from the same manifest: recording the manifest id is what
- * makes the attach mapping and the routing key the same value end-to-end. The
- * `grove_id` (the host's Grove that serves the project) has no local source — the
- * affiliation hint carries only the host_id and a HostRecord stores no Grove
- * list — so it is a required flag the operator supplies from the host side.
+ * makes the attach mapping and the routing key the same value end-to-end.
+ *
+ * `grove_id` (server-mode design spec §2): a host serves exactly ONE designated
+ * Grove, self-reported at enrollment and persisted on the joined `HostRecord`
+ * (`served_grove_id`, `host/member-overlay.ts` `joinHost` step 8). There is no
+ * operator-typed `--grove` flag anymore — the member never types a grove id; a
+ * host that predates served-grove designation (its enrollment carried no
+ * `served_grove_id`) refuses attach with the stable `host_predates_served_grove`
+ * membership code (`membership-error.ts`) rather than falling back to an
+ * unverifiable flag.
  *
  * Pure orchestration over the registry's disk reads/writes; no daemon, no DB.
  */
@@ -50,8 +56,6 @@ export interface AttachOptions {
   /** The joined host that will serve this project. Falls back to the manifest's
    *  Team Host affiliation hint (`grove.remote.remote_id`) when omitted. */
   hostId?: string;
-  /** The host's Grove id that will serve this project. Required — no local source. */
-  groveId?: string;
   /** Override the project id (default: the checkout's `.myco/project.toml`
    *  `project.id`, the same value the routing chokepoint keys on). */
   projectId?: string;
@@ -122,17 +126,6 @@ export function attachCommand(options: AttachOptions): AttachResult {
       + 'It names the joined host that will serve this project.',
     );
   }
-  const groveId = options.groveId?.trim();
-  if (!groveId) {
-    throw new Error(
-      `attach requires --grove <groveId> — the id of the Grove on host ${hostId} that will serve this `
-      + "project. The host's Grove id is not derivable locally; get it from the host operator or the "
-      + "host's Groves page.",
-    );
-  }
-  if (!isGroveEraId(groveId, 'grove')) {
-    throw new Error(`--grove must be a Grove id (grove_<32 hex chars>), got ${JSON.stringify(groveId)}.`);
-  }
 
   const host = getHost(hostId);
   if (!host) {
@@ -140,6 +133,20 @@ export function attachCommand(options: AttachOptions): AttachResult {
       'not_joined',
       `Unknown host ${hostId} — this machine has no host record for it. Join it first with `
       + `\`myco join ${hostId}\`, then attach.`,
+    );
+  }
+
+  // The Grove comes from the host's own self-report (`served_grove_id`,
+  // learned at join) — never a typed flag. A host that predates served-grove
+  // designation carries no value here; attach has nothing to source a Grove
+  // from and refuses rather than guessing.
+  const groveId = host.served_grove_id;
+  if (!groveId) {
+    throw codedMembershipError(
+      'host_predates_served_grove',
+      `Host ${hostId} predates served-grove designation; update the host (run \`myco update\` on that `
+      + 'machine, then re-enable Team Host serving) and re-join with '
+      + `\`myco join ${hostId}\`, then retry attach.`,
     );
   }
 

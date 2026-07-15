@@ -41,7 +41,7 @@ import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
 import { upsertHost, writeHostSecret } from '@myco/host/registry';
 import { listGroves } from '@myco/grove/registry';
 import type { RemoteTarget } from '@myco/host/routing';
-import { HOST_BEARER_SECRET, HOST_PROTOCOL_HEADER } from '@myco/constants';
+import { HOST_BEARER_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 
 const MACHINE = 'alice_a1b2c3d4';
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -762,7 +762,7 @@ describe('default transport wire shape', () => {
     expect(seen[0].method).toBe('POST');
     expect(seen[0].url).toBe('/events');
     expect(seen[0].headers.authorization).toBe('Bearer bearer-x');
-    expect(seen[0].headers[HOST_PROTOCOL_HEADER]).toBe('1');
+    expect(seen[0].headers[HOST_PROTOCOL_HEADER]).toBe(String(HOST_PROTOCOL_VERSION));
     expect(seen[0].headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe(PROJ_A);
     expect(seen[0].headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe(GROVE_A);
     expect(seen[0].headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe(MACHINE);
@@ -955,5 +955,34 @@ describe('drain health (consolidation Task C-5)', () => {
       listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
     });
     expect(q2.health().get(HOST_A)).toBeUndefined();
+  });
+
+  test('a caught-up (fully-acked) session clears a stale failure on the STORED entry, with no transport attempt', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/health-caught-up-stale';
+    buf.append(dir, 'sess-1', evt());
+    const store = memStore();
+    // Seed a ReplayEntry that is ALREADY fully acked (acked_count === the
+    // single record in the buffer) but still carries a stale failure from a
+    // past incident — the state a genuinely-recovered session is left in
+    // before this fix (e.g. the host separately caught up this session via
+    // another path while this entry's failure flag was never touched).
+    store.put({
+      host_id: HOST_A, project_id: PROJ_A, session_id: 'sess-1', acked_count: 1,
+      updated_at: '2020-01-01T00:00:00.000Z',
+      consecutive_failures: 3, last_error_kind: 'unreachable', last_error_at: '2020-01-01T00:00:00.000Z',
+    });
+    const sink = recordingSink();
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store, transport: sink.transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+
+    // No forward happened — this was a genuine no-op, not a retry that happened to succeed.
+    expect(sink.calls).toHaveLength(0);
+    const entry = store.get(HOST_A, 'sess-1');
+    expect(entry?.consecutive_failures).toBe(0);
+    expect(entry?.last_error_kind).toBeNull();
   });
 });

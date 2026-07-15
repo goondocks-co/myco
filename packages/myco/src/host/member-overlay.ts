@@ -49,6 +49,7 @@ import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import { acquireTunnelBridgePort } from '@myco/daemon/host-proxy.js';
 
 import {
+  ENROLLMENT_RETRY_BACKOFFS_MS,
   HOST_BEARER_SECRET,
   HOST_ENROLL_ROUTE,
   HOST_PROTOCOL_HEADER,
@@ -112,6 +113,13 @@ export interface HostEnrollment {
   protocol_version: number;
   /** The shared host serve-bearer, stored under {@link HOST_BEARER_SECRET}. */
   bearer: string;
+  /** The host's self-reported served Grove (protocol v2). `undefined` when the
+   *  host predates served-grove designation — its enrollment response carried
+   *  no `served_grove_id` field at all (distinct from the host reporting one
+   *  explicitly as absent). Persisted onto the {@link HostRecord} at join
+   *  (step 7) and later consulted by `attachCommand` as the ONE grove source
+   *  for a new attach ref — no `--grove` flag. */
+  served_grove_id?: string;
   /** Projects the host pre-associates at enrollment (usually empty — attach is a
    *  separate step, done via `myco attach` in v1, a UI in Phase E). Preserved onto
    *  the record if present. */
@@ -185,13 +193,17 @@ export const stubEnrollmentClient: EnrollmentClient = {
 
 /** The wire response the host enrollment endpoint returns (mirrors the host-side
  *  `buildHostEnrollmentPayload`). host_id/label may be empty on a host enabled before
- *  Task 2.4 wrote them, so the client falls back to what it already knows. */
+ *  Task 2.4 wrote them, so the client falls back to what it already knows.
+ *  `served_grove_id` is `undefined` when the KEY is absent (a pre-v2 host that
+ *  never sends the field), `null` when a v2 host reports it explicitly as
+ *  undesignated — both collapse to "no grove source" on {@link HostEnrollment}. */
 interface HostEnrollmentResponse {
   host_id?: string;
   label?: string;
   overlay_address?: string;
   protocol_version?: number;
   bearer?: string;
+  served_grove_id?: string | null;
   projects?: AttachRef[];
 }
 
@@ -301,6 +313,7 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
         overlay_address: parsed.overlay_address,
         protocol_version: parsed.protocol_version ?? ctx.protocolVersion ?? HOST_PROTOCOL_VERSION,
         bearer: parsed.bearer,
+        served_grove_id: parsed.served_grove_id ?? undefined,
         projects: parsed.projects,
       };
     },
@@ -310,6 +323,37 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
 /** The default (real) enrollment client used by `join` unless `--bearer` selects the
  *  manual bridge or a test injects its own client. */
 export const realEnrollmentClient: EnrollmentClient = createEnrollmentClient();
+
+/** Default backoff wait — a plain `setTimeout` wrapped as a Promise. Tests inject
+ *  `deps.sleep` so retry backoff never costs real wall-clock time. */
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Bounded retry-with-backoff around a single {@link EnrollmentClient.enroll} call
+ * (design spec §4, step 5) — ONLY the transport call is retried, nothing before or
+ * after it in `joinHost`. {@link ENROLLMENT_RETRY_BACKOFFS_MS} bounds it at 3
+ * attempts total (2s then 4s between them, none before the first or after the
+ * last); the final attempt's failure is rethrown UNCHANGED so the caller sees the
+ * same error a non-retrying `enroll` would have thrown.
+ */
+async function enrollWithRetry(
+  client: EnrollmentClient,
+  ctx: EnrollmentContext,
+  sleep: (ms: number) => Promise<void>,
+  log: (message: string) => void,
+): Promise<HostEnrollment> {
+  const backoffs = ENROLLMENT_RETRY_BACKOFFS_MS;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.enroll(ctx);
+    } catch (err) {
+      if (attempt >= backoffs.length) throw err;
+      const delayMs = backoffs[attempt]!;
+      log(`Enrollment attempt ${attempt + 1} failed (${(err as Error).message}) — retrying in ${delayMs}ms…`);
+      await sleep(delayMs);
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Options / deps / result
@@ -358,6 +402,9 @@ export interface MemberOverlayDeps {
   resolveMemberOverlayIp?: (runner: CommandRunner, tailscaleBin: string, socketPath: string) => Promise<string | null>;
   /** Best-effort reachability probe to the host over the overlay (never fatal). */
   checkHostReachable?: (overlayAddress: string, proxyPort: number) => Promise<boolean>;
+  /** Backoff wait between enrollment retry attempts (tests inject a no-real-wait
+   *  fake). Default a plain `setTimeout` wrapped as a Promise. */
+  sleep?: (ms: number) => Promise<void>;
   logger?: (message: string) => void;
 }
 
@@ -483,7 +530,10 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
   log(`Member overlay IP on host ${hostId}: ${memberOverlayIp}`);
 
   // 5. Enroll: obtain the host's overlay address + serve-bearer (Task 2.4 seam).
-  const enrollment = await enrollmentClient.enroll({
+  //    Bounded retry-with-backoff (design spec §4) — a transient overlay/DERP-
+  //    settling failure shouldn't burn the whole join.
+  const sleep = deps.sleep ?? defaultSleep;
+  const enrollment = await enrollWithRetry(enrollmentClient, {
     hostId,
     hostRef: options.hostRef.trim(),
     serverUrl: options.serverUrl?.trim(),
@@ -495,7 +545,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     bearer: options.bearer?.trim(),
     protocolVersion: options.protocolVersion,
     label: options.label?.trim(),
-  });
+  }, sleep, log);
 
   // 6. Best-effort reachability probe through THIS host's proxy port (never fatal).
   const reachProbe = deps.checkHostReachable ?? defaultCheckHostReachable;
@@ -505,8 +555,29 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     : 'Host daemon not confirmed reachable yet — verify with `myco doctor` after the overlay settles.');
   if (!hostReachable) notes.push('host daemon not confirmed reachable over the overlay');
 
-  // 7. Write THIS host's HostRecord (+ bearer). Merge onto any existing record so a
-  //    converging re-join preserves attached projects + created_at.
+  // 7. host_id reconciliation — WARN, never re-key (server-mode design spec §4).
+  //    The host's self-reported id can differ from the operator-typed one (a
+  //    typo, or a host renamed since an earlier affiliation hint); adopting it
+  //    would require re-keying this host's already-provisioned per-host
+  //    tailscaled instance (socket/statedir/label, all derived from the TYPED
+  //    id above) before enrollment ever ran — out of scope for v1. The typed
+  //    id stays the record key unconditionally; a mismatch only ever produces
+  //    a note, never a silent rewrite.
+  if (enrollment.host_id && enrollment.host_id !== hostId) {
+    const warning =
+      `Host self-reported id "${enrollment.host_id}" differs from the typed id "${hostId}" — `
+      + `keeping "${hostId}" as the host record key (Myco never re-keys a joined host silently). `
+      + 'Verify this is the host you meant to join.';
+    notes.push(warning);
+    log(`WARNING: ${warning}`);
+  }
+
+  // 8. Write THIS host's HostRecord (+ bearer). Merge onto any existing record so a
+  //    converging re-join preserves attached projects + created_at. served_grove_id
+  //    falls back to the existing record's value when this join's enrollment didn't
+  //    report one (e.g. the manual bridge, which has no host metadata) — a real
+  //    designation, once learned, is never clobbered by an enrollment that simply
+  //    didn't carry it.
   const existing = getHost(hostId);
   const record: HostRecord = {
     host_id: hostId,
@@ -514,6 +585,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     overlay_address: enrollment.overlay_address,
     proxy_port: proxyPort,
     protocol_version: enrollment.protocol_version,
+    served_grove_id: enrollment.served_grove_id ?? existing?.served_grove_id,
     created_at: existing?.created_at ?? new Date().toISOString(),
     projects: existing?.projects ?? enrollment.projects ?? [],
   };

@@ -22,6 +22,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
+  useIsTeamConfigTarget: () => false,
   useScopedConfig: () => ({
     effective: {
       agent: { tasks: {} },

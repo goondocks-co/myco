@@ -43,6 +43,99 @@ mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
   useActiveProjectSelection: () => null,
 }));
 
+// ---------------------------------------------------------------------------
+// HostTab now always mounts TeamSettingsPanel (Task 9), which reuses
+// AgentProviderCard/EmbeddingCard. Every field rendered through those forms
+// in THIS file is bound to a team target, so useIsTeamConfigTarget is fixed
+// true here (TeamConfigTargetProvider itself is stubbed to a passthrough —
+// there's no real React context wiring once the whole module is mocked).
+// The rest of this block mirrors settings-page.test.tsx's proven mock set
+// for mounting the same reused forms.
+// ---------------------------------------------------------------------------
+
+const teamEffective: Record<string, unknown> = {
+  agent: {
+    provider: { type: '', model: '' },
+    harness: '',
+    scheduled_tasks_enabled: false,
+    event_tasks_enabled: false,
+  },
+  embedding: { provider: 'ollama', model: 'bge-m3', base_url: '' },
+};
+let teamKeyHealth: 'ok' | 'missing_key' = 'missing_key';
+// Captures the `target` prop each TeamConfigTargetProvider mount receives —
+// lets the host-selection tests below assert which carrier a selector
+// choice actually produced, without a real React context.
+const teamTargetCalls: Array<{ carrier: { groveId: string; projectId: string } | null }> = [];
+
+mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
+  useIsTeamConfigTarget: () => true,
+  useTeamConfigTargetOrNull: () => ({ carrier: null }),
+  TeamConfigTargetProvider: ({ target, children }: { target: { carrier: { groveId: string; projectId: string } | null }; children: unknown }) => {
+    teamTargetCalls.push(target);
+    return children;
+  },
+  teamCarrierHeaders: () => ({}),
+  useScopedConfig: () => ({
+    effective: teamEffective,
+    local: {},
+    isLoading: false,
+    isError: false,
+    error: null,
+    isLocalOverride: () => false,
+    setField: vi.fn().mockResolvedValue(undefined),
+    setFields: vi.fn().mockResolvedValue(undefined),
+    resetField: vi.fn().mockResolvedValue(undefined),
+    resetFields: vi.fn().mockResolvedValue(undefined),
+    addToConfigList: vi.fn().mockResolvedValue(undefined),
+    removeFromConfigList: vi.fn().mockResolvedValue(undefined),
+    keyHealth: teamKeyHealth,
+  }),
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-providers', () => ({
+  useProviders: () => ({ data: { providers: [] }, isPending: false }),
+  useTestProvider: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false, isSuccess: false, isError: false }),
+  defaultBaseUrlForProvider: () => '',
+  maybeInferHarnessFromProviderType: () => 'claude-code-sdk',
+  REASONING_LEVELS: ['low', 'default', 'high'],
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-provider-secrets', () => ({
+  useProviderSecrets: () => ({ data: { secrets: {} } }),
+  useSaveProviderSecret: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteProviderSecret: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-provider-config-draft', () => ({
+  draftToNormalizedProviderConfig: () => ({}),
+  useProviderConfigDraft: () => ({
+    draft: { type: '', harness: '', model: '', localBackend: '', baseUrl: '', contextLength: undefined, reasoningLow: '', reasoningDefault: '', reasoningHigh: '' },
+    savedDraft: { type: '', harness: '', model: '', localBackend: '', baseUrl: '', contextLength: undefined, reasoningLow: '', reasoningDefault: '', reasoningHigh: '' },
+    isDirty: false,
+    clearDraft: vi.fn(),
+    resetDraft: vi.fn(),
+    handleHarnessChange: vi.fn(),
+    handleProviderChange: vi.fn(),
+    handleModelChange: vi.fn(),
+    handleLocalBackendChange: vi.fn(),
+    handleReasoningChange: vi.fn(),
+    handleBaseUrlChange: vi.fn(),
+    handleContextLengthChange: vi.fn(),
+  }),
+}));
+
+mock.module('../../packages/myco/ui/src/hooks/use-models', () => ({
+  useModels: () => ({ data: { models: [] }, isPending: false }),
+}));
+
+mock.module('../../packages/myco/ui/src/components/providers/ProviderModelSelector', () => ({
+  ProviderModelSelector: () => null,
+}));
+mock.module('../../packages/myco/ui/src/components/providers/ReasoningProfiles', () => ({
+  ReasoningProfiles: () => null,
+}));
+
 import { HostTab } from '../../packages/myco/ui/src/pages/Team/HostTab';
 
 function renderHostTab() {
@@ -59,6 +152,8 @@ function renderHostTab() {
 beforeEach(() => {
   statusFixture = { hosts: [], hint: null };
   drainFixture = { hosts: [] };
+  teamKeyHealth = 'missing_key';
+  teamTargetCalls.length = 0;
   joinMutateAsync.mockClear();
   leaveMutateAsync.mockClear();
   attachMutateAsync.mockClear();
@@ -164,6 +259,37 @@ describe('Joined hosts list', () => {
     expect(screen.getByRole('button', { name: /detach proj_x/i })).toBeInTheDocument();
   });
 
+  it('renders a warning on a project ref whose mismatch flag is set (UX spec §2(c)) — never silent', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+        protocol_version: 1, created_at: '2026-01-01T00:00:00Z',
+        projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: 'attach_grove_mismatch' }],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    expect(screen.getByTestId('project-ref-mismatch-proj_x')).toBeInTheDocument();
+    // Copy doctrine (decision-6a2ccfac): user vocabulary only, never the
+    // internal "Grove" mechanism name in a visible warning.
+    expect(screen.getByTestId('project-ref-mismatch-proj_x').textContent ?? '').not.toMatch(/grove/i);
+  });
+
+  it('renders no warning on a project ref whose mismatch flag is null', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+        protocol_version: 1, created_at: '2026-01-01T00:00:00Z',
+        projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: null }],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    expect(screen.queryByTestId('project-ref-mismatch-proj_x')).not.toBeInTheDocument();
+  });
+
   it('Detach calls useDetachProject with the project root + id', async () => {
     statusFixture = {
       hosts: [{
@@ -214,7 +340,7 @@ describe('AttachProjectPanel', () => {
     expect(screen.queryByText('Route a project through a Team Host')).not.toBeInTheDocument();
   });
 
-  it('takes an operator-typed project path (never a picker of already-locally-registered projects), and submits project_root/host_id/grove_id', async () => {
+  it('takes an operator-typed project path (never a picker of already-locally-registered projects), and submits project_root/host_id — no grove id (the daemon sources it from the host record)', async () => {
     statusFixture = {
       hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
@@ -229,12 +355,11 @@ describe('AttachProjectPanel', () => {
 
     fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/fresh' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_abc' } });
-    fireEvent.change(screen.getByLabelText('Grove id (on the host)'), { target: { value: 'grove_y' } });
     expect(submit).not.toBeDisabled();
     fireEvent.click(submit);
 
     await waitFor(() => expect(attachMutateAsync).toHaveBeenCalledWith({
-      project_root: '/checkout/fresh', host_id: 'host_abc', grove_id: 'grove_y',
+      project_root: '/checkout/fresh', host_id: 'host_abc',
     }));
     await waitFor(() => expect(screen.getByTestId('host-attach-success')).toBeInTheDocument());
   });
@@ -259,7 +384,6 @@ describe('AttachProjectPanel', () => {
 
     fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/used' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_abc' } });
-    fireEvent.change(screen.getByLabelText('Grove id (on the host)'), { target: { value: 'grove_y' } });
     fireEvent.click(screen.getByRole('button', { name: /attach project/i }));
 
     await waitFor(() => expect(screen.getByTestId('host-attach-error')).toHaveTextContent(/already has local Myco data/));
@@ -290,5 +414,114 @@ describe('DrainHealthPanel', () => {
 
     expect(screen.getByText(/2 pending \(18,234 bytes\) · 1 failing/)).toBeInTheDocument();
     expect(screen.getByText(/3 pending \(9 records\)/)).toBeInTheDocument();
+  });
+});
+
+describe('Team settings — per-host selection (Task 9)', () => {
+  it('with no joined hosts, mounts the panel targeting "This machine" and shows no selector', () => {
+    statusFixture = { hosts: [], hint: null };
+    renderHostTab();
+
+    expect(screen.getByText('Team settings')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Configure team for')).not.toBeInTheDocument();
+    expect(teamTargetCalls).toEqual([{ carrier: null }]);
+  });
+
+  it('a joined host with no attached project is left out of the selector (no carrier available)', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+        protocol_version: 1, created_at: '', projects: [],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    expect(screen.queryByLabelText('Configure team for')).not.toBeInTheDocument();
+    expect(teamTargetCalls).toEqual([{ carrier: null }]);
+  });
+
+  it('a joined host with an attached project appears in the selector alongside "This machine"', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+        protocol_version: 1, created_at: '',
+        projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout' }],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
+    const optionLabels = Array.from(select.options).map((o) => o.textContent);
+    expect(optionLabels).toEqual(['This machine', 'Mac Studio (host_abc)']);
+    // Defaults to "This machine" — no carrier — until the operator picks a host.
+    expect(select.value).toBe('self');
+    expect(teamTargetCalls).toEqual([{ carrier: null }]);
+  });
+
+  it('prefers a non-mismatched ref as the team-settings carrier when the first ref is mismatch-flagged', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+        protocol_version: 1, created_at: '',
+        projects: [
+          { grove_id: 'grove_stale', project_id: 'proj_stale', root: '/checkout-stale', mismatch: 'attach_grove_mismatch' },
+          { grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: null },
+        ],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'host_abc' } });
+
+    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { groveId: 'grove_x', projectId: 'proj_x' } });
+  });
+
+  it('falls back to the first ref as the team-settings carrier when every ref on the host is mismatch-flagged', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+        protocol_version: 1, created_at: '',
+        projects: [
+          { grove_id: 'grove_stale', project_id: 'proj_stale', root: '/checkout-stale', mismatch: 'attach_grove_mismatch' },
+        ],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'host_abc' } });
+
+    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { groveId: 'grove_stale', projectId: 'proj_stale' } });
+  });
+
+  it('selecting a joined host switches the team target to that host\'s carrier', async () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+        protocol_version: 1, created_at: '',
+        projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout' }],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'host_abc' } });
+
+    await waitFor(() => expect(select.value).toBe('host_abc'));
+    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { groveId: 'grove_x', projectId: 'proj_x' } });
+  });
+
+  it('surfaces keyHealth as the status line', () => {
+    teamKeyHealth = 'ok';
+    statusFixture = { hosts: [], hint: null };
+    renderHostTab();
+
+    expect(screen.getByText(/a team key is configured/i)).toBeInTheDocument();
   });
 });

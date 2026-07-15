@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
+import { EXTERNAL_MCP_DEFAULT_PORT, SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 import { AcceleratorConfigSchema, ReasoningLevelSchema, HarnessIdSchema } from '@myco/agent/schemas.js';
 import { ThinkingBudgetValueSchema, EffortValueSchema } from '@myco/agent/reasoning-tier-schemas.js';
 
@@ -535,6 +535,38 @@ const HostServeSchema = z.object({
    */
   host_id: z.string().nullable().default(null),
   label: z.string().nullable().default(null),
+  /**
+   * The one Grove this host serves to team members (v1: one served Grove per
+   * host, server-mode design spec §2). Null until the enable / `--serve` flow
+   * designates one. `enabled: true` with `served_grove_id: null` still
+   * RESOLVES here — fail-closed enforcement (a null designation serves
+   * nothing) is the dispatch filter's job, not this config's; this field
+   * only carries the designation and (at boot, `resolveHostServeConfig`)
+   * validates it names a Grove that actually exists. The disable branch of
+   * `writeHostServeConfig` clears it back to null. Designation is intended
+   * to be stable for a serving instance — the enable/re-designation wiring
+   * that enforces stability outside an explicit disable → re-enable cycle
+   * lands with the designation-lifecycle work; today `writeHostServeConfig`
+   * overwrites rather than merges this field, so that stability is not yet
+   * an enforced invariant.
+   */
+  served_grove_id: z.string().nullable().default(null),
+}).strict();
+
+/**
+ * External read-only MCP opt-in (machine tier, under `daemon.external_mcp`,
+ * server-mode design spec §7). `enabled` gates the dedicated Funnel-fronted
+ * listener; `port` is the fixed loopback port it binds (and the port a
+ * member points `tailscale funnel` at). Off by default — exposure is opt-in
+ * even on `--serve`. The listener re-binds from this persisted state at
+ * daemon boot when `enabled` is true, so a restart never leaves the toggle
+ * on with a dead port. The access token itself is NOT here — it lives in
+ * machine `secrets.env` under `HOST_EXTERNAL_MCP_TOKEN_SECRET` (secrets
+ * never in YAML).
+ */
+export const ExternalMcpSchema = z.object({
+  enabled: z.boolean().default(false),
+  port: z.number().int().min(1024).max(65535).default(EXTERNAL_MCP_DEFAULT_PORT),
 }).strict();
 
 /**
@@ -586,6 +618,13 @@ const MachineDaemonSchema = z.object({
    * the host bearer. Absent/invalid address → host-serve stays off with one log.
    */
   host_serve: HostServeSchema.default(() => HostServeSchema.parse({})),
+  /**
+   * External read-only MCP (Task 10, server-mode design spec §7) — this
+   * machine's opt-in to fronting its served Grove's read-only tool surface
+   * on the public internet via Tailscale Funnel. Machine tier for the same
+   * reason as `host_serve`: a per-machine daemon mechanic, never git-shared.
+   */
+  external_mcp: ExternalMcpSchema.default(() => ExternalMcpSchema.parse({})),
 });
 
 // NOTE: the registry block (`grove.default_grove_id`) used to live

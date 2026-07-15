@@ -15,7 +15,7 @@ import {
 } from '../grove/request-context.js';
 import { classifyRoute, refusalMcpBody } from '../host/routing.js';
 import { handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from '../daemon/host-proxy.js';
-import { isOverlayRequest } from '../daemon/host-serve.js';
+import { isOverlayRequest, servedGroveRefusal, type HostServeRuntime } from '../daemon/host-serve.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
@@ -43,6 +43,20 @@ export interface StreamableMcpHttpHandlerOptions {
    * silently never fires for the surface routed through this one.
    */
   hostProxyDeps?: Partial<HostProxyDeps>;
+  /**
+   * Team Host serve enablement (Task 2.3), threaded so the served-grove
+   * fail-closed filter (Task 2, `servedGroveRefusal`) can run at THIS
+   * dispatch chokepoint too — chokepoint 2 of the dual-homed filter (the
+   * first is `daemon/server.ts`'s router-route dispatch). `/mcp` bypasses
+   * router dispatch entirely (a raw route), so it must independently gate an
+   * overlay request's resolved Grove against `hostServe.servedGroveId`; a
+   * single-homed filter would leave the full mixed-op MCP tool surface
+   * (including `myco_spores`/`myco_plans` writes) open against any Grove the
+   * host owns. `null`/omitted on a non-host daemon — the overlay branch below
+   * never runs there (no overlay listener, so `isOverlayRequest` is always
+   * false), so the filter is inert rather than misapplied.
+   */
+  hostServe?: HostServeRuntime | null;
 }
 
 /**
@@ -227,12 +241,56 @@ export function createStreamableMcpHttpHandler(
       throw err;
     }
     if (!resolved.ok) {
+      // Team Host overlay posture: `resolved.body` (the `legacy_vault` 503,
+      // see `legacyVaultBody`) carries the host's absolute filesystem
+      // `vault_dir` plus local-user-oriented dashboard guidance — safe for a
+      // loopback caller on the operator's own machine, but a path-disclosure
+      // and posture leak to a bearer-holding overlay member, and it fires
+      // BEFORE the served-grove filter below ever runs. An overlay caller
+      // gets the same uniform 404 `not_found` refusal shape the filter emits
+      // a few lines down instead; loopback keeps the descriptive 503
+      // unchanged (see `(e) loopback requests are entirely unaffected` in
+      // `tests/daemon/host-serve-grove-filter.test.ts`).
+      if (isOverlayRequest(req)) {
+        res.statusCode = 404;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          error: 'not_found',
+          message: 'This request resolved no Grove; the host serves exactly one designated Grove over the overlay.',
+        }));
+        return;
+      }
       res.statusCode = 503;
       res.setHeader('Content-Type', 'application/json');
       res.end(resolved.body);
       return;
     }
     const { requestContext } = resolved;
+
+    // Team Host served-grove filter (Task 2), chokepoint 2 of 2 (see
+    // `daemon/server.ts` for chokepoint 1). `/mcp` is a raw route — it never
+    // passes through the router's chokepoint-1 check — so it must
+    // independently refuse an overlay request whose resolved Grove is not
+    // THE one Grove this host serves, immediately after context resolution
+    // and before any tool/protocol dispatch.
+    if (isOverlayRequest(req)) {
+      const groveRefusal = options.hostServe
+        ? servedGroveRefusal(options.hostServe, requestContext.groveId)
+        // Unreachable in practice (isOverlayRequest only marks requests when
+        // the daemon's overlay listener — which requires hostServe — is
+        // what admitted them), but fail closed rather than dispatch.
+        : { status: 503, body: { error: 'host_serve_unavailable' } };
+      if (groveRefusal) {
+        res.statusCode = groveRefusal.status;
+        res.setHeader('Content-Type', 'application/json');
+        if (groveRefusal.headers) {
+          for (const [key, value] of Object.entries(groveRefusal.headers)) res.setHeader(key, value);
+        }
+        res.end(JSON.stringify(groveRefusal.body));
+        return;
+      }
+    }
+
     const tools = createMycoTools(vaultDir, client, {
       requestContext,
       resolveDatabase: options.resolveDatabase,

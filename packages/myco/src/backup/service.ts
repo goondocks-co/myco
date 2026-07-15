@@ -22,7 +22,8 @@ import {
   type TableContentCounts,
 } from './engine.js';
 import { resolveGroveBackupDir, legacyGroveBackupLocations, migrationMarkerPath } from './location.js';
-import { loadGroveConfig } from '../config/loader.js';
+import { loadGroveConfig, updateTierConfigRaw } from '../config/loader.js';
+import { GroveConfigSchema } from '../config/schema.js';
 import { resolveMycoHome } from '../grove/paths.js';
 
 const MS_PER_HOUR = 60 * 60 * 1000;
@@ -143,6 +144,43 @@ export function isAutoBackupDue(params: {
   if (!recent) return true;
   const ageMs = (params.now ?? Date.now()) - new Date(recent.modified_at).getTime();
   return ageMs >= intervalMs;
+}
+
+/** The schema's own backup defaults — the single source of truth {@link seedGroveBackupDefaults}
+ *  writes onto disk, so a later schema-default change can never silently drift from what a
+ *  served Grove already has pinned. */
+const SCHEMA_BACKUP_DEFAULTS = GroveConfigSchema.parse({}).backup;
+
+/**
+ * Seed the default backup posture (`auto_interval_hours` + retention) onto a
+ * Grove's `grove.yaml` WHEN ABSENT — never overwrites a value already on disk,
+ * explicit or previously seeded. Server-mode design spec §8: "`--serve`
+ * enables scheduled backups for the served Grove by default." This makes that
+ * default durable and explicit in the served Grove's own config rather than
+ * relying on an implicit Zod default that could change out from under an
+ * already-serving box. Idempotent — safe to call on every designation (create
+ * or re-verify); a Grove that already has explicit backup config is left
+ * untouched. Writes through the canonical raw-doc tier writer
+ * (`updateTierConfigRaw`) — never a second YAML writer.
+ */
+export function seedGroveBackupDefaults(groveId: string, mycoHome: string = resolveMycoHome()): void {
+  updateTierConfigRaw({ kind: 'grove', groveId }, (raw) => {
+    const rawBackup = (raw.backup && typeof raw.backup === 'object' && !Array.isArray(raw.backup))
+      ? raw.backup as Record<string, unknown>
+      : {};
+    const rawRetention = (rawBackup.retention && typeof rawBackup.retention === 'object' && !Array.isArray(rawBackup.retention))
+      ? rawBackup.retention as Record<string, unknown>
+      : {};
+
+    const nextRetention: Record<string, unknown> = { ...rawRetention };
+    if (nextRetention.keep_daily === undefined) nextRetention.keep_daily = SCHEMA_BACKUP_DEFAULTS.retention.keep_daily;
+    if (nextRetention.keep_weekly === undefined) nextRetention.keep_weekly = SCHEMA_BACKUP_DEFAULTS.retention.keep_weekly;
+
+    const nextBackup: Record<string, unknown> = { ...rawBackup, retention: nextRetention };
+    if (nextBackup.auto_interval_hours === undefined) nextBackup.auto_interval_hours = SCHEMA_BACKUP_DEFAULTS.auto_interval_hours;
+
+    return { ...raw, backup: nextBackup };
+  }, { mycoHome });
 }
 
 function resolveBackupFile(

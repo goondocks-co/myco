@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Server, Link2, AlertTriangle, Activity } from 'lucide-react';
 import { Panel } from '../../components/ui/panel';
 import { IconEyebrow } from '../../components/ui/icon-eyebrow';
@@ -6,8 +6,10 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { AccentSurface } from '../../components/ui/accent-surface';
 import { cn } from '../../lib/cn';
-import { membershipErrorCopy } from '../../lib/membership-copy';
+import { ATTACH_MISMATCH_WARNING_COPY, membershipErrorCopy } from '../../lib/membership-copy';
 import { useActiveProjectSelection } from '../../hooks/use-project-selection';
+import { TeamSettingsPanel } from '../../components/team/TeamSettingsPanel';
+import type { TeamConfigTarget } from '../../hooks/use-scoped-config';
 import {
   useHostMembershipStatus,
   useJoinHost,
@@ -198,6 +200,16 @@ function ProjectRefRow({ hostId, projectRef }: { hostId: string; projectRef: Hos
           {detach.isPending ? 'Detaching…' : 'Detach'}
         </button>
       </div>
+      {projectRef.mismatch === 'attach_grove_mismatch' && (
+        <p
+          className="flex items-center gap-1 text-xs text-ochre m-0"
+          role="status"
+          data-testid={`project-ref-mismatch-${projectRef.project_id}`}
+        >
+          <AlertTriangle className="size-3 shrink-0" aria-hidden />
+          {ATTACH_MISMATCH_WARNING_COPY}
+        </p>
+      )}
       {error && <p className="text-xs text-terracotta m-0">{error}</p>}
     </div>
   );
@@ -261,21 +273,21 @@ function HostCard({ host }: { host: HostMembershipHost }) {
 // Grove state and would be refused with `ProjectRegisteredLocallyError`).
 // The operator types the checkout path directly, exactly like `myco attach
 // <project>` — same "typed, honestly unverified" posture as the join form's
-// host id, and the same principle applied to the Grove id (no local source
-// knows a host's Grove list; WS5/E-0 territory).
+// host id. There is no Grove picker: a host serves exactly one designated
+// Grove and self-reports it at join, so attach sources it from the joined
+// host record — the operator never supplies one.
 // ---------------------------------------------------------------------------
 
 function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
   const attach = useAttachProject();
   const [projectRoot, setProjectRoot] = useState('');
   const [hostId, setHostId] = useState('');
-  const [groveId, setGroveId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   if (hosts.length === 0) return null;
 
-  const canSubmit = Boolean(projectRoot.trim() && hostId.trim() && groveId.trim()) && !attach.isPending;
+  const canSubmit = Boolean(projectRoot.trim() && hostId.trim()) && !attach.isPending;
 
   const handleAttach = async () => {
     setError(null);
@@ -284,13 +296,11 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
       const result = await attach.mutateAsync({
         project_root: projectRoot.trim(),
         host_id: hostId.trim(),
-        grove_id: groveId.trim(),
       });
       setSuccess(result.already_attached
         ? `${result.project_id} is already attached to ${result.host_label}.`
         : `Project attached — new work now routes to ${result.host_label}.`);
       setProjectRoot('');
-      setGroveId('');
     } catch (err) {
       setError(membershipErrorCopy(err));
     }
@@ -300,8 +310,8 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
     <Panel tone="sage" eyebrow={<IconEyebrow Icon={Link2}>Attach</IconEyebrow>} title="Route a project through a Team Host">
       <p className="text-xs text-on-surface-variant m-0 mb-3">
         Attach a checkout that hasn't been used with Myco yet — going forward only, so a project that already has
-        local Grove history is refused (migrate it off its local Grove first). The path and Grove id below aren't
-        verified here; get the Grove id from the host operator or the host's Groves page.
+        local Grove history is refused (migrate it off its local Grove first). The path below isn't verified here.
+        The host's served Grove is used automatically — no Grove id to supply.
       </p>
       <div className="flex flex-col gap-2">
         <label className={labelClass} htmlFor="host-attach-project">Project path</label>
@@ -311,8 +321,6 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
           <option value="">Select a joined host…</option>
           {hosts.map((h) => <option key={h.host_id} value={h.host_id}>{h.label} ({h.host_id})</option>)}
         </select>
-        <label className={labelClass} htmlFor="host-attach-grove">Grove id (on the host)</label>
-        <input id="host-attach-grove" className={inputClass} value={groveId} onChange={(e) => setGroveId(e.target.value)} placeholder="grove_…" />
         <div className="flex justify-end">
           <Button size="sm" disabled={!canSubmit} onClick={handleAttach}>
             {attach.isPending ? 'Attaching…' : 'Attach project'}
@@ -322,6 +330,80 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
       {error && <p className="text-sm text-terracotta m-0 mt-2" data-testid="host-attach-error">{error}</p>}
       {success && <p className="text-sm text-sage m-0 mt-2" data-testid="host-attach-success">{success}</p>}
     </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Team settings — per-host selection (spec §6). Previously HostTab listed
+// hosts with no notion of "which host am I configuring." "This machine" is
+// always offered first (this box may itself be a Team Host); each joined
+// host with at least one attached project is offered too, using that host's
+// FIRST attach ref purely as the wire carrier that routes a team-write
+// request to it (`classifyRoute` resolves the destination host from the
+// carrier project's attach ref — there is no per-request host header). The
+// value edited is grove-wide, not project-specific, so which attached
+// project carries the request makes no functional difference — PROVIDED the
+// carrier itself still resolves. A ref flagged `mismatch` 404s the whole
+// panel (its attach record points at a Grove the host no longer serves), so
+// the carrier prefers the first non-mismatched ref and only falls back to
+// `projects[0]` when every ref on the host is flagged. A joined host with no
+// attached project yet has no carrier available and is left out — attach a
+// project to it first.
+// ---------------------------------------------------------------------------
+
+const SELF_TEAM_TARGET_ID = 'self';
+
+interface TeamSettingsOption {
+  id: string;
+  label: string;
+  target: TeamConfigTarget;
+}
+
+function teamSettingsOptions(hosts: HostMembershipHost[]): TeamSettingsOption[] {
+  const options: TeamSettingsOption[] = [
+    { id: SELF_TEAM_TARGET_ID, label: 'This machine', target: { carrier: null } },
+  ];
+  for (const host of hosts) {
+    const ref = host.projects.find((p) => p.mismatch !== 'attach_grove_mismatch') ?? host.projects[0];
+    if (!ref) continue;
+    options.push({
+      // Distinct from the plain host label used elsewhere on this page
+      // (e.g. HostCard) so the two never collide as exact-text matches.
+      id: host.host_id,
+      label: `${host.label} (${host.host_id})`,
+      target: { carrier: { groveId: ref.grove_id, projectId: ref.project_id } },
+    });
+  }
+  return options;
+}
+
+function TeamSettingsSection({ hosts }: { hosts: HostMembershipHost[] }) {
+  const options = useMemo(() => teamSettingsOptions(hosts), [hosts]);
+  const [selectedId, setSelectedId] = useState(SELF_TEAM_TARGET_ID);
+  const selected = options.find((o) => o.id === selectedId) ?? options[0]!;
+
+  return (
+    <div className="flex flex-col gap-3">
+      {options.length > 1 && (
+        <div className="flex items-center gap-2">
+          <label className={labelClass} htmlFor="team-settings-host">Configure team for</label>
+          <select
+            id="team-settings-host"
+            className={inputClass}
+            value={selected.id}
+            onChange={(e) => setSelectedId(e.target.value)}
+          >
+            {options.map((o) => (
+              <option key={o.id} value={o.id}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
+      {/* Remount on target change — the reused forms hold local draft state
+          keyed to whatever grove they last loaded; a fresh mount avoids a
+          stale draft bleeding across hosts. */}
+      <TeamSettingsPanel key={selected.id} target={selected.target} />
+    </div>
   );
 }
 
@@ -352,6 +434,7 @@ export function HostTab() {
       )}
       <AttachProjectPanel hosts={hosts} />
       {hosts.length > 0 && <DrainHealthPanel />}
+      <TeamSettingsSection hosts={hosts} />
     </div>
   );
 }
