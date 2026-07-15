@@ -3,7 +3,7 @@ import type { SymbiontAdapter } from '../symbionts/adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
 import fs from 'node:fs';
 import {
-  listBatchesBySession,
+  listMainThreadBatchesBySession,
   listBatchesBySessionThread,
   updateBatchKind,
   insertBatchStateless,
@@ -396,11 +396,13 @@ export class TranscriptMiner {
       });
     }
     // Bucket/reclassify source: a reattribution mine touches ONLY this
-    // thread's rows (thread_id = childThreadId), never the parent's
-    // main-thread batches (thread_id IS NULL).
+    // thread's rows (thread_id = childThreadId); a main-thread mine touches
+    // ONLY thread_id IS NULL rows. Neither side can ever see the other's
+    // batches, so a 60-char prompt-prefix collision between a thread row and
+    // a main-thread prompt can't cross-contaminate via buildPrefixBuckets.
     const batches = (reattribute
       ? listBatchesBySessionThread(targetSessionId, threadId!)
-      : listBatchesBySession(sessionId, { scope: { kind: 'all' } })
+      : listMainThreadBatchesBySession(sessionId, { scope: { kind: 'all' } })
     ).sort((a, b) => a.id - b.id);
 
     let reclassified = 0;
@@ -563,7 +565,7 @@ export class TranscriptMiner {
     // would collide numbers between the parent's main thread and its sub-agent
     // threads (§3.1). Thread rows are ordered by id, not prompt_number.
     if (!reattribute && inserted > 0) {
-      const allBatches = listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
+      const allBatches = listMainThreadBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
       const renumber = buildPrefixBuckets(allBatches);
       const reservedNumbers = new Set<number>();
       // First pass: walk records to identify which batches WILL be matched,
@@ -685,10 +687,11 @@ export class TranscriptMiner {
     if (imageTurns.length === 0) return;
 
     // Thread-scoped when mining a sub-agent thread so images match only that
-    // thread's batches, never the parent's main-thread rows.
+    // thread's batches; main-thread scoped otherwise so a thread row can
+    // never absorb a main-thread image match.
     const batches = (threadId != null
       ? listBatchesBySessionThread(sessionId, threadId)
-      : listBatchesBySession(sessionId, { scope: { kind: 'all' } })
+      : listMainThreadBatchesBySession(sessionId, { scope: { kind: 'all' } })
     ).sort((a, b) => a.id - b.id);
     const buckets = buildPrefixBuckets(batches);
     for (let i = 0; i < imageTurns.length; i++) {

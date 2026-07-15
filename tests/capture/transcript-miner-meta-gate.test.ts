@@ -21,7 +21,7 @@ import { seedSession } from '../helpers/sessions.js';
 import { TranscriptMiner, type MinerLogger } from '@myco/capture/transcript-miner.js';
 import { extractUserPromptRecordsWithDrops } from '@myco/capture/prompt-kind.js';
 import { evaluateUserPromptRules } from '@myco/hooks/capture-rules.js';
-import { listBatchesBySession, listBatchesBySessionThread } from '@myco/db/queries/batches.js';
+import { listBatchesBySession, listBatchesBySessionThread, PROMPT_PREFIX_MATCH_CHARS } from '@myco/db/queries/batches.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import fs from 'node:fs';
@@ -476,5 +476,90 @@ describe('walker carve-out — sub-agent reattribution masks only the sub-agent 
     expect(walked.records.map((r) => r.text)).toEqual(['reviewer turn']);
     expect(walked.records.every((r) => r.origin === 'agent_dispatch')).toBe(true);
     expect(walked.droppedText).toEqual(['# AGENTS.md instructions\n\ncontext']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Final-review finding: main-thread mining must structurally exclude thread
+// rows (symmetry with the reattribution branch, which is already
+// thread-scoped via listBatchesBySessionThread).
+// ---------------------------------------------------------------------------
+
+describe('TranscriptMiner — main-thread mining structurally excludes thread rows (symmetry fix)', () => {
+  const PARENT = 'parent-symmetry';
+  const CHILD = 'child-symmetry-thread';
+
+  let tmpDir: string;
+  let parentPath: string;
+  let childPath: string;
+
+  beforeAll(() => { setupTestDb(); });
+  afterAll(teardownTestDb);
+  beforeEach(() => {
+    cleanTestDb();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'main-thread-symmetry-test-'));
+    parentPath = path.join(tmpDir, 'parent.jsonl');
+    childPath = path.join(tmpDir, 'child.jsonl');
+    seedSession({ id: PARENT, agent: 'codex' });
+  });
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  // A thread-row prompt and a later main-thread prompt share the exact
+  // PROMPT_PREFIX_MATCH_CHARS-length prefix `buildPrefixBuckets` keys on,
+  // but diverge after it — the collision shape the review finding describes.
+  const SHARED_PREFIX = 'Q'.repeat(PROMPT_PREFIX_MATCH_CHARS);
+  const threadPrompt = `${SHARED_PREFIX} — child thread turn`;
+  const parentPrompt = `${SHARED_PREFIX} — parent human turn`;
+
+  it('does not reclassify/re-parent a thread row when a later main-thread prompt collides on its 60-char prefix', () => {
+    // 1. Mine a child sub-agent transcript into the parent as a thread batch.
+    writeTranscript(childPath, [
+      subagentMetaEntry({ childId: CHILD, parentThreadId: PARENT, agentNickname: 'Reviewer' }),
+      codexUserEntry(threadPrompt, '2026-07-12T14:51:21Z'),
+      codexAssistantEntry('Thread turn handled.', '2026-07-12T14:51:40Z'),
+    ]);
+    new TranscriptMiner().reconcileAndAttributeResponses(CHILD, { agent: 'codex', transcriptPath: childPath });
+
+    const threadRowsBefore = listBatchesBySessionThread(PARENT, CHILD);
+    expect(threadRowsBefore).toHaveLength(1);
+    const before = threadRowsBefore[0];
+    expect(before.user_prompt).toBe(threadPrompt);
+    expect(before.origin).toBe('agent_dispatch');
+    expect(before.kind).toBe('initial');
+
+    // 2. A separate, LATER main-thread transcript introduces a brand-new
+    // human prompt whose first 60 chars collide with the thread row's
+    // prefix key. Before the fix, buildPrefixBuckets sourced from
+    // listBatchesBySession (every thread's rows) could hand this record's
+    // `buckets.consume` call the thread row instead of treating it as new —
+    // updateBatchKind would then silently re-parent/reclassify the thread
+    // row, and the parent's real prompt would never get its own batch.
+    writeTranscript(parentPath, [
+      sessionMetaEntry('vscode'),
+      codexUserEntry(parentPrompt, '2026-07-12T15:00:00Z'),
+      codexAssistantEntry('Parent turn handled.', '2026-07-12T15:00:30Z'),
+    ]);
+    const result = new TranscriptMiner().reconcileAndAttributeResponses(PARENT, {
+      agent: 'codex',
+      transcriptPath: parentPath,
+    });
+    expect(result.skippedReason).toBeUndefined();
+
+    // The thread row is untouched — full-row equal to its pre-mine snapshot
+    // (origin, kind, thread_id, parent_prompt_batch_id, everything).
+    const threadRowsAfter = listBatchesBySessionThread(PARENT, CHILD);
+    expect(threadRowsAfter).toHaveLength(1);
+    expect(threadRowsAfter[0]).toEqual(before);
+
+    // The parent's own prompt gets matched to its own bucket: a genuine new
+    // main-thread batch, not a hijacked thread row.
+    const mainRows = mainThreadRows(PARENT);
+    const parentBatch = mainRows.find((r) => r.user_prompt === parentPrompt);
+    expect(parentBatch).toBeDefined();
+    expect(parentBatch!.thread_id).toBeNull();
+    expect(parentBatch!.origin).toBe('human');
+    expect(parentBatch!.kind).toBe('initial');
+    expect(parentBatch!.response_summary).toBe('Parent turn handled.');
+    expect(result.inserted).toBe(1);
   });
 });

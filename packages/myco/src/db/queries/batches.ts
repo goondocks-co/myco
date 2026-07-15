@@ -1184,6 +1184,55 @@ export function listBatchesBySession(
 }
 
 /**
+ * List every main-thread batch for a session — the non-reattribute mining
+ * counterpart of `listBatchesBySessionThread`. Structurally excludes every
+ * sub-agent thread row (`thread_id IS NOT NULL`) via `AND thread_id IS NULL`,
+ * mirroring `listBatchesBySession` in every other respect (options, column
+ * set, ordering).
+ *
+ * Why this exists: the transcript miner's non-reattribute (main-thread) mine
+ * used to source its bucket/reclassify, renumber, and image-capture batches
+ * from `listBatchesBySession`, which returns every thread's rows. Once a
+ * parent session accumulates sub-agent thread batches, a 60-char
+ * prompt-prefix collision between a thread row and a new main-thread
+ * transcript prompt could let `buildPrefixBuckets` hand the main-thread mine
+ * a THREAD row, which `updateBatchKind`/`setBatchPromptNumber` would then
+ * silently re-parent or renumber onto a main-thread anchor. The reattribute
+ * branch was already thread-scoped (`listBatchesBySessionThread`); this
+ * gives the main-thread branch the symmetric guarantee at the SQL layer
+ * instead of relying on prefix-bucket luck.
+ */
+export function listMainThreadBatchesBySession(
+  sessionId: string,
+  options: ListBatchesBySessionOptions,
+): BatchRow[] {
+  const db = getDatabase();
+
+  const limit = options.limit ?? BATCHES_DEFAULT_LIMIT;
+  const offset = options.offset ?? 0;
+  const conditions = ['session_id = ?', 'thread_id IS NULL'];
+  const params: unknown[] = [sessionId];
+  appendProjectCondition(conditions, params, options.scope);
+
+  if (options.origins && options.origins.length > 0) {
+    const placeholders = options.origins.map(() => '?').join(', ');
+    conditions.push(`origin IN (${placeholders})`);
+    params.push(...options.origins);
+  }
+
+  const rows = db.prepare(
+    `SELECT ${SELECT_COLUMNS}
+     FROM prompt_batches
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY prompt_number ASC
+     LIMIT ?
+     OFFSET ?`,
+  ).all(...params, limit, offset) as Record<string, unknown>[];
+
+  return rows.map(toBatchRow);
+}
+
+/**
  * List every batch for one sub-agent thread within a session, in transcript
  * order — the thread-mining counterpart of `listBatchesBySession`. Unlike
  * that function, this is unconditionally scoped to a single `thread_id` and
