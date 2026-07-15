@@ -42,7 +42,12 @@ describe('cursor.yaml capture rules', () => {
       prompt: wrapped,
       transcriptPath: '/Users/x/.claude/projects/p/session.jsonl',
     });
-    expect(result).toEqual({ action: 'pass', prompt: wrapped });
+    // Cursor's strip_envelope rewrite does not cross the agent boundary — the
+    // prompt text itself is untouched. But the whole message is a single
+    // unrecognized XML envelope, so claude-code's own fail-safe
+    // (prompt_is_enclosing_envelope, ordered last) classifies it non-human
+    // rather than letting it leak through as a human prompt.
+    expect(result).toEqual({ action: 'pass', prompt: wrapped, origin: 'system' });
   });
 
   it('leaves unwrapped cursor prompts unchanged', () => {

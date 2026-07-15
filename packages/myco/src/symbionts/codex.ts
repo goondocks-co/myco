@@ -1,14 +1,17 @@
 import type { SymbiontAdapter } from './adapter.js';
 import { CodexJsonlParser } from './parsers/codex-jsonl.js';
-import { systemEnvelopePrefixes } from './envelope-prefixes.js';
+import { systemEnvelopePrefixes, systemEnvelopeTags } from './envelope-prefixes.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 const TRANSCRIPT_BASE = path.join(os.homedir(), '.codex');
-// Envelope prefixes come from the codex manifest's capture rules (via the
-// generated hook config) — the parser must never hardcode prompt strings.
-const codexParser = new CodexJsonlParser({ envelopePrefixes: systemEnvelopePrefixes('codex') });
+// Envelope prefixes/tags come from the codex manifest's capture rules (via
+// the generated hook config) — the parser must never hardcode prompt strings.
+const codexParser = new CodexJsonlParser({
+  envelopePrefixes: systemEnvelopePrefixes('codex'),
+  envelopeTags: systemEnvelopeTags('codex'),
+});
 
 /**
  * Find a Codex transcript file by session ID.

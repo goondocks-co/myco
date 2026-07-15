@@ -7,7 +7,7 @@ import { createEventDispatcher } from '@myco/daemon/event-dispatch.js';
 import { SessionRegistry } from '@myco/daemon/lifecycle.js';
 import { PowerManager } from '@myco/daemon/power.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
-import { getSession } from '@myco/db/queries/sessions.js';
+import { getSession, upsertSession, STATUS_COMPLETED } from '@myco/db/queries/sessions.js';
 import { countActivities } from '@myco/db/queries/activities.js';
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
@@ -483,6 +483,55 @@ describe('createEventDispatcher', () => {
 
       // The prompt_batch landed (the original failure mode).
       expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE }).length).toBeGreaterThan(0);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('reactivation on any event type', () => {
+    // Regression: reactivateSessionIfCompleted used to run only from the
+    // user_prompt branch, so a session kept alive purely by tool_use events
+    // (e.g. a Codex agent-team orchestrator polling sub-agents) stayed
+    // status='completed' after the stale sweep closed it, and got
+    // prematurely swept up by intelligence-task queries that filter on
+    // session status.
+    it('a tool_use event reactivates a completed session (registered case)', async () => {
+      const { handler, registry, logger, vaultDir } = makeHandler();
+      const sessionId = 'tool-use-reactivate-001';
+
+      // Seed a completed session that is ALSO in the in-memory registry —
+      // the common stale-sweep case, where the daemon never restarted so
+      // the registry still holds the session even though the stale sweep
+      // flipped the DB row to 'completed' underneath it.
+      upsertSession({
+        id: sessionId,
+        agent: 'codex',
+        status: STATUS_COMPLETED,
+        started_at: Math.floor(Date.now() / 1000) - 120,
+        created_at: Math.floor(Date.now() / 1000) - 120,
+        ended_at: Math.floor(Date.now() / 1000) - 60,
+        machine_id: 'local',
+      });
+      registry.register(sessionId, { started_at: new Date().toISOString() });
+      expect(getSession(sessionId, ALL_PROJECTS_SCOPE)?.status).toBe(STATUS_COMPLETED);
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'tool_use',
+          session_id: sessionId,
+          agent: 'codex',
+          tool_name: 'Bash',
+          tool_input: { command: 'echo hi' },
+        },
+        query: {},
+        params: {},
+        pathname: '/events',
+      });
+
+      expect(res.body).toMatchObject({ ok: true });
+      expect(getSession(sessionId, ALL_PROJECTS_SCOPE)?.status).toBe('active');
 
       logger.close();
       fs.rmSync(vaultDir, { recursive: true, force: true });

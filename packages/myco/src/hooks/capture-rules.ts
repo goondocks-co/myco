@@ -26,6 +26,37 @@ import { HOOK_CONFIG } from './hook-config.generated.js';
 import { getAtPath } from '../utils/dot-path.js';
 import { DEFAULT_SYMBIONT_NAME } from '../constants.js';
 
+/**
+ * Matches the tag NAME at the start of the (trimmed) prompt, ignoring attributes,
+ * so a tag with attributes like `from="…"` still matches. Start-match (not
+ * whole-message) so it also catches prefix-style envelopes. Returns true if
+ * `prompt` begins with `<tag` for any tag in `tags`.
+ */
+export function envelopeTagAtStart(prompt: string, tags: readonly string[]): boolean {
+  const s = prompt.trimStart();
+  for (const tag of tags) {
+    if (!s.startsWith('<' + tag)) continue;
+    const next = s.charAt(tag.length + 1);
+    if (next === '>' || next === '/' || next === '' || /\s/.test(next)) return true;
+  }
+  return false;
+}
+
+// Whole trimmed message is one balanced (or self-closing) envelope. Greedy to
+// the LAST matching close-tag (nested same-tag whole-message envelopes match);
+// attributes containing '>' are handled for the open/close form; the self-closing
+// form does not support '>' inside attributes (fails toward human, which is safe);
+// Known limitation: two sibling same-name tags concatenated also match and would
+// be classified non-human under the fail-safe — an accepted case within the
+// fail-safe's hide-by-default tradeoff (content is preserved, just hidden).
+// No catastrophic backtracking.
+const ENCLOSING_ENVELOPE = /^<([A-Za-z][\w-]*)(\s[^>]*)?>[\s\S]*<\/\1>$|^<([A-Za-z][\w-]*)(\s[^>]*)?\/>$/;
+
+/** True when the ENTIRE trimmed prompt is a single XML envelope (fail-safe classifier). */
+export function isEnclosingEnvelope(prompt: string): boolean {
+  return ENCLOSING_ENVELOPE.test(prompt.trim());
+}
+
 /** Structured context a rule can match against at UserPromptSubmit time. */
 export interface UserPromptRuleContext {
   /** The user prompt text as received from the hook. */
@@ -266,6 +297,8 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
     transcript_path_missing,
     transcript_meta_field_exists,
     transcript_meta_field_equals,
+    prompt_envelope_tag_in,
+    prompt_is_enclosing_envelope,
   } = rule.when;
 
   // Refuse rules with no conditions — prevents a mistyped YAML file from
@@ -275,7 +308,9 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
     prompt_contains !== undefined ||
     transcript_path_missing !== undefined ||
     transcript_meta_field_exists !== undefined ||
-    transcript_meta_field_equals !== undefined;
+    transcript_meta_field_equals !== undefined ||
+    prompt_envelope_tag_in !== undefined ||
+    prompt_is_enclosing_envelope !== undefined;
   if (!hasAnyCondition) return false;
 
   if (prompt_starts_with && !ctx.prompt.startsWith(prompt_starts_with)) return false;
@@ -297,6 +332,13 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
     if (getAtPath(ctx.transcriptMeta, transcript_meta_field_equals.path) !== transcript_meta_field_equals.value) {
       return false;
     }
+  }
+
+  if (prompt_envelope_tag_in !== undefined) {
+    if (!envelopeTagAtStart(ctx.prompt, prompt_envelope_tag_in)) return false;
+  }
+  if (prompt_is_enclosing_envelope !== undefined) {
+    if (prompt_is_enclosing_envelope !== isEnclosingEnvelope(ctx.prompt)) return false;
   }
 
   return true;

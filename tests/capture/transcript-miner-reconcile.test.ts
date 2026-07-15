@@ -174,6 +174,57 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(after[3].kind).toBe('initial');
   });
 
+  // Regression for the renamed agent-team envelope (successor to
+  // <teammate-message>): Claude Code injects each teammate report into the
+  // lead's transcript as a `type: user` entry sharing the LEAD's current-turn
+  // promptId. The generic `user_prompt` shape dedupes by promptId, so
+  // without a dedicated `agent_message` shape (keyed on the `<agent-message`
+  // prefix, deduped by `uuid`) every dispatch collapses into the already
+  // hook-captured lead batch and never becomes its own row — this proves the
+  // mining path recovers both dispatches as distinct agent_dispatch batches.
+  it('recovers each <agent-message> dispatch as its own agent_dispatch batch despite sharing the lead promptId', () => {
+    handleUserPrompt('s-reconcile', 'lead asks something', { kind: 'initial' });
+
+    const sharedPromptId = 'lead-turn-1';
+    const events = [
+      { type: 'user', promptId: sharedPromptId, uuid: 'uuid-lead-prompt', message: { role: 'user', content: 'lead asks something' } },
+      {
+        type: 'user',
+        promptId: sharedPromptId,
+        uuid: 'uuid-agent-message-1',
+        message: { role: 'user', content: '<agent-message from="rev-consplan">first verdict</agent-message>' },
+      },
+      {
+        type: 'user',
+        promptId: sharedPromptId,
+        uuid: 'uuid-agent-message-2',
+        message: { role: 'user', content: '<agent-message from="rev-consplan">second verdict</agent-message>' },
+      },
+    ];
+    fs.writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const miner = new TranscriptMiner();
+    const result = miner.reconcileBatchKinds('s-reconcile', {
+      agent: 'claude-code',
+      transcriptPath,
+    });
+
+    // Both agent-message dispatches are new rows — neither matches the
+    // already-captured lead batch by text, and the shared promptId must not
+    // suppress either one.
+    expect(result.inserted).toBe(2);
+    expect(result.errors).toEqual([]);
+
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
+    expect(after).toHaveLength(3);
+    expect(after[0].origin).toBe('human');
+    expect(after[0].user_prompt).toBe('lead asks something');
+    expect(after[1].origin).toBe('agent_dispatch');
+    expect(after[1].user_prompt).toContain('first verdict');
+    expect(after[2].origin).toBe('agent_dispatch');
+    expect(after[2].user_prompt).toContain('second verdict');
+  });
+
   it('attributes Copilot responses across sourced user.message records', () => {
     const sessionId = 's-copilot-sourced-user-message';
     seedSession({ id: sessionId, agent: 'copilot' });
