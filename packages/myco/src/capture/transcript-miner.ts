@@ -4,6 +4,7 @@ import { PROMPT_PREVIEW_CHARS } from '../constants.js';
 import fs from 'node:fs';
 import {
   listBatchesBySession,
+  listBatchesBySessionThread,
   updateBatchKind,
   insertBatchStateless,
   setBatchPromptNumber,
@@ -20,9 +21,10 @@ import { extractUserPromptRecordsWithDrops, type UserPromptRecord } from './prom
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
-import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
+import { getSession } from '../db/queries/sessions.js';
+import { assertGroveProjectId, ALL_PROJECTS_SCOPE, type GroveProjectId } from '@myco/grove/ids.js';
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
-import { evaluateSessionCaptureRules } from '../hooks/capture-rules.js';
+import { evaluateSessionCaptureRules, resolveSubagentThread } from '../hooks/capture-rules.js';
 import { stripPlanTagEnvelopes } from '../plans/tag-envelopes.js';
 
 function promptPrefix(text: string | null | undefined): string {
@@ -156,6 +158,22 @@ interface TranscriptMetaMemoEntry {
   meta: Record<string, unknown> | undefined;
   /** Drop reason from transcript-level rules, or null when mining may proceed. */
   dropReason: string | null;
+  /**
+   * Sub-agent thread reattribution target. When non-null this transcript is a
+   * resolved sub-agent thread: its turns are mined INTO this PARENT session as
+   * thread-scoped batches rather than dropped. Derived from the transcript's
+   * own meta (never the sessionId argument), so it is a stable property of the
+   * file — safe to memoize. Parent-EXISTENCE is checked per reconcile call and
+   * deliberately NOT memoized, so a late-registering parent isn't stuck behind
+   * a stale skip.
+   */
+  reattributeTo: string | null;
+  /** The sub-agent thread's own id (thread scope for every insert/query). */
+  threadId: string | null;
+  /** Friendly thread label for display (nickname / agent path segment). */
+  threadLabel: string | null;
+  /** Origin stamped on every reattributed record (always agent_dispatch when set). */
+  originOverride: PromptBatchOrigin | null;
 }
 
 export class TranscriptMiner {
@@ -198,23 +216,59 @@ export class TranscriptMiner {
     if (memo && memo.agent === input.agent) return memo;
 
     const meta = readTranscriptMeta(input.transcriptPath) ?? undefined;
-    const decision = evaluateSessionCaptureRules(input.agent, {
-      transcriptPath: input.transcriptPath,
-      transcriptMeta: meta,
-    });
-    const dropReason = decision.action === 'drop' ? (decision.reason ?? 'transcript-drop-rule') : null;
-    const entry: TranscriptMetaMemoEntry = { agent: input.agent, meta, dropReason };
+
+    // Sub-agent thread reattribution takes precedence over the drop gate: a
+    // transcript whose meta resolves BOTH a parent thread id AND the child's
+    // own thread id is mined INTO the parent session as thread-scoped
+    // agent_dispatch batches rather than dropped. Requiring the thread id too
+    // keeps every reattributed row properly thread-scoped — a null thread_id
+    // would leak the rows into the parent's main thread. When the parent
+    // resolves but the thread id doesn't (a manifest misconfiguration), fall
+    // through to the drop gate, which is the safe main-thread-protecting
+    // behavior. `resolveSubagentThread` returns null when this agent declares
+    // no `subagentParentPath` or the path doesn't resolve — the exact
+    // unresolvable-parent case that must keep dropping.
+    const thread = resolveSubagentThread(input.agent, meta);
+    let entry: TranscriptMetaMemoEntry;
+    if (thread && thread.threadId) {
+      entry = {
+        agent: input.agent,
+        meta,
+        dropReason: null,
+        reattributeTo: thread.parentSessionId,
+        threadId: thread.threadId,
+        threadLabel: thread.threadLabel,
+        originOverride: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH,
+      };
+    } else {
+      const decision = evaluateSessionCaptureRules(input.agent, {
+        transcriptPath: input.transcriptPath,
+        transcriptMeta: meta,
+      });
+      const dropReason = decision.action === 'drop' ? (decision.reason ?? 'transcript-drop-rule') : null;
+      entry = {
+        agent: input.agent,
+        meta,
+        dropReason,
+        reattributeTo: null,
+        threadId: null,
+        threadLabel: null,
+        originOverride: null,
+      };
+    }
 
     // Only memoize once the meta line is readable — before the agent
-    // flushes the file, a pass decision would be premature and sticky.
+    // flushes the file, a decision would be premature and sticky.
     if (meta !== undefined) {
       if (this.metaMemo.size >= META_MEMO_MAX_ENTRIES) this.metaMemo.clear();
       this.metaMemo.set(input.transcriptPath, entry);
-      if (dropReason) {
+      // The skip log fires only for a real drop — a reattributed sub-agent
+      // thread is mined, not skipped.
+      if (entry.dropReason) {
         this.logger?.info(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Mining skipped — transcript belongs to a dropped class (e.g. subagent thread)', {
           session_id: sessionId,
           transcript_path: input.transcriptPath,
-          reason: dropReason,
+          reason: entry.dropReason,
         });
       }
     }
@@ -263,6 +317,23 @@ export class TranscriptMiner {
       return { reclassified: 0, inserted: 0, errors: [], skippedReason: gate.dropReason };
     }
 
+    // Sub-agent thread reattribution: mine the child rollout INTO the parent
+    // session as thread-scoped agent_dispatch batches. The target session and
+    // thread id come from the transcript's OWN meta (via the gate), never the
+    // sessionId argument — the live-reconcile caller passes the PARENT id with
+    // the child transcript path, and a Stop passes the child id; both converge
+    // on the same (parent, threadId) target from the file itself.
+    const reattribute = gate.reattributeTo != null;
+    const targetSessionId = reattribute ? gate.reattributeTo! : sessionId;
+    const threadId = reattribute ? gate.threadId : null;
+    const threadLabel = reattribute ? gate.threadLabel : null;
+
+    // The parent must already exist — a child mine never materializes it.
+    // Checked every call (not memoized) so a late-registering parent unblocks.
+    if (reattribute && !getSession(targetSessionId, ALL_PROJECTS_SCOPE)) {
+      return { reclassified: 0, inserted: 0, errors: [], skippedReason: 'subagent-parent-missing' };
+    }
+
     // Short-circuit: if we've already reconciled this transcript at its
     // current size, nothing new to do. The cached `reconciledSize` is only
     // set after a full reconcile pass at that size, so the DB state is
@@ -295,8 +366,15 @@ export class TranscriptMiner {
       this.parseAllEvents(input.transcriptPath),
       input.transcriptPath,
       gate.meta,
+      reattribute ? { subagentReattribution: true } : undefined,
     );
-    const batches = listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
+    // Bucket/reclassify source: a reattribution mine touches ONLY this
+    // thread's rows (thread_id = childThreadId), never the parent's
+    // main-thread batches (thread_id IS NULL).
+    const batches = (reattribute
+      ? listBatchesBySessionThread(targetSessionId, threadId!)
+      : listBatchesBySession(sessionId, { scope: { kind: 'all' } })
+    ).sort((a, b) => a.id - b.id);
 
     let reclassified = 0;
     let inserted = 0;
@@ -386,7 +464,7 @@ export class TranscriptMiner {
       const now = epochSeconds();
       const isSystemOrigin = record.origin !== PROMPT_BATCH_ORIGIN.HUMAN;
       const { row: created, created: didInsert } = insertBatchStateless({
-        session_id: sessionId,
+        session_id: targetSessionId,
         user_prompt: record.text,
         ordinal,
         started_at: now,
@@ -400,6 +478,11 @@ export class TranscriptMiner {
         kind: effectiveKind,
         origin: record.origin,
         parent_prompt_batch_id: effectiveKind === BATCH_KIND.INITIAL ? null : parentForNew,
+        // Null for a main-thread mine; the child thread's id + label for a
+        // sub-agent reattribution (folds into content_hash so sibling threads
+        // never collide — §3.1).
+        thread_id: threadId,
+        thread_label: threadLabel,
       });
       // On a dedup (didInsert === false) the row already exists with its
       // lineage, so skip the counter and lineage write; the row still serves
@@ -408,7 +491,7 @@ export class TranscriptMiner {
         inserted++;
         try {
           const lineageProjectId = created.project_id ? assertGroveProjectId(created.project_id) : null;
-          createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now, lineageProjectId);
+          createBatchLineage(DEFAULT_AGENT_ID, targetSessionId, created.id, now, lineageProjectId);
         } catch { /* lineage best-effort */ }
       }
       // Only a HUMAN initial batch becomes the open anchor (see existing-branch
@@ -448,7 +531,11 @@ export class TranscriptMiner {
     // produces batch 3502, the renumber walks the post-drop records, matches
     // 3502, and assigns prompt_number=1 — duplicating 3501's number and
     // breaking getLatestBatch's prompt_number-DESC ordering.
-    if (inserted > 0) {
+    // Skip the renumber pass entirely for a thread mine: prompt_number is a
+    // per-session (main-thread) ordering key, and renumbering across threads
+    // would collide numbers between the parent's main thread and its sub-agent
+    // threads (§3.1). Thread rows are ordered by id, not prompt_number.
+    if (!reattribute && inserted > 0) {
       const allBatches = listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
       const renumber = buildPrefixBuckets(allBatches);
       const reservedNumbers = new Set<number>();
@@ -523,6 +610,14 @@ export class TranscriptMiner {
     // content onto the session exactly like the reconcile would have.
     if (result.skippedReason) return result;
 
+    // Mirror the reconcile's reattribution target: responses and images from a
+    // sub-agent thread are written to the PARENT session, thread-scoped, so
+    // the child's turns never touch the parent's main-thread rows.
+    const gate = this.transcriptGate(sessionId, input);
+    const reattribute = gate.reattributeTo != null;
+    const targetSessionId = reattribute ? gate.reattributeTo! : sessionId;
+    const threadId = reattribute ? gate.threadId ?? undefined : undefined;
+
     const { turns } = this.getAllTurnsWithSource(sessionId, input.transcriptPath);
     // Plan envelopes have had their extraction chance by the time a summary
     // is persisted (extraction reads raw parser turns, never persisted
@@ -534,14 +629,19 @@ export class TranscriptMiner {
       .map((t) => ({ prompt: t.prompt, response: stripPlanTagEnvelopes(t.aiResponse!, this.planTags) }))
       .filter((r) => r.response.trim().length > 0);
     if (responses.length > 0) {
-      populateBatchResponses(sessionId, responses);
+      populateBatchResponses(targetSessionId, responses, threadId);
     }
     // Human-anchoring backstop for tool calls: re-home any activity stranded on
     // a system-origin batch onto its enclosing human turn (legacy data + live
     // races). The live path attributes correctly by construction; this keeps
     // re-mined/older sessions consistent so the myco agent sees the tool calls.
-    rehomeSystemActivitiesToHumanAnchor(sessionId);
-    this.captureTurnImages(sessionId, turns);
+    // Skipped entirely for a thread mine: a thread's batches are all
+    // agent_dispatch (no human anchor to re-home onto), and rehoming is
+    // main-thread machinery that would reach across into the parent's rows.
+    if (!reattribute) {
+      rehomeSystemActivitiesToHumanAnchor(sessionId);
+    }
+    this.captureTurnImages(targetSessionId, turns, threadId);
     return result;
   }
 
@@ -552,12 +652,17 @@ export class TranscriptMiner {
    * own project_id — never from ambient daemon state. Best-effort: a sink
    * failure is logged and never blocks reconciliation.
    */
-  private captureTurnImages(sessionId: string, turns: TranscriptTurn[]): void {
+  private captureTurnImages(sessionId: string, turns: TranscriptTurn[], threadId?: string): void {
     if (!this.captureImages) return;
     const imageTurns = turns.filter((t) => t.images?.length && t.prompt);
     if (imageTurns.length === 0) return;
 
-    const batches = listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
+    // Thread-scoped when mining a sub-agent thread so images match only that
+    // thread's batches, never the parent's main-thread rows.
+    const batches = (threadId != null
+      ? listBatchesBySessionThread(sessionId, threadId)
+      : listBatchesBySession(sessionId, { scope: { kind: 'all' } })
+    ).sort((a, b) => a.id - b.id);
     const buckets = buildPrefixBuckets(batches);
     for (let i = 0; i < imageTurns.length; i++) {
       const turn = imageTurns[i]!;
