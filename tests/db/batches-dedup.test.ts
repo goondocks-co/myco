@@ -61,6 +61,38 @@ describe('promptBatchContentHash — positional, full-prompt, scoped', () => {
     expect(human).not.toBe(system);
     expect(human).not.toBe(other);
   });
+
+  it('pins the byte-level canonical string for a fixed vector with no threadId (regression guard against re-ordering the join)', () => {
+    // Pinned constant computed by running the pre-thread-support formula
+    // `[sessionId, origin, String(ordinal), text].join(' ')` through sha256Hex
+    // BEFORE the threadId param was added. A threadId of null/undefined must
+    // reproduce this exact value forever, or every existing row's dedupe key
+    // on real vaults breaks.
+    const hash = promptBatchContentHash({
+      sessionId: 's-pin',
+      origin: PROMPT_BATCH_ORIGIN.HUMAN,
+      ordinal: 0,
+      userPrompt: 'pinned prompt text',
+    });
+    expect(hash).toBe('db8a3fac085e4014362fccb4684b874ec703a59735a7a07bcbbc6993db45543b');
+  });
+
+  it('threadId undefined/null is a byte-level no-op — matches the no-threadId hash exactly', () => {
+    const base = promptBatchContentHash({ sessionId: 's1', origin: PROMPT_BATCH_ORIGIN.HUMAN, ordinal: 0, userPrompt: 'deploy' });
+    const withUndefined = promptBatchContentHash({ sessionId: 's1', origin: PROMPT_BATCH_ORIGIN.HUMAN, ordinal: 0, userPrompt: 'deploy', threadId: undefined });
+    const withNull = promptBatchContentHash({ sessionId: 's1', origin: PROMPT_BATCH_ORIGIN.HUMAN, ordinal: 0, userPrompt: 'deploy', threadId: null });
+    expect(withUndefined).toBe(base);
+    expect(withNull).toBe(base);
+  });
+
+  it('two different threadIds produce different hashes for identical (session, origin, ordinal, text)', () => {
+    const threadA = promptBatchContentHash({ sessionId: 's1', origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH, ordinal: 0, userPrompt: 'reviewer task', threadId: 'task_6_reviewer' });
+    const threadB = promptBatchContentHash({ sessionId: 's1', origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH, ordinal: 0, userPrompt: 'reviewer task', threadId: 'task_7_reviewer' });
+    const mainThread = promptBatchContentHash({ sessionId: 's1', origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH, ordinal: 0, userPrompt: 'reviewer task' });
+    expect(threadA).not.toBe(threadB);
+    expect(threadA).not.toBe(mainThread);
+    expect(threadB).not.toBe(mainThread);
+  });
 });
 
 describe('insertBatchStateless — content_hash dedup guard', () => {
