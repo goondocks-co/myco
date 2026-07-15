@@ -101,7 +101,11 @@ export const PROMPT_BATCHES_TABLE = `
     content_hash           TEXT,
     created_at             INTEGER NOT NULL,
     machine_id             TEXT NOT NULL DEFAULT 'local',
-    synced_at              INTEGER
+    synced_at              INTEGER,
+    -- NULL = the session's main thread; sub-agent-mined batches carry the child thread id
+    thread_id              TEXT,
+    -- friendly thread identity for display (e.g. task_6_reviewer); NULL for main-thread rows
+    thread_label           TEXT
   )`;
 
 export const KNOWLEDGE_GIT_PROVENANCE_TABLE = `
@@ -1295,6 +1299,8 @@ export const SECONDARY_INDEXES = [
   // v39 — supports getProjectActivitySeconds without forcing the planner
   // to use the wider (project_id, origin, created_at) index.
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_created ON prompt_batches (project_id, created_at)',
+  // v71 — supports looking up a session's sub-agent thread batches by thread_id.
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_session_thread ON prompt_batches (session_id, thread_id)',
 
   // Release provenance
   'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_project_captured ON knowledge_git_provenance (project_id, captured_at)',
