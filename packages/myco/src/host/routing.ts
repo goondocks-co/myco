@@ -26,6 +26,13 @@
  *                 proxy (which would resolve the member's machine tier from the
  *                 host) nor a plain local read (an attached project has no local
  *                 Grove row to resolve against) is correct; the member assembles.
+ *   - `team-write` → proxy to host (server-mode design spec §6): a member's Team
+ *                 page writes the SERVED grove's team config/secrets through its
+ *                 own daemon, which proxies to the host exactly like `serve`/
+ *                 `collect`. Kept as its own stamp (not folded into `serve`)
+ *                 because both dispatch chokepoints below give it an EXPLICIT
+ *                 case — the whole point of this table is that a route can never
+ *                 silently inherit `serve`'s behavior by omission.
  *   - `localhost-only` → served locally (operator control plane / local-install
  *                 management); never crosses the overlay.
  *
@@ -48,7 +55,7 @@ import { scopePolicyForPath } from '../config/scope.js';
 import { readHostSecrets, resolveAttach } from './registry.js';
 
 /** The scope-map stamp a route carries. See the module docstring. */
-export type RouteStamp = 'serve' | 'collect' | 'degrade' | 'config-lock' | 'config-carve' | 'localhost-only';
+export type RouteStamp = 'serve' | 'collect' | 'degrade' | 'config-lock' | 'config-carve' | 'team-write' | 'localhost-only';
 
 /** The capability + stamp for a matched route, handed to the proxy so it can
  *  key the collector contract / flush ordering without re-classifying. */
@@ -62,6 +69,15 @@ export interface RemoteTarget {
   projectId: GroveProjectId;
   /** Grove id from the attach record — the hosted Grove's identity, not a local row. */
   groveId: string;
+  /**
+   * This project's member-local checkout root, carried from `AttachRef.root`
+   * (`host/registry.ts`). Per-request — NOT the daemon's bootstrap-anchor
+   * project root — so a multi-project member's collect-time root-relative
+   * matching (e.g. `capture/plan-drain.ts` `noteCollect`) scopes to the
+   * project the request is actually about. Absent for attach records
+   * created before `root` was added to `AttachRef`.
+   */
+  root?: string;
   host: {
     host_id: string;
     label: string;
@@ -231,6 +247,7 @@ const GROVE_ADMIN = 'Grove administration';
 const DB_MAINTENANCE = 'Database maintenance';
 const EMBEDDING_MAINTENANCE = 'Embedding maintenance';
 const CONTENT_MATERIALIZE = 'Content materialization';
+const TEAM_WRITE = 'Team configuration';
 
 /**
  * The stamp table — every rule here is a route whose attached-project behavior
@@ -313,6 +330,27 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/api/agent/tasks/:id/copy', stamp: 'config-lock', capability: INTEL_CONFIG },
   { method: 'DELETE', pattern: '/api/agent/tasks/:id', stamp: 'config-lock', capability: INTEL_CONFIG },
   { method: 'PUT', pattern: '/api/agent/tasks/:id/config', stamp: 'config-lock', capability: INTEL_CONFIG },
+
+  // --- team-write: the served grove's team config/secrets (server-mode design
+  //     spec §6). Proxied to the host exactly like `serve`/`collect` — the
+  //     host is authoritative for the served grove's shared config, so a
+  //     member's Team page writes reach it over the SAME overlay proxy path.
+  //     These are EXACT/`:param` matches, so they win over the coarser
+  //     `/api/team/*` prefix rules below (legacy team-sync, still
+  //     localhost-only) under `matchRouteRule`'s exact > param > prefix tiering. ---
+  { method: 'GET', pattern: '/api/team/config', stamp: 'team-write', capability: TEAM_WRITE },
+  { method: 'PUT', pattern: '/api/team/config', stamp: 'team-write', capability: TEAM_WRITE },
+  { method: 'PUT', pattern: '/api/team/secrets/:provider', stamp: 'team-write', capability: TEAM_WRITE },
+  { method: 'DELETE', pattern: '/api/team/secrets/:provider', stamp: 'team-write', capability: TEAM_WRITE },
+  { method: 'POST', pattern: '/api/team/mcp-token/rotate', stamp: 'team-write', capability: TEAM_WRITE },
+  // Task 10: external read-only MCP toggle/status (server-mode design spec §7).
+  { method: 'GET', pattern: '/api/team/external-mcp', stamp: 'team-write', capability: TEAM_WRITE },
+  { method: 'PUT', pattern: '/api/team/external-mcp/toggle', stamp: 'team-write', capability: TEAM_WRITE },
+  // Per-task table (spec §6.3): the bespoke `/api/agent/tasks/:id/config` is
+  // config-lock stamped above, so the Team page's per-task overrides reach
+  // the served grove through this parallel team-write pair instead.
+  { method: 'GET', pattern: '/api/team/agent-tasks/:id/config', stamp: 'team-write', capability: TEAM_WRITE },
+  { method: 'PUT', pattern: '/api/team/agent-tasks/:id/config', stamp: 'team-write', capability: TEAM_WRITE },
 
   // --- config-carve: per-tier member-side config (routing-layer §6.3). The
   //     member assembles/serves these from its own machine/project/personal
@@ -608,6 +646,12 @@ export function classifyRoute(input: {
       return { kind: 'local' };
     case 'config-carve':
       return { kind: 'config_carve', target: remoteTargetFor(input.projectId, attach), classification };
+    case 'team-write':
+      // Member Team page write against the served grove — proxied to the host
+      // (server-mode design spec §6), same shape as serve/collect. Named
+      // explicitly (not folded into the case below) so this behavior is a
+      // deliberate decision, not an accident of a shared case label.
+      return { kind: 'remote', target: remoteTargetFor(input.projectId, attach), classification };
     case 'serve':
     case 'collect':
       return { kind: 'remote', target: remoteTargetFor(input.projectId, attach), classification };
@@ -637,6 +681,13 @@ export function classifyRoute(input: {
  *   - `config-lock` → the config-host-authoritative refusal (409) — shared config
  *     is host-operator-managed and not member-writable even directly, the SAME
  *     payload the member-side `classifyRoute` returns for `config_locked`.
+ *   - `team-write` → `null`: served locally, same as `serve`/`collect` — the host
+ *     is authoritative for the served grove's team config/secrets and answers a
+ *     bearer-holding member's write directly. This switch only decides overlay
+ *     ADMISSION by route class; the grove CONSTRAINT ("only for the served
+ *     grove, never any other Grove this host owns") is enforced downstream by
+ *     `servedGroveRefusal` (Task 2), the SAME chokepoint serve/collect rely on
+ *     — so admitting the route class here never widens which Grove it can touch.
  *   - `config-carve` → 404: these are member-ASSEMBLED config routes that never
  *     legitimately cross the overlay — a member resolves machine/project/personal
  *     from its own disk and host-sources ONLY the grove tier via `GET
@@ -658,6 +709,11 @@ export function overlayHostStampRefusal(method: string, pathname: string): Refus
       return hostedCapabilityUnavailable(capability);
     case 'config-lock':
       return configHostAuthoritative(capability);
+    case 'team-write':
+      // Admitted (served locally on the host) — see the docstring above for
+      // why this is safe: the servedGroveRefusal chokepoint (Task 2) is what
+      // actually constrains WHICH grove a team-write request may touch.
+      return null;
     case 'serve':
     case 'collect':
       return null;
@@ -672,12 +728,13 @@ export function overlayHostStampRefusal(method: string, pathname: string): Refus
  *  state (`daemon/api/content-claims-materialize.ts`). */
 export function remoteTargetFor(
   projectId: GroveProjectId,
-  attach: { host: { host_id: string; label: string; overlay_address: string; protocol_version: number; proxy_port?: number }; ref: { grove_id: string } },
+  attach: { host: { host_id: string; label: string; overlay_address: string; protocol_version: number; proxy_port?: number }; ref: { grove_id: string; root?: string } },
 ): RemoteTarget {
   const bearer = readHostSecrets(attach.host.host_id)[HOST_BEARER_SECRET] ?? '';
   return {
     projectId,
     groveId: attach.ref.grove_id,
+    root: attach.ref.root,
     host: {
       host_id: attach.host.host_id,
       label: attach.host.label,

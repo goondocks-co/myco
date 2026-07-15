@@ -35,7 +35,10 @@ import {
 import { countToolCallsByRun } from '@myco/db/queries/turns.js';
 import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { loadAllTasks } from '@myco/agent/registry.js';
-import type { AgentRunResult } from '@myco/agent/types.js';
+import type { AgentRunResult, ProviderConfig } from '@myco/agent/types.js';
+import { resolveRunConfig } from '@myco/agent/config-resolver.js';
+import { probeProviderAvailable } from '@myco/agent/harness/provider-health.js';
+import { loadLayeredSecrets } from '@myco/config/secrets.js';
 import { notify } from '@myco/notifications/notify.js';
 import { agentRunNotificationLink } from '@myco/notifications/links.js';
 import { HARNESS_HEALTH_TASK_NAME, notifyHarnessHealthFindings } from '@myco/notifications/harness-health-consumer.js';
@@ -248,6 +251,44 @@ export function gateScheduledResume(input: ScheduledResumeGateInput): 'resume' |
     metadata: { taskName, runId: run.id },
   }, config, { projectId });
   return 'exhausted';
+}
+
+export interface ScheduledDispatchGateInput {
+  provider: ProviderConfig | undefined;
+  taskName: string;
+  projectId: GroveProjectId;
+  logger: DaemonLogger;
+}
+
+export type ScheduledDispatchGateDecision = 'proceed' | 'missing_key';
+
+/**
+ * Preflight run before every scheduled LLM dispatch (fresh or resumed),
+ * ahead of any `dispatchAgentRun` call. A cloud provider with no key
+ * resolvable from Grove secrets, machine secrets, or the process env is NOT
+ * a run failure — it's the expected posture of a served Grove whose team
+ * key hasn't been set yet (or was removed). `missing_key` tells the caller
+ * to skip dispatch entirely: log a visible status line and return WITHOUT
+ * calling `dispatchAgentRun` or `notifyScheduledRunOutcome`, so a keyless
+ * box never spams `agent.task.failure` for work that never ran.
+ *
+ * Exported so tests can drive this exact seam directly — `dispatchScheduledTask`
+ * is a closure inside `registerScheduledTasks` and not itself exported (the
+ * `gateScheduledResume` precedent above).
+ */
+export async function gateScheduledDispatch(
+  input: ScheduledDispatchGateInput,
+): Promise<ScheduledDispatchGateDecision> {
+  const availability = await probeProviderAvailable(input.provider);
+  if (!availability.available && availability.reason === 'missing_key') {
+    input.logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${input.taskName} skipped — no team key configured`, {
+      project_id: input.projectId,
+      task: input.taskName,
+      reason: 'missing_key',
+    });
+    return 'missing_key';
+  }
+  return 'proceed';
 }
 
 export interface ScheduledRunOutcomeInput {
@@ -556,6 +597,28 @@ export async function registerScheduledTasks(
     const config = resolveProjectConfig(scope);
     if (!config) return;
     const { requestContext, projectRoot, projectVaultDir, projectId, treeAvailable } = scope;
+
+    // Layer this project's Grove secrets.env (team key, server-mode design
+    // spec §5) into the process env before resolving the run's provider —
+    // a served-grove key set via the Team page must be visible to this
+    // dispatch. Grove-scoped, not served-grove-specific: works the same for
+    // any Grove, so a personal single-machine setup is unaffected (its
+    // Grove secrets.env is typically empty).
+    loadLayeredSecrets([mycoHome, scope.groveHome]);
+    const { taskProviderOverride } = resolveRunConfig(
+      DEFAULT_AGENT_ID,
+      taskName,
+      projectVaultDir,
+      requestContext.groveId ?? null,
+    );
+    const dispatchGate = await gateScheduledDispatch({
+      provider: taskProviderOverride,
+      taskName,
+      projectId,
+      logger,
+    });
+    if (dispatchGate === 'missing_key') return;
+
     // Grove-scoped manager for this project's run — never the bootstrap anchor.
     const embeddingManager = resolveEmbeddingManager(requestContext);
     const readScope: ProjectScope = toProjectScope(projectId);

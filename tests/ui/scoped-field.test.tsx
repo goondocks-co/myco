@@ -35,7 +35,12 @@ const hookState = {
   local: {} as Record<string, unknown>,
 };
 
+// Toggled by the team-target describe block below; every other test in this
+// file leaves it false (the ordinary project-selection path).
+const teamModeState = { isTeam: false };
+
 mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
+  useIsTeamConfigTarget: () => teamModeState.isTeam,
   useScopedConfig: () => ({
     effective: hookState.effective,
     local: hookState.local,
@@ -100,6 +105,7 @@ describe('ScopedField — grove home, Personal override allowed (agent.model)', 
 
     hookState.effective = { agent: { model: 'claude-opus-4' } };
     hookState.local = {};
+    teamModeState.isTeam = false;
   });
 
   it('no local override: pill renders with "Save Personal" action', async () => {
@@ -179,6 +185,7 @@ describe('ScopedField — registry locks the field (embedding.model: overridable
     promoteFieldMock.mockReset().mockResolvedValue(undefined);
     hookState.effective = { embedding: { model: 'bge-m3' } };
     hookState.local = {};
+    teamModeState.isTeam = false;
   });
 
   it('does not render any pill/promote/reset affordances when the policy disallows local', () => {
@@ -212,6 +219,7 @@ describe('ScopedField — empty-string commit routes through clear (RC-11)', () 
     promoteFieldMock.mockReset().mockResolvedValue(undefined);
     hookState.effective = { embedding: { base_url: 'http://localhost:11434' } };
     hookState.local = {};
+    teamModeState.isTeam = false;
   });
 
   it("commits '' as undefined so the write layer issues a clear, not a dead patch", async () => {
@@ -246,5 +254,43 @@ describe('ScopedField — empty-string commit routes through clear (RC-11)', () 
     await waitFor(() => {
       expect(setFieldMock).toHaveBeenCalledWith('embedding.base_url', undefined, 'grove');
     });
+  });
+});
+
+describe('ScopedField — bound to a team target (Task 9)', () => {
+  beforeEach(() => {
+    setFieldMock.mockReset().mockResolvedValue(undefined);
+    resetFieldMock.mockReset().mockResolvedValue(undefined);
+    promoteFieldMock.mockReset().mockResolvedValue(undefined);
+    hookState.effective = { agent: { model: 'claude-opus-4' } };
+    hookState.local = {};
+    teamModeState.isTeam = true;
+  });
+
+  it('shows a non-interactive "Team" badge for a field the registry would otherwise offer Personal on', () => {
+    renderScopedField({ path: 'agent.model' });
+
+    // No pill trigger — a team target renders a plain badge, never a button.
+    const pillTrigger = screen.queryAllByRole('button').find(
+      (b) => b.getAttribute('aria-haspopup') === 'menu',
+    );
+    expect(pillTrigger).toBeUndefined();
+    expect(screen.getByText('Team')).toBeInTheDocument();
+  });
+
+  it('never renders Save Personal / Reset affordances, even with a (stale) local override present', () => {
+    hookState.local = { agent: { model: 'claude-haiku-4' } };
+    renderScopedField({ path: 'agent.model' });
+
+    const menuButtons = screen.queryAllByRole('button', { name: /personal|save personal|reset|promote/i });
+    expect(menuButtons).toHaveLength(0);
+  });
+
+  it('shows "Team" (not "Grove") for a field the registry already locks to its home tier', () => {
+    hookState.effective = { embedding: { model: 'bge-m3' } };
+    renderScopedField({ path: 'embedding.model' });
+
+    expect(screen.getByText('Team')).toBeInTheDocument();
+    expect(screen.queryByText('Grove')).not.toBeInTheDocument();
   });
 });

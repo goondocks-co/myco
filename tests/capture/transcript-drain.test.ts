@@ -902,6 +902,35 @@ describe('drain health (consolidation Task C-5)', () => {
     expect(q2.health().get(HOST_A)).toEqual({ pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 });
   });
 
+  test('a caught-up (fully-acked) pass clears a stale failure on the STORED entry, with no transport attempt', async () => {
+    const files = memFiles();
+    const p = '/m/s.jsonl';
+    files.set(p, 'q1\nq2\n', 1); // 6 bytes
+    const store = memStore();
+    const t = target();
+    const transcriptId = deriveTranscriptId({ machineId: MACHINE, transcriptPath: p, inode: 1 });
+
+    // Seed an entry that is ALREADY fully acked (acked_offset === file size)
+    // but still carries a stale failure from a past incident — the state a
+    // genuinely-recovered entry is left in before this fix.
+    store.put({
+      host_id: HOST_A, session_id: 's', transcript_id: transcriptId,
+      project_id: 'proj_0123456789abcdef0123456789abcdef', grove_id: 'grove_0123456789abcdef0123456789abcdef',
+      transcript_path: p, acked_offset: 6, updated_at: '2020-01-01T00:00:00.000Z',
+      consecutive_failures: 3, last_error_kind: 'unreachable', last_error_at: '2020-01-01T00:00:00.000Z',
+    });
+
+    const host = multiFakeHost();
+    const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    await q.flushBeforeForward(t);
+
+    // No POST happened — this was a genuine no-op, not a retry that happened to succeed.
+    expect(host.calls).toHaveLength(0);
+    const entry = store.get(HOST_A, 's', transcriptId);
+    expect(entry?.consecutive_failures).toBe(0);
+    expect(entry?.last_error_kind).toBeNull();
+  });
+
   test('health aggregates per host — a second host with no entries is simply absent from the map', async () => {
     const files = memFiles();
     const p = '/m/s.jsonl';

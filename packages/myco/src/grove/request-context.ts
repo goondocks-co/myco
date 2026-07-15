@@ -4,6 +4,7 @@ import { getMachineId } from '@myco/machine-id.js';
 import { vaultDbPath } from '@myco/db/client.js';
 import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-manifest.js';
 import {
+  ALL_PROJECTS_SCOPE,
   assertGroveProjectId,
   GLOBAL_SCOPE,
   isGroveEraId,
@@ -11,7 +12,7 @@ import {
   type GroveProjectId,
   type ProjectScope,
 } from '@myco/grove/ids.js';
-import { resolveGroveDbPath, resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { resolveGroveDbPath, resolveGroveDir, resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
   findRegisteredProject,
   ForeignGroveError,
@@ -834,9 +835,16 @@ export function projectScopeFromRequestContext(
   // rows to an unauthorized request. Only a caller-asserted, Grove-bound
   // context may bind to a specific project scope; everything else resolves to
   // GLOBAL_SCOPE (`project_id IS NULL`), which returns zero cross-project rows.
-  return isProjectScopedTenancy(context) && context.groveId && context.projectId
-    ? projectScope(context.projectId)
-    : GLOBAL_SCOPE;
+  if (!isProjectScopedTenancy(context) || !context.groveId) return GLOBAL_SCOPE;
+  if (context.projectId) return projectScope(context.projectId);
+  // Caller-asserted Grove tenancy with NO project id (the external MCP
+  // listener's served-grove default, Task 10 Fix Round 1) — the safe,
+  // narrow widening: `context.databasePath` is already scoped to this ONE
+  // Grove's own DB (see `resolveRegisteredRequestContext`'s grove-only
+  // branch), so "all projects" never crosses a Grove boundary. This branch
+  // was unreachable before that widening — every other caller-tenancy
+  // resolver path supplies both ids together or neither.
+  return ALL_PROJECTS_SCOPE;
 }
 
 function compactHeaders(values: Record<string, string | null | undefined>): Record<string, string> {
@@ -942,23 +950,49 @@ function resolveRegisteredRequestContext(
     : null;
   const projectId = input.projectId ?? manifestFromInputRoot?.project.id;
   const groveId = input.groveId;
-  const missing: string[] = [];
-  if (!projectId) missing.push('project id');
-  if (!groveId) missing.push('Grove id');
-  if (missing.length > 0) {
-    throw new Error(`Incomplete Myco request context: missing ${missing.join(', ')}`);
+  if (!groveId) {
+    throw new Error('Incomplete Myco request context: missing Grove id');
   }
 
   const mycoHome = resolveMycoHome();
-  const grove = loadGroveRecord(groveId!, mycoHome);
+  const grove = loadGroveRecord(groveId, mycoHome);
   if (!grove) throw new UnknownRequestContextError(`Unknown Grove in request context: ${groveId}`);
 
-  if (manifestFromInputRoot && manifestFromInputRoot.project.id !== projectId) {
+  if (manifestFromInputRoot && projectId && manifestFromInputRoot.project.id !== projectId) {
     throw new Error(`Request context project id ${projectId} does not match project.toml id ${manifestFromInputRoot.project.id}`);
   }
 
+  if (!projectId) {
+    // Grove-scoped, project-less caller tenancy (server-mode external MCP
+    // contract, Task 10 Fix Round 1: server-mode-e1#external-surface-tenancy):
+    // the caller named a Grove but no project. Every OTHER header-resolution
+    // branch requires both ids together — before this widening, omitting
+    // `project id` here always threw "Incomplete Myco request context",
+    // so no existing caller could reach this branch or rely on the throw.
+    // `projectScopeFromRequestContext` reads `groveId set + projectId null`
+    // as ALL_PROJECTS_SCOPE (grove-wide), which is safe specifically because
+    // the resolved `databasePath` below is already the ONE Grove's own DB —
+    // "all projects" never crosses a Grove boundary.
+    if (enforceGroveOwnership && !groveOwnedByThisDaemon(grove, mycoHome)) {
+      throw new ForeignGroveError(grove.id);
+    }
+    return {
+      ...fallback,
+      projectRoot: resolveGroveDir(grove.id, mycoHome),
+      callerRoot: fallback.callerRoot,
+      projectId: null,
+      groveId: grove.id,
+      machineId: input.machineId ?? fallback.machineId,
+      sessionId: input.sessionId ?? fallback.sessionId,
+      projectVaultDir: resolveGroveDir(grove.id, mycoHome),
+      databasePath: resolveGroveDbPath(grove.id, mycoHome),
+      source,
+      tenancySource,
+    };
+  }
+
   const registered = findRegisteredProject({
-    projectId: projectId!,
+    projectId,
     groveId: grove.id,
     bindingId: manifestFromInputRoot?.grove?.binding_id ?? null,
     projectRoot: inputProjectRoot,

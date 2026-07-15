@@ -20,7 +20,7 @@ Commands:
   export --team-id <team_id> [--out <dir-or-file>]
   import <bundle-file>
   adopt --worker-url <url> [--api-key <key>] [--worker-name <name>]
-  host <enable|disable|status>   (Team Host overlay — run \`myco-team host --help\`)
+  host <command>                  (moved — run \`myco host --help\`)
 
 --account-id <id> (any command) selects which Cloudflare account to operate on
 when your wrangler login has access to more than one. Without it, create prompts

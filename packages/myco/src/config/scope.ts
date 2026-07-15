@@ -44,6 +44,11 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   // fact, never git-shared nor resolved cross-machine. Longest-prefix covers both
   // `daemon.host_serve.enabled` and `daemon.host_serve.overlay_address`.
   'daemon.host_serve': { home: 'machine', overridableBy: [] },
+  // External read-only MCP opt-in (Task 10, server-mode design spec §7) —
+  // machine-locked for the same reason as `host_serve`: a per-machine daemon
+  // mechanic (the port a member points Funnel at), never git-shared. Covers
+  // both `daemon.external_mcp.enabled` and `daemon.external_mcp.port`.
+  'daemon.external_mcp': { home: 'machine', overridableBy: [] },
   // Legacy `update.channel` leaf. Runtime reads/writes machine
   // `daemon.update_channel` exclusively, and the loader lifts any legacy
   // `update.channel` from myco.yaml or local.yaml to machine once, then strips

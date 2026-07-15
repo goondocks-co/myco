@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { scopePolicyForPath, TIER_LABEL, TIER_TOOLTIP } from '../../config/scope-policy';
+import { useIsTeamConfigTarget } from '../../hooks/use-scoped-config';
 
-type BadgeScope = 'personal' | 'project' | 'grove' | 'all-groves' | 'machine';
+type BadgeScope = 'personal' | 'project' | 'grove' | 'all-groves' | 'machine' | 'team';
 
 interface ScopeBadgeProps {
   scope: BadgeScope;
@@ -13,6 +14,7 @@ const SCOPE_BADGE_LABELS: Record<BadgeScope, string> = {
   grove: 'Grove',
   'all-groves': 'All Groves',
   machine: 'Machine',
+  team: 'Team',
 };
 
 const SCOPE_BADGE_TITLES: Record<BadgeScope, string> = {
@@ -21,6 +23,7 @@ const SCOPE_BADGE_TITLES: Record<BadgeScope, string> = {
   grove: 'This setting applies to every project in this Grove',
   'all-groves': 'This view aggregates every Grove on this machine',
   machine: 'This setting applies to every Grove on this machine',
+  team: 'This setting applies to everyone on this team',
 };
 
 const SCOPE_BADGE_CLASSES: Record<BadgeScope, string> = {
@@ -29,6 +32,7 @@ const SCOPE_BADGE_CLASSES: Record<BadgeScope, string> = {
   grove: 'border-ochre/40 bg-ochre/5 text-ochre',
   'all-groves': 'border-terracotta/40 bg-terracotta/5 text-terracotta',
   machine: 'border-terracotta/40 bg-terracotta/5 text-terracotta',
+  team: 'border-ochre/40 bg-ochre/5 text-ochre',
 };
 
 export function ScopeBadge({ scope }: ScopeBadgeProps) {
@@ -87,6 +91,7 @@ interface ScopePillProps {
 export function ScopePill({ path, hasLocalOverride, onSavePersonal, onReset }: ScopePillProps) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLSpanElement>(null);
+  const isTeamTarget = useIsTeamConfigTarget();
 
   useEffect(() => {
     if (!open) return;
@@ -103,6 +108,13 @@ export function ScopePill({ path, hasLocalOverride, onSavePersonal, onReset }: S
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
+
+  // Bound to a served grove: always "Team", never interactive. Grove-homed
+  // Personal overrides are refused by design (spec §6) — there is no menu to
+  // open, so this renders a plain badge with no click affordance at all.
+  if (isTeamTarget) {
+    return <ScopeBadge scope="team" />;
+  }
 
   const policy = scopePolicyForPath(path);
   const homeBadge = HOME_TIER_BADGE[policy.home] ?? 'project';

@@ -378,22 +378,17 @@ export class PlanDrainQueue {
    * uses), ensure a queue entry exists for the plan file and schedule a throttled
    * push of its content. Best-effort: never throws into the collect path.
    *
-   * NOTE — root scoping (C7, carried): `isPlanWriteEvent` below resolves relative
-   * watch dirs against `this.planWatchConfig.projectRoot`, which is bound ONCE at
-   * daemon construction to the bootstrap-anchor project's root
-   * (`daemon/main.ts`), NOT re-derived per request from `target.projectId`. That
-   * is correct for a member serving only its own bootstrap project, but this
-   * daemon CAN serve requests for OTHER attached projects too (the same
-   * multi-tenant dispatch the skill-delete API path resolves per request from
-   * `principal.tenancy.projectVaultDir` — see `daemon/api/skills.ts`); a collect
-   * event for a non-anchor attached project would be checked against the WRONG
-   * root here. `RemoteTarget` does not currently carry a filesystem root (the
-   * attach registry's `AttachRef.root` is available where `remoteTargetFor`
-   * builds the target but is not threaded onto it) — wiring a per-request root
-   * through would touch `RemoteTarget`, `remoteTargetFor`, and every
-   * `RemoteTarget` construction site, not just this function. Left as a real,
-   * grounded gap rather than papered over; a genuine fix is a small dedicated
-   * follow-up, not a one-line change here.
+   * Root scoping (C7, carried — fixed): `isPlanWriteEvent` resolves relative watch
+   * dirs against a project root. `this.planWatchConfig.projectRoot` is bound ONCE
+   * at daemon construction to the bootstrap-anchor project's root
+   * (`daemon/main.ts`) — correct for a member serving only its own bootstrap
+   * project, but this daemon CAN serve requests for OTHER attached projects too
+   * (the same multi-tenant dispatch the skill-delete API path resolves per
+   * request from `principal.tenancy.projectVaultDir` — see `daemon/api/skills.ts`).
+   * `target.root` (threaded from the attach registry's `AttachRef.root` onto
+   * `RemoteTarget` by `host/routing.ts` `remoteTargetFor`) carries THIS request's
+   * own project root; fall back to the bootstrap anchor only when it is absent
+   * (an attach record created before `root` was added to `AttachRef`).
    */
   noteCollect(target: RemoteTarget, event: Record<string, unknown>): void {
     try {
@@ -401,10 +396,13 @@ export class PlanDrainQueue {
       if (!sessionId) return;
       const toolName = typeof event.tool_name === 'string' ? event.tool_name : '';
       if (!toolName) return;
+      const watchConfig: PlanWatchConfig = target.root
+        ? { ...this.planWatchConfig, projectRoot: target.root }
+        : this.planWatchConfig;
       const planPath = isPlanWriteEvent(
         toolName,
         event.tool_input as Record<string, unknown> | undefined,
-        this.planWatchConfig,
+        watchConfig,
       );
       if (!planPath) return;
       const agent = typeof event.agent === 'string' ? event.agent : undefined;
@@ -620,7 +618,7 @@ export class PlanDrainQueue {
       return 0;
     }
     const hash = hashContent(content);
-    if (hash === entry.acked_hash) return 0; // unchanged since last ack — no-op
+    if (hash === entry.acked_hash) return this.noOpDrained(entry); // unchanged since last ack — no-op
 
     // CROSS-TENANT SAFETY (the load-bearing invariant): one host-drain batches
     // entries from EVERY project attached to this host, but `capturePlan` WRITES the
@@ -673,6 +671,19 @@ export class PlanDrainQueue {
       this.store.put(entry);
     }
     return 1;
+  }
+
+  /** Clear a stale failure recorded on a PAST attempt before returning from
+   *  the "unchanged since last ack" no-op pass — not a live transport
+   *  attempt, so it can't itself confirm the host is still unreachable.
+   *  Skips the store write when the entry has no failure on record, so the
+   *  common healthy-entry path costs nothing extra. */
+  private noOpDrained(entry: PlanDrainEntry): number {
+    if ((entry.consecutive_failures ?? 0) > 0 || entry.last_error_kind) {
+      clearDrainFailure(entry);
+      this.store.put(entry);
+    }
+    return 0;
   }
 
   /** Per-host drain health (consolidation Task C-5): un-shipped entries/bytes,

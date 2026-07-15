@@ -180,6 +180,11 @@ phases:
       - vault_report
     maxTurns: 25
     required: true
+    # This phase's whole job is reading the working tree — on a run for a
+    # registered project with no local checkout (Team Host) that surface
+    # doesn't exist. Skip rather than error; a skip here does not fail the
+    # run (infra omission, not a content failure).
+    requiresProjectTree: true
 
   - name: explore-themes
     reasoningLevel: default
@@ -240,6 +245,11 @@ phases:
       - vault_report
     maxTurns: 120
     required: true
+    # Drills into the working tree with code_grep/fs_read — on a run for a
+    # registered project with no local checkout (Team Host) that surface
+    # doesn't exist. Skip rather than error; a skip here does not fail the
+    # run (infra omission, not a content failure).
+    requiresProjectTree: true
 
   - name: seed-spores
     reasoningLevel: default

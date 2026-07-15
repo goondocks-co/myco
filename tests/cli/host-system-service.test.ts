@@ -13,8 +13,8 @@ import {
   uninstallSystemService,
   HEADSCALE_SERVICE_LABEL,
   type SystemServiceContext,
-} from '../../packages/myco-team/src/host/system-service.js';
-import type { CommandRunner } from '../../packages/myco-team/src/host/binaries.js';
+} from '@myco/team-host/system-service.js';
+import type { CommandRunner } from '@myco/team-host/binaries.js';
 
 /** A runner that records argv and, for `sudo install`/`sudo rm`, performs the fs effect
  *  so isSystemServiceInstalled() reflects reality. Everything else exits 0. */

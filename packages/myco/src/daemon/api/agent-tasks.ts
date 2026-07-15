@@ -312,14 +312,31 @@ export async function handleDeleteTask(
   return { status: HTTP_OK, body: { deleted: taskName } };
 }
 
+/** Explicit override for `handleGetTaskConfig`'s Grove/tier resolution — the
+ *  team-write route (`team-agent-tasks.ts`) passes both fields so the merged
+ *  config it reads is derived EXCLUSIVELY from `hostServe.servedGroveId`
+ *  (never `req.requestContext`, which a loopback caller may leave empty and
+ *  an overlay caller must never be trusted to set correctly on this route). */
+export interface TaskConfigResolutionOverride {
+  groveId?: string | null;
+  projectTierOptional?: boolean;
+}
+
 /**
  * Get the full config override for a specific task from the merged config.
  *
  * Returns: provider, model, maxTurns, timeoutSeconds, and per-phase overrides.
+ *
+ * `overrides` lets a caller pin the Grove/tier resolution explicitly instead
+ * of deriving it from `req.requestContext` + on-disk tree detection — the
+ * team-write route uses this to resolve strictly against the served grove.
+ * Omitted (the bespoke `/api/agent/tasks/:id/config` route's call), behavior
+ * is unchanged: `req.requestContext.groveId` + `projectTreeAvailable(vaultDir)`.
  */
 export async function handleGetTaskConfig(
   req: RouteRequest,
   vaultDir: string,
+  overrides?: TaskConfigResolutionOverride,
 ): Promise<RouteResponse> {
   const taskId = req.params.id;
   const definitionsDir = resolveDefinitionsDir();
@@ -332,11 +349,9 @@ export async function handleGetTaskConfig(
   // A Team Host serving this project for a member has no local working
   // tree — degrade to machine+grove tiers (empty project tier) instead of
   // throwing "myco.yaml not found" (same signal + mechanism as `task-scheduling.ts`).
-  const treeAvailable = projectTreeAvailable(vaultDir);
-  const config = loadMergedConfig(vaultDir, {
-    groveId: req.requestContext?.groveId ?? null,
-    projectTierOptional: !treeAvailable,
-  });
+  const groveId = overrides?.groveId !== undefined ? overrides.groveId : (req.requestContext?.groveId ?? null);
+  const projectTierOptional = overrides?.projectTierOptional ?? !projectTreeAvailable(vaultDir);
+  const config = loadMergedConfig(vaultDir, { groveId, projectTierOptional });
   const taskConfig = config.agent.tasks?.[taskId] ?? null;
   const capability = governingCapability(taskId);
   const yamlScheduleEnabled = task.schedule?.enabled ?? false;

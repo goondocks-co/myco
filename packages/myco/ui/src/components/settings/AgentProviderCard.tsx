@@ -20,7 +20,7 @@ import {
   type SecretProvider,
 } from '../../hooks/use-provider-secrets';
 import { useModels } from '../../hooks/use-models';
-import { useScopedConfig } from '../../hooks/use-scoped-config';
+import { useIsTeamConfigTarget, useScopedConfig } from '../../hooks/use-scoped-config';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Input } from '../ui/input';
@@ -37,15 +37,23 @@ import { ProviderModelSelector } from '../providers/ProviderModelSelector';
 import { AdvancedModelPin } from '../providers/AdvancedModelPin';
 import { ReasoningProfiles } from '../providers/ReasoningProfiles';
 
-type AgentSecretProvider = Extract<SecretProvider, 'openai' | 'openrouter'>;
+type AgentSecretProvider = Extract<SecretProvider, 'openai' | 'openrouter' | 'anthropic'>;
 
 const REMOTE_SECRET_LABELS: Record<AgentSecretProvider, string> = {
   openai: 'OpenAI API Key',
   openrouter: 'OpenRouter API Key',
+  anthropic: 'Anthropic API Key',
 };
 
-function isSecretProvider(type: ProviderDraft['type']): type is AgentSecretProvider {
-  return type === 'openai' || type === 'openrouter';
+// Anthropic is keyed only in TEAM mode — the served grove's team key (`PUT
+// /api/team/secrets/anthropic`, already wired through `useSaveProviderSecret`/
+// `useDeleteProviderSecret`'s team-target branch). In project mode anthropic
+// resolves through CLI subscription auth, so `isTeam` gates it: the card must
+// stay byte-identical for project mode, where this key-entry section has
+// never applied to anthropic and still must not.
+function isSecretProvider(type: ProviderDraft['type'], isTeam: boolean): type is AgentSecretProvider {
+  if (type === 'openai' || type === 'openrouter') return true;
+  return isTeam && type === 'anthropic';
 }
 
 /** Myco Agent — Grove-default. Provider configuration is staged locally
@@ -57,6 +65,7 @@ function isSecretProvider(type: ProviderDraft['type']): type is AgentSecretProvi
  *  Default tier is Grove; the ScopePill offers hard opt-in to Personal. */
 export function AgentProviderCard() {
   const { effective, setFields, isLocalOverride, resetFields } = useScopedConfig();
+  const isTeam = useIsTeamConfigTarget();
   const { data: providersData, isPending: isLoadingProviders } = useProviders();
   const { data: providerSecretsData } = useProviderSecrets();
   const saveProviderSecret = useSaveProviderSecret();
@@ -87,7 +96,7 @@ export function AgentProviderCard() {
     providers,
   });
   const [apiKeyInput, setApiKeyInput] = useState('');
-  const secretProvider = isSecretProvider(draft.type) ? draft.type : null;
+  const secretProvider = isSecretProvider(draft.type, isTeam) ? draft.type : null;
   const activeSecret = secretProvider ? providerSecretsData?.secrets[secretProvider] : undefined;
   const resolvedAgentBaseUrl = draft.baseUrl || defaultBaseUrlForProvider(draft.type, draft.localBackend);
   const modelsQuery = useModels(draft.type || null, resolvedAgentBaseUrl || undefined, 'llm', draft.localBackend || null);

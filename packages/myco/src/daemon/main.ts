@@ -8,6 +8,7 @@
 
 import { DaemonServer } from './server.js';
 import { resolveHostServeConfig } from './host-serve.js';
+import { ExternalMcpListener, defaultFunnelRunner } from './external-listener.js';
 import type { RouteRequest } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger, type Logger } from './logger.js';
@@ -109,6 +110,8 @@ import { registerContentClaimMaterializeRoute } from './api/content-claims-mater
 import { registerContentClaimFileStatusRoute } from './api/content-claims-file-status.js';
 import { registerDrainHealthRoute } from './api/drain-health.js';
 import { registerHostMembershipRoutes } from './api/host-membership.js';
+import { registerTeamConfigRoutes } from './api/team-config.js';
+import { registerTeamAgentTaskRoutes } from './api/team-agent-tasks.js';
 import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
 import { tenantRoute } from './api/route-helpers.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
@@ -1207,6 +1210,34 @@ export async function main(): Promise<void> {
     logger,
   });
 
+  // External read-only MCP (Task 10, server-mode design spec §7): one
+  // dedicated listener instance for the daemon's lifetime. Constructed
+  // unconditionally (like the overlay listener, its BIND is what's
+  // conditional) so `PUT /api/team/external-mcp/toggle` always has a live
+  // instance to bind/unbind. `resolveDatabase` mirrors the loopback `/mcp`
+  // handler's wiring below so both surfaces reuse the SAME cached DB
+  // handles rather than opening a private one per external call.
+  const externalMcpListener = new ExternalMcpListener({
+    vaultDir: bootstrapVaultDir,
+    hostServe,
+    resolveDatabase: (databasePath) => databasePath === dataPaths.databasePath
+      ? db
+      : runtimeCache.getDatabase(databasePath),
+    logger,
+    mycoHome,
+  });
+  // Re-bind from persisted config on boot when the toggle is already on —
+  // a restart must never leave `enabled: true` pointed at a dead port while
+  // Funnel is still fronting it. Never blocks/crashes boot: a bind failure
+  // logs (inside `bind`) and leaves the listener unbound, exactly like the
+  // overlay listener's own never-throws boot contract.
+  if (hostServe?.servedGroveId) {
+    const externalMcpConfig = loadMachineConfig(mycoHome).daemon.external_mcp;
+    if (externalMcpConfig.enabled) {
+      void externalMcpListener.bind(externalMcpConfig.port);
+    }
+  }
+
   // Team Host: the MEMBER-side transcript-content drain (capture-push C1). Ships
   // an attached session's transcript byte-deltas over the overlay to the host
   // materializer (C2), offset-authoritative + multi-host. Its `proxyDeps()` are
@@ -1704,6 +1735,25 @@ export async function main(): Promise<void> {
     return response;
   });
 
+  // `team-write` route class (Task 8): the served grove's team config/secrets,
+  // reached by a member through their own daemon's proxy. Only ever answers
+  // for real on the one machine designated as this Grove's Team Host —
+  // elsewhere `hostServe` is null and every handler refuses `not_serving`.
+  const teamWriteDeps = {
+    hostServe,
+    mycoHome,
+    onConfigWrite: async (touchedPaths: string[], groveId: string) => {
+      await applyConfigWriteReactions(touchedPaths, { vaultDir: bootstrapVaultDir, groveId });
+    },
+    // Task 10: the toggle route binds/unbinds the SAME listener instance
+    // boot re-bind above uses, and fronts it with the real Funnel CLI.
+    externalMcp: { listener: externalMcpListener, runFunnel: defaultFunnelRunner },
+  };
+  registerTeamConfigRoutes(server, teamWriteDeps);
+  // Per-task table (spec §6.3) — the team-write counterpart to the
+  // config-lock-stamped `/api/agent/tasks/:id/config` registered below.
+  registerTeamAgentTaskRoutes(server, teamWriteDeps);
+
   // Machine-tier config (~/.myco/config.yaml) — port, log policy, update
   // channel. One daemon per machine, so the route is global (no scope
   // header required). Reactions fire so liveConfig and dependent runtime
@@ -2070,6 +2120,11 @@ export async function main(): Promise<void> {
     // inert here today, but both chokepoints thread the real deps so the
     // guarantee can never silently regress if /mcp ever carries a flush route.
     hostProxyDeps: captureProxyDeps,
+    // Chokepoint 2 of the served-grove fail-closed filter (Task 2). Same
+    // `hostServe` resolved above and threaded into `DaemonServer` — required
+    // so `servedGroveRefusal` can run here too, since /mcp bypasses router
+    // dispatch (chokepoint 1) entirely.
+    hostServe,
   }));
 
   // --- Backup routes ---
@@ -2901,6 +2956,7 @@ export async function main(): Promise<void> {
       });
     }
     registry.destroy();
+    await externalMcpListener.unbind();
     await server.stop();
     runtimeCache.closeAll();
     vectorStore.close();

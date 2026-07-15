@@ -82,7 +82,7 @@ export async function checkRootAvailable(ctx: SystemServiceContext): Promise<{ a
     detail:
       'root privileges are required to install the overlay control plane as system services '
       + '(a /Library/LaunchDaemons plist on macOS, a /etc/systemd/system unit on Linux). '
-      + 'Re-run `myco-team host enable` from a shell where `sudo` can elevate (you may be prompted for your password).',
+      + 'Re-run `myco host enable` from a shell where `sudo` can elevate (you may be prompted for your password).',
   };
 }
 

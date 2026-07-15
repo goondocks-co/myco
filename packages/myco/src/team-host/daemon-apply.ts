@@ -10,10 +10,11 @@
  *      write boundary, so an out-of-range address never reaches config.
  *   2. APPLY it by restarting the daemon. Host-serve is read once at startup
  *      (`daemon/main.ts`), so a config write alone is inert — the daemon must
- *      restart to bind (or unbind) the overlay listener. `myco-team` is a separate
- *      process, so restarting via the platform ServiceManager is the safe path
- *      (no self-SIGTERM). When the daemon is not service-managed we surface a
- *      manual-restart instruction rather than failing.
+ *      restart to bind (or unbind) the overlay listener. The `myco` CLI process
+ *      running `host enable` is separate from the daemon, so restarting via the
+ *      platform ServiceManager is the safe path (no self-SIGTERM). When the
+ *      daemon is not service-managed we surface a manual-restart instruction
+ *      rather than failing.
  *
  * The write is machine-tier and machine-global; there is no project vault context
  * in `host enable`, so `saveMachineConfig` (not the project-scoped `updateConfig`)
@@ -35,6 +36,10 @@ export interface HostServeApply {
    *  enrollment endpoint (Task 2.4) can self-report them. Cleared on disable. */
   hostId?: string | null;
   label?: string | null;
+  /** The one Grove this host serves (server-mode design spec §2). Cleared on
+   *  disable — `host disable` un-serves the box entirely (spec §8), so a stale
+   *  designation must not survive a disable → re-enable cycle unexamined. */
+  servedGroveId?: string | null;
 }
 
 /**
@@ -61,6 +66,7 @@ export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = r
           overlay_address: apply.enabled ? apply.overlayAddress : null,
           host_id: apply.enabled ? (apply.hostId ?? null) : null,
           label: apply.enabled ? (apply.label ?? null) : null,
+          served_grove_id: apply.enabled ? (apply.servedGroveId ?? null) : null,
         },
       },
     },

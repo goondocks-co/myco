@@ -32,6 +32,8 @@ import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { assertGroveProjectId, createGroveId, createProjectId } from '@myco/grove/ids';
+import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
+import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION } from '@myco/constants';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const HOST_BEARER = 'test-host-serve-bearer-0123456789abcdef';
@@ -43,14 +45,35 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   let sessionsHandlerCalls: number;
   let mcpHandlerCalls: number;
   let shutdownCalls: number;
+  let savedMycoHome: string | undefined;
   let savedTeamHome: string | undefined;
   let loopback: string;
   let overlay: string;
+  let servedGrove: GroveRecord;
+  let servedProjectId: string;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-gate-'));
+    savedMycoHome = process.env.MYCO_HOME;
     savedTeamHome = process.env.MYCO_TEAM_HOME;
+    const mycoHome = path.join(tmp, 'home');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = tmp; // empty attach registry — this daemon is the HOST
+    clearGroveRegistryCaches();
+
+    // A real Grove this host is designated to serve — required since Task 2's
+    // servedGroveRefusal fail-closed filter refuses every grove-resolving
+    // overlay request unless it names THIS Grove.
+    servedGrove = createGrove('Served', mycoHome);
+    servedProjectId = assertGroveProjectId(createProjectId());
+    const servedRoot = path.join(tmp, 'served-project');
+    fs.mkdirSync(servedRoot, { recursive: true });
+    registerProjectInGrove(
+      servedGrove.id,
+      { projectId: servedProjectId, projectName: 'Served project', projectRoot: servedRoot },
+      mycoHome,
+    );
 
     // A minimal UI dir so we can prove the overlay refuses static/UI serving that
     // the loopback listener performs.
@@ -67,7 +90,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       uiDir,
-      hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER },
+      hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, servedGroveId: servedGrove.id },
     });
     server.registerRoute('GET', '/api/sessions', async () => {
       sessionsHandlerCalls += 1;
@@ -89,13 +112,24 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
 
   afterEach(async () => {
     await server.stop();
+    if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = savedMycoHome;
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
     else process.env.MYCO_TEAM_HOME = savedTeamHome;
+    clearGroveRegistryCaches();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
   const bearer = (token = HOST_BEARER) => `Bearer ${token}`;
   const v1 = { 'x-myco-host-protocol': '1' };
+  // The designated served Grove's tenancy headers — a real member request to a
+  // grove-resolving route always carries these; Task 2's servedGroveRefusal
+  // refuses any grove-resolving overlay request without them (or naming a
+  // different Grove) at both dispatch chokepoints.
+  const servedTenancy = () => ({
+    'x-myco-grove-id': servedGrove.id,
+    'x-myco-project-id': servedProjectId,
+  });
 
   // --- overlay CSRF: no browsers on the overlay (runs before the bearer gate) ---
 
@@ -145,13 +179,27 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
 
   // --- correct bearer + version → served through the same dispatch ---
 
-  test('correct bearer + version (no tenancy) → served locally, handler runs', async () => {
+  test('correct bearer + version + the designated served Grove\'s tenancy → served locally, handler runs', async () => {
     const res = await fetch(`${overlay}/api/sessions`, {
-      headers: { Authorization: bearer(), ...v1 },
+      headers: { Authorization: bearer(), ...v1, ...servedTenancy() },
     });
     expect(res.status).toBe(200);
     expect((await res.json()).from).toBe('handler');
     expect(sessionsHandlerCalls).toBe(1);
+  });
+
+  test('correct bearer + version but NO tenancy at all → refused 404 by the served-grove filter (Task 2), handler never runs', async () => {
+    // The bearer/lifecycle/version gate above (this describe block's subject)
+    // passes a tenancy-less request through to dispatch exactly as before;
+    // Task 2's servedGroveRefusal is what now refuses it, since the request
+    // resolved no Grove at all. Full pass/refuse-by-designation coverage lives
+    // in tests/daemon/host-serve-grove-filter.test.ts.
+    const res = await fetch(`${overlay}/api/sessions`, {
+      headers: { Authorization: bearer(), ...v1 },
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('not_found');
+    expect(sessionsHandlerCalls).toBe(0);
   });
 
   test('correct bearer + version + /mcp → the raw /mcp handler runs', async () => {
@@ -190,23 +238,23 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   test('missing version header → 409 protocol_version_unsupported (both bounds + host header)', async () => {
     const res = await fetch(`${overlay}/api/sessions`, { headers: { Authorization: bearer() } });
     expect(res.status).toBe(409);
-    expect(res.headers.get('x-myco-host-protocol')).toBe('1');
+    expect(res.headers.get('x-myco-host-protocol')).toBe(String(HOST_PROTOCOL_VERSION));
     const body = await res.json();
     expect(body.error).toBe('protocol_version_unsupported');
-    expect(body.host_protocol_version).toBe(1);
-    expect(body.host_min_compat_version).toBe(1);
+    expect(body.host_protocol_version).toBe(HOST_PROTOCOL_VERSION);
+    expect(body.host_min_compat_version).toBe(HOST_MIN_COMPAT_VERSION);
     expect(sessionsHandlerCalls).toBe(0);
   });
 
   test('version above the window → 409 with both bounds', async () => {
     const res = await fetch(`${overlay}/api/sessions`, {
-      headers: { Authorization: bearer(), 'x-myco-host-protocol': '2' },
+      headers: { Authorization: bearer(), 'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION + 1) },
     });
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toBe('protocol_version_unsupported');
-    expect(body.host_protocol_version).toBe(1);
-    expect(body.host_min_compat_version).toBe(1);
+    expect(body.host_protocol_version).toBe(HOST_PROTOCOL_VERSION);
+    expect(body.host_min_compat_version).toBe(HOST_MIN_COMPAT_VERSION);
   });
 
   test('version below the window → 409', async () => {
@@ -283,9 +331,12 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   // member can craft a raw overlay request that never ran its own classifyRoute).
   let tmp: string;
   let server: DaemonServer;
+  let savedMycoHome: string | undefined;
   let savedTeamHome: string | undefined;
   let overlay: string;
   let loopback: string;
+  let servedGrove: GroveRecord;
+  let servedProjectId: string;
 
   // Per-route run counters — a REFUSED route's handler must never execute.
   let secretWriteCalls: number;
@@ -303,8 +354,27 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-stamp-'));
+    savedMycoHome = process.env.MYCO_HOME;
     savedTeamHome = process.env.MYCO_TEAM_HOME;
+    const mycoHome = path.join(tmp, 'home');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = tmp; // empty attach registry — this daemon is the HOST
+    clearGroveRegistryCaches();
+
+    // A real Grove this host is designated to serve — required since Task 2's
+    // servedGroveRefusal fail-closed filter refuses every grove-resolving
+    // overlay request unless it names THIS Grove (the 'serve'-stamped routes
+    // below, /api/sessions and /api/embedding/status, resolve tenancy).
+    servedGrove = createGrove('Served', mycoHome);
+    servedProjectId = assertGroveProjectId(createProjectId());
+    const servedRoot = path.join(tmp, 'served-project');
+    fs.mkdirSync(servedRoot, { recursive: true });
+    registerProjectInGrove(
+      servedGrove.id,
+      { projectId: servedProjectId, projectName: 'Served project', projectRoot: servedRoot },
+      mycoHome,
+    );
 
     secretWriteCalls = 0;
     secretsListCalls = 0;
@@ -323,7 +393,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
-      hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER },
+      hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, servedGroveId: servedGrove.id },
     });
 
     // localhost-only — THE credential-hijack moat. This handler is the only writer
@@ -390,8 +460,11 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
 
   afterEach(async () => {
     await server.stop();
+    if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = savedMycoHome;
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
     else process.env.MYCO_TEAM_HOME = savedTeamHome;
+    clearGroveRegistryCaches();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -399,6 +472,13 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     Authorization: `Bearer ${HOST_BEARER}`,
     'x-myco-host-protocol': '1',
     ...extra,
+  });
+  // The designated served Grove's tenancy — required on 'serve'-stamped routes
+  // (/api/sessions, /api/embedding/status) now that Task 2's servedGroveRefusal
+  // sits downstream of this describe block's route-stamp backstop.
+  const servedTenancy = (): Record<string, string> => ({
+    'x-myco-grove-id': servedGrove.id,
+    'x-myco-project-id': servedProjectId,
   });
 
   // --- THE Critical case: the provider-secret write is refused AND never written ---
@@ -447,8 +527,8 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
 
   // --- serve → STILL served (proves the backstop only ADDS refusals) ---
 
-  test('a serve route over the overlay is STILL served locally (handler runs)', async () => {
-    const res = await fetch(`${overlay}/api/sessions`, { headers: authed() });
+  test('a serve route over the overlay, with the designated served Grove\'s tenancy, is STILL served locally (handler runs)', async () => {
+    const res = await fetch(`${overlay}/api/sessions`, { headers: { ...authed(), ...servedTenancy() } });
     expect(res.status).toBe(200);
     expect((await res.json()).from).toBe('handler');
     expect(sessionsCalls).toBe(1);
@@ -512,8 +592,8 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     expect(dbVacuumCalls).toBe(0);
   });
 
-  test('GET /api/embedding/status (a serve READ) over the overlay is STILL served (no over-refusal)', async () => {
-    const res = await fetch(`${overlay}/api/embedding/status`, { headers: authed() });
+  test('GET /api/embedding/status (a serve READ), with the designated served Grove\'s tenancy, over the overlay is STILL served (no over-refusal)', async () => {
+    const res = await fetch(`${overlay}/api/embedding/status`, { headers: { ...authed(), ...servedTenancy() } });
     expect(res.status).toBe(200);
     expect((await res.json()).from).toBe('embedding-status');
     expect(embeddingStatusCalls).toBe(1);

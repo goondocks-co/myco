@@ -1,5 +1,5 @@
 /**
- * `myco-team host enable` / `host disable` orchestration (Task 2.1).
+ * `myco host enable` / `host disable` orchestration.
  *
  * Stands up (or tears down) the OSS overlay — Headscale control plane + Tailscale
  * data plane — as SUPERVISED root services and wires the local daemon to serve
@@ -24,6 +24,9 @@ import path from 'node:path';
 import { createHostId } from '@myco/grove/ids.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import { resolveHostControlDir, resolveMycoHome } from '@myco/grove/paths.js';
+import { loadMachineConfig } from '@myco/config/loader.js';
+import { createGrove, ensureDefaultGrove, loadGroveRecord, resolveDefaultGrove } from '@myco/grove/registry.js';
+import { seedGroveBackupDefaults } from '@myco/backup/service.js';
 import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager } from '@myco/service/types.js';
 
@@ -64,6 +67,20 @@ export interface HostEnableOptions {
   headscaleUser?: string;
   /** One-time pre-auth key lifetime. Default `1h`. */
   keyExpiration?: string;
+  /**
+   * How served-grove designation resolves when no designation exists yet
+   * (server-mode design spec §2). Ignored on a re-run that already has one —
+   * designation is immutable once set (see {@link resolveServedGroveDesignation}).
+   *   - `'default'` (the fresh-box / installer `--serve` path): resolves or
+   *     creates the canonical default Grove (`ensureDefaultGrove`) — the
+   *     box's default Grove IS the team storage.
+   *   - `'fresh'` (a user instance enabling the capability on an existing
+   *     personal daemon): creates a brand-new Grove dedicated to serving,
+   *     crash-resumable via a durable intent marker. An existing personal
+   *     Grove is never designated.
+   * Default: `'default'`.
+   */
+  groveDesignation?: 'default' | 'fresh';
 }
 
 export interface HostEnableDeps {
@@ -93,7 +110,127 @@ export interface HostEnableResult {
   tailscaleVersion: string;
   daemonRestarted: boolean;
   overlayListenerUp: boolean;
+  /** The Grove this host is designated to serve (`served_grove_id`). */
+  servedGroveId: string;
   notes: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Served-grove designation (server-mode design spec §2)
+// ---------------------------------------------------------------------------
+
+/** Filename of the crash-resumable create-fresh intent marker, under the
+ *  host control dir ({@link resolveHostControlDir}). */
+export const DESIGNATION_INTENT_FILENAME = 'designation-intent.json';
+
+interface DesignationIntent {
+  grove_id: string;
+  created_at: string;
+}
+
+function designationIntentPath(controlDir: string): string {
+  return path.join(controlDir, DESIGNATION_INTENT_FILENAME);
+}
+
+/** Read the create-fresh intent marker, or null when absent, corrupt, or
+ *  unreadable — a bad marker is treated the same as no marker (falls
+ *  through to creating a fresh Grove), never a thrown error. */
+function readDesignationIntent(controlDir: string): DesignationIntent | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(designationIntentPath(controlDir), 'utf-8');
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<DesignationIntent>;
+    if (typeof parsed.grove_id !== 'string' || !parsed.grove_id) return null;
+    return { grove_id: parsed.grove_id, created_at: typeof parsed.created_at === 'string' ? parsed.created_at : new Date(0).toISOString() };
+  } catch {
+    return null;
+  }
+}
+
+function writeDesignationIntent(controlDir: string, groveId: string): void {
+  fs.mkdirSync(controlDir, { recursive: true });
+  const doc: DesignationIntent = { grove_id: groveId, created_at: new Date().toISOString() };
+  fs.writeFileSync(designationIntentPath(controlDir), `${JSON.stringify(doc, null, 2)}\n`, 'utf-8');
+}
+
+/** Remove the create-fresh intent marker. Safe to call when absent (a
+ *  `'default'`-mode designation never wrote one). Call ONLY after the
+ *  designation is durably persisted (`writeHostServeConfig` succeeded) —
+ *  never before, or a crash between clearing and persisting would strand
+ *  the created Grove with no way to resume adopting it. */
+function clearDesignationIntent(controlDir: string): void {
+  fs.rmSync(designationIntentPath(controlDir), { force: true });
+}
+
+/**
+ * Create-or-reuse a fresh Grove dedicated to Team Host serving — the
+ * user-instance designation path (an existing personal Grove is never
+ * designated). Crash-resumable: the created Grove id is recorded to the
+ * intent marker BEFORE this function returns, so a re-run whose previous
+ * attempt crashed before the designation itself was persisted adopts the
+ * SAME Grove instead of minting a second orphan.
+ */
+function createOrAdoptFreshServedGrove(mycoHome: string, controlDir: string, log: (message: string) => void): string {
+  const intent = readDesignationIntent(controlDir);
+  if (intent) {
+    const existing = loadGroveRecord(intent.grove_id, mycoHome);
+    if (existing) {
+      log(`Resuming an interrupted Team Host enable: adopting the Grove already created for serving ("${existing.name}", ${existing.id}) instead of creating a second one.`);
+      return existing.id;
+    }
+    // The marker names a Grove that no longer exists (e.g. deleted out of
+    // band) — stale marker, fall through to creating a fresh Grove below.
+  }
+  const grove = createGrove('Team Host', mycoHome);
+  writeDesignationIntent(controlDir, grove.id);
+  return grove.id;
+}
+
+/**
+ * Resolve served-grove designation for this `hostEnable` run — create-or-
+ * reuse when none exists yet, VERIFY (never re-derive) when one is already
+ * present (server-mode design spec §2: "immutable once set").
+ *
+ * A designation already on record is authoritative. This function checks it
+ * still names an existing Grove and, in `'default'` mode, warns (without
+ * moving) if the default-Grove pointer has since moved to a different
+ * Grove — the default pointer's movement must never re-point a serving box
+ * and strand attach refs. It never returns a different Grove id than the
+ * one it was handed once a designation exists.
+ */
+export function resolveServedGroveDesignation(
+  mode: 'default' | 'fresh',
+  existingServedGroveId: string | undefined,
+  mycoHome: string,
+  controlDir: string,
+  log: (message: string) => void,
+): { groveId: string; warning?: string } {
+  if (existingServedGroveId) {
+    const grove = loadGroveRecord(existingServedGroveId, mycoHome);
+    if (!grove) {
+      const warning = `served_grove_id ${existingServedGroveId} no longer names a Grove on this machine — the designation is dangling (see \`myco doctor\`). Team Host serving stays off until this is resolved; the designation was NOT silently replaced.`;
+      log(`WARNING: ${warning}`);
+      return { groveId: existingServedGroveId, warning };
+    }
+    if (mode === 'default') {
+      const currentDefault = resolveDefaultGrove(mycoHome);
+      if (currentDefault && currentDefault.id !== existingServedGroveId) {
+        const warning = `The default Grove pointer now points to "${currentDefault.name}" (${currentDefault.id}), but this host is designated to serve "${grove.name}" (${grove.id}) — designation is immutable once set and was NOT re-pointed. Disable and re-enable Team Host serving to designate a different Grove.`;
+        log(`WARNING: ${warning}`);
+        return { groveId: existingServedGroveId, warning };
+      }
+    }
+    return { groveId: existingServedGroveId };
+  }
+
+  if (mode === 'fresh') {
+    return { groveId: createOrAdoptFreshServedGrove(mycoHome, controlDir, log) };
+  }
+  return { groveId: ensureDefaultGrove(mycoHome).id };
 }
 
 // ---------------------------------------------------------------------------
@@ -212,13 +349,36 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   }
   log(`Host overlay IP: ${overlayAddress}`);
 
-  // 6. Wire the daemon: write machine-tier host_serve + restart to bind the listener.
-  //    Resolve the durable host_id up front (reused for the state record in step 7)
-  //    so the daemon's enrollment endpoint (Task 2.4) can self-report id + label to
-  //    joining members. `hostname` is the host's tailnet node name — the label.
+  // 6. Resolve served-grove designation (create-or-reuse, immutable once
+  //    set — server-mode design spec §2), THEN wire the daemon: write
+  //    machine-tier host_serve + restart to bind the listener. Resolve the
+  //    durable host_id up front (reused for the state record in step 7) so
+  //    the daemon's enrollment endpoint (Task 2.4) can self-report id +
+  //    label to joining members. `hostname` is the host's tailnet node
+  //    name — the label.
+  const existingServedGroveId = loadMachineConfig(mycoHome).daemon.host_serve.served_grove_id ?? undefined;
+  const designation = resolveServedGroveDesignation(
+    options.groveDesignation ?? 'default',
+    existingServedGroveId,
+    mycoHome,
+    controlDir,
+    log,
+  );
+  if (designation.warning) notes.push(designation.warning);
+
   const existingState = readHostState();
   const hostId = existingState?.host_id ?? createHostId();
-  writeHostServeConfig({ enabled: true, overlayAddress, hostId, label: hostname }, mycoHome);
+  writeHostServeConfig({ enabled: true, overlayAddress, hostId, label: hostname, servedGroveId: designation.groveId }, mycoHome);
+  // Only clear a create-fresh marker once the designation it points at is
+  // actually durable — see `clearDesignationIntent`'s ordering contract.
+  clearDesignationIntent(controlDir);
+  // Seed the served Grove's backup defaults now that the designation is
+  // durable (server-mode design spec §8 — backups default-on for the served
+  // Grove). Skipped for a dangling designation (the Grove doesn't exist on
+  // this machine, e.g. an unresolved warning above) — nothing to seed.
+  if (loadGroveRecord(designation.groveId, mycoHome)) {
+    seedGroveBackupDefaults(designation.groveId, mycoHome);
+  }
   const restart = await restartDaemonForHostServe(mycoHome, deps.serviceManager ?? getServiceManager());
   log(restart.detail);
   if (!restart.restarted) notes.push(restart.detail);
@@ -258,6 +418,7 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     tailscaleVersion: bins.tailscaleVersion,
     daemonRestarted: restart.restarted,
     overlayListenerUp,
+    servedGroveId: designation.groveId,
     notes,
   };
 }
@@ -342,7 +503,8 @@ export async function defaultResolveOverlayIp(runner: CommandRunner, tailscaleBi
   return line && isOverlayRangeAddress(line) ? line : null;
 }
 
-/** `headscale nodes list --output json` → the id of the node matching `hostname`. */
+/** `headscale nodes list --output json` → the id of the node matching `hostname`.
+ *  The admin socket is root-owned, so the call is sudo'd (same as key minting). */
 async function defaultResolveNodeId(
   runner: CommandRunner,
   headscaleBin: string,
@@ -350,7 +512,7 @@ async function defaultResolveNodeId(
   hostname: string,
 ): Promise<string | undefined> {
   try {
-    const res = await runner.run(headscaleBin, ['--config', configPath, 'nodes', 'list', '--output', 'json']);
+    const res = await runner.run('sudo', [headscaleBin, '--config', configPath, 'nodes', 'list', '--output', 'json']);
     if (res.exitCode !== 0) return undefined;
     const parsed = JSON.parse(res.stdout) as Array<{ id?: unknown; name?: unknown; given_name?: unknown }>;
     const match = parsed.find((n) => n.name === hostname || n.given_name === hostname);

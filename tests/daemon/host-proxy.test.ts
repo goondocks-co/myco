@@ -36,7 +36,7 @@ import { resolveProjectBufferDir } from '@myco/grove/paths';
 import { listGroves } from '@myco/grove/registry';
 import { readEventId } from '@myco/capture/event-id';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
-import { HOST_PROTOCOL_HEADER } from '@myco/constants';
+import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 
 const HOST_BEARER = 'host-bearer-secret';
 
@@ -236,7 +236,7 @@ describe('host-proxy forwarder', () => {
     // LOCAL bearer stripped; HOST bearer attached; version header stamped.
     expect(got.headers['x-myco-auth']).toBeUndefined();
     expect(got.headers.authorization).toBe(`Bearer ${HOST_BEARER}`);
-    expect(got.headers[HOST_PROTOCOL_HEADER]).toBe('1');
+    expect(got.headers[HOST_PROTOCOL_HEADER]).toBe(String(HOST_PROTOCOL_VERSION));
     expect(got.headers.host).toBe(`127.0.0.1:${fixturePort}`);
   });
 
@@ -418,7 +418,7 @@ describe('host-proxy forwarder', () => {
     const got = await forwarded;
     expect(JSON.parse(got.body)).toMatchObject(event);
     expect(got.headers.authorization).toBe(`Bearer ${HOST_BEARER}`);
-    expect(got.headers[HOST_PROTOCOL_HEADER]).toBe('1');
+    expect(got.headers[HOST_PROTOCOL_HEADER]).toBe(String(HOST_PROTOCOL_VERSION));
 
     // No local Grove materialized — no grove.toml, no DB, not in listGroves.
     const groveDir = path.join(tmpHome, 'groves', config.target.groveId);
@@ -557,7 +557,7 @@ describe('host-proxy forwarder', () => {
     const body = await res1.json();
     expect(body.error).toBe('host_protocol_mismatch');
     expect(body.host_protocol).toBe(99);
-    expect(body.member_protocol).toBe(1);
+    expect(body.member_protocol).toBe(HOST_PROTOCOL_VERSION);
     // Never dialed the host.
     expect(fixture.requests).toHaveLength(0);
     // Logged loudly once.

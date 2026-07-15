@@ -448,4 +448,62 @@ describe('member overlay — multi-host join / leave', () => {
       }),
     )).rejects.toThrow(/Could not resolve a 100\.64/);
   });
+
+  // --- Step-5 enrollment retry-with-backoff (server-mode design spec §4) ---
+
+  /** An {@link EnrollmentClient} whose `enroll` throws on the first
+   *  `failuresBeforeSuccess` calls, then succeeds. `callCount()` exposes how
+   *  many times the transport was actually invoked. */
+  function flakyEnrollment(
+    hostId: string,
+    bearer: string,
+    failuresBeforeSuccess: number,
+  ): { client: EnrollmentClient; callCount: () => number } {
+    let calls = 0;
+    const client: EnrollmentClient = {
+      async enroll(_ctx: EnrollmentContext): Promise<HostEnrollment> {
+        calls += 1;
+        if (calls <= failuresBeforeSuccess) throw new Error(`transient enrollment failure #${calls}`);
+        return {
+          host_id: hostId,
+          label: `host ${hostId.slice(0, 9)}`,
+          overlay_address: '100.64.0.1:7433',
+          protocol_version: HOST_PROTOCOL_VERSION,
+          bearer,
+          projects: [],
+        };
+      },
+    };
+    return { client, callCount: () => calls };
+  }
+
+  test('enroll transport fails twice then succeeds — join completes (3 attempts, 2s/4s backoff)', async () => {
+    const id = hostId();
+    const { client, callCount } = flakyEnrollment(id, 'bearer-retry', 2);
+    const sleeps: number[] = [];
+    const result = await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: client, sleep: async (ms) => { sleeps.push(ms); } }),
+    );
+
+    expect(callCount()).toBe(3);
+    expect(sleeps).toEqual([2000, 4000]);
+    expect(result.hostId).toBe(id);
+    expect(getHost(id)!.overlay_address).toBe('100.64.0.1:7433');
+    expect(readHostSecrets(id)[HOST_BEARER_SECRET]).toBe('bearer-retry');
+  });
+
+  test('enroll transport fails all 3 attempts — the final error surfaces unchanged, no record written', async () => {
+    const id = hostId();
+    const { client, callCount } = flakyEnrollment(id, 'bearer-retry', Number.POSITIVE_INFINITY);
+    const sleeps: number[] = [];
+    await expect(joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: client, sleep: async (ms) => { sleeps.push(ms); } }),
+    )).rejects.toThrow(/transient enrollment failure #3/);
+
+    expect(callCount()).toBe(3); // bounded — never a 4th attempt
+    expect(sleeps).toEqual([2000, 4000]); // backoff only BETWEEN attempts
+    expect(getHost(id)).toBeNull();
+  });
 });

@@ -174,15 +174,16 @@ export function createHostMembershipAttachHandler(deps: HostMembershipRouteDeps)
     const projectRoot = str(body.project_root);
     if (!projectRoot) return { status: 400, body: errorBody('missing_project_root', 'project_root is required.') };
 
-    // grove_id (and host_id) are NOT validated here — attachCommand itself
-    // validates both, and its own messages are richer (the host_id message
-    // names the resolved host; the missing-hostId case falls back to the
-    // manifest's affiliation hint before failing). Duplicating a shallower
-    // check here would only produce a worse error for the same input.
+    // host_id is NOT validated here — attachCommand itself validates it, and
+    // its own message is richer (names the resolved host; the missing-hostId
+    // case falls back to the manifest's affiliation hint before failing).
+    // Duplicating a shallower check here would only produce a worse error for
+    // the same input. There is no grove_id to accept: attachCommand sources
+    // the Grove from the joined host's own self-report (`served_grove_id`),
+    // never a caller-supplied value.
     const options: AttachOptions = {
       projectPath: projectRoot,
       hostId: str(body.host_id),
-      groveId: str(body.grove_id),
       projectId: str(body.project_id),
       mycoHome,
     };
@@ -240,11 +241,22 @@ export function createHostMembershipStatusHandler(): RouteHandler {
       overlay_address: record.overlay_address,
       proxy_port: record.proxy_port ?? null,
       protocol_version: record.protocol_version,
+      served_grove_id: record.served_grove_id ?? null,
       created_at: record.created_at,
       projects: record.projects.map((ref) => ({
         grove_id: ref.grove_id,
         project_id: ref.project_id,
         root: ref.root ?? null,
+        // Existing-refs mitigation (server-mode design spec §2(c)): once the
+        // host's served_grove_id is known, a ref recorded against a
+        // DIFFERENT Grove (e.g. attached under the pre-designation
+        // operator-typed `--grove` flow) is flagged here rather than left to
+        // fail opaquely the next time a drain or request routes through it.
+        // `null` while the host's designation is unknown — there is nothing
+        // to compare against yet, not a clean bill of health.
+        mismatch: record.served_grove_id && ref.grove_id !== record.served_grove_id
+          ? ('attach_grove_mismatch' as const)
+          : null,
       })),
     }));
 

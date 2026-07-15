@@ -60,7 +60,7 @@ describe('executeMapPhase connectivity', () => {
       runId: 'r',
       agentId: 'a',
       provider: { type: 'lmstudio', baseUrl: 'http://x:1234', model: 'm' },
-      probeAvailable: async () => false,
+      probeAvailable: async () => ({ available: false }),
     });
     expect(sourceCalls).toBe(0);
     expect(res.providerUnavailable).toBe(true);
@@ -99,7 +99,7 @@ describe('executeMapPhase connectivity', () => {
       runId: 'r',
       agentId: 'a',
       provider: { type: 'lmstudio', baseUrl: 'http://x:1234', model: 'm' },
-      probeAvailable: async () => true,
+      probeAvailable: async () => ({ available: true }),
     });
     expect(runs).toBe(1); // broke after the first connection failure
     expect(res.itemCount).toBe(3); // break happened mid-batch, not pre-fetch
@@ -154,7 +154,7 @@ describe('executeMapPhase connectivity', () => {
       runId: 'r',
       agentId: 'a',
       provider: { type: 'lmstudio', baseUrl: 'http://x:1234', model: 'm' },
-      probeAvailable: async () => true,
+      probeAvailable: async () => ({ available: true }),
     });
     expect(runs).toBe(3); // batch did NOT break — every item was attempted
     expect(res.providerUnavailable).toBe(false); // not classified as an outage

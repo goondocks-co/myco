@@ -6,7 +6,7 @@ import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useTask, type PhaseDefinition } from '../../hooks/use-agent';
 import { useScopedConfig } from '../../hooks/use-scoped-config';
-import { maybeInferHarnessFromProviderType, parseProviderType, resolveReasoningModel } from '../../hooks/use-providers';
+import { getExecution, getInheritedExecution } from '../../hooks/use-providers';
 import { capitalize } from '../../lib/format';
 import { sourceBadgeVariant } from './helpers';
 import { TaskActions } from './TaskActions';
@@ -25,111 +25,6 @@ interface TaskDetailProps {
   onBack: () => void;
   onNavigate?: (taskId: string) => void;
   onRunTriggered?: (runId?: string) => void;
-}
-
-/* ---------- Helpers ---------- */
-
-/** Resolve effective execution config from task fields. */
-interface TaskExecutionSource {
-  execution?: {
-    harness?: string;
-    provider?: { type?: string };
-    model?: string;
-    reasoningLevel?: 'low' | 'default' | 'high';
-    maxTurns?: number;
-    timeoutSeconds?: number;
-  };
-  model?: string;
-  reasoningLevel?: 'low' | 'default' | 'high';
-  maxTurns?: number;
-  timeoutSeconds?: number;
-}
-
-interface ExecutionSummary {
-  harness?: string;
-  provider?: string;
-  model?: string;
-  reasoningLevel?: 'low' | 'default' | 'high';
-  maxTurns?: number;
-  timeoutSeconds?: number;
-}
-
-interface InheritedExecutionSummary extends ExecutionSummary {
-  providerType?: string;
-  localBackend?: 'ollama' | 'lmstudio';
-  reasoningMap?: Partial<Record<'low' | 'default' | 'high', string>>;
-  baseUrl?: string;
-  contextLength?: number;
-}
-
-function getExecution(task: TaskExecutionSource): ExecutionSummary {
-  return {
-    harness: task.execution?.harness,
-    provider: task.execution?.provider?.type,
-    model: task.execution?.model ?? task.model,
-    reasoningLevel: task.execution?.reasoningLevel ?? task.reasoningLevel,
-    maxTurns: task.execution?.maxTurns ?? task.maxTurns,
-    timeoutSeconds: task.execution?.timeoutSeconds ?? task.timeoutSeconds,
-  };
-}
-
-function getInheritedExecution(
-  task: {
-    execution?: {
-      harness?: string;
-      provider?: {
-        type?: string;
-        local_backend?: 'ollama' | 'lmstudio';
-        model?: string;
-        reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
-        base_url?: string;
-        context_length?: number;
-      };
-      model?: string;
-      reasoningLevel?: 'low' | 'default' | 'high';
-      maxTurns?: number;
-      timeoutSeconds?: number;
-    };
-    model?: string;
-    reasoningLevel?: 'low' | 'default' | 'high';
-    maxTurns?: number;
-    timeoutSeconds?: number;
-  },
-  config: {
-    agent?: {
-      harness?: string;
-      provider?: {
-        type?: string;
-        local_backend?: 'ollama' | 'lmstudio';
-        model?: string;
-        reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
-        base_url?: string;
-        context_length?: number;
-      };
-    };
-  } | undefined,
-): InheritedExecutionSummary {
-  const globalProvider = config?.agent?.provider;
-  const taskProvider = task.execution?.provider;
-  const taskProviderType = taskProvider?.type ? parseProviderType(taskProvider.type) || undefined : undefined;
-  const globalProviderType = globalProvider?.type ? parseProviderType(globalProvider.type) || undefined : undefined;
-  const reasoningLevel = task.execution?.reasoningLevel ?? task.reasoningLevel;
-  const fallbackModel = task.execution?.model ?? task.model ?? globalProvider?.model;
-  return {
-    harness: task.execution?.harness
-      ?? config?.agent?.harness
-      ?? maybeInferHarnessFromProviderType(taskProviderType)
-      ?? maybeInferHarnessFromProviderType(globalProviderType),
-    providerType: taskProvider?.type ?? globalProvider?.type,
-    localBackend: taskProvider?.local_backend ?? globalProvider?.local_backend,
-    reasoningLevel,
-    model: resolveReasoningModel(reasoningLevel, taskProvider ?? globalProvider, fallbackModel),
-    reasoningMap: taskProvider?.reasoning_map ?? globalProvider?.reasoning_map,
-    baseUrl: taskProvider?.base_url ?? globalProvider?.base_url,
-    contextLength: taskProvider?.context_length ?? globalProvider?.context_length,
-    maxTurns: task.execution?.maxTurns ?? task.maxTurns,
-    timeoutSeconds: task.execution?.timeoutSeconds ?? task.timeoutSeconds,
-  };
 }
 
 /* ---------- Sub-components ---------- */

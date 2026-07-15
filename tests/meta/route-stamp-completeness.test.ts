@@ -51,7 +51,12 @@ const KNOWN_RAW_ROUTES: ReadonlySet<string> = new Set<string>([
   '/health', // liveness — bearer+version gated over the overlay
   '/api/version', // version probe — bearer+version gated
   '/api/shutdown', // lifecycle — overlayLifecycleRefused (404 over the overlay)
-  '/mcp', // the host serves its own Grove's MCP locally (correct)
+  '/mcp', // bypasses classifyRouteStamp entirely; gated by the dual-homed
+          // served-grove filter (servedGroveRefusal, Task 2) at its own
+          // chokepoint in mcp/http.ts — the host serves ONLY its one
+          // designated served_grove_id over the overlay, never "any Grove
+          // this host owns" (see daemon/server.ts's router chokepoint for
+          // the mirror check)
   '/api/host/enroll', // bearer-EXEMPT enrollment; overlay-only (constant-registered)
 ]);
 
@@ -294,6 +299,17 @@ describe('route-stamp completeness matcher self-test', () => {
     // The READ siblings stay serve (unstamped) — they belong in the serve manifest.
     expect(matchRouteRule('GET', '/api/embedding/status')).toBeUndefined();
     expect(matchRouteRule('GET', '/api/database/details')).toBeUndefined();
+  });
+
+  it('team-write routes (Task 8) resolve to the explicit team-write stamp, never the serve default', () => {
+    expect(matchRouteRule('GET', '/api/team/config')?.stamp).toBe('team-write');
+    expect(matchRouteRule('PUT', '/api/team/config')?.stamp).toBe('team-write');
+    expect(matchRouteRule('PUT', samplePath('/api/team/secrets/:provider'))?.stamp).toBe('team-write');
+    expect(matchRouteRule('DELETE', samplePath('/api/team/secrets/:provider'))?.stamp).toBe('team-write');
+    expect(matchRouteRule('POST', '/api/team/mcp-token/rotate')?.stamp).toBe('team-write');
+    // The coarse legacy team-sync prefix rules are unaffected — still localhost-only.
+    expect(matchRouteRule('GET', '/api/team/status')?.stamp).toBe('localhost-only');
+    expect(matchRouteRule('POST', '/api/team/join')?.stamp).toBe('localhost-only');
   });
 
   it('stripComments blanks a `.registerRoute(` that only appears in a comment', () => {

@@ -16,6 +16,7 @@ import {
   listRegisteredProjects,
   loadGroveRecord,
   renameGrove,
+  ServedGroveUndeletableError,
   setDefaultGrove,
   type GroveRecord,
   type RegisteredProject,
@@ -374,6 +375,9 @@ export function createDeleteGroveHandler(_daemonStateDir: string): RouteHandler 
       }
       if (err instanceof LastGroveUndeletableError) {
         return { status: 409, body: errorBody('last_grove_undeletable', err.message) };
+      }
+      if (err instanceof ServedGroveUndeletableError) {
+        return { status: 409, body: errorBody('served_grove_undeletable', err.message) };
       }
       return { status: 500, body: errorBody('delete_failed', (err as Error).message) };
     }

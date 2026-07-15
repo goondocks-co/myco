@@ -6,8 +6,8 @@ import {
   parsePreauthKey,
   parseUserId,
   renderHeadscaleConfig,
-} from '../../packages/myco-team/src/host/headscale-config.js';
-import type { CommandRunner } from '../../packages/myco-team/src/host/binaries.js';
+} from '@myco/team-host/headscale-config.js';
+import type { CommandRunner } from '@myco/team-host/binaries.js';
 
 describe('renderHeadscaleConfig', () => {
   const layout = headscaleLayout('/home/x/.myco-team/host');
@@ -34,6 +34,14 @@ describe('renderHeadscaleConfig', () => {
     expect(config).toMatch(/Tailscale Inc's public DERP fleet/);
     expect(config).toContain('enabled: false'); // embedded DERP server off
     expect(config).toContain('100.64.0.0/10'); // CGNAT overlay range
+  });
+
+  it('sets override_local_dns: false so headscale 0.29.2 does not fatal on load', () => {
+    // headscale 0.29.2 defaults dns.override_local_dns to true, which then
+    // requires dns.nameservers.global to be non-empty or the config load is a
+    // fatal error. We never override local DNS, so false is correct AND
+    // silences the fatal — see headscale-config.ts's module docblock.
+    expect(config).toContain('override_local_dns: false');
   });
 });
 
@@ -73,12 +81,18 @@ describe('mintPreauthKey', () => {
 
     expect(key).toBe('abc123def456key');
     // preauthkeys create references the user by resolved numeric id, one-time (no --reusable).
+    // Every call is routed through sudo — the headscale admin socket is root-owned.
     const mintCall = calls.find((c) => c.includes('preauthkeys'))!;
     expect(mintCall).toEqual([
-      '/bin/headscale', '--config', '/cfg/config.yaml',
+      'sudo', '/bin/headscale', '--config', '/cfg/config.yaml',
       'preauthkeys', 'create', '--user', '7', '--expiration', '1h', '--output', 'json',
     ]);
     expect(mintCall).not.toContain('--reusable');
+    // Every headscale invocation (create, list, mint) is sudo'd, not just the mint.
+    for (const call of calls) {
+      expect(call[0]).toBe('sudo');
+      expect(call[1]).toBe('/bin/headscale');
+    }
   });
 
   it('tolerates an already-existing user (idempotent re-enable)', async () => {

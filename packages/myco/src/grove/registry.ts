@@ -26,6 +26,7 @@ import {
   type RegistryResolvedProject,
 } from './registry-resolve.js';
 import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
+import { loadMachineConfig } from '../config/loader.js';
 import { resolveAttach, type AttachRef, type HostRecord } from '../host/registry.js';
 import { noticeTeamHostHintOnce } from '../host/hint.js';
 
@@ -268,6 +269,23 @@ export class LastGroveUndeletableError extends Error {
   constructor(public readonly groveId: string) {
     super(`Grove ${groveId} is the only Grove; at least one Grove must remain`);
     this.name = 'LastGroveUndeletableError';
+  }
+}
+
+/**
+ * Thrown by {@link deleteGrove} when the target is this machine's designated
+ * Team Host served Grove (`daemon.host_serve.served_grove_id`, machine
+ * tier). Not bypassed by `force` — deleting the one Grove a Team Host serves
+ * would silently strand every member's attach ref (server-mode design spec
+ * §2: "Grove deletion refuses while the grove is the served grove"). Disable
+ * Team Host serving first (`myco-team host disable`), which clears the
+ * designation. The daemon transport maps this to a 409
+ * `served_grove_undeletable`.
+ */
+export class ServedGroveUndeletableError extends Error {
+  constructor(public readonly groveId: string) {
+    super(`Grove ${groveId} is the Team Host served Grove; disable Team Host serving first`);
+    this.name = 'ServedGroveUndeletableError';
   }
 }
 
@@ -1089,12 +1107,14 @@ export function renameGrove(
  * `force: true` is passed — moves are the supported path for project
  * relocation, not a "smart" delete.
  *
- * Two additional refusals run before the bound-projects guard and are
+ * Three additional refusals run before the bound-projects guard and are
  * never bypassed by `force`:
  *   1. Deleting the current default Grove throws
  *      {@link DefaultGroveUndeletableError}.
  *   2. Deleting the last remaining Grove throws
  *      {@link LastGroveUndeletableError}.
+ *   3. Deleting this machine's Team Host served Grove throws
+ *      {@link ServedGroveUndeletableError}.
  *
  * On success: removes `~/.myco/groves/<groveId>/` (metadata, registry,
  * SQLite, vectors). Clears the cross-Grove default pointer if the deleted
@@ -1120,6 +1140,14 @@ export function deleteGrove(
 
   if (listGroves(mycoHome).length === 1) {
     throw new LastGroveUndeletableError(groveId);
+  }
+
+  // Every deletion path (CLI, daemon API, any future lifecycle caller) flows
+  // through this one function — the single chokepoint for the guard, never
+  // duplicated in a caller. `served_grove_id` is machine tier, independent
+  // of which project vault (if any) is asking.
+  if (loadMachineConfig(mycoHome).daemon.host_serve.served_grove_id === groveId) {
+    throw new ServedGroveUndeletableError(groveId);
   }
 
   const projects = listRegisteredProjects(groveId, mycoHome);

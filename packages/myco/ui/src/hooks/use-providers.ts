@@ -1,6 +1,8 @@
+import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, putJson, postJson } from '../lib/api';
 import { useProjectScopedQueryKey } from './use-project-selection';
+import { useIsTeamConfigTarget, useTeamConfigTargetOrNull, teamCarrierHeaders } from './use-scoped-config';
 import {
   PROVIDER_METADATA_BY_TYPE,
   getSupportedHarnessesForProviderType,
@@ -196,6 +198,119 @@ export function resolveReasoningModel(
     ?? '';
 }
 
+/* ---------- Task execution inheritance ---------- */
+
+/** Resolve effective execution config from task fields. */
+export interface TaskExecutionSource {
+  execution?: {
+    harness?: string;
+    provider?: { type?: string };
+    model?: string;
+    reasoningLevel?: 'low' | 'default' | 'high';
+    maxTurns?: number;
+    timeoutSeconds?: number;
+  };
+  model?: string;
+  reasoningLevel?: 'low' | 'default' | 'high';
+  maxTurns?: number;
+  timeoutSeconds?: number;
+}
+
+export interface ExecutionSummary {
+  harness?: string;
+  provider?: string;
+  model?: string;
+  reasoningLevel?: 'low' | 'default' | 'high';
+  maxTurns?: number;
+  timeoutSeconds?: number;
+}
+
+export interface InheritedExecutionSummary extends ExecutionSummary {
+  providerType?: string;
+  localBackend?: 'ollama' | 'lmstudio';
+  reasoningMap?: Partial<Record<'low' | 'default' | 'high', string>>;
+  baseUrl?: string;
+  contextLength?: number;
+}
+
+/** A task's OWN execution fields, ignoring anything inherited. Used for the
+ *  "Task Definition" summary card (`TaskDetail`). */
+export function getExecution(task: TaskExecutionSource): ExecutionSummary {
+  return {
+    harness: task.execution?.harness,
+    provider: task.execution?.provider?.type,
+    model: task.execution?.model ?? task.model,
+    reasoningLevel: task.execution?.reasoningLevel ?? task.reasoningLevel,
+    maxTurns: task.execution?.maxTurns ?? task.maxTurns,
+    timeoutSeconds: task.execution?.timeoutSeconds ?? task.timeoutSeconds,
+  };
+}
+
+/** A task's execution config resolved against the global provider default —
+ *  the placeholder/inherited-default view `TaskProviderConfig`'s `defaults`
+ *  prop needs. Shared by `TaskDetail` (project-scoped) and
+ *  `TeamTaskProviderConfig` (Team settings per-task table, server-mode
+ *  design spec §6.3) so both compute the SAME inherited-defaults view
+ *  without forking the logic. */
+export function getInheritedExecution(
+  task: {
+    execution?: {
+      harness?: string;
+      provider?: {
+        type?: string;
+        local_backend?: 'ollama' | 'lmstudio';
+        model?: string;
+        reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
+        base_url?: string;
+        context_length?: number;
+      };
+      model?: string;
+      reasoningLevel?: 'low' | 'default' | 'high';
+      maxTurns?: number;
+      timeoutSeconds?: number;
+    };
+    model?: string;
+    reasoningLevel?: 'low' | 'default' | 'high';
+    maxTurns?: number;
+    timeoutSeconds?: number;
+  },
+  config: {
+    agent?: {
+      harness?: string;
+      provider?: {
+        type?: string;
+        local_backend?: 'ollama' | 'lmstudio';
+        model?: string;
+        reasoning_map?: Partial<Record<'low' | 'default' | 'high', string>>;
+        base_url?: string;
+        context_length?: number;
+      };
+    };
+  } | undefined,
+): InheritedExecutionSummary {
+  const globalProvider = config?.agent?.provider;
+  const taskProvider = task.execution?.provider;
+  const taskProviderType = taskProvider?.type ? parseProviderType(taskProvider.type) || undefined : undefined;
+  const globalProviderType = globalProvider?.type ? parseProviderType(globalProvider.type) || undefined : undefined;
+  const reasoningLevel = task.execution?.reasoningLevel ?? task.reasoningLevel;
+  const fallbackModel = task.execution?.model ?? task.model ?? globalProvider?.model;
+  return {
+    harness: task.execution?.harness
+      ?? config?.agent?.harness
+      ?? maybeInferHarnessFromProviderType(taskProviderType)
+      ?? maybeInferHarnessFromProviderType(globalProviderType),
+    providerType: taskProvider?.type ?? globalProvider?.type,
+    localBackend: taskProvider?.local_backend ?? globalProvider?.local_backend,
+    reasoningLevel,
+    model: resolveReasoningModel(reasoningLevel, taskProvider ?? globalProvider, fallbackModel),
+    reasoningMap: taskProvider?.reasoning_map ?? globalProvider?.reasoning_map,
+    baseUrl: taskProvider?.base_url ?? globalProvider?.base_url,
+    contextLength: taskProvider?.context_length ?? globalProvider?.context_length,
+    maxTurns: task.execution?.maxTurns ?? task.maxTurns,
+    timeoutSeconds: task.execution?.timeoutSeconds ?? task.timeoutSeconds,
+  };
+}
+
 /** Seed a draft from a freshly-selected provider type — picks the first
  *  available model and the provider's default base URL. Both the global
  *  Agent card and per-task config call this on the provider-type change
@@ -291,12 +406,25 @@ export interface UpdateTaskConfigPayload {
 
 /* ---------- Hooks ---------- */
 
-/** Fetch the current config override for a task from myco.yaml. */
+/** Fetch the current config override for a task from myco.yaml — or, when
+ *  rendered inside a `TeamConfigTargetProvider` (the Team settings per-task
+ *  table, server-mode design spec §6.3), the served grove's team-write
+ *  counterpart route instead. `TaskProviderConfig` itself is unmodified;
+ *  only this hook and `useUpdateTaskConfig` below branch on the target. */
 export function useTaskConfig(taskId: string | undefined) {
-  const queryKey = useProjectScopedQueryKey(['task-config', taskId]);
+  const isTeam = useIsTeamConfigTarget();
+  const target = useTeamConfigTargetOrNull();
+  const projectQueryKey = useProjectScopedQueryKey(['task-config', taskId]);
+  const teamQueryKey = ['team-task-config', taskId];
+  const headers = useMemo(
+    () => (isTeam && target ? teamCarrierHeaders(target) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isTeam, target?.carrier?.groveId, target?.carrier?.projectId],
+  );
+  const path = isTeam ? `/team/agent-tasks/${taskId}/config` : `/agent/tasks/${taskId}/config`;
   return useQuery<TaskConfigResponse>({
-    queryKey,
-    queryFn: ({ signal }) => fetchJson<TaskConfigResponse>(`/agent/tasks/${taskId}/config`, { signal }),
+    queryKey: isTeam ? teamQueryKey : projectQueryKey,
+    queryFn: ({ signal }) => fetchJson<TaskConfigResponse>(path, { signal, headers }),
     enabled: taskId !== undefined,
     staleTime: PROVIDERS_STALE_TIME,
   });
@@ -319,14 +447,26 @@ export function useTestProvider() {
   });
 }
 
-/** Update a task's config override in myco.yaml. Accepts partial updates. */
+/** Update a task's config override in myco.yaml — or, bound to a team target
+ *  (see `useTaskConfig` above), the served grove's `agent.tasks.<id>`
+ *  override via the team-write route. Accepts partial updates. */
 export function useUpdateTaskConfig() {
   const queryClient = useQueryClient();
+  const isTeam = useIsTeamConfigTarget();
+  const target = useTeamConfigTargetOrNull();
+  const headers = useMemo(
+    () => (isTeam && target ? teamCarrierHeaders(target) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isTeam, target?.carrier?.groveId, target?.carrier?.projectId],
+  );
   return useMutation<{ taskId: string; config: TaskConfigOverride | null }, Error, UpdateTaskConfigPayload>({
-    mutationFn: ({ taskId, config }) =>
-      putJson<{ taskId: string; config: TaskConfigOverride | null }>(`/agent/tasks/${taskId}/config`, config),
+    mutationFn: ({ taskId, config }) => {
+      const path = isTeam ? `/team/agent-tasks/${taskId}/config` : `/agent/tasks/${taskId}/config`;
+      return putJson<{ taskId: string; config: TaskConfigOverride | null }>(path, config, { headers });
+    },
     onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({ queryKey: ['task-config', variables.taskId] });
+      const queryKey = isTeam ? ['team-task-config', variables.taskId] : ['task-config', variables.taskId];
+      void queryClient.invalidateQueries({ queryKey });
     },
   });
 }
