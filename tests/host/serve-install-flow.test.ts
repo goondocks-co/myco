@@ -21,14 +21,14 @@ import type { Database } from 'bun:sqlite';
 import {
   hostEnableAndEmitJoin,
   type ComposeEnableDeps,
-} from '../../packages/myco-team/src/host/cli.js';
+} from '@myco/team-host/compose.js';
 import {
   headscaleAssetName,
   headscaleAssetUrl,
   HEADSCALE_VERSION,
   type BinaryFetcher,
   type CommandRunner,
-} from '../../packages/myco-team/src/host/binaries.js';
+} from '@myco/team-host/binaries.js';
 import type { ServiceManager, ServiceStatus, InstallResult } from '@myco/service/types.js';
 
 import { loadMachineConfig, saveMachineConfig, loadGroveConfig, saveGroveConfig } from '@myco/config/loader.js';

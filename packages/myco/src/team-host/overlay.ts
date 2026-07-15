@@ -1,5 +1,5 @@
 /**
- * `myco-team host enable` / `host disable` orchestration (Task 2.1).
+ * `myco host enable` / `host disable` orchestration.
  *
  * Stands up (or tears down) the OSS overlay — Headscale control plane + Tailscale
  * data plane — as SUPERVISED root services and wires the local daemon to serve

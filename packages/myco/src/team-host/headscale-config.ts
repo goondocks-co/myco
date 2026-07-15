@@ -69,7 +69,7 @@ export interface HeadscaleConfigInput {
 export function renderHeadscaleConfig(input: HeadscaleConfigInput): string {
   const baseDomain = input.baseDomain ?? 'myco-host.internal';
   const ephemeral = input.ephemeralInactivityTimeout ?? '30m';
-  return `# Managed by \`myco-team host enable\` — do not edit by hand.
+  return `# Managed by \`myco host enable\` — do not edit by hand.
 # Regenerated on every host enable; removed on host disable.
 server_url: ${input.serverUrl}
 listen_addr: ${input.listenAddr}

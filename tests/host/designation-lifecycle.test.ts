@@ -15,8 +15,8 @@ import {
   hostEnable,
   resolveServedGroveDesignation,
   type HostEnableDeps,
-} from '../../packages/myco-team/src/host/overlay.js';
-import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '../../packages/myco-team/src/host/binaries.js';
+} from '@myco/team-host/overlay.js';
+import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '@myco/team-host/binaries.js';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader.js';
 import { resolveServedGroveDesignationHealth } from '@myco/daemon/host-serve.js';
 import { checkServedGroveDesignation } from '@myco/cli/doctor.js';

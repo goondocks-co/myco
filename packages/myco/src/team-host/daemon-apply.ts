@@ -10,10 +10,11 @@
  *      write boundary, so an out-of-range address never reaches config.
  *   2. APPLY it by restarting the daemon. Host-serve is read once at startup
  *      (`daemon/main.ts`), so a config write alone is inert — the daemon must
- *      restart to bind (or unbind) the overlay listener. `myco-team` is a separate
- *      process, so restarting via the platform ServiceManager is the safe path
- *      (no self-SIGTERM). When the daemon is not service-managed we surface a
- *      manual-restart instruction rather than failing.
+ *      restart to bind (or unbind) the overlay listener. The `myco` CLI process
+ *      running `host enable` is separate from the daemon, so restarting via the
+ *      platform ServiceManager is the safe path (no self-SIGTERM). When the
+ *      daemon is not service-managed we surface a manual-restart instruction
+ *      rather than failing.
  *
  * The write is machine-tier and machine-global; there is no project vault context
  * in `host enable`, so `saveMachineConfig` (not the project-scoped `updateConfig`)

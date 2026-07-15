@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { hostDisable, hostEnable, type HostEnableDeps } from '../../packages/myco-team/src/host/overlay.js';
-import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '../../packages/myco-team/src/host/binaries.js';
-import { HEADSCALE_SERVICE_LABEL } from '../../packages/myco-team/src/host/system-service.js';
-import { readHostState } from '../../packages/myco-team/src/host/state.js';
+import { hostDisable, hostEnable, type HostEnableDeps } from '@myco/team-host/overlay.js';
+import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '@myco/team-host/binaries.js';
+import { HEADSCALE_SERVICE_LABEL } from '@myco/team-host/system-service.js';
+import { readHostState } from '@myco/team-host/state.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import type { ServiceManager, ServiceStatus, InstallResult } from '@myco/service/types.js';

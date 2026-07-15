@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { runHostCommand, resolveTeamKeyProviderFlag } from '../../packages/myco-team/src/host/cli.js';
-import { readHostState } from '../../packages/myco-team/src/host/state.js';
+import { runHostCommand } from '@myco/cli/host.js';
+import { resolveTeamKeyProviderFlag } from '@myco/team-host/compose.js';
+import { readHostState } from '@myco/team-host/state.js';
 
 describe('runHostCommand argv handling', () => {
   let tmp: string;
@@ -50,7 +51,7 @@ describe('runHostCommand argv handling', () => {
 
   it('bare host prints help and exits 2', async () => {
     await expect(runHostCommand([])).rejects.toThrow('exit(2)');
-    expect(out.join('\n')).toMatch(/Usage: myco-team host/);
+    expect(out.join('\n')).toMatch(/Usage: myco host/);
   });
 
   // ---------------------------------------------------------------------

@@ -39,6 +39,7 @@ Commands:
   leave <host>             Detach this machine from a Team Host
   attach <project> --host <h> --grove <g>   Route a project to a Team Host (going-forward)
   detach <project>         Clear a project's Team Host mapping (resolves local again)
+  host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key)
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
@@ -112,6 +113,27 @@ Options:
 Clears a project's residency mapping so future requests resolve to a local Grove
 again. Detach-only: removes the mapping going forward, pulls back NO data.
 Idempotent — detaching a project that is not attached is a clean no-op.
+`,
+  host: `Usage: myco host <command>
+
+Commands:
+  enable --server-url <https://host:8080> [--hostname <name>] [--listen-addr <addr>]
+                                          [--user <headscale-user>] [--key-expiration <dur>]
+                                          [--designate-default] [--emit-join]
+                                          [--team-key <key>] [--team-key-provider <anthropic|openai|openrouter>]
+                                          [--setup-key-expiration <dur>]
+  disable
+  status
+  rotate-key [--expiration <dur>]        Mint a fresh one-time key to hand a joining team member.
+
+enable turns THIS machine into a Team Host: it provisions the pinned overlay
+networking binaries, supervises them as root services (they survive reboot),
+joins this host to the overlay, and wires the local daemon to serve your team
+over it. Root is required — you may be prompted for your sudo password.
+--server-url is the address teammates dial to reach this host.
+
+disable stops serving your team. status prints whether this machine is
+currently serving. rotate-key runs ONLY here, on this host's localhost.
 `,
 };
 
@@ -212,6 +234,11 @@ async function main(): Promise<void> {
   // `join`/`leave` they sit above the myco.yaml gate and work from any cwd.
   if (cmd === 'attach') return (await import('./cli/attach.js')).runAttach(args, resolveVaultDir());
   if (cmd === 'detach') return (await import('./cli/attach.js')).runDetach(args, resolveVaultDir());
+
+  // Team Host operator orchestration — provisions root services and writes
+  // machine-tier config, not a project vault, so like `join`/`attach` it sits
+  // above the myco.yaml gate and works from any cwd.
+  if (cmd === 'host') return (await import('./cli/host.js')).runHostCommand(args);
 
   if (cmd === 'doctor') {
     const vaultDir = resolveVaultDir();

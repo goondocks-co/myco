@@ -14,7 +14,7 @@ import {
   TAILSCALE_VERSION,
   type BinaryFetcher,
   type CommandRunner,
-} from '../../packages/myco-team/src/host/binaries.js';
+} from '@myco/team-host/binaries.js';
 
 const sha256 = (b: Uint8Array) => crypto.createHash('sha256').update(b).digest('hex');
 const bytes = (s: string) => new TextEncoder().encode(s);

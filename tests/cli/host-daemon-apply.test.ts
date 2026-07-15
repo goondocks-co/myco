@@ -6,8 +6,8 @@ import path from 'node:path';
 import {
   restartDaemonForHostServe,
   writeHostServeConfig,
-} from '../../packages/myco-team/src/host/daemon-apply.js';
-import { clearHostState, readHostState, writeHostState, type HostState } from '../../packages/myco-team/src/host/state.js';
+} from '@myco/team-host/daemon-apply.js';
+import { clearHostState, readHostState, writeHostState, type HostState } from '@myco/team-host/state.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { resolveHostServeConfig, isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import { SCOPE_REGISTRY } from '@myco/config/scope.js';

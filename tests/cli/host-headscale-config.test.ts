@@ -6,8 +6,8 @@ import {
   parsePreauthKey,
   parseUserId,
   renderHeadscaleConfig,
-} from '../../packages/myco-team/src/host/headscale-config.js';
-import type { CommandRunner } from '../../packages/myco-team/src/host/binaries.js';
+} from '@myco/team-host/headscale-config.js';
+import type { CommandRunner } from '@myco/team-host/binaries.js';
 
 describe('renderHeadscaleConfig', () => {
   const layout = headscaleLayout('/home/x/.myco-team/host');
