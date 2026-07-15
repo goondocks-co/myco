@@ -70,6 +70,8 @@ describe('operator control plane', () => {
     const mintCall = calls.find((c) => c.includes('preauthkeys') && c.includes('create'));
     expect(mintCall).toContain('--user');
     expect(mintCall).toContain('2h');
+    // The headscale admin socket is root-owned — every call routes through sudo.
+    expect(mintCall![0]).toBe('sudo');
     const log = readHostActionLog(controlDir);
     expect(log.filter((r) => r.action === 'key-mint').length).toBe(1);
     expect(JSON.stringify(log)).not.toContain('tskey-auth-ONETIME'); // NEVER logs the key
@@ -79,6 +81,8 @@ describe('operator control plane', () => {
     const calls: string[][] = [];
     const devices = await listDevices({ runner: fakeHeadscale(calls), state: fakeState(controlDir), controlDir });
     expect(calls.some((c) => c.includes('nodes') && c.includes('list') && c.includes('--output') && c.includes('json'))).toBe(true);
+    // The headscale admin socket is root-owned — every call routes through sudo.
+    expect(calls.every((c) => c[0] === 'sudo')).toBe(true);
     expect(devices).toHaveLength(2);
     expect(devices[0]).toMatchObject({ id: '7', name: 'macbook', overlay_ip: '100.64.0.5', online: true });
     expect(devices[1]).toMatchObject({ id: '8', name: 'vps', overlay_ip: '100.64.0.6', online: false });
@@ -89,6 +93,8 @@ describe('operator control plane', () => {
     await evictDevice('7', { runner: fakeHeadscale(calls), state: fakeState(controlDir), controlDir });
     const del = calls.find((c) => c.includes('delete'));
     expect(del).toEqual(expect.arrayContaining(['nodes', 'delete', '-i', '7', '--force']));
+    // The headscale admin socket is root-owned — every call routes through sudo.
+    expect(del![0]).toBe('sudo');
     const log = readHostActionLog(controlDir);
     expect(log.filter((r) => r.action === 'evict' && r.subject === '7').length).toBe(1);
   });

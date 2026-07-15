@@ -503,7 +503,8 @@ export async function defaultResolveOverlayIp(runner: CommandRunner, tailscaleBi
   return line && isOverlayRangeAddress(line) ? line : null;
 }
 
-/** `headscale nodes list --output json` → the id of the node matching `hostname`. */
+/** `headscale nodes list --output json` → the id of the node matching `hostname`.
+ *  The admin socket is root-owned, so the call is sudo'd (same as key minting). */
 async function defaultResolveNodeId(
   runner: CommandRunner,
   headscaleBin: string,
@@ -511,7 +512,7 @@ async function defaultResolveNodeId(
   hostname: string,
 ): Promise<string | undefined> {
   try {
-    const res = await runner.run(headscaleBin, ['--config', configPath, 'nodes', 'list', '--output', 'json']);
+    const res = await runner.run('sudo', [headscaleBin, '--config', configPath, 'nodes', 'list', '--output', 'json']);
     if (res.exitCode !== 0) return undefined;
     const parsed = JSON.parse(res.stdout) as Array<{ id?: unknown; name?: unknown; given_name?: unknown }>;
     const match = parsed.find((n) => n.name === hostname || n.given_name === hostname);

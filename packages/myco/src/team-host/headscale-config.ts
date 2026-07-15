@@ -19,10 +19,19 @@
  * failure. It is NOT a fully vendor-independent deployment, and the generated
  * file says so in a comment so the operator is never misled.
  *
+ * `dns.override_local_dns: false` is REQUIRED on headscale 0.29.2: it defaults
+ * that flag to true, which then requires `dns.nameservers.global` to be
+ * non-empty or the config load is a fatal error. Team Host never overrides
+ * local DNS (magic_dns is off too), so `false` is both correct and what
+ * silences the fatal.
+ *
  * Key minting shells the headscale CLI behind the {@link CommandRunner} seam so
- * it unit-tests with no real control plane. The exact v0.29 `preauthkeys`/`users`
- * flag syntax is pinned here and re-confirmed in live validation (the spike flagged
- * a `preauthkeys list` vs `create` flag-shape nit for Phase 2).
+ * it unit-tests with no real control plane. Every invocation runs through
+ * `sudo` — the headscale admin socket is root-owned (headscale runs as a root
+ * service), so administering it is a privileged step, the same as every
+ * service-install step in overlay.ts. The exact v0.29 `preauthkeys`/`users`
+ * flag syntax is pinned here and re-confirmed in live validation (the spike
+ * flagged a `preauthkeys list` vs `create` flag-shape nit for Phase 2).
  */
 import path from 'node:path';
 
@@ -113,6 +122,7 @@ ephemeral_node_inactivity_timeout: ${ephemeral}
 dns:
   magic_dns: false
   base_domain: ${baseDomain}
+  override_local_dns: false
   nameservers:
     global: []
 
@@ -145,9 +155,12 @@ export interface MintPreauthKeyInput {
  * the id from `users list --output json` after ensuring the user exists.
  */
 export async function mintPreauthKey(input: MintPreauthKeyInput): Promise<string> {
+  // The headscale admin socket is root-owned (headscale runs as a root
+  // service) — administering it is a privileged step, so every invocation
+  // routes through sudo (consistent with overlay.ts's service-install steps).
   const base = [input.headscaleBin, '--config', input.configPath] as const;
   const run = (args: string[], opts?: { input?: string }) =>
-    input.runner.run(base[0], [base[1], base[2], ...args], opts);
+    input.runner.run('sudo', [base[0], base[1], base[2], ...args], opts);
 
   // 1. Ensure the user exists (tolerate "already exists").
   const created = await run(['users', 'create', input.user, '--output', 'json']);

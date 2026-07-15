@@ -44,11 +44,12 @@ export interface Device {
   online: boolean;
 }
 
-/** List enrolled overlay nodes (`headscale nodes list --output json`, pinned v0.29). */
+/** List enrolled overlay nodes (`headscale nodes list --output json`, pinned v0.29).
+ *  The admin socket is root-owned, so the call is sudo'd (same as key minting). */
 export async function listDevices(deps: ControlPlaneDeps = {}): Promise<Device[]> {
   const base = headscaleBase(deps);
   const runner = deps.runner ?? realRunner;
-  const res = await runner.run(base.bin, ['--config', base.configPath, 'nodes', 'list', '--output', 'json']);
+  const res = await runner.run('sudo', [base.bin, '--config', base.configPath, 'nodes', 'list', '--output', 'json']);
   if (res.exitCode !== 0) {
     throw new Error(`headscale nodes list failed (exit ${res.exitCode}): ${res.stdout.trim()}`);
   }
@@ -64,7 +65,7 @@ export async function evictDevice(id: string, deps: ControlPlaneDeps = {}): Prom
   if (!id?.trim()) throw new Error('evict requires a device <id> (from `myco-team host devices list`).');
   const base = headscaleBase(deps);
   const runner = deps.runner ?? realRunner;
-  const res = await runner.run(base.bin, ['--config', base.configPath, 'nodes', 'delete', '-i', id.trim(), '--force']);
+  const res = await runner.run('sudo', [base.bin, '--config', base.configPath, 'nodes', 'delete', '-i', id.trim(), '--force']);
   if (res.exitCode !== 0) {
     throw new Error(`headscale nodes delete -i ${id} failed (exit ${res.exitCode}): ${res.stdout.trim()}`);
   }

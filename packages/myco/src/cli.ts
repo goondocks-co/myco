@@ -37,7 +37,7 @@ Commands:
   service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status)
   join <host> --key <k>    Enroll this machine with a Team Host over the overlay
   leave <host>             Detach this machine from a Team Host
-  attach <project> --host <h> --grove <g>   Route a project to a Team Host (going-forward)
+  attach <project> --host <h>   Route a project to a Team Host (going-forward)
   detach <project>         Clear a project's Team Host mapping (resolves local again)
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key)
   version                  Show plugin version
@@ -95,7 +95,7 @@ Detach this machine from a Team Host: removes the stored host record + bearer
 (and its attach refs). When no other host remains, the userspace tailscaled
 service is torn down too. Idempotent.
 `,
-  attach: `Usage: myco attach <project> --host <hostId> --grove <groveId>
+  attach: `Usage: myco attach <project> --host <hostId>
 
 Records a project's residency mapping so future requests route to the host that
 serves it, instead of a local Grove. Attach-going-forward only: it does NOT
@@ -105,8 +105,10 @@ with guidance). Idempotent — re-attaching to the same host converges.
 Options:
   --host <hostId>       The joined host that will serve this project (falls back to the
                         checkout's project.toml Team Host hint).
-  --grove <groveId>     REQUIRED. The Grove id on the host that serves this project.
   --project-id <proj_…> Override the project id (default: the checkout's project.toml).
+
+The Grove is sourced from the host's own self-report (its served_grove_id) —
+there is no --grove flag to type.
 `,
   detach: `Usage: myco detach <project>
 
