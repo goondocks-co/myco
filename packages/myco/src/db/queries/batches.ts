@@ -1134,6 +1134,9 @@ export function resolveResponseSummaryTarget(
 
 /**
  * Get the most recent active batch for a session (by id DESC).
+ *
+ * Thread batches are never a session's open turn — excluded structurally,
+ * not by the born-closed convention alone.
  */
 export function getLatestOpenBatch(
   sessionId: string,
@@ -1142,7 +1145,7 @@ export function getLatestOpenBatch(
 
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
-     WHERE session_id = ? AND status = ?
+     WHERE session_id = ? AND status = ? AND thread_id IS NULL
      ORDER BY id DESC LIMIT 1`,
   ).get(sessionId, DEFAULT_STATUS) as Record<string, unknown> | undefined;
 
@@ -1278,12 +1281,15 @@ export function replaceRecoveredBatchUserPrompt(
  *
  * Used by handleUserPrompt to decide whether an incoming prompt should be
  * nested as a child or start a new parent.
+ *
+ * Thread batches are never a session's open turn — excluded structurally,
+ * not by the born-closed convention alone.
  */
 export function findOpenParentBatch(sessionId: string): BatchRow | null {
   const db = getDatabase();
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
-     WHERE session_id = ? AND ended_at IS NULL AND kind = 'initial'
+     WHERE session_id = ? AND ended_at IS NULL AND kind = 'initial' AND thread_id IS NULL
      ORDER BY id DESC LIMIT 1`,
   ).get(sessionId) as Record<string, unknown> | undefined;
   return row ? toBatchRow(row) : null;

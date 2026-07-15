@@ -17,6 +17,8 @@ import {
   listBatchesBySession,
   listBatchesBySessionThread,
   getLatestBatch,
+  getLatestOpenBatch,
+  findOpenParentBatch,
   populateBatchResponses,
   PROMPT_BATCH_ORIGIN,
 } from '@myco/db/queries/batches.js';
@@ -240,5 +242,77 @@ describe('populateBatchResponses — threadId scoping', () => {
       'human-anchored answer part 1\n\nsystem interleaved answer',
     );
     expect(threadSystemRow.response_summary).toBeNull();
+  });
+});
+
+describe('getLatestOpenBatch — thread_id IS NULL guard', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(teardownTestDb);
+  beforeEach(() => {
+    cleanTestDb();
+    seedSession({ id: 's1' });
+  });
+
+  it('returns the main-thread active batch, never a thread batch even if thread is open', () => {
+    const mainBatch = insertBatchStateless({
+      session_id: 's1', user_prompt: 'main turn', ordinal: 0, created_at: nowSec(),
+      status: 'active',
+    });
+    // Insert an open thread batch (active status, no ended_at)
+    const threadBatch = insertBatchStateless({
+      session_id: 's1', user_prompt: 'thread turn', ordinal: 0, created_at: nowSec(),
+      origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH, thread_id: 'task_6_reviewer',
+      status: 'active',
+    });
+
+    const openBatch = getLatestOpenBatch('s1');
+    expect(openBatch?.id).toBe(mainBatch.row.id);
+    expect(openBatch?.thread_id).toBeNull();
+  });
+
+  it('returns null when only an open thread batch exists (no main-thread active row)', () => {
+    insertBatchStateless({
+      session_id: 's1', user_prompt: 'thread turn', ordinal: 0, created_at: nowSec(),
+      origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH, thread_id: 'task_6_reviewer',
+      status: 'active',
+    });
+
+    expect(getLatestOpenBatch('s1')).toBeNull();
+  });
+});
+
+describe('findOpenParentBatch — thread_id IS NULL guard', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(teardownTestDb);
+  beforeEach(() => {
+    cleanTestDb();
+    seedSession({ id: 's1' });
+  });
+
+  it('returns the main-thread parent batch, never a thread parent batch', () => {
+    const mainParent = insertBatchStateless({
+      session_id: 's1', user_prompt: 'main parent', ordinal: 0, created_at: nowSec(),
+      kind: 'initial',
+    });
+    // Insert an open thread parent batch (kind='initial', no ended_at)
+    const threadParent = insertBatchStateless({
+      session_id: 's1', user_prompt: 'thread parent', ordinal: 0, created_at: nowSec(),
+      origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH, thread_id: 'task_6_reviewer',
+      kind: 'initial',
+    });
+
+    const openParent = findOpenParentBatch('s1');
+    expect(openParent?.id).toBe(mainParent.row.id);
+    expect(openParent?.thread_id).toBeNull();
+  });
+
+  it('returns null when only an open thread parent batch exists (no main-thread parent)', () => {
+    insertBatchStateless({
+      session_id: 's1', user_prompt: 'thread parent', ordinal: 0, created_at: nowSec(),
+      origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH, thread_id: 'task_6_reviewer',
+      kind: 'initial',
+    });
+
+    expect(findOpenParentBatch('s1')).toBeNull();
   });
 });
