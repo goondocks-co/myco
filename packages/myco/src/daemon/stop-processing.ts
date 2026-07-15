@@ -14,6 +14,7 @@ import type { TranscriptTurn } from '@myco/symbionts/adapter.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
+import { resolveSubagentThread } from '@myco/hooks/capture-rules.js';
 import { captureBatchImages } from './capture-images.js';
 import {
   extractTaggedPlans,
@@ -731,11 +732,50 @@ export function createStopProcessor(deps: StopProcessorDeps): {
 
     if (hookTranscriptPath) {
       const detectedAgent = agent ?? getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent ?? 'claude-code';
-      const { decision } = gateEventByCaptureRules(
+      const { decision, transcriptMeta } = gateEventByCaptureRules(
         { agent: detectedAgent, transcriptPath: hookTranscriptPath },
         { manifests: loadManifests() },
       );
       if (decision.action === 'drop') {
+        // Before treating this as an ordinary invalid-session drop, check
+        // whether the transcript actually resolves to a sub-agent thread
+        // (Codex's `source.subagent.thread_spawn`, etc). A Stop for a
+        // sub-agent transcript can carry either the CHILD's own session id
+        // (first-sight case) or the PARENT's session id (Codex's tool-event
+        // Stop) — `resolveSubagentThread` reads the answer from the
+        // transcript's own meta, never from `sessionId`, so both shapes
+        // converge on the same (parent, threadId) target. Requiring
+        // `threadId` too mirrors the miner's own gate: a resolvable parent
+        // with no thread id is a manifest misconfiguration, not a thread —
+        // fall through to the ordinary drop path, which is the safe
+        // main-thread-protecting behavior.
+        const thread = resolveSubagentThread(detectedAgent, transcriptMeta);
+        if (thread && thread.threadId) {
+          // Mine the child rollout INTO the parent session as thread-scoped
+          // agent_dispatch batches. The miner re-derives the same
+          // (parent, threadId) target from the transcript's own meta and is
+          // a no-op (skippedReason: 'subagent-parent-missing') when the
+          // parent session doesn't exist yet — never materializes it.
+          transcriptMiner.reconcileAndAttributeResponses(sessionId, {
+            agent: detectedAgent,
+            transcriptPath: hookTranscriptPath,
+          });
+          // Only clean up when the Stop carried the CHILD's own session id —
+          // that's a leaked child row the invalid-session cleanup exists to
+          // remove. When the Stop carries the PARENT's id (Codex's tool-event
+          // shape), there is no child row to clean up, and the parent session
+          // itself must never be touched by this path.
+          const deleted = sessionId !== thread.parentSessionId
+            ? cleanupInvalidCapturedSession(sessionId)
+            : false;
+          logger.info(LOG_KINDS.HOOKS_STOP, 'Stop reattributed — sub-agent transcript mined into parent thread', {
+            session_id: sessionId,
+            parent_session_id: thread.parentSessionId,
+            thread_id: thread.threadId,
+            deleted_existing_session: deleted,
+          });
+          return { body: { ok: true, reattributed: thread.parentSessionId } };
+        }
         const deleted = cleanupInvalidCapturedSession(sessionId);
         logger.info(LOG_KINDS.HOOKS_STOP, 'Stop ignored — invalid captured session', {
           session_id: sessionId,

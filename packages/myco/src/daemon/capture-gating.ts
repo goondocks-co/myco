@@ -22,6 +22,13 @@ export interface CaptureGateResult {
   decision: SessionStartDecision;
   /** True when transcript-meta was successfully read and supplied to the evaluator. */
   hadTranscriptMeta: boolean;
+  /**
+   * The transcript-meta payload read for this event, when available. Exposed
+   * (rather than just the `hadTranscriptMeta` boolean) so callers can run
+   * further meta-driven resolution — e.g. `resolveSubagentThread` — without
+   * re-reading the transcript file themselves.
+   */
+  transcriptMeta?: Record<string, unknown>;
 }
 
 /**
@@ -44,5 +51,5 @@ export function gateEventByCaptureRules(
     transcriptPath: event.transcriptPath,
     transcriptMeta,
   });
-  return { decision, hadTranscriptMeta: transcriptMeta !== undefined };
+  return { decision, hadTranscriptMeta: transcriptMeta !== undefined, transcriptMeta };
 }

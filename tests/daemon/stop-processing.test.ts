@@ -10,7 +10,7 @@ import { TranscriptMiner } from '@myco/capture/transcript-miner.js';
 import { getSession, upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 import { getDatabase } from '@myco/db/client.js';
-import { insertBatch, listBatchesBySession, PROMPT_BATCH_ORIGIN } from '@myco/db/queries/batches.js';
+import { insertBatch, listBatchesBySession, listBatchesBySessionThread, PROMPT_BATCH_ORIGIN } from '@myco/db/queries/batches.js';
 import { insertActivity } from '@myco/db/queries/activities.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
@@ -44,7 +44,7 @@ function recordPlanWrite(
   });
 }
 
-function writeCodexSubagentTranscript(sessionId: string): string {
+function writeCodexSubagentTranscript(sessionId: string, parentThreadId = 'parent-session'): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-codex-subagent-'));
   const transcriptPath = path.join(dir, `rollout-${sessionId}.jsonl`);
   const lines = [
@@ -55,7 +55,7 @@ function writeCodexSubagentTranscript(sessionId: string): string {
         source: {
           subagent: {
             thread_spawn: {
-              parent_thread_id: 'parent-session',
+              parent_thread_id: parentThreadId,
               depth: 1,
               agent_role: 'default',
             },
@@ -127,6 +127,30 @@ function makeStopProcessor(vaultDir: string, options?: { planWatchConfig?: { wat
     vaultDir,
     planTags: [],
     planWatchConfig: options?.planWatchConfig ?? { watchDirs: [], projectRoot: vaultDir },
+  });
+}
+
+// Sub-agent thread reattribution needs the REAL miner — the plain
+// `getAllTurnsWithSource`-only mock above doesn't implement
+// `reconcileAndAttributeResponses`, which is what the drop-branch carve-out
+// calls to mine a resolved sub-agent thread into its parent.
+function makeStopProcessorWithRealMiner(vaultDir: string) {
+  return createStopProcessor({
+    registry: new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} }),
+    sessionBuffers: new Map(),
+    transcriptMiner: new TranscriptMiner(),
+    embeddingManager: { onRemoved: vi.fn() } as never,
+    resolveEmbeddingManager: () => ({ onRemoved: vi.fn() } as never),
+    logger: {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never,
+    liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+    vaultDir,
+    planTags: [],
+    planWatchConfig: { watchDirs: [], projectRoot: vaultDir },
   });
 }
 
@@ -509,7 +533,7 @@ describe('createStopProcessor session capture rules', () => {
   it('ignores a sub-agent transcript before any session row exists', async () => {
     const sessionId = 'codex-subagent-stop-001';
     const transcriptPath = writeCodexSubagentTranscript(sessionId);
-    const stopProcessor = makeStopProcessor(vaultDir);
+    const stopProcessor = makeStopProcessorWithRealMiner(vaultDir);
 
     const res = await stopProcessor.handleStopRoute({
       body: {
@@ -520,15 +544,22 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    expect(res.body).toEqual({ ok: true, ignored: 'subagent-thread-spawn' });
+    // The transcript resolves a thread (payload.id is the child's own id,
+    // matching codex's subagentThreadIdPath), but its parent
+    // ('parent-session') was never registered — the miner no-ops
+    // (subagent-parent-missing) rather than materializing it. Still routed
+    // through reattribution, not the generic drop path: nothing is
+    // registered for either id.
+    expect(res.body).toEqual({ ok: true, reattributed: 'parent-session' });
     expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(getSession('parent-session', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('deletes a leaked session row when stop re-evaluates the capture rules', async () => {
     const sessionId = 'codex-subagent-stop-002';
     const now = epochNow();
     const transcriptPath = writeCodexSubagentTranscript(sessionId);
-    const stopProcessor = makeStopProcessor(vaultDir);
+    const stopProcessor = makeStopProcessorWithRealMiner(vaultDir);
 
     upsertSession({
       id: sessionId,
@@ -558,17 +589,20 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    expect(res.body).toEqual({ ok: true, ignored: 'subagent-thread-spawn' });
+    // Stop carried the CHILD's own session id (sessionId !== parentSessionId)
+    // — the leaked child row cleanup still runs even though the transcript
+    // now reattributes instead of taking the generic drop path.
+    expect(res.body).toEqual({ ok: true, reattributed: 'parent-session' });
     expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
     expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
   });
 
-  it('refuses invalid Stop cleanup when a child transcript is reported against a parent session with human work', async () => {
+  it('reattributes a sub-agent Stop carrying the parent session id: human batch preserved, agent_dispatch thread rows added, parent never deleted', async () => {
     const parentSessionId = 'codex-parent-stop-protected-001';
     const childSessionId = 'codex-child-stop-protected-001';
     const now = epochNow();
-    const transcriptPath = writeCodexSubagentTranscript(childSessionId);
-    const stopProcessor = makeStopProcessor(vaultDir);
+    const transcriptPath = writeCodexSubagentTranscript(childSessionId, parentSessionId);
+    const stopProcessor = makeStopProcessorWithRealMiner(vaultDir);
 
     upsertSession({
       id: parentSessionId,
@@ -585,6 +619,8 @@ describe('createStopProcessor session capture rules', () => {
       created_at: now,
     });
 
+    // Codex's tool-event Stop shape: session_id is the PARENT's own id, but
+    // transcript_path points at the CHILD's rollout file.
     const res = await stopProcessor.handleStopRoute({
       body: {
         session_id: parentSessionId,
@@ -594,9 +630,27 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    expect(res.body).toEqual({ ok: true, ignored: 'subagent-thread-spawn' });
+    expect(res.body).toEqual({ ok: true, reattributed: parentSessionId });
+
+    // The Stop carried the PARENT's own id, so
+    // `sessionId === thread.parentSessionId` — the invalid-session cleanup
+    // never runs against it. Parent session and its human batch survive
+    // untouched.
     expect(getSession(parentSessionId, ALL_PROJECTS_SCOPE)).not.toBeNull();
-    expect(listBatchesBySession(parentSessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
+    const parentBatches = listBatchesBySession(parentSessionId, { scope: ALL_PROJECTS_SCOPE });
+    const humanBatches = parentBatches.filter((b) => b.thread_id === null);
+    expect(humanBatches).toHaveLength(1);
+    expect(humanBatches[0].user_prompt).toBe('real parent prompt');
+
+    // The child's turn is mined into the parent as a thread-scoped
+    // agent_dispatch batch — never a human batch on the parent's main thread.
+    const threadBatches = listBatchesBySessionThread(parentSessionId, childSessionId);
+    expect(threadBatches).toHaveLength(1);
+    expect(threadBatches[0].origin).toBe('agent_dispatch');
+    expect(threadBatches[0].user_prompt).toBe('Review this diff');
+
+    // No session row was ever created for the child id.
+    expect(getSession(childSessionId, ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('ignores and deletes a leaked noninteractive exec session row', async () => {
