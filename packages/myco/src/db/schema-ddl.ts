@@ -185,7 +185,7 @@ export const ACTIVITIES_TABLE = `
     myco_op              TEXT
   )`;
 
-const PLANS_TABLE = `
+export const PLANS_TABLE = `
   CREATE TABLE IF NOT EXISTS plans (
     id               TEXT PRIMARY KEY,
     project_id       TEXT,
@@ -207,7 +207,7 @@ const PLANS_TABLE = `
     synced_at        INTEGER
   )`;
 
-const ARTIFACTS_TABLE = `
+export const ARTIFACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS artifacts (
     id               TEXT PRIMARY KEY,
     project_id       TEXT,
@@ -224,7 +224,7 @@ const ARTIFACTS_TABLE = `
     synced_at        INTEGER
   )`;
 
-const TEAM_MEMBERS_TABLE = `
+export const TEAM_MEMBERS_TABLE = `
   CREATE TABLE IF NOT EXISTS team_members (
     id          TEXT PRIMARY KEY,
     "user"      TEXT NOT NULL,
@@ -307,7 +307,7 @@ export const ENTITIES_TABLE = `
     synced_at   INTEGER
   )`;
 
-const GRAPH_EDGES_TABLE = `
+export const GRAPH_EDGES_TABLE = `
   CREATE TABLE IF NOT EXISTS graph_edges (
     id              TEXT PRIMARY KEY,
     project_id      TEXT,
@@ -325,7 +325,7 @@ const GRAPH_EDGES_TABLE = `
     synced_at       INTEGER
   )`;
 
-const ENTITY_MENTIONS_TABLE = `
+export const ENTITY_MENTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS entity_mentions (
     project_id  TEXT,
     entity_id   TEXT NOT NULL REFERENCES entities(id),
@@ -337,7 +337,7 @@ const ENTITY_MENTIONS_TABLE = `
     UNIQUE (entity_id, note_id, note_type, agent_id)
   )`;
 
-const RESOLUTION_EVENTS_TABLE = `
+export const RESOLUTION_EVENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS resolution_events (
     id            TEXT PRIMARY KEY,
     project_id    TEXT,
