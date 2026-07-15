@@ -414,6 +414,41 @@ describe('TranscriptMiner — sub-agent thread reattribution (Task 4)', () => {
     expect(result.skippedReason).toBe('noninteractive-exec');
     expect(listBatchesBySession(CHILD, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
   });
+
+  // Review finding: a resolvable parent with no thread id (agent-format
+  // change or manifest misconfiguration) must still drop safely, but with a
+  // distinct WARN — not the generic "Mining skipped" info log a real
+  // sub-agent-thread drop gets, which would otherwise look identical.
+  it('warns distinctly when the parent resolves but the thread id does not, and still drops', () => {
+    seedParentWithHumanBatches();
+    // Same shape as subagentMetaEntry, but with no top-level `id` — codex's
+    // subagentThreadIdPath ("id") can't resolve, so threadId stays null even
+    // though parentSessionId resolves.
+    writeTranscript(childPath, [
+      {
+        timestamp: '2026-07-12T14:51:20Z',
+        type: 'session_meta',
+        payload: { source: { subagent: { thread_spawn: { parent_thread_id: PARENT } } } },
+      },
+      ...childConversation,
+    ]);
+    const { logger, calls } = collectingLogger();
+    const miner = new TranscriptMiner({ logger });
+
+    const result = miner.reconcileAndAttributeResponses(CHILD, { agent: 'codex', transcriptPath: childPath });
+
+    // Still drops — behavior unchanged.
+    expect(result.skippedReason).toBe('subagent-thread-spawn');
+    expect(listBatchesBySessionThread(PARENT, CHILD)).toHaveLength(0);
+
+    const warn = calls.find((c) => c.level === 'warn' && c.message.includes('resolvable parent but no thread id'));
+    expect(warn).toBeDefined();
+    expect(warn!.data).toMatchObject({
+      session_id: CHILD,
+      transcript_path: childPath,
+      parent_session_id: PARENT,
+    });
+  });
 });
 
 describe('walker carve-out — sub-agent reattribution masks only the sub-agent drop (Task 4)', () => {

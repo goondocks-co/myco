@@ -271,6 +271,20 @@ export class TranscriptMiner {
           reason: entry.dropReason,
         });
       }
+      // Distinct signal for the "resolvable parent, no thread id" case: it
+      // falls through to the same generic drop-gate reason as an ordinary
+      // sub-agent-thread drop, which would otherwise look identical to the
+      // expected-drop case in logs. This only fires for an agent-format
+      // change or manifest misconfiguration (subagentThreadIdPath missing or
+      // not resolving) — worth a WARN even though the drop behavior itself
+      // is unchanged and still safe.
+      if (thread && !thread.threadId) {
+        this.logger?.warn(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Sub-agent transcript has a resolvable parent but no thread id — dropping instead of reattributing (check subagentThreadIdPath)', {
+          session_id: sessionId,
+          transcript_path: input.transcriptPath,
+          parent_session_id: thread.parentSessionId,
+        });
+      }
     }
     return entry;
   }
@@ -361,13 +375,26 @@ export class TranscriptMiner {
 
     // The walker receives the transcript meta so per-prompt
     // `transcript_meta_*` rules fire at mining time exactly as at hook time.
-    const { records, droppedText } = extractUserPromptRecordsWithDrops(
+    const { records, droppedText, noMaskableDropRuleFound } = extractUserPromptRecordsWithDrops(
       input.agent,
       this.parseAllEvents(input.transcriptPath),
       input.transcriptPath,
       gate.meta,
       reattribute ? { subagentReattribution: true } : undefined,
     );
+    // Distinct signal for a reattribution that structurally can't work: the
+    // walker (no logger access) reports back via the flag rather than
+    // logging itself. Without this, a future agent whose sub-agent drop
+    // rule keys differently than its declared `subagentParentPath` would
+    // mine zero rows here with no signal beyond an empty result — identical
+    // to "sub-agent turn legitimately produced no prompts."
+    if (noMaskableDropRuleFound) {
+      this.logger?.warn(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Sub-agent reattribution active but no maskable drop rule found — records may all drop (check the agent\'s capture rules vs subagentParentPath)', {
+        session_id: sessionId,
+        transcript_path: input.transcriptPath,
+        agent: input.agent,
+      });
+    }
     // Bucket/reclassify source: a reattribution mine touches ONLY this
     // thread's rows (thread_id = childThreadId), never the parent's
     // main-thread batches (thread_id IS NULL).

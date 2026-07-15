@@ -84,11 +84,11 @@ export function extractUserPromptRecordsWithDrops(
   transcriptPath?: string,
   transcriptMeta?: Record<string, unknown>,
   options?: WalkerOptions,
-): { records: UserPromptRecord[]; droppedText: string[] } {
+): { records: UserPromptRecord[]; droppedText: string[]; noMaskableDropRuleFound: boolean } {
   const config = HOOK_CONFIG[agent]?.capturePrompts;
-  if (!config) return { records: [], droppedText: [] };
+  if (!config) return { records: [], droppedText: [], noMaskableDropRuleFound: false };
   const result = walkTranscript(config, agent, events, transcriptPath, transcriptMeta, options);
-  return { records: result.records, droppedText: result.droppedText };
+  return { records: result.records, droppedText: result.droppedText, noMaskableDropRuleFound: result.noMaskableDropRuleFound };
 }
 
 /** Classify a hypothetical next prompt given current transcript state + text. */
@@ -149,6 +149,15 @@ interface WalkResult {
   /** Raw text of prompts that a `drop` rule suppressed; used by reconcile to silence false stranded-batch warnings. */
   droppedText: string[];
   priorTurnEnded: boolean;
+  /**
+   * True only when `subagentReattribution` was requested but
+   * {@link maskSubagentDropMeta} found no ancestor drop-rule path to
+   * neutralize (unknown agent, no declared `subagentParentPath`, or no
+   * `user_prompt` drop rule keyed on it). In that state every prompt still
+   * hits the live sub-agent-thread drop rule, so reattribution silently mines
+   * zero rows — the caller (which owns a logger) should surface this.
+   */
+  noMaskableDropRuleFound: boolean;
 }
 
 /**
@@ -175,7 +184,13 @@ function walkTranscript(
   // keeps exec / AGENTS.md drops working even though the sub-agent drop rule
   // is declared BEFORE them and would otherwise shadow them.
   const reattribute = options?.subagentReattribution === true;
-  const evalMeta = reattribute ? maskSubagentDropMeta(agent, transcriptMeta) : transcriptMeta;
+  const mask = reattribute ? maskSubagentDropMeta(agent, transcriptMeta) : undefined;
+  const evalMeta = reattribute ? mask!.meta : transcriptMeta;
+  // Only meaningful when reattribution was requested — an agent whose
+  // sub-agent drop keys differently (or a manifest missing
+  // `subagentParentPath` altogether) leaves the live drop rule live, so every
+  // prompt in this transcript would be dropped instead of reattributed.
+  const noMaskableDropRuleFound = reattribute && !mask!.maskedAny;
 
   // Each reset-boundary with `changeOn` remembers its last seen value so
   // repeated matches with an unchanged value don't re-reset the walker.
@@ -236,7 +251,7 @@ function walkTranscript(
     priorTurnEnded = false;
   }
 
-  return { records, droppedText, priorTurnEnded };
+  return { records, droppedText, priorTurnEnded, noMaskableDropRuleFound };
 }
 
 function findMatchingShape(
@@ -340,23 +355,25 @@ function toKey(scope: string, value: unknown): string {
  * meta-independent. The match is structural — keyed on the exists-condition
  * path being an ancestor of `subagentParentPath`, never on a rule's editable
  * `reason`. Returns the original object unchanged when there is nothing to
- * mask (unknown agent, no declared parent path, or no matching drop rule).
+ * mask, with `maskedAny: false` (unknown agent, no declared parent path, or
+ * no matching drop rule) — the caller uses that flag to detect a
+ * reattribution request that can't actually neutralize the live drop rule.
  */
 function maskSubagentDropMeta(
   agent: string,
   meta: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!meta) return meta;
+): { meta: Record<string, unknown> | undefined; maskedAny: boolean } {
+  if (!meta) return { meta, maskedAny: false };
   const entry = HOOK_CONFIG[agent];
   const parentPath = entry?.subagentParentPath;
   const rules = entry?.captureRules;
-  if (!parentPath || !rules) return meta;
+  if (!parentPath || !rules) return { meta, maskedAny: false };
   const maskPaths = rules
     .filter((r) => r.event === 'user_prompt' && r.action === 'drop')
     .map((r) => r.when.transcript_meta_field_exists)
     .filter((p): p is string => !!p && (p === parentPath || parentPath.startsWith(`${p}.`)));
-  if (maskPaths.length === 0) return meta;
+  if (maskPaths.length === 0) return { meta, maskedAny: false };
   const clone = structuredClone(meta);
   for (const p of maskPaths) unsetAtPath(clone, p);
-  return clone;
+  return { meta: clone, maskedAny: true };
 }
