@@ -387,6 +387,72 @@ function applyAction(rule: CaptureRule, ctx: UserPromptRuleContext): UserPromptD
   return { action: 'rewrite', prompt: next, reason: rule.reason, origin: rule.set_origin };
 }
 
+/** Resolved sub-agent thread identity for a transcript. */
+export interface SubagentThreadInfo {
+  /** The PARENT thread/session id this sub-agent thread was spawned from. */
+  parentSessionId: string;
+  /** The sub-agent thread's own stable id, or null when the agent declares no `subagentThreadIdPath` or it doesn't resolve. */
+  threadId: string | null;
+  /** Human-friendly label for the thread — nickname, else the last path segment — or null when neither resolves. */
+  threadLabel: string | null;
+}
+
+/**
+ * Sub-agent thread info for a transcript, or null when the agent declares no
+ * `subagentParentPath` or the path doesn't resolve to a non-empty string.
+ * Locations are manifest-declared dot-paths (relative to the transcript's
+ * session_meta payload, the same object `transcript_meta_field_exists`
+ * reads) — no agent shape is hardcoded here.
+ *
+ * Label derivation (`agent_nickname` when non-empty, else the last
+ * `/`-separated segment of `agent_path`) lives here in code because a
+ * single dot-path can't express a fallback; `subagentLabelPath` only
+ * points at the OBJECT that carries both fields.
+ */
+export function resolveSubagentThread(
+  detectedAgent: string,
+  meta: Record<string, unknown> | undefined,
+): SubagentThreadInfo | null {
+  if (!meta) return null;
+  const entry = HOOK_CONFIG[detectedAgent];
+  const parentPath = entry?.subagentParentPath;
+  if (!parentPath) return null;
+
+  const parent = getAtPath(meta, parentPath);
+  if (typeof parent !== 'string' || parent.length === 0) return null;
+
+  let threadId: string | null = null;
+  if (entry.subagentThreadIdPath) {
+    const value = getAtPath(meta, entry.subagentThreadIdPath);
+    if (typeof value === 'string' && value.length > 0) threadId = value;
+  }
+
+  let threadLabel: string | null = null;
+  if (entry.subagentLabelPath) {
+    const labelSource = getAtPath(meta, entry.subagentLabelPath);
+    threadLabel = deriveSubagentLabel(labelSource);
+  }
+
+  return { parentSessionId: parent, threadId, threadLabel };
+}
+
+/**
+ * Derive a human-friendly thread label from the sub-agent-spawn object:
+ * prefer `agent_nickname` when it's a non-empty string, else fall back to
+ * the last `/`-separated segment of `agent_path`. Returns null when
+ * neither field resolves to something usable.
+ */
+function deriveSubagentLabel(labelSource: unknown): string | null {
+  if (!labelSource || typeof labelSource !== 'object') return null;
+  const { agent_nickname: nickname, agent_path: agentPath } = labelSource as Record<string, unknown>;
+  if (typeof nickname === 'string' && nickname.length > 0) return nickname;
+  if (typeof agentPath === 'string' && agentPath.length > 0) {
+    const segments = agentPath.split('/').filter((s) => s.length > 0);
+    if (segments.length > 0) return segments[segments.length - 1]!;
+  }
+  return null;
+}
+
 /**
  * Strip a single `open`…`close` envelope from a prompt. Returns the inner
  * text, or null when the envelope isn't fully present (only one tag, tags

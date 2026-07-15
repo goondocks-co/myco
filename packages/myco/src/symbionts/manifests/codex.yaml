@@ -18,6 +18,20 @@ capture:
     # tool is only transient checklist/progress state and must not be
     # persisted as a Myco plan.
     - proposed_plan
+  # Sub-agent thread identity (dot-paths into session_meta.payload, the
+  # same object Layer 3's `transcript_meta_field_exists: source.subagent`
+  # reads). Verified against a real child rollout first line
+  # (rollout-2026-07-12T14-51-20-019f57ab-…jsonl):
+  #   payload.source.subagent.thread_spawn.parent_thread_id — parent thread
+  #   payload.id                                             — the child's
+  #     OWN thread id; confirmed equal to the UUID in the rollout filename.
+  #   payload.source.subagent.thread_spawn                   — object
+  #     carrying agent_nickname ("Peirce") and agent_path
+  #     ("/root/task_6_reviewer"); the resolver prefers agent_nickname,
+  #     else the last path segment of agent_path.
+  subagentParentPath: source.subagent.thread_spawn.parent_thread_id
+  subagentThreadIdPath: id
+  subagentLabelPath: source.subagent.thread_spawn
   rules:
     # Ephemeral sub-invocation filter (structural, two-layer defense).
     #
