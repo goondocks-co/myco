@@ -169,50 +169,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "event": "user_prompt",
           "scope": "this_agent",
           "when": {
-            "prompt_starts_with": "<task-notification>"
-          },
-          "action": "classify",
-          "reason": "claude-code-task-notification",
-          "trim": true,
-          "set_origin": "system"
-        },
-        {
-          "event": "user_prompt",
-          "scope": "this_agent",
-          "when": {
-            "prompt_starts_with": "<skill>"
-          },
-          "action": "classify",
-          "reason": "claude-code-skill-envelope",
-          "trim": true,
-          "set_origin": "system"
-        },
-        {
-          "event": "user_prompt",
-          "scope": "this_agent",
-          "when": {
-            "prompt_starts_with": "<teammate-message "
-          },
-          "action": "classify",
-          "reason": "claude-code-teammate-message",
-          "trim": true,
-          "set_origin": "agent_dispatch"
-        },
-        {
-          "event": "user_prompt",
-          "scope": "this_agent",
-          "when": {
-            "prompt_starts_with": "<environment_context>"
-          },
-          "action": "classify",
-          "reason": "claude-code-environment-context",
-          "trim": true,
-          "set_origin": "system"
-        },
-        {
-          "event": "user_prompt",
-          "scope": "this_agent",
-          "when": {
             "prompt_starts_with": "<<autonomous-loop"
           },
           "action": "classify",
@@ -224,10 +180,31 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "event": "user_prompt",
           "scope": "this_agent",
           "when": {
-            "prompt_starts_with": "<local-command-caveat>"
+            "prompt_envelope_tag_in": [
+              "agent-message",
+              "teammate-message"
+            ]
           },
           "action": "classify",
-          "reason": "claude-code-local-command-caveat",
+          "reason": "claude-code-agent-envelope",
+          "trim": true,
+          "set_origin": "agent_dispatch"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_envelope_tag_in": [
+              "task-notification",
+              "system-reminder",
+              "skill",
+              "environment_context",
+              "persisted-output",
+              "local-command-caveat"
+            ]
+          },
+          "action": "classify",
+          "reason": "claude-code-system-envelope",
           "trim": true,
           "set_origin": "system"
         },
@@ -235,27 +212,28 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "event": "user_prompt",
           "scope": "this_agent",
           "when": {
-            "prompt_starts_with": "<persisted-output>"
+            "prompt_is_enclosing_envelope": true
           },
           "action": "classify",
-          "reason": "claude-code-persisted-output",
-          "trim": true,
-          "set_origin": "system"
-        },
-        {
-          "event": "user_prompt",
-          "scope": "this_agent",
-          "when": {
-            "prompt_starts_with": "<system-reminder>"
-          },
-          "action": "classify",
-          "reason": "claude-code-system-reminder",
+          "reason": "claude-code-unknown-envelope",
           "trim": true,
           "set_origin": "system"
         }
       ],
       "prompts": {
         "shapes": [
+          {
+            "name": "agent_message",
+            "match": {
+              "type": "user",
+              "fieldNotEquals": {
+                "isMeta": true
+              }
+            },
+            "textAt": "message.content",
+            "textStartsWith": "<agent-message",
+            "dedupeBy": "uuid"
+          },
           {
             "name": "teammate_message",
             "match": {
@@ -610,10 +588,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "event": "user_prompt",
           "scope": "this_agent",
           "when": {
-            "prompt_starts_with": "<subagent_notification>"
+            "prompt_envelope_tag_in": [
+              "subagent_notification"
+            ]
           },
           "action": "classify",
-          "reason": "codex-subagent-notification",
+          "reason": "codex-agent-envelope",
           "trim": true,
           "set_origin": "agent_dispatch"
         },
@@ -621,21 +601,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "event": "user_prompt",
           "scope": "this_agent",
           "when": {
-            "prompt_starts_with": "<environment_context>"
+            "prompt_envelope_tag_in": [
+              "environment_context",
+              "skill"
+            ]
           },
           "action": "classify",
-          "reason": "codex-environment-context",
-          "trim": true,
-          "set_origin": "system"
-        },
-        {
-          "event": "user_prompt",
-          "scope": "this_agent",
-          "when": {
-            "prompt_starts_with": "<skill>"
-          },
-          "action": "classify",
-          "reason": "codex-skill-envelope",
+          "reason": "codex-system-envelope",
           "trim": true,
           "set_origin": "system"
         },
@@ -649,6 +621,17 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "reason": "codex-desktop-file-preamble",
           "extract_after": "## My request for Codex:\n",
           "trim": true
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_is_enclosing_envelope": true
+          },
+          "action": "classify",
+          "reason": "codex-unknown-envelope",
+          "trim": true,
+          "set_origin": "system"
         }
       ],
       "prompts": {

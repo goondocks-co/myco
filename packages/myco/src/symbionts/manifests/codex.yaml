@@ -130,41 +130,37 @@ capture:
     # <subagent_notification> envelope into the parent transcript as a
     # synthetic user-type entry. Capture but tag origin='agent_dispatch' —
     # these are agent-to-agent communications, distinct from the model's
-    # own system-injected continuations.
+    # own system-injected continuations. Structural (attribute-robust)
+    # tag-name match rather than a raw prefix.
     - event: user_prompt
       scope: this_agent
       when:
-        prompt_starts_with: "<subagent_notification>"
+        prompt_envelope_tag_in: [subagent_notification]
       action: classify
       set_origin: agent_dispatch
-      reason: codex-subagent-notification
+      reason: codex-agent-envelope
 
-    # Codex environment_context headers.
-    #
-    # Codex prepends `<environment_context>` blocks (shell, current_date,
-    # timezone, cwd) to user-type entries when the runtime wants the model
-    # to refresh its environmental awareness. Not user input.
+    # Codex runtime/system envelopes: environment_context headers (shell,
+    # current_date, timezone, cwd refresh) and slash-skill expansions.
+    # Neither is user input.
     - event: user_prompt
       scope: this_agent
       when:
-        prompt_starts_with: "<environment_context>"
+        prompt_envelope_tag_in: [environment_context, skill]
       action: classify
       set_origin: system
-      reason: codex-environment-context
-
-    # Slash-skill envelope expansions (Codex).
-    - event: user_prompt
-      scope: this_agent
-      when:
-        prompt_starts_with: "<skill>"
-      action: classify
-      set_origin: system
-      reason: codex-skill-envelope
+      reason: codex-system-envelope
 
     # Codex Desktop wraps user prompts with a file-mention preamble when
     # screenshots or files are attached:
     #   "# Files mentioned by the user:\n## <filename>: <path>\n## My request for Codex:\n<actual prompt>"
     # Strip the preamble so the captured prompt contains only the user's text.
+    #
+    # NOTE: the VS Code Codex extension uses a different preamble
+    # (`# Context from my IDE setup:` … `## My request for Codex:`).
+    # Keying on the shared `## My request for Codex:` marker above
+    # should handle both Desktop and VS Code variants. If the VS Code
+    # preamble diverges, add a separate rule keyed on its specific marker.
     - event: user_prompt
       scope: this_agent
       when:
@@ -173,11 +169,16 @@ capture:
       extract_after: "## My request for Codex:\n"
       reason: codex-desktop-file-preamble
 
-    # NOTE: the VS Code Codex extension uses a different preamble
-    # (`# Context from my IDE setup:` … `## My request for Codex:`).
-    # Keying on the shared `## My request for Codex:` marker above
-    # should handle both Desktop and VS Code variants. If the VS Code
-    # preamble diverges, add a separate rule keyed on its specific marker.
+    # Fail-safe: any other whole-message envelope is non-human (preserved,
+    # hidden). MUST be last, after every drop and the file-preamble unwrap
+    # above, so it never pre-empts a human-wrapper rewrite.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_is_enclosing_envelope: true
+      action: classify
+      set_origin: system
+      reason: codex-unknown-envelope
   prompts:
     shapes:
       # Image prompts are multipart: `<image …>` wrapper input_text tags and

@@ -96,77 +96,12 @@ capture:
         prompt_starts_with: "<local-command-stdout>"
       action: drop
       reason: claude-code-builtin-command-stdout
-    # Async Agent-tool completion notifications.
-    #
-    # When Claude Code's Agent (Task) tool completes a background sub-agent
-    # invocation, the runtime injects a `<task-notification>` envelope into
-    # the transcript as a synthetic `type: "user"` entry. From the model's
-    # perspective this is "system, here's the result you were waiting on" —
-    # not a user-typed prompt. Without classification, every async agent
-    # completion creates a new prompt_batch indistinguishable from a real
-    # human prompt, swamping the Sessions UI (175+ such rows in 30 days of
-    # dogfood usage).
-    #
-    # Capture the envelope (the result content is genuinely useful to keep
-    # in the prompt_batches table) but tag it with origin='system' so UI
-    # default filters can hide it from human-attributed views.
-    - event: user_prompt
-      scope: this_agent
-      when:
-        prompt_starts_with: "<task-notification>"
-      action: classify
-      set_origin: system
-      reason: claude-code-task-notification
-    # Slash-skill envelope expansions.
-    #
-    # When a slash-skill resolves (e.g. /compound-engineering:ce-review),
-    # Claude Code expands the SKILL.md body and injects it into the
-    # transcript as a synthetic user-type entry wrapped in `<skill>...`.
-    # Same misclassification problem as <task-notification>: capture, but
-    # mark as origin='system' so it's distinguishable from a human-typed
-    # prompt. The user typed the slash command (already captured upstream
-    # via the hook); this is only the structural expansion.
-    - event: user_prompt
-      scope: this_agent
-      when:
-        prompt_starts_with: "<skill>"
-      action: classify
-      set_origin: system
-      reason: claude-code-skill-envelope
-    # Agent-team teammate-to-lead messages.
-    #
-    # Claude Code's experimental agent-team runtime (v2.1.32+) delivers
-    # teammate reports back to the lead by injecting a `<teammate-message
-    # teammate_id="..." color="...">...` envelope as a synthetic user-type
-    # entry on the lead's transcript. These are agent-to-agent coordination,
-    # not user input — same provenance class as Codex's <subagent_notification>.
-    # Prefix includes the trailing space (the tag always carries attributes,
-    # so the next char is the whitespace before `teammate_id`); this avoids
-    # false-matching hypothetical neighbours like `<teammate-message-batch>`.
-    - event: user_prompt
-      scope: this_agent
-      when:
-        prompt_starts_with: "<teammate-message "
-      action: classify
-      set_origin: agent_dispatch
-      reason: claude-code-teammate-message
-    # Environment-context headers.
-    #
-    # Claude Code prepends `<environment_context>` blocks (cwd, shell, etc.)
-    # when the runtime wants the model to refresh environmental awareness.
-    # Not user input. Mirrors the equivalent Codex rule.
-    - event: user_prompt
-      scope: this_agent
-      when:
-        prompt_starts_with: "<environment_context>"
-      action: classify
-      set_origin: system
-      reason: claude-code-environment-context
     # Autonomous-loop runtime self-prompts.
     #
     # The `/loop` skill's autonomous mode rewakes the agent by sending
     # `<<autonomous-loop-dynamic>>` (or `<<autonomous-loop>>`) as the next
-    # user prompt. Runtime-synthesized, not human-typed.
+    # user prompt. Runtime-synthesized, not human-typed. Not XML, so this
+    # stays a prefix match rather than an envelope-tag predicate.
     - event: user_prompt
       scope: this_agent
       when:
@@ -174,43 +109,31 @@ capture:
       action: classify
       set_origin: system
       reason: claude-code-autonomous-loop
-    # Local-command caveats.
-    #
-    # Claude Code emits `<local-command-caveat>Caveat: ...` after certain
-    # built-in command dispatches. Meta-content, not a user prompt.
+    # Agent-to-agent report envelopes → agent_dispatch; matched by tag name so
+    # attributes like from="…" don't affect it.
     - event: user_prompt
       scope: this_agent
       when:
-        prompt_starts_with: "<local-command-caveat>"
+        prompt_envelope_tag_in: [agent-message, teammate-message]
       action: classify
-      set_origin: system
-      reason: claude-code-local-command-caveat
-    # Persisted-output reinjection.
-    #
-    # On session resume, Claude Code replays the prior turn's `<persisted-output>`
-    # block as a synthetic user-type entry so the model regains context.
-    # Runtime-synthesized, not human-typed.
+      set_origin: agent_dispatch
+      reason: claude-code-agent-envelope
+    # Runtime/system envelopes → system (task-notification stays system, matching prior behavior).
     - event: user_prompt
       scope: this_agent
       when:
-        prompt_starts_with: "<persisted-output>"
+        prompt_envelope_tag_in: [task-notification, system-reminder, skill, environment_context, persisted-output, local-command-caveat]
       action: classify
       set_origin: system
-      reason: claude-code-persisted-output
-    # System-reminder envelopes.
-    #
-    # Claude Code wraps runtime nudges (task-tracker reminders, automated
-    # background-task events, etc.) in `<system-reminder>...` blocks. These
-    # were previously filtered by a hardcoded SYSTEM_MESSAGE_PREFIXES list in
-    # event-handlers.ts; declaring them here folds that special case into the
-    # manifest-driven rule path.
+      reason: claude-code-system-envelope
+    # Fail-safe: any other whole-message envelope is non-human (preserved, hidden). MUST be last.
     - event: user_prompt
       scope: this_agent
       when:
-        prompt_starts_with: "<system-reminder>"
+        prompt_is_enclosing_envelope: true
       action: classify
       set_origin: system
-      reason: claude-code-system-reminder
+      reason: claude-code-unknown-envelope
   prompts:
     shapes:
       # Agent-team teammate-message envelopes (Claude Code v2.1.32+).
@@ -234,6 +157,21 @@ capture:
       # teammate-messages match here first with `dedupeBy: uuid` (one batch
       # per discrete teammate dispatch). The `set_origin: agent_dispatch` rule
       # above then tags the resulting batch correctly.
+      #
+      # `<agent-message from="…">` is the renamed successor to
+      # `<teammate-message>` (Claude Code's agent-team rename). Same envelope
+      # shape, same shared-promptId leak, so it needs its own `textStartsWith`
+      # entry ahead of `teammate_message` — listed first here (before the
+      # older tag) since it's the current name. `teammate_message` stays
+      # below for older transcripts still on record.
+      - name: agent_message
+        match:
+          type: user
+          fieldNotEquals:
+            isMeta: true
+        textAt: message.content
+        textStartsWith: "<agent-message"
+        dedupeBy: uuid
       - name: teammate_message
         match:
           type: user

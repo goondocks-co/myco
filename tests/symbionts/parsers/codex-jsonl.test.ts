@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
-import { systemEnvelopePrefixes } from '@myco/symbionts/envelope-prefixes.js';
+import { systemEnvelopePrefixes, systemEnvelopeTags } from '@myco/symbionts/envelope-prefixes.js';
 
 /**
  * Build a JSONL string from an array of entry objects.
@@ -414,13 +414,17 @@ describe('CodexJsonlParser', () => {
 describe('CodexJsonlParser — system envelope folding (RC-B)', () => {
   const envelopeParser = new CodexJsonlParser({
     envelopePrefixes: systemEnvelopePrefixes('codex'),
+    envelopeTags: systemEnvelopeTags('codex'),
   });
 
-  it('manifest-derived prefixes cover the codex envelope set', () => {
-    const prefixes = systemEnvelopePrefixes('codex');
-    expect(prefixes).toContain('<skill>');
-    expect(prefixes).toContain('<subagent_notification>');
-    expect(prefixes).toContain('<environment_context>');
+  it('manifest-derived tags cover the codex envelope set', () => {
+    // codex.yaml expresses these as structural prompt_envelope_tag_in rules,
+    // not prompt_starts_with, so they're harvested by systemEnvelopeTags —
+    // not systemEnvelopePrefixes (which stays empty for codex now).
+    const tags = systemEnvelopeTags('codex');
+    expect(tags).toContain('skill');
+    expect(tags).toContain('subagent_notification');
+    expect(tags).toContain('environment_context');
   });
 
   it('folds a skill-expansion user message into the current turn (production shape)', () => {
@@ -486,6 +490,26 @@ describe('CodexJsonlParser — system envelope folding (RC-B)', () => {
     expect(turns).toHaveLength(1);
     expect(turns[0].prompt).toBe('Real first prompt');
     expect(turns[0].aiResponse).toBe('Answer');
+  });
+
+  it('folds an unknown whole-message enclosing envelope mid-turn (fail-safe symmetry)', () => {
+    // Mirrors the classify engine's `prompt_is_enclosing_envelope` fail-safe:
+    // a tag not present in the manifest's enumerated envelopeTags list still
+    // folds as long as the ENTIRE trimmed prompt is one balanced XML envelope.
+    // Without this, an unrecognized future envelope would classify correctly
+    // as non-human but still open a new turn here, stranding the real
+    // prompt's assistant response.
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: 'Investigate the flaky test' }], '2026-06-12T10:00:00Z'),
+      messageItem('user', [{ type: 'input_text', text: '<future-thing>context</future-thing>' }], '2026-06-12T10:00:01Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'Found the root cause.' }], '2026-06-12T10:00:30Z'),
+    ]);
+
+    const turns = envelopeParser.parseTurns(content);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].prompt).toBe('Investigate the flaky test');
+    expect(turns[0].aiResponse).toBe('Found the root cause.');
   });
 
   it('without configured prefixes, envelope folding is off (default construction)', () => {

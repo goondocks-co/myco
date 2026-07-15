@@ -444,9 +444,11 @@ export function getActiveSessionIds(
 /**
  * Flip a session back to `status = 'active'` if it's currently `'completed'`.
  *
- * Called on live user activity (`user_prompt` events) so a session that was
+ * Called on any inbound event (not just `user_prompt`) so a session that was
  * auto-completed by the stale sweep or manually completed via the API snaps
- * back to active transparently when the user resumes. No-op for sessions
+ * back to active transparently as soon as further activity arrives — a
+ * `tool_use`-only stream (e.g. an orchestrator polling a Codex agent-team
+ * run) reactivates just as reliably as a resumed prompt. No-op for sessions
  * that are already active or don't exist.
  *
  * The `ended_at` column is intentionally preserved — it records the most

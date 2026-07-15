@@ -5,7 +5,10 @@ export const PROMPT_PREVIEW_CHARS = 120;
 export const TIMELINE_NODE_SIZE_CLASS = 'h-7 w-7';
 
 export function formatTimestamp(epochSeconds: number): string {
-  return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return new Date(epochSeconds * 1000).toLocaleString([], {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
 }
 
 export function promptPreview(text: string | null): string {

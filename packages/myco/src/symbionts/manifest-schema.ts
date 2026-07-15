@@ -17,6 +17,10 @@ const CaptureRuleSchema = z.object({
       path: z.string(),
       value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
     }).optional(),
+    /** Fires when the prompt begins with a `<tag …>` open for one of these tag names (attribute-robust). */
+    prompt_envelope_tag_in: z.array(z.string()).optional(),
+    /** Fires when the entire prompt is a single balanced/self-closing XML envelope (fail-safe classifier). */
+    prompt_is_enclosing_envelope: z.boolean().optional(),
   }),
   action: z.enum(['drop', 'rewrite_prompt', 'classify']),
   /** Audit string logged when the rule matches. */
