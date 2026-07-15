@@ -108,6 +108,10 @@ export interface BatchRow {
   parent_prompt_batch_id: number | null;
   kind: string;
   origin: PromptBatchOrigin;
+  /** Sub-agent thread identity (see `prompt_batches.thread_id`); null for main-thread batches. */
+  thread_id: string | null;
+  /** Human-readable sub-agent thread label (e.g. a Codex reviewer's name); null for main-thread batches. */
+  thread_label: string | null;
   release_state?: SessionReleaseState;
 }
 
