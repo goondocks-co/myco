@@ -26,6 +26,18 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
     "This project's attach record points at a Grove the host no longer serves. Detach and re-attach to route it to the host's current Grove.",
 };
 
+/**
+ * Read-surface warning shown inline on a project ref row whose `mismatch`
+ * flag is set (`HostMembershipProjectRef.mismatch === 'attach_grove_mismatch'`
+ * — server-mode design spec §2(c)) — a persistent badge, not a failed-
+ * mutation banner, so it is worded independently of the `attach_grove_mismatch`
+ * entry above rather than reusing it verbatim: that entry names "Grove",
+ * which is fine inside a thrown-error banner but not for a standing UI label
+ * (copy doctrine, decision-6a2ccfac — user vocabulary only).
+ */
+export const ATTACH_MISMATCH_WARNING_COPY =
+  "This project's link to the host is out of date and needs attention — detach and re-attach it to fix the routing.";
+
 function apiErrorCode(err: ApiError): string | null {
   if (typeof err.body !== 'object' || err.body === null) return null;
   const error = (err.body as { error?: { code?: unknown } }).error;

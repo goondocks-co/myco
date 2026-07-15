@@ -219,6 +219,32 @@ describe('TeamSettingsPanel', () => {
     expect(screen.queryByText('sk-1234REALSECRETVALUEWXYZ')).not.toBeInTheDocument();
   });
 
+  it('saving an ANTHROPIC provider key in team mode PUTs /team/secrets/anthropic with carrier headers — the spec-default provider that project mode has no key field for', async () => {
+    stubTeamConfig('missing_key');
+    putJsonMock.mockResolvedValue({ provider: 'anthropic', maskedValue: 'sk-ant-****WXYZ' });
+    const originalType = providerDraft.type;
+    providerDraft.type = 'anthropic';
+
+    try {
+      renderPanel();
+
+      const input = await screen.findByPlaceholderText(/paste api key/i);
+      fireEvent.change(input, { target: { value: 'sk-ant-REALSECRETVALUEWXYZ' } });
+      fireEvent.click(screen.getByRole('button', { name: /save key/i }));
+
+      await waitFor(() => expect(putJsonMock).toHaveBeenCalledWith(
+        '/team/secrets/anthropic',
+        { secret: 'sk-ant-REALSECRETVALUEWXYZ' },
+        { headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' } },
+      ));
+
+      await waitFor(() => expect(screen.getByText(/sk-ant-\*+WXYZ/)).toBeInTheDocument());
+      expect(screen.queryByText('sk-ant-REALSECRETVALUEWXYZ')).not.toBeInTheDocument();
+    } finally {
+      providerDraft.type = originalType;
+    }
+  });
+
   it('deleting a provider key DELETEs /team/secrets/:provider (via fetchJson) and clears the masked echo', async () => {
     // The team DELETE path goes through fetchJson directly (deleteJson has no
     // headers param) — extend the /team/config stub to also answer the

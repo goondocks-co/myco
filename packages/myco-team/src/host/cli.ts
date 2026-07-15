@@ -164,7 +164,18 @@ export async function hostEnableAndEmitJoin(
     // reads — see TEAM_AGENT_KEY_SECRET's docstring, constants.ts). Default
     // provider 'anthropic' per spec §5's API-key path.
     const provider = options.teamKeyProvider ?? 'anthropic';
-    const envKey = KEYED_CLOUD_PROVIDER_ENV[provider]?.[0] ?? KEYED_CLOUD_PROVIDER_ENV.anthropic![0];
+    const envKey = KEYED_CLOUD_PROVIDER_ENV[provider]?.[0];
+    if (!envKey) {
+      // Unreachable in practice: `resolveTeamKeyProviderFlag` already
+      // validates `--team-key-provider` against `KEYED_CLOUD_PROVIDER_ENV`'s
+      // own keys before this composite ever runs, so `provider` is always a
+      // recognized key here. A silent `?? KEYED_CLOUD_PROVIDER_ENV.anthropic`
+      // fallback would, if this invariant were ever violated upstream, store
+      // the key under anthropic's env name while the caller believes it went
+      // to `provider` — a keyless-suppression hazard this route class exists
+      // to prevent. Fail loudly instead.
+      throw new Error(`Invariant violation: no env name registered for team key provider "${provider}" in KEYED_CLOUD_PROVIDER_ENV.`);
+    }
     writeSecret(groveDir, envKey, teamAgentKey);
     teamAgentKeyMasked = maskTeamAgentKey(teamAgentKey);
   }

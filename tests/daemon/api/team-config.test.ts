@@ -684,7 +684,9 @@ describe('GET /api/team/external-mcp + PUT .../toggle — mint-if-absent, bind/u
     funnelCalls = [];
     runFunnel = async (port, on) => {
       funnelCalls.push({ port, on });
-      return { ok: true, detail: `stub ${port} ${on}` };
+      return on
+        ? { ok: true, detail: `stub ${port} ${on}`, url: `https://stub-host.example.ts.net` }
+        : { ok: true, detail: `stub ${port} ${on}` };
     };
     listener = {
       bindCalls: [],
@@ -742,6 +744,12 @@ describe('GET /api/team/external-mcp + PUT .../toggle — mint-if-absent, bind/u
     const machine = loadMachineConfig(home());
     expect(machine.daemon.external_mcp.enabled).toBe(true);
     expect(machine.daemon.external_mcp.port).toBe(body.port);
+  });
+
+  test('enable: the Funnel runner\'s public URL is threaded into the response as funnel.url (spec §7)', async () => {
+    const res = await handlePutExternalMcpToggle(deps(), { enabled: true });
+    const body = res.body as { funnel: { ok: boolean; detail: string; url?: string } };
+    expect(body.funnel.url).toBe('https://stub-host.example.ts.net');
   });
 
   test('enable twice: mint-if-absent never rotates an already-existing token, and re-enable does NOT re-reveal it', async () => {

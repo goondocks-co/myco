@@ -259,6 +259,37 @@ describe('Joined hosts list', () => {
     expect(screen.getByRole('button', { name: /detach proj_x/i })).toBeInTheDocument();
   });
 
+  it('renders a warning on a project ref whose mismatch flag is set (UX spec §2(c)) — never silent', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+        protocol_version: 1, created_at: '2026-01-01T00:00:00Z',
+        projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: 'attach_grove_mismatch' }],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    expect(screen.getByTestId('project-ref-mismatch-proj_x')).toBeInTheDocument();
+    // Copy doctrine (decision-6a2ccfac): user vocabulary only, never the
+    // internal "Grove" mechanism name in a visible warning.
+    expect(screen.getByTestId('project-ref-mismatch-proj_x').textContent ?? '').not.toMatch(/grove/i);
+  });
+
+  it('renders no warning on a project ref whose mismatch flag is null', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+        protocol_version: 1, created_at: '2026-01-01T00:00:00Z',
+        projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: null }],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    expect(screen.queryByTestId('project-ref-mismatch-proj_x')).not.toBeInTheDocument();
+  });
+
   it('Detach calls useDetachProject with the project root + id', async () => {
     statusFixture = {
       hosts: [{
@@ -427,6 +458,45 @@ describe('Team settings — per-host selection (Task 9)', () => {
     // Defaults to "This machine" — no carrier — until the operator picks a host.
     expect(select.value).toBe('self');
     expect(teamTargetCalls).toEqual([{ carrier: null }]);
+  });
+
+  it('prefers a non-mismatched ref as the team-settings carrier when the first ref is mismatch-flagged', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+        protocol_version: 1, created_at: '',
+        projects: [
+          { grove_id: 'grove_stale', project_id: 'proj_stale', root: '/checkout-stale', mismatch: 'attach_grove_mismatch' },
+          { grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: null },
+        ],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'host_abc' } });
+
+    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { groveId: 'grove_x', projectId: 'proj_x' } });
+  });
+
+  it('falls back to the first ref as the team-settings carrier when every ref on the host is mismatch-flagged', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+        protocol_version: 1, created_at: '',
+        projects: [
+          { grove_id: 'grove_stale', project_id: 'proj_stale', root: '/checkout-stale', mismatch: 'attach_grove_mismatch' },
+        ],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'host_abc' } });
+
+    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { groveId: 'grove_stale', projectId: 'proj_stale' } });
   });
 
   it('selecting a joined host switches the team target to that host\'s carrier', async () => {

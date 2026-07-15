@@ -6,7 +6,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { AccentSurface } from '../../components/ui/accent-surface';
 import { cn } from '../../lib/cn';
-import { membershipErrorCopy } from '../../lib/membership-copy';
+import { ATTACH_MISMATCH_WARNING_COPY, membershipErrorCopy } from '../../lib/membership-copy';
 import { useActiveProjectSelection } from '../../hooks/use-project-selection';
 import { TeamSettingsPanel } from '../../components/team/TeamSettingsPanel';
 import type { TeamConfigTarget } from '../../hooks/use-scoped-config';
@@ -200,6 +200,16 @@ function ProjectRefRow({ hostId, projectRef }: { hostId: string; projectRef: Hos
           {detach.isPending ? 'Detaching…' : 'Detach'}
         </button>
       </div>
+      {projectRef.mismatch === 'attach_grove_mismatch' && (
+        <p
+          className="flex items-center gap-1 text-xs text-ochre m-0"
+          role="status"
+          data-testid={`project-ref-mismatch-${projectRef.project_id}`}
+        >
+          <AlertTriangle className="size-3 shrink-0" aria-hidden />
+          {ATTACH_MISMATCH_WARNING_COPY}
+        </p>
+      )}
       {error && <p className="text-xs text-terracotta m-0">{error}</p>}
     </div>
   );
@@ -332,9 +342,13 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
 // request to it (`classifyRoute` resolves the destination host from the
 // carrier project's attach ref — there is no per-request host header). The
 // value edited is grove-wide, not project-specific, so which attached
-// project carries the request makes no functional difference. A joined host
-// with no attached project yet has no carrier available and is left out —
-// attach a project to it first.
+// project carries the request makes no functional difference — PROVIDED the
+// carrier itself still resolves. A ref flagged `mismatch` 404s the whole
+// panel (its attach record points at a Grove the host no longer serves), so
+// the carrier prefers the first non-mismatched ref and only falls back to
+// `projects[0]` when every ref on the host is flagged. A joined host with no
+// attached project yet has no carrier available and is left out — attach a
+// project to it first.
 // ---------------------------------------------------------------------------
 
 const SELF_TEAM_TARGET_ID = 'self';
@@ -350,7 +364,7 @@ function teamSettingsOptions(hosts: HostMembershipHost[]): TeamSettingsOption[] 
     { id: SELF_TEAM_TARGET_ID, label: 'This machine', target: { carrier: null } },
   ];
   for (const host of hosts) {
-    const ref = host.projects[0];
+    const ref = host.projects.find((p) => p.mismatch !== 'attach_grove_mismatch') ?? host.projects[0];
     if (!ref) continue;
     options.push({
       // Distinct from the plain host label used elsewhere on this page

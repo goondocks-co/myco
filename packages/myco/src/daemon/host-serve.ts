@@ -376,7 +376,10 @@ export type ServedGroveKeyHealth =
  * covers every case where the question doesn't apply: serving is off,
  * undesignated, dangling (all three are {@link resolveServedGroveDesignationHealth}'s
  * job to report), or no explicit cloud provider is configured for the Grove
- * (the claude-sdk default needs no stored key). Pure read, never throws.
+ * (the claude-sdk default needs no stored key). Never throws — but NOT a
+ * pure read: it calls `loadLayeredSecrets`, which mutates `process.env`
+ * (see {@link resolveServedGroveKeyHealthIsolated}, the poll-safe wrapper
+ * that undoes that side effect for a long-lived caller).
  */
 export function resolveServedGroveKeyHealth(
   machineConfig: MachineConfig,

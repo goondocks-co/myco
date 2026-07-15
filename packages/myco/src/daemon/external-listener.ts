@@ -395,17 +395,45 @@ export class ExternalMcpListener {
 // Task 12; the runner itself is not unit-testable, so tests inject a stub).
 // ---------------------------------------------------------------------------
 
-export type FunnelRunner = (port: number, on: boolean) => Promise<{ ok: boolean; detail: string }>;
+export type FunnelRunner = (port: number, on: boolean) => Promise<{ ok: boolean; detail: string; url?: string }>;
 
-/** Shells out to `tailscale funnel <port> [on|off]`. The real runner used in
- *  production; every test injects a stub instead. */
+/** `Available on the internet: https://…` — the line the modern Funnel CLI
+ *  prints to stdout on a successful `--bg` enable. */
+const FUNNEL_URL_PATTERN = /https:\/\/\S+/;
+
+/**
+ * Shells out to the MODERN Tailscale Funnel CLI. The pre-1.40 `tailscale
+ * funnel <port> on|off` form this replaces no longer exists in current
+ * Tailscale releases (verified against
+ * https://tailscale.com/docs/reference/tailscale-cli/funnel, fetched
+ * 2026-07-14): the synopsis is `tailscale funnel [flags] <target>`, `--bg`
+ * backgrounds the process and prints the public HTTPS URL to stdout on
+ * success, and disabling a config requires repeating every flag the enable
+ * call used with `off` appended — so the disable call below intentionally
+ * mirrors the enable call's exact flags (`--bg <port>`), not the bare
+ * `--https=443 off` form, which would only match an enable that had
+ * explicitly set `--https`.
+ *
+ * The public URL is captured from stdout and threaded into the toggle
+ * response as `funnel.url` (server-mode design spec §7) — `undefined` when
+ * the CLI's output doesn't contain one (e.g. the `off` call, or an
+ * unexpected output shape), never a thrown error over a missing URL.
+ *
+ * The real runner used in production; every test injects a stub instead.
+ */
 export const defaultFunnelRunner: FunnelRunner = async (port, on) => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const execFileAsync = promisify(execFile);
+  const args = on ? ['funnel', '--bg', String(port)] : ['funnel', '--bg', String(port), 'off'];
   try {
-    await execFileAsync('tailscale', ['funnel', String(port), on ? 'on' : 'off']);
-    return { ok: true, detail: `tailscale funnel ${port} ${on ? 'on' : 'off'}` };
+    const { stdout } = await execFileAsync('tailscale', args);
+    const match = stdout.match(FUNNEL_URL_PATTERN);
+    return {
+      ok: true,
+      detail: `tailscale ${args.join(' ')}`,
+      ...(match ? { url: match[0] } : {}),
+    };
   } catch (err) {
     return { ok: false, detail: err instanceof Error ? err.message : String(err) };
   }
