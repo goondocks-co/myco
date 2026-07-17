@@ -33,6 +33,21 @@ The values below are derived from the symbiont manifests in `packages/myco/src/s
 - **Project root resolution** — how the daemon knows which project's vault to route the event to. Claude Code uses an env var the agent injects; everyone else carries `cwd` in the hook payload.
 - **Manifest rules** — declarative filters that drop or rewrite specific event shapes before they hit the dispatcher. These are how we handle agent-specific quirks (slash command dispatch envelopes, ephemeral sub-invocations, etc.) without hardcoding agent names in the dispatcher.
 
+## Prompt classification (origin) and sub-agent threads
+
+Beyond drop/keep, each agent's `capture.rules` classify prompts by *origin* — WHO issued them — so non-human prompts are preserved but hidden by default. Three action lanes:
+
+- **`drop`** — proven-valueless only (duplicate dispatch envelopes, no-transcript phantoms, non-interactive `exec`).
+- **`classify` + `set_origin`** — capture but tag `system` or `agent_dispatch` (hidden behind the "Show system & sub-agent prompts" filter). Origin values: `human` (default), `system` (runtime/synthesized continuations), `agent_dispatch` (sub-agent → parent), `hook_injected` (reserved).
+- **`rewrite_prompt`** — unwrap a human wrapper (`strip_envelope` for a tag pair, `extract_after` for a marker preamble) so the stored prompt is only the user's text.
+
+Two structural predicates decide classification without brittle text matching:
+
+- `prompt_envelope_tag_in: [tags]` — attribute-robust open-tag-name match (`<agent-message from="…">` matches `agent-message`); maps known envelopes to an origin.
+- `prompt_is_enclosing_envelope: true` — whole-message fail-safe → `system`. MUST be the last `user_prompt` rule, and only for agents whose human input is NOT itself wrapped. Agents that wrap human input (e.g. Cursor `<user_query>`, Cline `<user_input>`) strip the wrapper first and carry no fail-safe, otherwise every human prompt hides as `system`.
+
+Sub-agent threads (agents that isolate sub-agent work into separate transcripts, e.g. Codex `thread_spawn`): the sub-agent's turns are mined into the PARENT session as `agent_dispatch` batches with a non-null `thread_id`/`thread_label` — one session, many threads, no child session row. Three manifest dot-paths drive it: `subagentParentPath`, `subagentThreadIdPath`, `subagentLabelPath` (all in `capture:`). Agents without `subagentParentPath` have no thread concept.
+
 ## Where to look when this doc is wrong
 
 The source of truth for everything in the matrix lives under `packages/myco/src/symbionts/`:

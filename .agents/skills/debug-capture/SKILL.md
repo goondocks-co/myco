@@ -123,6 +123,37 @@ If the session row exists but batches don't (or vice versa) — that's a FK or t
 
 If the rows exist but you can't see them via a scoped query (e.g., from the UI for project A) — that's the multi-tenancy shape. The row's `project_id` must match the request context's project scope.
 
+### Step 4b — Is the prompt captured but hidden? (classification)
+
+A prompt the agent "sent" can be in the DB yet absent from the default UI because it was *classified* rather than dropped. Check the origin before concluding anything was lost:
+
+```bash
+sqlite3 "$GROVE_DB" "SELECT id, origin, thread_id, substr(user_prompt,1,60) FROM prompt_batches WHERE session_id = '<sid>' ORDER BY id"
+```
+
+`origin` records WHO issued the prompt. A non-`human` origin (`system`, `agent_dispatch`) is captured but hidden behind the dashboard's "Show system & sub-agent prompts" filter — the data is present, just filtered out of the default view.
+
+The capture rules act in three lanes; know which one handled the prompt:
+
+- **`drop`** — the event is removed entirely. Reserved for *proven-valueless* content only: duplicate slash-command dispatch envelopes (`<command-message>` / `<command-name>` / `<local-command-stdout>`), ephemeral phantoms with no transcript, non-interactive `exec` transcripts. If a real prompt was dropped, a `drop` rule matched too broadly.
+- **`classify` + `set_origin`** — preserve-and-hide: the prompt is stored but tagged `system` or `agent_dispatch`. This is the origin you see in Step 4b.
+- **`rewrite_prompt`** (`strip_envelope` / `extract_after`) — unwrap a human wrapper so the stored prompt holds only the user's text (e.g. Codex's `## My request for Codex:` preamble).
+
+To find which rule fired, grep the daemon log for the rule's `reason` audit string:
+
+```bash
+grep '"session_id":"<sid>"' ~/.myco/service*/logs/daemon.log | grep -E 'reason|envelope|dispatch' | tail
+```
+
+Two structural predicates drive classification (both prefer message *shape* over brittle text):
+
+- **`prompt_envelope_tag_in: [tags]`** — matches when the prompt begins with `<tag` for any listed tag name, ignoring attributes, so `<agent-message from="…">` still matches `agent-message`. Maps known runtime/agent envelopes to an origin.
+- **`prompt_is_enclosing_envelope: true`** — the whole-message fail-safe: fires when the ENTIRE trimmed prompt is one balanced (or self-closing) XML envelope, and classifies it `system` (preserved, hidden). It MUST be the last `user_prompt` rule (first-match-wins) and belongs only on agents whose human input does NOT arrive wrapped.
+
+**Common misclassifications:**
+- A real human prompt tagged `system` with `reason` ending `-unknown-envelope` — the fail-safe caught it. Either the agent's `prompt_envelope_tag_in` map is missing that tag (add it with the right origin), or the agent wraps its human input in an envelope and should NOT carry the fail-safe at all (strip the wrapper first instead — see `add-symbiont`).
+- A prompt hidden as `agent_dispatch` that was genuinely user-typed — an envelope-tag rule listed a tag that also appears in human prompts.
+
 ### Step 5 — Did transcript-mining add the post-stop turns?
 
 ```bash
@@ -141,6 +172,32 @@ wc -l <transcript_path>
 If `/events/stop` arrived but the post-stop turns aren't in the DB, the transcript miner either didn't recognize the file format, or it deduped against an in-flight live capture (correctly or incorrectly). Compare batch counts before and after the stop window.
 
 If `/events/stop` never arrived — the agent crashed or was killed without firing it. The reconciler at next daemon startup should pick this up via the buffer replay; check `lifecycle.reconcile` entries in the log.
+
+### Step 5b — Is a sub-agent's transcript "missing"?
+
+An agent that isolates sub-agent work into separate transcripts (Codex `thread_spawn`) does not get its own session row. Its turns are mined into the PARENT session as batches carrying `origin='agent_dispatch'` and a non-null `thread_id` (+ `thread_label`) — one session, many threads. So a sub-agent whose work appears "missing" is usually on the parent under a thread id, not lost.
+
+Query thread rows explicitly — they are scoped away from the main thread:
+
+```bash
+# Sub-agent thread batches live on the PARENT session id under a thread_id.
+sqlite3 "$GROVE_DB" "SELECT id, origin, thread_id, thread_label, substr(user_prompt,1,50) FROM prompt_batches WHERE session_id = '<parent_sid>' AND thread_id IS NOT NULL ORDER BY thread_id, id"
+```
+
+Attribution runs through `resolveSubagentThread`, which reads three manifest-declared dot-paths from the transcript's `session_meta`:
+
+- **`subagentParentPath`** → the parent session/thread id the batches attach to.
+- **`subagentThreadIdPath`** → the thread's OWN stable id (folded into `content_hash` so sibling threads with identical text don't dedupe into each other).
+- **`subagentLabelPath`** → the object carrying the friendly label (`thread_label`, derived as `agent_nickname` else the last segment of `agent_path`).
+
+If a manifest omits `subagentParentPath`, the agent has no sub-agent thread concept and its transcripts are top-level sessions — this step doesn't apply.
+
+**Two distinct WARN logs pinpoint the break** (grep `processor.transcript`):
+
+- *"Sub-agent transcript has a resolvable parent but no thread id — dropping instead of reattributing (check `subagentThreadIdPath`)"* — the parent resolved but the thread id didn't, so the miner drops rather than mine an un-thread-scoped row. Fix the agent's `subagentThreadIdPath`.
+- *"Sub-agent reattribution active but no maskable drop rule found"* — reattribution fired but the agent's capture rules lack the `source.subagent` drop the reattributing mine masks, so records may all drop. Add the structural sub-agent drop rule to the manifest.
+
+If neither parent nor thread id resolves, the transcript follows the ordinary drop path (unresolvable-parent sub-agent stops are dropped by design), and any leaked child session row is cleaned up.
 
 ### Step 6 — Did MCP tool calls log?
 
@@ -170,5 +227,6 @@ If you fixed a regression while debugging, the right follow-up is:
 
 - `references/capture-lifecycle.md` — the layered tenet
 - `references/symbiont-capture-contract.md` — per-agent capture differences
+- `packages/myco/src/hooks/capture-rules.ts` — the rule evaluator, structural predicates, and `resolveSubagentThread`
 - `packages/myco/src/daemon/session-lifecycle.ts` — the `ensureSession*` contract (in code)
 - `.agents/skills/debug-daemon-errors/SKILL.md` — broader daemon debugging

@@ -129,6 +129,47 @@ hookFields:
 
 `normalizeHookInput()` reads the active manifest at hook runtime and applies the mapping before any processing logic runs. Each hook invocation is a fresh process, so per-invocation manifest detection is correct.
 
+### 5a. Declare Capture Classification Rules
+
+A new agent emits more than human prompts: slash-command dispatch envelopes, runtime/system continuations, agent-to-agent notifications, and (for some agents) wrapped human input. Declare `capture.rules` in the manifest so these are filtered or classified instead of leaking as human prompts. Rules are `{ event, scope, when, action }` records evaluated first-match-wins by `evaluateUserPromptRules` — a YAML-only surface; no evaluator code changes.
+
+**The `when` predicates** (a rule fires only when every condition matches):
+
+- `prompt_starts_with` / `prompt_contains` — literal text guards.
+- `transcript_path_missing` — structural: fires when the hook carried no transcript path (an ephemeral phantom sub-invocation).
+- `transcript_meta_field_exists` / `transcript_meta_field_equals` — dot-path checks into the transcript's first JSON line (`session_meta`).
+- `prompt_envelope_tag_in: [tags]` — **structural, attribute-robust**: matches when the prompt begins with `<tag` for any listed tag name, ignoring attributes, so `<agent-message from="…">` still matches `agent-message`. Prefer this over `prompt_starts_with: "<tag"` for XML envelopes.
+- `prompt_is_enclosing_envelope: true` — **structural whole-message fail-safe**: fires when the ENTIRE trimmed prompt is one balanced/self-closing XML envelope.
+
+**The three action lanes:**
+
+- `drop` — remove the event. Only for *proven-valueless* content (duplicate dispatch envelopes, no-transcript phantoms, non-interactive `exec`). Never drop anything that might carry user intent.
+- `classify` + `set_origin` — capture but tag the batch `system` or `agent_dispatch` (hidden behind the dashboard's system/sub-agent filter). Origins: `human` (default), `system` (runtime/synthesized continuations), `agent_dispatch` (sub-agent → parent), `hook_injected` (reserved).
+- `rewrite_prompt` — unwrap a human wrapper: `strip_envelope: {open, close}` removes a tag pair; `extract_after: "<marker>"` keeps the text after a preamble. The stored prompt then holds only the user's text.
+
+**Session-level classification.** `event: session_start` rules run at SessionStart *and* at Stop-driven registration (via `evaluateSessionCaptureRules`), so a phantom or sub-agent session is refused at every materialization boundary, not just the first. `session_start` rules can only `drop` — there is no prompt text to rewrite yet.
+
+**Fail-safe ordering invariant.** The `prompt_is_enclosing_envelope: true` rule classifies every unknown whole-message envelope as `system` (preserved, hidden), so new runtime envelopes never leak as human. It MUST be the **last** `user_prompt` rule (first-match-wins), placed after every `drop` and every human-wrapper `rewrite_prompt`.
+
+**When NOT to add the fail-safe.** Only agents whose human input arrives *unwrapped* may carry it. Agents that wrap the user's own message in an envelope — Cursor `<user_query>…</user_query>`, Cline `<user_input>…</user_input>` — must instead **strip that wrapper first** with a `rewrite_prompt` + `strip_envelope` rule and carry NO fail-safe: otherwise the fail-safe hides every real human prompt as `system`.
+
+### 5b. Declare Sub-Agent Thread Paths (only if the agent isolates sub-agents)
+
+Declare these three `capture:` dot-paths ONLY for agents that write sub-agent work into *separate* transcripts (Codex `thread_spawn`). They let the miner attribute a sub-agent's turns to the PARENT session as `agent_dispatch` batches carrying a `thread_id`/`thread_label` — one session, many threads, no child session row. Omit all three for agents with no sub-agent concept or whose sub-agent turns already land inline on the parent transcript.
+
+```yaml
+capture:
+  subagentParentPath: source.subagent.thread_spawn.parent_thread_id  # → parent session id
+  subagentThreadIdPath: id                                           # → the thread's own stable id
+  subagentLabelPath: source.subagent.thread_spawn                    # → object with the label fields
+```
+
+- `subagentParentPath` — the parent session/thread id the batches attach to. Its absence means "not a sub-agent thread."
+- `subagentThreadIdPath` — the thread's OWN id (distinct from the daemon session id); folded into `content_hash` so sibling threads with identical text don't dedupe into each other.
+- `subagentLabelPath` — points at the OBJECT carrying the friendly label. The derivation (`agent_nickname` when non-empty, else the last `/`-segment of `agent_path`) lives in `resolveSubagentThread` in code, because a single dot-path can't express that fallback — the manifest stays a pure location declaration.
+
+Verify each path against a real child transcript's first JSON line before shipping; a wrong `subagentThreadIdPath` makes the miner drop the sub-agent instead of reattributing it (it logs a WARN naming the field).
+
 ### 6. Wire Instruction File (If Needed)
 
 If the new agent does **not** read `AGENTS.md` natively, declare `instructionsFile` in the manifest:
