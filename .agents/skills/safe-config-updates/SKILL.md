@@ -417,6 +417,8 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **Three-tier merge precedence:** Remember that personal overrides win over project settings, which win over grove settings, which win over machine defaults. When debugging config issues, check all four tiers in the merge chain.
 
+**Binding a reused settings component to a new config target — context, not prop-threading.** When adapting an existing scoped-config component (e.g., `useScopedConfigForSelection` in `packages/myco/ui/src/hooks/use-scoped-config.ts`) to serve a different target — such as a Team-scoped settings surface — prefer a React context that the shared hook reads internally over threading a target prop through every consumer. This keeps the component reusable without forking it as new scoped surfaces (e.g., team settings) are added.
+
 **Grove-tier scope selection:** When adding grove-level settings, ensure they truly coordinate across projects rather than duplicating project-level functionality. Grove settings should enable multi-project workflows, not replace project autonomy.
 
 **Config tier migration false positives:** During drift analysis, config property paths like `myco.yaml` and `backup.dir` are configuration property references, not missing file paths. Verify that core config safety functions remain present in the loader module before assuming drift.
