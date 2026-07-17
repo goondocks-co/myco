@@ -16,6 +16,9 @@ export interface HookConfigEntry {
   hookResponse?: NonNullable<SymbiontRegistration['hookResponse']>;
   capturePrompts?: CapturePrompts;
   captureRules?: CaptureRule[];
+  subagentParentPath?: string;
+  subagentThreadIdPath?: string;
+  subagentLabelPath?: string;
 }
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
@@ -358,7 +361,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "trim": true,
         "set_origin": "system"
       }
-    ]
+    ],
+    "subagentParentPath": "source.subagent.thread_spawn.parent_thread_id",
+    "subagentThreadIdPath": "id",
+    "subagentLabelPath": "source.subagent.thread_spawn"
   },
   "copilot": {},
   "cursor": {

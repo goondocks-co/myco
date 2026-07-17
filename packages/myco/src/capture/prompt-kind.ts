@@ -3,7 +3,7 @@
  * transcript under each symbiont's manifest-declared `capture.prompts` rules.
  */
 
-import { getAtPath } from '../utils/dot-path.js';
+import { getAtPath, unsetAtPath } from '../utils/dot-path.js';
 import { evaluateUserPromptRules, type PromptOrigin, type UserPromptDecision } from '../hooks/capture-rules.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { extractCodexPromptText } from '../symbionts/parsers/codex-jsonl.js';
@@ -33,6 +33,23 @@ export interface UserPromptRecord {
 }
 
 export type { UserPromptRecord as PromptRecord };
+
+/** Options that change how the walker dispositions prompts. */
+export interface WalkerOptions {
+  /**
+   * Sub-agent reattribution context: this transcript is a resolved sub-agent
+   * thread being mined INTO its parent session as thread-scoped batches. In
+   * this mode the walker does NOT honor the manifest's sub-agent-thread drop
+   * rule (the `user_prompt` drop whose `transcript_meta_field_exists` roots
+   * `subagentParentPath`) — it masks that meta subtree before evaluating, so
+   * those turns survive as records instead of being dropped. Every OTHER drop
+   * rule (exec `source == exec`, the AGENTS.md injection prefix) still fires,
+   * and every surviving record is stamped `origin = 'agent_dispatch'` so it is
+   * born-closed and never claims the human steering anchor. Gated by the
+   * structural "parent resolved" signal — never a rule's editable `reason`.
+   */
+  subagentReattribution?: boolean;
+}
 
 /** Return a kind per user prompt seen in the transcript, in order. */
 export function extractUserPromptKinds(
@@ -66,11 +83,12 @@ export function extractUserPromptRecordsWithDrops(
   events: ReadonlyArray<Record<string, unknown>>,
   transcriptPath?: string,
   transcriptMeta?: Record<string, unknown>,
-): { records: UserPromptRecord[]; droppedText: string[] } {
+  options?: WalkerOptions,
+): { records: UserPromptRecord[]; droppedText: string[]; noMaskableDropRuleFound: boolean } {
   const config = HOOK_CONFIG[agent]?.capturePrompts;
-  if (!config) return { records: [], droppedText: [] };
-  const result = walkTranscript(config, agent, events, transcriptPath, transcriptMeta);
-  return { records: result.records, droppedText: result.droppedText };
+  if (!config) return { records: [], droppedText: [], noMaskableDropRuleFound: false };
+  const result = walkTranscript(config, agent, events, transcriptPath, transcriptMeta, options);
+  return { records: result.records, droppedText: result.droppedText, noMaskableDropRuleFound: result.noMaskableDropRuleFound };
 }
 
 /** Classify a hypothetical next prompt given current transcript state + text. */
@@ -131,6 +149,15 @@ interface WalkResult {
   /** Raw text of prompts that a `drop` rule suppressed; used by reconcile to silence false stranded-batch warnings. */
   droppedText: string[];
   priorTurnEnded: boolean;
+  /**
+   * True only when `subagentReattribution` was requested but
+   * {@link maskSubagentDropMeta} found no ancestor drop-rule path to
+   * neutralize (unknown agent, no declared `subagentParentPath`, or no
+   * `user_prompt` drop rule keyed on it). In that state every prompt still
+   * hits the live sub-agent-thread drop rule, so reattribution silently mines
+   * zero rows — the caller (which owns a logger) should surface this.
+   */
+  noMaskableDropRuleFound: boolean;
 }
 
 /**
@@ -144,11 +171,26 @@ function walkTranscript(
   events: ReadonlyArray<Record<string, unknown>>,
   transcriptPath: string | undefined,
   transcriptMeta?: Record<string, unknown>,
+  options?: WalkerOptions,
 ): WalkResult {
   const seenDedupe = new Set<string>();
   const records: UserPromptRecord[] = [];
   const droppedText: string[] = [];
   let priorTurnEnded = true;
+
+  // In the sub-agent reattribution context the sub-agent-thread drop must be
+  // suppressed while every other drop rule stays live. Masking the meta
+  // subtree the drop keys on (rather than the first-matched rule) is what
+  // keeps exec / AGENTS.md drops working even though the sub-agent drop rule
+  // is declared BEFORE them and would otherwise shadow them.
+  const reattribute = options?.subagentReattribution === true;
+  const mask = reattribute ? maskSubagentDropMeta(agent, transcriptMeta) : undefined;
+  const evalMeta = reattribute ? mask!.meta : transcriptMeta;
+  // Only meaningful when reattribution was requested — an agent whose
+  // sub-agent drop keys differently (or a manifest missing
+  // `subagentParentPath` altogether) leaves the live drop rule live, so every
+  // prompt in this transcript would be dropped instead of reattributed.
+  const noMaskableDropRuleFound = reattribute && !mask!.maskedAny;
 
   // Each reset-boundary with `changeOn` remembers its last seen value so
   // repeated matches with an unchanged value don't re-reset the walker.
@@ -186,7 +228,7 @@ function walkTranscript(
       {
         prompt: rawText,
         transcriptPath: transcriptPath ?? '<transcript-walker>',
-        transcriptMeta,
+        transcriptMeta: evalMeta,
       },
     );
     if (decision.action === 'drop') {
@@ -194,7 +236,10 @@ function walkTranscript(
       continue;
     }
     const text = decision.action === 'rewrite' ? decision.prompt : rawText;
-    const origin: PromptOrigin = decision.origin ?? 'human';
+    // Every record that survives the reattribution walk is a sub-agent turn:
+    // stamp agent_dispatch regardless of what per-record rules said, so the
+    // reconcile inserts it born-closed and it never becomes a human anchor.
+    const origin: PromptOrigin = reattribute ? 'agent_dispatch' : (decision.origin ?? 'human');
 
     const kind = config.interruptMarker && text.startsWith(config.interruptMarker)
       ? 'interrupt'
@@ -206,7 +251,7 @@ function walkTranscript(
     priorTurnEnded = false;
   }
 
-  return { records, droppedText, priorTurnEnded };
+  return { records, droppedText, priorTurnEnded, noMaskableDropRuleFound };
 }
 
 function findMatchingShape(
@@ -293,4 +338,42 @@ function extractText(event: Record<string, unknown>, shape: PromptShape): string
 
 function toKey(scope: string, value: unknown): string {
   return `${scope}|${String(value)}`;
+}
+
+/**
+ * Return a copy of the transcript meta with every sub-agent-thread drop
+ * condition neutralized, for the reattribution mining context.
+ *
+ * A sub-agent-thread drop rule is a `user_prompt` `drop` whose
+ * `transcript_meta_field_exists` path roots the manifest's
+ * `subagentParentPath` — e.g. codex's `source.subagent`, an ancestor of
+ * `source.subagent.thread_spawn.parent_thread_id`. Deleting that subtree from
+ * the meta the walker evaluates against makes the sub-agent drop stop matching
+ * while leaving every other rule free to fire against the real prompt/meta:
+ * the exec drop (`transcript_meta_field_equals: source == exec`) still sees a
+ * non-'exec' source, and the AGENTS.md-injection drop (a prompt prefix) is
+ * meta-independent. The match is structural — keyed on the exists-condition
+ * path being an ancestor of `subagentParentPath`, never on a rule's editable
+ * `reason`. Returns the original object unchanged when there is nothing to
+ * mask, with `maskedAny: false` (unknown agent, no declared parent path, or
+ * no matching drop rule) — the caller uses that flag to detect a
+ * reattribution request that can't actually neutralize the live drop rule.
+ */
+function maskSubagentDropMeta(
+  agent: string,
+  meta: Record<string, unknown> | undefined,
+): { meta: Record<string, unknown> | undefined; maskedAny: boolean } {
+  if (!meta) return { meta, maskedAny: false };
+  const entry = HOOK_CONFIG[agent];
+  const parentPath = entry?.subagentParentPath;
+  const rules = entry?.captureRules;
+  if (!parentPath || !rules) return { meta, maskedAny: false };
+  const maskPaths = rules
+    .filter((r) => r.event === 'user_prompt' && r.action === 'drop')
+    .map((r) => r.when.transcript_meta_field_exists)
+    .filter((p): p is string => !!p && (p === parentPath || parentPath.startsWith(`${p}.`)));
+  if (maskPaths.length === 0) return { meta, maskedAny: false };
+  const clone = structuredClone(meta);
+  for (const p of maskPaths) unsetAtPath(clone, p);
+  return { meta: clone, maskedAny: true };
 }

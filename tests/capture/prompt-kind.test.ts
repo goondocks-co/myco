@@ -4,6 +4,7 @@ import {
   classifyNextPromptOrigin,
   extractUserPromptKinds,
   extractUserPromptRecords,
+  extractUserPromptRecordsWithDrops,
 } from '@myco/capture/prompt-kind.js';
 import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
 
@@ -792,5 +793,53 @@ describe('classifyNextPromptKind — tail predictions', () => {
         '[Request interrupted by user for tool use] continue later',
       ),
     ).toBe('interrupt');
+  });
+});
+
+// Review finding: `subagentReattribution` is only ever useful when the
+// walker can actually neutralize the agent's sub-agent-thread drop rule. An
+// agent with no declared `subagentParentPath` (or no matching drop rule) has
+// nothing to mask, so a reattribution request against it would silently mine
+// zero rows — indistinguishable from "this sub-agent turn legitimately
+// produced no prompts." The walker has no logger, so it surfaces this via a
+// returned flag instead; the miner (which does have a logger) is responsible
+// for turning the flag into a WARN.
+describe('extractUserPromptRecordsWithDrops — noMaskableDropRuleFound flag', () => {
+  it('is false when subagentReattribution is not requested', () => {
+    const result = extractUserPromptRecordsWithDrops('claude-code', [
+      { type: 'user', promptId: 'p1', message: { role: 'user', content: 'hi' } },
+    ]);
+    expect(result.noMaskableDropRuleFound).toBe(false);
+  });
+
+  it('is true when reattribution is requested against an agent with no declared subagentParentPath', () => {
+    // claude-code declares capturePrompts but no subagentParentPath/captureRules
+    // sub-agent-thread drop rule (only codex does) — nothing for the walker
+    // to mask, so the request can't do anything useful.
+    const result = extractUserPromptRecordsWithDrops(
+      'claude-code',
+      [{ type: 'user', promptId: 'p1', message: { role: 'user', content: 'hi' } }],
+      undefined,
+      { some: 'meta' },
+      { subagentReattribution: true },
+    );
+    expect(result.noMaskableDropRuleFound).toBe(true);
+  });
+
+  it('is false when reattribution is requested against an agent whose drop rule the mask can neutralize', () => {
+    const meta = { id: 'child-uuid', source: { subagent: { thread_spawn: { parent_thread_id: 'p1' } } } };
+    const result = extractUserPromptRecordsWithDrops(
+      'codex',
+      [{
+        timestamp: '2026-07-12T14:51:21Z',
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'reviewer turn' }] },
+      }],
+      '/tmp/child.jsonl',
+      meta,
+      { subagentReattribution: true },
+    );
+    expect(result.noMaskableDropRuleFound).toBe(false);
+    expect(result.records).toHaveLength(1);
   });
 });

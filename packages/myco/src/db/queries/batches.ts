@@ -144,6 +144,16 @@ export interface PromptBatchHashInput {
    */
   ordinal: number;
   userPrompt: string | null | undefined;
+  /**
+   * Sub-agent thread identity (see `prompt_batches.thread_id`). Folds into
+   * the canonical string ONLY when present, appended as a trailing segment —
+   * omitting it (undefined/null) reproduces the pre-thread-support canonical
+   * string byte-for-byte, so every main-thread row's dedupe key on existing
+   * vaults is unchanged. NEVER pass `threadId ?? ''` positionally: that would
+   * insert an empty segment for every main-thread call and change every
+   * existing row's hash, breaking re-mine dedupe on real vaults.
+   */
+  threadId?: string | null;
 }
 
 /**
@@ -153,7 +163,10 @@ export interface PromptBatchHashInput {
  * `session_id` scopes the key to one session (the index is project-scoped;
  * session_id makes same-text turns in different sessions never collide).
  * `origin` keeps a synthesized `system` batch from colliding with a human
- * prompt of the same text. `ordinal` distinguishes genuine repeats.
+ * prompt of the same text. `ordinal` distinguishes genuine repeats. `threadId`
+ * (when present) scopes the key to a sub-agent thread so two sibling threads
+ * can independently produce a turn with identical (origin, ordinal, text)
+ * without colliding on the same content_hash.
  */
 export function promptBatchContentHash(input: PromptBatchHashInput): string {
   const canonical = [
@@ -161,6 +174,7 @@ export function promptBatchContentHash(input: PromptBatchHashInput): string {
     input.origin,
     String(input.ordinal),
     normalizePromptForHash(input.userPrompt),
+    ...(input.threadId ? [input.threadId] : []),
   ].join(' ');
   return sha256Hex(canonical);
 }
@@ -247,6 +261,10 @@ export interface BatchRow {
   created_at: number;
   machine_id: string;
   synced_at: number | null;
+  /** NULL = the session's main thread; sub-agent-mined batches carry the child thread id. */
+  thread_id: string | null;
+  /** Friendly thread identity for display (e.g. task_6_reviewer); NULL for main-thread rows. */
+  thread_label: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +291,8 @@ const BATCH_COLUMNS = [
   'created_at',
   'machine_id',
   'synced_at',
+  'thread_id',
+  'thread_label',
 ] as const;
 
 const SELECT_COLUMNS = BATCH_COLUMNS.join(', ');
@@ -303,6 +323,8 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
     created_at: row.created_at as number,
     machine_id: (row.machine_id as string) ?? 'local',
     synced_at: (row.synced_at as number) ?? null,
+    thread_id: (row.thread_id as string) ?? null,
+    thread_label: (row.thread_label as string) ?? null,
   };
 }
 
@@ -410,18 +432,29 @@ export function closeBatch(
  * Myco's batch 1 (Cursor rewrites its transcript per conversation, not per
  * session) and to daemon-restart prompt_number resets. Only fills batches
  * whose response_summary is still NULL.
+ *
+ * `threadId` scopes the SELECT: omit (the default) to scope to `thread_id IS
+ * NULL` — today's main-thread-only behavior, unchanged. Pass a thread id to
+ * scope to that sub-agent thread's rows instead. Either way the scan is
+ * confined to ONE thread (main or a specific sub-agent thread) — the
+ * Phase-2 human-anchoring below must never roll a thread row's response onto
+ * a main-thread batch or vice versa, since the two threads' batches interleave
+ * by `id` but represent independent conversations.
  */
 export function populateBatchResponses(
   sessionId: string,
   turns: Array<{ prompt: string; response: string }>,
+  threadId?: string,
 ): void {
   const db = getDatabase();
+  const threadClause = threadId != null ? 'AND thread_id = ?' : 'AND thread_id IS NULL';
+  const threadParams = threadId != null ? [threadId] : [];
   const batches = db.prepare(
     `SELECT id, user_prompt, response_summary, origin
        FROM prompt_batches
-      WHERE session_id = ?
+      WHERE session_id = ? ${threadClause}
       ORDER BY id ASC`,
-  ).all(sessionId) as Array<{ id: number; user_prompt: string | null; response_summary: string | null; origin: string }>;
+  ).all(sessionId, ...threadParams) as Array<{ id: number; user_prompt: string | null; response_summary: string | null; origin: string }>;
 
   const prefixOf = (s: string | null | undefined) =>
     (s ?? '').trim().slice(0, PROMPT_PREFIX_MATCH_CHARS);
@@ -803,6 +836,16 @@ export interface StatelessBatchInsert {
    * transient rows like the recovered sentinel.
    */
   ordinal?: number;
+  /**
+   * Sub-agent thread identity. Omit (or pass null) for a main-thread batch —
+   * the default and today's behavior. When set, folds into the dedupe
+   * `content_hash` (see {@link promptBatchContentHash}) so a sibling thread
+   * with an identical (origin, ordinal, text) turn never collides with this
+   * thread or with the main thread.
+   */
+  thread_id?: string | null;
+  /** Friendly thread identity for display (e.g. task_6_reviewer). Omit for a main-thread batch. */
+  thread_label?: string | null;
 }
 
 /** Result of {@link insertBatchStateless}: the row plus whether it was newly created. */
@@ -843,6 +886,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
   const origin = data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN;
   // Dedup key is only meaningful with both a position AND a body. Transient
   // rows (the recovered sentinel) omit `ordinal` and stay NULL → no dedup.
+  const threadId = data.thread_id ?? null;
   const contentHash =
     data.ordinal != null && data.user_prompt != null
       ? promptBatchContentHash({
@@ -850,6 +894,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
           origin,
           ordinal: data.ordinal,
           userPrompt: data.user_prompt,
+          threadId,
         })
       : null;
 
@@ -859,13 +904,15 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
          session_id, project_id, parent_prompt_batch_id, kind, origin,
          prompt_number, user_prompt, response_summary,
          classification, started_at, ended_at, status,
-         activity_count, processed, content_hash, created_at, machine_id
+         activity_count, processed, content_hash, created_at, machine_id,
+         thread_id, thread_label
        ) VALUES (
          ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
          (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
          ?, NULL,
          NULL, ?, ?, ?,
-         ?, ?, ?, ?, COALESCE(?, (SELECT machine_id FROM sessions WHERE id = ?), ?)
+         ?, ?, ?, ?, COALESCE(?, (SELECT machine_id FROM sessions WHERE id = ?), ?),
+         ?, ?
        )`,
     ).run(
       data.session_id,
@@ -890,6 +937,8 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
       data.machine_id ?? null,
       data.session_id,
       getTeamMachineId(),
+      threadId,
+      data.thread_label ?? null,
     );
 
     const batchId = Number(info.lastInsertRowid);
@@ -1003,6 +1052,12 @@ export function setResponseSummary(
  * prompts that end up with high ids but earlier prompt_numbers, because
  * the summary for the current turn belongs on the last transcript-order
  * batch, not the last-inserted one.
+ *
+ * Always scoped to `thread_id IS NULL` — a sub-agent thread batch is never
+ * "the session's latest turn" for any of this function's consumers (response
+ * stamping, git-provenance capture, injection dedup, isLastTurn checks).
+ * Callers that need a specific thread's latest row use
+ * {@link listBatchesBySessionThread} instead.
  */
 export function getLatestBatch(
   sessionId: string,
@@ -1019,7 +1074,7 @@ export function getLatestBatch(
 
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
-     WHERE session_id = ? ${originClause}
+     WHERE session_id = ? AND thread_id IS NULL ${originClause}
      ORDER BY prompt_number DESC, id DESC LIMIT 1`,
   ).get(...params) as Record<string, unknown> | undefined;
 
@@ -1079,6 +1134,9 @@ export function resolveResponseSummaryTarget(
 
 /**
  * Get the most recent active batch for a session (by id DESC).
+ *
+ * Thread batches are never a session's open turn — excluded structurally,
+ * not by the born-closed convention alone.
  */
 export function getLatestOpenBatch(
   sessionId: string,
@@ -1087,7 +1145,7 @@ export function getLatestOpenBatch(
 
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
-     WHERE session_id = ? AND status = ?
+     WHERE session_id = ? AND status = ? AND thread_id IS NULL
      ORDER BY id DESC LIMIT 1`,
   ).get(sessionId, DEFAULT_STATUS) as Record<string, unknown> | undefined;
 
@@ -1121,6 +1179,78 @@ export function listBatchesBySession(
      LIMIT ?
      OFFSET ?`,
   ).all(...params, limit, offset) as Record<string, unknown>[];
+
+  return rows.map(toBatchRow);
+}
+
+/**
+ * List every main-thread batch for a session — the non-reattribute mining
+ * counterpart of `listBatchesBySessionThread`. Structurally excludes every
+ * sub-agent thread row (`thread_id IS NOT NULL`) via `AND thread_id IS NULL`,
+ * mirroring `listBatchesBySession` in every other respect (options, column
+ * set, ordering).
+ *
+ * Why this exists: the transcript miner's non-reattribute (main-thread) mine
+ * used to source its bucket/reclassify, renumber, and image-capture batches
+ * from `listBatchesBySession`, which returns every thread's rows. Once a
+ * parent session accumulates sub-agent thread batches, a 60-char
+ * prompt-prefix collision between a thread row and a new main-thread
+ * transcript prompt could let `buildPrefixBuckets` hand the main-thread mine
+ * a THREAD row, which `updateBatchKind`/`setBatchPromptNumber` would then
+ * silently re-parent or renumber onto a main-thread anchor. The reattribute
+ * branch was already thread-scoped (`listBatchesBySessionThread`); this
+ * gives the main-thread branch the symmetric guarantee at the SQL layer
+ * instead of relying on prefix-bucket luck.
+ */
+export function listMainThreadBatchesBySession(
+  sessionId: string,
+  options: ListBatchesBySessionOptions,
+): BatchRow[] {
+  const db = getDatabase();
+
+  const limit = options.limit ?? BATCHES_DEFAULT_LIMIT;
+  const offset = options.offset ?? 0;
+  const conditions = ['session_id = ?', 'thread_id IS NULL'];
+  const params: unknown[] = [sessionId];
+  appendProjectCondition(conditions, params, options.scope);
+
+  if (options.origins && options.origins.length > 0) {
+    const placeholders = options.origins.map(() => '?').join(', ');
+    conditions.push(`origin IN (${placeholders})`);
+    params.push(...options.origins);
+  }
+
+  const rows = db.prepare(
+    `SELECT ${SELECT_COLUMNS}
+     FROM prompt_batches
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY prompt_number ASC
+     LIMIT ?
+     OFFSET ?`,
+  ).all(...params, limit, offset) as Record<string, unknown>[];
+
+  return rows.map(toBatchRow);
+}
+
+/**
+ * List every batch for one sub-agent thread within a session, in transcript
+ * order — the thread-mining counterpart of `listBatchesBySession`. Unlike
+ * that function, this is unconditionally scoped to a single `thread_id` and
+ * carries no project-scope / origin-filter / pagination options: thread
+ * mining always wants "every row of this one thread", not a paginated view.
+ */
+export function listBatchesBySessionThread(
+  sessionId: string,
+  threadId: string,
+): BatchRow[] {
+  const db = getDatabase();
+
+  const rows = db.prepare(
+    `SELECT ${SELECT_COLUMNS}
+     FROM prompt_batches
+     WHERE session_id = ? AND thread_id = ?
+     ORDER BY prompt_number ASC`,
+  ).all(sessionId, threadId) as Record<string, unknown>[];
 
   return rows.map(toBatchRow);
 }
@@ -1200,12 +1330,15 @@ export function replaceRecoveredBatchUserPrompt(
  *
  * Used by handleUserPrompt to decide whether an incoming prompt should be
  * nested as a child or start a new parent.
+ *
+ * Thread batches are never a session's open turn — excluded structurally,
+ * not by the born-closed convention alone.
  */
 export function findOpenParentBatch(sessionId: string): BatchRow | null {
   const db = getDatabase();
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
-     WHERE session_id = ? AND ended_at IS NULL AND kind = 'initial'
+     WHERE session_id = ? AND ended_at IS NULL AND kind = 'initial' AND thread_id IS NULL
      ORDER BY id DESC LIMIT 1`,
   ).get(sessionId) as Record<string, unknown> | undefined;
   return row ? toBatchRow(row) : null;

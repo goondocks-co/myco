@@ -12,7 +12,7 @@
 // import from the main @myco package at runtime.
 const CANDIDATE_STATUS = { APPROVED: 'approved', GENERATED: 'generated' } as const;
 
-const SESSIONS_TABLE = `
+export const SESSIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS sessions (
     id                     TEXT NOT NULL,
     machine_id             TEXT NOT NULL,
@@ -38,7 +38,7 @@ const SESSIONS_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const PROMPT_BATCHES_TABLE = `
+export const PROMPT_BATCHES_TABLE = `
   CREATE TABLE IF NOT EXISTS prompt_batches (
     id                     INTEGER NOT NULL,
     machine_id             TEXT NOT NULL,
@@ -59,10 +59,12 @@ const PROMPT_BATCHES_TABLE = `
     content_hash           TEXT,
     created_at             INTEGER NOT NULL,
     synced_at              INTEGER,
+    thread_id              TEXT,
+    thread_label           TEXT,
     PRIMARY KEY (id, machine_id)
   )`;
 
-const SPORES_TABLE = `
+export const SPORES_TABLE = `
   CREATE TABLE IF NOT EXISTS spores (
     id                TEXT NOT NULL,
     machine_id        TEXT NOT NULL,
@@ -85,7 +87,7 @@ const SPORES_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const ENTITIES_TABLE = `
+export const ENTITIES_TABLE = `
   CREATE TABLE IF NOT EXISTS entities (
     id          TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
@@ -101,7 +103,7 @@ const ENTITIES_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const GRAPH_EDGES_TABLE = `
+export const GRAPH_EDGES_TABLE = `
   CREATE TABLE IF NOT EXISTS graph_edges (
     id              TEXT NOT NULL,
     machine_id      TEXT NOT NULL,
@@ -120,7 +122,7 @@ const GRAPH_EDGES_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const PLANS_TABLE = `
+export const PLANS_TABLE = `
   CREATE TABLE IF NOT EXISTS plans (
     id               TEXT NOT NULL,
     machine_id       TEXT NOT NULL,
@@ -142,7 +144,7 @@ const PLANS_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const ARTIFACTS_TABLE = `
+export const ARTIFACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS artifacts (
     id               TEXT NOT NULL,
     machine_id       TEXT NOT NULL,
@@ -159,7 +161,7 @@ const ARTIFACTS_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const ENTITY_MENTIONS_TABLE = `
+export const ENTITY_MENTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS entity_mentions (
     entity_id   TEXT NOT NULL,
     note_id     TEXT NOT NULL,
@@ -171,7 +173,7 @@ const ENTITY_MENTIONS_TABLE = `
     UNIQUE (entity_id, note_id, note_type, agent_id)
   )`;
 
-const RESOLUTION_EVENTS_TABLE = `
+export const RESOLUTION_EVENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS resolution_events (
     id            TEXT NOT NULL,
     machine_id    TEXT NOT NULL,
@@ -187,7 +189,7 @@ const RESOLUTION_EVENTS_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const DIGEST_EXTRACTS_TABLE = `
+export const DIGEST_EXTRACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS digest_extracts (
     id              INTEGER NOT NULL,
     machine_id      TEXT NOT NULL,
@@ -201,7 +203,7 @@ const DIGEST_EXTRACTS_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const SKILL_CANDIDATES_TABLE = `
+export const SKILL_CANDIDATES_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_candidates (
     id              TEXT NOT NULL,
     machine_id      TEXT NOT NULL,
@@ -227,7 +229,7 @@ const SKILL_CANDIDATES_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const SKILL_RECORDS_TABLE = `
+export const SKILL_RECORDS_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_records (
     id              TEXT NOT NULL,
     machine_id      TEXT NOT NULL,
@@ -250,7 +252,7 @@ const SKILL_RECORDS_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const SKILL_USAGE_TABLE = `
+export const SKILL_USAGE_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_usage (
     id              TEXT NOT NULL,
     machine_id      TEXT NOT NULL,
@@ -262,7 +264,7 @@ const SKILL_USAGE_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const SKILL_LINEAGE_TABLE = `
+export const SKILL_LINEAGE_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_lineage (
     id               TEXT NOT NULL,
     machine_id       TEXT NOT NULL,
@@ -278,7 +280,7 @@ const SKILL_LINEAGE_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const OKF_GENERATIONS_TABLE = `
+export const OKF_GENERATIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS okf_generations (
     id           TEXT NOT NULL,
     machine_id   TEXT NOT NULL,
@@ -298,7 +300,7 @@ const OKF_GENERATIONS_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const OKF_PAGES_TABLE = `
+export const OKF_PAGES_TABLE = `
   CREATE TABLE IF NOT EXISTS okf_pages (
     id          TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
@@ -316,7 +318,7 @@ const OKF_PAGES_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const OKF_PAGE_REVISIONS_TABLE = `
+export const OKF_PAGE_REVISIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS okf_page_revisions (
     id                   TEXT NOT NULL,
     machine_id           TEXT NOT NULL,
@@ -333,7 +335,7 @@ const OKF_PAGE_REVISIONS_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const KNOWLEDGE_RELEASE_STATE_TABLE = `
+export const KNOWLEDGE_RELEASE_STATE_TABLE = `
   CREATE TABLE IF NOT EXISTS knowledge_release_state (
     id                       INTEGER NOT NULL,
     machine_id               TEXT NOT NULL,
@@ -357,7 +359,7 @@ const KNOWLEDGE_RELEASE_STATE_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
-const TEAM_MEMBERS_TABLE = `
+export const TEAM_MEMBERS_TABLE = `
   CREATE TABLE IF NOT EXISTS team_members (
     id          TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
@@ -551,6 +553,10 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     'ALTER TABLE team_sync_stats ADD COLUMN last_embed_error TEXT',
     'ALTER TABLE team_sync_stats ADD COLUMN last_embed_at INTEGER',
     'ALTER TABLE team_dlq ADD COLUMN replay_count INTEGER NOT NULL DEFAULT 0',
+    // v71 — nullable sub-agent thread attribution on prompt_batches. See
+    // migrateV70ToV71ThreadColumns in the local vault (packages/myco/src/db/migrations.ts).
+    'ALTER TABLE prompt_batches ADD COLUMN thread_id TEXT',
+    'ALTER TABLE prompt_batches ADD COLUMN thread_label TEXT',
   ];
   for (const sql of migrations) {
     try {
@@ -575,7 +581,7 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
       'last_reconciled_at', 'reconciliation_reason',
       'project_id',
     ]],
-    ['prompt_batches', ['parent_prompt_batch_id', 'kind', 'origin', 'project_id']],
+    ['prompt_batches', ['parent_prompt_batch_id', 'kind', 'origin', 'project_id', 'thread_id', 'thread_label']],
     ['plans', ['logical_key', 'project_id']],
     ['skill_usage', ['synced_at', 'project_id']],
     ['sessions', ['project_id']],
