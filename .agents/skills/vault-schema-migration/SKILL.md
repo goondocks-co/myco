@@ -140,6 +140,28 @@ grep -r "D1\|BACKFILL_TABLES" packages/myco/src --include="*.ts"
 
 Common D1 tables include: `team_outbox`, `notifications`, `agent_runs`, and `sessions` (if team sync is enabled).
 
+The authoritative synced-table set lives in `packages/myco-team/worker/src/synced-tables.ts` (`SYNCED_TABLES`). If your changed table is in that set, the parity rule below is mandatory.
+
+#### 6a-parity. The synced-column parity rule — every local column must reach the D1 mirror
+
+**Any column added to a synced table MUST also be added to the D1 worker mirror.** The worker's insert path (`buildInsertParts` in `packages/myco-team/worker/src/index.ts`) builds its column list from the row payload, not from an allowlist — `sanitizeSyncPayload` only strips `LOCAL_ONLY_SYNC_COLUMNS`. So any new local column rides straight into the worker's `INSERT OR REPLACE INTO ${table} (...)`, and if D1 has no matching column, D1 throws `no such column` for **every** unsynced row of that table — a total sync stall for the table, with no local error.
+
+Mirror the column with the **3-part idempotent pattern** in `packages/myco-team/worker/src/schema.ts`, all inside `initD1Schema` (which is idempotent and runs on every request):
+
+1. **DDL** — add the column to the table's `CREATE TABLE` constant (e.g. `PROMPT_BATCHES_TABLE`), so fresh D1 databases get it at creation.
+2. **Idempotent ALTER** — add `ALTER TABLE <table> ADD COLUMN <col> <type>` to the `migrations` array; it runs inside a try/catch that swallows the "column already exists" error, so existing D1 databases pick it up on the next request.
+3. **`verifyColumnsAddressable`** — add the column to that table's entry in the `verifyColumnsAddressable(db, [...])` list, so a lazy/partial schema-cache refresh that hasn't propagated the ALTER fails fast and is retried on the next request instead of silently dropping writes.
+
+If the new column is intentionally local-only (never synced), add it to `LOCAL_ONLY_SYNC_COLUMNS[table]` in `packages/myco/src/db/queries/team-outbox.ts` instead — then it's stripped before the payload reaches the worker.
+
+**The column-parity test enforces this.** `tests/db/synced-table-parity.test.ts` extracts column names from both the local and worker `CREATE TABLE` DDL strings and asserts every synced local column (minus `LOCAL_ONLY_SYNC_COLUMNS` and globally-stripped columns) exists on the worker DDL. Adding a synced column without its worker counterpart turns this test red and names the offending column — run it after any synced-table change:
+
+```bash
+npm test -- tests/db/synced-table-parity.test.ts
+```
+
+**Older binary on a newer schema is safe for additive-nullable columns.** The local `createSchema` migration loop no-ops when the vault's `user_version` is already ahead of the running binary's `SCHEMA_VERSION` (the `if (currentVersion < N)` blocks are all skipped), and every query names its columns explicitly rather than `SELECT *`. So a machine still on an older binary reading a vault another machine migrated forward keeps working, as long as the new columns are **additive and nullable** (no NOT-NULL-without-default, no dropped/renamed columns an old query still references). This is the guarantee that lets a mixed-version team share one synced schema.
+
 #### 6b. Generate D1 migration SQL
 
 Extract the SQL statements from your migration block that affect D1 tables:
@@ -214,6 +236,34 @@ ls docs/ | grep schema
 grep -r "schema v" memory/ --include="*.md"
 ```
 
+### 9. Migrate a real existing vault offline (with backup)
+
+When you need to apply a new binary's migration to a live vault that already holds real data (e.g. before shipping, or to recover a stuck vault), do it offline with a backup so a bad migration is fully reversible:
+
+```bash
+# 1. Stop the daemon so nothing writes mid-migration.
+myco daemon stop      # or the service stop for your install
+
+# 2. Back up the DB and its write-ahead log together — the WAL holds
+#    committed pages not yet checkpointed into the main file; copying the
+#    .db without the .wal can restore a torn state.
+GROVE_DB=~/.myco/groves/<grove-id>/myco.db
+cp "$GROVE_DB"      "$GROVE_DB.bak"
+cp "$GROVE_DB-wal"  "$GROVE_DB-wal.bak" 2>/dev/null || true
+
+# 3. Open the vault once with the new binary so createSchema runs the
+#    migration chain to the new SCHEMA_VERSION.
+myco daemon start
+#    (or any command that opens the vault, e.g. `myco doctor`)
+
+# 4. Verify: version advanced and the new column/table is present and intact.
+sqlite3 "$GROVE_DB" "PRAGMA user_version;"
+sqlite3 "$GROVE_DB" ".schema <changed_table>"
+sqlite3 "$GROVE_DB" "PRAGMA integrity_check;"   # must print 'ok'
+```
+
+If `integrity_check` reports anything but `ok`, or the migration errored, restore from the backup (`mv "$GROVE_DB.bak" "$GROVE_DB"` and the WAL) and fix the migration before retrying. Never leave the daemon running against a half-migrated vault.
+
 ## Common Pitfalls
 
 **Never edit an existing migration block.** Once a version block ships, real vaults have already applied it. Changing it means the migration won't re-run for existing users. If you need to fix a past migration, add a new version that corrects it.
@@ -234,3 +284,5 @@ db.transaction(() => {
 ```
 
 **D1 schema drift causes team sync failures.** Always sync D1 schema changes using the procedures in step 6. Missing this step creates runtime drift between the daemon schema and the worker database.
+
+**A new column on a synced table with no worker mirror stalls sync for the whole table.** The worker builds its INSERT column list from the row payload, so an unmirrored column makes D1 throw `no such column` for every unsynced row — silently, with no local error. Apply the 3-part worker pattern (DDL + idempotent ALTER + `verifyColumnsAddressable`) from step 6a-parity and run `tests/db/synced-table-parity.test.ts`, which fails and names any local column missing from the D1 mirror. A column that is deliberately local-only belongs in `LOCAL_ONLY_SYNC_COLUMNS` instead.
