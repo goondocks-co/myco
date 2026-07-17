@@ -94,6 +94,14 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
                   {batch.activity_count} tool call{batch.activity_count !== 1 ? 's' : ''}
                 </span>
               )}
+              {batch.thread_label && (
+                <span
+                  title={batch.thread_id ?? undefined}
+                  className="inline-flex shrink-0 items-center rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary"
+                >
+                  {batch.thread_label}
+                </span>
+              )}
               {batch.started_at && (
                 <span className="shrink-0 font-mono text-xs text-on-surface-variant">
                   {formatTimestamp(batch.started_at)}

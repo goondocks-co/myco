@@ -658,7 +658,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           }
         ],
         "interruptMarker": "<turn_aborted>"
-      }
+      },
+      "subagentParentPath": "source.subagent.thread_spawn.parent_thread_id",
+      "subagentThreadIdPath": "id",
+      "subagentLabelPath": "source.subagent.thread_spawn"
     },
     "registration": {
       "hooksTarget": ".codex/hooks.json",

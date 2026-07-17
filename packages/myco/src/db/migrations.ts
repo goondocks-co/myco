@@ -140,6 +140,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 68, migrate: (db) => migrateV67ToV68(db) },
   { version: 69, migrate: (db) => migrateV68ToV69(db) },
   { version: 70, migrate: (db) => migrateV69ToV70(db) },
+  { version: 71, migrate: (db) => migrateV70ToV71(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4220,6 +4221,40 @@ function migrateV69ToV70(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(70, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v70 -> v71: `thread_id` / `thread_label` on `prompt_batches`.
+ *
+ * Sub-agent thread mining attributes batches mined from a Codex sub-agent
+ * transcript back to the parent session while keeping them distinguishable
+ * from the session's own main-thread batches. Both columns are nullable and
+ * backfill to NULL for every existing row (NULL thread_id means "main
+ * thread"). The composite index supports looking up a session's batches for
+ * a specific thread.
+ */
+function migrateV70ToV71(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'prompt_batches');
+    if (!cols.has('thread_id')) {
+      db.prepare('ALTER TABLE prompt_batches ADD COLUMN thread_id TEXT').run();
+    }
+    if (!cols.has('thread_label')) {
+      db.prepare('ALTER TABLE prompt_batches ADD COLUMN thread_label TEXT').run();
+    }
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_prompt_batches_session_thread
+         ON prompt_batches (session_id, thread_id)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(71, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

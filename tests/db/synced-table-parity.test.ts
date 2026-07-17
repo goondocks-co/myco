@@ -34,8 +34,32 @@ import {
   TEAM_SYNC_OBSERVED_TABLES,
   TEAM_SYNC_BACKFILL_TABLES,
   REBUILD_TABLES,
+  LOCAL_ONLY_SYNC_COLUMNS,
 } from '@myco/db/queries/team-outbox.js';
-import { TEAM_DELETE_TRIGGER_TABLES, TABLE_MIN_SYNC_PROTOCOL, tablesGatedByWorkerProtocol } from '@myco/db/schema-ddl.js';
+import {
+  TEAM_DELETE_TRIGGER_TABLES,
+  TABLE_MIN_SYNC_PROTOCOL,
+  tablesGatedByWorkerProtocol,
+  SESSIONS_TABLE,
+  PROMPT_BATCHES_TABLE,
+  SPORES_TABLE,
+  ENTITIES_TABLE,
+  GRAPH_EDGES_TABLE,
+  ENTITY_MENTIONS_TABLE,
+  RESOLUTION_EVENTS_TABLE,
+  PLANS_TABLE,
+  ARTIFACTS_TABLE,
+  DIGEST_EXTRACTS_TABLE,
+  SKILL_CANDIDATES_TABLE,
+  SKILL_RECORDS_TABLE,
+  SKILL_LINEAGE_TABLE,
+  SKILL_USAGE_TABLE,
+  KNOWLEDGE_RELEASE_STATE_TABLE,
+  TEAM_MEMBERS_TABLE,
+  OKF_GENERATIONS_TABLE,
+  OKF_PAGES_TABLE,
+  OKF_PAGE_REVISIONS_TABLE,
+} from '@myco/db/schema-ddl.js';
 // Relative import (not a tsconfig path alias) so the bun runner resolves the
 // real worker module. We import from the dependency-free `synced-tables`
 // module, NOT `index.ts`: index.ts transitively imports `agents/mcp` →
@@ -48,6 +72,30 @@ import {
   requiresGroveProjectId,
   stampSyncedAtAtIngestion,
 } from '../../packages/myco-team/worker/src/synced-tables.ts';
+// `schema.ts` has no imports of its own (D1Database is an ambient type), so
+// pulling the raw DDL strings in for column-level comparison doesn't drag
+// the Workers runtime graph into the bun test process.
+import {
+  SESSIONS_TABLE as WORKER_SESSIONS_TABLE,
+  PROMPT_BATCHES_TABLE as WORKER_PROMPT_BATCHES_TABLE,
+  SPORES_TABLE as WORKER_SPORES_TABLE,
+  ENTITIES_TABLE as WORKER_ENTITIES_TABLE,
+  GRAPH_EDGES_TABLE as WORKER_GRAPH_EDGES_TABLE,
+  ENTITY_MENTIONS_TABLE as WORKER_ENTITY_MENTIONS_TABLE,
+  RESOLUTION_EVENTS_TABLE as WORKER_RESOLUTION_EVENTS_TABLE,
+  PLANS_TABLE as WORKER_PLANS_TABLE,
+  ARTIFACTS_TABLE as WORKER_ARTIFACTS_TABLE,
+  DIGEST_EXTRACTS_TABLE as WORKER_DIGEST_EXTRACTS_TABLE,
+  SKILL_CANDIDATES_TABLE as WORKER_SKILL_CANDIDATES_TABLE,
+  SKILL_RECORDS_TABLE as WORKER_SKILL_RECORDS_TABLE,
+  SKILL_LINEAGE_TABLE as WORKER_SKILL_LINEAGE_TABLE,
+  SKILL_USAGE_TABLE as WORKER_SKILL_USAGE_TABLE,
+  KNOWLEDGE_RELEASE_STATE_TABLE as WORKER_KNOWLEDGE_RELEASE_STATE_TABLE,
+  TEAM_MEMBERS_TABLE as WORKER_TEAM_MEMBERS_TABLE,
+  OKF_GENERATIONS_TABLE as WORKER_OKF_GENERATIONS_TABLE,
+  OKF_PAGES_TABLE as WORKER_OKF_PAGES_TABLE,
+  OKF_PAGE_REVISIONS_TABLE as WORKER_OKF_PAGE_REVISIONS_TABLE,
+} from '../../packages/myco-team/worker/src/schema.ts';
 
 // ---------------------------------------------------------------------------
 // Documented exclusions — each is a deliberate, reviewable difference.
@@ -263,4 +311,146 @@ describe('per-table sync-protocol floors (TABLE_MIN_SYNC_PROTOCOL)', () => {
     expect(tablesGatedByWorkerProtocol(tables, undefined)).toEqual([]);
     expect(tablesGatedByWorkerProtocol(tables, null)).toEqual([]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Column-level parity — the table-membership checks above only guard "is this
+// table synced at all". A table can be a member of every list above and STILL
+// break sync if a column is added to the local DDL without a matching worker
+// DDL/ALTER — exactly what happened when thread_id/thread_label landed on
+// prompt_batches (v71) without a worker-side counterpart: sanitizeSyncPayload
+// only strips LOCAL_ONLY_SYNC_COLUMNS, so any other new column rides straight
+// through into the worker's `INSERT OR REPLACE INTO ${table} (${keys})`
+// (buildInsertParts in index.ts builds its column list from the payload, not
+// an allowlist) and D1 throws "no such column" for every unsynced row.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract column names from a `CREATE TABLE (...)` DDL string.
+ *
+ * Splits the parenthesized body on top-level commas (paren-depth aware, so
+ * `REFERENCES sessions(id)` and `CHECK (...)` don't fracture a column
+ * definition) and skips table-level constraints (PRIMARY KEY / UNIQUE /
+ * FOREIGN KEY / CHECK / CONSTRAINT) that aren't columns. Quoted identifiers
+ * (`"user"`) are unquoted so both schemas compare on the bare name.
+ */
+function extractColumnNames(ddl: string): Set<string> {
+  const withoutComments = ddl.replace(/--[^\n]*/g, '');
+  const openIndex = withoutComments.indexOf('(');
+  let depth = 0;
+  let closeIndex = -1;
+  for (let i = openIndex; i < withoutComments.length; i++) {
+    const ch = withoutComments[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) {
+        closeIndex = i;
+        break;
+      }
+    }
+  }
+  const body = withoutComments.slice(openIndex + 1, closeIndex);
+
+  const parts: string[] = [];
+  let partDepth = 0;
+  let current = '';
+  for (const ch of body) {
+    if (ch === '(') partDepth++;
+    if (ch === ')') partDepth--;
+    if (ch === ',' && partDepth === 0) {
+      parts.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) parts.push(current);
+
+  const tableConstraint = /^(PRIMARY\s+KEY|UNIQUE|FOREIGN\s+KEY|CHECK|CONSTRAINT)\b/i;
+  const columns = new Set<string>();
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed || tableConstraint.test(trimmed)) continue;
+    const match = trimmed.match(/^"?([A-Za-z_][A-Za-z0-9_]*)"?/);
+    if (match) columns.add(match[1]);
+  }
+  return columns;
+}
+
+/**
+ * Columns that legitimately never reach D1 for reasons OTHER than
+ * `LOCAL_ONLY_SYNC_COLUMNS`: `embedded` is stripped unconditionally by the
+ * worker's `buildInsertParts` (`delete row.embedded`) regardless of table,
+ * so no synced table needs it in its D1 DDL.
+ */
+const GLOBALLY_STRIPPED_COLUMNS = new Set<string>(['embedded']);
+
+/** Local DDL string for every table in TEAM_SYNC_OBSERVED_TABLES. */
+const LOCAL_DDL_BY_TABLE: Record<string, string> = {
+  sessions: SESSIONS_TABLE,
+  prompt_batches: PROMPT_BATCHES_TABLE,
+  spores: SPORES_TABLE,
+  entities: ENTITIES_TABLE,
+  graph_edges: GRAPH_EDGES_TABLE,
+  entity_mentions: ENTITY_MENTIONS_TABLE,
+  resolution_events: RESOLUTION_EVENTS_TABLE,
+  plans: PLANS_TABLE,
+  artifacts: ARTIFACTS_TABLE,
+  digest_extracts: DIGEST_EXTRACTS_TABLE,
+  skill_candidates: SKILL_CANDIDATES_TABLE,
+  skill_records: SKILL_RECORDS_TABLE,
+  skill_lineage: SKILL_LINEAGE_TABLE,
+  skill_usage: SKILL_USAGE_TABLE,
+  knowledge_release_state: KNOWLEDGE_RELEASE_STATE_TABLE,
+  team_members: TEAM_MEMBERS_TABLE,
+  okf_generations: OKF_GENERATIONS_TABLE,
+  okf_pages: OKF_PAGES_TABLE,
+  okf_page_revisions: OKF_PAGE_REVISIONS_TABLE,
+};
+
+/** Worker D1 DDL string for the same table set. */
+const WORKER_DDL_BY_TABLE: Record<string, string> = {
+  sessions: WORKER_SESSIONS_TABLE,
+  prompt_batches: WORKER_PROMPT_BATCHES_TABLE,
+  spores: WORKER_SPORES_TABLE,
+  entities: WORKER_ENTITIES_TABLE,
+  graph_edges: WORKER_GRAPH_EDGES_TABLE,
+  entity_mentions: WORKER_ENTITY_MENTIONS_TABLE,
+  resolution_events: WORKER_RESOLUTION_EVENTS_TABLE,
+  plans: WORKER_PLANS_TABLE,
+  artifacts: WORKER_ARTIFACTS_TABLE,
+  digest_extracts: WORKER_DIGEST_EXTRACTS_TABLE,
+  skill_candidates: WORKER_SKILL_CANDIDATES_TABLE,
+  skill_records: WORKER_SKILL_RECORDS_TABLE,
+  skill_lineage: WORKER_SKILL_LINEAGE_TABLE,
+  skill_usage: WORKER_SKILL_USAGE_TABLE,
+  knowledge_release_state: WORKER_KNOWLEDGE_RELEASE_STATE_TABLE,
+  team_members: WORKER_TEAM_MEMBERS_TABLE,
+  okf_generations: WORKER_OKF_GENERATIONS_TABLE,
+  okf_pages: WORKER_OKF_PAGES_TABLE,
+  okf_page_revisions: WORKER_OKF_PAGE_REVISIONS_TABLE,
+};
+
+describe('synced-table parity: column-level (every local column reaches D1)', () => {
+  it('LOCAL_DDL_BY_TABLE / WORKER_DDL_BY_TABLE cover exactly TEAM_SYNC_OBSERVED_TABLES (no table added to sync without wiring its DDL into this guard)', () => {
+    expect(Object.keys(LOCAL_DDL_BY_TABLE).sort()).toEqual([...observed].sort());
+    expect(Object.keys(WORKER_DDL_BY_TABLE).sort()).toEqual([...observed].sort());
+  });
+
+  for (const table of TEAM_SYNC_OBSERVED_TABLES) {
+    it(`every local "${table}" column that reaches sanitizeSyncPayload exists on the worker D1 DDL`, () => {
+      const localColumns = extractColumnNames(LOCAL_DDL_BY_TABLE[table]);
+      const workerColumns = extractColumnNames(WORKER_DDL_BY_TABLE[table]);
+      const strippedForThisTable = new Set<string>([
+        ...GLOBALLY_STRIPPED_COLUMNS,
+        ...(LOCAL_ONLY_SYNC_COLUMNS[table] ?? []),
+      ]);
+
+      const syncedLocalColumns = [...localColumns].filter((c) => !strippedForThisTable.has(c));
+      const missingFromWorker = syncedLocalColumns.filter((c) => !workerColumns.has(c));
+
+      expect(missingFromWorker).toEqual([]);
+    });
+  }
 });

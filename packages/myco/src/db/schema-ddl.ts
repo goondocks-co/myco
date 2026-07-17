@@ -101,7 +101,11 @@ export const PROMPT_BATCHES_TABLE = `
     content_hash           TEXT,
     created_at             INTEGER NOT NULL,
     machine_id             TEXT NOT NULL DEFAULT 'local',
-    synced_at              INTEGER
+    synced_at              INTEGER,
+    -- NULL = the session's main thread; sub-agent-mined batches carry the child thread id
+    thread_id              TEXT,
+    -- friendly thread identity for display (e.g. task_6_reviewer); NULL for main-thread rows
+    thread_label           TEXT
   )`;
 
 export const KNOWLEDGE_GIT_PROVENANCE_TABLE = `
@@ -181,7 +185,7 @@ export const ACTIVITIES_TABLE = `
     myco_op              TEXT
   )`;
 
-const PLANS_TABLE = `
+export const PLANS_TABLE = `
   CREATE TABLE IF NOT EXISTS plans (
     id               TEXT PRIMARY KEY,
     project_id       TEXT,
@@ -203,7 +207,7 @@ const PLANS_TABLE = `
     synced_at        INTEGER
   )`;
 
-const ARTIFACTS_TABLE = `
+export const ARTIFACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS artifacts (
     id               TEXT PRIMARY KEY,
     project_id       TEXT,
@@ -220,7 +224,7 @@ const ARTIFACTS_TABLE = `
     synced_at        INTEGER
   )`;
 
-const TEAM_MEMBERS_TABLE = `
+export const TEAM_MEMBERS_TABLE = `
   CREATE TABLE IF NOT EXISTS team_members (
     id          TEXT PRIMARY KEY,
     "user"      TEXT NOT NULL,
@@ -303,7 +307,7 @@ export const ENTITIES_TABLE = `
     synced_at   INTEGER
   )`;
 
-const GRAPH_EDGES_TABLE = `
+export const GRAPH_EDGES_TABLE = `
   CREATE TABLE IF NOT EXISTS graph_edges (
     id              TEXT PRIMARY KEY,
     project_id      TEXT,
@@ -321,7 +325,7 @@ const GRAPH_EDGES_TABLE = `
     synced_at       INTEGER
   )`;
 
-const ENTITY_MENTIONS_TABLE = `
+export const ENTITY_MENTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS entity_mentions (
     project_id  TEXT,
     entity_id   TEXT NOT NULL REFERENCES entities(id),
@@ -333,7 +337,7 @@ const ENTITY_MENTIONS_TABLE = `
     UNIQUE (entity_id, note_id, note_type, agent_id)
   )`;
 
-const RESOLUTION_EVENTS_TABLE = `
+export const RESOLUTION_EVENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS resolution_events (
     id            TEXT PRIMARY KEY,
     project_id    TEXT,
@@ -1295,6 +1299,8 @@ export const SECONDARY_INDEXES = [
   // v39 — supports getProjectActivitySeconds without forcing the planner
   // to use the wider (project_id, origin, created_at) index.
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_created ON prompt_batches (project_id, created_at)',
+  // v71 — supports looking up a session's sub-agent thread batches by thread_id.
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_session_thread ON prompt_batches (session_id, thread_id)',
 
   // Release provenance
   'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_project_captured ON knowledge_git_provenance (project_id, captured_at)',

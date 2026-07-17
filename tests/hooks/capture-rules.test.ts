@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   evaluateUserPromptRules,
   evaluateSessionStartRules,
+  resolveSubagentThread,
   type UserPromptRuleContext,
 } from '@myco/hooks/capture-rules.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
@@ -721,5 +722,97 @@ describe('codex manifest — structural envelope classification (real config)', 
   it('unknown codex envelope falls to the system fail-safe', () => {
     const d = evaluateUserPromptRules('codex', { prompt: '<future-thing>y</future-thing>', transcriptPath });
     expect(d).toMatchObject({ origin: 'system' });
+  });
+});
+
+// resolveSubagentThread reads the generated HOOK_CONFIG's
+// subagentParentPath/subagentThreadIdPath/subagentLabelPath for the
+// detected agent — real config (via `npm run codegen`), not a hand-built
+// manifest, so this also exercises the codex.yaml declarations directly.
+// Meta shape below is the real session_meta.payload observed on a live
+// child rollout (rollout-2026-07-12T14-51-20-019f57ab-…jsonl):
+// `payload.id` matches the filename UUID, `payload.source.subagent.
+// thread_spawn.parent_thread_id` is the parent thread, and `agent_nickname`/
+// `agent_path` live on the same thread_spawn object.
+describe('resolveSubagentThread', () => {
+  it('resolves parent/thread/label from codex-shaped meta', () => {
+    const meta = {
+      id: '019f57ab-6e01-7700-a829-6ea63d50cdc1',
+      source: {
+        subagent: {
+          thread_spawn: {
+            parent_thread_id: '019f4cc0-be39-70d2-829d-bb92981279ab',
+            depth: 1,
+            agent_path: '/root/task_6_reviewer',
+            agent_nickname: 'Peirce',
+            agent_role: null,
+          },
+        },
+      },
+    };
+    expect(resolveSubagentThread('codex', meta)).toEqual({
+      parentSessionId: '019f4cc0-be39-70d2-829d-bb92981279ab',
+      threadId: '019f57ab-6e01-7700-a829-6ea63d50cdc1',
+      threadLabel: 'Peirce',
+    });
+  });
+
+  it('falls back to the last agent_path segment when agent_nickname is absent', () => {
+    const meta = {
+      id: 'child-id',
+      source: {
+        subagent: {
+          thread_spawn: {
+            parent_thread_id: 'parent-id',
+            agent_path: '/root/task_6_reviewer',
+          },
+        },
+      },
+    };
+    expect(resolveSubagentThread('codex', meta)?.threadLabel).toBe('task_6_reviewer');
+  });
+
+  it('falls back to agent_path when agent_nickname is an empty string', () => {
+    const meta = {
+      id: 'child-id',
+      source: {
+        subagent: {
+          thread_spawn: {
+            parent_thread_id: 'parent-id',
+            agent_path: '/root/task_6_reviewer',
+            agent_nickname: '',
+          },
+        },
+      },
+    };
+    expect(resolveSubagentThread('codex', meta)?.threadLabel).toBe('task_6_reviewer');
+  });
+
+  it('returns null for a top-level session (source: "vscode", no thread_spawn)', () => {
+    const meta = { id: 'session-id', source: 'vscode' };
+    expect(resolveSubagentThread('codex', meta)).toBeNull();
+  });
+
+  it('returns null when meta is undefined', () => {
+    expect(resolveSubagentThread('codex', undefined)).toBeNull();
+  });
+
+  it('returns null for an agent whose manifest declares no subagentParentPath', () => {
+    const meta = {
+      id: 'child-id',
+      source: { subagent: { thread_spawn: { parent_thread_id: 'parent-id', agent_path: '/root/x' } } },
+    };
+    expect(resolveSubagentThread('claude-code', meta)).toBeNull();
+  });
+
+  it('returns threadId/threadLabel null when the parent resolves but the id/label paths do not', () => {
+    const meta = {
+      source: { subagent: { thread_spawn: { parent_thread_id: 'parent-id' } } },
+    };
+    expect(resolveSubagentThread('codex', meta)).toEqual({
+      parentSessionId: 'parent-id',
+      threadId: null,
+      threadLabel: null,
+    });
   });
 });

@@ -37,6 +37,9 @@ interface HookConfigEntry {
   hookResponse?: unknown;
   capturePrompts?: unknown;
   captureRules?: unknown;
+  subagentParentPath?: string;
+  subagentThreadIdPath?: string;
+  subagentLabelPath?: string;
 }
 
 function main(): void {
@@ -61,6 +64,9 @@ function main(): void {
     if (capturePrompts) entry.capturePrompts = capturePrompts;
     const captureRules = manifest.capture?.rules;
     if (captureRules && captureRules.length > 0) entry.captureRules = captureRules;
+    if (manifest.capture?.subagentParentPath) entry.subagentParentPath = manifest.capture.subagentParentPath;
+    if (manifest.capture?.subagentThreadIdPath) entry.subagentThreadIdPath = manifest.capture.subagentThreadIdPath;
+    if (manifest.capture?.subagentLabelPath) entry.subagentLabelPath = manifest.capture.subagentLabelPath;
     entries[manifest.name] = entry;
   }
 
@@ -83,6 +89,9 @@ export interface HookConfigEntry {
   hookResponse?: NonNullable<SymbiontRegistration['hookResponse']>;
   capturePrompts?: CapturePrompts;
   captureRules?: CaptureRule[];
+  subagentParentPath?: string;
+  subagentThreadIdPath?: string;
+  subagentLabelPath?: string;
 }
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = ${body} as const;

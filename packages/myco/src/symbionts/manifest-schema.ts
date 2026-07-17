@@ -153,6 +153,32 @@ const CaptureManifestSchema = z.object({
   planTags: z.array(z.string()).default([]),
   rules: z.array(CaptureRuleSchema).default([]),
   prompts: CapturePromptsSchema.optional(),
+  /**
+   * Dot-path (relative to the transcript's session_meta payload, the same
+   * object `transcript_meta_field_exists` reads) to the sub-agent's PARENT
+   * thread/session id. Present only on transcripts spawned as a sub-agent
+   * thread. Absent (or resolving to a falsy/non-string value) means either
+   * this agent has no sub-agent concept or this particular transcript is a
+   * top-level session, not a spawned thread.
+   */
+  subagentParentPath: z.string().optional(),
+  /**
+   * Dot-path to the sub-agent thread's OWN stable id, distinct from the
+   * daemon's internal session id. Used to correlate the same sub-agent
+   * thread across re-mines of the same transcript.
+   */
+  subagentThreadIdPath: z.string().optional(),
+  /**
+   * Dot-path to the OBJECT that carries the sub-agent's human-friendly
+   * label fields (e.g. Codex's `thread_spawn` object, which carries
+   * `agent_nickname` and `agent_path`). The resolver derives the label as
+   * `agent_nickname` when non-empty, else the last `/`-separated segment
+   * of `agent_path`. A single dot-path can't express that fallback, so the
+   * manifest declares only the OBJECT location and the derivation rule
+   * lives in code (`resolveSubagentThread`) — keeping the manifest
+   * agent-agnostic while the code stays shape-agnostic.
+   */
+  subagentLabelPath: z.string().optional(),
 });
 
 const RegistrationSchema = z.object({

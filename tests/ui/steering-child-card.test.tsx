@@ -23,6 +23,8 @@ function makeChild(overrides: Partial<BatchRow> = {}): BatchRow {
     parent_prompt_batch_id: 2,
     kind: 'steering',
     origin: 'human',
+    thread_id: null,
+    thread_label: null,
     ...overrides,
   };
 }
