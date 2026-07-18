@@ -221,7 +221,7 @@ function HostCard({ host }: { host: HostMembershipHost }) {
 
   const handleLeave = async () => {
     const message = host.projects.length > 0
-      ? `Leave "${host.label}"? This detaches ${host.projects.length} attached project${host.projects.length === 1 ? '' : 's'} (they resolve to a local Grove again) and removes this host's overlay connection.`
+      ? `Leave "${host.label}"? This detaches ${host.projects.length} attached project${host.projects.length === 1 ? '' : 's'} (they go back to local-only) and removes this host's overlay connection.`
       : `Leave "${host.label}"? This removes this host's overlay connection from this machine.`;
     if (!window.confirm(message)) return;
     setError(null);
@@ -310,8 +310,8 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
     <Panel tone="sage" eyebrow={<IconEyebrow Icon={Link2}>Attach</IconEyebrow>} title="Route a project through a Team Host">
       <p className="text-xs text-on-surface-variant m-0 mb-3">
         Attach a checkout that hasn't been used with Myco yet — going forward only, so a project that already has
-        local Grove history is refused (migrate it off its local Grove first). The path below isn't verified here.
-        The host's served Grove is used automatically — no Grove id to supply.
+        local history is refused (migrate it off its local storage first). The path below isn't verified here.
+        The host's team storage is used automatically — nothing to supply for it.
       </p>
       <div className="flex flex-col gap-2">
         <label className={labelClass} htmlFor="host-attach-project">Project path</label>

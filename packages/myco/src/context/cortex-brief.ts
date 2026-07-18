@@ -2,7 +2,7 @@
  * Cortex content assembly.
  *
  * Builds the material that the Cortex agent consumes and emits:
- *   - Capability resolution (team/collective availability)
+ *   - Capability resolution (team availability)
  *   - Delivery-decision logic (inline vs session-start injection)
  *   - Retrieval guidance derived from MCP tool definitions
  *   - Instruction-input prompt for the `cortex-instructions` agent task
@@ -34,13 +34,9 @@ import {
 import type { ProjectScope } from '@myco/grove/ids.js';
 import {
   TOOL_DEFINITIONS,
-  COLLECTIVE_TOOL_DEFINITIONS,
   getToolCortexPriority,
   type ToolDefinition,
 } from '../tools/definitions.js';
-
-const MAX_COLLECTIVE_CAPABILITY_LABELS = 4;
-const ALL_CORTEX_TOOL_DEFINITIONS = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS];
 
 const RECENT_SESSION_LIMIT = 5;
 const RECENT_WISDOM_SPORE_LIMIT = 3;
@@ -72,32 +68,15 @@ const RETIRED_TOOL_REFERENCE_PATTERN = new RegExp(
 // Capability resolution
 // ---------------------------------------------------------------------------
 
-export interface CortexCapabilities {
-  teamEnabled: boolean;
-  collectiveConnected: boolean;
-  collectiveCapabilities: string[];
-}
-
 export interface CortexToolGuidance {
   tool: string;
   guidance: string;
-  requiresTeam?: boolean;
-  requiresCollective?: boolean;
   priority: number;
 }
 
 export interface DeliveryDecision {
   inlineInstructions: boolean;
   reason: 'missing-symbiont' | 'session-start-supported' | 'session-start-disabled' | 'no-session-start';
-}
-
-interface CortexTeamStatus {
-  connected: boolean;
-  capabilities?: string[];
-}
-
-interface CortexTeamStatusPort {
-  getCollectiveStatus(): Promise<CortexTeamStatus>;
 }
 
 function toCortexToolGuidance(
@@ -108,43 +87,14 @@ function toCortexToolGuidance(
   return {
     tool: tool.name,
     guidance: cortex.guidance,
-    requiresTeam: cortex.requiresTeam,
-    requiresCollective: cortex.requiresCollective,
     priority: getToolCortexPriority(tool),
   };
 }
 
-export const RETRIEVAL_GUIDANCE: CortexToolGuidance[] = ALL_CORTEX_TOOL_DEFINITIONS
+export const RETRIEVAL_GUIDANCE: CortexToolGuidance[] = TOOL_DEFINITIONS
   .map(toCortexToolGuidance)
   .filter((entry): entry is CortexToolGuidance => entry !== null)
   .sort((left, right) => left.priority - right.priority);
-
-export async function resolveCortexCapabilities(
-  config: Pick<MycoConfig, 'team'>,
-  getTeamClient?: () => CortexTeamStatusPort | null,
-): Promise<CortexCapabilities> {
-  const teamClient = getTeamClient?.() ?? null;
-  const teamEnabled = Boolean(config.team.enabled && teamClient);
-  let collectiveConnected = false;
-  let collectiveCapabilities: string[] = [];
-
-  if (teamEnabled && teamClient) {
-    try {
-      const status = await teamClient.getCollectiveStatus();
-      collectiveConnected = Boolean(status?.connected);
-      collectiveCapabilities = status?.capabilities ?? [];
-    } catch {
-      collectiveConnected = false;
-      collectiveCapabilities = [];
-    }
-  }
-
-  return {
-    teamEnabled,
-    collectiveConnected,
-    collectiveCapabilities,
-  };
-}
 
 /**
  * Whether Cortex should inject session-start instructions for this
@@ -173,53 +123,21 @@ export function resolveInstructionDelivery(
   return { inlineInstructions: true, reason: 'no-session-start' };
 }
 
-export function buildCapabilitySummary(capabilities: CortexCapabilities): string[] {
-  const summary = [
-    capabilities.collectiveConnected
-      ? 'Myco can retrieve local, team, and collective knowledge in this project.'
-      : capabilities.teamEnabled
-        ? 'Myco can retrieve local and shared team knowledge in this project.'
-        : 'Myco can retrieve local project knowledge in this project.',
+export function buildCapabilitySummary(): string[] {
+  return [
+    'Myco can retrieve local project knowledge in this project.',
     'Use the currently available Myco tool surfaces described below, preferring CLI JSON when MCP is unavailable or brittle, and omit any surfaces that are offline.',
   ];
-
-  if (capabilities.collectiveConnected && capabilities.collectiveCapabilities.length > 0) {
-    const labels = capabilities.collectiveCapabilities.slice(0, MAX_COLLECTIVE_CAPABILITY_LABELS);
-    const remaining = Math.max(
-      0,
-      capabilities.collectiveCapabilities.length - MAX_COLLECTIVE_CAPABILITY_LABELS,
-    );
-    const suffix = remaining > 0 ? ` (+${remaining} more)` : '';
-    summary.push(`Collective capabilities online: ${labels.join(', ')}${suffix}.`);
-  }
-
-  return summary;
 }
 
-export function buildRetrievalGuidanceLines(capabilities: CortexCapabilities): string[] {
-  const lines: string[] = [];
-
-  for (const entry of RETRIEVAL_GUIDANCE) {
-    if (entry.requiresTeam && !capabilities.teamEnabled) continue;
-    if (entry.requiresCollective && !capabilities.collectiveConnected) continue;
-    lines.push(`- \`${entry.tool}\`: ${entry.guidance}`);
-  }
-
-  return lines;
+export function buildRetrievalGuidanceLines(): string[] {
+  return RETRIEVAL_GUIDANCE.map((entry) => `- \`${entry.tool}\`: ${entry.guidance}`);
 }
 
-function buildCurrentToolSurfaceLines(capabilities: CortexCapabilities): string[] {
-  const lines = [
+function buildCurrentToolSurfaceLines(): string[] {
+  return [
     `Local project tools: ${TOOL_DEFINITIONS.map((tool) => `\`${tool.name}\``).join(', ')}.`,
   ];
-
-  if (capabilities.collectiveConnected) {
-    lines.push(`Collective tools: ${COLLECTIVE_TOOL_DEFINITIONS.map((tool) => `\`${tool.name}\``).join(', ')}.`);
-  } else {
-    lines.push('Collective tools are offline in this session; do not mention them unless the capability summary says Collective is connected.');
-  }
-
-  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +252,6 @@ export interface CortexInstructionPayload {
 export async function buildCortexInstructionsInput(
   config: MycoConfig,
   vaultDir: string,
-  getTeamClient?: () => CortexTeamStatusPort | null,
   requestContext?: MycoRequestContext,
 ): Promise<CortexInstructionPayload> {
   // Probe the Canopy Map state once at build time so the prompt can branch
@@ -356,10 +273,9 @@ export async function buildCortexInstructionsInput(
   const mapRow = readCanopyMap(projectId, machineId);
   const hasCanopyMap = !!(mapRow && mapRow.content && mapRow.content.length > 0);
 
-  const capabilities = await resolveCortexCapabilities(config, getTeamClient);
-  const capabilitySummary = buildCapabilitySummary(capabilities);
-  const currentToolSurface = buildCurrentToolSurfaceLines(capabilities);
-  const retrievalGuidance = buildRetrievalGuidanceLines(capabilities);
+  const capabilitySummary = buildCapabilitySummary();
+  const currentToolSurface = buildCurrentToolSurfaceLines();
+  const retrievalGuidance = buildRetrievalGuidanceLines();
   const recentSessions = formatRecentSessions(scope);
   const recentWisdomSpores = formatSporesOfType('wisdom', RECENT_WISDOM_SPORE_LIMIT, scope);
   const recentDecisionSpores = formatSporesOfType('decision', RECENT_DECISION_SPORE_LIMIT, scope);
@@ -375,7 +291,6 @@ export async function buildCortexInstructionsInput(
       spores_inject_on_prompt_submit: config.cortex.spores.inject_on_prompt_submit,
       spores_max_per_prompt: config.cortex.spores.max_per_prompt,
     },
-    capabilities,
     toolSurface: {
       currentToolSurface,
       retrievalGuidance,
@@ -472,11 +387,10 @@ export async function buildCortexInstructionsInput(
 export async function buildScheduledCortexInstruction(
   config: MycoConfig,
   vaultDir: string,
-  getTeamClient?: () => CortexTeamStatusPort | null,
   requestContext?: MycoRequestContext,
 ): Promise<CortexInstructionPayload | undefined> {
   if (!capabilityEnabled(config, 'cortex')) return undefined;
-  const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
+  const built = await buildCortexInstructionsInput(config, vaultDir, requestContext);
   const existing = getCortexInstructions(DEFAULT_AGENT_ID, projectScopeFromRequestContext(requestContext));
   if (existing?.input_hash === built.inputHash) {
     return undefined;

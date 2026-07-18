@@ -12,7 +12,6 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import {
   SEARCH_RESULTS_DEFAULT_LIMIT,
   SEARCH_SIMILARITY_THRESHOLD,
-  TEAM_SOURCE_PREFIX,
 } from '@myco/constants.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { normalizeSearchResults } from '@myco/search-results.js';
@@ -20,7 +19,6 @@ import { searchCanopy } from '@myco/canopy/search.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
-import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,12 +51,12 @@ export function normalizeSearchNamespace(value?: string): string | undefined {
   return value;
 }
 
-/** Dependencies injected by the daemon when registering the route. */
+/**
+ * Dependencies injected by the daemon when registering the route.
+ */
 export interface SearchDeps {
   embeddingManager: SearchEmbeddingManager;
   resolveEmbeddingManager?: (requestContext?: MycoRequestContext) => SearchEmbeddingManager;
-  getTeamClient?: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
-  machineId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,24 +156,7 @@ async function handleSearchWithDatabase(
     }
 
     // --- Semantic or auto mode: attempt vector search ---
-    // Fire team search in parallel with the embedding round-trip — both are
-    // network-bound and team search depends only on the query string. On the
-    // rare FTS fallback path the team response is discarded; the saved
-    // round-trip on every successful semantic search is the better trade.
-    const teamClient = deps.getTeamClient?.(req.requestContext);
-    const teamSearchNamespace = normalizeSearchNamespace(namespace ?? type);
-    const teamPromise = teamClient
-      ? teamClient.search(query, {
-          limit,
-          tables: teamSearchNamespace ? [teamSearchNamespace] : undefined,
-          status: req.query.status || undefined,
-          observation_type: req.query.observation_type || undefined,
-          since: req.query.since ? Number(req.query.since) : undefined,
-          until: req.query.until ? Number(req.query.until) : undefined,
-          session_id: req.query.session_id || undefined,
-          project_id: typeof projectId === 'string' ? projectId : undefined,
-        }).catch(() => null)
-      : null;
+    const searchNamespace = normalizeSearchNamespace(namespace ?? type);
 
     const queryVector = await embeddingManager.embedQuery(query);
 
@@ -203,7 +184,7 @@ async function handleSearchWithDatabase(
 
     // Vector search with optional namespace/type filtering
     const vectorResults = embeddingManager.searchVectors(queryVector, {
-      namespace: teamSearchNamespace,
+      namespace: searchNamespace,
       limit,
       threshold: SEARCH_SIMILARITY_THRESHOLD,
       filters: vectorFilters,
@@ -219,32 +200,7 @@ async function handleSearchWithDatabase(
       source: 'local',
     }));
 
-    const teamResponse = teamPromise ? await teamPromise : null;
-    const teamResults: Array<TeamSearchResult & { source: string }> = teamResponse
-      ? teamResponse.results.map((r) => ({
-          ...r,
-          source: `${TEAM_SOURCE_PREFIX}${r.machine_id}`,
-        }))
-      : [];
-
-    // Deduplicate: skip team results from this machine (we already have them locally)
-    const dedupedTeam = deps.machineId
-      ? teamResults.filter((r) => r.machine_id !== deps.machineId)
-      : teamResults;
-
-    const filteredTeam = vectorFilters
-      ? dedupedTeam.filter((r) => matchesSemanticSearchFilters(
-          (r as { metadata?: Record<string, unknown> }).metadata,
-          metadataFilters,
-        ))
-      : dedupedTeam;
-
-    // Merge by score (highest first), slice to limit
-    const merged = [...localResults, ...filteredTeam]
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, limit);
-
-    return { body: { mode: 'semantic', results: normalizeSearchResults(merged) } };
+    return { body: { mode: 'semantic', results: normalizeSearchResults(localResults) } };
 }
 
 function openRequestDatabase(requestContext?: MycoRequestContext): Database | undefined {

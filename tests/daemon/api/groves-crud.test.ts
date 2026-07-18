@@ -385,7 +385,7 @@ describe('Grove CRUD API', () => {
       expect(listGroveSummaries().groves[0]!.projects[0]!.status).toBe('active');
     });
 
-    it('permanently deletes project rows, creates a snapshot, and journals Team Sync delete tombstones via triggers', async () => {
+    it('permanently deletes project rows and creates a snapshot without journaling to the outbox', async () => {
       const grove = createGrove('Work');
       const projectId = createProjectId();
       const siblingProjectId = createProjectId();
@@ -401,14 +401,15 @@ describe('Grove CRUD API', () => {
         projectName: 'Sibling',
         projectRoot: siblingRoot,
       });
-      // Enable team sync via Grove config — deleteProjectPermanently reconciles
-      // team_sync_state from this config on its own DB handle, so the AFTER
-      // DELETE triggers journal regardless of daemon tick timing.
+      // Grove config's team.enabled and the team registry below are retained
+      // from this test's pre-quiesce-migration form but are no longer
+      // load-bearing: deleteProjectPermanently no longer reads either one to
+      // arm the delete triggers (Team Host E-2 Task 5). The delete triggers
+      // are membership-gated on team_sync_membership, which nothing in src
+      // populates anymore, so they never fire — see the outbox assertion
+      // below. Direct trigger-firing coverage (with membership seeded
+      // in-test) lives in tests/db/team-delete-triggers.test.ts.
       updateGroveConfig(grove.id, (c) => ({ ...c, team: { ...c.team, enabled: true } }));
-      // Assign both projects to a team so the authority resolves them as members.
-      // deleteProjectPermanently projects this registry membership into
-      // team_sync_membership on its own DB handle, arming the membership-gated
-      // delete triggers for both projects' rows.
       teamRegistry.save(
         {
           team_id: createTeamId(),
@@ -463,15 +464,16 @@ describe('Grove CRUD API', () => {
       try {
         expect((verifyDb.prepare('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?').get(projectId) as { n: number }).n).toBe(0);
         expect((verifyDb.prepare('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?').get(siblingProjectId) as { n: number }).n).toBe(1);
-        // The sessions_team_ad trigger journals the delete for the removed
-        // project's session only (the sibling's session is untouched). The
-        // trigger payload carries id + machine_id (no project_id).
+        // The sessions_team_ad trigger is membership-gated
+        // (team_sync_membership), and nothing populates that table anymore —
+        // deleteProjectPermanently's registry-membership projection was
+        // retired by the quiesce migration (Team Host E-2 Task 5). So the
+        // removed project's session delete journals nothing, same as the
+        // sibling project below.
         const outbox = verifyDb.prepare(
           `SELECT table_name, row_id, operation FROM team_outbox`,
         ).all() as Array<{ table_name: string; row_id: string; operation: string }>;
-        expect(outbox).toEqual([
-          { table_name: 'sessions', row_id: 'sess-delete', operation: 'delete' },
-        ]);
+        expect(outbox).toEqual([]);
       } finally {
         verifyDb.close();
       }

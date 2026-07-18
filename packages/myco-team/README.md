@@ -1,5 +1,10 @@
 # @goondocks/myco-team
 
+> **Status: dormant.** This package is retained in the repository but is no
+> longer published or maintained. Team functionality now lives in Team Host,
+> built into the `myco` binary (`myco host …`, `myco join`, `myco attach`).
+> The Cloudflare Worker + D1 stack this package deploys is retired.
+
 `@goondocks/myco-team` manages a Myco Team Sync deployment from the terminal.
 A team is a global, machine-scoped entity: `create` provisions a new team's
 Cloudflare worker from anywhere — no project or Grove context required — and you
@@ -40,9 +45,7 @@ Every command except `create`, `import`, and `adopt` addresses a team by
 
 ## Upgrade
 
-After the first install, Myco's Operations page can detect and apply updates for this package automatically on the same machine.
-
-You can also update it directly:
+This package no longer receives new releases. If you have an existing install, you can still re-run:
 
 ```bash
 npm update -g @goondocks/myco-team
@@ -51,7 +54,7 @@ npm update -g @goondocks/myco-team
 ## Learn more
 
 - Main project: <https://github.com/goondocks-co/myco>
-- Team Sync guide: <https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md>
+- Team Host guide: <https://github.com/goondocks-co/myco/blob/main/docs/team-host.md>
 
 ## License
 

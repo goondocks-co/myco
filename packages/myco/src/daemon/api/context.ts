@@ -35,7 +35,6 @@ import { resolvePlanIntentNudge } from './plan-intent.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
-import type { TeamSyncClient } from '../team-sync.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,7 +53,6 @@ export interface ContextDeps {
    */
   resolveEmbeddingManager: (requestContext: RouteRequest['requestContext']) => EmbeddingManager;
   logger: DaemonLogger;
-  getTeamClient?: () => TeamSyncClient | null;
   // Holder so each request reads the current merged config — a user can
   // update context knobs and the very next request sees the change without
   // a daemon restart.

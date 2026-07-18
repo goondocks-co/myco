@@ -1,15 +1,12 @@
 /**
- * Operator control-plane primitives shared by the `myco host` CLI and the
- * legacy `myco-team host` operator surface: the "is this machine a Team
- * Host, and if so what's its headscale invocation base" resolution, and
- * one-time setup-key minting.
+ * Operator control-plane primitives: the "is this machine a Team Host, and
+ * if so what's its headscale invocation base" resolution, and one-time
+ * setup-key minting.
  *
- * `headscaleBase`/`ControlPlaneDeps`/`NotAHostError` are also consumed by
- * `packages/myco-team/src/host/devices.ts` (devices list/evict, bearer
- * rotate) — those ops are localhost-CLI-only by construction (spec §8:
- * "Operator (host localhost): the control plane, exclusively") and are not
- * (yet) exposed as `myco host` subcommands, so their home stays in
- * `myco-team`; this module is theirs to import rather than duplicate.
+ * `mintSetupKey` is imported by `team-host/compose.ts` (join-command
+ * composition) and `cli/host.ts` (the `myco host` CLI). `headscaleBase`,
+ * `ControlPlaneDeps`, and `NotAHostError` back `mintSetupKey` and are
+ * exported for any other control-plane op built on the same seams.
  */
 import { appendHostAction } from '@myco/host/action-log.js';
 import { resolveHostControlDir } from '@myco/grove/paths.js';

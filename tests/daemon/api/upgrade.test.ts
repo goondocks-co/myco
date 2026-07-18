@@ -3,11 +3,10 @@
  *
  * Covers:
  * - handleUpgradeStatus: version-sync self-restart (restarting/reason),
- *   union assembly from cache, stale cache triggers background fetch, null cache fallback
- * - handleUpgradeCheck: live resolveMycoPackageCheck + checkOperatorCliVersions,
- *   union CheckResult assembly, partial failure
- * - handleUpgradeApply: myco → initiateAdopt on staged version; operator CLIs →
- *   spawnUpdateScript; 400/409/422 error cases; beta→stable revert; service label routing
+ *   packages[] assembly from cache, stale cache triggers background fetch, null cache fallback
+ * - handleUpgradeCheck: live resolveMycoPackageCheck, CheckResult assembly, partial failure
+ * - handleUpgradeApply: myco → initiateAdopt on staged version; 400/409/422 error
+ *   cases; beta→stable revert; service label routing
  * - handleUpgradeChannel: writes config + clears cache, 400 for invalid channel
  *
  * Route: /api/upgrade/{status,check,apply,channel}
@@ -30,7 +29,6 @@ const realSpawn = await import('@myco/upgrade/spawn.js');
 const realAdopt = await import('@myco/upgrade/adopt.js');
 const realAutoCheck = await import('@myco/upgrade/auto-check.js');
 const realMycoChecker = await import('@myco/upgrade/checker.js');
-const realOperatorCli = await import('@myco/daemon/operator-cli-versions.js');
 
 mock.module('@myco/daemon/update-checker.js', () => ({
   releaseChannelIsManual: vi.fn(() => false),
@@ -46,7 +44,6 @@ mock.module('@myco/daemon/update-checker.js', () => ({
 }));
 
 mock.module('@myco/upgrade/spawn.js', () => ({
-  spawnUpdateScript: vi.fn(() => '/tmp/myco-update-123.sh'),
   spawnRestartScript: vi.fn(() => '/tmp/myco-restart-123.sh'),
 }));
 
@@ -64,17 +61,12 @@ mock.module('@myco/upgrade/checker.js', () => ({
   resolveMycoPackageCheck: vi.fn(),
 }));
 
-mock.module('@myco/daemon/operator-cli-versions.js', () => ({
-  checkOperatorCliVersions: vi.fn(() => Promise.resolve([])),
-}));
-
 afterAll(() => {
   mock.module('@myco/daemon/update-checker.js', () => realUpdateChecker);
   mock.module('@myco/upgrade/spawn.js', () => realSpawn);
   mock.module('@myco/upgrade/adopt.js', () => realAdopt);
   mock.module('@myco/upgrade/auto-check.js', () => realAutoCheck);
   mock.module('@myco/upgrade/checker.js', () => realMycoChecker);
-  mock.module('@myco/daemon/operator-cli-versions.js', () => realOperatorCli);
 });
 
 import {
@@ -88,11 +80,10 @@ import {
   getInstalledVersion,
   resolveRuntimeCommand,
 } from '@myco/daemon/update-checker.js';
-import { spawnUpdateScript, spawnRestartScript } from '@myco/upgrade/spawn.js';
+import { spawnRestartScript } from '@myco/upgrade/spawn.js';
 import { initiateAdopt } from '@myco/upgrade/adopt.js';
 import { resolveNewestStagedVersion } from '@myco/upgrade/auto-check.js';
 import { resolveMycoPackageCheck } from '@myco/upgrade/checker.js';
-import { checkOperatorCliVersions } from '@myco/daemon/operator-cli-versions.js';
 import { createUpgradeHandlers } from '@myco/daemon/api/upgrade.js';
 import { serviceLabel } from '@myco/service/labels.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
@@ -235,7 +226,6 @@ describe('handleUpgradeStatus', () => {
     (readCachedCheck as AnyMock).mockReturnValue(makeNoUpdateCache());
     (isCacheStale as AnyMock).mockReturnValue(true);
     (resolveMycoPackageCheck as AnyMock).mockResolvedValue(MYCO_PKG_UPDATE);
-    (checkOperatorCliVersions as AnyMock).mockResolvedValue([]);
 
     const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps());
     const result = await handleUpgradeStatus(makeReq());
@@ -293,53 +283,6 @@ describe('handleUpgradeStatus', () => {
     const body = result.body as Record<string, unknown>;
 
     expect(body.update_available).toBe(false);
-  });
-
-  // T7 — combined GitHub (myco) + npm (operator CLI) routing in a single status call
-  it('packages[] union contains myco (GitHub) row first then operator (npm) rows; update_available aggregates correctly (T7)', async () => {
-    // Cache with both myco AND an operator CLI (myco-team) having updates.
-    (readCachedCheck as AnyMock).mockReturnValue({
-      checked_at: new Date().toISOString(),
-      channel: 'stable' as const,
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.1.0',
-          latest_beta: null,
-        },
-        'myco-team': {
-          package_name: '@goondocks/myco-team',
-          latest_stable: '0.2.0',
-          latest_beta: null,
-        },
-      },
-    });
-    // myco: installed 1.0.0 (update to 1.1.0); myco-team: installed 0.1.0 (update to 0.2.0).
-    (getInstalledVersion as AnyMock).mockImplementation(
-      (_globalPrefix: unknown, pkg?: unknown) => {
-        if (!pkg || pkg === '@goondocks/myco') return '1.0.0';
-        if (pkg === '@goondocks/myco-team') return '0.1.0';
-        return null;
-      },
-    );
-    (isCacheStale as AnyMock).mockReturnValue(false);
-
-    const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps({ globalPrefix: '/usr/local' }));
-    const result = await handleUpgradeStatus(makeReq());
-    const body = result.body as Record<string, unknown>;
-    const packages = body.packages as Array<{ id: string; update_available: boolean; installed: boolean }>;
-
-    // myco (GitHub resolver) must be first.
-    expect(packages[0]?.id).toBe('myco');
-    // Operator row (npm resolver) must also be present.
-    const operatorRow = packages.find((p) => p.id === 'myco-team');
-    expect(operatorRow).toBeDefined();
-    expect(operatorRow?.update_available).toBe(true);
-
-    // Top-level aggregate must be true because at least one installed package has an update.
-    expect(body.update_available).toBe(true);
-    // revert_available must be false (running stable, not a prerelease).
-    expect(body.revert_available).toBe(false);
   });
 });
 
@@ -477,44 +420,17 @@ describe('handleUpgradeCheck', () => {
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (resolveMycoPackageCheck as AnyMock).mockResolvedValue(MYCO_PKG_UPDATE);
-    (checkOperatorCliVersions as AnyMock).mockResolvedValue([]);
     (getInstalledVersion as AnyMock).mockReturnValue(null);
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
   });
 
-  it('calls resolveMycoPackageCheck + checkOperatorCliVersions and returns union', async () => {
+  it('calls resolveMycoPackageCheck and returns the result', async () => {
     const { handleUpgradeCheck } = createUpgradeHandlers(makeDeps());
 
     const result = await handleUpgradeCheck(makeReq());
 
     expect(resolveMycoPackageCheck).toHaveBeenCalledWith('1.0.0', 'stable', '1.0.0');
-    expect(checkOperatorCliVersions).toHaveBeenCalled();
     expect(result.body).toMatchObject({ update_available: true });
-  });
-
-  it('union packages[] has myco first', async () => {
-    const operatorPkg = {
-      id: 'myco-team',
-      display_name: 'Myco Team',
-      package_name: '@goondocks/myco-team',
-      installed: true,
-      installed_version: '0.1.0',
-      latest_version: '0.1.1',
-      latest_stable: '0.1.1',
-      latest_beta: null,
-      update_available: true,
-      revert_available: false,
-    };
-    (checkOperatorCliVersions as AnyMock).mockResolvedValue([operatorPkg]);
-
-    const { handleUpgradeCheck } = createUpgradeHandlers(makeDeps());
-    const result = await handleUpgradeCheck(makeReq());
-    const body = result.body as Record<string, unknown>;
-    const packages = body.packages as Array<{ id: string }>;
-
-    expect(packages[0]?.id).toBe('myco');
-    expect(packages[1]?.id).toBe('myco-team');
-    expect(body.update_available).toBe(true);
   });
 
   it('propagates update_available:false when nothing to update', async () => {
@@ -533,7 +449,6 @@ describe('handleUpgradeCheck', () => {
 
   it('partial failure: returns what succeeded with non-null error field', async () => {
     (resolveMycoPackageCheck as AnyMock).mockRejectedValue(new Error('GitHub 503'));
-    (checkOperatorCliVersions as AnyMock).mockResolvedValue([]);
 
     const { handleUpgradeCheck } = createUpgradeHandlers(makeDeps());
     const result = await handleUpgradeCheck(makeReq());
@@ -557,7 +472,6 @@ describe('handleUpgradeApply', () => {
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (getInstalledVersion as AnyMock).mockReturnValue('1.0.0');
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
-    (spawnUpdateScript as AnyMock).mockReturnValue('/tmp/myco-update-123.sh');
     (initiateAdopt as AnyMock).mockResolvedValue(undefined);
     (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
   });
@@ -608,7 +522,7 @@ describe('handleUpgradeApply', () => {
     expect((result.body as Record<string, unknown>).error).toBe('no_release_available');
   });
 
-  it('myco update → calls initiateAdopt (not spawnUpdateScript) with staged version', async () => {
+  it('myco update → calls initiateAdopt with staged version', async () => {
     const deps = makeDeps();
     const { handleUpgradeApply } = createUpgradeHandlers(deps);
 
@@ -624,7 +538,6 @@ describe('handleUpgradeApply', () => {
         daemonPort: 20915,
       }),
     );
-    expect(spawnUpdateScript).not.toHaveBeenCalled();
     expect(result.body).toMatchObject({ status: 'applying', version: '1.1.0' });
   });
 
@@ -643,40 +556,6 @@ describe('handleUpgradeApply', () => {
 
     expect(result.status).toBe(409);
     expect((result.body as Record<string, unknown>).error).toBe('update_in_progress');
-  });
-
-  it('operator CLI update → spawnUpdateScript, myco → initiateAdopt', async () => {
-    // Cache contains both myco and myco-team with updates available
-    (readCachedCheck as AnyMock).mockReturnValue({
-      checked_at: new Date().toISOString(),
-      channel: 'stable',
-      packages: {
-        myco: { package_name: '@goondocks/myco', latest_stable: '1.1.0', latest_beta: null },
-        'myco-team': { package_name: '@goondocks/myco-team', latest_stable: '0.1.1', latest_beta: null },
-      },
-    });
-    // getInstalledVersion returns the old version for both packages
-    (getInstalledVersion as AnyMock).mockImplementation((_globalPrefix: unknown, pkg: unknown) => {
-      if (!pkg || pkg === '@goondocks/myco') return '1.0.0';
-      if (pkg === '@goondocks/myco-team') return '0.1.0';
-      return null;
-    });
-
-    const deps = makeDeps({ globalPrefix: '/usr/local' });
-    const { handleUpgradeApply } = createUpgradeHandlers(deps);
-
-    await handleUpgradeApply(makeReq());
-
-    // Operator CLI → spawnUpdateScript
-    expect(spawnUpdateScript).toHaveBeenCalledWith(
-      expect.objectContaining({
-        packageSpecs: ['@goondocks/myco-team@0.1.1'],
-      }),
-    );
-    // Myco → initiateAdopt
-    expect(initiateAdopt).toHaveBeenCalledWith(
-      expect.objectContaining({ source: 'daemon', targetVersion: '1.1.0' }),
-    );
   });
 
   it('beta→stable revert: resolves+stages+adopts the LOWER stable version (not a 422)', async () => {
@@ -790,35 +669,6 @@ describe('handleUpgradeApply', () => {
       expect.objectContaining({ serviceManagedLabel: HOME_LABEL }),
     );
   });
-
-  it('calls scheduleShutdown for operator-only update when not service-managed', async () => {
-    // Only myco-team needs update, myco is up to date
-    (readCachedCheck as AnyMock).mockReturnValue({
-      checked_at: new Date().toISOString(),
-      channel: 'stable',
-      packages: {
-        myco: { package_name: '@goondocks/myco', latest_stable: '1.0.0', latest_beta: null },
-        'myco-team': { package_name: '@goondocks/myco-team', latest_stable: '0.1.1', latest_beta: null },
-      },
-    });
-    (getInstalledVersion as AnyMock).mockImplementation((_globalPrefix: unknown, pkg: unknown) => {
-      if (!pkg || pkg === '@goondocks/myco') return '1.0.0';
-      if (pkg === '@goondocks/myco-team') return '0.1.0';
-      return null;
-    });
-
-    const scheduleShutdown = vi.fn();
-    const mgr = new FakeServiceManager();
-    const deps = makeDeps({ scheduleShutdown, serviceManager: mgr, globalPrefix: '/usr/local' });
-    const { handleUpgradeApply } = createUpgradeHandlers(deps);
-
-    await handleUpgradeApply(makeReq());
-
-    expect(spawnUpdateScript).toHaveBeenCalledWith(
-      expect.objectContaining({ serviceManagedLabel: null }),
-    );
-    expect(scheduleShutdown).toHaveBeenCalled();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -913,9 +763,7 @@ describe('manual channel: automatic paths no-op, operator paths proceed', () => 
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
     (getInstalledVersion as AnyMock).mockReturnValue('1.0.0');
     (resolveMycoPackageCheck as AnyMock).mockResolvedValue(MYCO_PKG_UPDATE);
-    (checkOperatorCliVersions as AnyMock).mockResolvedValue([]);
     (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
-    (spawnUpdateScript as AnyMock).mockReturnValue('/tmp/myco-update-123.sh');
     (initiateAdopt as AnyMock).mockResolvedValue(undefined);
   });
 

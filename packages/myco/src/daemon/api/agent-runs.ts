@@ -41,7 +41,6 @@ import { serializeRun } from './run-serializer.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
-import type { TeamSyncClient } from '../team-sync.js';
 import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -177,7 +176,6 @@ export interface AgentRunDeps {
    *  tools must hit the caller's grove store). */
   resolveEmbeddingManager: (requestContext: RouteRequest['requestContext']) => EmbeddingManager;
   logger: DaemonLogger;
-  getTeamClient?: () => TeamSyncClient | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +183,7 @@ export interface AgentRunDeps {
 // ---------------------------------------------------------------------------
 
 export function createAgentRunHandlers(deps: AgentRunDeps) {
-  const { vaultDir, resolveEmbeddingManager, logger, getTeamClient } = deps;
+  const { vaultDir, resolveEmbeddingManager, logger } = deps;
   const vaultDirForRequest = (req: RouteRequest): string => req.requestContext?.projectVaultDir ?? vaultDir;
   // A Team Host running this task for a member-attached project has no local
   // working tree — degrade to machine+grove tiers (empty project tier)
@@ -307,11 +305,11 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
         : configuredTaskParams;
       try {
         const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir);
-        built = await buildTaskInstruction(task, taskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext, treeAvailable);
+        built = await buildTaskInstruction(task, taskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, req.requestContext, treeAvailable);
       } catch {
         const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir);
         const fallbackTaskParams = force && task === SKILL_SURVEY_TASK ? { force: true } : undefined;
-        built = await buildTaskInstruction(task, fallbackTaskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext, treeAvailable);
+        built = await buildTaskInstruction(task, fallbackTaskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, req.requestContext, treeAvailable);
       }
       instruction = built?.instruction;
       runContext = built?.context;

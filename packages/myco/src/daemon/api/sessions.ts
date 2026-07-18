@@ -29,7 +29,6 @@ import {
   releaseStateAnnotationMap,
   releaseStateField,
 } from '@myco/release-provenance/annotations.js';
-import { fetchTeamFallback, type TeamFallbackDeps } from './team-fallback.js';
 import { errorBody } from './error-envelope.js';
 
 const DEFAULT_LIST_LIMIT = 50;
@@ -82,12 +81,9 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
 }
 
 /**
- * Factory form — supports team fallback when the record is missing locally.
- *
- * On a team hit we leave `prompt_count`/`tool_count` null because the
- * derived-count queries only run against local SQLite.
+ * Factory form — local-only: a miss is a plain not-found.
  */
-export function createGetSessionHandler(deps: TeamFallbackDeps = {}) {
+export function createGetSessionHandler() {
   return async function handleGetSession(req: RouteRequest): Promise<RouteResponse> {
     const scope = projectScopeFromRequestContext(req.requestContext);
     const session = getSession(req.params.id, scope);
@@ -106,23 +102,11 @@ export function createGetSessionHandler(deps: TeamFallbackDeps = {}) {
       };
     }
 
-    const fallback = await fetchTeamFallback(deps, 'sessions', req.params.id);
-    if (fallback) {
-      return {
-        body: {
-          ...fallback.record,
-          prompt_count: null,
-          tool_count: null,
-          source: fallback.source,
-        },
-      };
-    }
-
     return { status: 404, body: { error: 'not_found' } };
   };
 }
 
-/** Back-compat: no-team-fallback handler for existing call sites. */
+/** Back-compat: default handler for existing call sites. */
 export const handleGetSession = createGetSessionHandler();
 
 /**

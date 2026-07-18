@@ -22,7 +22,6 @@ import {
 } from '@myco/canopy/map/inputs-hash.js';
 import { readCanopyMap, type CanopyMapRow } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/machine-id.js';
-import type { AgentTeamStatusPort } from '@myco/agent/runtime/ports.js';
 import {
   projectScopeFromRequestContext,
   requireProjectId,
@@ -1295,7 +1294,6 @@ export async function buildTaskInstruction(
   projectRoot?: string,
   retrievalProvider?: SemanticSearchProvider,
   config?: MycoConfig,
-  getTeamClient?: () => AgentTeamStatusPort | null,
   requestContext?: MycoRequestContext,
   treeAvailable = true,
 ): Promise<BuiltTaskInstruction | undefined> {
@@ -1314,7 +1312,7 @@ export async function buildTaskInstruction(
     case CORTEX_INSTRUCTIONS_TASK: {
       if (!config || !projectRoot) return undefined;
       const vaultDir = `${projectRoot.replace(/\/$/, '')}/.myco`;
-      const built = await buildScheduledCortexInstruction(config, vaultDir, getTeamClient, requestContext);
+      const built = await buildScheduledCortexInstruction(config, vaultDir, requestContext);
       return built
         ? {
             instruction: built.instruction,

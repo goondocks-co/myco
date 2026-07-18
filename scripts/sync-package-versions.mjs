@@ -40,23 +40,6 @@ const PACKAGE_TARGETS = [
     },
   },
   {
-    envKey: 'MYCO_TEAM_VERSION',
-    tagPrefix: 'myco-team',
-    files: [
-      'packages/myco-team/package.json',
-      'packages/myco-team/worker/package.json',
-    ],
-  },
-  {
-    envKey: 'MYCO_COLLECTIVE_VERSION',
-    tagPrefix: 'myco-collective',
-    files: [
-      'packages/myco-collective/package.json',
-      'packages/myco-collective/ui/package.json',
-      'packages/myco-collective/worker/package.json',
-    ],
-  },
-  {
     envKey: 'MYCO_SHARED_VERSION',
     tagPrefix: 'myco-shared',
     files: [

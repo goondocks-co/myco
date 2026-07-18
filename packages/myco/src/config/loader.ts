@@ -13,7 +13,6 @@ import {
   type MachineConfig,
   type GroveConfig,
   type BackupConfig,
-  type TeamConfig,
 } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 import { pruneToTier } from './scope.js';
@@ -810,7 +809,7 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   // Validate full shape first (OAK lesson: validate on write, not just
   // read), then filter through ProjectConfigSchema so Grove/Machine-tier
   // fields can't sneak back into the project file. Zod's default strip
-  // semantics drop any unknown keys — daemon/backup/team/update etc. all
+  // semantics drop any unknown keys — daemon/backup/update etc. all
   // belong in their own tier files. The returned MycoConfig still has
   // those tiers; we just don't persist them here.
   const validated = MycoConfigSchema.parse(config);
@@ -913,16 +912,6 @@ export function getEnabledSymbiontNames(config: MycoConfig): Set<string> | null 
       .filter(([, entry]) => entry.enabled)
       .map(([name]) => name),
   );
-}
-
-export function updateTeamConfig(
-  vaultDir: string,
-  team: Partial<TeamConfig>,
-): MycoConfig {
-  return updateConfig(vaultDir, (config) => ({
-    ...config,
-    team: { ...config.team, ...team },
-  }));
 }
 
 /**

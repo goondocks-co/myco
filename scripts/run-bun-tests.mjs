@@ -181,9 +181,6 @@ const SAFE_NODE_BUNDLE_GROUPS = new Set([
   'tests/ui/layout',
   'tests/utils',
   'tests/vault',
-  'tests/worker',
-  'tests/worker/integration',
-  'tests/worker/mcp',
 ]);
 
 // These targets pass as their own shared-process Bun run without `--isolate`.
@@ -225,7 +222,6 @@ const NO_ISOLATE_NODE_TARGETS = [
   'tests/ui/layout',
   'tests/utils',
   'tests/vault',
-  'tests/worker',
   'tests/semantic-search-filters.test.ts',
   // tests/hooks intentionally omitted: response-shape tests depend on
   // process-global manifest capability state and have failed under Linux
@@ -369,7 +365,6 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/api/spores.test.ts',
       'tests/daemon/api/team-connect-handlers.test.ts',
       'tests/daemon/api/team-connect-status.test.ts',
-      'tests/daemon/api/team-upgrade-worker.test.ts',
       // tests/daemon/api/update.test.ts intentionally omitted — its top-level
       // `mock.module('@myco/daemon/update-checker.js', ...)` is hoisted by bun
       // ahead of the `await import(...)` that tries to capture the real module

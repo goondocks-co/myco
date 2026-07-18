@@ -5,7 +5,6 @@
  *   - a tool is registered in `TOOL_DEFINITIONS` but never dispatched in `tools/index.ts`
  *   - a tool is dispatched in `tools/index.ts` but never declared in `TOOL_DEFINITIONS`
  *   - a schema property exists but the handler doesn't forward it
- *   - core and collective tool name sets overlap
  *
  * Real-world bug this catches (2026-04-15 regression sweep):
  *   `myco_plans` declared an `id` schema property. The handler silently dropped it,
@@ -20,14 +19,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   TOOL_DEFINITIONS,
-  COLLECTIVE_TOOL_DEFINITIONS,
 } from '@myco/tools/definitions.js';
 import { RETRIEVAL_GUIDANCE } from '@myco/context/cortex-brief.js';
 import { handleMycoSearch } from '@myco/tools/search.js';
-import {
-  handleCollectiveSearch,
-  handleCollectiveProject,
-} from '@myco/tools/collective.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = {}, ok = true): DaemonClient {
@@ -74,30 +68,15 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     }
   });
 
-  it('every collective tool is wired into the tools/index.ts dispatcher', () => {
-    for (const tool of COLLECTIVE_TOOL_DEFINITIONS) {
-      const constant = constantNameForTool(tool.name);
-      expect(isRegistered(constant), `Tool ${tool.name} missing from tool dispatch`).toBe(true);
-    }
-  });
-
-  it('core and collective name sets do not overlap', () => {
-    const core = new Set(TOOL_DEFINITIONS.map((t) => t.name));
-    const collective = new Set(COLLECTIVE_TOOL_DEFINITIONS.map((t) => t.name));
-    for (const name of collective) {
-      expect(core.has(name), `Tool ${name} is both core and collective`).toBe(false);
-    }
-  });
-
   it('every tool has an object-shaped inputSchema with a properties map', () => {
-    for (const tool of [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]) {
+    for (const tool of TOOL_DEFINITIONS) {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.inputSchema.properties).toBeDefined();
     }
   });
 
   it('every Cortex-guided tool appears in generated retrieval guidance', () => {
-    const cortexToolNames = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]
+    const cortexToolNames = TOOL_DEFINITIONS
       .filter((tool) => Boolean(tool.cortex))
       .map((tool) => tool.name)
       .sort();
@@ -121,7 +100,7 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
   // as opencode + GPT-5.
   it('no tool schema has oneOf/anyOf/allOf/not at the top level', () => {
     const forbidden = ['oneOf', 'anyOf', 'allOf', 'not'] as const;
-    for (const tool of [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]) {
+    for (const tool of TOOL_DEFINITIONS) {
       for (const key of forbidden) {
         expect(
           (tool.inputSchema as Record<string, unknown>)[key],
@@ -131,9 +110,9 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     }
   });
 
-  it('every tool name starts with myco_ or collective_', () => {
-    for (const tool of [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]) {
-      expect(tool.name).toMatch(/^(myco_|collective_)/);
+  it('every tool name starts with myco_', () => {
+    for (const tool of TOOL_DEFINITIONS) {
+      expect(tool.name).toMatch(/^myco_/);
     }
   });
 
@@ -184,7 +163,7 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
  * lives in the per-tool integration tests under `tests/mcp/tools/` — those
  * call the in-process services and assert against the persisted DB state,
  * which catches the same class of drift end-to-end. This file only covers
- * tools that still go over HTTP (myco_search, collective_*).
+ * tools that still go over HTTP (myco_search).
  */
 describe('handler forwards every documented schema property', () => {
   it('myco_search forwards every documented filter', async () => {
@@ -209,44 +188,13 @@ describe('handler forwards every documented schema property', () => {
     expect(url).toContain('until=20');
     expect(url).toContain('language=typescript');
   });
-
-  it('collective_search forwards query, project, limit, and semantic filters', async () => {
-    const client = mockClient({ results: [] });
-    await handleCollectiveSearch({
-      query: 'q',
-      project: 'p',
-      limit: 2,
-      types: ['spores'],
-      status: 'active',
-      observation_type: 'decision',
-      since: 10,
-      until: 20,
-    }, client);
-    const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
-    expect(url).toContain('q=q');
-    expect(url).toContain('project=p');
-    expect(url).toContain('limit=2');
-    expect(url).toContain('types=spores');
-    expect(url).toContain('status=active');
-    expect(url).toContain('observation_type=decision');
-    expect(url).toContain('since=10');
-    expect(url).toContain('until=20');
-  });
-
-  it('collective_project forwards project and include_digest', async () => {
-    const client = mockClient({ project: null });
-    await handleCollectiveProject({ project: 'p', include_digest: true }, client);
-    const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
-    expect(url).toContain('project=p');
-    expect(url).toContain('include_digest=true');
-  });
 });
 
 /**
- * Cross-surface anti-drift. These read the Pi symbiont, Collective worker,
- * and Team worker source files and compare their registered tool names
- * against the canonical definitions — catching the class of drift where a
- * tool is added or renamed in one surface but not another.
+ * Cross-surface anti-drift. These read the Pi symbiont and Team worker
+ * source files and compare their registered tool names against the
+ * canonical definitions — catching the class of drift where a tool is
+ * added or renamed in one surface but not another.
  */
 describe('cross-surface tool-name drift', () => {
   const TOOL_NAME_PATTERNS = {
@@ -266,10 +214,7 @@ describe('cross-surface tool-name drift', () => {
     // See `docs/architecture/actors-and-boundaries.md`.
     const names = extractToolNames('packages/myco/src/symbionts/templates/pi/plugin.ts', 'registerTool');
     expect(names.length).toBeGreaterThan(0);
-    const expected = new Set([
-      ...TOOL_DEFINITIONS.map((t) => t.name),
-      ...COLLECTIVE_TOOL_DEFINITIONS.map((t) => t.name),
-    ]);
+    const expected = new Set(TOOL_DEFINITIONS.map((t) => t.name));
     expect(new Set(names)).toEqual(expected);
   });
 
@@ -284,13 +229,6 @@ describe('cross-surface tool-name drift', () => {
     );
     expect(source).toContain('language?: string');
     expect(source).toContain('language: Type.Optional(Type.String');
-  });
-
-  it('Collective worker exposes exactly COLLECTIVE_TOOL_DEFINITIONS', () => {
-    const names = extractToolNames('packages/myco-collective/worker/src/mcp/server.ts', 'server.tool');
-    expect(names.length).toBeGreaterThan(0);
-    const expected = new Set(COLLECTIVE_TOOL_DEFINITIONS.map((t) => t.name));
-    expect(new Set(names)).toEqual(expected);
   });
 
   it('Team worker exposes a subset of canonical local tools', () => {

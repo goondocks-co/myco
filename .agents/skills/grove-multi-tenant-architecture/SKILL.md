@@ -336,17 +336,29 @@ async function getGroveProjectData(groveId, projectId, resourceId) {
 }
 ```
 
-## Procedure H: D1 Drift Reconciler Architecture and Daemon-Side Intelligence
+## Procedure H: D1 Drift Reconciler Architecture (Historical — Team Sync Is Retired/Quiescent)
 
-**Critical update**: Implement daemon-side intelligence vs worker passive receiver principles.
+**Team sync is retired.** The legacy Cloudflare team-sync transport, routes, and UI are gone;
+`packages/myco-team` (worker + CLI) is preserved in-repo but dormant — typecheck-only, not
+deployed. The daemon-side-intelligence-vs-worker-passive-receiver split described below was
+this architecture's design principle while the pipeline was live; it's preserved here as
+historical/architectural record for the day this machinery is revived (Phase-F), not as
+active build guidance.
 
-### Daemon-Side Intelligence Principle
+### Daemon-Side Intelligence Principle (as designed)
 
-The daemon performs all intelligence operations (drift detection, reconciliation planning) while the worker acts as a passive data receiver that applies plans. Implementing analysis or decision-making in the worker violates this principle and creates architectural inconsistencies.
+The daemon performed all intelligence operations (drift detection, reconciliation planning)
+while the worker acted as a passive data receiver that applied plans. Any future revival of
+this pipeline should keep that split — putting analysis or decision-making in the worker
+would recreate the architectural inconsistency this principle existed to avoid.
 
 ### Session-Scoped Tool Call Aggregation
 
-Session-scoped tool call aggregation metrics contain sensitive usage patterns and must be excluded from team sync. Always set `exclude_team_sync: true` for tool usage metrics to prevent cross-project data leakage.
+Session-scoped tool call aggregation metrics (`session_myco_tool_calls`) are local-only —
+listed in `LOCAL_ONLY_OUTBOX_TABLES` in `packages/myco/src/db/queries/team-outbox.ts`. There
+is no `exclude_team_sync` flag; the real mechanism is that table (and
+`LOCAL_ONLY_SYNC_COLUMNS` for column-level exclusions), which strips the payload before it
+ever reaches the (dormant) worker.
 
 ### Process Identity Check Before Schema Mutations
 
@@ -374,7 +386,7 @@ Validate daemon PID, uptime, and schema version before any CREATE TABLE, ALTER T
 
 **Cross-Grove Session Pollution**: Session storage can leak data between Groves if session keys don't include Grove and Project IDs. Always prefix session keys with both identifiers.
 
-**D1 Worker Intelligence Violation**: The worker must remain a passive receiver for all D1 operations. Implementing analysis or decision-making in the worker violates the daemon-side intelligence principle and creates architectural inconsistencies.
+**D1 Worker Intelligence Violation (historical — team sync is dormant)**: If the retired team-sync D1 pipeline is ever revived, the worker must remain a passive receiver; the daemon does all drift detection and reconciliation planning. See Procedure H.
 
 **loadMergedConfig Grove Auto-Resolution**: `loadMergedConfig()` automatically resolves Grove from project manifest. If you receive "Grove not found" errors, check that `.myco/project.toml` contains a valid `grove.binding_id` field. Do not pass explicit Grove context to `loadMergedConfig()` — the function ignores it.
 

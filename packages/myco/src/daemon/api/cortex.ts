@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from '../request-config.js';
-import type { TeamSyncClient } from '../team-sync.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { DaemonLogger } from '../logger.js';
@@ -17,7 +16,6 @@ import { errorBody } from './error-envelope.js';
 
 export interface CortexDeps {
   liveConfig: { current: MycoConfig };
-  getTeamClient?: () => TeamSyncClient | null;
   /** Resolve the grove EmbeddingManager for the request — never the bootstrap
    *  manager (anchor-leak Variant A). */
   resolveEmbeddingManager: (requestContext: MycoRequestContext) => EmbeddingManager;
@@ -67,7 +65,6 @@ export function createCortexHandlers(deps: CortexDeps) {
       requestContext: req.requestContext!,
       resolveEmbeddingManager: deps.resolveEmbeddingManager,
       logger: deps.logger,
-      getTeamClient: deps.getTeamClient,
       registerInflightRun: deps.registerInflightRun,
     });
     if (!result.started && (result.reason === 'provider-not-configured' || result.reason === 'event-tasks-disabled')) {
@@ -97,7 +94,6 @@ export function createCortexHandlers(deps: CortexDeps) {
       principal.tenancy.projectVaultDir,
       {
         resolveEmbeddingManager: deps.resolveEmbeddingManager,
-        getTeamClient: deps.getTeamClient,
         logger: deps.logger,
         registerInflightRun: deps.registerInflightRun,
       },

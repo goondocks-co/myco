@@ -54,14 +54,15 @@ The license changed from MIT to Apache 2.0 on 2026-04-29 (commit `57a9571a`). No
 
 ## Optional operator packages
 
-If you also installed one of the standalone operator CLIs, they upgrade independently. The Upgrade section of the dashboard's Settings page detects updates for them too and offers a one-click apply.
+Team Host operator commands (`myco host`, `myco join`, `myco attach`) live in the main binary and upgrade automatically with the rest of Myco — there's no separate package for them.
+
+If you installed the standalone Collective operator CLI, it upgrades independently.
 
 ```bash
-npm update -g @goondocks/myco-team       # team-sync operator CLI
 npm update -g @goondocks/myco-collective # Collective operator CLI
 ```
 
-Most users never need these.
+Most users never need this.
 
 ## Verifying the upgrade
 

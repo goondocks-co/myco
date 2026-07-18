@@ -48,7 +48,7 @@ afterAll(() => {
   mock.module('node:fs', () => ({ ...fsActual, default: fsActual }));
 });
 
-import { spawnUpdateScript, spawnRestartScript } from '@myco/upgrade/spawn.js';
+import { spawnRestartScript } from '@myco/upgrade/spawn.js';
 
 /** The single params file the spawner wrote for the most recent call. */
 function lastParams(): Record<string, unknown> {
@@ -56,15 +56,6 @@ function lastParams(): Record<string, unknown> {
   const paramsFile = call.args[1];
   return JSON.parse(writtenFiles.get(paramsFile)!) as Record<string, unknown>;
 }
-
-const UPDATE_BASE = {
-  packageSpecs: ['@goondocks/myco@1.0.0'],
-  projectRoot: '/project',
-  vaultDir: '/project/.myco',
-  mycoBinary: 'myco',
-  daemonPort: 20915,
-  targetVersion: '1.0.0',
-};
 
 const RESTART_BASE = {
   projectRoot: '/home/user/project',
@@ -80,63 +71,6 @@ beforeEach(() => {
   spawnCalls.length = 0;
   writtenFiles.clear();
   unrefCount = 0;
-});
-
-describe('spawnUpdateScript', () => {
-  it('spawns the binary `__apply-update` subcommand detached + unreffed', () => {
-    spawnUpdateScript(UPDATE_BASE);
-    expect(spawnCalls.length).toBe(1);
-    const { args, opts } = spawnCalls[0];
-    expect(args[0]).toBe('__apply-update');
-    // argv[1] is the params file path the orchestrator reads.
-    expect(args[1]).toBe(spawnCalls[0].args[1]);
-    expect(opts.detached).toBe(true);
-    expect(opts.stdio).toBe('ignore');
-    expect(opts.windowsHide).toBe(true);
-    expect(unrefCount).toBe(1);
-  });
-
-  it('never spawns /bin/sh (the Windows-ENOENT bug this fix removes)', () => {
-    spawnUpdateScript(UPDATE_BASE);
-    expect(spawnCalls[0].cmd).not.toBe('/bin/sh');
-  });
-
-  it('writes a kind:"update" params JSON with the install fields', () => {
-    spawnUpdateScript({
-      ...UPDATE_BASE,
-      packageSpecs: ['@goondocks/myco@1.0.0', '@goondocks/myco-team@0.1.1'],
-    });
-    const p = lastParams();
-    expect(p.kind).toBe('update');
-    expect(p.packageSpecs).toEqual(['@goondocks/myco@1.0.0', '@goondocks/myco-team@0.1.1']);
-    expect(p.projectRoot).toBe('/project');
-    expect(p.vaultDir).toBe('/project/.myco');
-    expect(p.mycoBinary).toBe('myco');
-    expect(p.daemonPort).toBe(20915);
-    expect(p.targetVersion).toBe('1.0.0');
-  });
-
-  it('defaults serviceManagedLabel to null when not provided', () => {
-    spawnUpdateScript(UPDATE_BASE);
-    expect(lastParams().serviceManagedLabel).toBeNull();
-  });
-
-  it('passes a service label through when supplied', () => {
-    spawnUpdateScript({ ...UPDATE_BASE, serviceManagedLabel: 'co.goondocks.myco' });
-    expect(lastParams().serviceManagedLabel).toBe('co.goondocks.myco');
-  });
-
-  it('omits the retired managed-runtime params (deleted with the native installer)', () => {
-    spawnUpdateScript(UPDATE_BASE);
-    const p = lastParams();
-    expect(p.localRuntimeSpec).toBeUndefined();
-    expect(p.removeLocalRuntime).toBeUndefined();
-    expect(p.machineRuntimeDir).toBeUndefined();
-    expect(p.machineRuntimeTmpDir).toBeUndefined();
-    expect(p.machineRuntimeCommandPath).toBeUndefined();
-    expect(p.machineRuntimeMyco).toBeUndefined();
-  });
-
 });
 
 describe('spawnRestartScript', () => {

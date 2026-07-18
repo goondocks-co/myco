@@ -3,9 +3,6 @@ import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import { openDatabase } from '@myco/db/client.js';
 import { createGroveBackup } from '@myco/backup/service.js';
 import { getMachineId } from '@myco/machine-id.js';
-import { loadGroveConfig } from '@myco/config/loader.js';
-import { setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
-import { memberProjectIdsForGrove } from './project-tenancy.js';
 import fs from 'node:fs';
 import { ensureGroveDatabase } from './database.js';
 import {
@@ -78,7 +75,6 @@ export function deleteProjectPermanently(
 
   ensureGroveDatabase(groveId, mycoHome);
   const dbPath = resolveGroveDbPath(groveId, mycoHome);
-  const groveConfig = loadGroveConfig(grove.id, mycoHome);
 
   const db = openDatabase(dbPath);
   try {
@@ -91,28 +87,12 @@ export function deleteProjectPermanently(
       mycoHome,
     });
     const tableCounts = countProjectRows(db, project.project_id);
-    // Reconcile the per-Grove team_sync_state flag from this Grove's config
-    // before deleting rows. Without this, a freshly-opened DB handle (e.g.
-    // before the first daemon flush tick) has no flag row, so the AFTER DELETE
-    // triggers would silently skip journaling. Reconciling here guarantees the
-    // trigger gate reflects the Grove's intent regardless of tick timing.
-    setTeamSyncEnabled(groveConfig.team.enabled, db);
-    // The delete triggers are also membership-gated (a delete journals only when
-    // OLD.project_id is a member), so the per-project member set must be present
-    // on this freshly-opened handle too — otherwise a member project's delete
-    // would silently skip journaling.
-    const memberResolution = memberProjectIdsForGrove(groveId);
-    // Only write membership when the registry was successfully read. An
-    // indeterminate read leaves the prior membership in place — that is the
-    // best available outcome, since replacing it with a known-wrong empty
-    // list would cause member-project deletes to silently skip D1 journaling.
-    if (memberResolution.resolved) {
-      setProjectSyncMembership(memberResolution.memberships, db);
-    }
-    // Each `DELETE FROM <table> WHERE project_id = ?` in deleteProjectRows
-    // fires that table's `_team_ad` trigger, which journals the delete to
-    // team_outbox when this Grove's team_sync_state.enabled = 1. No manual
-    // tombstone enqueue is needed (it would double-journal).
+    // Each `DELETE FROM <table> WHERE project_id = ?` in deleteProjectRows fires
+    // that table's `_team_ad` trigger, but the trigger is membership-gated
+    // (`WHEN OLD.project_id IN (SELECT project_id FROM team_sync_membership)`)
+    // and nothing in this codepath — or anywhere else in src — populates
+    // team_sync_membership anymore, so the trigger never matches and no
+    // team_outbox rows are journaled.
     deleteProjectRows(db, project.project_id);
     deregisterProjectInGrove(groveId, project.project_id, mycoHome);
     // Remove the Grove-side project dir (buffer/ and any per-project

@@ -1,11 +1,8 @@
 /**
- * Coverage for the spore get-by-id team-fallback fanout.
- *
- * Mirrors `tests/daemon/api/sessions.test.ts`'s fallback block so the recall
- * path has parity across both record shapes (search, sessions, spores).
+ * Coverage for the spore get-by-id handler and project-scoped listing.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -42,14 +39,7 @@ function requestContext(vaultDir: string, projectId: string) {
   });
 }
 
-function makeTeamClient(impl: (type: string, id: string) => Promise<Record<string, unknown> | null>) {
-  const getRecord = vi.fn(impl);
-  return { getRecord } as {
-    getRecord: typeof getRecord;
-  };
-}
-
-describe('createGetSporeHandler — team fallback', () => {
+describe('createGetSporeHandler — local get', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -65,7 +55,7 @@ describe('createGetSporeHandler — team fallback', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('local hit: returns local record with source=local and does not call the team', async () => {
+  it('returns local record with source=local', async () => {
     const now = Math.floor(Date.now() / 1000);
     insertSpore({
       id: 'spore-local',
@@ -76,18 +66,13 @@ describe('createGetSporeHandler — team fallback', () => {
       status: 'active',
     });
 
-    const teamClient = makeTeamClient(async () => null);
-    const handler = createGetSporeHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
+    const handler = createGetSporeHandler();
 
     const res = await handler(makeRequest({ params: { id: 'spore-local' } }));
     expect(res.status === undefined || res.status < 400).toBe(true);
     const body = res.body as { id: string; source: string };
     expect(body.id).toBe('spore-local');
     expect(body.source).toBe('local');
-    expect(teamClient.getRecord).not.toHaveBeenCalled();
   });
 
   it('lists only spores in the requested project context', async () => {
@@ -142,65 +127,11 @@ describe('createGetSporeHandler — team fallback', () => {
     expect(res.body).toMatchObject({ error: 'not_found' });
   });
 
-  it('local miss + team hit: returns team record tagged team:<machine_id>', async () => {
-    const teamClient = makeTeamClient(async (type, id) => {
-      expect(type).toBe('spores');
-      expect(id).toBe('spore-remote');
-      return { id: 'spore-remote', machine_id: 'remote-node', content: 'team content' };
-    });
-
-    const handler = createGetSporeHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
-
-    const res = await handler(makeRequest({ params: { id: 'spore-remote' } }));
-    expect(res.status === undefined || res.status < 400).toBe(true);
-    const body = res.body as { id: string; source: string };
-    expect(body.id).toBe('spore-remote');
-    expect(body.source).toBe('team:remote-node');
-  });
-
-  it('local miss + team miss: returns 404', async () => {
-    const teamClient = makeTeamClient(async () => null);
-    const handler = createGetSporeHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
+  it('returns 404 for an unknown id (a local miss is a plain not-found)', async () => {
+    const handler = createGetSporeHandler();
 
     const res = await handler(makeRequest({ params: { id: 'absent' } }));
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ error: 'not_found' });
-  });
-
-  it('local miss + team throws: returns 404 (team failures are non-blocking)', async () => {
-    const teamClient = {
-      getRecord: vi.fn(async () => {
-        throw new Error('team down');
-      }),
-    };
-    const handler = createGetSporeHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
-
-    const res = await handler(makeRequest({ params: { id: 'broken' } }));
-    expect(res.status).toBe(404);
-  });
-
-  it('local miss + team hit with own machine_id: falls through to 404 (no self-echo)', async () => {
-    const teamClient = makeTeamClient(async () => ({
-      id: 'spore-self',
-      machine_id: 'local-machine',
-      content: 'echoed back from team',
-    }));
-
-    const handler = createGetSporeHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
-
-    const res = await handler(makeRequest({ params: { id: 'spore-self' } }));
-    expect(res.status).toBe(404);
   });
 });

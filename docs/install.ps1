@@ -363,7 +363,6 @@ if ($ServiceOk) {
     Write-Host "    myco open"
 }
 Write-Host ""
-Write-Host "  Optional operator CLIs (npm):"
-Write-Host "    npm install -g @goondocks/myco-team        # https://github.com/$Repo/blob/main/docs/team-sync.md"
+Write-Host "  Optional operator CLI (npm):"
 Write-Host "    npm install -g @goondocks/myco-collective  # https://github.com/$Repo/blob/main/docs/collective.md"
 Write-Host ""

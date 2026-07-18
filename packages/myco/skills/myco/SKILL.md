@@ -60,7 +60,7 @@ If the CLI is genuinely unavailable or both inline and `@file` forms fail repeat
 
 Successful calls return `{ "ok": true, "tool": "<name>", "result": ... }`; failures return `{ "ok": false, "tool": "<name>", "error": { "code": "...", "message": "..." } }`.
 
-The local Myco tool surface registers 7 core tools. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also available. Tools are defined in `packages/myco/src/tools/definitions.ts` — that file is the source of truth. MCP registers the same names when available.
+The local Myco tool surface registers 7 core tools. Tools are defined in `packages/myco/src/tools/definitions.ts` — that file is the source of truth. MCP registers the same names when available.
 
 Use direct SQLite reads only as an expert, read-only fallback for complex analysis that cannot be answered through the `myco` CLI or MCP.
 
@@ -240,36 +240,6 @@ List recent agent runs with runtime, provider, model, token, and cost fields, or
 
 ```json
 { "op": "run", "id": "run-abc123" }
-```
-
-### Collective tools (only when connected)
-
-The following tools appear only when the project is connected to a Myco Collective — they are conditionally registered by the shared tools dispatcher based on the team status.
-
-#### collective_projects — List projects in the collective
-
-```json
-{}
-```
-
-#### collective_project — Get metadata for one project
-
-```json
-{ "project": "myco-main", "include_digest": false }
-```
-
-#### collective_search — Search across collective projects
-
-Results include project attribution.
-
-```json
-{ "query": "authentication approach", "project": "myco-main", "limit": 5 }
-```
-
-#### collective_settings — View active collective setting overrides
-
-```json
-{}
 ```
 
 ## Wisdom — Keeping the Vault Clean

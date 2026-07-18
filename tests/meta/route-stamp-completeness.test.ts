@@ -307,9 +307,6 @@ describe('route-stamp completeness matcher self-test', () => {
     expect(matchRouteRule('PUT', samplePath('/api/team/secrets/:provider'))?.stamp).toBe('team-write');
     expect(matchRouteRule('DELETE', samplePath('/api/team/secrets/:provider'))?.stamp).toBe('team-write');
     expect(matchRouteRule('POST', '/api/team/mcp-token/rotate')?.stamp).toBe('team-write');
-    // The coarse legacy team-sync prefix rules are unaffected — still localhost-only.
-    expect(matchRouteRule('GET', '/api/team/status')?.stamp).toBe('localhost-only');
-    expect(matchRouteRule('POST', '/api/team/join')?.stamp).toBe('localhost-only');
   });
 
   it('stripComments blanks a `.registerRoute(` that only appears in a comment', () => {

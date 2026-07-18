@@ -1,7 +1,7 @@
 ---
 name: myco:vault-schema-extension
 description: |
-  Use this skill when adding or evolving Myco's SQLite vault database schema and its Cloudflare D1 cloud counterpart — even if the user doesn't explicitly ask for "schema work." Covers: authoring versioned migration scripts with correct error guards (IF NOT EXISTS, user_version bumps), evolving existing tables with ALTER TABLE in a backfill-safe sequence, creating and populating FTS5 full-text search indexes with auto-sync triggers, keeping local SQLite and D1 schemas in sync (including D1's lazy-migration behaviour where ALTER TABLE applies on the first request after deploy, not at deploy time), selecting the right query patterns (WHERE IN with json_each for dynamic ID sets, hydration joins instead of N+1 selects, cursor-based pagination instead of OFFSET), Grove multi-tenant database design for global daemon architecture, and updating the constants and query modules that complete the data layer surface. Every new Myco feature that stores data touches this domain.
+  Use this skill when adding or evolving Myco's SQLite vault database schema — even if the user doesn't explicitly ask for "schema work." Covers: authoring versioned migration scripts with correct error guards (IF NOT EXISTS, user_version bumps), evolving existing tables with ALTER TABLE in a backfill-safe sequence, creating and populating FTS5 full-text search indexes with auto-sync triggers, keeping the dormant team-sync worker's D1 mirror parity-test-clean for any table in its synced-table set (team sync itself is retired — there is no live D1 deployment), selecting the right query patterns (WHERE IN with json_each for dynamic ID sets, hydration joins instead of N+1 selects, cursor-based pagination instead of OFFSET), Grove multi-tenant database design for global daemon architecture, and updating the constants and query modules that complete the data layer surface. Every new Myco feature that stores data touches this domain.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -9,13 +9,13 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Vault Schema and Data Layer Extension
 
-MycoVault stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration entry in the MIGRATIONS registry, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each migration is a self-contained, idempotent entry in the declarative MIGRATIONS array. Grove architecture extends this foundation with global daemon coordination patterns and multi-project data organization.
+MycoVault stores all project intelligence in a local SQLite file (`.myco/myco.db`). A subset of tables historically mirrored to Cloudflare D1 for team sync via a dedicated worker (`packages/myco-team`) — that worker is now dormant (typecheck-only, not deployed; team sync itself is retired in favor of Team Host) and the mirror only matters for keeping the in-repo parity test green. Every new feature that persists data requires a versioned migration entry in the MIGRATIONS registry and query functions, and — depending on the feature — an FTS5 index and, if the table is in the dormant worker's synced-table set, a worker-mirror update. Schema versions progress monotonically (v6→v7→v8→v9→…); each migration is a self-contained, idempotent entry in the declarative MIGRATIONS array. Grove architecture extends this foundation with global daemon coordination patterns and multi-project data organization.
 
 ## Prerequisites
 
 - Know what data needs to be stored and how it relates to existing tables (`sessions`, `spores`, `entities`, `edges`, etc.)
 - Check the current highest version in the `MIGRATIONS` array in `packages/myco/src/db/migrations.ts`
-- Decide upfront whether the table needs FTS5 (required if the intelligence agent will keyword-search it) and D1 alignment (required if the cloud MCP server queries it)
+- Decide upfront whether the table needs FTS5 (required if the intelligence agent will keyword-search it) and a worker-mirror update (only relevant if the table is in the dormant team-sync worker's synced-table set — there is no live cloud MCP server querying D1 today)
 - Understand Grove architecture implications for multi-project data coordination
 - For Grove migrations: understand project-scoped row management and migration_import_journal patterns
 - **For legacy database migration**: Be aware of historical column renames (e.g., `agent_runs.runtime` was renamed to `agent_runs.harness` in v29) that require schema normalization before Grove import
@@ -108,17 +108,26 @@ SQLite requires full table rebuild for column rename. For historical context, `a
 - `RENAME COLUMN` — same constraint.
 - Two unrelated `ALTER TABLE` statements in one migration — if one fails, the retry will attempt both again and the first may throw "duplicate column."
 
-## Procedure C: D1/Cloud Schema Alignment
+## Procedure C: Dormant Worker-Mirror Alignment (Team Sync Is Retired)
 
-Cloudflare D1 mirrors the local SQLite schema for team sync. Critical behavioural difference: **D1 migrations apply lazily on the first request after deploy, not at deploy time.**
+Team sync is retired — there is no live D1 deployment to align against. The dormant
+team-sync worker (`packages/myco-team/worker`) still carries its own D1 DDL for whichever
+tables were in its synced-table set, and `tests/db/synced-table-parity.test.ts` still
+enforces that the worker DDL matches the local schema for those tables. If your table isn't
+in that set, this procedure doesn't apply to you.
 
-### Mitigating the lazy-migration gotcha
+If it is: mirror the change in `packages/myco-team/worker/src/schema.ts` using the 3-part
+idempotent pattern described in `myco:vault-schema-migration` (DDL + idempotent ALTER +
+`verifyColumnsAddressable`), then run:
 
-1. **Explicit migration endpoint** — expose `POST /migrate` that runs all pending DDL. Call it from your deploy script immediately after `wrangler deploy`.
-2. **Defensive `IF NOT EXISTS` everywhere** — never use bare `CREATE TABLE` on D1.
-3. **Dead-letter row pattern** — for high-value writes where silent loss is unacceptable, catch the "no such table" error and store the payload for replay.
+```bash
+npm test -- tests/db/synced-table-parity.test.ts
+```
 
-`ALTER TABLE` on D1 is safe: it applies on the next request with no table lock. Guard reads against new columns until you know migration has run.
+There is no `wrangler deploy` or `POST /migrate` step — nothing is deployed. The historical
+"D1 migrations apply lazily on the first request, not at deploy time" behavior only mattered
+while the worker was live; it's preserved here as background for whoever revives this
+machinery in a future phase, not as something to act on today.
 
 ## Procedure D: FTS5 Index Creation and Maintenance
 
@@ -216,14 +225,14 @@ expect(tableInfo.some(col => col.name === 'quality_score')).toBe(true);
 
 ## Procedure L: D1 Schema Parity Management
 
-Treat D1 schema updates as a required paired step with any SQLite schema change that syncs to team. Run `npm test -- tests/worker/schema.test.ts` to validate D1 compatibility.
+Team sync is retired and quiescent — this is a CI-correctness step, not a live-sync step. Treat a worker-mirror update as a required paired step with any SQLite schema change to a table in the dormant worker's synced-table set, and run `npm test -- tests/db/synced-table-parity.test.ts` (and `tests/worker/schema.test.ts` for the worker's own schema tests) to validate.
 
 ## Procedure M: Session Lifecycle Batch Management and Tool Call Aggregation
 
 Tool call counts are materialized at session Stop boundary via `aggregateSessionMycoToolCalls()`:
 - Flat table design: `(session_id, tool_name, op, count)` — no denormalized JSON
 - Stop boundary timing: aggregation at session completion, not per-call
-- Team sync exclusion: tool usage data remains local-only
+- Local-only: tool usage data is listed in `LOCAL_ONLY_OUTBOX_TABLES` (`packages/myco/src/db/queries/team-outbox.ts`), so it's stripped before ever reaching the (dormant) team-sync outbox
 - Idempotent: uses UPSERT patterns
 
 **Phantom Batch Detection**: Schema v44 requires checking for orphaned session references before adding FK constraints:
@@ -233,9 +242,13 @@ LEFT JOIN prompt_batches pb ON s.id = pb.session_id
 WHERE s.status = 'active' AND pb.id IS NULL;
 ```
 
-## Procedure N: D1 Drift Reconciliation Architecture
+## Procedure N: D1 Drift Reconciliation Architecture (Historical)
 
-Team sync scenarios can create schema version mismatches. Always query D1 schema version before sync operations and implement graceful degradation. Use defensive column-checking before INSERT in reconciliation code.
+This described how the (now-retired, quiescent) team-sync pipeline detected and reconciled
+schema version mismatches between the daemon and the worker's D1 database. There is no live
+sync operation to run this against today. Preserved as design record for a future revival:
+query the D1 schema version before any sync operation, implement graceful degradation, and
+use defensive column-checking before INSERT in reconciliation code.
 
 ## Procedure O: Tool Name Canonicalization and Injection Dedup for Activities
 
@@ -268,15 +281,15 @@ When the vec0 schema changes (new partition key or metadata column), increment `
 
 See `packages/myco/src/daemon/embedding/sqlite-vec-store.ts` for the reference implementation (`vecMigratingTable`, `vecBackfillSelect`).
 
-### Team Sync Protocol Versioning
+### Sync Protocol Versioning
 
-Any breaking team sync schema change must assess `SYNC_PROTOCOL_VERSION` in `packages/myco/src/constants.ts`. Bump it if the change breaks wire compatibility with older clients.
+`SYNC_PROTOCOL_VERSION` in `packages/myco/src/constants.ts` now serves the backup wire only — team sync is retired and quiescent, so there's no live team-sync client to break compatibility with in practice. Any breaking change to the backup wire format must still assess and bump it.
 
 ## Cross-Cutting Gotchas
 
 - **`IF NOT EXISTS` is mandatory everywhere** — migrations run at every startup; a bare `CREATE TABLE` throws on the second run.
 - **Each migration is atomic** — all migrations up to the highest version succeed or the runner rolls back entirely.
-- **D1 ALTER TABLE is lazy** — the column does not exist on D1 until the first post-deploy request. Guard reads against new columns until migration has run.
+- **D1 ALTER TABLE is lazy (historical)** — while the team-sync worker was live, a D1 column didn't exist until the first post-deploy request. No live deployment exists today; this is background for a future revival, not something to guard against now.
 - **FTS triggers must use `IF NOT EXISTS`** — duplicate triggers corrupt the index silently.
 - **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, keyset cursors for pagination.
 - **All SQL lives in query modules** — no inline SQL in MCP handlers or business logic.
@@ -284,13 +297,13 @@ Any breaking team sync schema change must assess `SYNC_PROTOCOL_VERSION` in `pac
 - **Grove `project_id` is mandatory in v31+** — all new project-scoped tables must include `project_id` and all queries must scope by it.
 - **Column Order Drift** — Fresh installs and migrated databases have different column orders. Test column addressability by name using `PRAGMA table_info`, never by position.
 - **Version Pinning Fragility** — Tests asserting `SCHEMA_VERSION === N` break immediately when the schema advances. Test schema capabilities and invariants instead.
-- **D1 Parity Gaps** — Adding columns to SQLite without updating D1 schema causes silent sync failures. Treat D1 updates as mandatory paired steps.
+- **D1 Parity Gaps** — Adding columns to a synced table without updating the dormant worker's mirror fails `tests/db/synced-table-parity.test.ts` (a real, enforced CI gate) even though nothing is deployed. Treat worker-mirror updates as mandatory paired steps for synced tables.
 - **ensureOpenBatch Dependencies** — Schema v44+ migrations that create tool call aggregation tables must account for sessions that may not have active batches.
 - **Phantom Batch States** — Always check for orphaned session references before adding FK constraints.
 - **Tool usage data is local-only** — `session_myco_tool_calls` does not sync to team D1 databases.
 - **Vec0 has no ALTER TABLE** — any change to partition keys or metadata columns requires a full table rebuild using the temp-table + `INSERT…SELECT` migration pattern.
 - **`patchDomainMetadata` updates the JSON blob only** — it writes to `embedding_metadata.domain_metadata` but does NOT update vec0 partition or metadata columns. Keys patched in-place after embedding (e.g., `release_state`, `release_confidence`) MUST use the `'postKnn'` strategy in `FILTERABLE_KEY_REGISTRY`; promoting them to `'column'` causes stale in-KNN filter values that silently exclude matching rows.
-- **`SYNC_PROTOCOL_VERSION` must be assessed on breaking team sync schema changes** — bump it in `packages/myco/src/constants.ts` if the wire format breaks compatibility with older clients.
+- **`SYNC_PROTOCOL_VERSION` now serves the backup wire only** — team sync is retired/quiescent. Bump it in `packages/myco/src/constants.ts` if a breaking change to the backup wire format breaks compatibility with older clients.
 - **Vec0 missing-value sentinel is `''` (empty string), not NULL** — sqlite-vec rejects NULL binds on partition/column values. Records missing a filtered field use `''`, which correctly excludes them from equality filters but is wrong for range comparisons — which is why range keys stay `postKnn`.
 - **Migration PR sequencing** — Only one schema-changing PR may merge to main at a time. Any branch cut before that merge must rebase onto post-merge main and take the next sequential version number before submitting. Two branches with the same migration version silently collide — the first to merge wins; the second fails at startup.
 - **`purgeNonMemberOutbox` empty-set guard** — When `memberProjectIds` is empty, SQLite's `NOT IN ()` predicate matches every non-NULL row, silently wiping all team outbox entries. Always guard with an early-return check before calling `purgeNonMemberOutbox` when the member list may be empty.

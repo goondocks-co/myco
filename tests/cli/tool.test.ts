@@ -25,10 +25,10 @@ const CLI_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 /** Minimal `DaemonClient` stand-in for the LOCAL daemon's `/mcp` handler.
  *  Only `get('/api/digest', ...)` is exercised by the tools under test
- *  (`myco_cortex`); every other verb/endpoint (e.g. the collective-enabled
- *  probe at `/api/team/status`) is a harmless no-op ack. `digestHeaders`
- *  collects just the headers of each `/api/digest` call, in order — the
- *  same shape `tests/mcp/http.test.ts`'s `mockClient` captures. */
+ *  (`myco_cortex`); every other verb/endpoint is a harmless no-op ack.
+ *  `digestHeaders` collects just the headers of each `/api/digest` call,
+ *  in order — the same shape `tests/mcp/http.test.ts`'s `mockClient`
+ *  captures. */
 function mockDaemonClient(digestHeaders: http.IncomingHttpHeaders[] = []): DaemonClient {
   return {
     get: (async (endpoint: string, options?: { headers?: Record<string, string> }) => {

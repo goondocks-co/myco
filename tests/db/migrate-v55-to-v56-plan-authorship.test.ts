@@ -158,7 +158,7 @@ describe('migration v55 -> v56: authorship-gated plan cleanup', () => {
     db.close();
   });
 
-  it('enqueues a team-sync tombstone for each deleted plan row when team sync is enabled', () => {
+  it('a mid-chain phantom-plan tombstone does not survive a vault that reaches head in one upgrade', () => {
     const db = seedV55Db();
     // plans carries an AFTER DELETE team-sync trigger gated on team_sync_state
     // and the project's membership in team_sync_membership.
@@ -172,12 +172,21 @@ describe('migration v55 -> v56: authorship-gated plan cleanup', () => {
 
     createSchema(db, LOCAL);
 
-    // The two phantom deletes (p-phantom-shared, p-canon-phantom) journal a
-    // tombstone so machines that already pulled the row drop it too.
+    // v56's phantom-plan cleanup deletes p-phantom-shared and p-canon-phantom,
+    // and each delete fires the membership-gated trigger, so v56 DOES enqueue
+    // 2 pending tombstones mid-chain (that mechanism is unchanged and still
+    // fires — see tests/db/team-delete-triggers.test.ts for direct, isolated
+    // coverage of trigger-enqueue-on-delete). But this test's `createSchema`
+    // call chains all the way to SCHEMA_VERSION, not just to v56, and the
+    // terminal quiesce migration (v71 -> v72, Team Host E-2 Task 5) purges
+    // every pending (sent_at IS NULL) team_outbox row as its last step — so a
+    // vault that goes from v55 straight to head in one upgrade never carries
+    // those 2 tombstones forward: nothing will ever drain them anyway, since
+    // the legacy team-sync transport that used to flush the outbox is gone.
     const tombstones = db.prepare(
       `SELECT COUNT(*) AS n FROM team_outbox WHERE table_name = 'plans' AND operation = 'delete'`,
     ).get() as { n: number };
-    expect(tombstones.n).toBe(2);
+    expect(tombstones.n).toBe(0);
     db.close();
   });
 });

@@ -82,7 +82,7 @@
       <a href="#how">How it works</a>
       <a href="#lifecycle">Skills</a>
       <a href="#cortex">Cortex</a>
-      <a href="#team">Team sync</a>
+      <a href="#team">Team Host</a>
       <a href="#agents">Agents</a>
       <a href="#docs">Docs</a>
       <a href="#sponsor">Sponsor</a>
@@ -296,10 +296,10 @@
           <span class="feature-kicker">03 · Connect</span>
         </div>
         <h3>A shared nervous system across the team.</h3>
-        <p>Each teammate's project knowledge synchronizes through a Cloudflare-backed worker. Secure Cloud MCP exposes that synced knowledge to managed agents beyond your laptop.</p>
+        <p>Join a teammate's Myco as your Team Host and every connected project's knowledge reaches team storage directly, machine to machine. A secure external endpoint exposes that knowledge to managed agents beyond your laptop.</p>
         <div class="feature-meta">
-          <span class="tag">team sync</span>
-          <span class="tag">cloud mcp</span>
+          <span class="tag">team host</span>
+          <span class="tag">external mcp</span>
           <span class="tag">collective</span>
         </div>
       </article>
@@ -503,25 +503,24 @@
   </div>
 </section>
 
-<!-- =================== TEAM SYNC =================== -->
+<!-- =================== TEAM HOST =================== -->
 <section class="band team-band" id="team">
   <div class="wrap">
     <div class="team-grid">
       <div class="team-copy">
-        <span class="eyebrow">Team sync</span>
-        <h2 class="sec-title" style="margin-top: 16px;">Shared team knowledge, <em>without making the cloud the source of truth.</em></h2>
-        <p class="sec-lede">Every teammate's agents benefit from the same project intelligence. Runs on Cloudflare's free tier for small teams. Your local databases stay the source of truth — the cloud store only mirrors connected teammates' synced knowledge.</p>
+        <span class="eyebrow">Team Host</span>
+        <h2 class="sec-title" style="margin-top: 16px;">Shared team knowledge, <em>with no cloud account in the loop.</em></h2>
+        <p class="sec-lede">One teammate's Myco becomes the team's shared home. Everyone else joins it directly, machine to machine, and connects the projects they want the team to share.</p>
 
         <ul class="team-bullets">
-          <li><span class="mark">✓</span><span><strong>Automatic backfill</strong> — existing knowledge syncs when you assign a project to a team, then new knowledge follows in the background.</span></li>
-          <li><span class="mark">✓</span><span><strong>Team-aware search</strong> — results include your local knowledge and synced teammate knowledge, merged by relevance.</span></li>
+          <li><span class="mark">✓</span><span><strong>Direct connections</strong> — joined machines and the host talk over an encrypted overlay, peer-to-peer where possible.</span></li>
+          <li><span class="mark">✓</span><span><strong>Team-aware search</strong> — results include your local knowledge and connected teammates' knowledge, merged by relevance.</span></li>
           <li><span class="mark">✓</span><span><strong>Machine-identity attribution</strong> — results are tagged with who said what, so nothing is anonymised.</span></li>
-          <li><span class="mark">✓</span><span><strong>Cloud MCP endpoint</strong> — securely expose synced team knowledge to managed agents and N8N automations.</span></li>
+          <li><span class="mark">✓</span><span><strong>External MCP endpoint</strong> — securely expose team knowledge to managed agents and automations that aren't Myco members.</span></li>
         </ul>
 
         <div style="margin-top: 28px; display:flex; gap: 14px;">
-          <a class="btn btn-outline" href="/team-sync">Team sync guide<span class="chev">→</span></a>
-          <a class="btn btn-ghost" href="/cloud-mcp">Cloud MCP →</a>
+          <a class="btn btn-outline" href="/team-host">Team Host guide<span class="chev">→</span></a>
         </div>
       </div>
 
@@ -561,14 +560,14 @@
         </div>
         <div class="team-node terra" style="bottom: 12%; right: 5%;">
           <span class="nh">secure</span>
-          <span class="nn">cloud mcp</span>
+          <span class="nn">external mcp</span>
           <span class="ns">token access</span>
         </div>
 
         <div class="team-core">
-          <span class="label">team mirror</span>
-          <div class="title">synced team knowledge</div>
-          <div class="meta">local stays source of truth</div>
+          <span class="label">team host</span>
+          <div class="title">team storage</div>
+          <div class="meta">direct connections, no cloud mirror</div>
         </div>
       </div>
     </div>
@@ -731,16 +730,10 @@
         <p>Code intelligence for your agents — file anatomy before a read, a navigable project map, and search by what code <em>does</em>. How Myco cuts speculative reads.</p>
         <span class="go">Read guide</span>
       </a>
-      <a class="doc-card" href="/team-sync">
+      <a class="doc-card" href="/team-host">
         <span class="kind">Team</span>
-        <h4>Team sync</h4>
-        <p>Provision a team, have teammates join from the dashboard, include team knowledge in search, and configure cloud embeddings.</p>
-        <span class="go">Read guide</span>
-      </a>
-      <a class="doc-card" href="/cloud-mcp">
-        <span class="kind">Integration</span>
-        <h4>Cloud MCP</h4>
-        <p>Expose your knowledge to Anthropic Managed Agents, N8N workflows, and other cloud-resident agents.</p>
+        <h4>Team Host</h4>
+        <p>Join a teammate's Myco as your Team Host, connect projects, and expose team knowledge to agents that aren't Myco members.</p>
         <span class="go">Read guide</span>
       </a>
       <a class="doc-card" href="/collective">
@@ -800,7 +793,7 @@
   <div class="cta-inner">
     <span class="eyebrow no-bar"><span class="dot"></span>Local-first · Apache 2.0 licensed</span>
     <h2 class="cta-title">Install once. Give your agents a <em>shared nervous system</em>.</h2>
-    <p class="cta-sub">Myco runs entirely on your machine by default — no account, no vendor lock-in. Layer Team Sync and a Collective on top when you're ready.</p>
+    <p class="cta-sub">Myco runs entirely on your machine by default — no account, no vendor lock-in. Join a Team Host when you're ready to share knowledge across the team.</p>
     <div style="display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top: 10px;">
       <a class="btn btn-primary btn-lg" href="#install">Get started<span class="chev">→</span></a>
       <a class="btn btn-outline btn-lg" href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">Star on GitHub</a>
@@ -824,7 +817,7 @@
         <h5>Product</h5>
         <a href="#how">What it does</a>
         <a href="#lifecycle">Skill lifecycle</a>
-        <a href="#team">Team sync</a>
+        <a href="#team">Team Host</a>
         <a href="#agents">Supported agents</a>
       </div>
       <div class="footer-col">

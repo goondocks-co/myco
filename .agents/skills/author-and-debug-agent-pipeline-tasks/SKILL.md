@@ -142,7 +142,7 @@ These are intentionally separate tasks with separate `enabled` flags. Merging th
 1. **Candidate lookup** — checks active skill candidates for the same topic
 2. **Name match** — exact name comparison against existing skills
 3. **Description token overlap** — token-frequency similarity against all active skills
-4. **Cosine embedding similarity** — vector search in the `myco-skills` Vectorize namespace
+4. **Cosine embedding similarity** — vector search in the local `myco-skills` vector namespace (sqlite-vec, not Cloudflare Vectorize)
 
 The embedding search uses `vault_search_semantic` with `namespace: 'skills'`. If any existing skill exceeds the cosine threshold (~0.85), the evolution is blocked. **Critical**: always specify `namespace: 'skills'` — omitting it searches the default spore namespace instead.
 

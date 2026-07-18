@@ -57,17 +57,9 @@ export const MS_PER_HOUR = 3_600_000;
 /** Primary Myco npm package name. */
 export const NPM_PACKAGE_NAME = '@goondocks/myco';
 
-/** Optional standalone Myco Team package name. */
-export const TEAM_PACKAGE_NAME = '@goondocks/myco-team';
-
-/** Optional standalone Myco Collective package name. */
-export const COLLECTIVE_PACKAGE_NAME = '@goondocks/myco-collective';
-
 /** Global-package update targets shown in the Operations UI. */
 export const UPDATE_PACKAGES = [
   { id: 'myco', packageName: NPM_PACKAGE_NAME, displayName: 'Myco' },
-  { id: 'myco-team', packageName: TEAM_PACKAGE_NAME, displayName: 'Myco Team' },
-  { id: 'myco-collective', packageName: COLLECTIVE_PACKAGE_NAME, displayName: 'Myco Collective' },
 ] as const;
 export type UpdatePackageId = (typeof UPDATE_PACKAGES)[number]['id'];
 

@@ -5,7 +5,6 @@ import { PageLoading } from '../components/ui/page-loading';
 import { PageContainer } from '../components/ui/page-container';
 import { GroveIdentityCard } from '../components/grove/GroveIdentityCard';
 import { DaemonStatusCard } from '../components/grove/DaemonStatusCard';
-import { TeamStatusCard } from '../components/grove/TeamStatusCard';
 import { GroveProjectsPanel } from '../components/grove/GroveProjectsPanel';
 import { GroveActiveNowPanel } from '../components/grove/GroveActiveNowPanel';
 import { GroveVaultSummary } from '../components/grove/GroveVaultSummary';
@@ -33,7 +32,7 @@ export default function GroveDashboard() {
         subtitle="Database boundary for this set of projects. Embedding, vault, backups, and team sync are all Grove-scoped."
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-3 lg:grid-cols-2">
         <GroveIdentityCard
           name={grove.name}
           slug={grove.slug}
@@ -45,7 +44,6 @@ export default function GroveDashboard() {
           port={daemon.daemon.port}
           version={daemon.daemon.version}
         />
-        <TeamStatusCard groveSlug={grove.slug} />
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">

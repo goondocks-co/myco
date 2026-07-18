@@ -312,17 +312,6 @@ const UpdateSchema = z.object({
   channel: z.enum(['stable', 'beta']).default('stable'),
 });
 
-export const TeamSchema = z.object({
-  /** Whether team sync is enabled. */
-  enabled: z.boolean().default(false),
-  /** Cloudflare Worker URL for team sync. */
-  worker_url: z.string().url().optional(),
-  /** Team identifier for sync grouping. */
-  team_id: z.string().optional(),
-  /** Sync interval in minutes. */
-  interval_minutes: z.number().int().min(1).max(1440).default(15),
-});
-
 const SkillsSchema = z.object({
   /** Master gate for the Skills capability (survey/generate/evolve tasks). */
   enabled: z.boolean().default(true),
@@ -722,8 +711,6 @@ export const GroveConfigSchema = z.object({
   agent: GroveAgentSchema.default(() => GroveAgentSchema.parse({})),
   release_provenance: GroveReleaseProvenanceSchema.default(() => GroveReleaseProvenanceSchema.parse({})),
   appearance: AppearanceConfigSchema,
-  /** Team sync activation — Grove-scoped per the migration plan. */
-  team: TeamSchema.default(() => TeamSchema.parse({})),
   /**
    * Skill-lifecycle thresholds. Grove-tier: skills are *generated* per
    * project, but these are myco-agent thresholds (survey auto-promote
@@ -859,7 +846,6 @@ export const MycoConfigSchema = z.preprocess(
     backup: BackupSchema.default(() => BackupSchema.parse({})),
     maintenance: MaintenanceSchema.default(() => MaintenanceSchema.parse({})),
     update: UpdateSchema.default(() => UpdateSchema.parse({})),
-    team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
     vault_evolution: VaultEvolutionSchema.default(() => VaultEvolutionSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
@@ -877,7 +863,6 @@ export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;
 export type ScheduleOverride = z.infer<typeof ScheduleOverrideSchema>;
 // ContextSchema removed in config_version 8 (unified into CortexSchema).
 export type BackupConfig = z.infer<typeof BackupSchema>;
-export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
 export type VaultEvolutionConfig = z.infer<typeof VaultEvolutionSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsSchema>;

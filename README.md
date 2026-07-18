@@ -38,7 +38,7 @@ That knowledge also evolves. Myco is not an ever-growing static archive. It keep
 - **Routes context to agents** — session briefings, relevant spores, and Canopy file anatomy surface when agents need them.
 - **Maps the codebase** — [Canopy](docs/canopy.md) gives agents semantic awareness of files before they open them.
 - **Learns workflows** — repeated procedures become reviewed [skills](docs/skills.md) that every connected agent can follow.
-- **Shares across teams** — optional [Team Sync](docs/team-sync.md) mirrors each teammate's Grove data through Cloudflare and exposes it to cloud agents through a secure MCP server while local databases remain the source of truth.
+- **Shares across teams** — an optional [Team Host](docs/team-host.md) connection routes a project's knowledge to a teammate's Myco directly and exposes it to non-member agents through a secure read-only MCP endpoint, no cloud account required.
 
 ## Install
 
@@ -71,9 +71,8 @@ Myco keeps itself up to date **automatically** — the local service self-update
 
 No `npm update` is needed. (A `myco upgrade` CLI exists for advanced or scripted use, with `--channel stable|beta`, but the automatic and dashboard paths are the normal way to stay current.) Upgrading from an older per-project install archives legacy Myco-owned files the next time Myco starts. See [Upgrading Myco](docs/upgrade.md).
 
-Optional operator packages are only needed for infrastructure administration (these remain npm/Node tools and require Node 22+):
+Team Host operator commands (`myco host`, `myco join`, `myco attach`) are part of the main binary and upgrade with it — no separate package. One optional operator package remains for infrastructure administration (an npm/Node tool that requires Node 22+):
 
-- `@goondocks/myco-team` — provision and manage a team's sync Worker (operators only; teammates join from the dashboard)
 - `@goondocks/myco-collective` — deploy and manage a Myco Collective
 
 ## How it works
@@ -136,20 +135,20 @@ Myco integrates with coding agents through **symbionts**. Each symbiont connects
 
 Supported symbionts include Claude Code, Cursor, Codex, Cline, Copilot, Antigravity, Devin Desktop, OpenCode, and Pi. See the [Symbiont docs](docs/symbionts.md) for agent-specific details.
 
-### Team sync
+### Team Host
 
-Share knowledge across machines and teammates. One person provisions the team's cloud infrastructure once; everyone else joins from the dashboard with nothing extra to install:
+Share knowledge across machines and teammates with no cloud account. One teammate's Myco becomes the team's shared home; everyone else joins it directly from the dashboard:
 
 ```bash
-npm install -g @goondocks/myco-team wrangler && wrangler login
-myco-team create --name "Acme Core"   # deploys the team Worker; prints a Worker URL + Team key
+myco host enable --server-url https://your-host:8080   # on the host machine
+myco join <host> --key <one-time-key> --server-url <url> --overlay-address <address>   # on a member's machine
 ```
 
-Share the Worker URL and Team key with teammates. Each teammate opens the **Team** page in their dashboard, joins the team with those two values, and assigns the projects they want to sync — no `myco-team` package needed. From then on, each assigned project's knowledge syncs automatically: new spores, session summaries, plans, and graph edges become available to the team in the background, and search returns both local and team knowledge.
+Both steps are also available from the dashboard's **Team** page — enabling a host prints a ready-to-paste join command, and joining is a form with the same four fields. Once joined, connect the projects you want the team to share (Team page, or `myco attach [path] --host <id>`). From then on, each connected project's knowledge reaches the host directly: new spores, session summaries, plans, and graph edges become available to the team in the background, and search returns both local and team knowledge.
 
-Local Grove databases remain the source of truth. The cloud store is a queryable mirror of connected teammates' Grove data, and each record carries a machine identity for attribution.
+Local Grove databases remain the source of truth. Joined machines and the host talk over a direct, encrypted overlay connection, and each record carries a machine identity for attribution.
 
-Runs on the Cloudflare free tier. See the [Team Sync docs](docs/team-sync.md) for the full guide.
+See the [Team Host docs](docs/team-host.md) for the full guide, including running a team server and the external read-only MCP endpoint for agents that aren't Myco members.
 
 ### Collective
 
@@ -164,9 +163,9 @@ myco-collective install
 
 The Collective gives you a worker-hosted admin UI for connected projects, shared settings, and cross-project search. See the [Collective guide](docs/collective.md).
 
-### Cloud MCP Server
+### External read-only MCP
 
-Team Sync also deploys a read-only **Cloud MCP server** on the same Worker — a secure Streamable HTTP endpoint that exposes synced Grove intelligence to cloud agents like Anthropic Managed Agents, OpenAI Workflows, and N8N. Connect any tool that speaks MCP and it gets the same project context your local agents already have. See the [Cloud MCP docs](docs/cloud-mcp.md) for the tool reference and setup.
+A Team Host can also expose a read-only, six-tool MCP endpoint over a secure public URL — for agents that aren't Myco members, like managed agents and automation platforms. Connect any tool that speaks MCP and it gets read access to the same team knowledge your local agents already have. See the [Team Host docs](docs/team-host.md#external-read-only-mcp) for the tool reference and setup.
 
 ### Skills — automated curation, not just memory
 

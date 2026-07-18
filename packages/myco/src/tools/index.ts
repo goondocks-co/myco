@@ -3,7 +3,6 @@ import path from 'node:path';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import type { Database } from '@myco/db/client.js';
 import { ToolError } from './error.js';
-import { isCollectiveEnabled } from './shared.js';
 import { isCallerTenancy, requireProjectId, type MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   readPivot,
@@ -12,12 +11,7 @@ import {
 } from './call-context.js';
 import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
 import {
-  COLLECTIVE_TOOL_DEFINITIONS,
   TOOL_AGENT,
-  TOOL_COLLECTIVE_PROJECT,
-  TOOL_COLLECTIVE_PROJECTS,
-  TOOL_COLLECTIVE_SEARCH,
-  TOOL_COLLECTIVE_SETTINGS,
   TOOL_CORTEX,
   TOOL_DEFINITIONS,
   TOOL_PLANS,
@@ -35,7 +29,6 @@ export interface MycoTools {
 }
 
 export interface MycoToolsOptions {
-  collectiveEnabled?: () => Promise<boolean>;
   requestContext?: MycoRequestContext;
   /**
    * Optional resolver for the per-request DB handle. When provided, tool
@@ -46,8 +39,6 @@ export interface MycoToolsOptions {
    */
   resolveDatabase?: (databasePath: string) => Database;
 }
-
-const COLLECTIVE_TOOL_NAMES = new Set(COLLECTIVE_TOOL_DEFINITIONS.map((tool) => tool.name));
 
 interface JsonSchemaProperty {
   type?: string | readonly string[];
@@ -116,32 +107,6 @@ const HANDLERS = new Map<string, ToolLoader>([
       },
     };
   }],
-  [TOOL_COLLECTIVE_SEARCH, async () => {
-    const { handleCollectiveSearch } = await import('./collective.js');
-    return {
-      handle: (input, client) => handleCollectiveSearch(input as unknown as Parameters<typeof handleCollectiveSearch>[0], client),
-      summarize: (input) => ({ query: input.query }),
-    };
-  }],
-  [TOOL_COLLECTIVE_PROJECTS, async () => {
-    const { handleCollectiveProjects } = await import('./collective.js');
-    return {
-      handle: (_input, client) => handleCollectiveProjects(client),
-    };
-  }],
-  [TOOL_COLLECTIVE_PROJECT, async () => {
-    const { handleCollectiveProject } = await import('./collective.js');
-    return {
-      handle: (input, client) => handleCollectiveProject(input as unknown as Parameters<typeof handleCollectiveProject>[0], client),
-      summarize: (input) => ({ project: input.project }),
-    };
-  }],
-  [TOOL_COLLECTIVE_SETTINGS, async () => {
-    const { handleCollectiveSettings } = await import('./collective.js');
-    return {
-      handle: (_input, client) => handleCollectiveSettings(client),
-    };
-  }],
   [TOOL_AGENT, async () => {
     const { handleMycoAgent } = await import('./agent.js');
     return {
@@ -187,7 +152,6 @@ function requireCallerTenancy(context: MycoRequestContext | undefined): MycoRequ
 
 export function createMycoTools(vaultDir: string, client: DaemonClient, options: MycoToolsOptions = {}): MycoTools {
   let logDirReady = false;
-  let collectiveProbe: Promise<boolean> | null = null;
   let logDirCache: string | null = null;
 
   // Resolve the daemon log dir lazily and only once we have a guarded
@@ -236,14 +200,6 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     }
   }
 
-  // Memoize per-instance: the dispatcher hits this on every callTool, and
-  // the collective flag is stable for the lifetime of a tools instance.
-  function collectiveEnabled(): Promise<boolean> {
-    if (options.collectiveEnabled) return options.collectiveEnabled();
-    if (!collectiveProbe) collectiveProbe = isCollectiveEnabled(client);
-    return collectiveProbe;
-  }
-
   function normalizeInput(args: unknown): ToolInput {
     if (args === undefined || args === null) return {};
     if (typeof args === 'object' && !Array.isArray(args)) return args as ToolInput;
@@ -251,18 +207,13 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   }
 
   async function getAvailableDefinitions(): Promise<ToolDefinition[]> {
-    return await collectiveEnabled()
-      ? [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]
-      : TOOL_DEFINITIONS;
+    return TOOL_DEFINITIONS;
   }
 
   async function getAvailableDefinition(name: string): Promise<ToolDefinition> {
     const available = await getAvailableDefinitions();
     const definition = available.find((tool) => tool.name === name);
     if (definition) return definition;
-    if (COLLECTIVE_TOOL_NAMES.has(name)) {
-      throw new ToolError('tool_unavailable', `Tool unavailable: ${name}`);
-    }
     throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
   }
 
@@ -453,13 +404,8 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
    * input carries `grove_id` and/or `project_id` (J3), pivot scope per
    * the call-context resolver. Otherwise return the closed-over base
    * context unchanged.
-   *
-   * Tools that don't accept scope-pivot fields (`collective_*`) skip
-   * resolution — those fields aren't in their schemas, so they were
-   * already rejected by `validateInput`.
    */
   function effectiveContextFor(base: MycoRequestContext, name: string, input: ToolInput): MycoRequestContext {
-    if (name.startsWith('collective_')) return base;
     return resolveCallContext(base, readPivot(input));
   }
 
