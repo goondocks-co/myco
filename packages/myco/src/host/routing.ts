@@ -254,8 +254,13 @@ const TEAM_WRITE = 'Team configuration';
  * is something OTHER than plain proxy-to-host. Everything not listed defaults to
  * `serve`. Rows mirror the scope-map §1 sections; families are matched by prefix
  * where the whole family shares a stamp.
+ *
+ * Exported so the route-stamp completeness guard
+ * (`tests/meta/route-stamp-completeness.test.ts`) can enumerate every rule and
+ * assert each one actually wins `matchRouteRule` for at least one registered
+ * route — a rule that wins for none is a stale entry no live route depends on.
  */
-const ROUTE_RULES: RouteRule[] = [
+export const ROUTE_RULES: readonly RouteRule[] = [
   // --- collect: origin-side capture (scope-map §1a). Proxied; the collector
   //     contract (buffer-then-drain) is the proxy's job (Task 1.3). ---
   { method: 'POST', pattern: '/events', stamp: 'collect', capability: COLLECTION },
@@ -334,10 +339,7 @@ const ROUTE_RULES: RouteRule[] = [
   // --- team-write: the served grove's team config/secrets (server-mode design
   //     spec §6). Proxied to the host exactly like `serve`/`collect` — the
   //     host is authoritative for the served grove's shared config, so a
-  //     member's Team page writes reach it over the SAME overlay proxy path.
-  //     These are EXACT/`:param` matches, so they win over the coarser
-  //     `/api/team/*` prefix rules below (legacy team-sync, still
-  //     localhost-only) under `matchRouteRule`'s exact > param > prefix tiering. ---
+  //     member's Team page writes reach it over the SAME overlay proxy path. ---
   { method: 'GET', pattern: '/api/team/config', stamp: 'team-write', capability: TEAM_WRITE },
   { method: 'PUT', pattern: '/api/team/config', stamp: 'team-write', capability: TEAM_WRITE },
   { method: 'PUT', pattern: '/api/team/secrets/:provider', stamp: 'team-write', capability: TEAM_WRITE },
@@ -406,13 +408,6 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', pattern: '/api/restore/status', stamp: 'localhost-only', capability: CONFIG },
   { method: 'GET', pattern: '/api/backups', stamp: 'localhost-only', capability: CONFIG },
   { method: 'GET', pattern: '/api/notifications/registry', stamp: 'localhost-only', capability: 'Viewing' },
-  // team-sync + collective clusters (§1e): machine-global connectivity, distinct
-  // from team-host. Coarse localhost-only for v1 — an attached project's per-Grove
-  // sync ops have no local Grove DB and fail closed; enrollment/status is machine-wide.
-  { method: 'GET', pattern: '/api/team/*', stamp: 'localhost-only', capability: 'team-sync' },
-  { method: 'POST', pattern: '/api/team/*', stamp: 'localhost-only', capability: 'team-sync' },
-  { method: 'GET', pattern: '/api/collective/*', stamp: 'localhost-only', capability: 'collective' },
-  { method: 'POST', pattern: '/api/collective/*', stamp: 'localhost-only', capability: 'collective' },
 
   // --- localhost-only: content-claim MATERIALIZATION, the disk-write step
   //     (design: docs/superpowers/specs/2026-07-09-content-claim-system-design.md
@@ -453,6 +448,23 @@ const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/api/host-membership/attach', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/host-membership/detach', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'GET', pattern: '/api/host-membership/status', stamp: 'localhost-only', capability: HOST_ADMIN },
+  // Member-side live reachability + protocol-skew probe (Team Host E-4 W1
+  // Task T4, decision-ef693c71 D3). Reports on THIS machine's own view of
+  // every host it has joined — never proxied, never meaningful to answer on
+  // another machine's behalf, same posture as the mutation routes above.
+  { method: 'GET', pattern: '/api/host-membership/health', stamp: 'localhost-only', capability: HOST_ADMIN },
+
+  // --- localhost-only: Team Host operator-side serving status (Task T4,
+  //     decision-ef693c71 D3). Reports THIS machine's OWN host-serve
+  //     enablement/runtime state (host-serve.ts) — machine-scoped, no
+  //     project/Grove tenancy header to proxy against, and never meaningful
+  //     to answer on behalf of another machine. Unlike the served grove's
+  //     team-write config surface (`/api/team/*`, which a NON-host member
+  //     reaches by proxy), this route answers "is THIS box serving at all"
+  //     and is therefore never a valid overlay surface — a bearer-holding
+  //     member has no business asking a host about its own serving posture
+  //     over the connection that posture gates. ---
+  { method: 'GET', pattern: '/api/host-serve/status', stamp: 'localhost-only', capability: HOST_ADMIN },
 ];
 
 /**
@@ -591,9 +603,14 @@ function pathMatches(pattern: string, pathname: string): boolean {
  *  applies the `serve` default). Exported so the route-stamp completeness guard
  *  (`tests/meta/route-stamp-completeness.test.ts`) can distinguish an EXPLICIT
  *  stamp from a serve-default fall-through — the latter is what silently exposes a
- *  new machine/maintenance route over the overlay. */
-export function matchRouteRule(method: string, pathname: string): RouteRule | undefined {
-  const candidates = ROUTE_RULES.filter((rule) => rule.method === method);
+ *  new machine/maintenance route over the overlay.
+ *
+ *  `rules` defaults to the production {@link ROUTE_RULES} table; every production
+ *  caller omits it. The optional param exists so the ROUTE_RULES staleness gate
+ *  (same test file) can run a synthetic rules+routes fixture through this SAME
+ *  precedence logic — the staleness predicate must never reimplement it. */
+export function matchRouteRule(method: string, pathname: string, rules: readonly RouteRule[] = ROUTE_RULES): RouteRule | undefined {
+  const candidates = rules.filter((rule) => rule.method === method);
   const tiers: ((pattern: string) => boolean)[] = [
     (p) => !p.includes(':') && !p.endsWith('/*'),
     (p) => p.includes(':'),

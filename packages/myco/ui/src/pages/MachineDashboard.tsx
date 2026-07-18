@@ -6,6 +6,7 @@ import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { GrovesOverviewCard } from '../components/operations/GrovesOverviewCard';
 import { ProjectsActivityCard } from '../components/operations/ProjectsActivityCard';
+import { TeamHostServingCard } from '../components/operations/TeamHostServingCard';
 import { cn } from '../lib/cn';
 
 /* ---------- Helpers ---------- */
@@ -83,6 +84,7 @@ export default function MachineDashboard() {
       </div>
 
       <DaemonStatsCard />
+      <TeamHostServingCard />
       <GrovesOverviewCard />
       <ProjectsActivityCard />
     </PageContainer>

@@ -21,11 +21,13 @@ import {
   loadGroveRecord,
   registerProjectInGrove,
   renameGrove,
+  resolveAttachRefHomeGroveId,
   resolveGrove,
   setDefaultGrove,
   unarchiveProjectInGrove,
 } from '@myco/grove/registry.js';
 import { createGroveId } from '@myco/grove/ids.js';
+import type { AttachRef } from '@myco/host/registry.js';
 
 let home: string;
 
@@ -396,6 +398,45 @@ describe('Grove registry', () => {
 
       expect(loadGroveRecord(a.id, home)).toBeNull();
       expect(getDefaultGroveId(home)).toBe(b.id);
+    });
+  });
+
+  describe('resolveAttachRefHomeGroveId (E-4 local-view requirement — read-time resolution)', () => {
+    function ref(localGroveId?: string): Pick<AttachRef, 'local_grove_id'> {
+      return { local_grove_id: localGroveId };
+    }
+
+    it('a ref with no local_grove_id (legacy/absent) resolves to the current default Grove', () => {
+      const defaultGrove = createGrove('Default', home);
+
+      expect(resolveAttachRefHomeGroveId(ref(undefined), home)).toBe(defaultGrove.id);
+    });
+
+    it('a dangling local_grove_id (the chosen Grove was deleted after attach) falls back to the current default Grove', () => {
+      const defaultGrove = createGrove('Default', home);
+      const deleted = createGrove('Gone', home);
+      deleteGrove(deleted.id, {}, home);
+
+      expect(resolveAttachRefHomeGroveId(ref(deleted.id), home)).toBe(defaultGrove.id);
+    });
+
+    it('a valid local_grove_id resolves to itself, even when it is not the default Grove', () => {
+      createGrove('Default', home);
+      const other = createGrove('Other', home);
+
+      expect(resolveAttachRefHomeGroveId(ref(other.id), home)).toBe(other.id);
+    });
+
+    it('resolves to null (never creates a Grove) when the machine has no Groves at all yet — dangling or absent alike', () => {
+      expect(listGroves(home)).toEqual([]);
+
+      expect(resolveAttachRefHomeGroveId(ref(undefined), home)).toBeNull();
+      expect(resolveAttachRefHomeGroveId(ref(createGroveId()), home)).toBeNull();
+
+      // Pure read: no Grove was minted as a side effect of resolving, in
+      // either case — the empty registry is exactly as empty as it started.
+      expect(listGroves(home)).toEqual([]);
+      expect(fs.existsSync(path.join(home, 'groves'))).toBe(false);
     });
   });
 });

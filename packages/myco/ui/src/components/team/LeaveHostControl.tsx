@@ -1,0 +1,39 @@
+import { useState } from 'react';
+import { useLeaveHost, type HostMembershipHost } from '../../hooks/use-host-membership';
+import { leaveHostConfirmMessage, membershipErrorCopy } from '../../lib/membership-copy';
+
+/**
+ * Leave-host action — confirm, mutate, inline error. Shared by the joined-
+ * hosts list (`HostCard`, `pages/Team/HostTab.tsx`) and the host detail
+ * slideout (`HostDetailPanel.tsx`) so leaving a host is ONE flow regardless
+ * of which surface it's triggered from (E-4 W1 Task T5 requirement — reuse,
+ * don't fork the confirm string or the mutation call).
+ */
+export function LeaveHostControl({ host }: { host: HostMembershipHost }) {
+  const leave = useLeaveHost();
+  const [error, setError] = useState<string | null>(null);
+
+  const handleLeave = async () => {
+    if (!window.confirm(leaveHostConfirmMessage(host.label, host.projects.length))) return;
+    setError(null);
+    try {
+      await leave.mutateAsync(host.host_id);
+    } catch (err) {
+      setError(membershipErrorCopy(err));
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-2">
+      {error && <p className="text-xs text-terracotta m-0">{error}</p>}
+      <button
+        type="button"
+        disabled={leave.isPending}
+        onClick={handleLeave}
+        className="ml-auto text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50"
+      >
+        {leave.isPending ? 'Leaving…' : 'Leave host'}
+      </button>
+    </div>
+  );
+}

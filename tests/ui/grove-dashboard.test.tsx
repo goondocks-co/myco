@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { vi } from '../helpers/vi-shim.js';
+import type { HostServeStatusResponse } from '../../packages/myco/ui/src/hooks/use-host-serve-status';
 
 // Mock every hook the dashboard composes — minimal happy-path values.
 
@@ -109,6 +111,14 @@ mock.module('../../packages/myco/ui/src/hooks/use-groves', () => ({
   }),
 }));
 
+// Default: this machine isn't serving, so TeamHostServedCard (E-4 W1 Task
+// T6) renders null and Row 1 stays at its usual 2-item content inside the
+// (now 3-col) grid. Overridden per-test for the served-match case below.
+const useHostServeStatusMock = vi.fn();
+mock.module('../../packages/myco/ui/src/hooks/use-host-serve-status', () => ({
+  useHostServeStatus: (...args: unknown[]) => useHostServeStatusMock(...args),
+}));
+
 import GroveDashboard from '../../packages/myco/ui/src/pages/GroveDashboard';
 
 function wrap() {
@@ -123,6 +133,11 @@ function wrap() {
 }
 
 describe('GroveDashboard', () => {
+  beforeEach(() => {
+    useHostServeStatusMock.mockReset();
+    useHostServeStatusMock.mockReturnValue({ data: { serving: false }, isLoading: false, isError: false });
+  });
+
   it('renders identity strip + projects + active-now + vault sections', async () => {
     render(wrap());
     await waitFor(() => {
@@ -132,5 +147,41 @@ describe('GroveDashboard', () => {
       expect(screen.getAllByText(/Vault/i).length).toBeGreaterThan(0);
       expect(screen.getAllByText(/Backup/i).length).toBeGreaterThan(0);
     });
+  });
+
+  it('keeps Row 1 at lg:grid-cols-3 (restored after the legacy TeamStatusCard removal) with 2 items when TeamHostServedCard renders null', async () => {
+    const { container } = render(wrap());
+    await waitFor(() => {
+      expect(screen.getAllByText('Test Grove').length).toBeGreaterThan(0);
+    });
+    const row1 = container.querySelector('.lg\\:grid-cols-3');
+    expect(row1).not.toBeNull();
+    // The grid handles a null 3rd child gracefully — no explicit 2-col
+    // fallback needed; CSS grid just leaves the 3rd column's row empty.
+    expect(row1?.children.length).toBe(2);
+  });
+
+  it('renders TeamHostServedCard in Row 1 when this machine serves the viewed Grove (served_grove_id === grove.id)', async () => {
+    const servingFixture: HostServeStatusResponse = {
+      serving: true,
+      served_grove_id: 'g1',
+      served_grove_name: 'Test Grove',
+      overlay_address: '100.64.1.2',
+      host_id: 'host_abc',
+      label: 'Mac Studio',
+      external_mcp: { enabled: false, port: 4919, bound: null, token_present: false },
+      bearer_present: true,
+      health: { designation: 'ok', backup: 'ok', key: 'not_applicable', mcp_coherence: 'not_enabled' },
+    };
+    useHostServeStatusMock.mockReturnValue({ data: servingFixture, isLoading: false, isError: false });
+
+    const { container } = render(wrap());
+    await waitFor(() => {
+      expect(screen.getByText('Served to your team by this machine')).toBeInTheDocument();
+    });
+
+    const row1 = container.querySelector('.lg\\:grid-cols-3');
+    expect(row1).not.toBeNull();
+    expect(row1?.children.length).toBe(3);
   });
 });

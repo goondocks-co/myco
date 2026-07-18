@@ -1047,6 +1047,13 @@ export class DaemonServer {
       // Inbound daemon resolution: a request must never resolve to (and
       // then open) a Grove served by the other daemon variant.
       enforceGroveOwnership: true,
+      // Member local dispatch: a `localhost-only` route classified `local`
+      // for an ATTACHED project (the member's active UI selection) carries
+      // (localGroveId, attachedProjectId) but has no local Grove row. Tolerate
+      // it into a display-only, grove-scoped context so machine-scoped surfaces
+      // serve instead of 404ing. Only this member-dispatch seam sets it; the
+      // `/mcp` transport, external listener, and URL tenancy leave it off.
+      tolerateAttachedProject: true,
     });
   }
 

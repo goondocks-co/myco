@@ -44,6 +44,25 @@ export interface AttachRef {
    * created before this field simply lack it.
    */
   root?: string;
+  /**
+   * The member's own LOCAL Grove chosen, at attach time, as this project's
+   * display home (E-4 local-view requirement, decision-ef693c71) — an
+   * EXPLICIT member choice, never inferred from request context: the attach
+   * handler never reads request context, and an attached project never had a
+   * local Grove registry row to infer one from (the never-materialize
+   * invariant forbids minting one just to answer this). Resolved at attach
+   * time by `attachCommand` (`host/attach-command.ts`), which validates an
+   * explicit value or defaults to the machine's current default Grove via a
+   * pure read.
+   *
+   * DISPLAY-ONLY: never consulted for capability config, capture routing, or
+   * any other tenancy decision — those stay keyed on `grove_id` (the host's
+   * served Grove). Optional: absent on refs recorded before this field
+   * existed, or possibly dangling if the chosen Grove is later deleted;
+   * `resolveAttachRefHomeGroveId` (`grove/registry.ts`) is the read-time
+   * fallback for both cases.
+   */
+  local_grove_id?: string;
 }
 
 export interface HostRecord {
@@ -67,7 +86,23 @@ export interface HostRecord {
   projects: AttachRef[];
 }
 
-/** Read every host record from the machine-global registry. Missing/unparseable files are skipped, not thrown. */
+/**
+ * True when `value` has the minimum shape every reader below relies on
+ * (`host_id` as a string, `projects` as an array) — the two fields
+ * `resolveAttach`'s reverse lookup and every route-classification consumer
+ * dereference unconditionally. A record that parses as valid JSON but fails
+ * this check (hand-edited, truncated, or written by an incompatible future
+ * version) is treated the same as unparseable JSON: skipped, not thrown,
+ * since a single corrupt host.json must never 500 every consumer (groves
+ * merge, status, health, hint) that reads across every host record.
+ */
+function isHostRecordShape(value: unknown): value is HostRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.host_id === 'string' && Array.isArray(record.projects);
+}
+
+/** Read every host record from the machine-global registry. Missing/unparseable files, and records that parse but fail the minimum HostRecord shape, are skipped, not thrown. */
 export function readHostRegistry(): HostRecord[] {
   const hostsDir = resolveHostsDir();
   if (!fs.existsSync(hostsDir)) return [];
@@ -77,8 +112,11 @@ export function readHostRegistry(): HostRecord[] {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const configPath = path.join(hostsDir, entry.name, 'host.json');
-    try { results.push(JSON.parse(fs.readFileSync(configPath, 'utf-8')) as HostRecord); }
-    catch { /* missing/unparseable — skip */ }
+    let parsed: unknown;
+    try { parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')); }
+    catch { continue; /* missing/unparseable — skip */ }
+    if (!isHostRecordShape(parsed)) continue; // valid JSON, wrong shape — skip
+    results.push(parsed);
   }
   return results;
 }
@@ -152,10 +190,11 @@ export class ProjectRegisteredLocallyError extends Error {
 
 /**
  * Attach a project to a host. Idempotent re-attach to this same host
- * backfills `ref.root` (see below) rather than a bare no-op. Throws if the
- * host is unknown, if the project still has a LOCAL Grove registry row (see
- * {@link ProjectRegisteredLocallyError}), or if the project is already
- * attached to a different host (see {@link ProjectAttachedToOtherHostError}).
+ * backfills `ref.root` and `ref.local_grove_id` (see below) rather than a
+ * bare no-op. Throws if the host is unknown, if the project still has a
+ * LOCAL Grove registry row (see {@link ProjectRegisteredLocallyError}), or if
+ * the project is already attached to a different host (see
+ * {@link ProjectAttachedToOtherHostError}).
  */
 export function attachProject(
   hostId: string,
@@ -167,20 +206,39 @@ export function attachProject(
 
   const existingIdx = record.projects.findIndex((p) => p.project_id === ref.project_id);
   if (existingIdx !== -1) {
-    // Already attached to THIS host — converges as a no-op EXCEPT for
-    // `root`. Records created before `root` was added to `AttachRef` (or
-    // whose checkout has since moved) sit forever without it unless a
-    // re-attach backfills it — and `member-project-context.ts`'s
-    // root-mismatch reconciliation silently skips any ref with no `root`
-    // (`attach.ref.root && …`), so a stuck record never gets validated
-    // against the caller's `project_root`. `grove_id` is deliberately NOT
-    // refreshed here — `attachCommand` treats a Grove change on re-attach
-    // as requiring an explicit detach first, and this function must not
-    // silently move which Grove serves the project.
+    // Already attached to THIS host — converges as a no-op EXCEPT for two
+    // backfill-only fields. `root`: records created before it was added to
+    // `AttachRef` (or whose checkout has since moved) sit forever without it
+    // unless a re-attach backfills/refreshes it — and
+    // `member-project-context.ts`'s root-mismatch reconciliation silently
+    // skips any ref with no `root` (`attach.ref.root && …`), so a stuck
+    // record never gets validated against the caller's `project_root`. Root
+    // genuinely changes (a checkout moves), so it REFRESHES on every
+    // differing value, not just when absent.
+    //
+    // `local_grove_id` backfills the same way for a legacy ref (recorded
+    // before the field existed) but, unlike `root`, never REFRESHES an
+    // already-present value — it is an explicit member choice "captured at
+    // attach time" (decision-ef693c71), so a later re-attach (e.g. an
+    // idempotent CLI re-run, which never passes an explicit value and would
+    // otherwise re-resolve to whatever the machine's default happens to be
+    // NOW) must not silently downgrade a choice already on record. Changing
+    // an existing `local_grove_id` is a distinct, not-yet-built operation,
+    // not a side effect of re-attach.
+    //
+    // `grove_id` is deliberately NOT refreshed here at all — `attachCommand`
+    // treats a Grove change on re-attach as requiring an explicit detach
+    // first, and this function must not silently move which Grove serves
+    // the project.
     const existingRef = record.projects[existingIdx];
-    if (ref.root && existingRef.root !== ref.root) {
+    const patch: Partial<AttachRef> = {};
+    if (ref.root && existingRef.root !== ref.root) patch.root = ref.root;
+    if (ref.local_grove_id && existingRef.local_grove_id === undefined) {
+      patch.local_grove_id = ref.local_grove_id;
+    }
+    if (Object.keys(patch).length > 0) {
       const projects = [...record.projects];
-      projects[existingIdx] = { ...existingRef, root: ref.root };
+      projects[existingIdx] = { ...existingRef, ...patch };
       upsertHost({ ...record, projects });
     }
     return;

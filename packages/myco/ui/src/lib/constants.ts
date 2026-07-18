@@ -18,6 +18,7 @@ export const POLL_INTERVALS = {
   CONTENT_CLAIMS: 15_000,
   HOST_MEMBERSHIP: 10_000,
   DRAIN_HEALTH: 15_000,
+  HOST_SERVE_STATUS: 15_000,
 } as const;
 
 export const STALE_TIME = 10_000;
@@ -72,4 +73,34 @@ export function levelDotColor(level: LogLevel): string {
     case 'error': return 'bg-tertiary';
     default:      return 'bg-outline';
   }
+}
+
+/** Badge variant scheme shared by every Team Host health-classifier badge
+ *  (designation/backup/key/mcp_coherence — `host-serve-status.ts`'s
+ *  `health.*`), used by both dashboard cards that consume
+ *  `useHostServeStatus` (`TeamHostServingCard`, `TeamHostServedCard`). */
+export type HealthBadgeVariant = 'default' | 'secondary' | 'warning' | 'destructive';
+
+/**
+ * Map a health-classifier `kind` string to a badge tone. `ok` is positive;
+ * `not_applicable`/`not_enabled` mean "nothing to check here" and get a
+ * muted chip; `dangling`/`not_serving` are the designation kinds meaning
+ * the served-grove reference no longer resolves on this machine — the
+ * most severe case, since it means serving is running against a Grove that
+ * doesn't (or no longer) exists here; every other kind (`stale`,
+ * `missing_key`, `missing_token`, `undesignated`) is a plain warning.
+ */
+export function healthBadgeVariant(kind: string): HealthBadgeVariant {
+  if (kind === 'ok') return 'default';
+  if (kind === 'not_applicable' || kind === 'not_enabled') return 'secondary';
+  if (kind === 'dangling' || kind === 'not_serving') return 'destructive';
+  return 'warning';
+}
+
+/** `missing_key` → "missing key" — a health badge's visible label must
+ *  never leak the classifier's own vocabulary (no "designation"/
+ *  "classifier"/"coherence"), so callers pass the `kind` string through
+ *  this instead of rendering it verbatim. */
+export function humanizeHealthKind(kind: string): string {
+  return kind.replace(/_/g, ' ');
 }

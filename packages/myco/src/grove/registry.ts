@@ -662,6 +662,38 @@ export function resolveAttachForProjectRoot(
 }
 
 /**
+ * Resolve the LOCAL Grove an attach ref should display under (E-4
+ * local-view requirement, decision-ef693c71). Prefers `ref.local_grove_id`
+ * when it still names an existing local Grove; falls back to the machine's
+ * current default Grove otherwise — covering both a legacy ref (recorded
+ * before `local_grove_id` existed) and a dangling one (the chosen Grove was
+ * deleted after attach). Pure read: never calls `ensureDefaultGrove` or any
+ * other write path, so resolving a ref never has a side effect on the local
+ * registry — even when the machine has no Groves at all yet, in which case
+ * this returns `null` rather than creating one.
+ *
+ * Lives here (not `host/registry.ts`, alongside `AttachRef`) because it
+ * needs `loadGroveRecord`/`resolveDefaultGrove`, and `host/registry.ts` must
+ * stay free of a dependency on this module — this module already imports
+ * `host/registry.ts` for {@link resolveAttach}, so the reverse edge would
+ * cycle.
+ *
+ * DISPLAY-ONLY: this never resolves capability config, capture routing, or
+ * any other tenancy decision — those stay keyed on `ref.grove_id` (the
+ * host's served Grove). Exported for the Groves-page merge to group an
+ * attached project's card under the same local Grove this resolves.
+ */
+export function resolveAttachRefHomeGroveId(
+  ref: Pick<AttachRef, 'local_grove_id'>,
+  mycoHome = resolveMycoHome(),
+): string | null {
+  if (ref.local_grove_id && loadGroveRecord(ref.local_grove_id, mycoHome)) {
+    return ref.local_grove_id;
+  }
+  return resolveDefaultGrove(mycoHome)?.id ?? null;
+}
+
+/**
  * Synthesize the tenancy an attached project resolves to WITHOUT registering
  * it locally. The real Grove/project records live on the host; this carrier
  * exists only so `ensureProjectRegistered`'s callers see the

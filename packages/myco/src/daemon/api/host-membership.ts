@@ -12,8 +12,10 @@
  *   POST /api/host-membership/attach   — wraps {@link attachCommand}
  *   POST /api/host-membership/detach   — wraps {@link detachCommand}
  *   GET  /api/host-membership/status   — read-only companion (see below)
+ *   GET  /api/host-membership/health   — live reachability + protocol-skew
+ *                                         probe (see below)
  *
- * All five are `localhost-only` (`host/routing.ts` ROUTE_RULES): every one
+ * All six are `localhost-only` (`host/routing.ts` ROUTE_RULES): every one
  * mutates or reads this MEMBER machine's own local registry/team-home state
  * (`~/.myco-team/hosts/*`) and, for join/leave, provisions a per-user
  * LaunchAgent — machine-local admin actions with no Grove/project scope to
@@ -29,23 +31,39 @@
  * routes — same capability, same stamp, no new state (a straight
  * `readHostRegistry()` projection) — rather than blocking on it.
  *
+ * The GET health route (Team Host E-4 W1 Task T4) is the member-side half of
+ * decision-ef693c71 (D3: on-demand probe, ~15s TTL cache, bounded
+ * concurrency, never background-polled) — it gives the Team page a live
+ * reachability + protocol-skew signal for every joined host without the
+ * dashboard shelling to `myco doctor`. See its own section below for the
+ * probe/cache design.
+ *
  * Wire bodies use snake_case, matching the rest of the API
  * (`content-claims-materialize.ts`, `drain-health.ts`); the orchestration
  * functions underneath use camelCase options objects, so each handler maps
  * between the two explicitly.
  */
 import { loadProjectManifest } from '../../config/project-manifest.js';
+import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION } from '../../constants.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '../../grove/paths.js';
+import { resolveAttachRefHomeGroveId } from '../../grove/registry.js';
 import { attachCommand, detachCommand, type AttachOptions, type DetachOptions } from '../../host/attach-command.js';
 import { resolveTeamHostHintState, teamHostHintMessage } from '../../host/hint.js';
-import { joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
+import { defaultCheckHostReachable, joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
 import { membershipErrorCode } from '../../host/membership-error.js';
-import { readHostRegistry } from '../../host/registry.js';
+import { readHostRegistry, type HostRecord } from '../../host/registry.js';
 import type { DaemonLogger } from '../logger.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
 
-export interface HostMembershipRouteDeps {
+/**
+ * The single deps bag `registerHostMembershipRoutes` threads to every handler
+ * factory in this module (mirroring `team-config.ts`'s `TeamConfigRouteDeps`
+ * pattern) — extends {@link HostMembershipHealthRouteDeps} (declared in the
+ * health section below) so the health route's own test seams travel through
+ * the same bag rather than needing a disjoint second parameter.
+ */
+export interface HostMembershipRouteDeps extends HostMembershipHealthRouteDeps {
   /** Test seam: override the orchestration functions (default the real ones). */
   join?: typeof joinHost;
   leave?: typeof leaveHost;
@@ -180,11 +198,16 @@ export function createHostMembershipAttachHandler(deps: HostMembershipRouteDeps)
     // Duplicating a shallower check here would only produce a worse error for
     // the same input. There is no grove_id to accept: attachCommand sources
     // the Grove from the joined host's own self-report (`served_grove_id`),
-    // never a caller-supplied value.
+    // never a caller-supplied value. `local_grove_id` is a DIFFERENT Grove
+    // concept (the member's own local Grove, E-4 local-view requirement) and
+    // IS accepted from the caller — also NOT validated here, for the same
+    // reason as host_id: attachCommand validates it (coded
+    // `unknown_local_grove`) or defaults it via a pure read when omitted.
     const options: AttachOptions = {
       projectPath: projectRoot,
       hostId: str(body.host_id),
       projectId: str(body.project_id),
+      localGroveId: str(body.local_grove_id),
       mycoHome,
     };
 
@@ -233,7 +256,8 @@ export function createHostMembershipDetachHandler(deps: HostMembershipRouteDeps)
 // status (read-only companion — see module docstring)
 // ---------------------------------------------------------------------------
 
-export function createHostMembershipStatusHandler(): RouteHandler {
+export function createHostMembershipStatusHandler(deps: HostMembershipRouteDeps = {}): RouteHandler {
+  const mycoHome = deps.mycoHome ?? resolveMycoHome();
   return async (req) => {
     const hosts = readHostRegistry().map((record) => ({
       host_id: record.host_id,
@@ -247,6 +271,13 @@ export function createHostMembershipStatusHandler(): RouteHandler {
         grove_id: ref.grove_id,
         project_id: ref.project_id,
         root: ref.root ?? null,
+        // The LOCAL Grove this ref displays under (E-4 local-view
+        // requirement) — RESOLVED, not the raw stored value: `ref.local_grove_id`
+        // when it still names an existing local Grove, else the machine's
+        // current default Grove (`resolveAttachRefHomeGroveId`,
+        // `grove/registry.ts`). `null` only in the bootstrap-only case where
+        // this machine has no default Grove yet.
+        local_grove_id: resolveAttachRefHomeGroveId(ref, mycoHome),
         // Existing-refs mitigation (server-mode design spec §2(c)): once the
         // host's served_grove_id is known, a ref recorded against a
         // DIFFERENT Grove (e.g. attached under the pre-designation
@@ -281,6 +312,140 @@ export function createHostMembershipStatusHandler(): RouteHandler {
 }
 
 // ---------------------------------------------------------------------------
+// health (live reachability + protocol-skew probe — see module docstring)
+// ---------------------------------------------------------------------------
+
+/**
+ * TTL for a per-host reachability probe result (decision-ef693c71 D3: ~15s).
+ * Long enough that a Team page poll — or two callers racing the same host —
+ * never stacks a second overlay dial within one refresh cycle; short enough
+ * that a host coming back up is reflected within roughly one UI cycle.
+ */
+export const HOST_HEALTH_CACHE_TTL_MS = 15_000;
+
+/**
+ * A joined host's protocol-version posture relative to THIS member's current
+ * compat window. `none` — within `[HOST_MIN_COMPAT_VERSION,
+ * HOST_PROTOCOL_VERSION]`; `host_newer` — the host's recorded version is
+ * ABOVE this member's window (this member needs `myco update`); `host_older`
+ * — the host's recorded version is BELOW this member's minimum (that host
+ * needs `myco update`).
+ */
+export type HostProtocolSkew = 'none' | 'host_newer' | 'host_older';
+
+/**
+ * Classify a joined host's RECORDED protocol version — `HostRecord.protocol_version`,
+ * captured from the host's enrollment self-report at join time — against this
+ * member's current compat window. This is a snapshot comparison, not the live
+ * one: the actual per-request negotiation (`overlayVersionRejection`,
+ * `daemon/host-serve.ts`) compares the member's live header against the HOST's
+ * OWN current window at dial time, on the host side. A host that has since
+ * upgraded or downgraded relative to what this member recorded at join shows
+ * the skew here — a heads-up before the member's next real proxy call would
+ * hit a 409 (or silently drift compatible) for real.
+ */
+export function classifyHostProtocolSkew(hostProtocolVersion: number): HostProtocolSkew {
+  if (hostProtocolVersion > HOST_PROTOCOL_VERSION) return 'host_newer';
+  if (hostProtocolVersion < HOST_MIN_COMPAT_VERSION) return 'host_older';
+  return 'none';
+}
+
+interface HostHealthEntry {
+  host_id: string;
+  label: string;
+  reachable: boolean | null;
+  checked_at: string;
+  protocol_skew: HostProtocolSkew;
+}
+
+export interface HostMembershipHealthRouteDeps {
+  /** Test seam: override the reachability probe (default the real overlay dial). */
+  checkReachable?: typeof defaultCheckHostReachable;
+  /** Test seam: override the registry read. */
+  readRegistry?: typeof readHostRegistry;
+  /** Test seam: override the probe TTL (default {@link HOST_HEALTH_CACHE_TTL_MS}). */
+  ttlMs?: number;
+  /** Test seam: current-time source, for TTL determinism. */
+  now?: () => number;
+}
+
+/**
+ * `GET /api/host-membership/health` — live reachability + protocol-skew for
+ * every joined host, request-driven only (never a timer/background job — see
+ * module docstring, decision-ef693c71 D3).
+ *
+ * Per-host TTL cache + single-flight, both scoped to the closure returned
+ * here (one instance per daemon process, matching every other route factory
+ * in this module): a call within {@link HOST_HEALTH_CACHE_TTL_MS} of the last
+ * probe for a host returns the cached result with NO new probe; two requests
+ * that overlap a host's in-flight probe share the SAME promise rather than
+ * each starting their own dial. `defaultCheckHostReachable` is already
+ * individually bounded (`HOST_PROXY_CONNECT_TIMEOUT_MS`) and never throws in
+ * practice, but the `catch` here is the same fail-closed shape doctor's
+ * `checkTeamHostReachability` uses, so a probe that somehow rejects still
+ * classifies as unreachable rather than crashing the whole fan-out.
+ */
+export function createHostMembershipHealthHandler(deps: HostMembershipHealthRouteDeps = {}): RouteHandler {
+  const checkReachable = deps.checkReachable ?? defaultCheckHostReachable;
+  const readRegistry = deps.readRegistry ?? readHostRegistry;
+  const ttlMs = deps.ttlMs ?? HOST_HEALTH_CACHE_TTL_MS;
+  const now = deps.now ?? Date.now;
+
+  const cache = new Map<string, { entry: HostHealthEntry; expiresAt: number }>();
+  const inflight = new Map<string, Promise<HostHealthEntry>>();
+
+  async function probeOne(host: HostRecord): Promise<HostHealthEntry> {
+    const cached = cache.get(host.host_id);
+    if (cached && now() < cached.expiresAt) return cached.entry;
+
+    const running = inflight.get(host.host_id);
+    if (running) return running;
+
+    const promise = (async (): Promise<HostHealthEntry> => {
+      // Mirrors doctor's own concurrent-probe shape (`cli/doctor.ts`
+      // checkTeamHostReachability): no proxy port on record means there is
+      // nothing to dial — `null` ("not confirmable"), never a false negative.
+      let reachable: boolean | null;
+      if (host.proxy_port === undefined) {
+        reachable = null;
+      } else {
+        try {
+          reachable = await checkReachable(host.overlay_address, host.proxy_port);
+        } catch {
+          reachable = false;
+        }
+      }
+      return {
+        host_id: host.host_id,
+        label: host.label,
+        reachable,
+        checked_at: new Date(now()).toISOString(),
+        protocol_skew: classifyHostProtocolSkew(host.protocol_version),
+      };
+    })();
+
+    inflight.set(host.host_id, promise);
+    try {
+      const entry = await promise;
+      cache.set(host.host_id, { entry, expiresAt: now() + ttlMs });
+      return entry;
+    } finally {
+      inflight.delete(host.host_id);
+    }
+  }
+
+  return async (): Promise<RouteResponse> => {
+    const hosts = readRegistry();
+    // Unbounded fan-out, no concurrency cap — accepted the same way doctor's
+    // own checkTeamHostReachability accepts it: joined-host counts are small
+    // and human-managed (an operator explicitly runs `myco join` per host),
+    // never approaching a scale where N concurrent probes matters.
+    const results = await Promise.all(hosts.map((host) => probeOne(host)));
+    return { status: 200, body: { hosts: results } };
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -289,5 +454,6 @@ export function registerHostMembershipRoutes(server: RouteRegistrar, deps: HostM
   server.registerRoute('POST', '/api/host-membership/leave', createHostMembershipLeaveHandler(deps));
   server.registerRoute('POST', '/api/host-membership/attach', createHostMembershipAttachHandler(deps));
   server.registerRoute('POST', '/api/host-membership/detach', createHostMembershipDetachHandler(deps));
-  server.registerRoute('GET', '/api/host-membership/status', createHostMembershipStatusHandler());
+  server.registerRoute('GET', '/api/host-membership/status', createHostMembershipStatusHandler(deps));
+  server.registerRoute('GET', '/api/host-membership/health', createHostMembershipHealthHandler(deps));
 }

@@ -7,8 +7,9 @@ import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createListGroveProjectsHandler, createListGrovesHandler, servedGroveScopeForDaemon } from '@myco/daemon/api/groves.js';
 import type { GroveProjectSummary } from '@myco/daemon/api/groves.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
-import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
-import { createTeamId } from '@myco/grove/ids.js';
+import { createGrove, deleteGrove, registerProjectInGrove, setDefaultGrove } from '@myco/grove/registry.js';
+import { createGroveId, createProjectId, createTeamId, projectUrlSlug } from '@myco/grove/ids.js';
+import { upsertHost, type HostRecord } from '@myco/host/registry.js';
 import { teamRegistry } from '@myco/team/registry.js';
 
 describe('Grove discovery API', () => {
@@ -278,6 +279,187 @@ describe('Grove discovery API', () => {
     expect(project!.capabilities.canopy).toBe(true);
     expect(project!.capabilities.skills).toBe(true);
     expect(project!.capabilities.vault_evolution).toBe(true);
+  });
+});
+
+describe('Grove discovery API — attached-project merge (E-4 local-view)', () => {
+  let testDir: string;
+  let mycoHome: string;
+  let serviceDir: string;
+  let previousHome: string | undefined;
+  let previousTeamHome: string | undefined;
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-groves-attach-'));
+    mycoHome = path.join(testDir, 'home');
+    previousHome = process.env.MYCO_HOME;
+    previousTeamHome = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_HOME = mycoHome;
+    process.env.MYCO_TEAM_HOME = path.join(mycoHome, 'team-home');
+    serviceDir = path.join(mycoHome, 'service');
+    fs.mkdirSync(serviceDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (previousHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = previousHome;
+    if (previousTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = previousTeamHome;
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  /** Write a member-local checkout whose manifest names the project, so the
+   *  merge's manifest-name resolution picks it up. Returns the checkout root. */
+  function writeAttachedCheckout(projectId: string, name: string): string {
+    const root = path.join(testDir, `checkout-${projectId}`);
+    const vaultDir = resolveProjectVaultDir(root);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    saveProjectManifest(vaultDir, { project: { id: projectId, name } });
+    return root;
+  }
+
+  function seedHost(projects: HostRecord['projects'], label = 'Mac Studio'): HostRecord {
+    const record: HostRecord = {
+      host_id: createGroveId().replace('grove_', 'host_'),
+      label,
+      overlay_address: '100.64.0.2:7777',
+      protocol_version: 1,
+      created_at: new Date().toISOString(),
+      projects,
+    };
+    upsertHost(record);
+    return record;
+  }
+
+  async function summaries(): Promise<{ groves: Array<{ id: string; slug: string; project_count: number; projects: GroveProjectSummary[] }> }> {
+    const response = await createListGrovesHandler({ groveIds: null }, serviceDir)({
+      body: undefined,
+      query: {},
+      params: {},
+      pathname: '/api/groves',
+    });
+    return response.body as { groves: Array<{ id: string; slug: string; project_count: number; projects: GroveProjectSummary[] }> };
+  }
+
+  it('appends an attached project under its recorded local_grove_id, flagged with host + no capabilities', async () => {
+    const displayGrove = createGrove('Team Projects');
+    createGrove('Elsewhere'); // a second grove the attach must NOT land in
+    const attachedId = createProjectId();
+    const root = writeAttachedCheckout(attachedId, 'Shared Service');
+    const host = seedHost([
+      { grove_id: createGroveId(), project_id: attachedId, root, local_grove_id: displayGrove.id },
+    ]);
+
+    const body = await summaries();
+    const section = body.groves.find((g) => g.id === displayGrove.id)!;
+    const elsewhere = body.groves.find((g) => g.slug === 'elsewhere')!;
+
+    expect(section.project_count).toBe(1);
+    expect(elsewhere.project_count).toBe(0);
+    const entry = section.projects[0];
+    expect(entry.project_id).toBe(attachedId);
+    expect(entry.name).toBe('Shared Service');
+    expect(entry.slug).toBe(projectUrlSlug('Shared Service', attachedId));
+    expect(entry.root).toBe(root);
+    expect(entry.attached).toBe(true);
+    expect(entry.host_id).toBe(host.host_id);
+    expect(entry.host_label).toBe('Mac Studio');
+    expect(entry.capabilities).toBeUndefined();
+    expect(entry.manifest_state).toBe('present');
+  });
+
+  it('falls back to the machine default Grove when local_grove_id dangles (chosen Grove deleted)', async () => {
+    const keep = createGrove('Keep'); // becomes default (first grove)
+    const doomed = createGrove('Doomed');
+    setDefaultGrove(keep.id);
+    deleteGrove(doomed.id);
+
+    const attachedId = createProjectId();
+    const root = writeAttachedCheckout(attachedId, 'Orphaned Home');
+    seedHost([
+      { grove_id: createGroveId(), project_id: attachedId, root, local_grove_id: doomed.id },
+    ]);
+
+    const body = await summaries();
+    const keepSection = body.groves.find((g) => g.id === keep.id)!;
+    expect(keepSection.projects.map((p) => p.project_id)).toContain(attachedId);
+  });
+
+  it('skips an attached project when the machine has no Groves at all (null home)', async () => {
+    const attachedId = createProjectId();
+    const root = writeAttachedCheckout(attachedId, 'Nowhere');
+    seedHost([{ grove_id: createGroveId(), project_id: attachedId, root, local_grove_id: createGroveId() }]);
+
+    const body = await summaries();
+    expect(body.groves).toEqual([]); // no sections, no crash
+  });
+
+  it('derives a deterministic name from the project id when the ref carries no root', async () => {
+    const grove = createGrove('Team Projects');
+    const attachedId = createProjectId();
+    seedHost([{ grove_id: createGroveId(), project_id: attachedId, local_grove_id: grove.id }]);
+
+    const body = await summaries();
+    const entry = body.groves.find((g) => g.id === grove.id)!.projects[0];
+    expect(entry.root).toBeNull();
+    expect(entry.name).toBe(`Project ${attachedId.replace(/^proj_/, '').slice(0, 8)}`);
+    expect(entry.slug).toBe(projectUrlSlug(entry.name, attachedId));
+  });
+
+  it('gives two same-named attached projects distinct, stable slugs', async () => {
+    const grove = createGrove('Team Projects');
+    const a = createProjectId();
+    const b = createProjectId();
+    seedHost([
+      { grove_id: createGroveId(), project_id: a, root: writeAttachedCheckout(a, 'Docs'), local_grove_id: grove.id },
+      { grove_id: createGroveId(), project_id: b, root: writeAttachedCheckout(b, 'Docs'), local_grove_id: grove.id },
+    ]);
+
+    const entries = (await summaries()).groves.find((g) => g.id === grove.id)!.projects;
+    const slugs = entries.map((p) => p.slug);
+    expect(new Set(slugs).size).toBe(2);
+    expect(slugs).toContain(projectUrlSlug('Docs', a));
+    expect(slugs).toContain(projectUrlSlug('Docs', b));
+  });
+
+  it('prefers the local row and skips the attached copy on a project_id collision (never-materialize defense)', async () => {
+    const grove = createGrove('Team Projects');
+    const collisionId = createProjectId();
+    const localRoot = path.join(testDir, 'local-checkout');
+    registerProjectInGrove(grove.id, {
+      projectId: collisionId,
+      projectName: 'Local Wins',
+      projectRoot: localRoot,
+    });
+    seedHost([
+      { grove_id: createGroveId(), project_id: collisionId, root: writeAttachedCheckout(collisionId, 'Attached Loses'), local_grove_id: grove.id },
+    ]);
+
+    const section = (await summaries()).groves.find((g) => g.id === grove.id)!;
+    const rows = section.projects.filter((p) => p.project_id === collisionId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe('Local Wins');
+    expect(rows[0].attached).toBeUndefined();
+  });
+
+  it('dials no host while building the merge (pure disk read of the host registry)', async () => {
+    const grove = createGrove('Team Projects');
+    const attachedId = createProjectId();
+    seedHost([{ grove_id: createGroveId(), project_id: attachedId, root: writeAttachedCheckout(attachedId, 'No Dial'), local_grove_id: grove.id }]);
+
+    const realFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+      fetchCalls += 1;
+      return realFetch(...args);
+    }) as typeof fetch;
+    try {
+      const body = await summaries();
+      expect(body.groves.find((g) => g.id === grove.id)!.project_count).toBe(1);
+      expect(fetchCalls).toBe(0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 

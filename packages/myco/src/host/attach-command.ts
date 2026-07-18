@@ -28,6 +28,12 @@
  * membership code (`membership-error.ts`) rather than falling back to an
  * unverifiable flag.
  *
+ * `local_grove_id` (E-4 local-view requirement, decision-ef693c71) is a SEPARATE
+ * Grove concept from `grove_id` above: the member's own LOCAL Grove the attached
+ * project displays under, not the host's served Grove. An explicit member choice,
+ * resolved (and validated, or defaulted via a pure read) once here at attach time
+ * — see `resolveLocalGroveId`.
+ *
  * Pure orchestration over the registry's disk reads/writes; no daemon, no DB.
  */
 import path from 'node:path';
@@ -38,6 +44,7 @@ import { createFsReplayStore } from '../capture/event-replay-drain.js';
 import { createFsPlanDrainStore } from '../capture/plan-drain.js';
 import { isGroveEraId } from '../grove/ids.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '../grove/paths.js';
+import { loadGroveRecord, resolveDefaultGrove } from '../grove/registry.js';
 import { teamHostHintFromManifest } from './hint.js';
 import { codedMembershipError } from './membership-error.js';
 import {
@@ -59,6 +66,14 @@ export interface AttachOptions {
   /** Override the project id (default: the checkout's `.myco/project.toml`
    *  `project.id`, the same value the routing chokepoint keys on). */
   projectId?: string;
+  /** The member's own LOCAL Grove to display this project under (E-4
+   *  local-view requirement, decision-ef693c71) — an explicit member choice,
+   *  never inferred. Omitted: defaults to the machine's current default
+   *  Grove via a pure read (never `ensureDefaultGrove`). No CLI flag
+   *  surfaces this in v1 — only the daemon API attach body
+   *  (`daemon/api/host-membership.ts`) accepts it; a CLI-originated attach
+   *  always omits it and gets the same default. */
+  localGroveId?: string;
   /** MYCO_HOME override (tests). Threaded to the never-materialize local-row check. */
   mycoHome?: string;
 }
@@ -104,6 +119,32 @@ function resolveProjectId(root: string, override: string | undefined): string {
     `Could not determine the project id for ${root}. Run this from a checkout with a committed `
     + '.myco/project.toml (its project.id is the routing key), or pass --project-id <proj_...>.',
   );
+}
+
+/** Resolve+validate the LOCAL Grove `local_grove_id` should record (E-4
+ *  local-view requirement). An explicit id must name an existing local
+ *  Grove or attach refuses with the coded `unknown_local_grove` membership
+ *  error, before anything is written. Omitted: resolves the machine's
+ *  current default Grove via a PURE read (`resolveDefaultGrove` — never
+ *  `ensureDefaultGrove`), so calling this never has a side effect on the
+ *  local Grove registry. In the (bootstrap-only) case where the machine has
+ *  no default Grove yet, this does NOT fail the attach — it returns
+ *  `undefined`, leaving `local_grove_id` unset exactly like a legacy ref;
+ *  `resolveAttachRefHomeGroveId` (`grove/registry.ts`) re-resolves it at
+ *  read time once a default Grove exists. */
+function resolveLocalGroveId(explicit: string | undefined, mycoHome: string): string | undefined {
+  if (explicit) {
+    const grove = loadGroveRecord(explicit, mycoHome);
+    if (!grove) {
+      throw codedMembershipError(
+        'unknown_local_grove',
+        `Unknown local Grove ${explicit} — this machine has no Grove with that id. Pass an existing local `
+        + 'Grove id, or omit local_grove_id to use the machine\'s default Grove.',
+      );
+    }
+    return grove.id;
+  }
+  return resolveDefaultGrove(mycoHome)?.id;
 }
 
 /**
@@ -160,7 +201,8 @@ export function attachCommand(options: AttachOptions): AttachResult {
     );
   }
 
-  const ref: AttachRef = { grove_id: groveId, project_id: projectId, root };
+  const localGroveId = resolveLocalGroveId(options.localGroveId, mycoHome);
+  const ref: AttachRef = { grove_id: groveId, project_id: projectId, root, local_grove_id: localGroveId };
   try {
     attachProject(hostId, ref, mycoHome);
   } catch (err) {

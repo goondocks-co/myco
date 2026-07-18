@@ -36,7 +36,14 @@ export type MembershipErrorCode =
    *  (`GET /api/host-membership/status`), not thrown from a mutation, so a
    *  member with a stale ref sees it flagged rather than having drains fail
    *  opaquely. */
-  | 'attach_grove_mismatch';
+  | 'attach_grove_mismatch'
+  /** An explicit `local_grove_id` passed to attach (E-4 local-view
+   *  requirement) names no existing LOCAL Grove on this machine. Surfaced by
+   *  `attachCommand` (`host/attach-command.ts`) before any `AttachRef` is
+   *  written. Distinct Grove concept from `attach_grove_mismatch` above:
+   *  that one is about the host's served (hosted) Grove, this one is about
+   *  the member's own local Grove — display-only, chosen at attach time. */
+  | 'unknown_local_grove';
 
 /** Build an Error carrying a stable membership code alongside its
  *  (CLI-voiced) message. The message still prints verbatim in terminals;

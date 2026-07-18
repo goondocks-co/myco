@@ -5,22 +5,31 @@ import { IconEyebrow } from '../../components/ui/icon-eyebrow';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { AccentSurface } from '../../components/ui/accent-surface';
-import { cn } from '../../lib/cn';
-import { ATTACH_MISMATCH_WARNING_COPY, membershipErrorCopy } from '../../lib/membership-copy';
+import { SlideoutDetailPanel } from '../../components/ui/slideout-detail-panel';
+import { DrainCell } from '../../components/team/DrainCell';
+import { LeaveHostControl } from '../../components/team/LeaveHostControl';
+import { HostDetailPanel } from '../../components/team/HostDetailPanel';
+import {
+  ATTACH_MISMATCH_WARNING_COPY,
+  LOCAL_GROVE_PICKER_HELPER,
+  LOCAL_GROVE_PICKER_LABEL,
+  membershipErrorCopy,
+  reachabilityHintSuffix,
+} from '../../lib/membership-copy';
 import { useActiveProjectSelection } from '../../hooks/use-project-selection';
+import { useGroves } from '../../hooks/use-groves';
 import { TeamSettingsPanel } from '../../components/team/TeamSettingsPanel';
 import type { TeamConfigTarget } from '../../hooks/use-scoped-config';
 import {
   useHostMembershipStatus,
   useJoinHost,
-  useLeaveHost,
   useAttachProject,
   useDetachProject,
   useDrainHealth,
+  useHostMembershipHealth,
   type HostMembershipHost,
   type HostMembershipHint,
   type HostMembershipProjectRef,
-  type DrainCounters,
 } from '../../hooks/use-host-membership';
 
 const inputClass =
@@ -117,27 +126,10 @@ function JoinHostForm() {
 }
 
 // ---------------------------------------------------------------------------
-// Drain health — Task C-5's status API, first UI consumer.
+// Drain health — Task C-5's status API, first UI consumer. `DrainCell` lives
+// in components/team/ (shared with the host detail slideout's per-host
+// breakdown, Task T5 — same `useDrainHealth()` poll, no second fetch).
 // ---------------------------------------------------------------------------
-
-function DrainCell({ label, counters }: { label: string; counters: DrainCounters | undefined }) {
-  if (!counters) return null;
-  const failing = counters.failing_entries > 0;
-  const sized = counters.pending_bytes !== undefined
-    ? `${counters.pending_bytes.toLocaleString()} bytes`
-    : counters.pending_records !== undefined
-      ? `${counters.pending_records.toLocaleString()} records`
-      : undefined;
-  return (
-    <div className={cn('flex flex-col gap-0.5 rounded px-2 py-1', failing ? 'bg-terracotta/10' : 'bg-surface-container')}>
-      <span className="myco-eyebrow-sm text-on-surface-variant">{label}</span>
-      <span className="text-xs text-on-surface">
-        {counters.pending_entries} pending{sized !== undefined ? ` (${sized})` : ''}
-        {failing ? ` · ${counters.failing_entries} failing` : ''}
-      </span>
-    </div>
-  );
-}
 
 function DrainHealthPanel() {
   const { data, isLoading } = useDrainHealth();
@@ -215,33 +207,21 @@ function ProjectRefRow({ hostId, projectRef }: { hostId: string; projectRef: Hos
   );
 }
 
-function HostCard({ host }: { host: HostMembershipHost }) {
-  const leave = useLeaveHost();
-  const [error, setError] = useState<string | null>(null);
-
-  const handleLeave = async () => {
-    const message = host.projects.length > 0
-      ? `Leave "${host.label}"? This detaches ${host.projects.length} attached project${host.projects.length === 1 ? '' : 's'} (they go back to local-only) and removes this host's overlay connection.`
-      : `Leave "${host.label}"? This removes this host's overlay connection from this machine.`;
-    if (!window.confirm(message)) return;
-    setError(null);
-    try {
-      await leave.mutateAsync(host.host_id);
-    } catch (err) {
-      setError(membershipErrorCopy(err));
-    }
-  };
-
+function HostCard({ host, onSelect }: { host: HostMembershipHost; onSelect: () => void }) {
   return (
     <div className="flex flex-col gap-2 rounded-md border border-[var(--ghost-border)] px-4 py-3">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+        {/* A real button (not a div onClick) so the card-select affordance
+            stays keyboard-reachable; the Detach/Leave controls below are
+            siblings, never nested inside it, so clicking them can't also
+            trigger selection. */}
+        <button type="button" onClick={onSelect} className="min-w-0 text-left" aria-label={`View ${host.label} details`}>
           <span className="text-sm font-medium text-on-surface">{host.label}</span>
           <div className="text-xs font-mono text-on-surface-variant break-all">{host.host_id}</div>
           <div className="text-xs text-on-surface-variant">
             {host.overlay_address}{host.proxy_port !== null ? ` · local proxy 127.0.0.1:${host.proxy_port}` : ''}
           </div>
-        </div>
+        </button>
         <Badge variant="outline">{host.projects.length} project{host.projects.length === 1 ? '' : 's'}</Badge>
       </div>
       {host.projects.length > 0 && (
@@ -251,17 +231,7 @@ function HostCard({ host }: { host: HostMembershipHost }) {
           ))}
         </div>
       )}
-      <div className="flex items-center justify-between gap-2">
-        {error && <p className="text-xs text-terracotta m-0">{error}</p>}
-        <button
-          type="button"
-          disabled={leave.isPending}
-          onClick={handleLeave}
-          className="ml-auto text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50"
-        >
-          {leave.isPending ? 'Leaving…' : 'Leave host'}
-        </button>
-      </div>
+      <LeaveHostControl host={host} />
     </div>
   );
 }
@@ -273,19 +243,37 @@ function HostCard({ host }: { host: HostMembershipHost }) {
 // Grove state and would be refused with `ProjectRegisteredLocallyError`).
 // The operator types the checkout path directly, exactly like `myco attach
 // <project>` — same "typed, honestly unverified" posture as the join form's
-// host id. There is no Grove picker: a host serves exactly one designated
-// Grove and self-reports it at join, so attach sources it from the joined
-// host record — the operator never supplies one.
+// host id. There is no picker for the HOST's served Grove: a host serves
+// exactly one designated Grove and self-reports it at join, so attach
+// sources it from the joined host record — the operator never supplies one.
+//
+// The "Show under" picker below IS built from `/api/groves` — but it is a
+// DIFFERENT Grove concept (E-4 local-view requirement, decision-ef693c71
+// D1): the member's OWN local Grove the newly-attached project displays
+// under in this machine's UI, sent as `local_grove_id`. That is orthogonal
+// to the "no picker" reasoning above, which is about the project being
+// attached and the host's served Grove — not about where the member chooses
+// to file the result locally.
 // ---------------------------------------------------------------------------
 
 function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
   const attach = useAttachProject();
+  const groves = useGroves();
+  // Cache-only read (`enabled: false`) — this panel never triggers its own
+  // reachability probe (decision-ef693c71 D3); it only annotates the host
+  // select with whatever the detail slideout's health query already fetched.
+  const health = useHostMembershipHealth(false);
   const [projectRoot, setProjectRoot] = useState('');
   const [hostId, setHostId] = useState('');
+  const [localGroveId, setLocalGroveId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   if (hosts.length === 0) return null;
+
+  const localGroves = groves.data?.groves ?? [];
+  const defaultGroveId = localGroves.find((g) => g.is_default)?.id ?? '';
+  const effectiveLocalGroveId = localGroveId || defaultGroveId;
 
   const canSubmit = Boolean(projectRoot.trim() && hostId.trim()) && !attach.isPending;
 
@@ -296,11 +284,13 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
       const result = await attach.mutateAsync({
         project_root: projectRoot.trim(),
         host_id: hostId.trim(),
+        ...(effectiveLocalGroveId ? { local_grove_id: effectiveLocalGroveId } : {}),
       });
       setSuccess(result.already_attached
         ? `${result.project_id} is already attached to ${result.host_label}.`
         : `Project attached — new work now routes to ${result.host_label}.`);
       setProjectRoot('');
+      setLocalGroveId('');
     } catch (err) {
       setError(membershipErrorCopy(err));
     }
@@ -319,8 +309,29 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
         <label className={labelClass} htmlFor="host-attach-host">Host</label>
         <select id="host-attach-host" className={inputClass} value={hostId} onChange={(e) => setHostId(e.target.value)}>
           <option value="">Select a joined host…</option>
-          {hosts.map((h) => <option key={h.host_id} value={h.host_id}>{h.label} ({h.host_id})</option>)}
+          {hosts.map((h) => {
+            const cached = health.data?.hosts.find((entry) => entry.host_id === h.host_id);
+            return (
+              <option key={h.host_id} value={h.host_id}>
+                {h.label} ({h.host_id}){reachabilityHintSuffix(cached?.reachable)}
+              </option>
+            );
+          })}
         </select>
+        {localGroves.length > 0 && (
+          <>
+            <label className={labelClass} htmlFor="host-attach-local-grove">{LOCAL_GROVE_PICKER_LABEL}</label>
+            <select
+              id="host-attach-local-grove"
+              className={inputClass}
+              value={effectiveLocalGroveId}
+              onChange={(e) => setLocalGroveId(e.target.value)}
+            >
+              {localGroves.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+            <p className="text-xs text-on-surface-variant m-0">{LOCAL_GROVE_PICKER_HELPER}</p>
+          </>
+        )}
         <div className="flex justify-end">
           <Button size="sm" disabled={!canSubmit} onClick={handleAttach}>
             {attach.isPending ? 'Attaching…' : 'Attach project'}
@@ -414,8 +425,16 @@ function TeamSettingsSection({ hosts }: { hosts: HostMembershipHost[] }) {
 
 export function HostTab() {
   const selection = useActiveProjectSelection();
-  const status = useHostMembershipStatus(selection?.project.root);
+  const status = useHostMembershipStatus(selection?.project.root ?? undefined);
   const hosts = status.data?.hosts ?? [];
+  // Page-wide selected host (precedent: Logs.tsx's selectedEntry) — ADDITIVE:
+  // the host list, DrainHealthPanel, and AttachProjectPanel keep rendering
+  // ALL hosts exactly as before. Selection only opens the detail slideout.
+  // Deriving `selectedHost` from the live `hosts` array (rather than storing
+  // the whole host object) means a status refresh that drops the host (e.g.
+  // it was left from another surface) auto-closes the slideout for free.
+  const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
+  const selectedHost = hosts.find((h) => h.host_id === selectedHostId) ?? null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -428,13 +447,21 @@ export function HostTab() {
           title={`${hosts.length} host${hosts.length === 1 ? '' : 's'}`}
         >
           <div className="flex flex-col gap-2">
-            {hosts.map((h) => <HostCard key={h.host_id} host={h} />)}
+            {hosts.map((h) => <HostCard key={h.host_id} host={h} onSelect={() => setSelectedHostId(h.host_id)} />)}
           </div>
         </Panel>
       )}
       <AttachProjectPanel hosts={hosts} />
       {hosts.length > 0 && <DrainHealthPanel />}
       <TeamSettingsSection hosts={hosts} />
+      <SlideoutDetailPanel
+        open={selectedHost !== null}
+        onClose={() => setSelectedHostId(null)}
+        ariaLabel={selectedHost ? `${selectedHost.label} details` : 'Host details'}
+        testIdRoot="host-detail"
+      >
+        {selectedHost && <HostDetailPanel host={selectedHost} />}
+      </SlideoutDetailPanel>
     </div>
   );
 }

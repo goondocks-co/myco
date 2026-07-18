@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePowerQuery } from './use-power-query';
 import { fetchJson, postJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
@@ -20,6 +20,13 @@ export interface HostMembershipProjectRef {
   grove_id: string;
   project_id: string;
   root: string | null;
+  /** The LOCAL Grove this project displays under (E-4 local-view
+   *  requirement) — already resolved server-side: the member's chosen
+   *  Grove when it still exists, else the machine's current default Grove.
+   *  `null` only in the bootstrap-only case where this machine has no
+   *  default Grove yet. A distinct Grove concept from `grove_id` above
+   *  (the host's served Grove). */
+  local_grove_id: string | null;
   /** `'attach_grove_mismatch'` when this ref's `grove_id` no longer matches
    *  the host's `served_grove_id` (server-mode design spec §2 existing-refs
    *  mitigation); `null` when it matches or the host's designation isn't
@@ -145,6 +152,11 @@ export interface AttachProjectInput {
   project_root: string;
   host_id?: string;
   project_id?: string;
+  /** The member's OWN local Grove to show this project under (E-4 local-view
+   *  requirement, decision-ef693c71 D1) — a DIFFERENT Grove concept from the
+   *  host's served Grove, which the daemon sources from the host record and
+   *  never accepts from the caller. Omit to use the machine's default Grove. */
+  local_grove_id?: string;
 }
 
 export interface AttachProjectResponse {
@@ -216,5 +228,56 @@ export function useDrainHealth() {
     queryFn: ({ signal }) => fetchJson<DrainHealthResponse>('/team-host/drain-health', { signal }),
     refetchInterval: POLL_INTERVALS.DRAIN_HEALTH,
     pollCategory: 'standard',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Live health (E-4 W1 Task T4a's probe — first UI consumer, Task T5)
+// ---------------------------------------------------------------------------
+
+export interface HostHealthEntry {
+  host_id: string;
+  label: string;
+  reachable: boolean | null;
+  checked_at: string;
+  protocol_skew: 'none' | 'host_newer' | 'host_older';
+}
+
+export interface HostMembershipHealthResponse {
+  hosts: HostHealthEntry[];
+}
+
+/** Matches the server's own probe cache TTL (`HOST_HEALTH_CACHE_TTL_MS`,
+ *  `daemon/api/host-membership.ts`) — staying under it means a re-render
+ *  reads the client cache instead of re-issuing a request the server would
+ *  just answer from ITS cache anyway. */
+const HOST_HEALTH_STALE_MS = 15_000;
+
+/**
+ * GET /api/host-membership/health — request-driven only, deliberately NOT a
+ * `usePowerQuery` (decision-ef693c71 D3: this must never become a background
+ * poll, so there is no power-state-scaled interval to opt into in the first
+ * place). `enabled` gates the fetch; passing `false` still returns whatever
+ * this query key already has cached (e.g. from an earlier open) without
+ * issuing a new probe — the attach panel's reachability hint relies on
+ * exactly that read-only-cache behavior.
+ *
+ * `refetchOnWindowFocus`/`refetchOnReconnect` default to `true` in TanStack
+ * Query, and the app's global `QueryClient` (`main.tsx`) only overrides
+ * `staleTime` — so without disabling both here, leaving the slideout open
+ * past `HOST_HEALTH_STALE_MS` and alt-tabbing back (or a network blip) would
+ * fire a live overlay probe outside of "panel open + manual refresh," which
+ * is exactly what D3 forbids.
+ */
+export function useHostMembershipHealth(enabled: boolean) {
+  return useQuery({
+    queryKey: ['host-membership-health'],
+    queryFn: ({ signal }) => fetchJson<HostMembershipHealthResponse>('/host-membership/health', { signal }),
+    enabled,
+    staleTime: HOST_HEALTH_STALE_MS,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
   });
 }
