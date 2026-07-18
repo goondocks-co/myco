@@ -21,9 +21,9 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
   protocol_mismatch:
     'This machine and the host are running different Myco versions. Update Myco on both, then try again.',
   host_predates_served_grove:
-    "This host hasn't reported which Grove it serves yet — update Myco on the host machine, then re-join and try attaching again.",
+    "This host hasn't reported its team storage yet — update Myco on the host machine, then re-join and try attaching again.",
   attach_grove_mismatch:
-    "This project's attach record points at a Grove the host no longer serves. Detach and re-attach to route it to the host's current Grove.",
+    "This project's link points at team storage the host no longer serves. Detach and re-attach to route it to the host's current team storage.",
 };
 
 /**
@@ -31,9 +31,9 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
  * flag is set (`HostMembershipProjectRef.mismatch === 'attach_grove_mismatch'`
  * — server-mode design spec §2(c)) — a persistent badge, not a failed-
  * mutation banner, so it is worded independently of the `attach_grove_mismatch`
- * entry above rather than reusing it verbatim: that entry names "Grove",
- * which is fine inside a thrown-error banner but not for a standing UI label
- * (copy doctrine, decision-6a2ccfac — user vocabulary only).
+ * entry above rather than reusing it verbatim: a badge needs its own concise
+ * phrasing, not the fuller sentence a one-off error banner can afford
+ * (copy doctrine, decision-6a2ccfac — user vocabulary only, both places).
  */
 export const ATTACH_MISMATCH_WARNING_COPY =
   "This project's link to the host is out of date and needs attention — detach and re-attach it to fix the routing.";

@@ -39,7 +39,6 @@ import { requireProjectId, type MycoRequestContext } from '@myco/grove/request-c
 import { listSymbiontInfos, type SymbiontInfo } from './api/symbionts.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { DaemonLogger } from './logger.js';
-import type { TeamSyncClient } from './team-sync.js';
 
 export const CORTEX_PROMPT_BUILDER_TASK = 'cortex-prompt-builder';
 const CORTEX_INSTRUCTIONS_TASK = 'cortex-instructions';
@@ -59,7 +58,6 @@ export interface CortexServicesDeps {
   /** Resolve the grove EmbeddingManager for the request — never the bootstrap
    *  manager (anchor-leak Variant A). */
   resolveEmbeddingManager?: (requestContext: MycoRequestContext) => EmbeddingManager;
-  getTeamClient?: () => TeamSyncClient | null;
   logger: DaemonLogger;
   /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
   registerInflightRun?: (promise: Promise<unknown>) => void;
@@ -87,7 +85,6 @@ export interface TriggerCortexInstructionsDeps {
    *  bootstrap manager (anchor-leak Variant A). */
   resolveEmbeddingManager: (requestContext: MycoRequestContext) => EmbeddingManager;
   logger: DaemonLogger;
-  getTeamClient?: () => TeamSyncClient | null;
   /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
   registerInflightRun?: (promise: Promise<unknown>) => void;
   /**
@@ -350,7 +347,7 @@ export function getCortexPromptResult(
 export async function triggerCortexInstructions(
   deps: TriggerCortexInstructionsDeps,
 ): Promise<TriggerCortexInstructionsResult> {
-  const { vaultDir, requestContext, resolveEmbeddingManager, logger, getTeamClient } = deps;
+  const { vaultDir, requestContext, resolveEmbeddingManager, logger } = deps;
   const embeddingManager = resolveEmbeddingManager(requestContext);
   const loadRunner = deps.loadRunner ?? (() => import('../agent/runner-host.js'));
   // Resolve config for the REQUEST's tenant through the shared seam, not the
@@ -384,7 +381,7 @@ export async function triggerCortexInstructions(
   }
 
   try {
-    const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
+    const built = await buildCortexInstructionsInput(config, vaultDir, requestContext);
     // Pre-generated and passed through RunOptions — reading the latest row
     // back after dispatch races the executor's insert. Same pattern as
     // handleRun.

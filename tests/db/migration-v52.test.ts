@@ -162,13 +162,17 @@ describe('migration v51 -> v52', () => {
       VALUES ('pl-1', 'lk-1', 'plan body', 1000, 'local', 999)
     `).run();
 
-    // An in-flight outbox row queued under 'local', with the routing identity also
+    // An already-sent outbox row queued under 'local', with the routing identity also
     // embedded in the payload JSON. v52 must NOT rewrite either, or the column/payload
-    // desync (worker upsert lets the payload machine_id win).
+    // desync (worker upsert lets the payload machine_id win). Seeded as sent
+    // (sent_at NOT NULL), not pending, so it survives the terminal quiesce
+    // migration (v72) later in this same chain run — that step purges only
+    // pending (sent_at IS NULL) rows, and v52's untouched-ness is orthogonal
+    // to sent/pending status either way.
     const payloadLocal = JSON.stringify({ id: 'sp-1', machine_id: 'local', content: 'hello' });
     db.prepare(`
-      INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
-      VALUES ('spores', 'sp-1', 'upsert', ?, 'local', 1000)
+      INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at, sent_at)
+      VALUES ('spores', 'sp-1', 'upsert', ?, 'local', 1000, 1500)
     `).run(payloadLocal);
 
     createSchema(db, 'real_machine_xyz');

@@ -3,7 +3,7 @@
  */
 
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentEmbeddingPort, AgentTeamSearchPort } from '@myco/agent/runtime/ports.js';
+import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 import {
   projectScopeFromRequestContext,
   resolveRequestContextForVault,
@@ -167,7 +167,6 @@ export interface VaultToolDeps {
   agentId: string;
   runId: string;
   embeddingManager?: AgentEmbeddingPort;
-  teamClient?: AgentTeamSearchPort | null;
   machineId?: string;
   projectRoot?: string;
   vaultDir?: string;

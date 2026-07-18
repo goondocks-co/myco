@@ -61,7 +61,6 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   // grove (locked — existing invariants)
   'embedding': { home: 'grove', overridableBy: [] },
   'appearance': { home: 'grove', overridableBy: [] },
-  'team': { home: 'grove', overridableBy: [] },
   // grove + Personal (seed = current cards — RATIFY, see note)
   'agent': { home: 'grove', overridableBy: ['local'] },
   // Agent task-enablement toggles are Grove-locked: each Grove opts its whole

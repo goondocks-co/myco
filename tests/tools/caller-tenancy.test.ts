@@ -18,9 +18,6 @@ const FIXTURE_PROJECT_ID = assertGroveProjectId(createProjectId());
 function mockClient(): DaemonClient {
   return {
     get: vi.fn(async (endpoint: string) => {
-      if (endpoint.startsWith('/api/team/status')) {
-        return { ok: true, data: { collective_connected: false } };
-      }
       if (endpoint === '/api/digest') {
         return { ok: true, data: { tiers: [{ tier: 5000, content: 'digest', generated_at: 1 }] } };
       }

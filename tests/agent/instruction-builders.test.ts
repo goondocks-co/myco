@@ -1094,7 +1094,6 @@ describe('buildSkillSurveyInstruction', () => {
       undefined,
       undefined,
       undefined,
-      undefined,
       TEST_REQUEST_CONTEXT,
     );
 
@@ -1285,22 +1284,22 @@ describe('buildTaskInstruction', () => {
   });
 
   it('returns undefined for tasks that do not use pre-assembled instructions', async () => {
-    await expect(buildTaskInstruction('vault-evolve', undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
-    await expect(buildTaskInstruction('skill-survey', undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('vault-evolve', undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('skill-survey', undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
   });
 
   it('returns undefined for skill-generate when no approved candidates exist', async () => {
-    await expect(buildTaskInstruction(SKILL_GENERATE_TASK, undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction(SKILL_GENERATE_TASK, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
   });
 
   it('returns undefined for skill-survey when no settled survey corpus exists', async () => {
-    await expect(buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
   });
 
   it('returns bundle for skill-survey when settled survey corpus exists', async () => {
     createSettledSurveyCorpus();
 
-    const result = await buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
+    const result = await buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('Skill Survey Run Admission');
     expect(result!.instruction).toContain('vault_skill_survey_prepare');
@@ -1313,9 +1312,9 @@ describe('buildTaskInstruction', () => {
     const now = epochSeconds();
     setState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, SKILL_SURVEY_WATERMARK_KEY, String(now), now);
 
-    await expect(buildTaskInstruction(SKILL_SURVEY_TASK, undefined, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction(SKILL_SURVEY_TASK, undefined, TEST_AGENT_ID, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
 
-    const result = await buildTaskInstruction(SKILL_SURVEY_TASK, { force: true }, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
+    const result = await buildTaskInstruction(SKILL_SURVEY_TASK, { force: true }, TEST_AGENT_ID, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('ignore_watermark: true');
     expect(result!.instruction).toContain('vault_skill_survey_prepare');
@@ -1343,7 +1342,7 @@ describe('buildTaskInstruction', () => {
     });
     updateCandidate('ready-to-generate', { status: CANDIDATE_STATUS.APPROVED, updated_at: now }, ALL_PROJECTS_SCOPE);
 
-    const result = await buildTaskInstruction(SKILL_GENERATE_TASK, undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
+    const result = await buildTaskInstruction(SKILL_GENERATE_TASK, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('Ready topic');
     expect(result!.instruction).toContain('## Candidate Quality Metadata');
@@ -1368,7 +1367,7 @@ describe('buildTaskInstruction', () => {
     ensureProjectManifest(vaultDir, { projectName: 'task-instr-test' });
     writeFileSync(join(vaultDir, 'machine_id'), 'test-machine', 'utf-8');
     const requestContext = resolveRequestContextForVault(vaultDir);
-    const built = await buildCortexInstructionsInput(config, vaultDir, undefined, requestContext);
+    const built = await buildCortexInstructionsInput(config, vaultDir, requestContext);
 
     upsertCortexInstructions({
       agent_id: DEFAULT_AGENT_ID,
@@ -1384,7 +1383,6 @@ describe('buildTaskInstruction', () => {
       tmpRoot,
       undefined,
       config,
-      undefined,
       requestContext,
     );
     expect(result).toBeUndefined();
@@ -1421,7 +1419,7 @@ describe('buildTaskInstruction', () => {
     );
 
     const withTree = await buildTaskInstruction(
-      SKILL_EVOLVE_TASK, {}, undefined, root, undefined, undefined, undefined, TEST_REQUEST_CONTEXT,
+      SKILL_EVOLVE_TASK, {}, undefined, root, undefined, undefined, TEST_REQUEST_CONTEXT,
     );
     expect(withTree?.instruction).toContain('Pre-computed Drift Report');
 
@@ -1431,7 +1429,7 @@ describe('buildTaskInstruction', () => {
     // when all signals are zero" contract, now reached via treeAvailable
     // rather than an absent projectRoot.
     const treeless = await buildTaskInstruction(
-      SKILL_EVOLVE_TASK, {}, undefined, root, undefined, undefined, undefined, TEST_REQUEST_CONTEXT, false,
+      SKILL_EVOLVE_TASK, {}, undefined, root, undefined, undefined, TEST_REQUEST_CONTEXT, false,
     );
     expect(treeless).toBeUndefined();
 
@@ -1451,7 +1449,6 @@ describe('buildTaskInstruction', () => {
       '/some/registered/project/root',
       undefined,
       config,
-      undefined,
       TEST_REQUEST_CONTEXT,
       false,
     );

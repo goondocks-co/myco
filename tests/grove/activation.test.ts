@@ -70,20 +70,18 @@ describe('Grove project activation', () => {
 
   it('activates a project only after import validation and resolves future requests to the Grove DB', () => {
     const grove = createGrove('Myco Dogfood', mycoHome);
-    // Simulate the legacy on-disk shape (team config in project
+    // Simulate the legacy on-disk shape (Grove-tier config in project
     // myco.yaml). saveConfig now strips Grove-tier fields via
     // ProjectConfigSchema, so write the YAML directly to set up the
     // pre-migration state activateProjectMigration is meant to
-    // handle. The activation flow should detect team here and
-    // promote it to the Grove tier.
+    // handle. The activation flow should detect the Grove-tier backup
+    // block here and promote it to the Grove tier.
     fs.writeFileSync(
       path.join(vaultDir, 'myco.yaml'),
       YAML.stringify({
         version: 3,
-        team: {
-          enabled: true,
-          worker_url: 'https://team.example.com',
-          team_id: 'legacy-team',
+        backup: {
+          dir: '/tmp/legacy-activation-backups',
         },
       }),
       'utf-8',
@@ -121,9 +119,9 @@ describe('Grove project activation', () => {
     expect(marker.status).toBe('activated');
     expect(marker.project_id).toBe(result.project_id);
     expect(marker.grove_id).toBe(grove.id);
-    // After the three-tier split, team config moved from project to Grove
+    // After the three-tier split, backup config moved from project to Grove
     // tier — read it from the merged view scoped to the activated Grove.
-    expect(loadMergedConfig(vaultDir, { groveId: grove.id, mycoHome }).team.enabled).toBe(true);
+    expect(loadMergedConfig(vaultDir, { groveId: grove.id, mycoHome }).backup.dir).toBe('/tmp/legacy-activation-backups');
 
     const requestContext = requestContextFromEnvironment({}, vaultDir);
     expect(requestContext.groveId).toBe(grove.id);

@@ -16,7 +16,7 @@ test('every guide has a slug and title', () => {
 test('allSlugs is flat, unique, and covers known guides', () => {
   const slugs = allSlugs();
   assert.equal(new Set(slugs).size, slugs.length, 'no duplicate slugs');
-  for (const expected of ['quickstart', 'team-sync', 'agent-teams', 'architecture/actors-and-boundaries']) {
+  for (const expected of ['quickstart', 'team-host', 'agent-teams', 'architecture/actors-and-boundaries']) {
     assert.ok(slugs.includes(expected), `includes ${expected}`);
   }
 });

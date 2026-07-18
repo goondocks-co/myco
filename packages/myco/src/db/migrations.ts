@@ -141,6 +141,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 69, migrate: (db) => migrateV68ToV69(db) },
   { version: 70, migrate: (db) => migrateV69ToV70(db) },
   { version: 71, migrate: (db) => migrateV70ToV71(db) },
+  { version: 72, migrate: (db) => migrateV71ToV72(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4255,6 +4256,61 @@ function migrateV70ToV71(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(71, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v71 -> v72: quiesce the preserved team-outbox machinery — Team Host E-2's
+ * legacy team-sync transport is gone (the drain, the flush loop, and the
+ * `enabled`-flag write are all deleted), but `team_sync_membership` rows
+ * from any vault that ever connected to a legacy team persist forever.
+ * Those rows are the gate: `syncRow` (via `getSyncableProjectTeamId`) and
+ * every `*_team_ad` AFTER-DELETE trigger key off `team_sync_membership`,
+ * not the `enabled` flag. With nothing left to drain the outbox, a
+ * previously-connected vault would otherwise keep enqueuing `team_outbox`
+ * rows forever. This is a data-only clear — no DDL — so tables, indexes,
+ * and the delete triggers all stay installed for a future phase.
+ *
+ * Three steps, in order:
+ *   1. Clear `team_sync_membership` — the load-bearing gate. Once empty,
+ *      `getSyncableProjectTeamId` returns null for every project, so
+ *      `syncRow` enqueues nothing and every delete trigger's `WHEN OLD.
+ *      project_id IN (SELECT project_id FROM team_sync_membership)` never
+ *      matches.
+ *   2. Clear `team_sync_state.enabled` for coherence. The flag already has
+ *      zero readers and zero writers left in src (the corresponding
+ *      `setTeamSyncEnabled` call site was removed from `deleteProjectPermanently`
+ *      in the prior retirement step) — nothing depends on this beyond making
+ *      the row match the vault's new quiesced state.
+ *   3. Purge PENDING (`sent_at IS NULL`) outbox rows only, mirroring
+ *      `purgePendingOutbox`'s SQL exactly. Already-sent rows are left alone:
+ *      they are a bounded historical set (not growing — the same gate clear
+ *      stops new pending rows), and their cleanup belongs to `pruneOld`'s
+ *      prune-only-acked retention posture, not to a one-time upgrade step.
+ *
+ * Both DELETEs and the UPDATE are unconditionally safe to re-run: an
+ * already-quiesced vault has empty `team_sync_membership`, `enabled` already
+ * 0, and no pending rows, so re-running this block again is a no-op.
+ *
+ * `setProjectSyncMembership` and `setTeamSyncEnabled` in
+ * `db/queries/team-sync-state.ts` have no caller left in `src`; both writers
+ * stay in place as intentionally caller-less machinery, preserved for a
+ * future phase to reuse rather than dead code to remove.
+ */
+function migrateV71ToV72(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec('DELETE FROM team_sync_membership');
+    db.exec('UPDATE team_sync_state SET enabled = 0');
+    db.exec('DELETE FROM team_outbox WHERE sent_at IS NULL');
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(72, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

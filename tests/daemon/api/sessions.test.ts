@@ -927,10 +927,10 @@ describe('handlePatchPlan — status updates', () => {
 });
 
 // ---------------------------------------------------------------------------
-// handleGetSession — team-fanout fallback (recall parity with search)
+// handleGetSession — local get-by-id
 // ---------------------------------------------------------------------------
 
-describe('createGetSessionHandler — team fallback', () => {
+describe('createGetSessionHandler — local get', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -945,14 +945,7 @@ describe('createGetSessionHandler — team fallback', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeTeamClient(impl: (type: string, id: string) => Promise<Record<string, unknown> | null>) {
-    const getRecord = vi.fn(impl);
-    return { getRecord: getRecord as never } as unknown as {
-      getRecord: typeof getRecord;
-    };
-  }
-
-  it('local hit: returns local record with source=local and does not call the team', async () => {
+  it('returns local record with source=local and derived prompt/tool counts', async () => {
     const now = epochNow();
     upsertSession({
       id: 'sess-local',
@@ -963,82 +956,20 @@ describe('createGetSessionHandler — team fallback', () => {
       title: 'local title',
     });
 
-    const teamClient = makeTeamClient(async () => null);
-    const handler = createGetSessionHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
+    const handler = createGetSessionHandler();
 
     const res = await handler(makeRequest({ params: { id: 'sess-local' } }));
     expect(res.status === undefined || res.status < 400).toBe(true);
     const body = res.body as { id: string; source: string };
     expect(body.id).toBe('sess-local');
     expect(body.source).toBe('local');
-    expect(teamClient.getRecord).not.toHaveBeenCalled();
   });
 
-  it('local miss + team hit: returns team record tagged team:<machine_id>', async () => {
-    const teamClient = makeTeamClient(async (type, id) => {
-      expect(type).toBe('sessions');
-      expect(id).toBe('sess-remote');
-      return { id: 'sess-remote', machine_id: 'remote-node', title: 'from team' };
-    });
-
-    const handler = createGetSessionHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
-
-    const res = await handler(makeRequest({ params: { id: 'sess-remote' } }));
-    expect(res.status === undefined || res.status < 400).toBe(true);
-    const body = res.body as { id: string; source: string; prompt_count: number | null; tool_count: number | null };
-    expect(body.id).toBe('sess-remote');
-    expect(body.source).toBe('team:remote-node');
-    expect(body.prompt_count).toBeNull();
-    expect(body.tool_count).toBeNull();
-  });
-
-  it('local miss + team miss: returns 404', async () => {
-    const teamClient = makeTeamClient(async () => null);
-    const handler = createGetSessionHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
+  it('returns 404 for an unknown id (a local miss is a plain not-found)', async () => {
+    const handler = createGetSessionHandler();
 
     const res = await handler(makeRequest({ params: { id: 'absent' } }));
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ error: 'not_found' });
-  });
-
-  it('local miss + team throws: returns 404 (team failures are non-blocking)', async () => {
-    const teamClient = {
-      getRecord: vi.fn(async () => {
-        throw new Error('team down');
-      }),
-    };
-    const handler = createGetSessionHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
-
-    // The handler itself must not throw — it simply returns 404.
-    const res = await handler(makeRequest({ params: { id: 'broken' } }));
-    expect(res.status).toBe(404);
-  });
-
-  it('local miss + team hit with own machine_id: falls through to 404 (no self-echo)', async () => {
-    const teamClient = makeTeamClient(async () => ({
-      id: 'sess-self',
-      machine_id: 'local-machine',
-      title: 'echoed back from team',
-    }));
-
-    const handler = createGetSessionHandler({
-      getTeamClient: () => teamClient as never,
-      machineId: 'local-machine',
-    });
-
-    const res = await handler(makeRequest({ params: { id: 'sess-self' } }));
-    expect(res.status).toBe(404);
   });
 });

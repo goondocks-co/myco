@@ -338,59 +338,52 @@ export async function genericPreToolUse(context: HookContext) {
 }
 ```
 
-## Procedure 5: Local-Only Aggregation Setup
+## Procedure 5: Local-Only Aggregation
 
-Configure Canopy metrics to remain local and never sync to D1 team storage.
+Canopy's behavioral counters and its own tables never leave the local vault. This isn't
+something you need to configure — it's already the case, and the exclusion happens through
+the real (now-quiescent, since team sync is retired) outbox exclusion mechanism rather than
+any Canopy-specific config.
 
 ### Session-Level Aggregate Columns
 
-Add local-only columns to sessions table:
+The real column names, added to `sessions` (`packages/myco/src/db/schema-ddl.ts`):
 
 ```sql
--- Migration: Add canopy aggregates to sessions
-ALTER TABLE sessions ADD COLUMN canopy_files_indexed INTEGER DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN canopy_tokens_injected INTEGER DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN canopy_last_injection_at INTEGER;
+canopy_injections_offered      INTEGER,
+canopy_injection_total_tokens  INTEGER,
+canopy_skips_after_injection   INTEGER,
+canopy_reads_after_injection   INTEGER,
+canopy_tokens_saved            INTEGER,
+canopy_redundant_reads         INTEGER,
+canopy_map_tool_calls          INTEGER NOT NULL DEFAULT 0
 ```
 
-### Team Sync Boundary Management
+### Local-Only Enforcement
 
-Configure sync exclusions in team sync configuration:
-
-```typescript
-export const SYNC_EXCLUSIONS = {
-  sessions: [
-    // Exclude canopy aggregates from team sync
-    'canopy_files_indexed',
-    'canopy_tokens_injected', 
-    'canopy_last_injection_at'
-  ],
-  // Canopy-specific tables never sync
-  excludeTables: [
-    'canopy_file_index',
-    'canopy_descriptions',
-    'pending_attributions'
-  ]
-};
-```
+These columns are listed in `LOCAL_ONLY_SYNC_COLUMNS.sessions` in
+`packages/myco/src/db/queries/team-outbox.ts` — the same mechanism every other local-only
+column uses (there is no Canopy-specific `SYNC_EXCLUSIONS` construct). Canopy's own tables
+(`canopy_entries`, `canopy_maps`) were never added to the worker's `SYNCED_TABLES` set in the
+first place, so there's nothing to exclude for them either. If you add a new Canopy-only
+column to `sessions`, add it to that same `LOCAL_ONLY_SYNC_COLUMNS.sessions` array so it's
+stripped from the outbox payload before it ever reaches the (dormant) team-sync worker.
 
 ### Local Aggregation Logic
 
-Update aggregates during canopy operations:
+Update aggregates during canopy operations, using the real column names from above:
 
 ```typescript
 async function updateSessionAggregates(sessionId: string, injection: CanopyInjection) {
   await vault.query(`
-    UPDATE sessions 
-    SET 
-      canopy_files_indexed = canopy_files_indexed + ?,
-      canopy_tokens_injected = canopy_tokens_injected + ?,
-      canopy_last_injection_at = ?
+    UPDATE sessions
+    SET
+      canopy_injections_offered = canopy_injections_offered + ?,
+      canopy_injection_total_tokens = canopy_injection_total_tokens + ?
     WHERE id = ?
   `, [
-    injection.fileCount,
+    injection.offeredCount,
     injection.tokenCount,
-    Date.now(),
     sessionId
   ]);
 }

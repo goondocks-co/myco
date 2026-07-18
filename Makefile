@@ -1,4 +1,4 @@
-.PHONY: build build-all build-packages build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
 
 # `make build` runs the fast unit-test profile + build. Integration / smoke
 # tests are deliberately excluded from the inner dev loop — they pair real
@@ -15,10 +15,6 @@ build:
 build-all:
 	$(MAKE) check-all
 	npm run build
-
-build-packages:
-	$(MAKE) check-fast
-	npm run build:packages
 
 # Alias retained for backward compatibility with existing automation.
 build-fast: build
@@ -67,7 +63,7 @@ watch:
 	npm run build:watch
 
 clean:
-	rm -rf packages/myco/dist packages/myco-team/dist packages/myco-collective/dist packages/myco-shared/dist
+	rm -rf packages/myco/dist packages/myco-shared/dist
 
 # Build every UI bundle (myco daemon UI + collective UI) without running the
 # rest of the quality gate or the host-target compile. Useful when iterating
@@ -140,9 +136,6 @@ process.platform === 'linux' ? 'linux-' + (process.arch === 'arm64' ? 'arm64' : 
 'windows-x64')")
 
 dev-build:
-	@# myco-team and myco-collective build via bun build (Node ESM, not standalone binaries).
-	npm run build -w @goondocks/myco-team
-	npm run build -w @goondocks/myco-collective
 	@# myco is now a Bun-compiled binary. Steps in order:
 	@#   1. build libsqlite3 for the host target (cached after first run)
 	@#   2. build UI bundle (Vite) — must precede codegen so it can be embedded
@@ -183,10 +176,6 @@ dev-link: dev-build
 	@rm -f $(HOME)/.local/bin/myco-dev
 	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "$$HOME/.myco-dev/bin/myco" "$$@"\n' > $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
-	@ln -sf $(PWD)/packages/myco-team/dist/main.js $(HOME)/.local/bin/myco-team-dev
-	@chmod +x $(HOME)/.local/bin/myco-team-dev
-	@ln -sf $(PWD)/packages/myco-collective/dist/main.js $(HOME)/.local/bin/myco-collective-dev
-	@chmod +x $(HOME)/.local/bin/myco-collective-dev
 	@ln -sf $(PWD)/packages/myco/bin/myco-run $(HOME)/.local/bin/myco-run
 	@chmod +x $(HOME)/.local/bin/myco-run
 	@# Write the absolute path of the dev binary to the project-scope
@@ -235,8 +224,6 @@ dev-link: dev-build
 		echo "✓ removed legacy machine-scope ~/.myco/runtime.command (migrated to project pin)"; \
 	fi
 	@echo "✓ myco-dev → $(HOME)/.myco-dev/bin/myco (standalone, mirrors prod ~/.myco/bin/myco)"
-	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
-	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
 	@echo "✓ $(PWD)/.myco/runtime.command set to $(HOME)/.local/bin/myco-dev"
 	@# Regenerate symbiont configs across every registered project so any
@@ -295,8 +282,6 @@ dev-link-windows: dev-build-windows
 
 dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
-	@rm -f $(HOME)/.local/bin/myco-team-dev
-	@rm -f $(HOME)/.local/bin/myco-collective-dev
 	@rm -f $(HOME)/.local/bin/myco-run
 	@rm -f $(PWD)/.myco/runtime.command
 	@rm -f $(PWD)/.myco/runtime.home
@@ -307,8 +292,6 @@ dev-unlink:
 	@# uninstall fully clears dev routing.
 	@rm -f $(HOME)/.myco/runtime.command
 	@echo "✓ myco-dev wrapper + ~/.myco-dev/bin/myco removed"
-	@echo "✓ myco-team-dev symlink removed"
-	@echo "✓ myco-collective-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
 	@echo "✓ $(PWD)/.myco/runtime.command removed — launchers fall back to default 'myco'"
 	@echo "✓ $(PWD)/.myco/runtime.home removed"

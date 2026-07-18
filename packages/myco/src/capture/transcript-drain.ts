@@ -455,7 +455,7 @@ export class TranscriptDrainQueue {
   }
 
   /** Count transcripts with un-shipped growth — the deep-sleep inhibitor signal
-   *  (`hold.pending`, mirroring team-sync-init/job-runner). A rotated entry (the
+   *  (`hold.pending`, mirroring job-runner's `providesHold`). A rotated entry (the
    *  file's inode no longer matches its `transcript_id`) is NOT pending: its bytes
    *  are unreachable, so it must never hold the machine awake. */
   pendingCount(): number {

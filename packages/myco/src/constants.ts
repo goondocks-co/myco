@@ -583,7 +583,9 @@ export const SYNC_PROTOCOL_VERSION = 3;
  * Oldest sync protocol the current daemon/worker still accepts. Used
  * to gate destructive worker startup chores (D1 one-shot prunes) and
  * to refuse incompatible enqueue payloads with an explicit typed
- * error rather than letting them quietly mis-write rows.
+ * error rather than letting them quietly mis-write rows. Live: verified
+ * against `packages/myco-team/worker/wrangler.toml`'s lockstep value by
+ * `tests/worker/manifest.test.ts` and `tests/worker/team-worker-schedule.test.ts`.
  *
  * The pair forms an inclusive window
  * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]`. Bump this
@@ -595,32 +597,26 @@ export const MIN_COMPAT_CLIENT_VERSION = 1;
 // --- Team sync ---
 /** Default machine ID for rows created before multi-machine support. */
 export const DEFAULT_MACHINE_ID = 'local';
-/** Prefix for team search result source attribution. */
-export const TEAM_SOURCE_PREFIX = 'team:';
-/** Timeout for team search requests (ms). */
-export const TEAM_SEARCH_TIMEOUT_MS = 3000;
-/** Timeout for team health check requests (ms). */
-export const TEAM_HEALTH_TIMEOUT_MS = 5000;
 /**
- * Default timeout for generic team sync JSON requests (ms).
- *
- * Covers connect, getConfig, collective status/settings/query, rotate, and
- * any other request() path that isn't already bounded by TEAM_SEARCH_TIMEOUT_MS
- * or TEAM_HEALTH_TIMEOUT_MS. Callers making heavier requests (e.g. pushBatch
- * during sync) can override per call.
+ * Secrets key for the team API key in secrets.env. Live: used by the
+ * standalone `myco-team` provisioning CLI (`packages/myco-team/src/cli.ts`)
+ * to read/write the team worker's API key via `teamRegistry`/`wrangler secret`.
  */
-export const TEAM_REQUEST_TIMEOUT_MS = 15_000;
-/** Timeout for team sync pushBatch requests (ms). Larger than generic because payloads may be large. */
-export const TEAM_SYNC_TIMEOUT_MS = 30_000;
-/** Secrets key for the team API key in secrets.env. */
 export const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
-/** Secrets key for the team MCP token in secrets.env. */
+/**
+ * Secrets key for the team MCP token in secrets.env. Live: used by the
+ * standalone `myco-team` provisioning CLI alongside {@link TEAM_API_KEY_SECRET}.
+ */
 export const TEAM_MCP_TOKEN_SECRET = 'MYCO_TEAM_MCP_TOKEN';
 /** Secrets key for the Collective admin token in secrets.env. */
 export const COLLECTIVE_ADMIN_TOKEN_SECRET = 'MYCO_COLLECTIVE_ADMIN_TOKEN';
 /** Secrets key for the Collective MCP token in secrets.env. */
 export const COLLECTIVE_MCP_TOKEN_SECRET = 'MYCO_COLLECTIVE_MCP_TOKEN';
-/** Timeout for wrangler CLI commands (ms). */
+/**
+ * Timeout for wrangler CLI commands (ms). Live: used by the standalone
+ * `myco-team` provisioning CLI (`packages/myco-team/src/cli.ts`) to bound
+ * `runWrangler` invocations during team worker provisioning/deploy.
+ */
 export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
 
 // --- Team Host ---

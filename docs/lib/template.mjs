@@ -58,7 +58,7 @@ export function renderPage({ slug, title, description, bodyHtml }) {
       <a href="/#how">How it works</a>
       <a href="/#lifecycle">Skills</a>
       <a href="/#cortex">Cortex</a>
-      <a href="/#team">Team sync</a>
+      <a href="/#team">Team Host</a>
       <a href="/#agents">Agents</a>
       <a href="/#docs">Docs</a>
       <a href="/#sponsor">Sponsor</a>

@@ -2,7 +2,7 @@
 
 > Myco is the nervous system for AI-assisted software teams. It works alongside coding agents, subagents, and agent teams to provide shared project knowledge, semantic codebase awareness, and learned workflows that evolve with the project.
 
-Myco is not a replacement coding agent or hosted harness. It runs on your machine and works with every git project automatically when you use a supported agent, capturing development sessions into a local Grove and routing useful context back to the agents a team already uses. Local Grove data remains the source of truth. Optional Team Sync mirrors connected teammates' synced knowledge through Cloudflare and exposes it to cloud agents through secure MCP.
+Myco is not a replacement coding agent or hosted harness. It runs on your machine and works with every git project automatically when you use a supported agent, capturing development sessions into a local Grove and routing useful context back to the agents a team already uses. Local Grove data remains the source of truth. Optional Team Host lets a team join one teammate's Myco directly, connect their projects, and expose team knowledge to non-member agents through a secure read-only MCP endpoint.
 
 macOS is the supported path. Linux and Windows are in beta (Windows x64 only).
 
@@ -23,9 +23,8 @@ macOS is the supported path. Linux and Windows are in beta (Windows x64 only).
 
 ## Team features
 
-- [Team Sync](https://myco.sh/team-sync.md): Share team knowledge across machines and teammates while keeping local data as the source of truth.
-- [Cloud MCP](https://myco.sh/cloud-mcp.md): Read-only access to synced team knowledge for cloud agents and automations.
-- [Collective](https://myco.sh/collective.md): Cross-project search and shared settings for multiple Team Sync deployments.
+- [Team Host](https://myco.sh/team-host.md): Join a teammate's Myco as your Team Host, connect projects, and expose team knowledge to non-member agents through a read-only MCP endpoint.
+- [Collective](https://myco.sh/collective.md): Cross-project search and shared settings for multiple connected projects (not currently integrated with the daemon).
 
 ## Operations
 

@@ -27,7 +27,7 @@ macOS is the primary supported platform. Linux and Windows are in beta. On Windo
 - Run the local dashboard, service, and MCP server
 - Search sessions, spores, plans, and artifacts
 - Give agents shared project context without replacing their native memory or workflows
-- Share project intelligence with Team Sync
+- Share project intelligence by joining a Team Host, with no cloud account required
 - Connect multiple team workers to a Myco Collective
 
 ## Upgrade
@@ -38,7 +38,7 @@ Myco keeps itself up to date automatically — the local service self-updates fr
 
 - Project homepage: <https://github.com/goondocks-co/myco>
 - Quickstart: <https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md>
-- Team Sync: <https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md>
+- Team Host: <https://github.com/goondocks-co/myco/blob/main/docs/team-host.md>
 - Collective: <https://github.com/goondocks-co/myco/blob/main/docs/collective.md>
 
 ## License

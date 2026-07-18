@@ -8,7 +8,7 @@ Myco does not replace an agent's reasoning, native memory, tools, or workflow. I
 
 - **A supported OS** — macOS (arm64/x64), Linux (x64/arm64), or Windows (x64). Myco ships as a self-contained native binary, so **no Node runtime is required to run it**. macOS is the supported path, with **Linux and Windows in beta**. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
 - **At least one supported coding agent** — Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, or Pi
-- **Node 22+** is only needed for the optional npm install path and the operator CLIs (`@goondocks/myco-team`, `@goondocks/myco-collective`).
+- **Node 22+** is only needed for the optional npm install path and the Collective operator CLI (`@goondocks/myco-collective`).
 
 Provider configuration is **optional** at install time. Myco captures sessions and provides full-text search immediately. To enable spores, digests, semantic search, Canopy summaries, and skill lifecycle features, configure intelligence and embedding providers in the dashboard after install.
 
@@ -45,10 +45,7 @@ npm install -g @goondocks/myco
 
 Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page. There is nothing to run by hand and no `npm update` step.
 
-For advanced or scripted use, the `myco upgrade` CLI (with `--channel stable|beta`) is available, but the automatic and dashboard paths are the normal way to stay current. If you later install one of the standalone operator CLIs, the Settings page's Upgrade section will also detect and apply updates for those installed Myco packages. You do not need to install extra packages unless you want one of the standalone operator CLIs:
-
-- `@goondocks/myco-team` for direct team-worker administration commands
-- `@goondocks/myco-collective` for cross-project Collective administration
+For advanced or scripted use, the `myco upgrade` CLI (with `--channel stable|beta`) is available, but the automatic and dashboard paths are the normal way to stay current. You do not need to install the standalone Collective operator CLI unless you want cross-project Collective administration (`@goondocks/myco-collective`).
 
 ## That's it — ready by default
 
@@ -197,22 +194,7 @@ myco remove --purge   # additionally remove ~/.myco/ itself
 
 ## Optional Operator CLIs
 
-Most users only need `@goondocks/myco`. Install the extra CLIs only when you want their dedicated operator surfaces.
-
-### Standalone team CLI
-
-```bash
-npm install -g @goondocks/myco-team
-```
-
-Operators only — teammates join a team from the dashboard's **Team** page without this CLI. Use it for:
-
-- `myco-team create --name "<team name>"` — provision a team (deploys its Worker, prints a Worker URL + Team key)
-- `myco-team update --team-id <id>` — redeploy the team's Worker
-- `myco-team status --team-id <id>` — show Worker info and credentials
-- `myco-team rotate-tokens --team-id <id>` — rotate the Team key and/or MCP token
-- `myco-team reindex-vectors --team-id <id>` — rebuild the team's search index
-- `myco-team destroy --team-id <id>` — tear down the team's Cloudflare resources
+Most users only need `@goondocks/myco`. Team Host operator commands (`myco host enable`, `myco join`, `myco attach`) are already part of that package — see the [Team Host guide](team-host.md) for running a team server or joining one. Install the extra CLI below only if you want its dedicated operator surface.
 
 ### Collective CLI
 

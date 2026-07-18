@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
-import { TOOL_DEFINITIONS, COLLECTIVE_TOOL_DEFINITIONS } from '@myco/tools/definitions.js';
+import { TOOL_DEFINITIONS } from '@myco/tools/definitions.js';
 
 // These tests pin the structural shape of the Pi plugin — the exact event
 // names it subscribes to and the data it forwards to the daemon. They are
@@ -110,13 +110,6 @@ describe('Pi plugin', () => {
     // See docs/architecture/actors-and-boundaries.md for the boundary.
     const source = pluginSource();
     for (const tool of TOOL_DEFINITIONS) {
-      expect(source).toContain(`name: "${tool.name}"`);
-    }
-  });
-
-  it('includes the collective tool names for parity when Collective is connected', () => {
-    const source = pluginSource();
-    for (const tool of COLLECTIVE_TOOL_DEFINITIONS) {
       expect(source).toContain(`name: "${tool.name}"`);
     }
   });

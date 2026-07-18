@@ -15,7 +15,6 @@
  */
 
 import type { EmbeddableTable } from '@myco/db/queries/embeddings.js';
-import type { ReleaseConfidence, ReleaseStateValue } from '@myco/db/queries/release-provenance.js';
 
 export interface AgentVectorSearchResult {
   id: string;
@@ -68,59 +67,3 @@ export interface AgentEmbeddingSimilarityPort {
 
 export interface AgentEmbeddingPort
   extends AgentSemanticSearchPort, AgentEmbeddingWritePort, AgentEmbeddingSimilarityPort {}
-
-export interface AgentTeamSearchOptions {
-  limit?: number;
-  tables?: string[];
-  status?: string;
-  release_state?: ReleaseStateValue;
-  release_confidence?: ReleaseConfidence;
-  observation_type?: string;
-  since?: number;
-  until?: number;
-  session_id?: string;
-  source_path?: string;
-  name?: string;
-  project_id?: string;
-  timeoutMs?: number;
-}
-
-export interface AgentTeamSearchResult {
-  id: string;
-  type?: string;
-  table?: string;
-  table_name?: string;
-  title?: string;
-  preview?: string;
-  content?: string;
-  score: number;
-  machine_id: string;
-  metadata?: Record<string, unknown>;
-  data?: Record<string, unknown>;
-  retrieve?: { tool: string; input: Record<string, unknown> };
-}
-
-export interface AgentTeamSearchResponse {
-  results: AgentTeamSearchResult[];
-  machine_ids: string[];
-}
-
-export interface AgentTeamSearchPort {
-  search(query: string, options?: AgentTeamSearchOptions): Promise<AgentTeamSearchResponse>;
-}
-
-export interface AgentTeamCollectiveStatus {
-  connected: boolean;
-  collective_url: string | null;
-  project_id: string | null;
-  last_settings_sync: number | null;
-  last_heartbeat: number | null;
-  capabilities: string[];
-  settings: Record<string, unknown>;
-}
-
-export interface AgentTeamStatusPort {
-  getCollectiveStatus(): Promise<AgentTeamCollectiveStatus>;
-}
-
-export interface AgentTeamRuntimePort extends AgentTeamSearchPort, AgentTeamStatusPort {}

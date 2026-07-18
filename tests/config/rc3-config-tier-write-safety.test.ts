@@ -97,9 +97,6 @@ describe('RC-3 — config tier write safety', () => {
   it('rc3a: unbound project retains user-set grove-tier values across an unrelated updateConfig', () => {
     writeProject([
       'version: 3',
-      'team:',
-      '  enabled: true',
-      '  team_id: team-rc3',
       'backup:',
       '  dir: /tmp/rc3-backups',
       'agent:',
@@ -119,8 +116,6 @@ describe('RC-3 — config tier write safety', () => {
     }));
 
     const persisted = readYaml(configPath());
-    expect((persisted.team as Record<string, unknown>).enabled).toBe(true);
-    expect((persisted.team as Record<string, unknown>).team_id).toBe('team-rc3');
     expect((persisted.backup as Record<string, unknown>).dir).toBe('/tmp/rc3-backups');
     expect(getAtPath(persisted, 'agent.model')).toBe('claude-opus-4-6');
     expect(getAtPath(persisted, 'agent.tasks.vault-evolve.maxTurns')).toBe(7);
@@ -130,9 +125,6 @@ describe('RC-3 — config tier write safety', () => {
   it('rc3a: binding a Grove lifts the retained values into grove.yaml and strips them from myco.yaml', () => {
     writeProject([
       'version: 3',
-      'team:',
-      '  enabled: true',
-      '  team_id: team-rc3',
       'backup:',
       '  dir: /tmp/rc3-backups',
       'agent:',
@@ -150,14 +142,11 @@ describe('RC-3 — config tier write safety', () => {
     loadMergedConfig(vaultDir, { mycoHome });
 
     const grove = readYaml(grovePath());
-    expect(getAtPath(grove, 'team.enabled')).toBe(true);
-    expect(getAtPath(grove, 'team.team_id')).toBe('team-rc3');
     expect(getAtPath(grove, 'backup.dir')).toBe('/tmp/rc3-backups');
     expect(getAtPath(grove, 'agent.model')).toBe('claude-opus-4-6');
     expect(getAtPath(grove, 'agent.tasks.vault-evolve.maxTurns')).toBe(7);
 
     const persisted = readYaml(configPath());
-    expect(persisted.team).toBeUndefined();
     expect(persisted.backup).toBeUndefined();
     expect(persisted.agent).toBeUndefined();
   });

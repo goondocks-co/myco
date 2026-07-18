@@ -377,7 +377,6 @@ export interface TaskSchedulingDeps {
    *  the agent's vector/canopy search tools must hit the run's grove store). */
   resolveEmbeddingManager: (requestContext: MycoRequestContext | undefined) => EmbeddingManager;
   logger: DaemonLogger;
-  getTeamClient?: () => import('./team-sync.js').TeamSyncClient | null;
   cache: GroveRuntimeCache;
   mycoHome: string;
   /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
@@ -501,7 +500,6 @@ export async function registerScheduledTasks(
     vaultDir,
     resolveEmbeddingManager,
     logger,
-    getTeamClient,
     cache,
     mycoHome,
     daemonStateDir,
@@ -678,7 +676,6 @@ export async function registerScheduledTasks(
       projectRoot,
       embeddingManager,
       config,
-      getTeamClient,
       requestContext,
       treeAvailable,
     );

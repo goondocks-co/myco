@@ -4,7 +4,7 @@
  *
  * The scheduler (`task-scheduling.ts`) already fed `RegisteredProjectScope
  * .treeAvailable` through to `dispatchAgentRun`'s `RunOptions.treeAvailable`
- * and `buildTaskInstruction`'s 9th arg, so a Team Host's SCHEDULED tasks
+ * and `buildTaskInstruction`'s `treeAvailable` arg, so a Team Host's SCHEDULED tasks
  * against a served treeless project correctly skip `requiresProjectTree`
  * phases. The two USER-TRIGGERED dispatch entry points in `agent-runs.ts`
  * (`handleRun`, `handleResumeRun`) computed `treeAvailableForRequest` only

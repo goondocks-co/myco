@@ -6,10 +6,6 @@ on:
     tags:
       - 'myco/v*.*.*'
       - 'myco/v*.*.*-*'
-      - 'myco-team/v*.*.*'
-      - 'myco-team/v*.*.*-*'
-      - 'myco-collective/v*.*.*'
-      - 'myco-collective/v*.*.*-*'
       - 'myco-shared/v*.*.*'
       - 'myco-shared/v*.*.*-*'
 
@@ -44,16 +40,6 @@ jobs:
               PACKAGE_NAME="@goondocks/myco"
               PACKAGE_DIR="packages/myco"
               TARBALL_PREFIX="goondocks-myco"
-              ;;
-            myco-team)
-              PACKAGE_NAME="@goondocks/myco-team"
-              PACKAGE_DIR="packages/myco-team"
-              TARBALL_PREFIX="goondocks-myco-team"
-              ;;
-            myco-collective)
-              PACKAGE_NAME="@goondocks/myco-collective"
-              PACKAGE_DIR="packages/myco-collective"
-              TARBALL_PREFIX="goondocks-myco-collective"
               ;;
             myco-shared)
               PACKAGE_NAME="@goondocks/myco-shared"
@@ -237,7 +223,7 @@ jobs:
     name: Build and Test
     runs-on: ubuntu-latest
     needs: [validate-tag, cross-compile]
-    # cross-compile is skipped for team/collective tags, which would
+    # cross-compile is skipped for myco-shared tags, which would
     # normally cascade-skip this job. Force it to run in that case.
     if: |
       always() &&
@@ -252,16 +238,17 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             packages/myco/ui/package-lock.json
-            packages/myco-collective/ui/package-lock.json
             packages/myco-team/worker/package-lock.json
             packages/myco-collective/worker/package-lock.json
 
       - run: npm ci
       - name: Install myco UI deps
         run: npm ci --prefix packages/myco/ui
-      - name: Install myco-collective UI deps
-        run: npm ci --prefix packages/myco-collective/ui
-      - name: Install worker deps
+      # packages/myco-team/worker and packages/myco-collective/worker are not
+      # npm workspaces (root workspaces glob only matches packages/*, one
+      # level up), so `npm run lint` below cannot type-check them via
+      # check:workers without their own node_modules installed first.
+      - name: Install worker deps (for check:workers lint gate)
         run: |
           set -eu
           for workspace in packages/myco-team/worker packages/myco-collective/worker; do
@@ -295,10 +282,10 @@ jobs:
       - name: Run test suite under Bun
         run: npm test
 
-      # For team/collective tags, run the normal build (bun build). For
+      # For myco-shared tags, run the normal build (bun build). For
       # myco tags, the binaries arrive from the cross-compile matrix —
       # downloaded in the next step. Run only the UI build locally.
-      - name: Build target package (team/collective)
+      - name: Build target package (myco-shared)
         if: needs.validate-tag.outputs.tag_prefix != 'myco'
         env:
           PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
@@ -575,8 +562,6 @@ jobs:
           # Friendly display name keyed on the tag prefix.
           case "$TAG_PREFIX" in
             myco)            DISPLAY_NAME="Myco" ;;
-            myco-team)       DISPLAY_NAME="Myco Team" ;;
-            myco-collective) DISPLAY_NAME="Myco Collective" ;;
             myco-shared)     DISPLAY_NAME="Myco Shared" ;;
             *)               DISPLAY_NAME="$PACKAGE_NAME" ;;
           esac
@@ -643,7 +628,7 @@ jobs:
           echo "title=${RELEASE_TITLE}" >> "$GITHUB_OUTPUT"
 
       # Collect every .tgz under release-files/ (multi-directory for myco
-      # tags, single file for team/collective) into a flat list. Using
+      # tags, single file for myco-shared) into a flat list. Using
       # `find` keeps the gh-release invocation directory-structure-agnostic.
       - name: Collect release assets
         id: assets

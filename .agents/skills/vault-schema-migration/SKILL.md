@@ -1,7 +1,7 @@
 ---
 name: myco:vault-schema-migration
 description: |
-  Use this skill whenever you need to add, modify, or remove tables, columns, or indexes in the Myco vault SQLite schema — even if the user just asks to "add a column" or "create a new table." The vault uses a versioned createSchema migration chain where each schema version is a numbered step that builds on the previous one. Because user vaults accumulate real data across machines, any schema change that breaks the migration chain can corrupt or destroy vault data. This skill covers how to add a new version to the chain, write safe migration SQL, handle backfill steps, bump the schema version constant, sync D1 databases, and verify the migration works end-to-end before shipping.
+  Use this skill whenever you need to add, modify, or remove tables, columns, or indexes in the Myco vault SQLite schema — even if the user just asks to "add a column" or "create a new table." The vault uses a versioned createSchema migration chain where each schema version is a numbered step that builds on the previous one. Because user vaults accumulate real data across machines, any schema change that breaks the migration chain can corrupt or destroy vault data. This skill covers how to add a new version to the chain, write safe migration SQL, handle backfill steps, bump the schema version constant, keep the dormant team-sync worker's D1 mirror parity-test-clean if your table is in the synced-table set, and verify the migration works end-to-end before shipping.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -126,21 +126,29 @@ db.pragma(`user_version = ${SCHEMA_VERSION}`);
 
 Make sure the final `PRAGMA user_version = N` assignment uses the constant, not a hardcoded number.
 
-### 6. Sync Cloudflare D1 schema changes
+### 6. Keep the dormant team-sync worker's D1 mirror in parity
 
-**Critical:** Deployed Cloudflare D1 databases do NOT auto-receive local migrations. After local schema changes that affect D1-backed tables (typically team sync tables), you must manually update the D1 database.
+**Team sync is retired — there is no live D1 deployment to push to.** The legacy Cloudflare
+team-sync transport, routes, config, and UI are gone; `packages/myco-team` (worker + CLI) is
+preserved in-repo but dormant — typecheck-only, no longer published or deployed. Schema v72
+cleared the `team_sync_membership` gate and reset `team_sync_state.enabled`, so the outbox
+enqueue path is quiescent for every vault today (preserved machinery, not an active pipeline;
+Phase-F reuse pending). **Do not** add a live D1 deployment step to your migration workflow.
 
-#### 6a. Identify D1-backed tables
+What still matters: the worker's own DDL (`packages/myco-team/worker/src/schema.ts`) and the
+cross-package parity test (`tests/db/synced-table-parity.test.ts`) are still real, still-enforced
+parts of this repo's test suite — they exist to keep the dormant worker's mirror internally
+consistent for whenever this machinery is revived. If the table you're changing is in the
+worker's synced-table set, you still need to update the worker mirror so CI stays green, even
+though nothing is deployed.
 
-Check which tables replicate to D1:
+#### 6a. Identify whether your table is in the synced-table set
 
 ```bash
-grep -r "D1\|BACKFILL_TABLES" packages/myco/src --include="*.ts"
+grep -r "BACKFILL_TABLES\|LOCAL_ONLY" packages/myco/src/db/queries/team-outbox.ts
 ```
 
-Common D1 tables include: `team_outbox`, `notifications`, `agent_runs`, and `sessions` (if team sync is enabled).
-
-The authoritative synced-table set lives in `packages/myco-team/worker/src/synced-tables.ts` (`SYNCED_TABLES`). If your changed table is in that set, the parity rule below is mandatory.
+The authoritative synced-table set lives in `packages/myco-team/worker/src/synced-tables.ts` (`SYNCED_TABLES`). If your changed table is in that set, the parity rule below is mandatory — otherwise you're done, skip to step 7.
 
 #### 6a-parity. The synced-column parity rule — every local column must reach the D1 mirror
 
@@ -162,47 +170,7 @@ npm test -- tests/db/synced-table-parity.test.ts
 
 **Older binary on a newer schema is safe for additive-nullable columns.** The local `createSchema` migration loop no-ops when the vault's `user_version` is already ahead of the running binary's `SCHEMA_VERSION` (the `if (currentVersion < N)` blocks are all skipped), and every query names its columns explicitly rather than `SELECT *`. So a machine still on an older binary reading a vault another machine migrated forward keeps working, as long as the new columns are **additive and nullable** (no NOT-NULL-without-default, no dropped/renamed columns an old query still references). This is the guarantee that lets a mixed-version team share one synced schema.
 
-#### 6b. Generate D1 migration SQL
-
-Extract the SQL statements from your migration block that affect D1 tables:
-
-```sql
--- Example: if your migration added notifications table
-CREATE TABLE IF NOT EXISTS notifications (
-  id TEXT PRIMARY KEY,
-  type TEXT NOT NULL,
-  payload TEXT,
-  created_at INTEGER NOT NULL DEFAULT (unixepoch())
-);
-CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
-```
-
-Save this to a temporary file like `d1-migration-v9.sql`.
-
-#### 6c. Apply to D1 via wrangler
-
-Execute each statement against the D1 database:
-
-```bash
-# For team-sync database
-wrangler d1 execute myco-team-sync --file=d1-migration-v9.sql
-
-# Or individual statements
-wrangler d1 execute myco-team-sync --command="CREATE TABLE IF NOT EXISTS notifications (...);"
-```
-
-#### 6d. Verify D1 schema sync
-
-Confirm the schema applied correctly:
-
-```bash
-wrangler d1 execute myco-team-sync --command=".schema notifications"
-```
-
-**Common D1 migration failures:**
-- **Syntax differences**: D1 may not support all SQLite features. Test statements separately.
-- **Constraint violations**: D1 enforces foreign keys differently than local SQLite.
-- **Timeout on large migrations**: Split complex migrations into smaller batches.
+There is no `wrangler d1 execute` deployment step to run — the worker isn't deployed anywhere. Updating the mirror DDL and passing the parity test above is the entire scope of "D1 sync" for this repo today.
 
 ### 7. Test the migration locally
 
@@ -283,6 +251,6 @@ db.transaction(() => {
 })();
 ```
 
-**D1 schema drift causes team sync failures.** Always sync D1 schema changes using the procedures in step 6. Missing this step creates runtime drift between the daemon schema and the worker database.
+**A missing worker mirror update fails CI, not a live deployment.** Team sync itself is retired and quiescent (no live D1 exists to drift against today), but `tests/db/synced-table-parity.test.ts` still enforces that the dormant worker's DDL matches the local schema for every synced table. Skipping step 6a-parity turns that test red — treat it the same as any other failing test, not as an optional cleanup step.
 
-**A new column on a synced table with no worker mirror stalls sync for the whole table.** The worker builds its INSERT column list from the row payload, so an unmirrored column makes D1 throw `no such column` for every unsynced row — silently, with no local error. Apply the 3-part worker pattern (DDL + idempotent ALTER + `verifyColumnsAddressable`) from step 6a-parity and run `tests/db/synced-table-parity.test.ts`, which fails and names any local column missing from the D1 mirror. A column that is deliberately local-only belongs in `LOCAL_ONLY_SYNC_COLUMNS` instead.
+**A new column on a synced table with no worker mirror would stall sync for the whole table if this machinery is ever reactivated.** The worker builds its INSERT column list from the row payload, so an unmirrored column would make D1 throw `no such column` for every synced row — silently, with no local error. This can't happen today (nothing is deployed), but the parity test exists precisely so it can't happen on the day Phase-F revives the pipeline either. Apply the 3-part worker pattern (DDL + idempotent ALTER + `verifyColumnsAddressable`) from step 6a-parity and run `tests/db/synced-table-parity.test.ts`, which fails and names any local column missing from the D1 mirror. A column that is deliberately local-only belongs in `LOCAL_ONLY_SYNC_COLUMNS` instead.

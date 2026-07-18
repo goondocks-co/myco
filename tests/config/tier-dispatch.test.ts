@@ -131,15 +131,13 @@ describe('Tier dispatch', () => {
       saveConfig(projectDir, {
         ...config,
         // Grove tier — retained until a Grove binds. Unknown keys
-        // (retention_days, github_repo, …) are still stripped by the schema.
+        // (retention_days, …) are still stripped by the schema.
         backup: { dir: '/tmp/bad', retention_days: 30 },
-        team: { enabled: true, github_repo: 'acme/x', branch: 'main', api_token: 'secret' },
         appearance: { theme: 'plum', mode: 'light', font: 'jetbrains-mono', density: 'compact' },
       } as MycoConfig);
 
       const persisted = YAML.parse(fs.readFileSync(path.join(projectDir, 'myco.yaml'), 'utf-8'));
       expect(persisted.backup?.dir).toBe('/tmp/bad');
-      expect(persisted.team?.enabled).toBe(true);
       expect(persisted.appearance?.theme).toBe('plum');
       // Machine-tier + legacy fields still never survive in the project file.
       expect(persisted.daemon).toBeUndefined();

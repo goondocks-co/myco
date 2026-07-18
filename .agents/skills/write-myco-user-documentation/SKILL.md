@@ -33,7 +33,7 @@ Default to **user guides**, not user manuals. A guide helps the user accomplish 
 | Prefer | Avoid |
 |---|---|
 | Outcome-first sections: install, configure, connect, verify, recover | Implementation catalogs and subsystem inventories |
-| Scenario flow: "If you want Team Sync, do this" | Abstract capability lists without an adoption path |
+| Scenario flow: "If you want Team Host, do this" | Abstract capability lists without an adoption path |
 | Progressive disclosure: start with the happy path, then troubleshooting | Front-loading edge cases, internals, or historical migrations |
 | User-facing names from the UI/CLI | Codebase names, file ownership, table names, or daemon internals |
 
@@ -202,18 +202,18 @@ Documentation is a merge gate, not a mid-implementation artifact. Write docs aft
 
 ## Before / After Example
 
-**Feature**: Cloud MCP server connection
+**Feature**: Team Host connection
 
 ```
 ❌ Before (implementation voice):
-"The cloud MCP server establishes a persistent WebSocket connection via
-the DaemonClient and provisions credentials through the outbox pipeline.
-Tokens are stored in .myco/secrets.env after the handshake completes."
+"Team Host establishes a peer-to-peer overlay connection and provisions
+credentials through the enrollment handshake. The bearer token is stored
+under the machine-scoped secrets file once join completes."
 
 ✅ After (user voice):
-"Connect Myco to the cloud MCP server by running `myco connect`. Your
-credentials are stored securely in `.myco/secrets.env` — you only
-need to do this once per project."
+"Join a team by running `myco join <host> --key <one-time-key> --server-url
+<url> --overlay-address <address>`. Your connection details are stored
+securely — you only need to do this once per machine."
 ```
 
 ## What This Skill Does Not Cover

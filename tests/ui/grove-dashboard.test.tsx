@@ -52,22 +52,6 @@ mock.module('../../packages/myco/ui/src/hooks/use-daemon', () => ({
   }),
 }));
 
-mock.module('../../packages/myco/ui/src/hooks/use-team', () => ({
-  useTeamStatus: () => ({
-    data: {
-      enabled: false,
-      healthy: false,
-      pending_sync_count: 0,
-      worker_url: null,
-      project: { id: 'p', name: 'p', root: '/' },
-    },
-  }),
-}));
-
-mock.module('../../packages/myco/ui/src/hooks/use-team-members', () => ({
-  useTeamMembers: () => ({ data: { members: [] } }),
-}));
-
 mock.module('../../packages/myco/ui/src/hooks/use-maintenance-summary', () => ({
   useProjectsActivity: () => ({
     data: { projects: [], active_window_days: 7, generated_at: '2026-05-15' },

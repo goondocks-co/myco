@@ -20,7 +20,7 @@
  * Enablement stays per-Grove in `team_sync_state`; this module only owns the
  * machine identity used to stamp synced rows and outbox records.
  */
-import { SYNC_PROTOCOL_VERSION, DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { DEFAULT_MACHINE_ID } from '@myco/constants.js';
 import { getMachineId } from '@myco/machine-id.js';
 
 let teamMachineId = DEFAULT_MACHINE_ID;
@@ -35,10 +35,6 @@ export function getTeamMachineId(): string {
   // even when initTeamContext() was never called in this process. An explicit
   // initTeamContext(<id>) still overrides (e.g. tests or daemon startup).
   return teamMachineId !== DEFAULT_MACHINE_ID ? teamMachineId : getMachineId();
-}
-
-export function getTeamSyncProtocolVersion(): number {
-  return SYNC_PROTOCOL_VERSION;
 }
 
 export function resetTeamContext(): void {

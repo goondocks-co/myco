@@ -108,10 +108,10 @@ export function removeHost(hostId: string): void {
  * Thrown by `attachProject` when `ref.project_id` is already attached to a
  * DIFFERENT host. Without this guard, `resolveAttach`'s reverse lookup over
  * `readHostRegistry()` (filesystem `readdirSync` order, not guaranteed)
- * would silently return whichever host happened to iterate first — the
- * same ambiguity `daemon/api/team-selection.ts`'s `project_in_other_team`
- * guard prevents for team membership. A future daemon transport (attach
- * command, Task 1.2+) should map this to a 409 `project_attached_to_other_host`.
+ * would silently return whichever host happened to iterate first — the same
+ * kind of ambiguity a `project_in_other_team` guard prevents for team
+ * membership. A future daemon transport (attach command, Task 1.2+) should
+ * map this to a 409 `project_attached_to_other_host`.
  */
 export class ProjectAttachedToOtherHostError extends Error {
   constructor(

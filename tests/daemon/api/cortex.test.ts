@@ -105,7 +105,6 @@ describe('createCortexHandlers', () => {
       liveConfig: { current: MycoConfigSchema.parse({ version: 3 }) },
       resolveEmbeddingManager: () => ({ reconcile: vi.fn() } as never),
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
-      getTeamClient: vi.fn(() => null),
     });
   }
 

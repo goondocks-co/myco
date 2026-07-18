@@ -14,55 +14,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-import { MYCO_GLOBAL_DIR, UPDATE_ERROR_PATH, RESTART_REASON_FILENAME } from '../constants/update.js';
-import type { ApplyUpdateParams, ApplyRestartParams, ApplyAdoptParams } from './orchestrator.js';
+import { UPDATE_ERROR_PATH, RESTART_REASON_FILENAME } from '../constants/update.js';
+import type { ApplyRestartParams, ApplyAdoptParams } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
-
-/** Parameters required to spawn an update orchestration. */
-export interface InstallParams {
-  /** Fully-qualified npm package specs to install globally (operator CLIs, e.g. ["@goondocks/myco-team@0.11.0"]). */
-  packageSpecs: string[];
-  /** Absolute path to the project root the daemon was running from (used as cwd for the respawn). */
-  projectRoot: string;
-  /** Absolute path to the vault directory the daemon was running against (used as cwd for the respawn). */
-  vaultDir: string;
-  /**
-   * Literal myco binary the orchestrator should invoke for the post-install
-   * project sync step and the final direct daemon respawn. See
-   * `resolveMycoBinary()` in update-checker for how the daemon picks it (dev
-   * build CLI entry in dev mode, bare `myco` in prod).
-   */
-  mycoBinary: string;
-  /**
-   * Service label to restart through, when this process is the
-   * service-managed daemon (launchctl kickstart / systemctl restart /
-   * schtasks). When set, the orchestrator restarts via the platform
-   * ServiceManager instead of spawning `<mycoBinary> daemon` directly —
-   * preventing the thundering-herd race between a manually-spawned daemon
-   * child and the supervisor's KeepAlive/Restart policy.
-   *
-   * Null (or absent) means no supervisor owns this home — the orchestrator
-   * respawns the daemon directly. Callers derive this from
-   * `resolveRestartServiceLabel()` (keyed on the installed unit, not pid).
-   */
-  serviceManagedLabel?: string | null;
-  /**
-   * Canonical daemon port for the variant this update is running against
-   * (e.g. 20915 prod, 19344 dev). Used by the readiness guard to skip the
-   * restart when the supervisor's KeepAlive has already brought the daemon
-   * back at the target version.
-   */
-  daemonPort: number;
-  /**
-   * The version we expect the daemon to be running after this update
-   * (e.g. "0.27.12"). The readiness probe verifies /health.version matches
-   * before skipping the restart.
-   */
-  targetVersion: string;
-}
 
 /** Parameters for a restart-only orchestration (no global npm install). */
 export interface RestartParams {
@@ -81,10 +38,25 @@ export interface RestartParams {
    * project sync step and the final direct daemon respawn.
    */
   mycoBinary: string;
-  /** Service label to restart through, or null/absent when not service-managed.
-   *  See `InstallParams.serviceManagedLabel`. */
+  /**
+   * Service label to restart through, when this process is the
+   * service-managed daemon (launchctl kickstart / systemctl restart /
+   * schtasks). When set, the orchestrator restarts via the platform
+   * ServiceManager instead of spawning `<mycoBinary> daemon` directly —
+   * preventing the thundering-herd race between a manually-spawned daemon
+   * child and the supervisor's KeepAlive/Restart policy.
+   *
+   * Null (or absent) means no supervisor owns this home — the orchestrator
+   * respawns the daemon directly. Callers derive this from
+   * `resolveRestartServiceLabel()` (keyed on the installed unit, not pid).
+   */
   serviceManagedLabel?: string | null;
-  /** Canonical daemon port for the readiness guard. See InstallParams. */
+  /**
+   * Canonical daemon port for the variant this restart is running against
+   * (e.g. 20915 prod, 19344 dev). Used by the readiness guard to skip the
+   * restart when the supervisor's KeepAlive has already brought the daemon
+   * back at the target version.
+   */
   daemonPort: number;
 }
 
@@ -128,7 +100,7 @@ export function resolveOrchestratorBinary(): string {
  * `<binary> __apply-update <paramsFile>` detached + unreffed so the daemon can
  * exit immediately. Returns the params file path.
  */
-export function spawnApplyUpgrade(namePrefix: string, params: ApplyUpdateParams | ApplyRestartParams | ApplyAdoptParams): string {
+export function spawnApplyUpgrade(namePrefix: string, params: ApplyRestartParams | ApplyAdoptParams): string {
   const paramsFile = path.join(os.tmpdir(), `${namePrefix}-${Date.now()}.json`);
   fs.writeFileSync(paramsFile, JSON.stringify(params), 'utf-8');
 
@@ -157,26 +129,6 @@ export function spawnApplyUpgrade(namePrefix: string, params: ApplyUpdateParams 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
-/**
- * Spawns the update orchestrator. Returns the params file path.
- */
-export function spawnUpdateScript(params: InstallParams): string {
-  // Ensure ~/.myco/ exists before writing the error path or checking state.
-  fs.mkdirSync(MYCO_GLOBAL_DIR, { recursive: true });
-
-  const applyParams: ApplyUpdateParams = {
-    kind: 'update',
-    packageSpecs: params.packageSpecs,
-    projectRoot: params.projectRoot,
-    vaultDir: params.vaultDir,
-    mycoBinary: params.mycoBinary,
-    serviceManagedLabel: params.serviceManagedLabel ?? null,
-    daemonPort: params.daemonPort,
-    targetVersion: params.targetVersion,
-  };
-  return spawnApplyUpgrade('myco-update', applyParams);
-}
 
 /**
  * Spawns the restart-only orchestrator. Returns the params file path.
