@@ -26,32 +26,40 @@ Follow these steps in order. Skipping the query functions or constants update le
 
 ### 1. Add migration to the MIGRATIONS registry
 
-Locate the migration runner (`packages/myco/src/db/migrations.ts`). Add a new `Migration` entry to the `MIGRATIONS` array:
+Locate the migration runner (`packages/myco/src/db/migrations.ts`). The `Migration` interface is `{ version: number; migrate: (db: Database, machineId: string) => void }` — there is no `name`, `description`, or `up` field. Append a new entry to the end of the `MIGRATIONS` array, pointing at a standalone `migrateVXToVY` function defined later in the same file:
 
 ```typescript
 export const MIGRATIONS: Migration[] = [
   // ... existing migrations
-  {
-    version: 21,
-    name: 'add_my_new_table',
-    description: 'Add my_new_table for <purpose>',
-    up: (db: Database) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS my_new_table (
-          id          TEXT PRIMARY KEY,
-          session_id  TEXT,
-          content     TEXT NOT NULL,
-          created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
-          FOREIGN KEY (session_id) REFERENCES sessions(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_my_new_table_session
-          ON my_new_table(session_id);
-        CREATE INDEX IF NOT EXISTS idx_my_new_table_created_at
-          ON my_new_table(created_at DESC);
-      `);
-    }
-  }
+  { version: 21, migrate: (db) => migrateV20ToV21(db) },
 ];
+
+function migrateV20ToV21(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS my_new_table (
+        id          TEXT PRIMARY KEY,
+        session_id  TEXT,
+        content     TEXT NOT NULL,
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_my_new_table_session
+        ON my_new_table(session_id);
+      CREATE INDEX IF NOT EXISTS idx_my_new_table_created_at
+        ON my_new_table(created_at DESC);
+    `);
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(21, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
 ```
 
 Key rules:
@@ -59,7 +67,8 @@ Key rules:
 - **Add all indexes inline** with the table creation. Putting them in a later migration risks a partial-schema state if the process dies between versions.
 - Use `INTEGER NOT NULL DEFAULT (unixepoch())` for timestamps — store Unix epoch seconds, not ISO strings.
 - Use `TEXT PRIMARY KEY` with a UUID for entity tables; use `INTEGER PRIMARY KEY AUTOINCREMENT` only for pure log/event tables where an ordered surrogate is the point.
-- **Each migration is atomic** — the migration runner applies all migrations up to the highest version or rolls back entirely on failure.
+- **Each migration function is atomic on its own** — it wraps itself in an explicit `BEGIN`/`COMMIT`, rolling back and rethrowing on failure. There is no single all-or-nothing transaction around the whole chain: `createSchema()`'s driver loop calls each due migration in order, so if migration N+2 throws, migrations N and N+1 stay committed rather than rolling back too (see `myco:vault-schema-migration` for the driver loop and the frozen-DDL / no-live-query-helper rules migrations must follow).
+- All migration SQL is a literal string frozen at authoring time — never `db.exec()` a live constant like `TABLE_DDLS` from inside a migration, and never call a `db/queries/*` helper from one (see `myco:vault-schema-migration` step 4 for both reasons).
 
 ### 2. Create the query functions
 
@@ -80,22 +89,34 @@ Use `ALTER TABLE` for additive changes (new columns). SQLite does not support dr
 ### Adding a column
 
 ```typescript
-{
-  version: 22,
-  name: 'add_supersedes_column',
-  description: 'Add supersedes column to skill_candidates',
-  up: (db: Database) => {
-    db.exec(`ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT;`);
-    // Backfill: give existing rows a safe default before any code relies on the column
-    db.exec(`UPDATE skill_candidates SET supersedes = '[]' WHERE supersedes IS NULL;`);
+// MIGRATIONS entry: { version: 22, migrate: (db) => migrateV21ToV22(db) }
+
+function migrateV21ToV22(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'skill_candidates'); // PRAGMA table_info wrapper
+    if (!cols.has('supersedes')) {
+      db.prepare(`ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT;`).run();
+      // Backfill: give existing rows a safe default before any code relies on the column
+      db.prepare(`UPDATE skill_candidates SET supersedes = '[]' WHERE supersedes IS NULL;`).run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(22, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
   }
 }
 ```
 
 Rules:
 - **Never add `NOT NULL` without a `DEFAULT`** — existing rows fail the constraint on open.
-- **Backfill in the same migration**, before the migration completes. This keeps the migration atomic: either both the schema change and the backfill succeed, or the whole migration retries.
+- **Backfill in the same migration**, before `COMMIT`. This keeps the migration atomic: either both the schema change and the backfill succeed, or both roll back.
 - **One conceptual change per migration** — keep each migration atomic and describable in a single sentence.
+- SQLite's `ALTER TABLE ADD COLUMN` has no `IF NOT EXISTS` form and throws on a column that already exists — idempotency comes from a `PRAGMA table_info` check (`getTableColumnSet` in `migrations.ts`) guarding the `ALTER`, not from a try/catch that swallows the "duplicate column" error.
 - Update the query functions' INSERT and SELECT statements and the TypeScript row interface to include the new column.
 
 ### Column renames (legacy considerations)
@@ -202,14 +223,14 @@ Two tables for release provenance tracking (both include `project_id` and `grove
 
 ## Procedure I: Migration Chain Validation
 
-Test the complete migration path, not just individual migrations. Follow patterns from existing tests (`tests/db/migrate-v40.test.ts`). Assert invariants, not version constants:
+Test the complete migration path, not just individual migrations. Write a per-migration test under `tests/db/` following the current convention — `tests/db/migrate-v71-to-v72-team-sync-quiesce.test.ts` is the most recent, correctly-authored example (see `myco:vault-schema-migration` step 7 for the full shape: build a `:memory:` database, roll `schema_version` back to simulate the prior version, seed legacy-shaped rows, re-run `createSchema()`, and assert the result). Assert invariants, not version constants:
 ```javascript
-expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(42);
+expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(72);
 ```
 
 ## Procedure J: Fresh Install vs Migration Equivalence Testing
 
-Fresh installs follow CREATE TABLE column order; migrated databases append ALTER TABLE columns at the end. Test column addressability by name, not ordinal position. Use `PRAGMA table_info(table_name)` to check column existence.
+Fresh installs follow CREATE TABLE column order; migrated databases append ALTER TABLE columns at the end. Test column addressability by name, not ordinal position. Use `PRAGMA table_info(table_name)` to check column existence. `tests/db/migration-matrix.test.ts` already does this at the whole-chain level — it upgrades authentic historical fresh-vault fixtures through the current chain and asserts convergence with a fresh-created vault; run it (`npm test -- tests/db/migration-matrix.test.ts`) after any migration change rather than only relying on your new migration's own test.
 
 ## Procedure K: Migration Test Hardening
 
@@ -287,12 +308,13 @@ See `packages/myco/src/daemon/embedding/sqlite-vec-store.ts` for the reference i
 
 ## Cross-Cutting Gotchas
 
-- **`IF NOT EXISTS` is mandatory everywhere** — migrations run at every startup; a bare `CREATE TABLE` throws on the second run.
-- **Each migration is atomic** — all migrations up to the highest version succeed or the runner rolls back entirely.
+- **`IF NOT EXISTS` is mandatory everywhere it exists as SQL syntax** — `CREATE TABLE`/`CREATE INDEX`/`CREATE TRIGGER` all support it and migrations run at every startup, so a bare `CREATE` throws on the second run. `ALTER TABLE ADD COLUMN` has no `IF NOT EXISTS` form; guard it with a `PRAGMA table_info` check (`getTableColumnSet` in `migrations.ts`) instead.
+- **Each migration function is atomic on its own, not the whole chain** — every `migrateVXToVY` wraps itself in an explicit `BEGIN`/`COMMIT`/`ROLLBACK`. There is no single all-or-nothing transaction around the full `MIGRATIONS` array: if migration N+2 throws, migrations up through N+1 stay committed and the vault is left stamped at N+1, not rolled back to its pre-chain state.
+- **Migration SQL is a frozen literal, never a live schema constant or a `db/queries/*` helper call** — see `myco:vault-schema-migration` step 4. A later addition to `TABLE_DDLS`/`SECONDARY_INDEXES`/etc. can retroactively change a shipped migration's behavior (this bricked v34–v40 vaults once), and query helpers often bind the `getDatabase()` singleton rather than the migration's own `db` handle.
 - **D1 ALTER TABLE is lazy (historical)** — while the team-sync worker was live, a D1 column didn't exist until the first post-deploy request. No live deployment exists today; this is background for a future revival, not something to guard against now.
 - **FTS triggers must use `IF NOT EXISTS`** — duplicate triggers corrupt the index silently.
 - **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, keyset cursors for pagination.
-- **All SQL lives in query modules** — no inline SQL in MCP handlers or business logic.
+- **All SQL lives in query modules — except inside a migration.** Application code (MCP handlers, business logic) must call query-module functions rather than inline SQL. Migrations are the deliberate exception: they must inline frozen literal SQL and must never call a query-module helper (previous bullet) — the two rules point in opposite directions for a reason, not a contradiction.
 - **Scan `packages/myco/src/db/schema-ddl.ts` after every new table** — missing `TABLE_DDLS` or `FTS_TABLES` registration silently limits feature surface.
 - **Grove `project_id` is mandatory in v31+** — all new project-scoped tables must include `project_id` and all queries must scope by it.
 - **Column Order Drift** — Fresh installs and migrated databases have different column orders. Test column addressability by name using `PRAGMA table_info`, never by position.

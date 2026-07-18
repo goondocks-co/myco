@@ -207,7 +207,7 @@ node packages/myco-team/dist/main.js status --team-id <team_id>
 
 `.myco/runtime.command` is set to the absolute path of `myco-dev`. The hook guard only uses this file to choose the main Myco binary; it never selects an operator CLI.
 
-`.agents/myco-hook.cjs` reads `~/.myco/runtime.command` at every hook invocation and substitutes that path for the default `myco` command. Because the read happens at hook-fire time (not at shell startup), no shell restart is required.
+The hook guard checks the project-scope `.myco/runtime.command` first (walking up from the invoking directory), falling back to the machine-scope `~/.myco/runtime.command` if no project pin is found, and substitutes whichever path resolves for the default `myco` command. Because the read happens at hook-fire time (not at shell startup), no shell restart is required.
 
 ### Verify Dev Configuration
 
@@ -215,15 +215,15 @@ node packages/myco-team/dist/main.js status --team-id <team_id>
 myco-dev doctor
 ```
 
-The output should report the dev binary path. If it falls back to the global binary path, check that `~/.myco/runtime.command` exists and contains the correct path.
+The output should report the dev binary path. If it falls back to the global binary path, check that the project-scope `.myco/runtime.command` (in the repo, not `~/.myco/`) exists and contains the correct path.
 
-Confirm `~/.myco/runtime.command` is gitignored:
+Confirm the project-scope `.myco/runtime.command` is gitignored (it lives inside the repo, unlike the machine-scope fallback under `~/.myco/`):
 
 ```bash
-grep 'runtime.command' packages/myco/src/cli/shared.ts
+grep 'runtime.command' packages/myco/src/vault/gitignore.ts
 ```
 
-You should see it listed in `VAULT_GITIGNORE`. The file holds your machine's absolute path, so it must never be committed.
+You should see it listed in the `VAULT_GITIGNORE` body there — the canonical `.myco/.gitignore` content. `ProjectVault.ensureGitignore()` (`packages/myco/src/vault/project-vault.ts`) writes it, and every ProjectVault write of a per-machine file (`runtime.command`, `project.local.toml`) refreshes it automatically. The pin file holds your machine's absolute path, so it must never be committed.
 
 ### Build After Code Changes
 
@@ -241,7 +241,7 @@ Because the symlinks point to your repo's built files, the rebuilt artifact is i
 make dev-unlink
 ```
 
-This removes `~/.myco/runtime.command` and deletes the `~/.local/bin/myco-*` symlinks. Hooks fall back to the globally-installed `myco` automatically because `.agents/myco-hook.cjs` treats a missing `~/.myco/runtime.command` as "use the default."
+This removes the project-scope `.myco/runtime.command` and `.myco/runtime.home` pins, deletes the `~/.local/bin/myco-dev` wrapper and `myco-run` symlink plus the standalone `~/.myco-dev/bin/myco` copy, and also sweeps any legacy machine-scope `~/.myco/runtime.command` an older dev-link may have written. Hooks fall back to the globally-installed `myco` automatically because the hook guard (`.agents/myco-run.cjs`) treats a missing pin at both scopes as "use the default."
 
 ### Why This Approach Works
 
@@ -348,7 +348,7 @@ This is the canonical way to invoke Cortex or any Myco MCP tool from a script or
 
 **Use `make dev-link`, not `npm link`.** `npm link` rewires global resolution and will interfere with production-install testing in the same shell session.
 
-**`~/.myco/runtime.command` is machine-specific.** If you copy your repo to another machine, re-run `make dev-link` there — the path baked into the file will be wrong otherwise.
+**The project-scope `.myco/runtime.command` holds a machine-specific absolute path.** If you copy your repo to another machine, re-run `make dev-link` there — the path baked into the file will be wrong otherwise.
 
 **Rebuild before testing.** `myco-dev doctor` (or any hook) reads the binary on disk. Stale `packages/myco/bin/myco.cjs` means stale behavior, even if your source edits look right.
 
