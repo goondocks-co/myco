@@ -186,14 +186,13 @@ function LegacyTeamRedirect() {
 }
 
 /**
- * Legacy Grove-scoped /g/:slug/team/maintenance → /g/:slug/team?tab=sync.
- * Phase 6 collapses TeamDashboard + TeamMaintenance into a single tabbed
- * TeamPage; the Maintenance route forwards to the Sync tab.
+ * Legacy Grove-scoped /g/:slug/team/maintenance → /g/:slug/team.
+ * Old maintenance bookmarks forward to the Team page.
  */
 function TeamMaintenanceRedirect() {
   const { groveSlug } = useParams();
   if (!groveSlug) return <Navigate to="/" replace />;
-  return <Navigate to={`/g/${groveSlug}/team?tab=sync`} replace />;
+  return <Navigate to={`/g/${groveSlug}/team`} replace />;
 }
 
 /**

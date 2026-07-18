@@ -231,7 +231,7 @@ When adding any new user-configurable behavior, follow these steps to determine 
 **Step 1: Apply the tier decision rule**
 - **Machine tier**: Global daemon behavior across all groves (port, logging, global auth, capture policy)
 - **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies, agent provider and model selection, agent harness configuration, task configuration overlays, embedding configuration)
-- **Project tier**: Team collaboration settings specific to this project (task configs, team sync)
+- **Project tier**: Team collaboration settings specific to this project (task configs)
 - **Personal tier**: Individual developer experience preferences (UI themes, notification settings, daemon operational settings)
 
 **Step 2: Consult the scope registry**
@@ -249,7 +249,6 @@ Use these established patterns as representative examples (verify against the li
 - Symbiont manifest (`symbionts.*`)
 - Agent operational limits (`agent.timeout`, `agent.context_window`)
 - Vault data policies (`vault.retention_days`, `vault.max_sessions`)
-- Team sync enablement (`sync.enabled`)
 
 *Grove Settings:* Multi-project coordination within a grove
 - Agent provider and model selection (`agent.provider`, `agent.model`)

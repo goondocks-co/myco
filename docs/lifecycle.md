@@ -123,10 +123,11 @@ Myco runs as a single native binary and one local service serving every Grove on
 
 All three paths end at the same state: the installed Myco binary is at the new version, and the next restart updates your local service and connected agents.
 
-If you also installed one of the optional standalone operator CLIs, the Settings page's Upgrade section detects and applies those package updates too. They remain npm/Node tools and can also be updated directly:
+If you also installed the standalone Collective operator CLI, it remains an npm/Node tool and can be updated directly:
 
-- `npm update -g @goondocks/myco-team`
 - `npm update -g @goondocks/myco-collective`
+
+Team Host operator commands (`myco host`, `myco join`, `myco attach`) live in the main binary and upgrade automatically with the rest of Myco — see [Team Host](team-host.md).
 
 See [Upgrading Myco](upgrade.md) for the full upgrade walkthrough.
 

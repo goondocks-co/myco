@@ -196,13 +196,23 @@ describe('migrateV69ToV70 — skill_lineage sync-column guard', () => {
   it('converges the skill_lineage delete trigger so it can resolve OLD.machine_id after the migration', () => {
     const db = seedV67WithoutLineageColumnsDb();
     db.exec('PRAGMA foreign_keys = OFF');
-    setTeamSyncEnabled(true, db);
-    db.prepare('INSERT OR IGNORE INTO team_sync_membership (project_id, team_id) VALUES (?, ?)').run(PROJECT, 'team_test');
     seedAgent(db);
     seedSkillRecord(db, 'skill-1', 'm1');
     seedLineageRowNoSyncCols(db, 'lin-1', 'skill-1');
 
     createSchema(db); // applies migrateV69ToV70, converts the pre-guard row + trigger
+
+    // Seed membership AFTER createSchema, not before: this vault starts below
+    // v71, so a pre-migration seed would also chain through the terminal
+    // quiesce migration (v71 -> v72, Team Host E-2 Task 5) in the same call,
+    // which purges team_sync_membership as its load-bearing gate clear. That
+    // would silently defeat this test's actual point (proving OLD.machine_id
+    // resolves without a SQL error once the trigger is converged) by making
+    // the trigger's WHEN clause never match. Seeding here, after createSchema
+    // has already returned, matches the same technique the preserved
+    // tests/db/team-delete-triggers.test.ts uses and lets the trigger fire.
+    setTeamSyncEnabled(true, db);
+    db.prepare('INSERT OR IGNORE INTO team_sync_membership (project_id, team_id) VALUES (?, ?)').run(PROJECT, 'team_test');
 
     db.prepare(`DELETE FROM skill_lineage WHERE id = 'lin-1'`).run();
 

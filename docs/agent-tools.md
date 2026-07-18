@@ -1,6 +1,6 @@
 # Agent Tools
 
-Myco exposes MCP tools and slash-command skills that your agents can use without leaving their native workflows. Local tools serve coding agents on your machine, and the [Cloud MCP server](cloud-mcp.md) serves cloud agents from synced Grove knowledge. Both speak [Model Context Protocol](https://modelcontextprotocol.io) and discover their tools automatically.
+Myco exposes MCP tools and slash-command skills that your agents can use without leaving their native workflows. Local tools serve coding agents on your machine, and the [external MCP endpoint](team-host.md#external-read-only-mcp) serves agents that aren't Myco members from a Team Host's team storage. Both speak [Model Context Protocol](https://modelcontextprotocol.io) and discover their tools automatically.
 
 ## Automatic context injection
 
@@ -14,7 +14,7 @@ These context routes augment the agent's native memory and tools. Myco does not 
 
 ## Local MCP tools
 
-Seven local tools are available to any symbiont Myco has connected. When the project is connected to a Myco Collective, four additional `collective_*` tools are also registered.
+Seven local tools are available to any symbiont Myco has connected.
 
 The MCP surface is intentionally limited to **read and editorial** operations — symbionts use Myco's project intelligence; they do not administer Myco. Administrative operations such as restart, update, backup, restore, and maintenance live in the **CLI** and **UI**. See [Actors and Boundaries](architecture/actors-and-boundaries.md).
 
@@ -37,9 +37,9 @@ Every vault-scoped tool accepts optional `grove_id` and `project_id` fields so a
 | `myco_spores` | List, retrieve, save, supersede, or consolidate spores using `op=list|get|save|supersede|consolidate`. |
 | `myco_agent` | Read agent run history using `op=runs|run` — token budget, cost, reasoning level, and per-run details. |
 
-## Cloud MCP tools
+## External MCP tools
 
-A separate, read-only tool surface for cloud agents (Anthropic Managed Agents, N8N, OpenAI Workflows, etc.). Six tools follow the same search-then-entity access pattern as local MCP while limiting operations to synced team reads. See the [Cloud MCP docs](cloud-mcp.md) for the full reference and setup.
+A separate, read-only tool surface for agents that aren't Myco members — managed agents, automation platforms, anything that speaks MCP over HTTPS. Six tools follow the same search-then-entity access pattern as local MCP while limiting operations to reads against a Team Host's team storage. See the [Team Host docs](team-host.md#external-read-only-mcp) for the full reference and setup.
 
 ## Slash-command skills
 

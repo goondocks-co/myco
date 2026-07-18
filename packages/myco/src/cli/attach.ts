@@ -55,8 +55,8 @@ export async function runAttach(args: string[], vaultDir: string): Promise<void>
   } else {
     console.log(`Attached ${body.project_id} to Team Host ${body.host_id} (${body.host_label}).`);
   }
-  console.log(`  Grove:    ${body.grove_id}`);
-  console.log(`  Checkout: ${body.root}`);
+  console.log(`  Team storage: ${body.grove_id}`);
+  console.log(`  Checkout:     ${body.root}`);
   for (const note of body.notes) console.log(`  NOTE: ${note}`);
 }
 
@@ -81,5 +81,5 @@ export async function runDetach(args: string[], vaultDir: string): Promise<void>
     return;
   }
   console.log(`Detached ${body.project_id} from Team Host ${body.detached_from_host_id}.`);
-  console.log('  Future requests for this project resolve to a local Grove again.');
+  console.log('  Future requests for this project go back to local-only.');
 }

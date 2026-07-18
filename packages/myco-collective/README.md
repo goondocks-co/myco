@@ -1,5 +1,8 @@
 # @goondocks/myco-collective
 
+> **Status: dormant.** This package is retained in the repository but is not
+> currently integrated with the myco daemon, pending redesign.
+
 `@goondocks/myco-collective` deploys and manages a Myco Collective.
 
 Install it when you want the cross-project admin layer:
@@ -32,9 +35,7 @@ myco-collective destroy oss
 
 ## Upgrade
 
-After the first install, Myco's Operations page can detect and apply updates for this package automatically on the same machine.
-
-You can also update it directly:
+This package no longer receives new releases. If you have an existing install, you can still re-run:
 
 ```bash
 npm update -g @goondocks/myco-collective

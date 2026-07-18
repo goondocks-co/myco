@@ -66,7 +66,3 @@ export const SKILLS_PATHS = {
   confidenceThreshold: 'skills.confidence_threshold',
   usageStaleDays: 'skills.usage_stale_days',
 } as const;
-
-export const TEAM_PATHS = {
-  intervalMinutes: 'team.interval_minutes',
-} as const;

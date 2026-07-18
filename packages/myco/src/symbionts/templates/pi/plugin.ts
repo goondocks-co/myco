@@ -280,19 +280,6 @@ async function postJson(
   }
 }
 
-async function getJson(
-  directory: string,
-  urlPath: string,
-): Promise<{ ok: boolean; data?: unknown }> {
-  const res = await fetchFromDaemon(directory, urlPath);
-  if (!res) return { ok: false };
-  try {
-    return { ok: true, data: await res.json() };
-  } catch {
-    return { ok: true };
-  }
-}
-
 // ---------------------------------------------------------------------------
 // CLI tool dispatch — dispatches `tool call <name> --json --input <json>` by
 // running the self-contained Myco binary directly (no `node`, no
@@ -784,10 +771,6 @@ async function mycoSessions(
   return execMycoTool(directory, "myco_sessions", input);
 }
 
-async function fetchTeamStatus(directory: string): Promise<{ ok: boolean; data?: unknown }> {
-  return getJson(directory, "/api/team/status");
-}
-
 async function mycoSpores(
   directory: string,
   input: {
@@ -824,40 +807,6 @@ async function mycoAgent(
   input: { op?: string; id?: string; task?: string; agent_id?: string; limit?: number },
 ): Promise<{ ok: boolean; data?: unknown }> {
   return execMycoTool(directory, "myco_agent", input);
-}
-
-async function collectiveProjects(directory: string): Promise<{ ok: boolean; data?: unknown }> {
-  return execMycoTool(directory, "collective_projects", {});
-}
-
-async function collectiveSettings(directory: string): Promise<{ ok: boolean; data?: unknown }> {
-  return execMycoTool(directory, "collective_settings", {});
-}
-
-async function collectiveProject(
-  directory: string,
-  input: { project: string; include_digest?: boolean },
-): Promise<{ ok: boolean; data?: unknown }> {
-  return execMycoTool(directory, "collective_project", input);
-}
-
-async function collectiveSearch(
-  directory: string,
-  input: {
-    query: string;
-    project?: string;
-    limit?: number;
-    types?: string[];
-    status?: string;
-    observation_type?: string;
-    since?: number;
-    until?: number;
-    session_id?: string;
-    source_path?: string;
-    name?: string;
-  },
-): Promise<{ ok: boolean; data?: unknown }> {
-  return execMycoTool(directory, "collective_search", input);
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,84 +1113,6 @@ export default function (pi: ExtensionAPI) {
   // the injected Cortex guidance aligned with the tool names other symbionts
   // receive through the MCP server.
 
-  let collectiveToolsRegistered = false;
-
-  function registerCollectiveTools(): void {
-    if (collectiveToolsRegistered) return;
-    collectiveToolsRegistered = true;
-
-    pi.registerTool({
-      name: "collective_search",
-      label: "Collective Search",
-      description: "Search across collective-connected projects when Collective is available.",
-      parameters: Type.Object({
-        query: Type.String({ description: "Search query" }),
-        project: Type.Optional(Type.String({ description: "Optional project filter" })),
-        limit: Type.Optional(Type.Number({ description: "Optional max results" })),
-        types: Type.Optional(Type.Array(Type.String(), { description: "Optional type filters" })),
-        status: Type.Optional(Type.String({ description: "Optional status filter" })),
-        observation_type: Type.Optional(Type.String({ description: "Optional observation type filter" })),
-        since: Type.Optional(Type.Number({ description: "Optional created_at lower bound in epoch seconds" })),
-        until: Type.Optional(Type.Number({ description: "Optional created_at upper bound in epoch seconds" })),
-        session_id: Type.Optional(Type.String({ description: "Optional session filter" })),
-        source_path: Type.Optional(Type.String({ description: "Optional source path filter" })),
-        name: Type.Optional(Type.String({ description: "Optional record name filter" })),
-      }),
-      async execute(_toolCallId, params) {
-        const result = await collectiveSearch(currentCwd, params);
-        if (!result.ok) {
-          return { content: [{ type: "text" as const, text: "Collective search unavailable." }], details: {} };
-        }
-        return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? []) }], details: result.data ?? {} };
-      },
-    });
-
-    pi.registerTool({
-      name: "collective_projects",
-      label: "Collective Projects",
-      description: "List projects available through the connected Collective.",
-      parameters: Type.Object({}),
-      async execute() {
-        const result = await collectiveProjects(currentCwd);
-        if (!result.ok) {
-          return { content: [{ type: "text" as const, text: "Collective projects unavailable." }], details: {} };
-        }
-        return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? []) }], details: result.data ?? {} };
-      },
-    });
-
-    pi.registerTool({
-      name: "collective_project",
-      label: "Collective Project",
-      description: "Get metadata for one collective project.",
-      parameters: Type.Object({
-        project: Type.String({ description: "Project identifier" }),
-        include_digest: Type.Optional(Type.Boolean({ description: "Include digest in the response" })),
-      }),
-      async execute(_toolCallId, params) {
-        const result = await collectiveProject(currentCwd, params);
-        if (!result.ok) {
-          return { content: [{ type: "text" as const, text: "Collective project lookup unavailable." }], details: {} };
-        }
-        return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? null) }], details: result.data ?? {} };
-      },
-    });
-
-    pi.registerTool({
-      name: "collective_settings",
-      label: "Collective Settings",
-      description: "Inspect active Collective setting overrides for this project.",
-      parameters: Type.Object({}),
-      async execute() {
-        const result = await collectiveSettings(currentCwd);
-        if (!result.ok) {
-          return { content: [{ type: "text" as const, text: "Collective settings unavailable." }], details: {} };
-        }
-        return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
-      },
-    });
-  }
-
   pi.registerTool({
     name: "myco_search",
     label: "Myco Search",
@@ -1448,10 +1319,4 @@ export default function (pi: ExtensionAPI) {
       return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
     },
   });
-
-  void fetchTeamStatus(currentCwd).then((status) => {
-    if ((status.data as { collective_connected?: boolean } | undefined)?.collective_connected) {
-      registerCollectiveTools();
-    }
-  }).catch(() => undefined);
 }

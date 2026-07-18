@@ -54,7 +54,7 @@ import {
 } from './tool-names.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
-import type { AgentEmbeddingPort, AgentTeamSearchPort } from '@myco/agent/runtime/ports.js';
+import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import type { HarnessHooks, HarnessHookContext } from './harness/hooks.js';
 import type { HarnessId, ProviderConfig, ReasoningLevel, RunLogger } from '@myco/agent/types.js';
@@ -71,7 +71,6 @@ export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } fr
 export interface VaultToolOptions {
   turnOffset?: number;
   embeddingManager?: AgentEmbeddingPort;
-  teamClient?: AgentTeamSearchPort | null;
   machineId?: string;
   projectRoot?: string;
   vaultDir?: string;
@@ -430,7 +429,6 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
   const {
     turnOffset = 0,
     embeddingManager,
-    teamClient,
     machineId,
     projectRoot,
     vaultDir,
@@ -538,7 +536,6 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     agentId,
     runId,
     embeddingManager,
-    teamClient,
     machineId: machineId ?? requestContext?.machineId,
     projectRoot,
     vaultDir,

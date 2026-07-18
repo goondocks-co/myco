@@ -1,6 +1,6 @@
 ---
 name: myco:mcp-tool-development-lifecycle
-description: "Comprehensive lifecycle for authoring, registering, documenting, and maintaining MCP tools in packages/myco/src/tools/ — covering schema definition in TOOL_DEFINITIONS arrays, handler implementation with DaemonClient patterns, shared tool-runtime registration, documentation bundling, anti-drift testing patterns, and cloud vs local placement decisions. Essential for maintaining the schema ↔ handler ↔ documentation triad that agents depend on for correct tool invocations, even when the user doesn't explicitly ask for MCP tool development."
+description: "Comprehensive lifecycle for authoring, registering, documenting, and maintaining MCP tools in packages/myco/src/tools/ — covering schema definition in TOOL_DEFINITIONS arrays, handler implementation with DaemonClient patterns, shared tool-runtime registration, documentation bundling, anti-drift testing patterns, and per-symbiont transport (mcp vs cli) decisions. Essential for maintaining the schema ↔ handler ↔ documentation triad that agents depend on for correct tool invocations, even when the user doesn't explicitly ask for MCP tool development."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -15,7 +15,6 @@ MCP tools are the primary interface between agents and the Myco intelligence pip
 - Working Myco development environment with `packages/myco/src/tools/` structure
 - Understanding of JSON Schema for parameter definitions
 - Familiarity with TypeScript handler patterns and DaemonClient usage
-- Knowledge of local vs cloud MCP bifurcation model
 - Understanding of shared tool-runtime supporting multiple transports (MCP stdio, HTTP MCP, CLI)
 
 ## Procedure A: Schema Definition
@@ -27,7 +26,7 @@ Define the tool interface in `packages/myco/src/tools/definitions.ts` (shared to
    export const TOOL_MY_NEW_TOOL = 'myco_my_new_tool';
    ```
 
-2. **Add schema entry** to the appropriate array (`TOOL_DEFINITIONS` for local tools, `COLLECTIVE_TOOL_DEFINITIONS` for Collective-dependent tools):
+2. **Add schema entry** to `TOOL_DEFINITIONS` (the single local tool-definition array — there is no separate cloud/Collective array; the daemon's Collective MCP integration was removed):
    ```typescript
    {
      name: TOOL_MY_NEW_TOOL,
@@ -35,8 +34,6 @@ Define the tool interface in `packages/myco/src/tools/definitions.ts` (shared to
      cortex: {
        guidance: 'Clear guidance for when to use this tool vs alternatives',
        priority: 50,
-       requiresTeam: false,
-       requiresCollective: false,
      },
      annotations: {
        readOnlyHint: true,
@@ -67,7 +64,7 @@ Define the tool interface in `packages/myco/src/tools/definitions.ts` (shared to
 
 5. **Set annotations correctly** — `readOnlyHint: true` for read-only tools, `destructiveHint: true` for tools that can destroy data.
 
-6. **Configure cortex metadata** — set `requiresCollective: true` for tools that only work when connected to a Collective.
+6. **Configure cortex metadata** — set `priority` and `guidance` to help agent tool-selection; there is no Collective-connection gate to configure (that conditional-enablement mechanism was removed with the daemon's Collective integration).
 
 7. **Avoid OpenAI strict mode incompatibilities** — OpenAI's strict JSON Schema mode rejects `oneOf`, `anyOf`, `allOf`, `enum`, and `not` keywords at the top level. Use simple types with clear descriptions instead.
 
@@ -100,7 +97,6 @@ Register the tool once in the shared tool runtime. Stdio MCP, HTTP MCP, and the 
 2. **MCP stdio and HTTP registration** — automatically handled via shared definitions
 3. **CLI registration** — becomes available after tool is in TOOL_DEFINITIONS
 4. **Test multi-transport availability** — verify tool appears in MCP client, HTTP MCP endpoints, and CLI
-5. **Configure conditional enablement** — use cortex flags for Collective-dependent tools
 
 ## Procedure D: Documentation Bundling and Regeneration
 
@@ -154,22 +150,28 @@ Handle incomplete or placeholder tools appropriately:
 4. **Test stub behavior** — ensure stubs return consistent responses across all transports.
 5. **Remove or implement** — stubs confuse agents. Either complete or remove entirely.
 
-## Procedure G: Cloud vs Local Placement Decisions
+## Procedure G: Per-Symbiont Transport Decisions
 
-Decide whether new tools belong in local or cloud MCP surface, and whether the hosting symbiont uses MCP or CLI transport:
+There is a single local tool surface (`TOOL_DEFINITIONS`) — the daemon's Collective MCP
+integration (a separate `COLLECTIVE_TOOL_DEFINITIONS` array, `collective_*` tools, and their
+conditional connection-state enablement) was removed when Collective integration was retired
+from the main binary. `packages/myco-collective` itself still exists as a standalone,
+dormant-but-buildable package with its own tools — but it is no longer wired into the
+daemon's MCP surface, so new daemon tools always go in `TOOL_DEFINITIONS`.
 
-1. **Default to local-only** — new tools go in `TOOL_DEFINITIONS` unless they meet cloud criteria.
-2. **Promote to cloud surface** only if tool is semantically read-only, safe for federation, or required for Collective operations.
-3. **Use `COLLECTIVE_TOOL_DEFINITIONS`** for tools requiring Collective connection state.
-4. **Test both surfaces** — verify tools work correctly in both local and (if applicable) cloud federation.
-5. **Document placement rationale** — explain why tool belongs in its chosen surface.
+What still varies per-symbiont is **transport**, not placement:
+
+1. **All new tools go in `TOOL_DEFINITIONS`** — there is no separate surface to choose between.
+2. **Check the target symbiont's `toolTransport`** — a `cli`-transport symbiont receives no MCP tools at all regardless of definition; it calls tools via `myco tool call` instead (see below).
+3. **Test across transports actually in use** — MCP stdio, HTTP MCP (Team Host's external read-only endpoint), and CLI — not across a local/cloud split that no longer exists.
+4. **Document any transport-specific behavior**, not a placement rationale.
 
 **`toolTransport` manifest field drives symbiont installer seams**: Each symbiont manifest declares `toolTransport: 'mcp' | 'cli'` (defined in `packages/myco/src/symbionts/manifest-schema.ts`, defaulting to `'mcp'`). This single field controls three installer seams:
    - `shouldProvisionMcpServer()` in `packages/myco/src/symbionts/installer.ts` — returns `false` for `cli` transport, skipping MCP server provisioning entirely
    - `CLI_TOOL_TRANSPORT_DIRECTIVE` injection (from `packages/myco/src/context/cortex-injection-context.ts`) — injected into context when `toolTransport === 'cli'` so the agent knows to call tools via `myco tool call` instead of MCP
    - `myco doctor` treatment — CLI-transport symbionts have MCP config swept/uninstalled rather than verified
 
-   When deciding cloud vs local placement, also check the target symbiont's `toolTransport` — a `cli` symbiont cannot receive MCP tools regardless of TOOL_DEFINITIONS placement.
+   Always check the target symbiont's `toolTransport` when adding a new tool — a `cli` symbiont cannot receive MCP tools regardless of TOOL_DEFINITIONS placement.
 
 ## Procedure H: Skill Lifecycle Belongs Inside the Harness, Not on MCP
 
@@ -201,13 +203,9 @@ Handle project context changes with Grove migration architecture:
 
 **Documentation lag**: Bundled documentation becomes stale when handlers change. Always regenerate after schema or handler modifications.
 
-**Cloud surface leakage**: Write operations must never leak to cloud MCP surface. Default to local-only; promote to cloud only with explicit verification.
-
 **Validation vs runtime divergence**: Schema validation passes but handler expects different parameter structure. Test actual invocations.
 
-**Collective conditional enablement**: `collective_*` tools are enabled by Collective connection state. Test both connected and disconnected scenarios.
-
-**Tool name consistency**: Use `myco_` prefix for standard tools, `collective_` prefix for Collective-dependent tools. Avoid generic names that conflict with other MCP servers.
+**Tool name consistency**: Use the `myco_` prefix for all tools. Avoid generic names that conflict with other MCP servers.
 
 **Tool name canonicalization**: The activities table records tool calls with canonicalized names. Never use legacy prefixes from pre-unification period. Current standard: `mcp__` for MCP-specific tools, `myco_` for standard tools. Verify activities records match tool definitions exactly.
 

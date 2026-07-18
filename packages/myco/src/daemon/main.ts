@@ -44,12 +44,6 @@ import { resolveGlobalPrefix, resolveMycoBinary } from './update-checker.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { migrateLegacyBackups } from '@myco/backup/migrate.js';
-import { createTeamHandlers } from './api/team-connect.js';
-import { createTeamSelectionHandlers } from './api/team-selection.js';
-import { createListTeamMembersHandler } from './api/team-members.js';
-import { teamRegistry } from '@myco/team/registry.js';
-import { parseOptionalTeamId } from './api/team-request-parsing.js';
-import { createCollectiveHandlers } from './api/collective.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
 import {
   handleListCandidates,
@@ -61,7 +55,6 @@ import {
   createSkillRecordDeleteHandler,
 } from './api/skills.js';
 import { initTeamContext } from '@myco/team/context.js';
-import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
@@ -1519,7 +1512,6 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/routed-capture/plan', createRoutedPlanHandler({ logger }));
 
   // --- Context injection (cortex brief + semantic spore search) ---
-  let teamSync!: ReturnType<typeof initTeamSync>;
   const contextDeps = {
     vaultDir: bootstrapVaultDir,
     // Per-request grove resolution — never the bootstrap manager (anchor-leak
@@ -1527,7 +1519,6 @@ export async function main(): Promise<void> {
     resolveEmbeddingManager: (rc: MycoRequestContext | undefined) => getEmbeddingRuntime(rc).manager,
     liveConfig,
     logger,
-    getTeamClient: () => teamSync.getTeamClient(),
   };
   server.registerRoute('POST', '/context', createSessionContextHandler(contextDeps));
   server.registerRoute('POST', '/context/resume', createResumeContextHandler(contextDeps));
@@ -1547,7 +1538,6 @@ export async function main(): Promise<void> {
     liveConfig,
     resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
     logger,
-    getTeamClient: () => teamSync.getTeamClient(),
     registerInflightRun: (p) => inflightRuns.register(p),
   });
 
@@ -1645,7 +1635,6 @@ export async function main(): Promise<void> {
       // hit the run's grove store, never the bootstrap anchor (anchor-leak A).
       resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
       logger,
-      getTeamClient: () => teamSync.getTeamClient(),
       cache: runtimeCache,
       mycoHome,
       daemonStateDir: daemonService.stateDir,
@@ -1848,8 +1837,7 @@ export async function main(): Promise<void> {
 
   server.registerRoute('GET', '/api/sessions', handleListSessions);
 
-  const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
-  server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
+  server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler());
   const sessionMutations = createSessionMutationHandlers({ embeddingManager, resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry, transcriptMiner });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
@@ -1966,7 +1954,6 @@ export async function main(): Promise<void> {
         projectRoot,
         embeddingManager,
         mycoConfig,
-        () => teamSync.getTeamClient(),
         requestContext,
         treeAvailable,
       );
@@ -2020,7 +2007,7 @@ export async function main(): Promise<void> {
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
-  server.registerRoute('GET', '/api/spores/:id', createGetSporeHandler(teamFallbackDeps));
+  server.registerRoute('GET', '/api/spores/:id', createGetSporeHandler());
   server.registerRoute('GET', '/api/entities', handleListEntities);
   server.registerRoute('GET', '/api/graph/seeds', handleGetGraphSeeds);
   server.registerRoute('GET', '/api/graph', handleGetFullGraph);
@@ -2041,7 +2028,6 @@ export async function main(): Promise<void> {
     // Per-request grove resolution — never the bootstrap manager (anchor-leak A).
     resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
     logger,
-    getTeamClient: () => teamSync.getTeamClient(),
   });
   server.registerRoute('POST', '/api/agent/run', agentRunHandlers.handleRun);
   server.registerRoute('GET', '/api/agent/runs', agentRunHandlers.handleListRuns);
@@ -2172,240 +2158,6 @@ export async function main(): Promise<void> {
     return result;
   });
 
-  // --- Team sync ---
-  teamSync = initTeamSync({
-    liveConfig,
-    machineId,
-    logger,
-    vaultDir: bootstrapVaultDir,
-    serverVersion: server.version,
-    daemonStateDir: daemonService.stateDir,
-    requestContext: dataPaths.requestContext,
-  });
-  reactions.on(['team'], async () => {
-    await teamSync.reconcileClient();
-  });
-  await teamSync.reconcileClient();
-
-  const teamHandlers = createTeamHandlers({
-    vaultDir: bootstrapVaultDir,
-    machineId,
-    logger,
-    runtimeCache,
-    getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
-    getTeamClientForId: (teamId) => teamSync.getTeamClientById(teamId),
-    globalPrefix,
-  });
-  async function reconcileTeamRoute(req: RouteRequest): Promise<void> {
-    await teamSync.reconcileClient(req.requestContext);
-  }
-  const listTeamMembersHandler = createListTeamMembersHandler({
-    getTeamClientForId: (teamId) => teamSync.getTeamClientById(teamId),
-  });
-  const teamSelectionHandlers = createTeamSelectionHandlers();
-  server.registerRoute('GET', '/api/team/registry', async (req) => teamSelectionHandlers.handleListTeams(req));
-  server.registerRoute('GET', '/api/team/projects', async (req) => teamSelectionHandlers.handleListProjects(req));
-  server.registerRoute('POST', '/api/team/project-membership', async (req) => {
-    const body = (req.body ?? {}) as { action?: unknown; team_id?: unknown; grove_id?: unknown; project_id?: unknown };
-    let affectedGroveId = typeof body.grove_id === 'string' ? body.grove_id : null;
-    let addAfterSave: { groveId: string; projectId: string; teamId: string } | null = null;
-    let removeAfterSave: { groveId: string; projectId: string; teamId: string } | null = null;
-    if (
-      body.action === 'remove' &&
-      typeof body.team_id === 'string' &&
-      typeof body.grove_id === 'string' &&
-      typeof body.project_id === 'string'
-    ) {
-      const existingTeam = teamRegistry.get(body.team_id);
-      if (existingTeam?.projects.some((project) => project.project_id === body.project_id)) {
-        removeAfterSave = { groveId: body.grove_id, projectId: body.project_id, teamId: body.team_id };
-      }
-    } else if (
-      body.action === 'add' &&
-      typeof body.team_id === 'string' &&
-      typeof body.grove_id === 'string' &&
-      typeof body.project_id === 'string'
-    ) {
-      addAfterSave = { groveId: body.grove_id, projectId: body.project_id, teamId: body.team_id };
-    }
-    const result = teamSelectionHandlers.handleSetProjectMembership(req);
-    if (!result.status || result.status < 400) {
-      if (removeAfterSave) {
-        await teamSync.prepareProjectRemoval(
-          runtimeCache,
-          removeAfterSave.groveId,
-          removeAfterSave.projectId,
-          removeAfterSave.teamId,
-        );
-      } else if (addAfterSave) {
-        await teamSync.prepareProjectAddition(
-          runtimeCache,
-          addAfterSave.groveId,
-          addAfterSave.projectId,
-          addAfterSave.teamId,
-        );
-      }
-      // Reconcile the Grove that actually owns the (re)assigned project, not the
-      // ambient request Grove — membership is machine-wide on the Team page, so a
-      // project can be assigned/removed from any Grove. reconcileGrove targets
-      // that Grove (a no-op when the Grove is not registered in this home) and runs the
-      // full backfill + flush so an assigned project starts syncing immediately
-      // and a removed project's rows are purged immediately.
-      if (affectedGroveId) {
-        await teamSync.reconcileGrove(runtimeCache, affectedGroveId);
-      }
-    }
-    return result;
-  });
-  server.registerRoute('POST', '/api/team/connect', async (req) => {
-    const result = await teamHandlers.handleConnect(req);
-    if (!result.status || result.status < 400) {
-      await applyConfigWriteReactions(['team.enabled', 'team.worker_url'], {
-        vaultDir: bootstrapVaultDir,
-        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
-      });
-      await teamSync.reconcileClient(req.requestContext);
-    }
-    return result;
-  });
-  server.registerRoute('POST', '/api/team/join', async (req) => {
-    const result = await teamHandlers.handleJoin(req);
-    if (!result.status || result.status < 400) {
-      await teamSync.reconcileClient(req.requestContext);
-    }
-    return result;
-  });
-  server.registerRoute('POST', '/api/team/forget', async (req) => {
-    const body = (req.body ?? {}) as { team_id?: unknown };
-    const teamId = typeof body.team_id === 'string' ? body.team_id.trim() : '';
-    if (teamId) {
-      const preparation = await teamSync.prepareTeamForget(runtimeCache, teamId);
-      if (preparation.pendingDeletes > 0 || preparation.flushErrors > 0) {
-        return {
-          status: 503,
-          body: {
-            error: 'team_forget_cleanup_pending',
-            enqueued: preparation.enqueued,
-            flush_errors: preparation.flushErrors,
-            pending_deletes: preparation.pendingDeletes,
-            reset: preparation.reset,
-          },
-        };
-      }
-    }
-    const result = await teamHandlers.handleForget(req);
-    if (!result.status || result.status < 400) {
-      await teamSync.reconcileClient(req.requestContext);
-    }
-    return result;
-  });
-  server.registerRoute('POST', '/api/team/disconnect', async (req) => {
-    const result = await teamHandlers.handleDisconnect(req);
-    if (!result.status || result.status < 400) {
-      await applyConfigWriteReactions(['team.enabled', 'team.worker_url'], {
-        vaultDir: bootstrapVaultDir,
-        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
-      });
-      await teamSync.reconcileClient(req.requestContext);
-    }
-    return result;
-  });
-  server.registerRoute('GET', '/api/team/status', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleStatus(req);
-  });
-  server.registerRoute('GET', '/api/team/members', async (req) => {
-    await reconcileTeamRoute(req);
-    return listTeamMembersHandler(req);
-  });
-  server.registerRoute('POST', '/api/team/backfill', async (req) => {
-    const startedAt = Date.now();
-    await reconcileTeamRoute(req);
-    const result = await teamHandlers.handleBackfill(req);
-    if (result.status && result.status >= 400) return result;
-    const flush = await teamSync.flushPending(req.requestContext);
-    const durationMs = Date.now() - startedAt;
-    const resultBody = result.body as Record<string, unknown>;
-    logger.info(LOG_KINDS.TEAM_SYNC_HANDOFF, 'Team sync handoff complete', {
-      mode: typeof resultBody.mode === 'string' ? resultBody.mode : null,
-      enqueued: typeof resultBody.enqueued === 'number' ? resultBody.enqueued : null,
-      flushed: flush.handedOff,
-      rejected: flush.rejected,
-      batches: flush.batches,
-      duration_ms: durationMs,
-      error: flush.error ?? null,
-    });
-    return {
-      ...result,
-      body: {
-        ...resultBody,
-        flushed: flush.handedOff,
-        rejected: flush.rejected,
-        batches: flush.batches,
-        duration_ms: durationMs,
-        flush_error: flush.error ?? null,
-      },
-    };
-  });
-  server.registerRoute('POST', '/api/team/rotate-mcp-token', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleRotateMcpToken(req);
-  });
-  server.registerRoute('GET', '/api/team/queue-stats', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleQueueStats(req);
-  });
-  server.registerRoute('GET', '/api/team/sync-summary', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleSyncSummary(req);
-  });
-  server.registerRoute('GET', '/api/team/dlq', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleDlqList(req);
-  });
-  server.registerRoute('POST', '/api/team/dlq/retry', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleDlqRetry(req);
-  });
-  server.registerRoute('POST', '/api/team/dlq/discard', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleDlqDiscard(req);
-  });
-  // POST /api/team/rebuild — destructive one-way repair: truncate this
-  // machine's cloud mirror (D1 + Vectorize), then re-push the full local
-  // Grove. The local Grove is the source of truth; we re-push rather than
-  // reconcile. Retired the old drift-reconciler endpoint in favour of this.
-  server.registerRoute('POST', '/api/team/rebuild', async (req) => {
-    await reconcileTeamRoute(req);
-    const parsedTeamId = parseOptionalTeamId(req.body);
-    if (!parsedTeamId.ok) return { status: 400, body: { error: parsedTeamId.error } };
-    const result = await teamSync.rebuildFromLocal(runtimeCache, req.requestContext, parsedTeamId.teamId);
-    return { status: result.error ? 502 : 200, body: { ok: !result.error, ...result } };
-  });
-  // POST /api/team/reconcile — on-demand symmetric reconcile. An immediacy
-  // trigger only: it runs the SAME fully-automatic full-diff reconcile across
-  // every owned (grove, project) partition that the periodic backstop runs, just
-  // now instead of on the next tick. There is no operator power — deletes are
-  // bounded by settledness + cross-pass drift stability inside reconcilePartition
-  // (an orphan must persist across two passes before it is deleted), so a single
-  // on-demand pass heals only drift already observed on a prior pass.
-  server.registerRoute('POST', '/api/team/reconcile', async (req) => {
-    // One pass over every owned grove. We do NOT also call reconcileTeamRoute(req)
-    // here — that would run a redundant pass over the request grove on top of the
-    // all-groves fan-out below. Targeting a single grove is future UI work.
-    await teamSync.reconcileAllGroves(runtimeCache);
-    return { status: 200, body: { ok: true } };
-  });
-
-  const collectiveHandlers = createCollectiveHandlers({
-    getTeamClient: () => teamSync.getTeamClient(),
-  });
-  server.registerRoute('GET', '/api/collective/status', collectiveHandlers.handleStatus);
-  server.registerRoute('GET', '/api/collective/search', collectiveHandlers.handleSearch);
-  server.registerRoute('GET', '/api/collective/projects', collectiveHandlers.handleProjects);
-  server.registerRoute('GET', '/api/collective/project', collectiveHandlers.handleProject);
-  server.registerRoute('GET', '/api/collective/settings', collectiveHandlers.handleSettings);
-
   // --- Search, activity feed, and embedding status ---
 
   // Dual-mode read: a caller-supplied context scopes to its project; a
@@ -2414,8 +2166,6 @@ export async function main(): Promise<void> {
   const searchHandler = createSearchHandler({
     embeddingManager,
     resolveEmbeddingManager: (requestContext) => getEmbeddingRuntime(requestContext).manager,
-    getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
-    machineId,
   });
   server.registerRoute('GET', '/api/search', searchHandler);
   server.registerRoute('GET', '/api/activity', handleGetFeed);
@@ -2481,25 +2231,6 @@ export async function main(): Promise<void> {
 
   // --- Notification API routes ---
   registerNotificationRoutes(server, { machineId, logger });
-
-  // Reconcile team_sync_state.enabled for every registered Grove BEFORE the
-  // port is bound. reconcileClient() above only arms the boot Grove's flag;
-  // non-boot Groves' flags stay at their persisted default until their first
-  // flush tick — a window where deletes on those Groves are not journaled to
-  // team_outbox (the AFTER DELETE triggers gate on this flag, and deletes have
-  // no backfill safety net, so an un-journaled delete is permanently
-  // un-mirrored). Awaiting this before server.start() guarantees every Grove's
-  // delete triggers are armed before any HTTP traffic can issue a delete. The
-  // flag writes fan out concurrently (parallel) and a single Grove's failure is
-  // isolated + logged inside forEachGrove, so this neither blocks startup long
-  // nor aborts on one bad Grove. No push, no client creation.
-  try {
-    await teamSync.reconcileAllGroveFlags(runtimeCache);
-  } catch (err) {
-    logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Boot-time Grove flag reconcile failed', {
-      error: errorMessage(err),
-    });
-  }
 
   // --- Start server ---
   //
@@ -2676,14 +2407,13 @@ export async function main(): Promise<void> {
     stateAuthority: daemonStateAuthority,
     server,
   });
-  teamSync.registerFlushJob(jobRunner, runtimeCache);
 
   // Team Host transcript-drain backstop (capture-push C1). The mid-turn drain
   // rides its own ~3 s throttle (fired from the collect path) and terminal routes
   // flush synchronously, so this job is the catch-up sweep for anything a throttle
   // missed (e.g. a host that was unreachable at flush time) and — via `hold.pending`
   // — the deep-sleep inhibitor so the machine never sleeps on an un-shipped turn
-  // (mirrors team-sync-init's flush-job hold + job-runner's `providesHold`).
+  // (mirrors job-runner's `providesHold`).
   jobRunner.register({
     name: 'team-host-transcript-drain',
     runIn: ['active', 'idle', 'sleep'],
@@ -2934,26 +2664,6 @@ export async function main(): Promise<void> {
           remaining: outcome.remaining,
         });
       }
-    }
-    // Drain pending team-sync outbox rows across every Grove before
-    // closing DBs. Without this, SIGTERM/suspend leaves rows queued
-    // locally with no trigger to retry until the next daemon boot. The
-    // RunnerJob fans out the same way (see team-sync-init.ts:registerFlushJob).
-    try {
-      const aggregate = await teamSync.flushAllGroves(runtimeCache);
-      if (aggregate.flushed > 0 || aggregate.rejected > 0 || aggregate.errors > 0) {
-        logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Team-sync drain at shutdown', {
-          groves: aggregate.groves,
-          flushed: aggregate.flushed,
-          rejected: aggregate.rejected,
-          batches: aggregate.batches,
-          errors: aggregate.errors,
-        });
-      }
-    } catch (err) {
-      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Team-sync drain at shutdown failed', {
-        error: errorMessage(err),
-      });
     }
     registry.destroy();
     await externalMcpListener.unbind();

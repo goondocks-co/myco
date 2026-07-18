@@ -9,7 +9,6 @@ import path from 'node:path';
  */
 const GUARDED = [
   'packages/myco/src/db/queries/team-outbox.ts',
-  'packages/myco/src/daemon/team-sync-init.ts',
 ];
 
 const FORBIDDEN = [

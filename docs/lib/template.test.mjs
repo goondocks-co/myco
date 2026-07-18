@@ -21,7 +21,7 @@ test('sets canonical and raw-markdown alternate', () => {
 });
 
 test('renders the sidebar with all guides and marks the current page active', () => {
-  assert.match(page, /href="\/team-sync"/);
+  assert.match(page, /href="\/team-host"/);
   assert.match(page, /class="ds-link active"[^>]*href="\/quickstart"/);
 });
 

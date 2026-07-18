@@ -20,12 +20,9 @@ const FIXTURE_CONTEXT = resolveLegacyRequestContext(FIXTURE_VAULT, {
   tenancySource: 'caller',
 });
 
-function mockClient(options?: { collective?: boolean; digest?: unknown }): DaemonClient {
+function mockClient(options?: { digest?: unknown }): DaemonClient {
   return {
     get: vi.fn(async (endpoint: string) => {
-      if (endpoint === '/api/team/status') {
-        return { ok: true, data: { collective_connected: options?.collective ?? false } };
-      }
       if (endpoint === '/api/digest') {
         return { ok: true, data: options?.digest ?? { tiers: [] } };
       }
@@ -38,21 +35,12 @@ function mockClient(options?: { collective?: boolean; digest?: unknown }): Daemo
 }
 
 describe('Myco tools dispatcher', () => {
-  it('lists the core tool surface without collective tools by default', async () => {
+  it('lists the core tool surface', async () => {
     const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
     const names = (await tools.listTools()).map((tool) => tool.name);
 
     expect(names).toContain('myco_cortex');
     expect(names).toContain('myco_spores');
-    expect(names).not.toContain('collective_search');
-  });
-
-  it('includes collective tools when the daemon reports a collective connection', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient({ collective: true }), { requestContext: FIXTURE_CONTEXT });
-    const names = (await tools.listTools()).map((tool) => tool.name);
-
-    expect(names).toContain('collective_search');
-    expect(names).toContain('collective_projects');
   });
 
   it('dispatches a core tool through the shared path', async () => {
@@ -76,12 +64,9 @@ describe('Myco tools dispatcher', () => {
     const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
     await expect(tools.callTool('missing_tool', {})).rejects.toThrow('Unknown tool: missing_tool');
-  });
-
-  it('rejects unavailable collective tools', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
-
-    await expect(tools.callTool('collective_search', { query: 'q' })).rejects.toThrow('Tool unavailable: collective_search');
+    // collective_* names are not registered tools; they fail the same way
+    // as any other unknown tool name.
+    await expect(tools.callTool('collective_search', { query: 'q' })).rejects.toThrow('Unknown tool: collective_search');
   });
 
   it('rejects non-object input', async () => {
@@ -183,8 +168,7 @@ describe('Myco tools dispatcher', () => {
       const client = mockClient();
       // Override get for the search endpoint so handleMycoSearch returns []
       (client.get as unknown as { mockImplementation: (fn: (e: string) => unknown) => void })
-        .mockImplementation(async (endpoint: string) => {
-          if (endpoint === '/api/team/status') return { ok: true, data: { collective_connected: false } };
+        .mockImplementation(async () => {
           return { ok: true, data: { results: [] } };
         });
       const tools = createMycoTools(vaultDir, client, { requestContext: callerContext(vaultDir) });
@@ -205,9 +189,6 @@ describe('Myco tools dispatcher', () => {
       const client = {
         get: vi.fn(async (endpoint: string, options?: { headers?: unknown }) => {
           calls.push({ endpoint, headers: options?.headers });
-          if (endpoint.startsWith('/api/team/status')) {
-            return { ok: true, data: { collective_connected: false } };
-          }
           for (const [prefix, body] of Object.entries(endpointResponses)) {
             if (endpoint === prefix || endpoint.startsWith(`${prefix}?`)) {
               return { ok: true, data: body };
@@ -261,8 +242,7 @@ describe('Myco tools dispatcher', () => {
 
     it('falls back to a typed failure when the daemon returns !ok', async () => {
       const client = {
-        get: vi.fn(async (endpoint: string) => {
-          if (endpoint.startsWith('/api/team/status')) return { ok: true, data: { collective_connected: false } };
+        get: vi.fn(async () => {
           return { ok: false, data: undefined };
         }),
         post: vi.fn().mockResolvedValue({ ok: true, data: {} }),

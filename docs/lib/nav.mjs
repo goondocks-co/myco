@@ -26,8 +26,7 @@ export const NAV = [
   {
     group: 'Team',
     items: [
-      { slug: 'team-sync', title: 'Team Sync' },
-      { slug: 'cloud-mcp', title: 'Cloud MCP' },
+      { slug: 'team-host', title: 'Team Host' },
       { slug: 'collective', title: 'Collective' },
     ],
   },

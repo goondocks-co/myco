@@ -76,12 +76,4 @@ describe('MCP tool surface (createMycoTools)', () => {
       expect(tools).not.toContain(retired);
     }
   });
-
-  it('does not leak collective tools into the core registration', () => {
-    const tools = createMycoTools(tmpDir, client).getRegisteredTools();
-    expect(tools).not.toContain('collective_search');
-    expect(tools).not.toContain('collective_projects');
-    expect(tools).not.toContain('collective_project');
-    expect(tools).not.toContain('collective_settings');
-  });
 });

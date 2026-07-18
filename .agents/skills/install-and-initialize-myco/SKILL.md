@@ -46,7 +46,7 @@ Navigate to the project root directory:
 cd /path/to/your/project
 ```
 
-Start the Myco daemon. The daemon runs as a background process and manages session capture, intelligence processing, and team sync. The daemon UI provides configuration and monitoring:
+Start the Myco daemon. The daemon runs as a background process and manages session capture, intelligence processing, and Team Host connectivity. The daemon UI provides configuration and monitoring:
 
 ```bash
 myco daemon start
@@ -115,9 +115,10 @@ Doctor flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists
 After the daemon is running, open the **Myco Agent** section in the daemon UI to enable Myco Agent pipeline features:
 - LLM and embedding provider configuration
 - Agent pipeline scheduling (skill survey, digest, etc.)
-- Team sync settings
 
 The Myco Agent pipeline is intentionally off-by-default so new installations capture data before any processing runs. Enable features as needed through the UI.
+
+Team collaboration settings live on a separate **Team** page, not in the Myco Agent section — see `docs/team-host.md` for joining or hosting a team.
 
 ### 5. Managing Updates
 
@@ -189,14 +190,22 @@ The CLI build at `packages/myco/bin/myco.cjs` is required for dev configuration 
 make dev-link
 ```
 
-This creates four symlinks in `~/.local/bin/` and writes `~/.myco/runtime.command`:
+This creates two entries in `~/.local/bin/` and writes the project-scope `.myco/runtime.command` (in the repo, not `~/.myco/` — dev mode applies only inside this repo):
 
-- **`myco-dev`** — symlink to `packages/myco/bin/myco.cjs`. Used for dogfooding agent and core daemon changes.
-- **`myco-team-dev`** — symlink to `packages/myco-team/dist/main.js`. Used for manual testing of team sync operator flows.
-- **`myco-collective-dev`** — symlink to `packages/myco-collective/dist/main.js`. Used for manual testing of Collective operator flows.
+- **`myco-dev`** — a wrapper script that sets `MYCO_HOME=~/.myco-dev` and execs the freshly-built standalone binary copied to `~/.myco-dev/bin/myco`. Used for dogfooding agent and core daemon changes.
 - **`myco-run`** — symlink to `packages/myco/bin/myco-run`. Stable operator entrypoint for MCP server mode; never delete this even if it appears unused.
 
-`~/.myco/runtime.command` is set to `myco-dev`. The hook guard only uses this file to choose the main Myco binary; it does not switch team or collective operator CLIs.
+The operator CLIs (team-sync and Collective) are **not** part of `make dev-link` — there are no `myco-team-dev`/`myco-collective-dev` links anymore. To run either dormant operator CLI locally, build its package and invoke the dist entry directly:
+
+```bash
+npm run build -w @goondocks/myco-collective
+node packages/myco-collective/dist/main.js status
+
+npm run build -w @goondocks/myco-team
+node packages/myco-team/dist/main.js status --team-id <team_id>
+```
+
+`.myco/runtime.command` is set to the absolute path of `myco-dev`. The hook guard only uses this file to choose the main Myco binary; it never selects an operator CLI.
 
 `.agents/myco-hook.cjs` reads `~/.myco/runtime.command` at every hook invocation and substitutes that path for the default `myco` command. Because the read happens at hook-fire time (not at shell startup), no shell restart is required.
 
@@ -345,6 +354,6 @@ This is the canonical way to invoke Cortex or any Myco MCP tool from a script or
 
 **Symlinks go stale after package relocation.** When the Myco project restructures (e.g., moving into a monorepo), `~/.local/bin/myco-*` symlinks still point to the old locations. If the target dist file doesn't exist at the old path, hooks will fail silently. Fix this by re-running `make dev-link` after any significant directory reorganization.
 
-**Team and Collective dev binaries are separate tools.** `myco-team-dev` and `myco-collective-dev` are for manual CLI use. `~/.myco/runtime.command` still points to `myco-dev`, because hooks and the daemon only need the main Myco binary.
+**Operator CLIs are not dev-linked.** `make dev-link` handles only the main Myco binary — there are no `myco-team-dev`/`myco-collective-dev` links. Run the dormant operator CLIs manually (`npm run build -w <pkg>` then `node packages/<pkg>/dist/main.js <cmd>`); hooks and the daemon only ever need the main Myco binary selected by `runtime.command`.
 
 **Global detection in development mode.** When running `myco-dev`, the manifest-driven detection system uses the development binary's manifest registry. This may differ from the production registry, potentially affecting symbiont detection behavior during development. Use `myco-dev doctor` to validate detection status with the development binary.

@@ -13,7 +13,6 @@ import {
   releaseStateField,
 } from '@myco/release-provenance/annotations.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
-import { fetchTeamFallback, type TeamFallbackDeps } from './team-fallback.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -79,8 +78,10 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
   return { body: { spores, total, offset, limit } };
 }
 
-/** Factory form — supports team fallback when the spore is missing locally. */
-export function createGetSporeHandler(deps: TeamFallbackDeps = {}) {
+/**
+ * Factory form — local-only: a miss is a plain not-found.
+ */
+export function createGetSporeHandler() {
   return async function handleGetSpore(req: RouteRequest): Promise<RouteResponse> {
     const scope = projectScopeFromRequestContext(req.requestContext);
     const spore = getSpore(req.params.id, scope);
@@ -94,16 +95,11 @@ export function createGetSporeHandler(deps: TeamFallbackDeps = {}) {
       };
     }
 
-    const fallback = await fetchTeamFallback(deps, 'spores', req.params.id);
-    if (fallback) {
-      return { body: { ...fallback.record, source: fallback.source } };
-    }
-
     return { status: 404, body: { error: 'not_found' } };
   };
 }
 
-/** Back-compat: no-team-fallback handler for existing call sites. */
+/** Back-compat: default handler for existing call sites. */
 export const handleGetSpore = createGetSporeHandler();
 
 // ---------------------------------------------------------------------------

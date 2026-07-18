@@ -98,8 +98,8 @@ service is torn down too. Idempotent.
   attach: `Usage: myco attach <project> --host <hostId>
 
 Records a project's residency mapping so future requests route to the host that
-serves it, instead of a local Grove. Attach-going-forward only: it does NOT
-migrate existing local Grove data (a project that still has local data is refused
+serves it, instead of staying local-only. Attach-going-forward only: it does NOT
+migrate existing local data (a project that still has local history is refused
 with guidance). Idempotent — re-attaching to the same host converges.
 
 Options:
@@ -107,13 +107,12 @@ Options:
                         checkout's project.toml Team Host hint).
   --project-id <proj_…> Override the project id (default: the checkout's project.toml).
 
-The Grove is sourced from the host's own self-report (its served_grove_id) —
-there is no --grove flag to type.
+The host's team storage is used automatically — there is no id to supply for it.
 `,
   detach: `Usage: myco detach <project>
 
-Clears a project's residency mapping so future requests resolve to a local Grove
-again. Detach-only: removes the mapping going forward, pulls back NO data.
+Clears a project's residency mapping so future requests go back to local-only.
+Detach-only: removes the mapping going forward, pulls back NO data.
 Idempotent — detaching a project that is not attached is a clean no-op.
 `,
   host: `Usage: myco host <command>

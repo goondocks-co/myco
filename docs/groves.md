@@ -1,16 +1,16 @@
 # Grove Management
 
-A **Grove** is the local home for one or more projects. It gives related projects a shared vault, shared provider settings, shared backups, and optional team sync while still letting each project keep its own identity.
+A **Grove** is the local home for one or more projects. It gives related projects a shared vault, shared provider settings, shared backups, and an optional Team Host connection while still letting each project keep its own identity.
 
 Most users start with the default Grove Myco creates during install. Create more Groves when you want to separate workstreams, clients, experiments, or teams.
 
 ## When to Use More Than One Grove
 
-Keep projects in the same Grove when they should share project knowledge, provider setup, backups, and team sync membership. This is common for a monorepo, a product plus companion tooling, or several repos that one team works on together.
+Keep projects in the same Grove when they should share project knowledge, provider setup, backups, and Team Host connection. This is common for a monorepo, a product plus companion tooling, or several repos that one team works on together.
 
-Use separate Groves when projects should stay independent. Good reasons include client separation, personal versus work projects, risky experiments, or projects that should not appear in the same team sync connection.
+Use separate Groves when projects should stay independent. Good reasons include client separation, personal versus work projects, risky experiments, or projects that shouldn't route through the same Team Host.
 
-The Grove boundary matters because search, embeddings, backups, and team sync are organized around it.
+The Grove boundary matters because search, embeddings, backups, and Team Host connections are organized around it.
 
 ## How Projects Join a Grove
 
@@ -85,7 +85,7 @@ You can promote a capture-only project later by opening its capability panel and
 
 ## Moving and Archiving Projects
 
-Move a project when it belongs with a different set of Grove settings or a different team sync connection. Myco keeps the project identity intact and shows the project under the target Grove after the move.
+Move a project when it belongs with a different set of Grove settings or a different Team Host connection. Myco keeps the project identity intact and shows the project under the target Grove after the move.
 
 Archive a project when you want it out of the active list but may need it later. Archived projects can be shown and unarchived from the Groves page.
 
@@ -97,11 +97,11 @@ Backups are Grove-scoped. You can run a project backup from the Groves page, and
 
 Deleting a project is destructive and requires confirmation. When backups are enabled, Myco creates a fresh backup before destructive project deletion.
 
-## Team Sync
+## Team Host
 
-Team Sync connects a Grove to a cloud mirror so teammates and cloud agents can query shared Grove knowledge. Local Grove data remains the source of truth.
+Connecting a project to a Team Host routes its knowledge to a teammate's Myco directly, so the team and non-member agents can query it too. Local Grove data remains the source of truth.
 
-Use the **Team** page to join or manage a Team Sync connection. See [Team Sync](team-sync.md) for the full setup guide.
+Use the **Team** page to join a Team Host and connect projects to it. See [Team Host](team-host.md) for the full guide.
 
 ## Troubleshooting
 

@@ -8,7 +8,7 @@
 
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
+import { SEARCH_SIMILARITY_THRESHOLD } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import {
   getUnprocessedBatches,
@@ -114,7 +114,7 @@ function classifyEmbeddingProviderError(message: string): string | undefined {
 // ---------------------------------------------------------------------------
 
 export function createReadTools(deps: VaultToolDeps) {
-  const { agentId, embeddingManager, teamClient, machineId, requestContext } = deps;
+  const { agentId, embeddingManager, requestContext } = deps;
   const scope = projectScopeFromVaultToolDeps(deps);
 
   const originValues = Object.values(PROMPT_BATCH_ORIGIN) as [PromptBatchOrigin, ...PromptBatchOrigin[]];
@@ -375,33 +375,12 @@ export function createReadTools(deps: VaultToolDeps) {
         };
         const vectorFilters = hasSemanticSearchFilters(metadataFilters) ? metadataFilters : undefined;
 
-        // Fire local and team search in parallel
-        const [rawLocalResults, teamResults] = await Promise.all([
-          Promise.resolve(
-            embeddingManager.searchVectors(queryVector, {
-              namespace: args.namespace,
-              limit: searchLimit,
-              threshold: SEARCH_SIMILARITY_THRESHOLD,
-              filters: vectorFilters,
-            }).map((r) => ({ ...r, source: 'local' as const })),
-          ),
-          teamClient
-            ? teamClient.search(args.query, {
-                limit: searchLimit,
-                tables: args.namespace ? [args.namespace] : undefined,
-                status: args.status,
-                release_state: args.release_state,
-                release_confidence: args.release_confidence,
-                observation_type: args.observation_type,
-                since: args.since,
-                until: args.until,
-                session_id: args.session_id,
-                project_id: scope.kind === 'project' ? scope.id : undefined,
-              })
-                .then((res) => res.results.map((r) => ({ ...r, source: `${TEAM_SOURCE_PREFIX}${r.machine_id}` })))
-                .catch(() => [] as Array<Record<string, unknown>>)
-            : Promise.resolve([] as Array<Record<string, unknown>>),
-        ]);
+        const rawLocalResults = embeddingManager.searchVectors(queryVector, {
+          namespace: args.namespace,
+          limit: searchLimit,
+          threshold: SEARCH_SIMILARITY_THRESHOLD,
+          filters: vectorFilters,
+        }).map((r) => ({ ...r, source: 'local' as const }));
 
         const localResults = activeIds.size > 0
           ? rawLocalResults.filter((r) => {
@@ -419,33 +398,7 @@ export function createReadTools(deps: VaultToolDeps) {
           source: 'local' as const,
         }));
 
-        // Deduplicate: skip team results from this machine (we already have them locally)
-        let dedupedTeam = machineId
-          ? teamResults.filter((r) => (r as Record<string, unknown>).machine_id !== machineId)
-          : teamResults;
-
-        if (activeIds.size > 0) {
-          dedupedTeam = dedupedTeam.filter((r) => {
-            const sid = (r as { metadata?: { session_id?: unknown } }).metadata?.session_id;
-            return typeof sid !== 'string' || !activeIds.has(sid);
-          });
-        }
-
-        if (vectorFilters) {
-          dedupedTeam = dedupedTeam.filter((r) => matchesSemanticSearchFilters(
-            (r as { metadata?: Record<string, unknown> }).metadata,
-            metadataFilters,
-          ));
-        }
-
-        const merged = [
-          ...hydratedLocalResults,
-          ...dedupedTeam,
-        ]
-          .sort((a, b) => ((b.score as number) ?? 0) - ((a.score as number) ?? 0))
-          .slice(0, searchLimit);
-
-        return textResult({ results: merged });
+        return textResult({ results: hydratedLocalResults });
       } catch (err) {
         const message = errorMessage(err);
         const hint = classifyEmbeddingProviderError(message);

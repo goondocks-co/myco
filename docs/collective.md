@@ -1,5 +1,7 @@
 # Myco Collective
 
+> **Status: not currently integrated with the daemon, pending redesign for Team Host.** The Collective was built for the retired Team Sync (Cloudflare) stack. It isn't wired into a Team Host install today — the guide below describes the Collective as it worked with Team Sync, kept for reference until the redesign lands.
+
 Run one Myco Collective to search across projects and manage shared settings for the team workers connected to it.
 
 The Collective sits above team sync:
@@ -29,7 +31,7 @@ You also need:
 
 - a Cloudflare account
 - `wrangler` installed and authenticated
-- at least one project already using [team sync](team-sync.md)
+- at least one project already using team sync
 
 ## Create a Collective
 

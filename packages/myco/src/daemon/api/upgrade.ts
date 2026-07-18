@@ -8,12 +8,10 @@
  *   POST /api/upgrade/apply
  *   PUT  /api/upgrade/channel
  *
- * Union recompose (owned here — moved from update-checker shim per Task 7):
- *   status assembles packages[] = [myco from cache, ...operators from cache].
- *   check uses resolveMycoPackageCheck + checkOperatorCliVersions (live fetch),
- *   then persists to cache.
- * The myco apply path drives initiateAdopt (staged binary) directly.
- * Version-sync self-restart (spawnRestartScript + restarting/reason) is retained.
+ * status assembles packages[] from cache; check uses resolveMycoPackageCheck
+ * (live fetch), then persists to cache. The apply path drives initiateAdopt
+ * (staged binary) directly. Version-sync self-restart (spawnRestartScript +
+ * restarting/reason) is retained.
  */
 
 import { z } from 'zod';
@@ -35,7 +33,7 @@ import {
 } from '../update-checker.js';
 import type { CachedCheck, UpdateConfig } from '../update-checker.js';
 import { TierConfigUnreadableError } from '../../config/loader.js';
-import { spawnUpdateScript, spawnRestartScript } from '@myco/upgrade/spawn.js';
+import { spawnRestartScript } from '@myco/upgrade/spawn.js';
 import { initiateAdopt } from '@myco/upgrade/adopt.js';
 import { resolveMycoPackageCheck } from '@myco/upgrade/checker.js';
 import type { PackageCheckResult } from '@myco/upgrade/checker.js';
@@ -43,7 +41,6 @@ import { resolveMycoBinaryUpdateRefs } from '@myco/upgrade/release-resolver.js';
 import { stageBinary, DEFAULT_BINARY_UPDATE_DEPS } from '@myco/upgrade/apply-binary.js';
 import type { StageBinaryDeps } from '@myco/upgrade/apply-binary.js';
 import type { AssetRefs } from '@myco/upgrade/release-assets.js';
-import { checkOperatorCliVersions } from '../operator-cli-versions.js';
 import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { resolveNewestStagedVersion } from '@myco/upgrade/auto-check.js';
 import { versionBinaryPath } from '../../install/managed-binary.js';
@@ -144,24 +141,15 @@ const ChannelBodySchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Union assembly helpers (owned here — moved from update-checker shim)
+// Cache-derived CheckResult assembly helpers
 // ---------------------------------------------------------------------------
 
 function buildInstalledVersions(
-  globalPrefix: string | null,
   currentVersion: string,
 ): Record<UpdatePackageId, string | null> {
-  const installed: Record<UpdatePackageId, string | null> = {
-    myco: currentVersion,
-    'myco-team': null,
-    'myco-collective': null,
-  };
-  if (globalPrefix === null) return installed;
-  for (const pkg of UPDATE_PACKAGES) {
-    if (pkg.id === 'myco') continue;
-    installed[pkg.id] = getInstalledVersion(globalPrefix, pkg.packageName);
-  }
-  return installed;
+  // `myco` is the only UPDATE_PACKAGES entry; its installed version is
+  // always the running binary's version.
+  return { myco: currentVersion };
 }
 
 function resolveTargetFromCache(
@@ -177,9 +165,8 @@ function buildPackagesFromCache(
   currentVersion: string,
   cache: CachedCheck,
   channel: ReleaseChannel,
-  globalPrefix: string | null,
 ): PackageCheckResult[] {
-  const installedVersions = buildInstalledVersions(globalPrefix, currentVersion);
+  const installedVersions = buildInstalledVersions(currentVersion);
   const desiredStableRevert =
     channel === 'stable' &&
     semver.valid(currentVersion) !== null &&
@@ -241,9 +228,8 @@ function buildCheckResultFromCache(
   config: UpdateConfig,
   channel: ReleaseChannel,
   error: string | null,
-  globalPrefix: string | null,
 ): CheckResult {
-  const packages = buildPackagesFromCache(currentVersion, cache, channel, globalPrefix);
+  const packages = buildPackagesFromCache(currentVersion, cache, channel);
   const primaryPackage = packages.find((pkg) => pkg.id === 'myco');
   // `latest_stable ?? currentVersion` ensures a clean base for comparisons.
   const latestStable = primaryPackage?.latest_stable ?? currentVersion;
@@ -275,7 +261,6 @@ function buildCheckResultFromCache(
  */
 function statusFromCacheLocal(
   currentVersion: string,
-  globalPrefix: string | null,
   channelOverride?: ReleaseChannel,
   cache?: CachedCheck | null,
   config?: UpdateConfig,
@@ -290,7 +275,6 @@ function statusFromCacheLocal(
     resolvedConfig,
     effectiveChannel,
     null,
-    globalPrefix,
   );
 }
 
@@ -376,11 +360,11 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
   /**
    * GET /api/upgrade/status — returns cached upgrade state.
    *
-   * Assembles the union packages[] = [myco, ...operators] from cache.
-   * When the cache is stale, kicks off a background registry check
-   * (fire-and-forget) and immediately returns the current cached value.
-   * Retains the version-sync self-restart branch (spawnRestartScript +
-   * restarting/reason fields the card polls).
+   * Assembles the packages[] (the `myco` row) from cache. When the cache is
+   * stale, kicks off a background registry check (fire-and-forget) and
+   * immediately returns the current cached value. Retains the version-sync
+   * self-restart branch (spawnRestartScript + restarting/reason fields the
+   * card polls).
    */
   async function handleUpgradeStatus(_req: RouteRequest): Promise<RouteResponse> {
     const snapshot = readVaultSnapshot();
@@ -438,33 +422,26 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       }
     }
 
-    // Normal flow: serve cached union result; refresh in background if stale.
+    // Normal flow: serve cached result; refresh in background if stale.
     // Manual-channel machines skip the background refresh — they never auto-update.
     const config = readUpdateConfig();
     const cache = readCachedCheck();
     const autoEligible = !releaseChannelIsManual();
 
     if (autoEligible && isCacheStale(cache, config.check_interval_hours)) {
-      // Fire-and-forget background refresh using the new split checkers.
+      // Fire-and-forget background refresh.
       const effectiveChannel = snapshot.desiredChannel;
       void (async () => {
         try {
-          const installedVersions = buildInstalledVersions(globalPrefix, currentVersion);
-          const [mycoResult, operatorResult] = await Promise.allSettled([
-            resolveMycoPackageCheck(currentVersion, effectiveChannel, currentVersion),
-            checkOperatorCliVersions(effectiveChannel, installedVersions),
-          ]);
-          const freshPkgs: PackageCheckResult[] = [];
-          if (mycoResult.status === 'fulfilled') freshPkgs.push(mycoResult.value);
-          if (operatorResult.status === 'fulfilled') freshPkgs.push(...operatorResult.value);
-          writeFreshCache(freshPkgs, effectiveChannel, currentVersion);
+          const mycoResult = await resolveMycoPackageCheck(currentVersion, effectiveChannel, currentVersion);
+          writeFreshCache([mycoResult], effectiveChannel, currentVersion);
         } catch {
           /* background check failure is non-fatal */
         }
       })();
     }
 
-    const status = statusFromCacheLocal(currentVersion, globalPrefix, snapshot.desiredChannel, cache, config);
+    const status = statusFromCacheLocal(currentVersion, snapshot.desiredChannel, cache, config);
     if (!status) {
       return {
         body: {
@@ -490,39 +467,21 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
   /**
    * POST /api/upgrade/check — forces an immediate registry check (blocking).
    *
-   * Fetches live data via resolveMycoPackageCheck + checkOperatorCliVersions,
-   * assembles the union CheckResult, persists to cache, and returns fresh data.
+   * Fetches live data via resolveMycoPackageCheck, persists to cache, and
+   * returns fresh data.
    */
   async function handleUpgradeCheck(_req: RouteRequest): Promise<RouteResponse> {
     const snapshot = readVaultSnapshot();
     const config = readUpdateConfig();
     const effectiveChannel = snapshot.desiredChannel;
-    const installedVersions = buildInstalledVersions(globalPrefix, currentVersion);
-
-    const [mycoSettled, operatorSettled] = await Promise.allSettled([
-      resolveMycoPackageCheck(currentVersion, effectiveChannel, currentVersion),
-      checkOperatorCliVersions(effectiveChannel, installedVersions),
-    ]);
 
     const fetchErrors: string[] = [];
     const packages: PackageCheckResult[] = [];
 
-    if (mycoSettled.status === 'fulfilled') {
-      packages.push(mycoSettled.value);
-    } else {
-      const msg = mycoSettled.reason instanceof Error
-        ? mycoSettled.reason.message
-        : String(mycoSettled.reason);
-      fetchErrors.push(msg);
-    }
-
-    if (operatorSettled.status === 'fulfilled') {
-      packages.push(...operatorSettled.value);
-    } else {
-      const msg = operatorSettled.reason instanceof Error
-        ? operatorSettled.reason.message
-        : String(operatorSettled.reason);
-      fetchErrors.push(msg);
+    try {
+      packages.push(await resolveMycoPackageCheck(currentVersion, effectiveChannel, currentVersion));
+    } catch (err) {
+      fetchErrors.push(err instanceof Error ? err.message : String(err));
     }
 
     // Persist fresh data so the next status call serves from cache.
@@ -628,8 +587,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
    *     resolve the stable channel's refs DIRECTLY, stage them if not already
    *     present, then initiateAdopt that exact version — intentionally bypassing
    *     the no-downgrade gate for the explicit revert.
-   * For operator CLIs (myco-team / myco-collective): uses spawnUpdateScript
-   * (npm path), the same as before.
    *
    * Returns 400 when no update is available or when in dev mode.
    * Returns 409 when an update is already in flight.
@@ -638,23 +595,12 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
    */
   async function handleUpgradeApply(_req: RouteRequest): Promise<RouteResponse> {
     const snapshot = readVaultSnapshot();
-    const status = statusFromCacheLocal(currentVersion, globalPrefix, snapshot.desiredChannel);
+    const status = statusFromCacheLocal(currentVersion, snapshot.desiredChannel);
     if (!status) {
       return { status: 400, body: { error: 'no_update_available' } };
     }
 
     const mycoPackage = status.packages.find((pkg) => pkg.id === 'myco');
-
-    // Operator CLIs (myco-team / myco-collective) remain on npm.
-    const operatorSpecs = status.packages
-      .filter(
-        (pkg) =>
-          pkg.id !== 'myco' &&
-          pkg.installed &&
-          (pkg.update_available || pkg.revert_available) &&
-          pkg.latest_version,
-      )
-      .map((pkg) => `${pkg.package_name}@${pkg.latest_version}`);
 
     // Myco binary swap is needed for a forward update, a revert-to-stable, a
     // channel switch onto beta, OR a channel switch back onto stable while the
@@ -671,7 +617,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       status.channel === 'stable' && semver.prerelease(currentVersion) !== null;
     const mycoNeedsBinarySwap = mycoNeedsUpdate || enteringBeta || enteringStable;
 
-    if (operatorSpecs.length === 0 && !mycoNeedsBinarySwap) {
+    if (!mycoNeedsBinarySwap) {
       return { status: 400, body: { error: 'no_update_available' } };
     }
 
@@ -716,22 +662,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     const serviceManagedLabel = await resolveRestartServiceLabel(serviceManager);
     const reportedVersion = mycoTargetVersion ?? status.latest_version;
 
-    // Operator CLIs: spawn update script (npm path).
-    if (operatorSpecs.length > 0) {
-      spawnUpdateScript({
-        packageSpecs: operatorSpecs,
-        projectRoot,
-        vaultDir,
-        mycoBinary: snapshot.mycoBinary,
-        serviceManagedLabel,
-        daemonPort,
-        targetVersion: status.latest_version,
-      });
-      if (!serviceManagedLabel) {
-        scheduleShutdown();
-      }
-    }
-
     // Myco binary: drive initiateAdopt on the resolved (staged) version.
     if (mycoNeedsBinarySwap && mycoTargetVersion !== null) {
       updateInProgress.write(daemonStateDir, {
@@ -755,10 +685,8 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       });
     }
 
-    const reportedPackages = [
-      ...(mycoNeedsBinarySwap && mycoTargetVersion ? [`${NPM_PACKAGE_NAME}@${mycoTargetVersion}`] : []),
-      ...operatorSpecs,
-    ];
+    const reportedPackages =
+      mycoNeedsBinarySwap && mycoTargetVersion ? [`${NPM_PACKAGE_NAME}@${mycoTargetVersion}`] : [];
 
     return {
       body: {
@@ -801,7 +729,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     clearCachedCheck();
 
     const snapshot = readVaultSnapshot();
-    const channelStatus = statusFromCacheLocal(currentVersion, globalPrefix, channel);
+    const channelStatus = statusFromCacheLocal(currentVersion, channel);
     if (!channelStatus) {
       return {
         body: {

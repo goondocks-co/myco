@@ -22,8 +22,6 @@ interface ToolInputSchema {
 export interface ToolCortexMetadata {
   guidance: string;
   priority?: number;
-  requiresTeam?: boolean;
-  requiresCollective?: boolean;
 }
 
 /**
@@ -67,10 +65,6 @@ export const TOOL_SESSIONS = 'myco_sessions';
 export const TOOL_SKILLS = 'myco_skills';
 export const TOOL_SPORES = 'myco_spores';
 export const TOOL_AGENT = 'myco_agent';
-export const TOOL_COLLECTIVE_SEARCH = 'collective_search';
-export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
-export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
-export const TOOL_COLLECTIVE_SETTINGS = 'collective_settings';
 
 // --- Shared property descriptions (used by multiple tools) ---
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
@@ -282,84 +276,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         agent_id: { type: 'string', description: 'Filter op: "runs" by agent id' },
         limit: { type: 'number', description: 'Max results for op: "runs" (default: 50)' },
       },
-    },
-  },
-];
-
-export const COLLECTIVE_TOOL_DEFINITIONS: ToolDefinition[] = [
-  {
-    name: TOOL_COLLECTIVE_SEARCH,
-    description: 'Search across connected projects in the active Myco Collective. Results include project attribution.',
-    cortex: {
-      guidance: 'Use for cross-project knowledge across the connected collective.',
-      priority: 80,
-      requiresCollective: true,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        query: { type: 'string', description: 'Natural language search query across the connected Collective projects' },
-        project: { type: 'string', description: 'Optional project id or project name filter' },
-        limit: { type: 'number', description: `Max results (default: ${MCP_SEARCH_DEFAULT_LIMIT})` },
-        types: { type: 'array', items: { type: 'string' }, description: 'Optional content type filter for remote semantic search' },
-        observation_type: { type: 'string', description: 'Optional spore observation type filter for remote semantic search' },
-        status: { type: 'string', description: 'Optional record status filter for remote semantic search' },
-        since: { type: 'number', description: 'Optional created_at lower bound in epoch seconds' },
-        until: { type: 'number', description: 'Optional created_at upper bound in epoch seconds' },
-        session_id: { type: 'string', description: 'Optional session id metadata filter' },
-        source_path: { type: 'string', description: 'Optional source path metadata filter' },
-        name: { type: 'string', description: 'Optional name metadata filter' },
-      },
-      required: ['query'],
-    },
-  },
-  {
-    name: TOOL_COLLECTIVE_PROJECTS,
-    description: 'List the projects connected to the active Myco Collective.',
-    cortex: {
-      guidance: 'Use to discover relevant collective projects before drilling deeper.',
-      priority: 81,
-      requiresCollective: true,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-  },
-  {
-    name: TOOL_COLLECTIVE_PROJECT,
-    description: 'Get metadata for a single project connected to the active Myco Collective.',
-    cortex: {
-      guidance: 'Use when you know the collective project and need its focused context.',
-      priority: 82,
-      requiresCollective: true,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        project: { type: 'string', description: 'Project id or project name' },
-        include_digest: { type: 'boolean', description: 'Request digest information when available' },
-      },
-      required: ['project'],
-    },
-  },
-  {
-    name: TOOL_COLLECTIVE_SETTINGS,
-    description: 'Inspect the active Collective setting overrides applied to this project.',
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: true,
-    },
-    cortex: {
-      guidance: 'Use to inspect active Collective setting overrides for this project.',
-      priority: 83,
-      requiresCollective: true,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
     },
   },
 ];

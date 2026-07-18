@@ -6,7 +6,6 @@ import {
   buildCortexInstructionsInput,
   buildRetrievalGuidanceLines,
   RETRIEVAL_GUIDANCE,
-  resolveCortexCapabilities,
   resolveInstructionDelivery,
 } from '@myco/context/cortex-brief.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
@@ -56,11 +55,7 @@ const NOW = Math.floor(Date.now() / 1000);
 
 describe('buildRetrievalGuidanceLines', () => {
   it('does not encode myco_skills guidance into Cortex instructions', () => {
-    const lines = buildRetrievalGuidanceLines({
-      teamEnabled: false,
-      collectiveConnected: false,
-      collectiveCapabilities: [],
-    });
+    const lines = buildRetrievalGuidanceLines();
 
     expect(lines.join('\n')).toContain('`myco_cortex`');
     expect(lines.join('\n')).toContain('`myco_search`');
@@ -69,24 +64,15 @@ describe('buildRetrievalGuidanceLines', () => {
   });
 
   it('teaches cross-session plan pickup by id in the myco_plans guidance', () => {
-    const text = buildRetrievalGuidanceLines({
-      teamEnabled: false,
-      collectiveConnected: false,
-      collectiveCapabilities: [],
-    }).join('\n');
+    const text = buildRetrievalGuidanceLines().join('\n');
     expect(text).toContain('op: "get"');
     expect(text).toContain('earlier session');
   });
 
-  it('filters team and collective guidance by runtime capabilities', () => {
-    const lines = buildRetrievalGuidanceLines({
-      teamEnabled: false,
-      collectiveConnected: false,
-      collectiveCapabilities: [],
-    });
+  it('never encodes myco_team guidance', () => {
+    const lines = buildRetrievalGuidanceLines();
 
     expect(lines.join('\n')).not.toContain('`myco_team`');
-    expect(lines.join('\n')).not.toContain('`collective_search`');
   });
 });
 
@@ -108,11 +94,7 @@ describe('RETRIEVAL_GUIDANCE', () => {
   });
 
   it('injects canonical retrieval guidance into the brief body', () => {
-    const lines = buildRetrievalGuidanceLines({
-      teamEnabled: false,
-      collectiveConnected: false,
-      collectiveCapabilities: [],
-    });
+    const lines = buildRetrievalGuidanceLines();
     const body = lines.join('\n');
     expect(body).toContain('`myco_agent`');
   });
@@ -194,22 +176,6 @@ describe('resolveInstructionDelivery', () => {
         .toEqual(testCase.expected);
     });
   }
-});
-
-describe('resolveCortexCapabilities', () => {
-  it('returns collectiveConnected=false and empty capabilities when the team client throws', async () => {
-    const config = { team: { enabled: true } } as const;
-    const throwingClient = {
-      getCollectiveStatus: () => { throw new Error('team sync offline'); },
-    };
-    const result = await resolveCortexCapabilities(
-      config as never,
-      () => throwingClient as never,
-    );
-    expect(result.teamEnabled).toBe(true);
-    expect(result.collectiveConnected).toBe(false);
-    expect(result.collectiveCapabilities).toEqual([]);
-  });
 });
 
 describe('buildCortexInstructionsInput', () => {
@@ -296,7 +262,6 @@ describe('buildCortexInstructionsInput', () => {
     const result = await buildCortexInstructionsInput(
       config,
       vaultDir,
-      undefined,
       requestContext(vaultDir, projectId),
     );
     cleanup();
@@ -414,7 +379,7 @@ describe('buildCortexInstructionsInput', () => {
     });
 
     const { vaultDir, cleanup } = makeVaultDir();
-    const result = await buildCortexInstructionsInput(config, vaultDir, undefined, requestContext(vaultDir, projectAId));
+    const result = await buildCortexInstructionsInput(config, vaultDir, requestContext(vaultDir, projectAId));
     cleanup();
 
     expect(result.instruction).toContain('Project A digest only');
@@ -441,7 +406,6 @@ describe('buildCortexInstructionsInput', () => {
     const result = await buildCortexInstructionsInput(
       config,
       vaultDir,
-      undefined,
       requestContext(vaultDir, projectId),
     );
     cleanup();
@@ -468,7 +432,6 @@ describe('buildCortexInstructionsInput', () => {
     const result = await buildCortexInstructionsInput(
       config,
       vaultDir,
-      undefined,
       requestContext(vaultDir, projectId),
     );
     cleanup();
@@ -491,7 +454,6 @@ describe('buildCortexInstructionsInput', () => {
     const result = await buildCortexInstructionsInput(
       config,
       vaultDir,
-      undefined,
       requestContext(vaultDir, projectId),
     );
     cleanup();
@@ -514,7 +476,6 @@ describe('buildCortexInstructionsInput', () => {
     const result = await buildCortexInstructionsInput(
       config,
       vaultDir,
-      undefined,
       requestContext(vaultDir, projectId),
     );
     cleanup();
