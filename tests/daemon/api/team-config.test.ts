@@ -142,10 +142,13 @@ describe('(a) classifyRoute: team-write routes to the host for an attached proje
     expect(decision.kind).toBe('local');
   });
 
-  test('the legacy /api/team/* prefix (team-sync) is unaffected — still localhost-only (local kind)', () => {
+  test('an unrecognized /api/team/* path (no ROUTE_RULES entry) falls through to serve — proxied, not local', () => {
     const { projectId } = attach();
     const decision = classifyRoute({ method: 'GET', pathname: '/api/team/status', projectId });
-    expect(decision.kind).toBe('local');
+    expect(decision.kind).toBe('remote');
+    if (decision.kind === 'remote') {
+      expect(decision.classification.stamp).toBe('serve');
+    }
   });
 
   test('tmp dir created (fixture sanity)', () => {
@@ -164,11 +167,10 @@ describe('(per-task d) route-stamp completeness: per-task team-write routes neve
     expect(matchRouteRule('PUT', '/api/team/agent-tasks/_id/config')?.stamp).toBe('team-write');
   });
 
-  test('the coarse legacy /api/team/* prefix rules do not shadow the exact :id/config match', () => {
-    // Sanity: the legacy prefix rules are GET/POST only (no PUT), so a PUT
-    // here with no explicit ROUTE_RULES entry would silently fall through to
-    // `serve` rather than `team-write` — this pins that the explicit :param
-    // rule, not the coarse prefix, is what resolves it.
+  test('PUT /api/team/agent-tasks/:id/config resolves via its own explicit rule, not a fall-through', () => {
+    // Sanity: with no PUT rule for this exact/param pattern, the route would
+    // silently fall through to `serve` rather than `team-write` — this pins
+    // that the explicit :param rule is what resolves it.
     expect(matchRouteRule('PUT', '/api/team/agent-tasks/_id/config')).toBeDefined();
   });
 });

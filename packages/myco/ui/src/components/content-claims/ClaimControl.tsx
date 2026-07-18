@@ -95,7 +95,7 @@ export function ClaimControl({
   const publishedEntry = findPublishedArtifact(data, artifactKind, artifactId);
   const myMachineId = useMyMachineId();
   const selection = useActiveProjectSelection();
-  const projectRoot = selection?.project.root;
+  const projectRoot = selection?.project.root ?? undefined;
   const release = useReleaseContentClaim();
   const markPublished = useMarkContentClaimPublished();
   const { phase, run, retryMaterialize, reset } = useClaimAndMaterialize();

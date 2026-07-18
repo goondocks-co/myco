@@ -223,8 +223,6 @@ describe('classifyRouteStamp — scope-map coverage spot-checks', () => {
     ['PUT', '/api/machine-config', 'localhost-only'],
     ['GET', '/api/providers/secrets', 'localhost-only'],
     ['POST', '/api/groves', 'localhost-only'],
-    ['GET', '/api/team/status', 'localhost-only'],
-    ['GET', '/api/collective/status', 'localhost-only'],
   ];
 
   for (const [method, pathname, stamp] of cases) {

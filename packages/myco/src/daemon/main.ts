@@ -103,6 +103,7 @@ import { registerContentClaimMaterializeRoute } from './api/content-claims-mater
 import { registerContentClaimFileStatusRoute } from './api/content-claims-file-status.js';
 import { registerDrainHealthRoute } from './api/drain-health.js';
 import { registerHostMembershipRoutes } from './api/host-membership.js';
+import { registerHostServeStatusRoute } from './api/host-serve-status.js';
 import { registerTeamConfigRoutes } from './api/team-config.js';
 import { registerTeamAgentTaskRoutes } from './api/team-agent-tasks.js';
 import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
@@ -1742,6 +1743,11 @@ export async function main(): Promise<void> {
   // Per-task table (spec §6.3) — the team-write counterpart to the
   // config-lock-stamped `/api/agent/tasks/:id/config` registered below.
   registerTeamAgentTaskRoutes(server, teamWriteDeps);
+  // Team Host operator-side serving status (Task T4, decision-ef693c71 D3):
+  // `localhost-only`, unlike the team-write routes above — reuses the SAME
+  // boot-resolved `hostServe` runtime + external MCP listener, never
+  // re-parsed per request.
+  registerHostServeStatusRoute(server, { hostServe, mycoHome, externalMcp: { listener: externalMcpListener } });
 
   // Machine-tier config (~/.myco/config.yaml) — port, log policy, update
   // channel. One daemon per machine, so the route is global (no scope

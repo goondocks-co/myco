@@ -103,7 +103,7 @@ export default function Groves() {
   const visibleProjects = (grove: GroveSummary): GroveProjectSummary[] => {
     const needle = search.trim().toLowerCase();
     const filtered = needle
-      ? grove.projects.filter((p) => `${p.name} ${p.root}`.toLowerCase().includes(needle))
+      ? grove.projects.filter((p) => `${p.name} ${p.root ?? ''}`.toLowerCase().includes(needle))
       : grove.projects;
     return [...filtered].sort((a, b) => activityMs(b.project_id) - activityMs(a.project_id));
   };
@@ -144,6 +144,13 @@ export default function Groves() {
   }
 
   function handleIgnore(grove: GroveSummary, project: GroveProjectSummary) {
+    // Ignore is menu-gated to non-attached rows (ProjectActionMenu is only
+    // rendered for `!project.attached` below) since an attached project has
+    // no local checkout path to ignore and its Grove state is host-owned. A
+    // non-attached (local) project's `root` is never legitimately absent
+    // (`RegisteredProject.root` is a required string) — this null-check is a
+    // defensive backstop for the shared nullable type, not the gate itself.
+    if (!project.root) return;
     const existing = machineConfig.data?.config.capture?.ignore?.paths ?? [];
     if (existing.includes(project.root)) { handleArchive(grove, project); return; }
     addToMachineConfigList.mutate(
@@ -248,11 +255,16 @@ export default function Groves() {
                             </span>
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-sm font-medium text-on-surface">{project.name}</span>
-                              <span className="block truncate text-xs text-on-surface-variant font-mono">{project.root}</span>
+                              {project.root && (
+                                <span className="block truncate text-xs text-on-surface-variant font-mono">{project.root}</span>
+                              )}
                               <span className="block truncate text-[11px] text-on-surface-variant">
                                 {lastActivity ? `last active ${formatTimeAgo(lastActivity)}` : 'no activity yet'}
                               </span>
                             </span>
+                            {project.attached && (
+                              <Badge variant="secondary" title="Served by a team host">Team</Badge>
+                            )}
                             {project.manifest_state !== 'present' && (
                               <Badge variant="outline">{project.manifest_state}</Badge>
                             )}
@@ -274,16 +286,31 @@ export default function Groves() {
                               ))}
                             </button>
                           )}
-                          <ProjectActionMenu
-                            projectName={project.name}
-                            archived={project.status === 'archived'}
-                            onOpen={() => navigate(projectPath({ grove, project }))}
-                            onMove={() => setMoveTarget({ grove, project })}
-                            onIgnore={() => handleIgnore(grove, project)}
-                            onArchive={() => handleArchive(grove, project)}
-                            onUnarchive={() => handleUnarchive(grove, project)}
-                            onDelete={() => setDeleteProjectTarget({ grove, project })}
-                          />
+                          {project.attached ? (
+                            // Attached rows have no local Grove state: Move/Ignore/
+                            // Archive/Delete are local-lifecycle ops on a project this
+                            // machine doesn't own (Move is deferred to a later window).
+                            // Only navigation is meaningful here.
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => navigate(projectPath({ grove, project }))}
+                              aria-label={`Open ${project.name}`}
+                            >
+                              Open
+                            </Button>
+                          ) : (
+                            <ProjectActionMenu
+                              projectName={project.name}
+                              archived={project.status === 'archived'}
+                              onOpen={() => navigate(projectPath({ grove, project }))}
+                              onMove={() => setMoveTarget({ grove, project })}
+                              onIgnore={() => handleIgnore(grove, project)}
+                              onArchive={() => handleArchive(grove, project)}
+                              onUnarchive={() => handleUnarchive(grove, project)}
+                              onDelete={() => setDeleteProjectTarget({ grove, project })}
+                            />
+                          )}
                         </div>
                       </Row>
                     </li>

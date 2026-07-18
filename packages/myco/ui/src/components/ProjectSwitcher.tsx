@@ -17,6 +17,7 @@ import {
 } from '../lib/selection';
 import { formatTimeAgo } from '../lib/format';
 import { cn } from '../lib/cn';
+import { Badge } from './ui/badge';
 
 export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) {
   const contextSelection = useProjectSelection();
@@ -163,6 +164,15 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
                     >
                       <ProjectAvatar project={project} color={colorForProjectId(project.project_id)} />
                       <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                      {project.attached && (
+                        <Badge
+                          variant="secondary"
+                          className="shrink-0 px-1.5 py-0 text-[10px]"
+                          title="Served by a team host"
+                        >
+                          Team
+                        </Badge>
+                      )}
                       {active ? (
                         <Check className="h-4 w-4 shrink-0" />
                       ) : lastActivity ? (

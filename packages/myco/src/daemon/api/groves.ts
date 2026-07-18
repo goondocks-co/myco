@@ -2,7 +2,7 @@ import { CAPABILITIES, capabilityEnabled } from '@myco/config/capabilities.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import type { CapabilityId } from '@myco/config/scope.js';
-import { resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { projectTreeAvailable } from '@myco/vault/resolve.js';
 import {
   createGrove,
@@ -16,11 +16,13 @@ import {
   listRegisteredProjects,
   loadGroveRecord,
   renameGrove,
+  resolveAttachRefHomeGroveId,
   ServedGroveUndeletableError,
   setDefaultGrove,
   type GroveRecord,
   type RegisteredProject,
 } from '@myco/grove/registry.js';
+import { readHostRegistry, type AttachRef, type HostRecord } from '@myco/host/registry.js';
 import { moveProjectBetweenGroves } from '@myco/grove/move.js';
 import {
   archiveProject,
@@ -36,14 +38,31 @@ export interface GroveProjectSummary {
   project_id: string;
   name: string;
   slug: string;
-  root: string;
+  /** Registered checkout root for a local project; `null` for an attached
+   *  project whose ref carries no recorded root. */
+  root: string | null;
   binding_id: string | null;
   status: 'active' | 'archived';
   archived_at: string | null;
   created_at: string;
   updated_at: string;
   manifest_state: 'present' | 'missing' | 'invalid' | 'mismatch';
-  capabilities: Record<CapabilityId, boolean>;
+  /** Per-capability master-gate booleans for a LOCAL project. Omitted for an
+   *  attached project — capabilities are host-authoritative, never computed
+   *  member-side; consumers guard on presence and render no local strip. */
+  capabilities?: Record<CapabilityId, boolean>;
+  /**
+   * Team Host attach discriminator: present (and always `true`) ONLY on a
+   * project served by a remote host, appended into the member-chosen local
+   * Grove section (E-4 local-view requirement). Display-only — the
+   * authoritative Grove/project record is host-owned; nothing here enters
+   * scope iteration, capture routing, or any write path.
+   */
+  attached?: true;
+  /** The host serving an attached project (attach discriminator). */
+  host_id?: string;
+  /** The host's display label for an attached project (attach discriminator). */
+  host_label?: string;
 }
 
 export interface GroveSummary {
@@ -155,16 +174,35 @@ export function listGroveSummaries(
   scope: ServedGroveScope = { groveIds: null },
   options: { includeArchived?: boolean } = {},
 ): GrovesResponse {
-  const defaultGroveId = getDefaultGroveId();
-  const allGroves = listGroves();
+  const mycoHome = resolveMycoHome();
+  const defaultGroveId = getDefaultGroveId(mycoHome);
+  const allGroves = listGroves(mycoHome);
   const filtered = scope.groveIds
     ? allGroves.filter((grove) => scope.groveIds!.includes(grove.id))
     : allGroves;
-  const groves = filtered.map((grove) => {
-    const projects = listRegisteredProjects(grove.id, undefined, {
+
+  // Local rows first, and collect their ids: a local row always wins a
+  // collision with an attached ref (see attachedProjectSummariesByGrove).
+  const localByGrove = new Map<string, GroveProjectSummary[]>();
+  const localProjectIds = new Set<string>();
+  for (const grove of filtered) {
+    const projects = listRegisteredProjects(grove.id, mycoHome, {
       includeArchived: options.includeArchived,
     })
       .map((project) => serializeProject(project, grove.id));
+    localByGrove.set(grove.id, projects);
+    for (const project of projects) localProjectIds.add(project.project_id);
+  }
+
+  // Attached projects, grouped by the LOCAL Grove each displays under. PURE
+  // disk reads (host registry + local manifests) — no host is dialed, so a
+  // down/unreachable host has no effect on this endpoint.
+  const attachedByGrove = attachedProjectSummariesByGrove(mycoHome, localProjectIds);
+
+  const groves = filtered.map((grove) => {
+    const local = localByGrove.get(grove.id) ?? [];
+    const attached = attachedByGrove.get(grove.id) ?? [];
+    const projects = [...local, ...attached];
     return {
       id: grove.id,
       name: grove.name,
@@ -177,6 +215,101 @@ export function listGroveSummaries(
     };
   });
   return { groves };
+}
+
+const ATTACHED_EPOCH_ISO = new Date(0).toISOString();
+
+/**
+ * Attached projects grouped by the LOCAL Grove they display under (E-4
+ * local-view requirement). The Grove is resolved by `resolveAttachRefHomeGroveId`
+ * — the ref's `local_grove_id` when it still names an existing Grove, else the
+ * machine default. A `null` home (no Groves at all — bootstrap-only) skips the
+ * entry; there is nothing to display under and the Groves list is empty anyway.
+ *
+ * PURE LOCAL DISK READS: `readHostRegistry` plus each ref's local `project.toml`.
+ * No host is dialed here, by construction — an unreachable host cannot affect
+ * the Groves endpoint.
+ */
+function attachedProjectSummariesByGrove(
+  mycoHome: string,
+  localProjectIds: ReadonlySet<string>,
+): Map<string, GroveProjectSummary[]> {
+  const byGrove = new Map<string, GroveProjectSummary[]>();
+  for (const host of readHostRegistry()) {
+    for (const ref of host.projects) {
+      // Never-materialize invariant: an attached project has no local Grove
+      // row. If one exists anyway (a bug elsewhere), prefer the local row and
+      // skip the attached copy rather than render the project twice.
+      if (localProjectIds.has(ref.project_id)) {
+        console.warn(
+          `[groves] attached project ${ref.project_id} (host ${host.host_id}) also has a local Grove row; `
+          + 'showing the local row and skipping the attached entry (never-materialize invariant violated elsewhere).',
+        );
+        continue;
+      }
+      const homeGroveId = resolveAttachRefHomeGroveId(ref, mycoHome);
+      if (!homeGroveId) continue;
+      const summary = attachedProjectSummary(ref, host);
+      const existing = byGrove.get(homeGroveId);
+      if (existing) existing.push(summary);
+      else byGrove.set(homeGroveId, [summary]);
+    }
+  }
+  // Deterministic order within a section: attached entries carry no activity,
+  // so sort by name then id (the switcher then floats active local projects
+  // above them by recency; attached entries, activity 0, stay last).
+  for (const list of byGrove.values()) {
+    list.sort((a, b) => a.name.localeCompare(b.name) || a.project_id.localeCompare(b.project_id));
+  }
+  return byGrove;
+}
+
+/**
+ * Build a display-only summary for an attached project. Local-lifecycle fields
+ * carry fail-closed neutral values (no binding, active, epoch timestamps,
+ * `manifest_state: 'present'` so no local fix-it prompt); `capabilities` is
+ * omitted (host-authoritative). The attach discriminator (`attached`/`host_id`/
+ * `host_label`) marks the row for the UI.
+ */
+function attachedProjectSummary(ref: AttachRef, host: HostRecord): GroveProjectSummary {
+  const name = attachedProjectName(ref);
+  return {
+    project_id: ref.project_id,
+    name,
+    // Same slugging as a local row (`projectUrlSlug`), so `findSelection` /
+    // deep links resolve an attached entry identically. The project-id hash
+    // suffix both stabilizes and disambiguates same-named projects.
+    slug: projectUrlSlug(name, ref.project_id),
+    root: ref.root ?? null,
+    binding_id: null,
+    status: 'active',
+    archived_at: null,
+    created_at: ATTACHED_EPOCH_ISO,
+    updated_at: ATTACHED_EPOCH_ISO,
+    manifest_state: 'present',
+    attached: true,
+    host_id: host.host_id,
+    host_label: host.label,
+  };
+}
+
+/**
+ * Display name for an attached project: the local checkout's `project.toml`
+ * name when the ref carries a readable root, else a deterministic name derived
+ * from the project id (`proj_<32hex>` → `Project <first 8 hex>`) so a rootless
+ * or corrupt-manifest ref still gets a stable, human label.
+ */
+function attachedProjectName(ref: AttachRef): string {
+  if (ref.root) {
+    try {
+      const manifest = loadProjectManifest(resolveProjectVaultDir(ref.root));
+      const name = manifest?.project?.name?.trim();
+      if (name) return name;
+    } catch {
+      // Unreadable / corrupt manifest — fall through to the id-derived name.
+    }
+  }
+  return `Project ${ref.project_id.replace(/^proj_/, '').slice(0, 8)}`;
 }
 
 /**

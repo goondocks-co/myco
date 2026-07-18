@@ -21,12 +21,15 @@ import { stringify } from 'smol-toml';
 
 import { clearProjectManifestCache } from '@myco/config/project-manifest.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { createGrove } from '@myco/grove/registry.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import { codedMembershipError } from '@myco/host/membership-error.js';
 import { upsertHost, type HostRecord } from '@myco/host/registry.js';
 import {
+  classifyHostProtocolSkew,
   createHostMembershipAttachHandler,
   createHostMembershipDetachHandler,
+  createHostMembershipHealthHandler,
   createHostMembershipJoinHandler,
   createHostMembershipLeaveHandler,
   createHostMembershipStatusHandler,
@@ -190,7 +193,8 @@ describe('POST /api/host-membership/attach', () => {
     const res = await handler(req({ project_root: '/checkout', host_id: 'host_abc' }));
 
     expect(seen).toEqual({
-      projectPath: '/checkout', hostId: 'host_abc', projectId: undefined, mycoHome: '/tmp/myco-home',
+      projectPath: '/checkout', hostId: 'host_abc', projectId: undefined,
+      localGroveId: undefined, mycoHome: '/tmp/myco-home',
     });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -230,6 +234,60 @@ describe('POST /api/host-membership/attach', () => {
     const res = await handler(req({ project_root: '/checkout' }));
     expect(res.status).toBe(400);
     expect((res.body as { error: { code: string } }).error.code).toBe('attach_failed');
+  });
+
+  test('maps an explicit local_grove_id from the body into AttachOptions.localGroveId (a distinct Grove concept from grove_id — the member\'s own local Grove, E-4 local-view requirement)', async () => {
+    let seen: unknown;
+    const handler = createHostMembershipAttachHandler({
+      attach: (options) => {
+        seen = options;
+        return {
+          projectId: 'proj_x', groveId: 'grove_x', hostId: options.hostId!,
+          hostLabel: 'Mac Studio', root: '/checkout', alreadyAttached: false, notes: [],
+        };
+      },
+      mycoHome: '/tmp/myco-home',
+    });
+    await handler(req({ project_root: '/checkout', host_id: 'host_abc', local_grove_id: 'grove_local_1' }));
+
+    expect(seen).toEqual({
+      projectPath: '/checkout', hostId: 'host_abc', projectId: undefined,
+      localGroveId: 'grove_local_1', mycoHome: '/tmp/myco-home',
+    });
+  });
+
+  test('an omitted local_grove_id maps to undefined in AttachOptions — attachCommand itself resolves the default', async () => {
+    let seen: unknown;
+    const handler = createHostMembershipAttachHandler({
+      attach: (options) => {
+        seen = options;
+        return {
+          projectId: 'proj_x', groveId: 'grove_x', hostId: options.hostId!,
+          hostLabel: 'Mac Studio', root: '/checkout', alreadyAttached: false, notes: [],
+        };
+      },
+      mycoHome: '/tmp/myco-home',
+    });
+    await handler(req({ project_root: '/checkout', host_id: 'host_abc' }));
+
+    expect((seen as { localGroveId?: string }).localGroveId).toBeUndefined();
+  });
+
+  test('a CODED unknown_local_grove refusal surfaces its stable code — attachCommand throws it when an explicit local_grove_id names no existing local Grove', async () => {
+    const handler = createHostMembershipAttachHandler({
+      attach: () => {
+        throw codedMembershipError(
+          'unknown_local_grove',
+          'Unknown local Grove grove_ghost — this machine has no Grove with that id. Pass an existing local '
+          + 'Grove id, or omit local_grove_id to use the machine\'s default Grove.',
+        );
+      },
+      mycoHome: '/tmp/myco-home',
+    });
+    const res = await handler(req({ project_root: '/checkout', host_id: 'host_abc', local_grove_id: 'grove_ghost' }));
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { code: string } }).error.code).toBe('unknown_local_grove');
+    expect((res.body as { error: { message: string } }).error.message).toContain('Unknown local Grove grove_ghost');
   });
 
   test('a CODED attach refusal surfaces its stable membership code — the UI keys copy on it, never the CLI-voiced message', async () => {
@@ -283,16 +341,24 @@ describe('POST /api/host-membership/detach', () => {
 describe('GET /api/host-membership/status', () => {
   let teamHome: string;
   let savedTeamHome: string | undefined;
+  // A dedicated MYCO_HOME (distinct from teamHome) for the LOCAL Grove
+  // registry `local_grove_id` resolution reads — passed explicitly via
+  // `{ mycoHome: home }` rather than a process.env override, so each test's
+  // Groves are deterministic and never bleed into the shared sandbox home
+  // the test-preload redirects os.homedir() to.
+  let home: string;
 
   beforeEach(() => {
     teamHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-membership-status-'));
     savedTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_TEAM_HOME = teamHome;
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-membership-status-home-'));
   });
   afterEach(() => {
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
     else process.env.MYCO_TEAM_HOME = savedTeamHome;
     fs.rmSync(teamHome, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
     clearProjectManifestCache();
   });
 
@@ -308,30 +374,68 @@ describe('GET /api/host-membership/status', () => {
   }
 
   test('no joined hosts → empty array, no hint without project_root', async () => {
-    const handler = createHostMembershipStatusHandler();
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ hosts: [], hint: null });
   });
 
-  test('every joined host appears with its attach refs (no bearer/secret leaks)', async () => {
+  test('every joined host appears with its attach refs, including the resolved local_grove_id (no bearer/secret leaks)', async () => {
+    const defaultGrove = createGrove('Default', home);
     const groveId = createGroveId();
     const projectId = createProjectId();
+    // No explicit local_grove_id on this ref — a legacy shape — so it
+    // resolves to the machine's current default Grove.
     const host = makeHost({ projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout' }] });
     upsertHost(host);
 
-    const handler = createHostMembershipStatusHandler();
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
     expect(res.body).toEqual({
       hosts: [{
         host_id: host.host_id, label: host.label, overlay_address: host.overlay_address,
         proxy_port: host.proxy_port, protocol_version: host.protocol_version,
         served_grove_id: null, created_at: host.created_at,
-        projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout', mismatch: null }],
+        projects: [{
+          grove_id: groveId, project_id: projectId, root: '/checkout',
+          local_grove_id: defaultGrove.id, mismatch: null,
+        }],
       }],
       hint: null,
     });
     expect(JSON.stringify(res.body)).not.toContain('bearer');
+  });
+
+  test('an explicit local_grove_id naming an existing local Grove resolves to itself, even when it is not the default Grove', async () => {
+    createGrove('Default', home);
+    const chosen = createGrove('Personal', home);
+    const groveId = createGroveId();
+    const projectId = createProjectId();
+    const host = makeHost({
+      projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout', local_grove_id: chosen.id }],
+    });
+    upsertHost(host);
+
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
+    const res = await handler(req({}, {}));
+    const body = res.body as { hosts: { projects: { local_grove_id: string | null }[] }[] };
+    expect(body.hosts[0]!.projects[0]!.local_grove_id).toBe(chosen.id);
+  });
+
+  test('a dangling local_grove_id (the chosen Grove was deleted after attach) falls back to the current default Grove', async () => {
+    const defaultGrove = createGrove('Default', home);
+    const danglingGroveId = createGroveId(); // never created in `home` — simulates a deleted Grove.
+    const groveId = createGroveId();
+    const projectId = createProjectId();
+    const host = makeHost({
+      projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout', local_grove_id: danglingGroveId }],
+    });
+    upsertHost(host);
+
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
+    const res = await handler(req({}, {}));
+    const body = res.body as { hosts: { projects: { local_grove_id: string | null }[] }[] };
+    expect(body.hosts[0]!.projects[0]!.local_grove_id).toBe(defaultGrove.id);
   });
 
   test('a ref whose grove_id no longer matches the host\'s served_grove_id is flagged attach_grove_mismatch (spec §2 existing-refs mitigation (c))', async () => {
@@ -348,7 +452,7 @@ describe('GET /api/host-membership/status', () => {
     });
     upsertHost(host);
 
-    const handler = createHostMembershipStatusHandler();
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
     const body = res.body as { hosts: { served_grove_id: string | null; projects: { project_id: string; mismatch: string | null }[] }[] };
     expect(body.hosts[0]!.served_grove_id).toBe(servedGroveId);
@@ -365,7 +469,7 @@ describe('GET /api/host-membership/status', () => {
     });
     upsertHost(host);
 
-    const handler = createHostMembershipStatusHandler();
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
     const body = res.body as { hosts: { served_grove_id: string | null; projects: { mismatch: string | null }[] }[] };
     expect(body.hosts[0]!.served_grove_id).toBeNull();
@@ -377,7 +481,7 @@ describe('GET /api/host-membership/status', () => {
     const projectId = createProjectId();
     const root = makeCheckout(projectId, hintedHostId);
 
-    const handler = createHostMembershipStatusHandler();
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, { project_root: root }));
     const body = res.body as { hint: { host_id: string; state: string; message: string } | null };
     expect(body.hint).not.toBeNull();
@@ -395,17 +499,150 @@ describe('GET /api/host-membership/status', () => {
     const { attachProject } = await import('@myco/host/registry.js');
     attachProject(host.host_id, { grove_id: createGroveId(), project_id: projectId, root });
 
-    const handler = createHostMembershipStatusHandler();
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, { project_root: root }));
     expect((res.body as { hint: unknown }).hint).toBeNull();
   });
 
   test('project_root pointing at a directory with no manifest degrades to no hint, not an error', async () => {
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-membership-bare-'));
-    const handler = createHostMembershipStatusHandler();
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, { project_root: bare }));
     expect(res.status).toBe(200);
     expect((res.body as { hint: unknown }).hint).toBeNull();
     fs.rmSync(bare, { recursive: true, force: true });
+  });
+});
+
+describe('classifyHostProtocolSkew', () => {
+  test('within [HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION] → none', () => {
+    expect(classifyHostProtocolSkew(1)).toBe('none');
+    expect(classifyHostProtocolSkew(2)).toBe('none');
+  });
+
+  test('above HOST_PROTOCOL_VERSION → host_newer (this member needs myco update)', () => {
+    expect(classifyHostProtocolSkew(3)).toBe('host_newer');
+  });
+
+  test('below HOST_MIN_COMPAT_VERSION → host_older (that host needs myco update)', () => {
+    expect(classifyHostProtocolSkew(0)).toBe('host_older');
+  });
+});
+
+describe('GET /api/host-membership/health', () => {
+  /** A promise the test controls the settlement of, to simulate an in-flight probe. */
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => { resolve = r; });
+    return { promise, resolve };
+  }
+
+  test('no joined hosts → empty array, never calls the probe', async () => {
+    let called = false;
+    const handler = createHostMembershipHealthHandler({
+      readRegistry: () => [],
+      checkReachable: async () => { called = true; return true; },
+    });
+    const res = await handler(req({}));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ hosts: [] });
+    expect(called).toBe(false);
+  });
+
+  test('a host with no proxy_port on record → reachable: null, the probe is never invoked (doctor\'s "not confirmable" branch)', async () => {
+    let called = false;
+    const host = makeHost({ proxy_port: undefined });
+    const handler = createHostMembershipHealthHandler({
+      readRegistry: () => [host],
+      checkReachable: async () => { called = true; return true; },
+    });
+    const res = await handler(req({}));
+    const body = res.body as { hosts: { host_id: string; reachable: boolean | null }[] };
+    expect(body.hosts).toEqual([expect.objectContaining({ host_id: host.host_id, reachable: null })]);
+    expect(called).toBe(false);
+  });
+
+  test('probes every joined host concurrently and reports protocol_skew + checked_at', async () => {
+    const seen: { address: string; port: number }[] = [];
+    const hostReachable = makeHost({ overlay_address: '100.64.0.1:7433', proxy_port: 1, protocol_version: 1 });
+    const hostUnreachable = makeHost({ overlay_address: '100.64.0.2:7433', proxy_port: 2, protocol_version: 3 });
+    const handler = createHostMembershipHealthHandler({
+      readRegistry: () => [hostReachable, hostUnreachable],
+      checkReachable: async (address, port) => {
+        seen.push({ address, port });
+        return address === hostReachable.overlay_address;
+      },
+      now: () => 1_700_000_000_000,
+    });
+
+    const res = await handler(req({}));
+    const body = res.body as { hosts: { host_id: string; reachable: boolean | null; checked_at: string; protocol_skew: string }[] };
+    expect(body.hosts).toHaveLength(2);
+    const reachableEntry = body.hosts.find((h) => h.host_id === hostReachable.host_id)!;
+    const unreachableEntry = body.hosts.find((h) => h.host_id === hostUnreachable.host_id)!;
+    expect(reachableEntry.reachable).toBe(true);
+    expect(reachableEntry.protocol_skew).toBe('none');
+    expect(reachableEntry.checked_at).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(unreachableEntry.reachable).toBe(false);
+    expect(unreachableEntry.protocol_skew).toBe('host_newer');
+    // Both dialed — concurrent fan-out, not serialized.
+    expect(seen).toHaveLength(2);
+  });
+
+  test('a probe that rejects classifies reachable: false (fail-closed), never throws out of the handler', async () => {
+    const host = makeHost({ proxy_port: 1 });
+    const handler = createHostMembershipHealthHandler({
+      readRegistry: () => [host],
+      checkReachable: async () => { throw new Error('ECONNRESET'); },
+    });
+    const res = await handler(req({}));
+    const body = res.body as { hosts: { reachable: boolean | null }[] };
+    expect(body.hosts[0]!.reachable).toBe(false);
+  });
+
+  test('TTL cache: a second call within the TTL returns the cached result with ZERO new probe invocations', async () => {
+    const host = makeHost({ proxy_port: 1 });
+    let callCount = 0;
+    let clock = 1_700_000_000_000;
+    const handler = createHostMembershipHealthHandler({
+      readRegistry: () => [host],
+      checkReachable: async () => { callCount += 1; return true; },
+      now: () => clock,
+      ttlMs: 15_000,
+    });
+
+    await handler(req({}));
+    expect(callCount).toBe(1);
+
+    clock += 10_000; // still inside the 15s TTL
+    const res2 = await handler(req({}));
+    expect(callCount).toBe(1); // no new probe
+    expect((res2.body as { hosts: { reachable: boolean | null }[] }).hosts[0]!.reachable).toBe(true);
+
+    clock += 10_000; // now 20s since the first probe — past the TTL
+    await handler(req({}));
+    expect(callCount).toBe(2); // re-probed
+  });
+
+  test('single-flight: two overlapping requests for the same host share ONE in-flight probe', async () => {
+    const host = makeHost({ proxy_port: 1 });
+    let callCount = 0;
+    const gate = deferred<boolean>();
+    const handler = createHostMembershipHealthHandler({
+      readRegistry: () => [host],
+      checkReachable: async () => { callCount += 1; return gate.promise; },
+    });
+
+    const first = handler(req({}));
+    const second = handler(req({}));
+    // Let both requests reach the probe call before it settles.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(callCount).toBe(1);
+
+    gate.resolve(true);
+    const [res1, res2] = await Promise.all([first, second]);
+    expect(callCount).toBe(1);
+    expect((res1.body as { hosts: { reachable: boolean | null }[] }).hosts[0]!.reachable).toBe(true);
+    expect((res2.body as { hosts: { reachable: boolean | null }[] }).hosts[0]!.reachable).toBe(true);
   });
 });
