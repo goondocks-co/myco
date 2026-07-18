@@ -11,7 +11,7 @@
  */
 
 import { renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -39,6 +39,7 @@ import {
   useAttachProject,
   useDetachProject,
   useDrainHealth,
+  useHostMembershipHealth,
   type HostMembershipStatusResponse,
 } from '../../packages/myco/ui/src/hooks/use-host-membership';
 
@@ -101,6 +102,76 @@ describe('useDrainHealth', () => {
         pollCategory: 'standard',
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useHostMembershipHealth (E-4 W1 Task T4a/T5, decision-ef693c71 D3) — this
+// one is deliberately NOT usePowerQuery-mocked above: it's a plain useQuery,
+// so these tests run it against a REAL QueryClient (only fetchJson is mocked)
+// to pin the query's actual config, not a hand-rolled assertion about it.
+// ---------------------------------------------------------------------------
+
+describe('useHostMembershipHealth', () => {
+  beforeEach(() => {
+    fetchJsonMock.mockReset();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function healthWrapper({ children }: { children: ReactNode }) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+
+  it('fetches /host-membership/health when enabled', async () => {
+    fetchJsonMock.mockResolvedValue({ hosts: [] });
+    renderHook(() => useHostMembershipHealth(true), { wrapper: healthWrapper });
+
+    await waitFor(() => expect(fetchJsonMock).toHaveBeenCalledWith('/host-membership/health', expect.anything()));
+  });
+
+  it('does not fetch when disabled, but still reflects the query\'s cached data (attach panel\'s cache-only read)', () => {
+    fetchJsonMock.mockResolvedValue({ hosts: [] });
+    renderHook(() => useHostMembershipHealth(false), { wrapper: healthWrapper });
+
+    expect(fetchJsonMock).not.toHaveBeenCalled();
+  });
+
+  // Pins the regression this test was written for: refetchOnWindowFocus and
+  // refetchOnReconnect both default to `true` in TanStack Query, and the
+  // app's global QueryClient (main.tsx) only overrides staleTime — so
+  // without the hook explicitly disabling both, a slideout left open past
+  // the 15s staleTime and then refocused (alt-tab back, or any tab
+  // visibilitychange) would fire a live overlay probe outside of "panel
+  // open + manual refresh," which is exactly what decision-ef693c71 D3
+  // forbids. This is a behavioral test (a real focus event against a real
+  // QueryClient), not an options-object assertion, so it catches the actual
+  // defect rather than pinning a specific call shape.
+  it('does not refetch on a window focus event after staleTime has elapsed (decision-ef693c71 D3 — never a background probe)', async () => {
+    fetchJsonMock.mockResolvedValue({
+      hosts: [{ host_id: 'host_a', label: 'Mac Studio', reachable: true, checked_at: '', protocol_skew: 'none' }],
+    });
+
+    const { result } = renderHook(() => useHostMembershipHealth(true), { wrapper: healthWrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(fetchJsonMock).toHaveBeenCalledTimes(1);
+
+    // Advance well past the query's 15s staleTime — a query left at its
+    // TanStack defaults WOULD be eligible to refetch on the next focus event.
+    vi.advanceTimersByTime(20_000);
+
+    // TanStack's FocusManager listens for `visibilitychange` on `window` by
+    // default (query-core's focusManager.ts) — this is what a real alt-tab
+    // back to the browser tab dispatches.
+    window.dispatchEvent(new Event('visibilitychange'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchJsonMock).toHaveBeenCalledTimes(1);
   });
 });
 

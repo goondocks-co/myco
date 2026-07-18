@@ -207,6 +207,36 @@ describe('host registry', () => {
     expect(resolveAttach(ref.project_id)?.host.host_id).toBe(hostA.host_id);
   });
 
+  test('round-trip: a ref with `local_grove_id` persists/reads; a ref without it stays absent (not null)', () => {
+    const host = makeHost();
+    upsertHost(host);
+    const withHome = { grove_id: 'grove-11', project_id: 'proj-11', local_grove_id: 'grove-local-1' };
+    const withoutHome = { grove_id: 'grove-12', project_id: 'proj-12' };
+    attachProject(host.host_id, withHome);
+    attachProject(host.host_id, withoutHome);
+
+    expect(resolveAttach('proj-11')?.ref).toEqual(withHome);
+    expect(resolveAttach('proj-12')?.ref).toEqual(withoutHome);
+    expect(resolveAttach('proj-12')?.ref.local_grove_id).toBeUndefined();
+    expect('local_grove_id' in (resolveAttach('proj-12')?.ref ?? {})).toBe(false);
+  });
+
+  test('re-attach backfills `local_grove_id` for a legacy ref (recorded before the field existed) but never clobbers an already-recorded value', () => {
+    const host = makeHost({ projects: [{ grove_id: 'grove-13', project_id: 'proj-13' }] });
+    upsertHost(host);
+    expect(resolveAttach('proj-13')?.ref.local_grove_id).toBeUndefined();
+
+    // First re-attach: backfills the absent value.
+    attachProject(host.host_id, { grove_id: 'grove-13', project_id: 'proj-13', local_grove_id: 'grove-local-a' });
+    expect(resolveAttach('proj-13')?.ref.local_grove_id).toBe('grove-local-a');
+
+    // Second re-attach with a DIFFERENT explicit value: the already-recorded
+    // choice is NOT overwritten — local_grove_id is captured once, at first
+    // attach (or first backfill), not silently refreshed like `root`.
+    attachProject(host.host_id, { grove_id: 'grove-13', project_id: 'proj-13', local_grove_id: 'grove-local-b' });
+    expect(resolveAttach('proj-13')?.ref.local_grove_id).toBe('grove-local-a');
+  });
+
   test('removeHost deletes the record and its secrets', () => {
     const host = makeHost();
     upsertHost(host);
@@ -216,6 +246,38 @@ describe('host registry', () => {
 
     expect(getHost(host.host_id)).toBeNull();
     expect(readHostSecrets(host.host_id)).toEqual({});
+  });
+
+  test('readHostRegistry skips a host.json that parses as valid JSON but is missing `host_id`; a sibling valid record still loads', () => {
+    const host = makeHost();
+    upsertHost(host);
+
+    const corruptDir = path.join(tmp, 'hosts', 'corrupt-missing-host-id');
+    fs.mkdirSync(corruptDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(corruptDir, 'host.json'),
+      JSON.stringify({ label: 'no host_id here', projects: [] }),
+    );
+
+    const all = readHostRegistry();
+    expect(all).toHaveLength(1);
+    expect(all[0].host_id).toBe(host.host_id);
+  });
+
+  test('readHostRegistry skips a host.json whose `projects` is not an array; a sibling valid record still loads', () => {
+    const host = makeHost();
+    upsertHost(host);
+
+    const corruptDir = path.join(tmp, 'hosts', 'corrupt-projects-shape');
+    fs.mkdirSync(corruptDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(corruptDir, 'host.json'),
+      JSON.stringify({ host_id: 'host_corrupt', label: 'bad shape', projects: 'not-an-array' }),
+    );
+
+    const all = readHostRegistry();
+    expect(all).toHaveLength(1);
+    expect(all[0].host_id).toBe(host.host_id);
   });
 
   test('bearer round-trips via secrets and never appears in host.json on disk', () => {

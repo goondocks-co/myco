@@ -36,7 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { SERVE_DEFAULT_ROUTES, matchRouteRule } from '@myco/host/routing';
+import { ROUTE_RULES, SERVE_DEFAULT_ROUTES, matchRouteRule, type RouteRule } from '@myco/host/routing';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
@@ -167,6 +167,37 @@ function hasExplicitRule(route: RegisteredRoute): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// ROUTE_RULES staleness — the WINNING-match predicate.
+//
+// A naive "matches zero registered routes" predicate is a no-op: a live exact
+// route prefix-matches a dead wildcard (e.g. `/api/team/config` matches
+// `/api/team/*`), so the dead wildcard looks alive. The correct predicate is
+// narrower: a rule is stale iff it never WINS `matchRouteRule` for any
+// registered route, once the router's exact > param > prefix precedence has
+// picked a single winner per route.
+// ---------------------------------------------------------------------------
+
+/** Entries intentionally kept even though no currently-registered route resolves
+ *  to them — e.g. a stamp landed ahead of the route it anticipates. Add an entry
+ *  only with a comment naming the anticipated route and why it doesn't exist yet. */
+const ROUTE_RULES_STALENESS_ALLOWLIST: ReadonlySet<string> = new Set<string>([]);
+
+/** The subset of `rules` that never win {@link matchRouteRule} for any of
+ *  `routes` — threaded through matchRouteRule's own `rules` param so the
+ *  precedence logic can never drift between production and this gate. */
+function staleRules(
+  rules: readonly RouteRule[],
+  routes: ReadonlyArray<{ method: string; pathname: string }>,
+): RouteRule[] {
+  const winners = new Set<RouteRule>();
+  for (const route of routes) {
+    const winner = matchRouteRule(route.method, route.pathname, rules);
+    if (winner) winners.add(winner);
+  }
+  return rules.filter((rule) => !winners.has(rule));
+}
+
+// ---------------------------------------------------------------------------
 // Gate
 // ---------------------------------------------------------------------------
 
@@ -219,6 +250,22 @@ describe('route-stamp completeness gate', () => {
       }
     }
     expect(stale.length, `SERVE_DEFAULT_ROUTES has stale/redundant entries:\n  ${stale.join('\n  ')}\n`)
+      .toBe(0);
+  });
+
+  it('ROUTE_RULES holds no stale entries (every rule WINS matchRouteRule for at least one registered route)', () => {
+    const registeredRoutes = scan.routes.map((r) => ({ method: r.method, pathname: samplePath(r.pattern) }));
+    const stale = staleRules(ROUTE_RULES, registeredRoutes)
+      .filter((rule) => !ROUTE_RULES_STALENESS_ALLOWLIST.has(`${rule.method} ${rule.pattern}`));
+
+    const detail = stale
+      .map((r) => `  { method: '${r.method}', pattern: '${r.pattern}' } — stamp '${r.stamp}'`)
+      .join('\n');
+
+    expect(stale.length, `${stale.length} ROUTE_RULES entr${stale.length === 1 ? 'y' : 'ies'} never win `
+      + 'matchRouteRule for any registered route — every matching request resolves to a MORE SPECIFIC '
+      + 'rule instead, so this entry is dead weight. Remove it, or if it deliberately anticipates a route '
+      + `not yet registered, add it to ROUTE_RULES_STALENESS_ALLOWLIST with a comment saying why:\n${detail}\n`)
       .toBe(0);
   });
 
@@ -312,5 +359,44 @@ describe('route-stamp completeness matcher self-test', () => {
   it('stripComments blanks a `.registerRoute(` that only appears in a comment', () => {
     const commented = '// server.registerRoute(\'GET\', \'/api/ghost\', h) in a comment must not count\n';
     expect([...stripComments(commented).matchAll(REGISTER_ROUTE_RE)].length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Self-test: prove the ROUTE_RULES staleness predicate is WINNING-match, not
+// naive zero-match, on a synthetic fixture — never by mutating the real table.
+// ---------------------------------------------------------------------------
+
+describe('ROUTE_RULES staleness gate self-test', () => {
+  // A dead wildcard shadowed by an exact rule for the only route it textually
+  // matches. A naive "matches zero registered routes" predicate would call this
+  // rule ALIVE (`/api/team/config` matches `/api/team/*`) — exactly the
+  // orphaned-rule shape this gate exists to catch.
+  const shadowedWildcard: RouteRule = { method: 'GET', pattern: '/api/team/*', stamp: 'localhost-only', capability: 'X' };
+  const shadowingExact: RouteRule = { method: 'GET', pattern: '/api/team/config', stamp: 'team-write', capability: 'Y' };
+  // A wildcard with no more-specific competitor — it genuinely wins its route.
+  const liveWildcard: RouteRule = { method: 'GET', pattern: '/api/other/*', stamp: 'degrade', capability: 'Z' };
+
+  const fixtureRules = [shadowedWildcard, shadowingExact, liveWildcard];
+  const fixtureRoutes = [
+    { method: 'GET', pathname: '/api/team/config' }, // matches both team rules; exact wins per precedence
+    { method: 'GET', pathname: '/api/other/thing' }, // only matches liveWildcard
+  ];
+  const stale = staleRules(fixtureRules, fixtureRoutes);
+
+  it('FAILS (flags) the wildcard shadowed by an exact rule for every route it textually matches', () => {
+    expect(stale).toContain(shadowedWildcard);
+  });
+
+  it('does not flag the exact rule, which wins its own route', () => {
+    expect(stale).not.toContain(shadowingExact);
+  });
+
+  it('STAYS GREEN for the wildcard that wins for at least one registered route', () => {
+    expect(stale).not.toContain(liveWildcard);
+  });
+
+  it('the fixture stale set is exactly the shadowed wildcard, nothing else', () => {
+    expect(stale).toEqual([shadowedWildcard]);
   });
 });

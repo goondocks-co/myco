@@ -4,7 +4,7 @@ export interface GroveProjectSummary {
   project_id: string;
   name: string;
   slug: string;
-  root: string;
+  root: string | null;
   binding_id: string | null;
   status?: 'active' | 'archived';
   archived_at?: string | null;
@@ -12,6 +12,12 @@ export interface GroveProjectSummary {
   updated_at: string;
   manifest_state: 'present' | 'missing' | 'invalid' | 'mismatch';
   capabilities?: Record<string, boolean>;
+  /** Team Host attach discriminator: present (and `true`) only on a project
+   *  served by a remote host, shown inside its member-chosen local Grove. */
+  attached?: true;
+  /** The host serving an attached project (attach discriminator). */
+  host_id?: string;
+  host_label?: string;
 }
 
 export interface GroveSummary {

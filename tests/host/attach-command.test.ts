@@ -23,6 +23,7 @@ import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
   clearGroveRegistryCaches,
   createGrove,
+  listGroves,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
 import { getHost, resolveAttach, upsertHost, type HostRecord } from '@myco/host/registry.js';
@@ -278,5 +279,79 @@ describe('attach/detach command', () => {
 
     expect(() => attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home }))
       .toThrow(/Could not determine the project id/);
+  });
+});
+
+describe('attach — local_grove_id (E-4 local-view requirement)', () => {
+  test('an explicit local_grove_id naming an existing local Grove is recorded as-is', () => {
+    const host = makeHost();
+    upsertHost(host);
+    const localGrove = createGrove('Personal', home);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+
+    const result = attachCommand({ projectPath: root, hostId: host.host_id, localGroveId: localGrove.id, mycoHome: home });
+
+    expect(result.alreadyAttached).toBe(false);
+    expect(resolveAttach(projectId)?.ref.local_grove_id).toBe(localGrove.id);
+  });
+
+  test('omitted local_grove_id defaults to the machine\'s current default Grove via a pure read (also covers CLI-originated attach, which never passes this option)', () => {
+    const host = makeHost();
+    upsertHost(host);
+    const defaultGrove = createGrove('Default', home); // createGrove auto-sets the first Grove as default.
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    const groveCountBefore = listGroves(home).length;
+
+    const result = attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
+
+    expect(resolveAttach(projectId)?.ref.local_grove_id).toBe(defaultGrove.id);
+    // Pure read: resolving the default never minted a Grove.
+    expect(listGroves(home)).toHaveLength(groveCountBefore);
+  });
+
+  test('an unknown local_grove_id refuses with the coded unknown_local_grove membership error, writing nothing', () => {
+    const host = makeHost();
+    upsertHost(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+
+    expect(() => attachCommand({ projectPath: root, hostId: host.host_id, localGroveId: 'grove_does_not_exist', mycoHome: home }))
+      .toThrow(/Unknown local Grove grove_does_not_exist/);
+    try {
+      attachCommand({ projectPath: root, hostId: host.host_id, localGroveId: 'grove_does_not_exist', mycoHome: home });
+    } catch (err) {
+      expect(membershipErrorCode(err)).toBe('unknown_local_grove');
+    }
+    expect(resolveAttach(projectId)).toBeNull();
+  });
+
+  test('attach with no default Grove yet and no explicit local_grove_id still succeeds — local_grove_id is left unset, like a legacy ref (bootstrap-only edge case, never a hard attach failure)', () => {
+    const host = makeHost();
+    upsertHost(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    // `home` has no Groves at all — no createGrove/ensureDefaultGrove call in this test.
+
+    const result = attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
+
+    expect(result.alreadyAttached).toBe(false);
+    expect(resolveAttach(projectId)?.ref.local_grove_id).toBeUndefined();
+  });
+
+  test('re-attach with a different explicit local_grove_id keeps the originally recorded choice (captured once, at attach time)', () => {
+    const host = makeHost();
+    upsertHost(host);
+    const groveA = createGrove('Alpha', home);
+    const groveB = createGrove('Bravo', home);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+
+    attachCommand({ projectPath: root, hostId: host.host_id, localGroveId: groveA.id, mycoHome: home });
+    const second = attachCommand({ projectPath: root, hostId: host.host_id, localGroveId: groveB.id, mycoHome: home });
+
+    expect(second.alreadyAttached).toBe(true);
+    expect(resolveAttach(projectId)?.ref.local_grove_id).toBe(groveA.id);
   });
 });

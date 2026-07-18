@@ -21,6 +21,7 @@ import {
   type GroveRecord,
 } from '@myco/grove/registry.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { resolveAttach } from '@myco/host/registry.js';
 
 // Transports that resolve inbound requests catch this alongside the
 // resolver's own error types; re-exported so they import one module for
@@ -129,6 +130,24 @@ export interface RequestContextAuthOptions {
    * default keeps today's non-throwing behavior.
    */
   enforceGroveOwnership?: boolean;
+  /**
+   * Tolerate an ATTACHED project (served by a remote Team Host, no local Grove
+   * registry row) that is named as caller tenancy against an existing LOCAL
+   * Grove. When set, a `findRegisteredProject` miss that would otherwise throw
+   * {@link UnknownRequestContextError} instead resolves a display-only,
+   * grove-scoped, `attachedProject`-flagged context (see
+   * {@link MycoRequestContext.attachedProject}) so machine-scoped
+   * `localhost-only` surfaces serve instead of 404ing while an attached project
+   * is the member's active UI selection.
+   *
+   * Opt-in, set ONLY at the member daemon's local-dispatch header resolution
+   * (`daemon/server.ts` `resolveRouteRequestContext`). The `/mcp` transport, the
+   * external MCP listener, URL-tenancy resource routes, and client-side env
+   * resolution all leave it off, so their behavior is byte-identical to today.
+   * A non-attached miss (genuinely unknown project) still throws exactly as
+   * before regardless of this flag.
+   */
+  tolerateAttachedProject?: boolean;
 }
 
 export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault' | 'url';
@@ -217,6 +236,21 @@ export interface MycoRequestContext {
    * (non-overlay) run — behavior there is byte-identical to today.
    */
   hostServed?: boolean;
+  /**
+   * True when the caller's tenancy names an ATTACHED project (served by a
+   * remote Team Host) that has no local Grove registry row, and the request
+   * is a member-local dispatch (a `localhost-only` route classified `local`).
+   * Set only by {@link resolveRegisteredRequestContext}'s attach-tolerance
+   * branch, gated behind `tolerateAttachedProject` — so it is absent for every
+   * non-attached request and for URL-tenancy / client-side resolution.
+   *
+   * The context it stamps is DISPLAY-ONLY and grove-scoped, project-less at the
+   * database layer: `databasePath` is the member's own local display Grove DB
+   * (never a project vault — an attached project has none), and project-scoped
+   * reads resolve to zero local rows. Read this through
+   * {@link isAttachedProjectRequest}; absent/false everywhere else.
+   */
+  attachedProject?: boolean;
 }
 
 /**
@@ -231,6 +265,18 @@ export function isHostServedRequest(
   context: { hostServed?: boolean } | undefined | null,
 ): boolean {
   return context?.hostServed === true;
+}
+
+/**
+ * True when the request resolved to an ATTACHED project (a Team Host member's
+ * active UI selection) that has no local Grove registry row — see
+ * {@link MycoRequestContext.attachedProject}. Coerces the optional flag so an
+ * unstamped context (every non-attached request) reads as false.
+ */
+export function isAttachedProjectRequest(
+  context: { attachedProject?: boolean } | undefined | null,
+): boolean {
+  return context?.attachedProject === true;
 }
 
 /** True iff the request is bound to a Grove (vs a legacy project-local vault). */
@@ -320,6 +366,7 @@ export function requestContextFromHttpHeaders(
   enforceContextSwitchAuth(headers, options.expectedAuthToken ?? null);
 
   const enforceGroveOwnership = options.enforceGroveOwnership === true;
+  const tolerateAttachedProject = options.tolerateAttachedProject === true;
   const callerRoot = normalizeCallerRoot(readHeader(headers, REQUEST_CONTEXT_HEADERS.callerRoot));
   // Base context; caller headers below override to a real project.
   const { context: fallback, manifest } = buildVaultFallbackOrGlobal(fallbackVaultDir, { callerRoot });
@@ -338,7 +385,7 @@ export function requestContextFromHttpHeaders(
     // session headers. Auth has already been enforced above.
     const tenancySource = tenancySourceFromExplicit(explicit);
     if (explicit.groveId) {
-      return resolveRegisteredRequestContext(explicit, fallback, 'headers', tenancySource, enforceGroveOwnership);
+      return resolveRegisteredRequestContext(explicit, fallback, 'headers', tenancySource, enforceGroveOwnership, tolerateAttachedProject);
     }
     const manifestContext = resolveManifestHeaderRequestContext(explicit, fallback, 'headers', tenancySource, enforceGroveOwnership);
     if (manifestContext) return manifestContext;
@@ -438,6 +485,10 @@ export function requestContextFromTenancyIds(
     'url',
     tenancySourceFromExplicit(explicit),
     options.enforceGroveOwnership === true,
+    // URL-tenancy resource routes for an attached project are serve-stamped and
+    // proxied to the host before this resolver runs, so they never reach the
+    // attach-tolerance branch; keep it off to stay byte-identical to today.
+    false,
   );
 }
 
@@ -590,8 +641,9 @@ export function requestContextFromEnvironment(
   // Client-side resolution (hooks, stdio bridge, CLI): never enforce
   // Grove ownership here — a throw would be swallowed by the hook
   // client's catch and silently drop capture headers. The daemon
-  // enforces ownership when it resolves the inbound request.
-  return resolveRegisteredRequestContext(explicit, fallback, 'explicit', tenancySourceFromExplicit(explicit), false);
+  // enforces ownership when it resolves the inbound request. Attach
+  // tolerance stays off too: it is a member daemon local-dispatch affordance.
+  return resolveRegisteredRequestContext(explicit, fallback, 'explicit', tenancySourceFromExplicit(explicit), false, false);
 }
 
 /**
@@ -943,6 +995,7 @@ function resolveRegisteredRequestContext(
   source: RequestContextSource,
   tenancySource: TenancySource,
   enforceGroveOwnership: boolean,
+  tolerateAttachedProject: boolean,
 ): MycoRequestContext {
   const inputProjectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
   const manifestFromInputRoot = inputProjectRoot
@@ -998,6 +1051,41 @@ function resolveRegisteredRequestContext(
     projectRoot: inputProjectRoot,
   }, mycoHome);
   if (!registered) {
+    // Team Host member local-dispatch tolerance (E-4 local-view requirement):
+    // the caller named a project with no local Grove row against an existing
+    // LOCAL Grove (validated above). If that project is ATTACHED to a remote
+    // host, it legitimately has no local row (the never-materialize invariant),
+    // yet it can be the member's ACTIVE UI selection — so every `localhost-only`
+    // route then carries (localGroveId, attachedProjectId) and would 404 here.
+    // Resolve a display-only, grove-scoped, project-LESS-at-the-DB context so
+    // machine-scoped surfaces serve. `resolveAttach` is a pure disk read (no
+    // host dial); a non-attached miss falls through to the unchanged throw.
+    if (tolerateAttachedProject && resolveAttach(projectId)) {
+      if (enforceGroveOwnership && !groveOwnedByThisDaemon(grove, mycoHome)) {
+        throw new ForeignGroveError(grove.id);
+      }
+      // Mirror the grove-scoped/project-less branch above: `databasePath` is the
+      // member's own local display Grove DB, NOT a project vault (an attached
+      // project has none) — so nothing binds or creates a local project vault,
+      // and project-scoped reads resolve to zero local rows (correct: the
+      // project's data lives on the host). `projectId` is retained for the
+      // handlers/observability that key on it, and `attachedProject` marks the
+      // context so it is never mistaken for a locally-registered project.
+      return {
+        ...fallback,
+        projectRoot: resolveGroveDir(grove.id, mycoHome),
+        callerRoot: fallback.callerRoot,
+        projectId: assertGroveProjectId(projectId),
+        groveId: grove.id,
+        machineId: input.machineId ?? fallback.machineId,
+        sessionId: input.sessionId ?? fallback.sessionId,
+        projectVaultDir: resolveGroveDir(grove.id, mycoHome),
+        databasePath: resolveGroveDbPath(grove.id, mycoHome),
+        source,
+        tenancySource,
+        attachedProject: true,
+      };
+    }
     throw new UnknownRequestContextError(`Project ${projectId} is not registered in Grove ${grove.id}`);
   }
 
