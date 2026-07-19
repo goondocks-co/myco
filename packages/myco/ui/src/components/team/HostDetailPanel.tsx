@@ -50,7 +50,11 @@ export interface HostDetailPanelProps {
 export function HostDetailPanel({ host }: HostDetailPanelProps) {
   const health = useHostMembershipHealth(true);
   const drain = useDrainHealth();
-  const groves = useGroves();
+  // includeArchived: an attach ref's `local_grove_id` can name a local Grove
+  // that's since been archived (still exists, just hidden from the default
+  // Groves list) — excluding it here would render the raw grove id instead
+  // of its name under "Shows under:" for an otherwise-normal attached ref.
+  const groves = useGroves({ includeArchived: true });
 
   const healthEntry = health.data?.hosts.find((h) => h.host_id === host.host_id);
   const reachability = reachabilityDisplayState(health.isLoading, healthEntry?.reachable);

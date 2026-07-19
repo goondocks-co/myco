@@ -1,7 +1,7 @@
 ---
 name: myco:ui-development-and-visual-identity
 description: |
-  Comprehensive procedures for building, maintaining, and extending Myco's React-based UI components and multi-instance visual identity system. Covers React component architecture patterns, theme system implementation with 6-theme variants, multi-instance visual coordination for daemon/collective/marketing distinction, frontend build integration, appearance controls, and component development lifecycle. Use when implementing new UI components, extending the theme system, coordinating visual identity across multiple Myco instances, or troubleshooting frontend build issues, even if the user doesn't explicitly ask for UI development guidance.
+  Procedures for building, maintaining, and extending Myco's React daemon UI: the v7 component-composition system (AccentSurface/Panel primitives, page-wide selection state, master-detail and slideout layouts), the Grove-owned appearance system (6 themes, light/dark/system mode, three-role fonts, density), project-scoped request context, auth-gated attachments, and the Team Host degraded-presentation family for attached (hosted) projects. Use when building or troubleshooting UI components, extending the theme/appearance system, wiring project-scoped data, or presenting attached-project degradation, even if the user doesn't explicitly ask for UI development guidance.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -9,407 +9,273 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # UI Development and Visual Identity System
 
-Myco's UI spans multiple contexts (daemon, collective, marketing) with 6-theme architecture and multi-instance coordination.
+The daemon UI lives in `packages/myco/ui/` (Vite + React + Tailwind, react-router).
+It is built on the v7 "Tactile Research" design system: a 6-theme appearance
+model and a small set of composition primitives under
+`packages/myco/ui/src/components/ui/`. Build new surfaces by composing those
+primitives — do not reinvent card chrome, loading gates, or layout shells.
 
 ## Prerequisites
 
-- Myco project with `.myco/` vault directory  
-- Node.js environment with npm workspaces
-- Access to `packages/myco/ui/` and related UI directories
+- A running daemon (the UI reads/writes through its HTTP API).
+- Node.js with npm workspaces; the UI is its own workspace under `packages/myco/ui`.
+- Familiarity with `packages/myco/ui/src/components/ui/` (primitives) and
+  `packages/myco/ui/src/hooks/` (data hooks over `usePowerQuery`).
 
-## Procedure A: React Component Architecture
+## Procedure A: Component Composition (v7 primitives)
 
-### Multi-Instance Component Design
+Every card/panel derives from **`AccentSurface`**
+(`components/ui/accent-surface.tsx`) — the v7 signature chrome (2px coloured
+top stripe, `surface-container-low` bg, `outline-variant` border, 12px radius).
+Its `accent` is `sage | ochre | terra | outline`. **`Panel`**
+(`components/ui/panel.tsx`) wraps `AccentSurface` with a standard
+`eyebrow`/`title`/`actions`/`footer` header and a `tone` (`sage | ochre | terra`).
 
-```typescript
-const InstanceContext = createContext<'daemon' | 'collective' | 'marketing'>();
+Other primitives in `components/ui/`: `Surface`, `PageContainer`, `PageHeader`,
+`SectionHeader`, `Eyebrow`/`IconEyebrow`, `DefRow`, `Badge`, `StatCard`/`MetricCard`,
+`SlideoutDetailPanel`, `MasterDetailSplit`, `Pagination`, `PageLoading`, and the
+status pills (`daemon-status-pill`, `cortex-status-pill`, `git-identity-pill`).
 
-function NavigationComponent() {
-  const instance = useContext(InstanceContext);
-  const instanceClasses = instance === 'collective' ? 'nav-collective' : 'nav-daemon';
-  return <nav className={`nav-component ${instanceClasses}`}>{/* content */}</nav>;
-}
-```
+**Gate loading/error with `PageLoading`** (`components/ui/page-loading.tsx`):
+`<PageLoading isLoading={...} error={...}>{children}</PageLoading>` renders a
+spinner, a "Failed to connect to daemon" state, or the children — never
+hand-roll these three states.
 
-### Grove Project Switcher
+### Exemplary compositions (copy these, verify before citing)
 
-```typescript
-function ProjectSwitcher() {
-  const { groveSlug, projectSlug } = useParams();
-  const { projects } = useGroveProjects(groveSlug);
-  
-  return (
-    <DropdownMenu>
-      <DropdownTrigger>
-        <Button variant="ghost">{projectSlug} <ChevronDown /></Button>
-      </DropdownTrigger>
-      <DropdownContent>
-        {projects.map(project => (
-          <DropdownItem key={project.slug} onClick={() => navigate(`/g/${groveSlug}/p/${project.slug}/`)}>
-            {project.displayName}
-          </DropdownItem>
-        ))}
-      </DropdownContent>
-    </DropdownMenu>
-  );
-}
-```
+- **`components/grove/DaemonStatusCard.tsx`** — the minimal card recipe:
+  `Panel tone="sage"` + `IconEyebrow` + a `<dl>` of `DefRow`s + a `Badge`.
+  Read this first when building any status/summary card.
+- **`pages/MachineDashboard.tsx`** — page assembly: a `PageContainer` +
+  `PageHeader` stacking self-contained cards (`Surface level="low"`, a local
+  `Stat` sub-component, `dl` grids). Cards own their own data hook
+  (`useDaemon`) and their own loading fallback.
+- **`pages/Logs.tsx`** — **page-wide selection state** precedent: a single
+  `selectedEntry` state drives both the row highlight (`selectedId` passed into
+  the table) and a `SlideoutDetailPanel`; re-clicking the selected row toggles
+  it closed. It also hydrates initial filter/selection state from URL query
+  params (`new URLSearchParams(window.location.search)`) for deep links. Follow
+  this shape for any list-plus-detail page: one selection state at the page,
+  passed down as `selectedId` + `onSelect`.
 
-### Durable Project Selection Model
+### New component recipe
 
-Myco uses a two-notion project selection model. Pages that need a project context must use the durable selection hook and appropriate boundary:
+1. Compose from `AccentSurface`/`Panel` and the existing primitives; match an
+   exemplar above rather than inventing chrome.
+2. Read data through a hook in `components/ui/hooks/` built on `usePowerQuery`;
+   gate rendering with `PageLoading` (or a card-local `if (!data)` fallback).
+3. Use theme tokens (`text-on-surface`, `text-on-surface-variant`, `bg-surface-*`,
+   `border-outline-variant`, `text-sage`/`text-ochre`) — never hard-coded hex.
+4. Keep selection/detail state at the page and pass `selectedId`/`onSelect` down.
 
-- **`useActiveProjectSelection()`** — reads the durable selection across all pages, including machine-scoped pages. Import from `packages/myco/ui/src/hooks/use-project-selection.tsx`. Returns `ProjectSelection | null`.
-- **`ProjectSelectionBoundary`** — context provider that sets the selection for its subtree. The `persist` prop controls whether entering this boundary calls `writeLastSelection()`:
-  - `persist` (default `true`) — saves the selection as the durable last-known project. Use for normal project-scoped pages.
-  - `persist={false}` — does NOT update the durable selection. Use for read-only route params (e.g. redirect targets, machine-scoped pages viewing a specific project) where you must not clobber the user's intentional selection.
-- **`GlobalSelectionBoundary`** — wraps machine-scoped pages (e.g. machine settings, global operations). Deliberately sends **no** project context headers so those pages operate machine-wide without leaking a stale project scope.
-- **`requestContextHeadersFromSelection()`** — called by `packages/myco/ui/src/lib/api.ts` on every API request to inject `x-myco-grove-id` / `x-myco-project-id` from the active selection. Never suppress this; it is the sole mechanism for scoping requests to the correct project.
-- **`OperationsScopePill`** — visual affordance showing the current operations scope (grove / project / machine). Lives in `packages/myco/ui/src/components/operations/OperationsScopePill.tsx`. Render it in headers of pages where scope is user-selectable.
+## Procedure B: Project-Scoped Data and Selection
 
-**Two common bug patterns to avoid:**
+Pages that need a project context use the durable selection model in
+`packages/myco/ui/src/hooks/use-project-selection.tsx`:
 
-1. **Component reads page route params instead of durable selection**: The page re-renders with the route's project but the durable selection holds a different project, causing request headers to diverge from the visible UI. Fix: call `useActiveProjectSelection()` explicitly and let the boundary wire the selection.
-2. **Route write fires persist=true on a non-user-facing selection**: A redirect or background route entry triggers `writeLastSelection()`, clobbering the user's durable project. Fix: always pass `persist={false}` on boundaries that are not driven by an explicit user project-pick action.
+- **`useProjectSelection()` / `useActiveProjectSelection()`** — read the active
+  `ProjectSelection | null` from context/durable store.
+- **`ProjectSelectionBoundary`** — sets the selection for its subtree. Its
+  `persist` prop (default `true`) controls whether entering the boundary writes
+  the durable last-known project. Pass **`persist={false}`** for read-only route
+  params (redirect targets, machine-scoped pages viewing a specific project) so
+  a non-user-facing navigation never clobbers the user's intentional pick.
+- **`GlobalSelectionBoundary`** — wraps machine-scoped pages; deliberately sends
+  **no** project context headers so they operate machine-wide.
+- **`requestContextHeadersFromSelection()`** (`lib/selection.ts`, called by
+  `lib/api.ts` on every request) injects **`x-myco-grove-id` / `x-myco-project-id`**
+  from the active selection. This is the sole request-scoping mechanism — never
+  suppress it.
+- **`OperationsScopePill`** (`components/operations/`) — the scope affordance for
+  headers of pages where scope is user-selectable.
 
-### Enhanced TabSwitcher for Phase 6 Team Consolidation
+**Project switcher** — `components/ProjectSwitcher.tsx` is the real switcher.
+It reads `useProjectSelection()`, `useGroves()`, and `useProjectsActivity()`,
+sorts projects by recent activity, and navigates via the `lib/selection.ts`
+path helpers (`projectPath`, `projectRouteSuffix`, `selectionFromLast`) — it does
+**not** read route params directly. Reuse those helpers rather than string-building
+routes.
 
-**Critical update**: Queue-aware TabSwitcher with error state handling:
+**Two bug patterns to avoid:**
 
-```typescript
-interface TabSwitcherProps {
-  tabs: Array<{ 
-    id: string; 
-    label: string; 
-    icon?: React.ReactNode; 
-    count?: number;
-    badge?: 'active' | 'pending' | 'error';
-    disabled?: boolean;
-  }>;
-  activeTab: string;
-  onTabChange: (tabId: string) => void;
-  layout?: 'horizontal' | 'vertical';
-}
+1. **Reading route params instead of the durable selection** — the page renders
+   the route's project while the durable selection (and therefore the request
+   headers) holds a different one. Fix: read `useActiveProjectSelection()` and
+   let the boundary wire the selection.
+2. **A non-user navigation firing `persist={true}`** — a redirect/background
+   route entry overwrites the user's durable project. Fix: `persist={false}` on
+   any boundary not driven by an explicit user project-pick.
 
-export function TabSwitcher({ tabs, activeTab, onTabChange, layout = 'horizontal' }: TabSwitcherProps) {
-  return (
-    <div className={`tab-switcher tab-switcher-${layout}`} role="tablist">
-      {tabs.map(tab => (
-        <button
-          key={tab.id}
-          role="tab"
-          aria-selected={tab.id === activeTab}
-          disabled={tab.disabled}
-          className={`tab-button ${tab.id === activeTab ? 'active' : ''} ${tab.badge ? `badge-${tab.badge}` : ''}`}
-          onClick={() => !tab.disabled && onTabChange(tab.id)}
-        >
-          {tab.icon && <span className="tab-icon">{tab.icon}</span>}
-          <span className="tab-label">{tab.label}</span>
-          {tab.count !== undefined && <span className="tab-count">{tab.count}</span>}
-          {tab.badge && <span className={`tab-badge tab-badge-${tab.badge}`} />}
-        </button>
-      ))}
-    </div>
-  );
-}
-```
+## Procedure C: Auth-Gated Attachments
 
-### URL State Management with React Router
+Attachment bytes come from a bearer-gated daemon route
+(`/api/g/:groveId/p/:projectId/attachments/:file`). A bare `<img src>` cannot
+send the `x-myco-auth` header, so always use
+`components/ui/attachment-image.tsx`:
 
-**Critical update**: Use React Router hooks instead of window.location for MemoryRouter compatibility:
-
-```typescript
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-
-function useUrlState() {
-  const location = useLocation();
-  const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
-  
-  // Use React Router hooks instead of window.location
-  // This ensures MemoryRouter compatibility for testing and Electron contexts
-  const readUrlState = () => ({
-    pathname: location.pathname,
-    search: location.search,
-    hash: location.hash,
-    params: Object.fromEntries(searchParams.entries())
-  });
-  
-  const updateUrlState = (newParams: Record<string, string>) => {
-    const currentParams = Object.fromEntries(searchParams.entries());
-    const mergedParams = { ...currentParams, ...newParams };
-    setSearchParams(mergedParams);
-  };
-  
-  return { readUrlState, updateUrlState };
-}
-```
-
-### Auth-Gated Attachment Rendering
-
-Attachment bytes are served by a bearer-token-gated daemon route (`/api/g/:groveId/p/:projectId/attachments/:file`). A bare `<img src>` cannot send the `x-myco-auth` header — always use `AttachmentImage` or `useAttachmentObjectUrls` from `packages/myco/ui/src/components/ui/attachment-image.tsx`:
-
-```typescript
+```tsx
 import { AttachmentImage, useAttachmentObjectUrls } from '../ui/attachment-image';
 
-// Single image (preferred for all attachment display)
 <AttachmentImage filePath={attachment.file_path} alt="attachment" />
-
-// Multiple images — for lightbox or raw URL access
-const objectUrls = useAttachmentObjectUrls(attachments.map(a => a.file_path));
+const urls = useAttachmentObjectUrls(attachments.map(a => a.file_path)); // lightbox/raw
 ```
 
-`AttachmentImage` fetches with the `x-myco-auth` bearer token and renders a blob object URL. The (Grove, project) scope is resolved from the current project selection automatically. Never use `<img src={attachment.file_path}>` directly.
+`AttachmentImage` fetches with the token and renders a blob object URL, resolving
+the (Grove, project) scope from the active selection. Never render
+`<img src={attachment.file_path}>` — it silently renders a broken image or an
+auth-error body as binary garbage.
 
-## Procedure B: Theme System
+## Procedure D: Appearance and Theme System
 
-### Core Theme Architecture
+Appearance is **Grove-owned config** (not a local file): the
+`AppearanceProvider` (`providers/appearance.tsx`) reads it via `useScopedConfig`
+and applies it with `applyAppearance` from `lib/appearance-apply.ts`. Four axes,
+whose enum values are the single source of truth in
+`packages/myco/src/config/appearance-values.ts`:
 
-```css
-:root[data-theme="sage"] {
-  --primary: #abcfb8;
-  --on-primary: #163627;
-  --secondary: #edbf7f;
-  --tertiary: #ffb4a1;
-}
-```
+- **`theme`** — `sage | moss | terracotta | dusk | plum | slate` (6 themes).
+- **`mode`** — `light | dark | system` (toggles the `.light` class on `<html>`).
+- **`font`** — `default | geist-mono | system | sf-mono | fira-code | jetbrains-mono`,
+  each a three-role stack applied as `--font-heading` / `--font-ui` / `--font-data`
+  (the `default` stack is the three-font system: Newsreader / Inter / JetBrains Mono).
+- **`density`** — `compact | normal | comfy`, scaling `--density` and root font-size.
 
-### Adding New Themes
+Each theme is a CSS file in `packages/myco/ui/src/themes/` defining custom
+properties under `:root[data-theme="<name>"]` (dark) and
+`:root[data-theme="<name>"].light` (light) — `--primary`, `--on-primary`,
+`--secondary`, `--tertiary`, etc. Shared accents live in `themes/_shared-accents.css`.
 
-1. Create `packages/myco/ui/src/themes/new-theme.css`
-2. Define CSS custom properties
-3. Register in `packages/myco/src/config/appearance-values.ts`
-4. Import in `packages/myco/ui/src/index.css`
+**Adding a theme:**
 
-## Procedure C: Enhanced Grove Worktree Architecture
+1. Create `packages/myco/ui/src/themes/<name>.css` with both the base and
+   `.light` blocks (mirror `themes/sage.css`).
+2. Add `<name>` to `APPEARANCE_THEMES` in
+   `packages/myco/src/config/appearance-values.ts`.
+3. Import the CSS in `packages/myco/ui/src/index.css`.
+4. Add a `public/favicon-<name>.svg` — `applyAppearance` swaps the favicon per theme.
 
-**Critical Grove improvement**: Streamlined worktree setup with UI workspace verification:
+## Procedure E: Master-Detail and Slideout Layouts
 
-```bash
-function init_grove_worktree_enhanced() {
-  local branch_name="$1"
-  local worktree_path=".worktrees/$branch_name"
-  
-  echo "🌱 Creating Grove worktree: $branch_name"
-  git worktree add "$worktree_path" "$branch_name"
-  cd "$worktree_path"
-  
-  # Install with parallel UI workspaces
-  npm install --include-workspace-root
-  
-  echo "🎨 Installing UI workspaces in parallel..."
-  for workspace in packages/myco/ui packages/myco-hub/ui; do
-    [ -d "$workspace" ] && (cd "$workspace" && npm install) &
-  done
-  wait
-  
-  # Verify UI workspace integrity
-  echo "🔍 Verifying UI workspaces..."
-  for workspace in packages/myco/ui packages/myco-hub/ui; do
-    [ -d "$workspace" ] && (cd "$workspace" && npm run type-check) || {
-      echo "❌ Type check failed in $workspace"; return 1
-    }
-  done
-  
-  npm run build:ui || { echo "❌ UI build failed"; return 1; }
-  
-  echo "✅ Grove worktree ready"
-}
-```
+**`MasterDetailSplit`** (`components/ui/master-detail-split.tsx`) is a responsive
+shell, not a spacing knob. Real props: `master`, `detail`, `hasSelection`,
+optional `onCloseMobileDetail`, `railMinWidthPx`/`railMaxWidthPx`, and the
+`masterAriaLabel`/`detailAriaLabel` landmarks. On desktop it renders a fixed-width
+rail plus a flex detail pane; on mobile it swaps to a single pane with a Back
+button. **The detail pane owns its gutter** (`p-6`) so every consumer renders
+flush to the divider — leaf pages must not add their own outer padding.
 
-## Procedure D: Enhanced Cloudflare Worker Constraints
+For a list page where the detail is an overlay rather than a side-by-side pane,
+use **`SlideoutDetailPanel`** driven by a page-level selection state — see
+`pages/Logs.tsx` (Procedure A).
 
-**Critical constraint updates**: Comprehensive worker limitations with UI adaptations:
+## Procedure F: Team Host Degraded Presentation (attached/hosted projects)
 
-```typescript
-function CloudflareWorkerCompatibleUpload() {
-  const MAX_FILE_SIZE = 1024 * 1024; // 1MB limit
-  const EXECUTION_TIMEOUT = 9000; // 9s timeout
-  const SUPPORTED_FORMATS = ['image/jpeg', 'image/png', 'image/webp'];
-  
-  function validateFileForWorker(file: File) {
-    if (file.size > MAX_FILE_SIZE) {
-      return { 
-        valid: false, 
-        error: `File ${(file.size/1024/1024).toFixed(2)}MB exceeds 1MB worker limit` 
-      };
-    }
-    if (!SUPPORTED_FORMATS.includes(file.type)) {
-      return { valid: false, error: `Format ${file.type} not supported in worker` };
-    }
-    return { valid: true };
-  }
-}
-```
+When a project is **attached** (served by a Team Host), some daemon routes refuse
+locally-scoped work. There are exactly **two refusal flavors**, both classified
+once in `packages/myco/ui/src/lib/degrade.ts` — never re-derive a check against
+`ApiError.body` in a hook or component.
 
-## Procedure E: Master-Detail Layout
+**1. Capability degraded (409) → uniform "unavailable" surface.**
+A `degrade`-stamped route (git status, Canopy, release provenance, backup/embedding
+mutations, Grove lifecycle) 409s with `{ error: 'capability_unavailable_hosted',
+capability, message }`. Detect with `hostedDegradedInfo(err)`; render
+**`HostedUnavailable`** (`components/ui/hosted-unavailable.tsx`), whose `variant`
+is `panel` (replaces a whole section body) or `inline` (fits inside an existing
+card/row). The copy comes from `hostedUnavailableMessage(info)` — never render the
+server `message` verbatim.
 
-**Critical update**: Layout primitives own spacing decisions, not leaf pages:
+**2. Attached tenancy pending (404/500) → behave-like-local empty.**
+Before an attached project's first forwarded capture registers it host-side,
+serve-stamped knowledge reads 404 with `{ error: 'unknown_tenancy' }` (and a
+residual carve can 500 with `attached_config_failed`). Detect with
+`isAttachedTenancyPending(err, selection)` and map the query to its **existing
+empty shape** with `resolveAttachedEmpty(result, selection, empty)` — the same
+zero-state a brand-new local project renders. Empty means empty: reuse the hook's
+own zero object/list (see the `EMPTY_DATABASE_DETAILS` pattern in
+`hooks/use-database-details.ts`), never a bespoke "hosted" placeholder.
 
-```typescript
-export function MasterDetailSplit({ 
-  masterContent, 
-  detailContent, 
-  showDetail, 
-  onCloseDetail,
-  spacing = 'default' // Primitive controls spacing
-}) {
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape' && showDetail) onCloseDetail();
-    }
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [showDetail, onCloseDetail]);
+**Exactly-two-knob suppression rule.** On the classified refusal, set only two
+React Query knobs — `retry: false` and `refetchInterval: false` — and only for
+that refusal (keyed off the same detector). **Never touch
+`refetchOnWindowFocus` / `refetchOnMount` / `retryOnMount`: those are the recovery
+path.** Once registration lands, a page reload or re-selection re-mounts the query
+and it repopulates. Reference implementations:
 
-  const spacingClass = {
-    'compact': 'spacing-compact',
-    'default': 'spacing-default',
-    'comfortable': 'spacing-comfortable'
-  }[spacing];
+- `hooks/use-git-identity.ts` — the 409 pattern:
+  `refetchInterval: (q) => hostedDegradedInfo(q.state.error) ? false : POLL...`
+  and `retry: (n, err) => hostedDegradedInfo(err) ? false : n < 3`.
+- `hooks/use-database-details.ts` — the tenancy pattern: the same two knobs keyed
+  on `isAttachedTenancyPending`, wrapped in `resolveAttachedEmpty`.
 
-  return (
-    <div className={`master-detail-split ${showDetail ? 'detail-open' : ''} ${spacingClass}`}>
-      <div className="master-panel">{masterContent}</div>
-      {showDetail && (
-        <div className="detail-panel">
-          <button onClick={onCloseDetail}>×</button>
-          {detailContent}
-        </div>
-      )}
-    </div>
-  );
-}
-```
+**Classifier precision is load-bearing.** Real outages must keep real error
+presentation: a host outage (`host_unreachable` 503, `host_auth_rejected` 502),
+any relay 5xx, a network error that never became an `ApiError`, any *other* 404,
+and every refusal on a **non-attached** project all classify as false. Do not widen
+the detectors to "any 409" or "any 404" — that silently hides genuine failures
+behind a fake empty page.
 
-## Procedure F: Settings Registry
+**Membership copy vocabulary** (`lib/membership-copy.ts`; the copy doctrine is
+recorded as a Myco decision spore — search "UI copy user vocabulary" to retrieve
+it): map known failure codes to **user-outcome** sentences that
+reference the UI's own affordances ("its host card has a Detach control"), not the
+daemon's CLI-voiced message or raw error codes. Host-facing surfaces carry **zero
+"grove" strings** — the only permitted use is the member's *own* local Grove picker
+(`LOCAL_GROVE_PICKER_LABEL = "Show under"`). Proactive suppression that keys on the
+attached selection directly (not an error response) gets its own plain line — e.g.
+`BACKUPS_HOSTED_LIST_NOTICE`, which replaces the localhost-only backups *list* so it
+never shows the member's local backups as if they were the team project's.
 
-```typescript
-interface SettingDefinition<T> {
-  key: string;
-  label: string;
-  schema: z.ZodType<T>;
-  scope: 'machine' | 'grove' | 'project';
-  section: string;
-  defaultValue: T;
-}
-
-class SettingsRegistry {
-  private settings = new Map<string, SettingDefinition>();
-  
-  register<T>(setting: SettingDefinition<T>) {
-    this.settings.set(setting.key, setting);
-  }
-  
-  validate<T>(key: string, value: unknown): T {
-    const setting = this.settings.get(key);
-    const result = setting?.schema.safeParse(value);
-    if (!result?.success) throw new Error(`Validation failed: ${key}`);
-    return result.data;
-  }
-}
-```
-
-## Procedure G: Appearance Controls
-
-```typescript
-interface AppearanceConfig {
-  theme: 'sage' | 'moss' | 'terracotta' | 'dusk' | 'plum' | 'slate';
-  fontSize: 'small' | 'medium' | 'large';
-  darkMode: boolean;
-}
-
-function useAppearanceConfig(): [AppearanceConfig, (config: Partial<AppearanceConfig>) => void] {
-  // Read from .myco/local.yaml, write updates
-}
-```
-
-## Procedure H: Runtime Status Badges
-
-```typescript
-function RuntimeStatusBadge() {
-  const { runtimeOrigin } = useDaemonStats();
-  
-  if (!runtimeOrigin || runtimeOrigin === 'stable') return null;
-  
-  const config = runtimeOrigin === 'dev' 
-    ? { label: 'DEV', className: 'runtime-badge-dev' }
-    : { label: 'BETA', className: 'runtime-badge-beta' };
-  
-  return <Badge variant="outline" className={config.className}>{config.label}</Badge>;
-}
-```
-
-## Procedure I: PR Merge Discipline and Go-Ahead Patterns
-
-**Critical update**: Wait for explicit go-ahead signals before merging PRs:
-
-```typescript
-interface PRMergeChecks {
-  reviewsComplete: boolean;
-  ciPassing: boolean;
-  conflictsResolved: boolean;
-  goAheadReceived: boolean;
-}
-
-function PRMergeController({ prId, checks }: { prId: string; checks: PRMergeChecks }) {
-  const canMerge = Object.values(checks).every(Boolean);
-  
-  return (
-    <div className="pr-merge-controls">
-      <ChecklistItem checked={checks.reviewsComplete} label="Reviews complete" />
-      <ChecklistItem checked={checks.ciPassing} label="CI passing" />
-      <ChecklistItem checked={checks.conflictsResolved} label="Conflicts resolved" />
-      <ChecklistItem 
-        checked={checks.goAheadReceived} 
-        label="Explicit go-ahead received"
-        critical
-      />
-      <Button 
-        disabled={!canMerge}
-        onClick={() => mergePR(prId)}
-      >
-        {canMerge ? 'Merge PR' : 'Waiting for go-ahead signal'}
-      </Button>
-    </div>
-  );
-}
-```
+Provenance for the above (verify against source, not this list): the classifier and
+shared empty mapper landed in T4a (`0cec8e1b`); the attached knowledge-read hooks in
+T4bcd (`b1949b43`); the Operations/Canopy/provenance `HostedUnavailable` wiring in
+T5a–d (`3df07097`, `e30785f6`, `d9ee7493`, `e3c59411`).
 
 ## Cross-Cutting Gotchas
 
-### Theme Development
-**Browser caches CSS aggressively**. Always hard refresh (Cmd+Shift+R) when developing themes.
+### Appearance paints from a pre-bootstrap cache
+`applyCachedAppearance()` (`lib/appearance-apply.ts`) replays the last-applied
+values from `localStorage['myco-appearance']` synchronously in `main.tsx` before
+React mounts, so the chosen theme paints on the first frame. When developing
+themes, browsers cache CSS aggressively — hard refresh (Cmd+Shift+R).
 
-### Grove Worktree Dependencies
-**Each Grove worktree needs independent UI workspace `npm install`**. The enhanced setup handles this automatically with parallel installation and verification.
+### UI workspace install in worktrees
+Each git worktree needs its own `npm install` in `packages/myco/ui` (and the UI
+build must run before dogfooding a worktree daemon). Follow the **`dogfood-worktree`**
+skill rather than a bespoke setup script — the worktree's runtime does not travel
+with `git worktree add`.
 
-### TabSwitcher Queue Integration  
-**Queue error states must trigger auto-navigation to queue tab**. Missing queue status monitoring breaks Phase 6 team consolidation workflow.
+### Layout primitives own spacing
+`MasterDetailSplit`'s detail pane and `Panel`'s body own their gutters. Leaf pages
+must not apply conflicting outer margin/padding — it double-pads or breaks the
+flush-to-divider alignment.
 
-### Instance Context
-**Components default to daemon behavior without proper InstanceContext**. Ensure context provider wraps the app tree.
+### Request context headers are `x-myco-*-id`
+Grove/project scoping rides on **`x-myco-grove-id` / `x-myco-project-id`**, injected
+by `requestContextHeadersFromSelection()` in `lib/api.ts` — not slug headers. A page
+that bypasses the selection model (or a machine-scoped page that forgets
+`GlobalSelectionBoundary`) leaks or omits the wrong scope.
 
-### Master-Detail State
-**URL params must drive state, not component state**. Missing URL sync breaks browser history.
+### Navigate via react-router, not `window.location`
+Use `useNavigate`/`useLocation`/`useSearchParams` for navigation and URL state so
+`MemoryRouter` (tests, embedded contexts) works. Reading `window.location.search`
+once for initial deep-link hydration (as `pages/Logs.tsx` does) is fine; driving
+navigation off `window.location` is not.
 
-### Project Context Leaks
-**Grove multi-tenant data can leak without proper headers**. Always inject `X-Grove-Slug` and `X-Project-Slug` headers.
+### Attachment routes are auth-gated
+Never render attachment images with a bare `<img src>` — use `AttachmentImage`
+(Procedure C). The route requires `x-myco-auth`, which an `<img>` can't send.
 
-### React Router vs Window Location
-**Using window.location directly breaks MemoryRouter compatibility**. Always use React Router hooks (useLocation, useNavigate, useSearchParams) for URL state management.
+### Durable selection vs route selection
+Route params change every navigation; the durable selection persists until the user
+picks a new project. Machine-scoped pages wrap with `GlobalSelectionBoundary` (no
+project headers); a specific-project view that must not overwrite the user's pick
+uses `ProjectSelectionBoundary persist={false}`.
 
-### Layout Primitive Spacing Authority
-**Leaf pages must not override layout primitive spacing decisions**. MasterDetailSplit and similar primitives own spacing through props — leaf components should not apply conflicting margin/padding styles.
-
-### PR Merge Go-Ahead Discipline  
-**Auto-merge without explicit go-ahead signals creates integration risks**. Always implement go-ahead confirmation patterns for non-trivial PRs.
-
-### Attachment Routes Are Auth-Gated
-**Never render attachment images with bare `<img src>`**. Attachment routes (`/api/g/:groveId/p/:projectId/attachments/:file`) require the `x-myco-auth` bearer token, which a standard `<img>` element cannot send. Use `AttachmentImage` from `packages/myco/ui/src/components/ui/attachment-image.tsx` for all attachment display. Use `useAttachmentObjectUrls` when raw blob URLs are needed (e.g. lightboxes). Using a bare image tag silently renders a broken image or an auth error response as binary garbage.
-
-### Durable Selection vs Route Selection
-**Do not confuse the durable selection (via `useActiveProjectSelection()`) with route params**. Route params change on every navigation; the durable selection persists until the user explicitly picks a new project. A boundary with `persist={false}` exposes a specific project to its subtree without overwriting the durable selection. Machine-scoped pages must wrap with `GlobalSelectionBoundary` — never with a project `ProjectSelectionBoundary` — so `requestContextHeadersFromSelection()` injects no project headers and the request is correctly machine-wide.
-
-### UI Embed Build Order Is Strictly Sequential
-**`build:ui` must run before `codegen`, which must run before `build:binary`**. The `codegen` step includes `packages/myco/scripts/gen-ui-assets.ts`, which reads the Vite-compiled output and generates `packages/myco/src/ui-assets.generated.ts` — the file that embeds the React bundle into the TypeScript source tree for binary compilation. If codegen runs before the Vite build, it emits an empty or stale asset map, silently producing a binary with no bundled UI. Always run the full `npm run build` (which sequences `build:ui && codegen && build:binary`) rather than invoking the script directly.
+### UI embed build order is strictly sequential
+`build:ui` must run before `codegen`, which must run before `build:binary`
+(`packages/myco/package.json`: `build:ui && codegen && … && build:binary`). The
+`codegen` step runs `packages/myco/scripts/gen-ui-assets.ts`, which reads the
+Vite-compiled output and generates `packages/myco/src/ui-assets.generated.ts` — the
+file that embeds the React bundle into the binary. If codegen runs before the Vite
+build, it emits a stale/empty asset map and silently ships a binary with no UI.
+Always run the full `npm run build`.

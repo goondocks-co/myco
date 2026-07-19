@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
-import { HardDrive, Download, Upload, RefreshCw, FolderOpen } from 'lucide-react';
+import { HardDrive, Download, Upload, RefreshCw, FolderOpen, CloudOff } from 'lucide-react';
 import { fetchJson } from '../../lib/api';
 import { errorMessage } from '../../lib/error';
 import { formatBytes } from '../../lib/format';
@@ -9,6 +9,10 @@ import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
+import { AccentSurface } from '../ui/accent-surface';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
+import { hostedDegradedInfo, type HostedDegradedInfo } from '../../lib/degrade';
+import { BACKUPS_HOSTED_LIST_NOTICE } from '../../lib/membership-copy';
 import { cn } from '../../lib/cn';
 import { ScopedField } from '../config/ScopedField';
 import { OperationsScopePill, type OperationsScope } from './OperationsScopePill';
@@ -54,6 +58,11 @@ const RECENT_SHOWN = 3;
 
 export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // Backup/restore is degrade-stamped for attached (hosted) projects — the
+  // mutation 409s capability_unavailable_hosted. When that's the failure, render
+  // the uniform HostedUnavailable strip in the message slot instead of a raw
+  // "Backup failed: …" (a real failure keeps the raw message).
+  const [hostedInfo, setHostedInfo] = useState<HostedDegradedInfo | null>(null);
   // Backup operates on a per-Grove SQLite file — no project-narrowed dump
   // path — so the pill defaults to Grove and excludes the project option.
   const [pillScope, setPillScope] = useState<OperationsScope>('grove');
@@ -67,11 +76,18 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   const selection = useActiveProjectSelection();
   const groveId = selection?.grove.id ?? null;
   const ctxHeaders = selection ? requestContextHeadersForSelection(selection) : undefined;
+  // LOCKED decision D-W2-4 (E-4 W2 Task 7 item f): GET /api/backups is
+  // localhost-only (not degrade-stamped), so it succeeds under an attached
+  // selection and would list the MEMBER's own local display-Grove backups as
+  // if they were this team project's — actively misleading. The query is
+  // disabled outright rather than fetched-and-hidden: no reason to hit the
+  // endpoint for data this surface will never render.
+  const attached = selection?.project.attached === true;
 
   const backupsQuery = useQuery({
     queryKey: ['backups', groveId],
     queryFn: () => fetchJson<BackupListResponse>('/backups', { headers: ctxHeaders }),
-    enabled: !!groveId,
+    enabled: !!groveId && !attached,
   });
   const backups = backupsQuery.data?.backups ?? [];
   const loaded = !!groveId && (backupsQuery.isSuccess || backupsQuery.isError);
@@ -81,6 +97,7 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   async function doCreateBackup() {
     setBusy(true);
     setMessage(null);
+    setHostedInfo(null);
     try {
       const wireScope = buildActionScope(pillScope, selection);
       const res = await fetchJson<BackupCreateResponse & Partial<BackupAllResponse>>('/backup', {
@@ -98,7 +115,12 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
       }
       await backupsQuery.refetch();
     } catch (err) {
-      setMessage({ type: 'error', text: `Backup failed: ${errorMessage(err)}` });
+      const degraded = hostedDegradedInfo(err);
+      if (degraded) {
+        setHostedInfo(degraded);
+      } else {
+        setMessage({ type: 'error', text: `Backup failed: ${errorMessage(err)}` });
+      }
     } finally {
       setBusy(false);
     }
@@ -115,7 +137,16 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
 
   const listError = backupsQuery.isError ? `Failed to load backups: ${errorMessage(backupsQuery.error)}` : null;
 
-  const actions = (
+  // LOCKED decision D-W2-4 (item f): local backup/restore actions on a team
+  // project page are the same scope confusion as the list they act on —
+  // Restore… would offer this member's own local display-Grove backups as if
+  // they belonged to the team project, and Refresh/Backup Now would hit an
+  // endpoint whose data this surface never renders under an attached
+  // selection (`refetch()` bypasses `enabled`, so Refresh would fire the
+  // fetch the disabled query is there to avoid). The whole row is suppressed
+  // rather than disabled — a disabled Restore… reads identically to the
+  // ordinary "no backups yet" state, which is a dead, misleading control.
+  const actions = attached ? null : (
     <div className="flex gap-2">
       <Button variant="ghost" size="sm" onClick={() => backupsQuery.refetch()}>
         <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
@@ -148,9 +179,9 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
           </div>
           {actions}
         </div>
-      ) : (
+      ) : actions ? (
         <div className="flex items-center justify-end">{actions}</div>
-      )}
+      ) : null}
 
       <ActionConfirmDialog
         open={confirmOpen}
@@ -197,15 +228,30 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
         </ScopedField>
       )}
 
-      {(message || listError) && (
+      {hostedInfo ? (
+        <HostedUnavailable info={hostedInfo} variant="inline" />
+      ) : (message || listError) ? (
         <p className={cn('font-sans text-sm', message?.type === 'success' ? 'text-primary' : 'text-tertiary')}>
           {message?.text ?? listError}
         </p>
-      )}
+      ) : null}
 
       {/* Status — prove backups exist without dumping the whole list. The
-          full history lives in the Restore… flow. */}
-      {backups.length > 0 ? (
+          full history lives in the Restore… flow. Suppressed under an
+          attached selection (LOCKED decision D-W2-4, item f) — replaced
+          with a one-line hosted notice instead of this machine's own
+          (irrelevant, misleading) local backup list. */}
+      {attached ? (
+        <AccentSurface
+          accent="ochre"
+          padded
+          className="flex items-center gap-2 text-sm text-on-surface-variant"
+          role="status"
+        >
+          <CloudOff className="size-4 shrink-0 text-ochre" aria-hidden />
+          <span>{BACKUPS_HOSTED_LIST_NOTICE}</span>
+        </AccentSurface>
+      ) : backups.length > 0 ? (
         <div className="space-y-2">
           {recent.map((b, idx) => (
             <div

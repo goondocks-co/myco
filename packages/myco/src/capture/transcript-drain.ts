@@ -38,6 +38,7 @@ import {
   HOST_PROXY_HEADERS_TIMEOUT_MS,
 } from '../constants.js';
 import { assertSafeCaptureSegment, resolveMemberTranscriptDrainDir } from '../grove/paths.js';
+import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { getHost, readHostSecrets } from '../host/registry.js';
 import type { RemoteTarget } from '../host/routing.js';
@@ -257,6 +258,17 @@ export const defaultTranscriptTransport: TranscriptPostTransport = async (target
     'content-type': 'application/json',
     'content-length': String(payload.length),
     [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
+    // Per-entry tenancy claims (project/grove/machine/session), stamped exactly
+    // as plan-drain does. Without them the host resolves `groveId: null` and the
+    // served-grove fail-closed filter refuses `POST /routed-capture/transcript`
+    // for EVERY attached project. `/routed-capture/transcript` is collect-stamped,
+    // so registration-on-ingest (T1a) then admits the freshly-attached project.
+    // The member sends no `x-myco-auth` — the host re-stamps its own local bearer
+    // after the overlay gate. E-4 W2 T1c.
+    [REQUEST_CONTEXT_HEADERS.projectId]: String(target.projectId),
+    [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
+    [REQUEST_CONTEXT_HEADERS.machineId]: body.machine_id,
+    [REQUEST_CONTEXT_HEADERS.sessionId]: body.session_id,
   };
   const req = await defaultDial(target, { method: 'POST', path: '/routed-capture/transcript', headers });
 

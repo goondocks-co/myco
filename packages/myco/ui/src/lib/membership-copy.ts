@@ -20,6 +20,10 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
     "This machine hasn't joined that host yet. Join it first using the form above, then attach.",
   protocol_mismatch:
     'This machine and the host are running different Myco versions. Update Myco on both, then try again.',
+  host_enroll_rejected:
+    "The host turned down this machine's request to join. Ask the host operator to confirm this machine is allowed, then try again.",
+  host_enroll_failed:
+    "Couldn't finish joining this host. It may be busy or set up incompletely — check with the host operator and try again.",
   host_predates_served_grove:
     "This host hasn't reported its team storage yet — update Myco on the host machine, then re-join and try attaching again.",
   attach_grove_mismatch:
@@ -103,6 +107,21 @@ export const LOCAL_GROVE_PICKER_HELPER =
 
 /** Empty-state line for the host detail slideout's attached-projects list. */
 export const HOST_DETAIL_NO_PROJECTS_COPY = 'No projects attached to this host yet.';
+
+/**
+ * One-line notice replacing the backups LIST for an attached (hosted)
+ * project (LOCKED decision D-W2-4, E-4 W2 Task 7 item f). `GET /api/backups`
+ * is localhost-only — unlike the backup/restore MUTATIONS, which are
+ * degrade-stamped and already render the uniform `HostedUnavailable` strip
+ * on a 409 (`lib/degrade.ts`, `ui/components/ui/hosted-unavailable.tsx`) —
+ * so it succeeds and would otherwise list the MEMBER's own local
+ * display-Grove backups as if they belonged to the team project: actively
+ * misleading. This keys on the attached selection directly (proactive
+ * suppression, not an error response), so it is its own plain-language line
+ * rather than routed through `hostedUnavailableMessage`'s generic "isn't
+ * available yet" phrasing. User vocabulary, zero "grove" strings.
+ */
+export const BACKUPS_HOSTED_LIST_NOTICE = "This project's team storage is backed up by its host.";
 
 function apiErrorCode(err: ApiError): string | null {
   if (typeof err.body !== 'object' || err.body === null) return null;

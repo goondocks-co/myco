@@ -242,6 +242,109 @@ describe('handleAttachedConfigRequest — reads', () => {
   });
 });
 
+describe('handleAttachedConfigRequest — a missing project myco.yaml is tolerated (fresh attach)', () => {
+  // A fresh clone-then-attach has the working tree but no `.myco/myco.yaml`
+  // yet. The carve must behave like a local project with the same missing file
+  // (loadMergedConfig `projectTierOptional`): resolve machine + grove tiers,
+  // contribute project-tier defaults, and never 500. Absence is tolerated;
+  // corruption is not.
+  function removeProjectConfig(): void {
+    fs.rmSync(path.join(vaultDir, 'myco.yaml'), { force: true });
+  }
+
+  test('GET /api/config/merged → 200 with grove(host) + machine(local), project tier defaulted', async () => {
+    writeMachineConfig({ daemon: { log_level: 'debug' } });
+    removeProjectConfig();
+
+    const { status, json } = await request('GET', '/api/config/merged');
+    expect(status).toBe(200);
+    expect(json.version).toBe(3);
+    expect(json.daemon.log_level).toBe('debug');    // machine tier, local disk
+    expect(json.embedding.provider).toBe('openai'); // grove tier, from the host fixture
+    expect(json.cortex.enabled).toBe(true);         // project tier absent → schema default
+    // The carve never materialized a myco.yaml for the member.
+    expect(fs.existsSync(path.join(vaultDir, 'myco.yaml'))).toBe(false);
+  });
+
+  test('GET /api/config/merged with a PRESENT-but-malformed myco.yaml still 500s attached_config_failed', async () => {
+    // Corruption is NOT absence — a malformed present file must still surface
+    // the failure envelope, not be papered over by the absence tolerance.
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'foo: [1, 2\n', 'utf-8');
+    const { status, json } = await request('GET', '/api/config/merged');
+    expect(status).toBe(500);
+    expect(json.error).toBe('attached_config_failed');
+  });
+
+  test('GET /api/config → 200 with the project-tier stand-in (never 500)', async () => {
+    removeProjectConfig();
+    const { status, json } = await request('GET', '/api/config');
+    expect(status).toBe(200);
+    expect(json.version).toBe(3);
+    expect(json.cortex.enabled).toBe(true); // schema default — no project file
+    // Reading the config never materialized one.
+    expect(fs.existsSync(path.join(vaultDir, 'myco.yaml'))).toBe(false);
+  });
+
+  test('GET /api/config with a PRESENT-but-malformed myco.yaml still 500s attached_config_failed', async () => {
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'foo: [1, 2\n', 'utf-8');
+    const { status, json } = await request('GET', '/api/config');
+    expect(status).toBe(500);
+    expect(json.error).toBe('attached_config_failed');
+  });
+
+  test('scope=project write CREATES myco.yaml from the skeleton, applies the patch, and round-trips', async () => {
+    removeProjectConfig();
+    const write = await request('PUT', '/api/config/scoped', {
+      body: { scope: 'project', patch: { cortex: { enabled: false } } },
+    });
+    expect(write.status).toBe(200);
+    expect(write.json.cortex.enabled).toBe(false);
+
+    // The write created the member's myco.yaml from the stand-in skeleton.
+    const onDisk = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8'));
+    expect(onDisk.version).toBe(3);
+    expect(onDisk.cortex.enabled).toBe(false);
+
+    // A subsequent merged read round-trips the written project-tier value while
+    // the grove tier is still host-sourced.
+    const merged = await request('GET', '/api/config/merged');
+    expect(merged.status).toBe(200);
+    expect(merged.json.cortex.enabled).toBe(false);
+    expect(merged.json.embedding.provider).toBe('openai');
+  });
+
+  test('scope=local write is tolerant of the absent project file and never creates myco.yaml', async () => {
+    removeProjectConfig();
+    const { status } = await request('PUT', '/api/config/scoped', {
+      body: { scope: 'local', patch: { notifications: { enabled: false } } },
+    });
+    expect(status).toBe(200);
+
+    // The personal overlay landed; the project file was NOT materialized.
+    const onDisk = YAML.parse(fs.readFileSync(path.join(vaultDir, 'local.yaml'), 'utf-8'));
+    expect(onDisk.notifications.enabled).toBe(false);
+    expect(fs.existsSync(path.join(vaultDir, 'myco.yaml'))).toBe(false);
+  });
+
+  test('fresh attach with the host ALSO down: merged still 200, grove failure surfaced (never a 500)', async () => {
+    // The real-world fresh-clone-then-attach failure mode: no myco.yaml AND the
+    // host unreachable. Absence tolerance (project defaults) and the T1 grove
+    // degrade (grove defaults + once-warn) COMPOSE — the envelope fires for
+    // neither, but the grove-tier failure is still surfaced, not swallowed.
+    writeMachineConfig({ daemon: { log_level: 'warn' } });
+    removeProjectConfig();
+    groveResponder = (_req, res) => { res.writeHead(503); res.end(); };
+
+    const { status, json } = await request('GET', '/api/config/merged');
+    expect(status).toBe(200);
+    expect(json.version).toBe(3);
+    expect(json.daemon.log_level).toBe('warn');     // machine tier, local disk
+    expect(json.embedding.provider).toBe('ollama'); // grove tier degraded to default
+    const degradeWarns = warns.filter(([m]) => m.includes('host unreachable for grove-tier config'));
+    expect(degradeWarns.length).toBe(1);
+  });
+});
+
 describe('handleAttachedConfigRequest — the write split', () => {
   test('a project-tier scoped write proceeds locally via updateConfig', async () => {
     const { status, json } = await request('PUT', '/api/config/scoped', {

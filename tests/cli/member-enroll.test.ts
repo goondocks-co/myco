@@ -30,6 +30,7 @@ import {
   type EnrollmentContext,
   type EnrollmentTransport,
 } from '@myco/host/member-overlay';
+import { membershipErrorCode } from '@myco/host/membership-error';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 
@@ -80,9 +81,34 @@ describe('member enrollment client — unit (injected transport)', () => {
     await expect(createEnrollmentClient(transport).enroll(ctx())).rejects.toThrow(/protocol-version mismatch/);
   });
 
-  test('a non-200/409 status is a clear failure', async () => {
-    const transport: EnrollmentTransport = async () => ({ status: 500, body: 'boom' });
-    await expect(createEnrollmentClient(transport).enroll(ctx())).rejects.toThrow(/Host enrollment failed \(HTTP 500\)/);
+  test('a non-200/409 status is a coded, body-SANITIZED failure (no raw host body on the error)', async () => {
+    const htmlBody = '<html><body>Internal Server Error: db timeout at 0xDEADBEEF secret-detail</body></html>';
+    const transport: EnrollmentTransport = async () => ({ status: 500, body: htmlBody });
+    const err = await createEnrollmentClient(transport).enroll(ctx()).catch((e) => e as Error);
+    expect(membershipErrorCode(err)).toBe('host_enroll_failed');
+    expect(err.message).toContain('500');
+    // The raw host response body must NEVER reach the message (it flows onto
+    // the daemon-API wire + the Team page verbatim).
+    expect(err.message).not.toContain('db timeout');
+    expect(err.message).not.toContain('DEADBEEF');
+    expect(err.message).not.toContain('secret-detail');
+  });
+
+  test('a 401/403 status maps to a coded auth-rejection with no raw body', async () => {
+    const jsonBody = JSON.stringify({ error: 'forbidden', detail: 'internal-token-xyz' });
+    const transport: EnrollmentTransport = async () => ({ status: 403, body: jsonBody });
+    const err = await createEnrollmentClient(transport).enroll(ctx()).catch((e) => e as Error);
+    expect(membershipErrorCode(err)).toBe('host_enroll_rejected');
+    expect(err.message).toContain('403');
+    expect(err.message).not.toContain('internal-token-xyz');
+    expect(err.message).not.toContain('forbidden');
+  });
+
+  test('an unparseable 200 body is a coded failure without the raw body', async () => {
+    const transport: EnrollmentTransport = async () => ({ status: 200, body: '<not-json> leaky-content-here' });
+    const err = await createEnrollmentClient(transport).enroll(ctx()).catch((e) => e as Error);
+    expect(membershipErrorCode(err)).toBe('host_enroll_failed');
+    expect(err.message).not.toContain('leaky-content-here');
   });
 
   test('a missing host overlay address is a clear, actionable error (not a fabricated record)', async () => {

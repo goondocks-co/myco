@@ -23,6 +23,7 @@ import {
   type RegisteredProject,
 } from '@myco/grove/registry.js';
 import { readHostRegistry, type AttachRef, type HostRecord } from '@myco/host/registry.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { moveProjectBetweenGroves } from '@myco/grove/move.js';
 import {
   archiveProject,
@@ -146,18 +147,23 @@ export function servedGroveScopeForDaemon(): ServedGroveScope {
   return { groveIds: null };
 }
 
-export function createListGrovesHandler(scope: ServedGroveScope, _daemonStateDir: string): RouteHandler {
+/** Structural logger seam — mirrors `session-completion.ts`'s
+ *  `SessionCompletionDeps.logger`: a narrow shape so tests can pass a plain
+ *  recording fake without constructing a real `DaemonLogger`. */
+export type GrovesLogger = { warn(kind: string, message: string, data?: Record<string, unknown>): void };
+
+export function createListGrovesHandler(scope: ServedGroveScope, _daemonStateDir: string, logger?: GrovesLogger): RouteHandler {
   return async (req) => ({
     body: listGroveSummaries(scope, {
       includeArchived: req.query.include_archived === 'true',
-    }),
+    }, logger),
   });
 }
 
-export function createListGroveProjectsHandler(scope: ServedGroveScope, _daemonStateDir: string): RouteHandler {
+export function createListGroveProjectsHandler(scope: ServedGroveScope, _daemonStateDir: string, logger?: GrovesLogger): RouteHandler {
   return async (req) => {
     const groveId = req.params.id;
-    const summaries = listGroveSummaries(scope);
+    const summaries = listGroveSummaries(scope, {}, logger);
     const grove = summaries.groves.find((row) => row.id === groveId || row.slug === groveId);
     if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
     const includes = parseTenancyInclude(req.query.include);
@@ -173,6 +179,7 @@ export function createListGroveProjectsHandler(scope: ServedGroveScope, _daemonS
 export function listGroveSummaries(
   scope: ServedGroveScope = { groveIds: null },
   options: { includeArchived?: boolean } = {},
+  logger?: GrovesLogger,
 ): GrovesResponse {
   const mycoHome = resolveMycoHome();
   const defaultGroveId = getDefaultGroveId(mycoHome);
@@ -197,7 +204,7 @@ export function listGroveSummaries(
   // Attached projects, grouped by the LOCAL Grove each displays under. PURE
   // disk reads (host registry + local manifests) — no host is dialed, so a
   // down/unreachable host has no effect on this endpoint.
-  const attachedByGrove = attachedProjectSummariesByGrove(mycoHome, localProjectIds);
+  const attachedByGrove = attachedProjectSummariesByGrove(mycoHome, localProjectIds, logger);
 
   const groves = filtered.map((grove) => {
     const local = localByGrove.get(grove.id) ?? [];
@@ -233,6 +240,7 @@ const ATTACHED_EPOCH_ISO = new Date(0).toISOString();
 function attachedProjectSummariesByGrove(
   mycoHome: string,
   localProjectIds: ReadonlySet<string>,
+  logger?: GrovesLogger,
 ): Map<string, GroveProjectSummary[]> {
   const byGrove = new Map<string, GroveProjectSummary[]>();
   for (const host of readHostRegistry()) {
@@ -241,9 +249,11 @@ function attachedProjectSummariesByGrove(
       // row. If one exists anyway (a bug elsewhere), prefer the local row and
       // skip the attached copy rather than render the project twice.
       if (localProjectIds.has(ref.project_id)) {
-        console.warn(
-          `[groves] attached project ${ref.project_id} (host ${host.host_id}) also has a local Grove row; `
-          + 'showing the local row and skipping the attached entry (never-materialize invariant violated elsewhere).',
+        logger?.warn(
+          LOG_KINDS.GROVES_ATTACHED_COLLISION,
+          'Attached project also has a local Grove row — showing the local row, skipping the attached entry '
+          + '(never-materialize invariant violated elsewhere)',
+          { project_id: ref.project_id, host_id: host.host_id },
         );
         continue;
       }

@@ -29,6 +29,7 @@ import {
   type HostProxyDeps,
   type ProxyLogger,
 } from '@myco/daemon/host-proxy';
+import { __resetLogThrottleForTests, __setLogThrottleClockForTests } from '@myco/daemon/log-throttle';
 import type { RemoteTarget, RouteClassification } from '@myco/host/routing';
 import { shouldBufferFallback } from '@myco/hooks/send-event';
 import { getMachineId } from '@myco/machine-id';
@@ -36,7 +37,7 @@ import { resolveProjectBufferDir } from '@myco/grove/paths';
 import { listGroves } from '@myco/grove/registry';
 import { readEventId } from '@myco/capture/event-id';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
-import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
+import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants';
 
 const HOST_BEARER = 'host-bearer-secret';
 
@@ -142,6 +143,7 @@ describe('host-proxy forwarder', () => {
     process.env.MYCO_HOME = tmpHome;
     process.env.MYCO_TEAM_HOME = tmpTeamHome;
     __resetVersionMismatchLogForTests();
+    __resetLogThrottleForTests();
 
     fixture = createFixture();
     fixturePort = await listen(fixture.server);
@@ -302,6 +304,30 @@ describe('host-proxy forwarder', () => {
     expect(got.headers.origin).toBeUndefined();
     expect(got.headers.referer).toBeUndefined();
     expect(got.headers.cookie).toBeUndefined();
+  });
+
+  test('serve/collect route strips the caller x-myco-project-root before forwarding (E-4 W2 T1b — tenancy is the attach mapping, not the caller checkout)', async () => {
+    // A hook/MCP client sends `x-myco-project-root` on every request (its LOCAL
+    // checkout path). Forwarded verbatim, that member path feeds the host's
+    // findRegisteredProject root-equivalence filter and 404s the synthetic-root
+    // hosted row registration-on-ingest just admitted. The proxy must drop it —
+    // tenancy is the attach mapping's (grove/project overwritten below), never
+    // the caller's local claim.
+    fixture.setResponder((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    await fetch(memberUrl('/api/spores?q=1'), {
+      headers: {
+        'x-myco-project-id': 'proj_0123456789abcdef0123456789abcdef',
+        'x-myco-project-root': '/Users/member/checkouts/some-project',
+      },
+    });
+    const got = fixture.requests[0];
+    expect(got.headers['x-myco-project-root']).toBeUndefined();
+    // Tenancy (grove/project) is still stamped from the attach mapping.
+    expect(got.headers['x-myco-grove-id']).toBe('grove_0123456789abcdef0123456789abcdef');
+    expect(got.headers['x-myco-project-id']).toBe('proj_0123456789abcdef0123456789abcdef');
   });
 
   test('serve route with a request body pipes the body through to the host', async () => {
@@ -594,6 +620,115 @@ describe('host-proxy forwarder', () => {
     const res = await fetch(memberUrl('/api/spores'));
     expect(res.status).toBe(502);
     expect((await res.json()).error).toBe('host_auth_rejected');
+  });
+
+  // --- Task 2 (E-4 W2): relayed upstream-failure observability ---
+
+  test('host 401 (bearer rejected) also logs once (throttled) — never the response body', async () => {
+    const cap = capturingLogger();
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    config.deps = { logger: cap.logger };
+    fixture.setResponder((_req, res) => {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized', secret: 'never-log-me' }));
+    });
+
+    const res1 = await fetch(memberUrl('/api/spores'));
+    expect(res1.status).toBe(502);
+    expect((await res1.json()).error).toBe('host_auth_rejected');
+    expect(cap.warns).toHaveLength(1);
+    const [message, meta] = cap.warns[0] as [string, Record<string, unknown>];
+    expect(meta.host_id).toBe(config.target.host.host_id);
+    expect(meta.path).toBe('/api/spores');
+    expect(meta.status).toBe(401);
+    expect(JSON.stringify([message, meta])).not.toContain('never-log-me');
+
+    // An identical repeat within the throttle interval: response byte-identical
+    // (Task 2 is log-lines-only, zero wire/behavior change), no second log.
+    const res2 = await fetch(memberUrl('/api/spores'));
+    expect(res2.status).toBe(502);
+    expect((await res2.json()).error).toBe('host_auth_rejected');
+    expect(cap.warns).toHaveLength(1);
+  });
+
+  test('host 404 relayed to the caller logs once (throttled); repeat within the interval is silent; body content never appears in the log', async () => {
+    const cap = capturingLogger();
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    config.deps = { logger: cap.logger };
+    fixture.setResponder((_req, res) => {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found', message: 'secret-body-content' }));
+    });
+
+    const res1 = await fetch(memberUrl('/api/spores'));
+    expect(res1.status).toBe(404);
+    const body1 = await res1.json();
+    expect(body1.error).toBe('not_found');
+    expect(cap.warns).toHaveLength(1);
+    const [message, meta] = cap.warns[0] as [string, Record<string, unknown>];
+    expect(meta.host_id).toBe(config.target.host.host_id);
+    expect(meta.path).toBe('/api/spores');
+    expect(meta.status).toBe(404);
+    expect(JSON.stringify([message, meta])).not.toContain('secret-body-content');
+
+    // An identical repeat within the interval: response byte-identical, no
+    // second log.
+    const res2 = await fetch(memberUrl('/api/spores'));
+    expect(res2.status).toBe(404);
+    expect(await res2.json()).toEqual(body1);
+    expect(cap.warns).toHaveLength(1);
+  });
+
+  test('host 500 relayed to the caller also logs — a different status class on the same route is a distinct throttle key, not suppressed by a fresh 404', async () => {
+    const cap = capturingLogger();
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    config.deps = { logger: cap.logger };
+    fixture.setResponder((_req, res) => {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+    });
+    const notFound = await fetch(memberUrl('/api/spores'));
+    expect(notFound.status).toBe(404);
+    expect(cap.warns).toHaveLength(1);
+
+    fixture.setResponder((_req, res) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'internal' }));
+    });
+    const serverError = await fetch(memberUrl('/api/spores'));
+    expect(serverError.status).toBe(500);
+    expect(cap.warns).toHaveLength(2);
+    expect((cap.warns[1][1] as Record<string, unknown>).status).toBe(500);
+  });
+
+  test('once the throttle interval elapses, the same relayed failure logs again', async () => {
+    let fakeNow = 0;
+    __setLogThrottleClockForTests(() => fakeNow);
+    const cap = capturingLogger();
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    config.deps = { logger: cap.logger };
+    fixture.setResponder((_req, res) => {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+    });
+
+    await fetch(memberUrl('/api/spores'));
+    expect(cap.warns).toHaveLength(1);
+    await fetch(memberUrl('/api/spores'));
+    expect(cap.warns).toHaveLength(1);
+
+    fakeNow += REFUSAL_LOG_THROTTLE_INTERVAL_MS + 1;
+    await fetch(memberUrl('/api/spores'));
+    expect(cap.warns).toHaveLength(2);
+  });
+
+  test('a successful (200) relayed response never logs a relay-failure warn', async () => {
+    const cap = capturingLogger();
+    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
+    config.deps = { logger: cap.logger };
+    const res = await fetch(memberUrl('/api/spores'));
+    expect(res.status).toBe(200);
+    expect(cap.warns).toHaveLength(0);
   });
 
   // --- per-tool /mcp degrade ---

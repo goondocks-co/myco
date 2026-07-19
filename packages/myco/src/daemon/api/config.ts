@@ -1,5 +1,6 @@
 import {
   loadConfig,
+  loadConfigOptional,
   updateConfig,
   updateLocalConfig,
   loadMergedConfig,
@@ -25,8 +26,17 @@ import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import { projectTreeAvailable } from '../../vault/resolve.js';
 
-export async function handleGetConfig(vaultDir: string): Promise<RouteResponse> {
-  const config = loadConfig(vaultDir);
+export async function handleGetConfig(
+  vaultDir: string,
+  options: { projectTierOptional?: boolean } = {},
+): Promise<RouteResponse> {
+  // The attach carve opts in so a fresh checkout without `.myco/myco.yaml`
+  // returns the project-tier stand-in (200) instead of throwing "myco.yaml not
+  // found" into the attached_config_failed envelope. The LOCAL route passes
+  // nothing and stays strict.
+  const config = options.projectTierOptional
+    ? loadConfigOptional(vaultDir)
+    : loadConfig(vaultDir);
   return { body: config };
 }
 
@@ -153,7 +163,11 @@ function scopeViolationResponse(tier: Tier, paths: string[]): RouteResponse {
  * both patch and clear are present, overlapping keys are rejected (400). The
  * server applies clear first, then patch, then list deltas, in a single write.
  */
-export async function handlePutScopedConfig(vaultDir: string, body: unknown): Promise<RouteResponse> {
+export async function handlePutScopedConfig(
+  vaultDir: string,
+  body: unknown,
+  options: { projectTierOptional?: boolean } = {},
+): Promise<RouteResponse> {
   const payload = (body ?? {}) as ScopedPutBody;
   if (!isScopedConfigScope(payload.scope)) {
     return { status: 400, body: { error: 'scope must be project or local' } };
@@ -198,7 +212,13 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
 
   if (scope === 'local') {
     try {
-      const project = loadConfig(vaultDir);
+      // Attach carve: a fresh checkout may have no myco.yaml — validating the
+      // personal overlay against the project tier must tolerate its absence the
+      // same way (BEHAVE-LIKE-LOCAL). Writing local.yaml never materializes a
+      // project file. The LOCAL route keeps the strict `loadConfig`.
+      const project = options.projectTierOptional
+        ? loadConfigOptional(vaultDir)
+        : loadConfig(vaultDir);
       const updated = updateLocalConfig(vaultDir, (local) => {
         const working = structuredClone(local) as Record<string, unknown>;
         for (const key of clearList) unsetAtPath(working, key, { pruneEmptyParents: true });
@@ -235,13 +255,22 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
     // saveConfig (called by updateConfig) runs the Zod parse — the callback
     // returns the deep-merged object without validating, and any invalid
     // shape raises a ZodError that we convert to a 400 below.
-    const updated = updateConfig(vaultDir, (current) => {
-      const working = structuredClone(current) as Record<string, unknown>;
-      for (const key of clearList) unsetAtPath(working, key, { pruneEmptyParents: true });
-      const withPatch = deepMergeConfig(working, patch as Record<string, unknown>) as Record<string, unknown>;
-      applyListDeltas(withPatch, addOpsOrError, removeOpsOrError);
-      return withPatch as MycoConfig;
-    });
+    //
+    // Attach carve only: pass `createIfMissing` so a fresh checkout's absent
+    // myco.yaml is created from the stand-in skeleton on this project-scope
+    // write (the user's explicit project-tier write, landing in git-carried
+    // config exactly like local). The LOCAL route omits it → strict default.
+    const updated = updateConfig(
+      vaultDir,
+      (current) => {
+        const working = structuredClone(current) as Record<string, unknown>;
+        for (const key of clearList) unsetAtPath(working, key, { pruneEmptyParents: true });
+        const withPatch = deepMergeConfig(working, patch as Record<string, unknown>) as Record<string, unknown>;
+        applyListDeltas(withPatch, addOpsOrError, removeOpsOrError);
+        return withPatch as MycoConfig;
+      },
+      options.projectTierOptional ? { createIfMissing: true } : undefined,
+    );
     return { body: updated };
   } catch (err) {
     if (err instanceof TierConfigUnreadableError) {

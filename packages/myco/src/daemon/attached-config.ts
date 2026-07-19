@@ -209,7 +209,9 @@ async function computeResponse(
   if (req.method === 'GET') {
     switch (pathname) {
       case '/api/config':
-        return handleGetConfig(vaultDir);
+        // Tolerate a fresh-attach checkout with no myco.yaml (BEHAVE-LIKE-LOCAL,
+        // gated on file absence) — a malformed present file still throws → 500.
+        return handleGetConfig(vaultDir, { projectTierOptional: true });
       case '/api/config/local':
         // No groveId → skips the legacy local-appearance→grove migration, which
         // would write a local grove config file for the hosted Grove.
@@ -251,7 +253,11 @@ async function computeResponse(
       const { status, body: refusalBody } = refusalJson(refusal);
       return { status, body: refusalBody };
     }
-    return handlePutScopedConfig(vaultDir, body);
+    // Fresh-attach tolerance (BEHAVE-LIKE-LOCAL): the local-scope read tolerates
+    // an absent project file, and a project-scope write CREATES it from the
+    // stand-in via updateConfig({ createIfMissing }) — the user's explicit
+    // project-tier write. Gated on file absence inside the loader.
+    return handlePutScopedConfig(vaultDir, body, { projectTierOptional: true });
   }
 
   return { status: 404, body: { error: 'not_found' } };

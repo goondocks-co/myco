@@ -1194,7 +1194,14 @@ function normalizeCallerRoot(raw: string | undefined): string | null {
   return path.resolve(raw);
 }
 
-function readHeader(headers: IncomingHttpHeaders, name: string): string | undefined {
+/**
+ * Read one request-context header with the resolver's canonical semantics:
+ * first array element, trimmed, empty→undefined. Exported so any pre-resolution
+ * gate (the Team Host registration-on-ingest seam) extracts grove/project
+ * headers EXACTLY as `requestContextFromHttpHeaders` does downstream, rather
+ * than hand-rolling a variant that could diverge on array/whitespace handling.
+ */
+export function readHeader(headers: IncomingHttpHeaders, name: string): string | undefined {
   const value = headers[name];
   const raw = Array.isArray(value) ? value[0] : value;
   if (typeof raw !== 'string') return undefined;

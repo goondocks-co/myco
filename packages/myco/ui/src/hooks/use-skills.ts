@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, putJson, postJson, deleteJson } from '../lib/api';
-import { useProjectScopedQueryKey } from './use-project-selection';
+import { isAttachedTenancyPending, resolveAttachedEmpty } from '../lib/degrade';
+import { useProjectScopedQueryKey, useProjectSelection } from './use-project-selection';
 
 /* ---------- Types ---------- */
 
@@ -75,6 +76,12 @@ export interface SkillRecordListResponse {
   total: number;
 }
 
+/** Empty skill-record list — the zero-state an attached project shows pre-first-capture. */
+const EMPTY_SKILL_RECORDS: SkillRecordListResponse = { records: [], total: 0 };
+
+/** Empty candidate list — the zero-state an attached project shows pre-first-capture. */
+const EMPTY_SKILL_CANDIDATES: CandidateListResponse = { candidates: [], total: 0 };
+
 /* ---------- Hooks ---------- */
 
 export function useSkillCandidates(filters?: {
@@ -89,11 +96,18 @@ export function useSkillCandidates(filters?: {
   const qs = params.toString();
   const path = qs ? `/skill-candidates?${qs}` : '/skill-candidates';
   const queryKey = useProjectScopedQueryKey(['skill-candidates', filters]);
+  const selection = useProjectSelection();
 
-  return useQuery<CandidateListResponse>({
-    queryKey,
-    queryFn: ({ signal }) => fetchJson<CandidateListResponse>(path, { signal }),
-  });
+  return resolveAttachedEmpty(
+    useQuery<CandidateListResponse>({
+      queryKey,
+      queryFn: ({ signal }) => fetchJson<CandidateListResponse>(path, { signal }),
+      retry: (failureCount, err) =>
+        isAttachedTenancyPending(err, selection) ? false : failureCount < 3,
+    }),
+    selection,
+    EMPTY_SKILL_CANDIDATES,
+  );
 }
 
 export function useUpdateCandidate() {
@@ -119,11 +133,18 @@ export function useSkillRecords(filters?: {
   const qs = params.toString();
   const path = qs ? `/skill-records?${qs}` : '/skill-records';
   const queryKey = useProjectScopedQueryKey(['skill-records', filters]);
+  const selection = useProjectSelection();
 
-  return useQuery<SkillRecordListResponse>({
-    queryKey,
-    queryFn: ({ signal }) => fetchJson<SkillRecordListResponse>(path, { signal }),
-  });
+  return resolveAttachedEmpty(
+    useQuery<SkillRecordListResponse>({
+      queryKey,
+      queryFn: ({ signal }) => fetchJson<SkillRecordListResponse>(path, { signal }),
+      retry: (failureCount, err) =>
+        isAttachedTenancyPending(err, selection) ? false : failureCount < 3,
+    }),
+    selection,
+    EMPTY_SKILL_RECORDS,
+  );
 }
 
 export function useSkillRecord(idOrName: string | undefined) {

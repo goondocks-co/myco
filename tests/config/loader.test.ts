@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { loadConfig, saveConfig, updateConfig } from '@myco/config/loader';
+import { loadConfig, loadConfigOptional, saveConfig, updateConfig } from '@myco/config/loader';
 import {
   invalidateMergedConfigCache,
   loadLocalConfig,
@@ -51,6 +51,24 @@ embedding:
 
   it('throws on missing config file', () => {
     expect(() => loadConfig(tmpDir)).toThrow(/myco\.yaml not found/);
+  });
+
+  it('loadConfigOptional returns the stand-in when myco.yaml is absent', () => {
+    const config = loadConfigOptional(tmpDir);
+    expect(config.version).toBe(3);
+    // Reading the optional config never materializes a file.
+    expect(fs.existsSync(path.join(tmpDir, 'myco.yaml'))).toBe(false);
+  });
+
+  it('loadConfigOptional loads a PRESENT file strictly (present is not absent)', () => {
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), 'version: 3\nembedding:\n  provider: openai\n  model: text-embedding-3-small\n');
+    const config = loadConfigOptional(tmpDir);
+    expect(config.embedding.provider).toBe('openai');
+  });
+
+  it('loadConfigOptional still throws on a PRESENT-but-malformed file (corruption ≠ absence)', () => {
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), 'foo: [1, 2\n');
+    expect(() => loadConfigOptional(tmpDir)).toThrow();
   });
 
   it('throws migration error for v1 config', () => {
@@ -174,6 +192,37 @@ okf:
     // Verify it was persisted to disk
     const reloaded = loadConfig(tmpDir);
     expect(reloaded.release_provenance.enabled).toBe(false);
+  });
+
+  it('updateConfig throws on a missing myco.yaml by DEFAULT (create-on-write is opt-in)', () => {
+    // The sacred strict default: no caller gets create-on-write unless it
+    // explicitly opts in via createIfMissing. Absent file → throw, no write.
+    expect(() => updateConfig(tmpDir, (config) => config)).toThrow(/myco\.yaml not found/);
+    expect(fs.existsSync(path.join(tmpDir, 'myco.yaml'))).toBe(false);
+  });
+
+  it('updateConfig({ createIfMissing: true }) creates myco.yaml from the skeleton and applies the transform', () => {
+    const result = updateConfig(
+      tmpDir,
+      (config) => ({ ...config, cortex: { ...config.cortex, enabled: false } }),
+      { createIfMissing: true },
+    );
+    expect(result.version).toBe(3);
+    expect(result.cortex.enabled).toBe(false);
+
+    // Persisted to a freshly-created myco.yaml, readable by the strict loader.
+    const reloaded = loadConfig(tmpDir);
+    expect(reloaded.cortex.enabled).toBe(false);
+  });
+
+  it('updateConfig({ createIfMissing: true }) loads an EXISTING file normally (present is not re-created)', () => {
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), 'version: 3\nrelease_provenance:\n  enabled: true\n');
+    const result = updateConfig(
+      tmpDir,
+      (config) => ({ ...config, release_provenance: { ...config.release_provenance, enabled: false } }),
+      { createIfMissing: true },
+    );
+    expect(result.release_provenance.enabled).toBe(false);
   });
 
   it('updateConfig rejects invalid transforms without writing', () => {

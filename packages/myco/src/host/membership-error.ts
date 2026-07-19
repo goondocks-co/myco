@@ -24,6 +24,18 @@ export type MembershipErrorCode =
   | 'project_attached_to_other_host'
   | 'not_joined'
   | 'protocol_mismatch'
+  /** The host actively refused this machine's enrollment with an auth/
+   *  permission status (401/403). Surfaced by the member enrollment client
+   *  (`host/member-overlay.ts`) as a coded, body-SANITIZED error — the raw
+   *  host response body is NEVER carried onto the message (it can echo host
+   *  internals), only the numeric status. */
+  | 'host_enroll_rejected'
+  /** Enrollment failed for any other non-success reason: a non-2xx status
+   *  other than the 409 protocol-mismatch and the 401/403 auth-rejection
+   *  above, or a 200 whose body was unreadable/incomplete. Surfaced by the
+   *  member enrollment client (`host/member-overlay.ts`), likewise body-
+   *  sanitized (status only, never the raw response body). */
+  | 'host_enroll_failed'
   /** Attach has no Grove source: the joined host's `HostRecord` carries no
    *  `served_grove_id` because it predates served-grove designation (its
    *  enrollment response never included the field). Surfaced by

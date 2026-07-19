@@ -162,6 +162,38 @@ describe('loadAttachedMergedConfig', () => {
     expect(attached).toEqual(local);
   });
 
+  test('an ABSENT project myco.yaml is tolerated — project tier contributes defaults, no throw', async () => {
+    // Fresh clone-then-attach: the working tree exists but `.myco/myco.yaml`
+    // does not. Behave like loadMergedConfig's projectTierOptional path — the
+    // project tier stands in with just `version`, machine + grove still resolve.
+    writeMachineConfig({ daemon: { log_level: 'debug' } });
+    // Deliberately NO writeProjectConfig — the file is absent.
+
+    const config = await loadAttachedMergedConfig(vaultDir, {
+      mycoHome,
+      fetchGroveDoc: async () => ({ embedding: { provider: 'openai' } }),
+    });
+
+    expect(config.version).toBe(3);
+    expect(config.daemon.log_level).toBe('debug');   // machine tier, local disk
+    expect(config.embedding.provider).toBe('openai'); // grove tier, host-sourced
+    expect(config.cortex.enabled).toBe(true);        // project tier absent → default
+    // Never materialized a myco.yaml for the member.
+    expect(fs.existsSync(path.join(vaultDir, 'myco.yaml'))).toBe(false);
+  });
+
+  test('a PRESENT-but-malformed project myco.yaml still throws (corruption ≠ absence)', async () => {
+    writeMachineConfig({});
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'foo: [1, 2\n', 'utf-8');
+
+    await expect(
+      loadAttachedMergedConfig(vaultDir, {
+        mycoHome,
+        fetchGroveDoc: async () => ({}),
+      }),
+    ).rejects.toThrow();
+  });
+
   test('grove-tier residue in myco.yaml never materializes a local grove config file', async () => {
     // A project myco.yaml carrying a stray grove-tier leaf must NOT be migrated
     // into a local grove config file for the hosted Grove (never-materialize).

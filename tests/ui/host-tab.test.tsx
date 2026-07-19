@@ -37,6 +37,11 @@ let healthIsLoading = false;
 // mode (`enabled: false`, decision-ef693c71 D3) rather than probing itself.
 const useHostMembershipHealthCalls: boolean[] = [];
 let grovesFixture: { groves: Array<{ id: string; name: string; is_default: boolean }> } = { groves: [] };
+// Records every `useGroves` call's options arg — lets the slideout tests
+// below confirm it reads WITH includeArchived: true (an attach ref can name
+// an archived local grove) while HostTab's own AttachProjectPanel picker
+// call (`useGroves()`, no options — decision-ef693c71 D1) stays untouched.
+const useGrovesCalls: Array<{ includeArchived?: boolean } | undefined> = [];
 
 mock.module('../../packages/myco/ui/src/hooks/use-host-membership', () => ({
   useHostMembershipStatus: () => ({ data: statusFixture, isLoading: false }),
@@ -56,7 +61,10 @@ mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
 }));
 
 mock.module('../../packages/myco/ui/src/hooks/use-groves', () => ({
-  useGroves: () => ({ data: grovesFixture, isLoading: false }),
+  useGroves: (options?: { includeArchived?: boolean }) => {
+    useGrovesCalls.push(options);
+    return { data: grovesFixture, isLoading: false };
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -172,6 +180,7 @@ beforeEach(() => {
   healthIsLoading = false;
   grovesFixture = { groves: [] };
   useHostMembershipHealthCalls.length = 0;
+  useGrovesCalls.length = 0;
   teamKeyHealth = 'missing_key';
   teamTargetCalls.length = 0;
   joinMutateAsync.mockClear();
@@ -699,6 +708,30 @@ describe('Host detail slideout — attached projects', () => {
     fireEvent.click(screen.getByRole('button', { name: /view mac studio details/i }));
 
     expect(screen.getByText(/Shows under: Personal/)).toBeInTheDocument();
+  });
+
+  it('resolves an ARCHIVED local Grove\'s display name (E-4 W2 Task 7, item d) — includeArchived: true', () => {
+    statusFixture = {
+      hosts: [{
+        ...hostA,
+        projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', local_grove_id: 'grove_archived_1', mismatch: null }],
+      }],
+      hint: null,
+    };
+    // useGroves() defaults to excluding archived Groves — the mock here
+    // returns the fixture regardless of the option, so this row's presence
+    // only proves the render path; the includeArchived: true assertion below
+    // is what actually pins the fix (before it, the real hook would never
+    // have returned this archived Grove and the name lookup would miss).
+    grovesFixture = { groves: [{ id: 'grove_archived_1', name: 'Old Client Work', is_default: false }] };
+    renderHostTab();
+    fireEvent.click(screen.getByRole('button', { name: /view mac studio details/i }));
+
+    expect(screen.getByText(/Shows under: Old Client Work/)).toBeInTheDocument();
+    expect(useGrovesCalls).toContainEqual({ includeArchived: true });
+    // HostTab's own AttachProjectPanel local-Grove PICKER call (decision-
+    // ef693c71 D1) must stay untouched — non-archived, no options.
+    expect(useGrovesCalls).toContainEqual(undefined);
   });
 
   it('falls back to the raw local_grove_id when it names no loaded Grove', () => {

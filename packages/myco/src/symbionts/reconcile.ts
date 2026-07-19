@@ -3,6 +3,7 @@ import { loadManifests, resolvePackageRoot } from './detect.js';
 import { SymbiontInstaller, type ManagedProjectFilesResult } from './installer.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
 import { resolveMycoHome } from '../grove/paths.js';
+import { projectTreeAvailable } from '../vault/resolve.js';
 import type { SymbiontManifest } from './manifest-schema.js';
 
 export interface ManagedProjectFilesOutcome {
@@ -74,6 +75,13 @@ export function reconcileRegisteredManagedProjectFiles(
 
   for (const grove of listGroves(mycoHome)) {
     for (const project of listRegisteredProjects(grove.id, mycoHome)) {
+      // Team Host: a hosted (member-attached) project's registry row carries a
+      // synthetic root that never exists on this host's disk. Reconciling
+      // managed files into it would ENOENT / symlink-warn per row on every
+      // serving-host reconcile. Absence of the working tree is the signal (the
+      // same behave-like-local degrade the agent pipeline uses via
+      // `scope-iteration.ts`'s `treeAvailable`) — skip, do not invent a flag.
+      if (!projectTreeAvailable(path.join(project.root, '.myco'))) continue;
       try {
         const result = reconcileManagedProjectFiles(
           project.root,

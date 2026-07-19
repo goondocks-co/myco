@@ -18,6 +18,8 @@ import {
   type CanopyEntryRow,
 } from '../../hooks/use-canopy';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
+import { hostedDegradedInfo } from '../../lib/degrade';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { formatEpochRelative } from '../../lib/format';
 import { cn } from '../../lib/cn';
@@ -382,6 +384,19 @@ export function CanopyEntriesList({ selectedPath, onSelectPath }: CanopyEntriesL
       </tr>
     </thead>
   );
+
+  const hostedDegraded = hostedDegradedInfo(error);
+  if (hostedDegraded) {
+    // Canopy is unavailable for hosted (attached) projects — the route 409s
+    // capability_unavailable_hosted. Render the uniform panel state (still with
+    // the toolbar so the page frame stays intact) instead of a raw error.
+    return (
+      <div className="space-y-3">
+        {toolbar}
+        <HostedUnavailable info={hostedDegraded} variant="panel" />
+      </div>
+    );
+  }
 
   if (isError) {
     return (
