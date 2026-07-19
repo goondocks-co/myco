@@ -29,11 +29,12 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { DaemonServer } from '@myco/daemon/server';
-import { DaemonLogger } from '@myco/daemon/logger';
+import { DaemonLogger, type LogEntry } from '@myco/daemon/logger';
+import { __resetLogThrottleForTests, __setLogThrottleClockForTests } from '@myco/daemon/log-throttle';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { assertGroveProjectId, createGroveId, createProjectId } from '@myco/grove/ids';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
-import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION } from '@myco/constants';
+import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const HOST_BEARER = 'test-host-serve-bearer-0123456789abcdef';
@@ -51,9 +52,11 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   let overlay: string;
   let servedGrove: GroveRecord;
   let servedProjectId: string;
+  let logEntries: LogEntry[];
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-gate-'));
+    __resetLogThrottleForTests();
     savedMycoHome = process.env.MYCO_HOME;
     savedTeamHome = process.env.MYCO_TEAM_HOME;
     const mycoHome = path.join(tmp, 'home');
@@ -85,9 +88,13 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     mcpHandlerCalls = 0;
     shutdownCalls = 0;
 
+    logEntries = [];
+    const logger = new DaemonLogger(path.join(tmp, 'logs'));
+    logger.setPersistFn((entry) => logEntries.push(entry));
+
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
-      logger: new DaemonLogger(path.join(tmp, 'logs')),
+      logger,
       daemonStateAuthority: stubAuthority,
       uiDir,
       hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, servedGroveId: servedGrove.id },
@@ -117,6 +124,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
     else process.env.MYCO_TEAM_HOME = savedTeamHome;
     clearGroveRegistryCaches();
+    __resetLogThrottleForTests();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -231,6 +239,71 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     expect(res.status).toBe(404);
     expect((await res.json()).error).toBe('unknown_tenancy');
     expect(sessionsHandlerCalls).toBe(0);
+  });
+
+  // --- Task 2 (E-4 W2): unknown-tenancy refusal observability ---
+
+  test('overlay unknown-tenancy refusal logs one throttled warn with the expected fields; an identical repeat within the interval logs nothing more; once the interval elapses it logs again', async () => {
+    // The throttle's own clock (not the runtime's system-time, which this
+    // sandbox doesn't honor for direct Date.now() reads) is swapped so the
+    // interval-elapsed branch is verifiable without a real 5-minute wait —
+    // the pure mechanics are unit-tested in tests/daemon/log-throttle.test.ts;
+    // this integration test only needs to prove the wiring at this call site.
+    let fakeNow = 0;
+    __setLogThrottleClockForTests(() => fakeNow);
+
+    const projectId = assertGroveProjectId(createProjectId());
+    const groveId = createGroveId();
+    const headers = {
+      Authorization: bearer(),
+      ...v1,
+      'x-myco-project-id': projectId,
+      'x-myco-grove-id': groveId,
+    };
+    const refusalLogs = () => logEntries.filter((e) => e.kind === 'host.serve-refusal');
+
+    const res1 = await fetch(`${overlay}/api/sessions`, { headers });
+    expect(res1.status).toBe(404);
+    const body1 = await res1.json();
+    expect(body1.error).toBe('unknown_tenancy');
+    expect(sessionsHandlerCalls).toBe(0);
+
+    expect(refusalLogs()).toHaveLength(1);
+    const [entry] = refusalLogs();
+    expect(entry.level).toBe('warn');
+    expect(entry.path).toBe('/api/sessions');
+    expect(entry.grove_header).toBe(groveId);
+    expect(entry.project_header).toBe(projectId);
+
+    // An identical repeat within the throttle interval: response byte-identical
+    // (Task 2 is log-lines-only, zero wire/behavior change), but no second log.
+    const res2 = await fetch(`${overlay}/api/sessions`, { headers });
+    expect(res2.status).toBe(404);
+    expect(await res2.json()).toEqual(body1);
+    expect(refusalLogs()).toHaveLength(1);
+
+    // Once the throttle interval fully elapses, the same refusal logs again.
+    fakeNow += REFUSAL_LOG_THROTTLE_INTERVAL_MS + 1;
+    const res3 = await fetch(`${overlay}/api/sessions`, { headers });
+    expect(res3.status).toBe(404);
+    expect(await res3.json()).toEqual(body1);
+    expect(refusalLogs()).toHaveLength(2);
+  });
+
+  test('loopback unknown-tenancy refusal never logs (unchanged posture — a localhost caller sees the 404 body directly)', async () => {
+    const projectId = assertGroveProjectId(createProjectId());
+    const groveId = createGroveId();
+    const res = await fetch(`${loopback}/api/sessions`, {
+      headers: {
+        'x-myco-auth': server.getAuthToken(),
+        'x-myco-project-id': projectId,
+        'x-myco-grove-id': groveId,
+      },
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('unknown_tenancy');
+    expect(sessionsHandlerCalls).toBe(0);
+    expect(logEntries.filter((e) => e.kind === 'host.serve-refusal')).toHaveLength(0);
   });
 
   // --- version gate ---

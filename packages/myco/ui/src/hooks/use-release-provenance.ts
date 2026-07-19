@@ -2,6 +2,7 @@
 
 import { usePowerQuery } from './use-power-query';
 import { fetchJson } from '../lib/api';
+import { hostedDegradedInfo } from '../lib/degrade';
 
 export interface ReleaseProvenanceAnnotationDetail {
   state: string;
@@ -69,5 +70,10 @@ export function useReleaseProvenanceDetail(
     enabled: enabled && Boolean(namespace && recordId),
     pollCategory: 'standard',
     refetchInterval: false,
+    // Release/Git provenance is `degrade`-stamped for attached (hosted) projects:
+    // GET /api/release-provenance/:ns/:id 409s capability_unavailable_hosted. Never
+    // retry that refusal — the dialog renders HostedUnavailable instead. (This query
+    // never polls, so only the retry knob applies; refetchInterval is already false.)
+    retry: (failureCount, err) => (hostedDegradedInfo(err) ? false : failureCount < 3),
   });
 }

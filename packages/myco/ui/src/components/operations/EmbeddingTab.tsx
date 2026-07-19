@@ -17,6 +17,8 @@ import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { SectionHeader } from '../ui/section-header';
 import { Button } from '../ui/button';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
+import { hostedDegradedInfo, type HostedDegradedInfo } from '../../lib/degrade';
 import { cn } from '../../lib/cn';
 import type { OperationsScope } from './OperationsScopePill';
 import { buildActionScope } from './scope-helpers';
@@ -124,6 +126,16 @@ export function EmbeddingTab() {
   const queryClient = useQueryClient();
   const selection = useProjectSelection();
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // Embedding maintenance mutations are degrade-stamped for attached (hosted)
+  // projects — they 409 capability_unavailable_hosted. When that's the failure,
+  // render the uniform HostedUnavailable strip in the action-result slot instead
+  // of a raw "Error: …". Set/cleared alongside actionResult by every handler.
+  const [hostedInfo, setHostedInfo] = useState<HostedDegradedInfo | null>(null);
+  function handleActionError(err: unknown) {
+    const degraded = hostedDegradedInfo(err);
+    if (degraded) setHostedInfo(degraded);
+    else setActionResult({ type: 'error', text: `Error: ${errorMessage(err)}` });
+  }
   // Per-section pill state — sections can hold different scopes concurrently.
   // Embedding namespace + actions are Grove-wide. There's no
   // project-narrowed path on the server (vector store doesn't carry
@@ -183,6 +195,7 @@ export function EmbeddingTab() {
 
   async function doReembedStale() {
     setActionResult(null);
+    setHostedInfo(null);
     try {
       const result = await postJson<{
         reembedded?: number;
@@ -206,7 +219,7 @@ export function EmbeddingTab() {
       }
       queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
     } catch (err) {
-      setActionResult({ type: 'error', text: `Error: ${errorMessage(err)}` });
+      handleActionError(err);
     }
   }
   function handleReembedStale() {
@@ -215,6 +228,7 @@ export function EmbeddingTab() {
 
   async function doRebuild() {
     setActionResult(null);
+    setHostedInfo(null);
     try {
       const result = await postJson<{
         queued?: number;
@@ -238,7 +252,7 @@ export function EmbeddingTab() {
       }
       queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
     } catch (err) {
-      setActionResult({ type: 'error', text: `Error: ${errorMessage(err)}` });
+      handleActionError(err);
     }
   }
   function handleRebuild() {
@@ -247,6 +261,7 @@ export function EmbeddingTab() {
 
   async function doCleanOrphans() {
     setActionResult(null);
+    setHostedInfo(null);
     try {
       const result = await postJson<{
         orphans_cleaned?: number;
@@ -264,7 +279,7 @@ export function EmbeddingTab() {
       }
       queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
     } catch (err) {
-      setActionResult({ type: 'error', text: `Error: ${errorMessage(err)}` });
+      handleActionError(err);
     }
   }
   function handleCleanOrphans() {
@@ -273,6 +288,7 @@ export function EmbeddingTab() {
 
   async function doReconcile() {
     setActionResult(null);
+    setHostedInfo(null);
     try {
       const result = await postJson<{
         embedded?: number;
@@ -297,7 +313,7 @@ export function EmbeddingTab() {
       }
       queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
     } catch (err) {
-      setActionResult({ type: 'error', text: `Error: ${errorMessage(err)}` });
+      handleActionError(err);
     }
   }
   function handleReconcile() {
@@ -306,6 +322,7 @@ export function EmbeddingTab() {
 
   async function doRetryStuck() {
     setActionResult(null);
+    setHostedInfo(null);
     try {
       const result = await postJson<{ reset: number }>(
         '/canopy/describe/retry-stuck',
@@ -314,7 +331,7 @@ export function EmbeddingTab() {
       setActionResult({ type: 'success', text: `Reset ${result.reset ?? 0} stuck row(s) for re-processing` });
       queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
     } catch (err) {
-      setActionResult({ type: 'error', text: `Error: ${errorMessage(err)}` });
+      handleActionError(err);
     }
   }
 
@@ -425,7 +442,9 @@ export function EmbeddingTab() {
         </div>
 
         {/* Action result message */}
-        {actionResult && (
+        {hostedInfo ? (
+          <HostedUnavailable info={hostedInfo} variant="inline" />
+        ) : actionResult ? (
           <p
             className={cn(
               'font-sans text-sm',
@@ -434,7 +453,7 @@ export function EmbeddingTab() {
           >
             {actionResult.text}
           </p>
-        )}
+        ) : null}
       </Surface>
 
       {/* Activity log replaced with a deep-link to the Logs page

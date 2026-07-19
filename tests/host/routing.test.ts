@@ -212,6 +212,10 @@ describe('classifyRouteStamp — scope-map coverage spot-checks', () => {
     ['GET', '/api/restore/status', 'localhost-only'],
     ['POST', '/api/groves', 'localhost-only'],
     ['POST', '/api/groves/grove_0123456789abcdef0123456789abcdef/default', 'localhost-only'],
+    // Team Host membership admin surfaces (E-4 W2 Task 7, item e) — machine-
+    // local admin, never proxied.
+    ['GET', '/api/host-membership/health', 'localhost-only'],
+    ['GET', '/api/host-serve/status', 'localhost-only'],
     ['PUT', '/api/grove-config', 'config-lock'],
     ['DELETE', '/api/agent/tasks/task_0123456789abcdef0123456789abcdef', 'config-lock'],
     // config carve: the per-tier member-side config surfaces (routing-layer §6.3).

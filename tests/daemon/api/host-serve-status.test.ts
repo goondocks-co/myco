@@ -18,7 +18,7 @@ import path from 'node:path';
 
 import { createHostServeStatusHandler } from '@myco/daemon/api/host-serve-status.js';
 import type { HostServeRuntime } from '@myco/daemon/host-serve.js';
-import { createGroveId } from '@myco/grove/ids.js';
+import { createGroveId, createProjectId } from '@myco/grove/ids.js';
 import { createGrove, clearGroveRegistryCaches } from '@myco/grove/registry.js';
 import { resolveGroveDir } from '@myco/grove/paths.js';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader.js';
@@ -88,6 +88,7 @@ describe('GET /api/host-serve/status', () => {
       serving: true,
       served_grove_id: grove.id,
       served_grove_name: 'Served',
+      hosted_project_count: 0,
       overlay_address: '100.64.0.1:7433',
       host_id: 'host_abc',
       label: 'Mac Studio',
@@ -95,6 +96,37 @@ describe('GET /api/host-serve/status', () => {
       bearer_present: true,
       health: { designation: 'ok', backup: 'stale', key: 'not_applicable', mcp_coherence: 'not_enabled' },
     });
+  });
+
+  test('hosted_project_count reflects registered synthetic-root rows in the served grove (AC #12)', async () => {
+    const grove = createGrove('Served', home);
+    const machine = loadMachineConfig(home);
+    saveMachineConfig({
+      ...machine,
+      daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id } },
+    }, home);
+
+    // Zero to start.
+    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1:7433', bearer: 'b', servedGroveId: grove.id };
+    const before = await createHostServeStatusHandler({ hostServe: runtime, mycoHome: home })(req());
+    expect((before.body as { hosted_project_count: number }).hosted_project_count).toBe(0);
+
+    // Register two hosted projects via the registration-on-ingest seam.
+    const { maybeRegisterHostedProjectOnIngest } = await import('@myco/host/hosted-projects.js');
+    for (let i = 0; i < 2; i += 1) {
+      maybeRegisterHostedProjectOnIngest({
+        method: 'POST',
+        pathname: '/sessions/register',
+        headers: { 'x-myco-grove-id': grove.id, 'x-myco-project-id': createProjectId() },
+        servedGroveId: grove.id,
+        mycoHome: home,
+      });
+    }
+    clearGroveRegistryCaches();
+
+    // A fresh handler (the count is inside the TTL cache) sees both rows.
+    const after = await createHostServeStatusHandler({ hostServe: runtime, mycoHome: home })(req());
+    expect((after.body as { hosted_project_count: number }).hosted_project_count).toBe(2);
   });
 
   test('undesignated (served_grove_id null on disk) -> health.designation undesignated, served_grove_name null', async () => {

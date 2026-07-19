@@ -10,6 +10,8 @@ import {
   DialogTitle,
 } from '../ui/dialog';
 import { useReleaseProvenanceDetail, type ReleaseProvenanceDetail } from '../../hooks/use-release-provenance';
+import { hostedDegradedInfo } from '../../lib/degrade';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
 import { cn } from '../../lib/cn';
 
 const SETTINGS_LINK = '/settings?configSection=release-provenance#release-provenance';
@@ -41,6 +43,11 @@ export function ReleaseProvenanceDialog({
           </DialogHeader>
           {isLoading ? (
             <div className="font-sans text-sm text-on-surface-variant">Loading provenance details...</div>
+          ) : hostedDegradedInfo(error) ? (
+            // Git/Release provenance is unavailable for hosted (attached) projects —
+            // the route 409s capability_unavailable_hosted. Render the uniform panel
+            // state instead of "Failed to load release provenance".
+            <HostedUnavailable info={hostedDegradedInfo(error)!} variant="panel" />
           ) : isError ? (
             <div className="rounded-md border border-terracotta/30 bg-terracotta/10 p-3 font-sans text-sm text-terracotta">
               {error instanceof Error ? error.message : 'Failed to load release provenance'}

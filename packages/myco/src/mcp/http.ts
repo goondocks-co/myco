@@ -17,6 +17,8 @@ import { classifyRoute, refusalMcpBody } from '../host/routing.js';
 import { handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from '../daemon/host-proxy.js';
 import { isOverlayRequest, servedGroveRefusal, type HostServeRuntime } from '../daemon/host-serve.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
+import { REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '../constants.js';
+import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
 
@@ -281,6 +283,23 @@ export function createStreamableMcpHttpHandler(
         // what admitted them), but fail closed rather than dispatch.
         : { status: 503, body: { error: 'host_serve_unavailable' } };
       if (groveRefusal) {
+        // Logged (throttled) — chokepoint 2 of 2 (see daemon/server.ts for
+        // chokepoint 1). Same LOG_KINDS + throttle mechanism as chokepoint 1
+        // (Task 2, E-4 W2); `options.logger` is optional (omitted where no
+        // daemon logger is threaded in), so this is skipped rather than
+        // throwing when absent.
+        if (options.logger) {
+          const resolvedGroveId = requestContext.groveId;
+          const servedGroveId = options.hostServe?.servedGroveId ?? null;
+          const throttleKey = `served_grove:/mcp:${resolvedGroveId ?? ''}:${servedGroveId ?? ''}`;
+          if (shouldLogOncePerInterval(throttleKey, REFUSAL_LOG_THROTTLE_INTERVAL_MS)) {
+            options.logger.warn(LOG_KINDS.HOST_SERVE_REFUSAL, 'Refused overlay /mcp request outside the served Grove', {
+              path: '/mcp',
+              resolved_grove_id: resolvedGroveId,
+              served_grove_id: servedGroveId,
+            });
+          }
+        }
         res.statusCode = groveRefusal.status;
         res.setHeader('Content-Type', 'application/json');
         if (groveRefusal.headers) {

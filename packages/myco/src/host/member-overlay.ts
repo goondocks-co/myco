@@ -299,13 +299,19 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
         );
       }
       if (status !== 200) {
-        throw new Error(`Host enrollment failed (HTTP ${status}): ${responseBody.slice(0, 300)}`);
+        // Coded + body-SANITIZED (like the 409 branch): the raw host response
+        // body is never carried onto the error — it can echo host internals,
+        // and the daemon-API wrapper surfaces `err.message` verbatim on the
+        // wire and into the Team page. Only the numeric status travels; the UI
+        // maps the code to its own outcome copy (`ui/src/lib/membership-copy.ts`).
+        const code = status === 401 || status === 403 ? 'host_enroll_rejected' : 'host_enroll_failed';
+        throw codedMembershipError(code, `Host enrollment failed (HTTP ${status}).`);
       }
       let parsed: HostEnrollmentResponse;
       try { parsed = JSON.parse(responseBody) as HostEnrollmentResponse; }
-      catch { throw new Error(`Host enrollment returned an unparseable response: ${responseBody.slice(0, 200)}`); }
+      catch { throw codedMembershipError('host_enroll_failed', 'Host enrollment returned a response Myco could not read.'); }
       if (!parsed.bearer || !parsed.overlay_address) {
-        throw new Error('Host enrollment response is missing the bearer or overlay_address — cannot complete join.');
+        throw codedMembershipError('host_enroll_failed', 'Host enrollment response is missing the bearer or overlay_address — cannot complete join.');
       }
       return {
         host_id: parsed.host_id || ctx.hostId,

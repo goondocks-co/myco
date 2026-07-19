@@ -12,6 +12,8 @@ import {
   getMycoToolCallCount,
   type SessionCanopyAggregate,
 } from '../../hooks/use-canopy';
+import { hostedDegradedInfo } from '../../lib/degrade';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
 import { cn } from '../../lib/cn';
 
 /** Cortex page hosts the Canopy settings + the canonical feature description. */
@@ -104,12 +106,21 @@ export function CanopyEfficiencyTile({
 }: CanopyEfficiencyTileProps) {
   const [open, setOpen] = useState(false);
   const fixtureProvided = fixture !== undefined;
-  const { data: fetched, isLoading } = useSessionCanopy(
+  const { data: fetched, isLoading, error } = useSessionCanopy(
     fixtureProvided ? undefined : sessionId,
   );
   const data = fixtureProvided ? fixture : fetched ?? null;
 
   if (!fixtureProvided && isLoading) return null;
+
+  // Canopy is unavailable for hosted (attached) projects — the route 409s
+  // capability_unavailable_hosted. Render the uniform HostedUnavailable strip in
+  // the tile's slot instead of a misleading zeros tile. A real outage keeps the
+  // tile's zeros fallback (the hook's `null` result), matching pre-feature sessions.
+  const hostedDegraded = fixtureProvided ? null : hostedDegradedInfo(error);
+  if (hostedDegraded) {
+    return <HostedUnavailable info={hostedDegraded} variant="inline" className={className} />;
+  }
 
   const tokensSaved = data?.canopy_tokens_saved ?? 0;
   const offered = data?.canopy_injections_offered ?? null;

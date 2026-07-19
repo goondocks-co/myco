@@ -4,6 +4,8 @@ import { ArrowLeft, Upload, Loader2, CheckCircle2, ChevronRight } from 'lucide-r
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
+import { hostedDegradedInfo, type HostedDegradedInfo } from '../../lib/degrade';
 import { fetchJson } from '../../lib/api';
 import { errorMessage } from '../../lib/error';
 import { formatBytes } from '../../lib/format';
@@ -71,6 +73,10 @@ export function RestoreBackupDialog({ open, onOpenChange, backups, groveId, head
   const [preview, setPreview] = useState<RestorePreviewResponse | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
+  // Restore (preview + apply) is degrade-stamped for attached (hosted) projects —
+  // both routes 409 capability_unavailable_hosted. When that's the failure, render
+  // the uniform HostedUnavailable strip instead of a raw error line.
+  const [hostedInfo, setHostedInfo] = useState<HostedDegradedInfo | null>(null);
 
   // Reset the flow whenever the dialog (re)opens.
   useEffect(() => {
@@ -79,6 +85,7 @@ export function RestoreBackupDialog({ open, onOpenChange, backups, groveId, head
       setPreview(null);
       setPreviewError(null);
       setPhase({ kind: 'idle' });
+      setHostedInfo(null);
     }
   }, [open]);
 
@@ -87,6 +94,7 @@ export function RestoreBackupDialog({ open, onOpenChange, backups, groveId, head
     setPreview(null);
     setPreviewError(null);
     setPhase({ kind: 'idle' });
+    setHostedInfo(null);
     try {
       const res = await fetchJson<RestorePreviewResponse>('/restore/preview', {
         method: 'POST',
@@ -95,7 +103,9 @@ export function RestoreBackupDialog({ open, onOpenChange, backups, groveId, head
       });
       setPreview(res);
     } catch (err) {
-      setPreviewError(errorMessage(err));
+      const degraded = hostedDegradedInfo(err);
+      if (degraded) setHostedInfo(degraded);
+      else setPreviewError(errorMessage(err));
     }
   }
 
@@ -131,7 +141,13 @@ export function RestoreBackupDialog({ open, onOpenChange, backups, groveId, head
         setPhase({ kind: 'error', message: job.error ?? 'unknown error' });
       }
     } catch (err) {
-      setPhase({ kind: 'error', message: errorMessage(err) });
+      const degraded = hostedDegradedInfo(err);
+      if (degraded) {
+        setHostedInfo(degraded);
+        setPhase({ kind: 'idle' });
+      } else {
+        setPhase({ kind: 'error', message: errorMessage(err) });
+      }
     }
   }
 
@@ -154,8 +170,9 @@ export function RestoreBackupDialog({ open, onOpenChange, backups, groveId, head
             backup={selected}
             preview={preview}
             previewError={previewError}
+            hostedInfo={hostedInfo}
             phase={phase}
-            onBack={() => { setSelected(null); setPreview(null); setPreviewError(null); setPhase({ kind: 'idle' }); }}
+            onBack={() => { setSelected(null); setPreview(null); setPreviewError(null); setPhase({ kind: 'idle' }); setHostedInfo(null); }}
             onRestore={runRestore}
             onClose={() => onOpenChange(false)}
           />
@@ -210,6 +227,7 @@ function DetailView({
   backup,
   preview,
   previewError,
+  hostedInfo,
   phase,
   onBack,
   onRestore,
@@ -218,6 +236,7 @@ function DetailView({
   backup: BackupMeta;
   preview: RestorePreviewResponse | null;
   previewError: string | null;
+  hostedInfo: HostedDegradedInfo | null;
   phase: Phase;
   onBack: () => void;
   onRestore: () => void;
@@ -248,7 +267,9 @@ function DetailView({
         <p className="font-sans font-medium text-xs uppercase tracking-widest text-on-surface-variant mb-2">
           Backup contents
         </p>
-        {previewError ? (
+        {hostedInfo ? (
+          <HostedUnavailable info={hostedInfo} variant="inline" />
+        ) : previewError ? (
           <p className="font-sans text-sm text-tertiary">Could not read contents: {previewError}</p>
         ) : !preview ? (
           <p className="flex items-center gap-2 font-sans text-sm text-on-surface-variant">
@@ -299,7 +320,7 @@ function DetailView({
         {done ? (
           <Button variant="default" size="sm" onClick={onClose}>Done</Button>
         ) : (
-          <Button variant="secondary" size="sm" onClick={onRestore} disabled={restoring || !!previewError}>
+          <Button variant="secondary" size="sm" onClick={onRestore} disabled={restoring || !!previewError || !!hostedInfo}>
             <Upload className="mr-1.5 h-3.5 w-3.5" />
             {restoring ? 'Restoring…' : 'Restore this backup'}
           </Button>

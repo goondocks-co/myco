@@ -245,10 +245,15 @@ export function AgentProviderCard() {
       </SectionHeader>
 
       {draft.type === '' ? (
-        <p className="font-sans text-sm text-on-surface-variant">
-          No provider configured -- data collection is active. Configure a provider
-          to enable the intelligence pipeline.
-        </p>
+        <div
+          data-empty-state="agent-provider"
+          className="rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest p-3"
+        >
+          <p className="font-sans text-sm text-on-surface-variant m-0">
+            No provider configured — data collection is active. Configure a provider
+            to enable the intelligence pipeline.
+          </p>
+        </div>
       ) : null}
 
       <ProviderModelSelector

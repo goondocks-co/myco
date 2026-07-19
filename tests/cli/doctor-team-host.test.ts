@@ -8,11 +8,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { checkTeamHostDrainHealth, checkTeamHostReachability } from '@myco/cli/doctor.js';
-import { upsertHost, type HostRecord } from '@myco/host/registry.js';
+import { checkTeamHostDrainHealth, checkTeamHostReachability, runChecks } from '@myco/cli/doctor.js';
+import { attachProject, upsertHost, type HostRecord } from '@myco/host/registry.js';
 import { createFsDrainStore } from '@myco/capture/transcript-drain.js';
 import { deriveTranscriptId } from '@myco/host/routed-transcript.js';
 import { getMachineId } from '@myco/machine-id.js';
+import { clearProjectManifestCache, ensureProjectManifest } from '@myco/config/project-manifest.js';
 
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
@@ -184,5 +185,87 @@ describe('checkTeamHostDrainHealth', () => {
     expect(checks).toHaveLength(1);
     expect(checks[0].status).toBe('ok');
     expect(checks[0].detail).toContain('nothing pending, no failures');
+  });
+});
+
+/**
+ * `checkDatabase` and `checkCaptureFlow` — attached-project hosted finding
+ * (task_f629721c, E-4 W2 Task 7 item g). Both false-reported ("0 sessions" /
+ * "capture not flowing") for a healthy ATTACHED project whose data lives on
+ * the host, because they queried this machine's local (irrelevant) DB. Both
+ * are vault-scoped (unlike the machine-global checks above), so the fixture
+ * provisions a real `.myco/` vault dir with a manifest — never registered in
+ * any local Grove (matching the never-materialize invariant an attach ref
+ * implies) — and an attach ref on a host record.
+ */
+describe('checkDatabase / checkCaptureFlow — attached project hosted finding', () => {
+  let tmp: string;
+  let vaultDir: string;
+  let savedHome: string | undefined;
+  let savedTeamHome: string | undefined;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-attached-'));
+    vaultDir = path.join(tmp, 'checkout', '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n');
+    savedHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(tmp, 'home');
+    savedTeamHome = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
+    clearProjectManifestCache();
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = savedHome;
+    if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = savedTeamHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('an attached project renders an informational hosted finding for both Database and Capture — never "0 sessions" / "capture not flowing"', async () => {
+    const manifest = ensureProjectManifest(vaultDir, { projectName: 'attached-proj' });
+    upsertHost({
+      host_id: HOST_A,
+      label: 'mac-studio',
+      overlay_address: '127.0.0.1:9',
+      protocol_version: 1,
+      created_at: new Date().toISOString(),
+      projects: [],
+      // No proxy_port on record — checkTeamHostReachability's own
+      // "not confirmable" branch, so runChecks() dials no network here.
+    });
+    attachProject(HOST_A, { grove_id: 'grove_x', project_id: manifest.project.id });
+
+    const checks = await runChecks(vaultDir);
+    const database = checks.find((c) => c.name === 'Database')!;
+    const capture = checks.find((c) => c.name === 'Capture')!;
+
+    expect(database.status).toBe('ok');
+    expect(database.fixable).toBe(false);
+    expect(database.detail).toContain('hosted');
+    expect(database.detail).toContain('mac-studio');
+    expect(database.detail).not.toMatch(/0 sessions/);
+
+    expect(capture.status).toBe('ok');
+    expect(capture.fixable).toBe(false);
+    expect(capture.detail).toContain('hosted');
+    expect(capture.detail).toContain('mac-studio');
+    expect(capture.detail).not.toContain('No sessions in the last');
+    expect(capture.detail).not.toContain('capture may not be flowing');
+    expect(capture.detail).not.toContain('No sessions captured yet');
+  });
+
+  test('a local (non-attached) project never renders the hosted finding — resolveAttach finds no ref', async () => {
+    ensureProjectManifest(vaultDir, { projectName: 'local-proj' });
+    // No upsertHost/attachProject — this project is not attached to anything.
+
+    const checks = await runChecks(vaultDir);
+    const database = checks.find((c) => c.name === 'Database')!;
+    const capture = checks.find((c) => c.name === 'Capture')!;
+
+    expect(database.detail).not.toContain('hosted');
+    expect(capture.detail).not.toContain('hosted');
   });
 });

@@ -402,7 +402,7 @@ function prepareClaudeRun(setup: HarnessScopeSetup): PreparedClaudeRun {
   const toolServer = buildToolServer({ toolSurface: setup.toolSurface });
   const baseEnv = buildPhaseEnv(setup.provider);
   const env = {
-    ...(baseEnv ?? process.env),
+    ...baseEnv,
     MYCO_AGENT_SESSION: '1',
     // Isolate from the user's Claude Code plugin registry — see
     // `getIsolatedPluginCacheDir()` docs. Only honored when the user hasn't

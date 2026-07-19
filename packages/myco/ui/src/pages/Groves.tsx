@@ -263,7 +263,7 @@ export default function Groves() {
                               </span>
                             </span>
                             {project.attached && (
-                              <Badge variant="secondary" title="Served by a team host">Team</Badge>
+                              <Badge variant="secondary" title={project.host_label ? `Served by ${project.host_label}` : 'Served by a team host'}>Team</Badge>
                             )}
                             {project.manifest_state !== 'present' && (
                               <Badge variant="outline">{project.manifest_state}</Badge>

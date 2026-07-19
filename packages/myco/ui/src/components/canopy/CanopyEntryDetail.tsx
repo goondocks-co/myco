@@ -12,6 +12,8 @@ import {
   type CanopyEntryRow,
 } from '../../hooks/use-canopy';
 import { formatEpochAbsolute } from '../../lib/format';
+import { hostedDegradedInfo } from '../../lib/degrade';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
 import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
 
 /* ---------- Helpers ---------- */
@@ -154,6 +156,7 @@ export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailPr
   }
 
   if (isError) {
+    const hostedDegraded = hostedDegradedInfo(error);
     return (
       <SlideoutDetailPanel
       open
@@ -168,16 +171,24 @@ export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailPr
               Back to list
             </Button>
           ) : null}
-          <div
-            className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary"
-            data-testid="canopy-entry-detail-error"
-          >
-            <AlertCircle className="h-5 w-5" />
-            <span className="font-sans text-sm">Failed to load entry</span>
-            <span className="font-sans text-xs text-on-surface-variant">
-              {error instanceof Error ? error.message : 'Unknown error'}
-            </span>
-          </div>
+          {hostedDegraded ? (
+            // Canopy is unavailable for hosted (attached) projects — the entry route
+            // 409s capability_unavailable_hosted. Render the uniform inline state
+            // instead of "Failed to load entry" (reachable via the Cortex deep-link
+            // ?tab=canopy&path=<p>). Real outages keep the raw error below.
+            <HostedUnavailable info={hostedDegraded} variant="inline" />
+          ) : (
+            <div
+              className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary"
+              data-testid="canopy-entry-detail-error"
+            >
+              <AlertCircle className="h-5 w-5" />
+              <span className="font-sans text-sm">Failed to load entry</span>
+              <span className="font-sans text-xs text-on-surface-variant">
+                {error instanceof Error ? error.message : 'Unknown error'}
+              </span>
+            </div>
+          )}
         </div>
       </SlideoutDetailPanel>
     );

@@ -30,11 +30,21 @@ export function isLocalProvider(provider?: ProviderConfig): boolean {
 /**
  * Build an env object for a phase's query() call.
  *
- * Returns `undefined` when no provider override is needed (SDK defaults to
- * `process.env`). Only creates a new object when overrides are required,
- * avoiding unnecessary copies of the full process.env.
+ * Captures a SNAPSHOT of `process.env` at build (prepare) time for EVERY
+ * provider type, so a phase's env is frozen when it is prepared rather than
+ * resolved lazily against a possibly-mutated live `process.env` when query()
+ * actually runs. The daemon does mutate env transiently elsewhere (the
+ * served-grove key-health classifier family, `daemon/host-serve.ts`), so
+ * returning the live object here would let such a mutation leak into a phase.
+ * The isolation is now explicit at the source rather than incidental to a
+ * downstream snapshot in `claude.ts`.
+ *
+ * Only local providers layer overrides on top of the snapshot; cloud and
+ * unset providers get the bare frozen snapshot — the exact env they resolved
+ * against before, now captured explicitly.
  */
-export function buildPhaseEnv(provider?: ProviderConfig): Record<string, string | undefined> | undefined {
+export function buildPhaseEnv(provider?: ProviderConfig): Record<string, string | undefined> {
+  const snapshot: Record<string, string | undefined> = { ...process.env };
   if (
     !provider ||
     provider.type === 'anthropic' ||
@@ -42,9 +52,9 @@ export function buildPhaseEnv(provider?: ProviderConfig): Record<string, string 
     provider.type === 'openrouter' ||
     provider.type === 'openai-compatible'
   ) {
-    return undefined;
+    return snapshot;
   }
-  return { ...process.env, ...getProviderEnvVars(provider) };
+  return { ...snapshot, ...getProviderEnvVars(provider) };
 }
 
 /**

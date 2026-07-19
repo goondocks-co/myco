@@ -81,6 +81,21 @@ describe('membershipErrorCopy', () => {
     expect(copy).not.toContain('grove_ghost');
   });
 
+  it('maps the enroll-failure codes (T6b) to outcome copy that never echoes the raw HTTP status', () => {
+    // The wire messages these codes travel with are already body-sanitized
+    // ("Host enrollment failed (HTTP 500).") — the mapped copy must still
+    // replace them with user-outcome voice, dropping the raw status/mechanics.
+    const rejected = membershipErrorCopy(membershipApiError('host_enroll_rejected', 'Host enrollment failed (HTTP 403).'));
+    expect(rejected).not.toContain('HTTP');
+    expect(rejected).not.toContain('403');
+    expect(rejected.length).toBeGreaterThan(20);
+
+    const failed = membershipErrorCopy(membershipApiError('host_enroll_failed', 'Host enrollment failed (HTTP 500).'));
+    expect(failed).not.toContain('HTTP');
+    expect(failed).not.toContain('500');
+    expect(failed.length).toBeGreaterThan(20);
+  });
+
   it('an unknown code falls back to the raw message rather than hiding it', () => {
     const copy = membershipErrorCopy(membershipApiError('join_failed', 'tailscaled socket did not appear'));
     expect(copy).toContain('tailscaled socket did not appear');

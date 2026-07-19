@@ -37,7 +37,7 @@ import {
   HOST_SERVE_BEARER_SECRET,
 } from '../constants.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
-import { readSecrets, writeSecret, loadLayeredSecrets } from '../config/secrets.js';
+import { readSecrets, writeSecret, writeSecretIfAbsent, loadLayeredSecrets } from '../config/secrets.js';
 import { loadMergedConfig } from '../config/loader.js';
 import type { MachineConfig } from '../config/schema.js';
 import { listGroves } from '../grove/registry.js';
@@ -165,11 +165,12 @@ export function isOverlayRangeAddress(address: string | null | undefined): boole
  * This is the single flat-trust host bearer Task 2.4 hands to joining members.
  */
 export function resolveHostServeBearer(mycoHome: string = resolveMycoHome()): string {
-  const existing = readSecrets(mycoHome)[HOST_SERVE_BEARER_SECRET];
-  if (existing && existing.trim()) return existing.trim();
-  const minted = crypto.randomBytes(32).toString('hex');
-  writeSecret(mycoHome, HOST_SERVE_BEARER_SECRET, minted);
-  return minted;
+  // Mint-if-absent at the secrets-write layer: a cross-process race (two
+  // daemons on a restart overlap, or a CLI-and-daemon pair) that both mint a
+  // fresh bearer converges on ONE stored value, and a losing minter returns
+  // the winner's stored bearer — never an orphaned one a member could enroll
+  // with but the host never persists.
+  return writeSecretIfAbsent(mycoHome, HOST_SERVE_BEARER_SECRET, () => crypto.randomBytes(32).toString('hex')).value;
 }
 
 /**

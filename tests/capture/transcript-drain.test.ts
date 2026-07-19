@@ -19,6 +19,7 @@ import http from 'node:http';
 import {
   TranscriptDrainQueue,
   createFsDrainStore,
+  defaultTranscriptTransport,
   type DrainEntry,
   type DrainStore,
   type TranscriptChunkRequest,
@@ -944,5 +945,53 @@ describe('drain health (consolidation Task C-5)', () => {
     const health = q.health();
     expect(health.has(HOST_A)).toBe(true);
     expect(health.has(HOST_B)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Default transport — the tenancy headers the host resolves the Grove DB from.
+// Without these the host resolves groveId:null and the served-grove filter
+// fail-closes POST /routed-capture/transcript for EVERY attached project
+// (E-4 W2 T1c, the C2 regression).
+// ---------------------------------------------------------------------------
+
+describe('defaultTranscriptTransport (wire headers)', () => {
+  let server: http.Server;
+  let received: { method?: string; url?: string; headers: http.IncomingHttpHeaders } | null;
+
+  beforeEach(async () => {
+    received = null;
+    server = http.createServer((req, res) => {
+      req.on('data', () => {});
+      req.on('end', () => {
+        received = { method: req.method, url: req.url, headers: req.headers };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, size: 4, action: 'append' }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  });
+  afterEach(async () => {
+    (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  test('POSTs /routed-capture/transcript with the tenancy claims (project/grove/machine/session) + host bearer, no x-myco-auth', async () => {
+    const port = (server.address() as AddressInfo).port;
+    const t = target({ overlay: `127.0.0.1:${port}` });
+    const res = await defaultTranscriptTransport(t, {
+      machine_id: MACHINE, session_id: 'sess-42', transcript_id: 'tid-1', base_offset: 0, bytes: Buffer.from('abcd').toString('base64'),
+    });
+    expect(res.status).toBe(200);
+    expect(received).not.toBeNull();
+    expect(received!.method).toBe('POST');
+    expect(received!.url).toBe('/routed-capture/transcript');
+    expect(received!.headers.authorization).toBe('Bearer b');
+    expect(received!.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe(String(t.projectId));
+    expect(received!.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe(t.groveId);
+    expect(received!.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe(MACHINE);
+    expect(received!.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-42');
+    // The member never sends x-myco-auth — the host re-stamps its own local bearer.
+    expect(received!.headers['x-myco-auth']).toBeUndefined();
   });
 });

@@ -442,6 +442,49 @@ describe('Grove discovery API — attached-project merge (E-4 local-view)', () =
     expect(rows[0].attached).toBeUndefined();
   });
 
+  it('emits a structured warn (not console.warn) through the injected logger on a collision', async () => {
+    const grove = createGrove('Team Projects');
+    const collisionId = createProjectId();
+    const localRoot = path.join(testDir, 'local-checkout-2');
+    registerProjectInGrove(grove.id, {
+      projectId: collisionId,
+      projectName: 'Local Wins',
+      projectRoot: localRoot,
+    });
+    const host = seedHost([
+      { grove_id: createGroveId(), project_id: collisionId, root: writeAttachedCheckout(collisionId, 'Attached Loses'), local_grove_id: grove.id },
+    ]);
+
+    const warnCalls: Array<{ kind: string; message: string; data?: Record<string, unknown> }> = [];
+    const logger = { warn: (kind: string, message: string, data?: Record<string, unknown>) => { warnCalls.push({ kind, message, data }); } };
+
+    await createListGrovesHandler({ groveIds: null }, serviceDir, logger)({
+      body: undefined, query: {}, params: {}, pathname: '/api/groves',
+    });
+
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0].kind).toBe('groves.attached-collision');
+    expect(warnCalls[0].data).toEqual({ project_id: collisionId, host_id: host.host_id });
+  });
+
+  it('never warns when no collision occurred', async () => {
+    const grove = createGrove('Team Projects');
+    const attachedId = createProjectId();
+    seedHost([{ grove_id: createGroveId(), project_id: attachedId, root: writeAttachedCheckout(attachedId, 'No Collision'), local_grove_id: grove.id }]);
+
+    const warnCalls: unknown[] = [];
+    const logger = { warn: (...args: unknown[]) => { warnCalls.push(args); } };
+
+    await createListGrovesHandler({ groveIds: null }, serviceDir, logger)({
+      body: undefined, query: {}, params: {}, pathname: '/api/groves',
+    });
+    await createListGroveProjectsHandler({ groveIds: null }, serviceDir, logger)({
+      body: undefined, query: {}, params: { id: grove.id }, pathname: `/api/groves/${grove.id}/projects`,
+    });
+
+    expect(warnCalls).toHaveLength(0);
+  });
+
   it('dials no host while building the merge (pure disk read of the host registry)', async () => {
     const grove = createGrove('Team Projects');
     const attachedId = createProjectId();

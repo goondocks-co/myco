@@ -16,6 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 const SECRETS_FILE = 'secrets.env';
@@ -55,6 +56,126 @@ export function writeSecret(vaultDir: string, key: string, value: string): void 
     .join('\n') + '\n';
 
   writeSecretsFile(secretsPath, content);
+}
+
+/** Outcome of {@link writeSecretIfAbsent}. */
+export interface MintIfAbsentResult {
+  /** The value now stored under `key` — the winner's, always. A concurrent
+   *  minter that LOST the race receives the winner's stored value here, never
+   *  its own discarded candidate. */
+  value: string;
+  /** True iff THIS call minted the stored value; false when it adopted a
+   *  value another writer had already stored (or concurrently minted). The
+   *  external-MCP toggle's one-time raw-token reveal keys off this. */
+  minted: boolean;
+}
+
+/** Suffix for the per-key mint-claim file that arbitrates a cross-process
+ *  mint race. Lives beside secrets.env; never matched by {@link readSecrets},
+ *  which reads only the exact `secrets.env` filename. */
+const MINT_CLAIM_SUFFIX = '.mint-claim';
+
+function mintClaimPath(vaultDir: string, key: string): string {
+  const safeKey = key.replace(/[^A-Za-z0-9_.-]/g, '_');
+  return path.join(vaultDir, `${SECRETS_FILE}.${safeKey}${MINT_CLAIM_SUFFIX}`);
+}
+
+/**
+ * Mint a secret for `key` exactly once, safe against a CROSS-PROCESS race.
+ *
+ * A plain read→mint→{@link writeSecret} cannot survive two daemon processes
+ * (a restart overlap, or a CLI-and-daemon pair) both minting the same key:
+ * both read the key absent, both mint a DIFFERENT random value, and the
+ * second whole-file write clobbers the first — the two processes then
+ * disagree about the stored token, and whichever already handed its value to
+ * a member (a host serve-bearer, an external-MCP token) handed out one the
+ * persisted file no longer holds. (In-process the callers are fully
+ * synchronous read-to-write, so the race is purely cross-process.)
+ *
+ * The arbiter is an atomic create-exclusive of a per-key claim file that
+ * already HOLDS the candidate value: the candidate is written to a private
+ * tempfile, then hard-linked into the claim path. `link(2)` fails EEXIST if a
+ * concurrent minter already created the claim, so exactly one candidate ever
+ * wins, and the claim holds that value the instant it exists (no empty-file
+ * window a loser could observe between create and first write). The winner
+ * merges its value into secrets.env before releasing the claim; a loser reads
+ * the winner's value out of secrets.env — or out of the still-present claim,
+ * if the winner hasn't merged yet (or crashed mid-mint, in which case the
+ * loser persists the claimed value so a keyless state can never result). The
+ * function therefore always returns the value that is (or is about to be) the
+ * single stored one — never a losing minter's orphaned candidate.
+ *
+ * `mint` is a thunk so a fresh random value is generated only when this call
+ * actually needs a candidate (never on the fast path).
+ */
+export function writeSecretIfAbsent(
+  vaultDir: string,
+  key: string,
+  mint: () => string,
+): MintIfAbsentResult {
+  ensureSecretsDirSecure(vaultDir);
+
+  // Fast path: a completed prior mint already sits in secrets.env.
+  const existing = readSecrets(vaultDir)[key];
+  if (existing && existing.trim()) return { value: existing.trim(), minted: false };
+
+  const claimPath = mintClaimPath(vaultDir, key);
+  const candidate = mint();
+  const tmp = `${claimPath}.tmp-${process.pid}-${randomBytes(12).toString('hex')}`;
+  fs.writeFileSync(tmp, candidate, { encoding: 'utf-8', mode: SECRETS_FILE_MODE });
+
+  try {
+    // Atomic create-with-content: link fails EEXIST if a concurrent minter
+    // already claimed. On success the claim holds our candidate atomically —
+    // no empty-file window between create and write for a loser to observe.
+    fs.linkSync(tmp, claimPath);
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort */ }
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    // Lost the race — adopt the winner's value.
+    return { value: adoptMintedSecret(vaultDir, key, claimPath), minted: false };
+  }
+
+  // Won the race. Merge into secrets.env (the canonical store) BEFORE
+  // releasing the claim, so a losing minter always finds the value in at
+  // least one of {claim, secrets.env}.
+  try {
+    writeSecret(vaultDir, key, candidate);
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort */ }
+    try { fs.rmSync(claimPath, { force: true }); } catch { /* best-effort */ }
+  }
+  return { value: candidate, minted: true };
+}
+
+/**
+ * Adopt the value a concurrent minter won the claim with. Prefers the
+ * canonical secrets.env; falls back to the claim file (the winner may not
+ * have merged yet, or may have crashed after claiming but before merging — in
+ * which case this call persists the claimed value so the canonical store
+ * still ends up holding it). The winner merges secrets.env BEFORE releasing
+ * the claim, so the value is present in at least one of {claim, secrets.env}
+ * for the whole window a loser can observe; the final throw is defensive only.
+ */
+function adoptMintedSecret(vaultDir: string, key: string, claimPath: string): string {
+  const fromSecrets = readSecrets(vaultDir)[key];
+  if (fromSecrets && fromSecrets.trim()) return fromSecrets.trim();
+
+  let fromClaim = '';
+  try { fromClaim = fs.readFileSync(claimPath, 'utf-8').trim(); } catch { /* claim released after a merge */ }
+  if (fromClaim) {
+    const recheck = readSecrets(vaultDir)[key];
+    if (!recheck || !recheck.trim()) writeSecret(vaultDir, key, fromClaim);
+    return fromClaim;
+  }
+
+  // Claim already released — the winner merged between our two secrets reads.
+  const settled = readSecrets(vaultDir)[key];
+  if (settled && settled.trim()) return settled.trim();
+
+  throw new Error(
+    `writeSecretIfAbsent: lost the mint race for ${key} but neither the claim nor secrets.env holds a value`,
+  );
 }
 
 /**
