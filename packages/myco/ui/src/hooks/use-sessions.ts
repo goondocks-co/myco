@@ -2,7 +2,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, deleteJson, patchJson, postJson } from '../lib/api';
 import { usePowerQuery } from './use-power-query';
 import { POLL_INTERVALS } from '../lib/constants';
-import { useProjectScopedQueryKey } from './use-project-selection';
+import { isAttachedTenancyPending, resolveAttachedEmpty } from '../lib/degrade';
+import { useProjectScopedQueryKey, useProjectSelection } from './use-project-selection';
 
 /* ---------- Constants ---------- */
 
@@ -88,6 +89,9 @@ export interface SessionsResponse {
   offset: number;
   limit: number;
 }
+
+/** Empty session list — the zero-state an attached project shows pre-first-capture. */
+const EMPTY_SESSIONS: SessionsResponse = { sessions: [], total: 0, offset: 0, limit: 0 };
 
 export type PromptBatchOrigin = 'human' | 'system' | 'agent_dispatch' | 'hook_injected';
 
@@ -200,13 +204,21 @@ export function useSessions(filters?: {
   if (filters?.offset !== undefined) params.set('offset', String(filters.offset));
   const qs = params.toString();
   const path = qs ? `/sessions?${qs}` : '/sessions';
+  const selection = useProjectSelection();
 
-  return usePowerQuery<SessionsResponse>({
-    queryKey: ['sessions', filters],
-    queryFn: ({ signal }) => fetchJson<SessionsResponse>(path, { signal }),
-    pollCategory: 'standard',
-    refetchInterval: SESSIONS_POLL_INTERVAL,
-  });
+  return resolveAttachedEmpty(
+    usePowerQuery<SessionsResponse>({
+      queryKey: ['sessions', filters],
+      queryFn: ({ signal }) => fetchJson<SessionsResponse>(path, { signal }),
+      pollCategory: 'standard',
+      refetchInterval: (query) =>
+        isAttachedTenancyPending(query.state.error, selection) ? false : SESSIONS_POLL_INTERVAL,
+      retry: (failureCount, err) =>
+        isAttachedTenancyPending(err, selection) ? false : failureCount < 3,
+    }),
+    selection,
+    EMPTY_SESSIONS,
+  );
 }
 
 export function useSession(id: string | undefined) {

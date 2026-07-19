@@ -71,6 +71,16 @@ export interface HostMembershipRouteDeps extends HostMembershipHealthRouteDeps {
   detach?: typeof detachCommand;
   mycoHome?: string;
   logger?: DaemonLogger;
+  /**
+   * Evicts a host's cached health entry (and any in-flight probe) on a
+   * successful leave — `registerHostMembershipRoutes` wires this to the
+   * health handler's own `evictHost` so the two factories share ONE cache
+   * instance without a new module. Left unset, a leave has no effect on the
+   * health cache (a directly-constructed `createHostMembershipLeaveHandler`
+   * in isolation, e.g. in tests, is a no-op here — matching every other
+   * optional test seam in this deps bag).
+   */
+  evictHealthCache?: (hostId: string) => void;
 }
 
 function asRecord(body: unknown): Record<string, unknown> {
@@ -163,6 +173,7 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
 
 export function createHostMembershipLeaveHandler(deps: HostMembershipRouteDeps): RouteHandler {
   const leave = deps.leave ?? leaveHost;
+  const evictHealthCache = deps.evictHealthCache;
   return async (req) => {
     const body = asRecord(req.body);
     const hostRef = str(body.host_ref);
@@ -170,6 +181,11 @@ export function createHostMembershipLeaveHandler(deps: HostMembershipRouteDeps):
 
     try {
       const result = await leave(hostRef);
+      // The health handler's TTL cache/inflight maps (below) have no
+      // reference to leave — without this, a left host's stale entries
+      // survive until their TTL expires, and a poll in that window can still
+      // report the (now-removed) host as reachable.
+      evictHealthCache?.(hostRef);
       return {
         status: 200,
         body: { removed: result.removed, tailscaled_removed: result.tailscaledRemoved, notes: result.notes },
@@ -385,7 +401,18 @@ export interface HostMembershipHealthRouteDeps {
  * `checkTeamHostReachability` uses, so a probe that somehow rejects still
  * classifies as unreachable rather than crashing the whole fan-out.
  */
-export function createHostMembershipHealthHandler(deps: HostMembershipHealthRouteDeps = {}): RouteHandler {
+export type HostMembershipHealthHandler = RouteHandler & {
+  /**
+   * Evicts a host's cached entry AND cancels any in-flight probe for it
+   * (family c, E-4 W2 Task 7) — called by the leave route, via
+   * `registerHostMembershipRoutes`'s `evictHealthCache` wiring, so a left
+   * host's stale reachability never survives past its own removal. A no-op
+   * for a host with nothing cached.
+   */
+  evictHost(hostId: string): void;
+};
+
+export function createHostMembershipHealthHandler(deps: HostMembershipHealthRouteDeps = {}): HostMembershipHealthHandler {
   const checkReachable = deps.checkReachable ?? defaultCheckHostReachable;
   const readRegistry = deps.readRegistry ?? readHostRegistry;
   const ttlMs = deps.ttlMs ?? HOST_HEALTH_CACHE_TTL_MS;
@@ -434,7 +461,7 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
     }
   }
 
-  return async (): Promise<RouteResponse> => {
+  const handler: RouteHandler = async (): Promise<RouteResponse> => {
     const hosts = readRegistry();
     // Unbounded fan-out, no concurrency cap — accepted the same way doctor's
     // own checkTeamHostReachability accepts it: joined-host counts are small
@@ -443,6 +470,13 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
     const results = await Promise.all(hosts.map((host) => probeOne(host)));
     return { status: 200, body: { hosts: results } };
   };
+
+  return Object.assign(handler, {
+    evictHost(hostId: string): void {
+      cache.delete(hostId);
+      inflight.delete(hostId);
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -450,10 +484,16 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
 // ---------------------------------------------------------------------------
 
 export function registerHostMembershipRoutes(server: RouteRegistrar, deps: HostMembershipRouteDeps = {}): void {
+  // Built once so join/leave/health share the SAME health handler instance —
+  // `leave` gets its `evictHealthCache` from this instance's own `evictHost`,
+  // unless a caller (a test) already supplied one explicitly.
+  const healthHandler = createHostMembershipHealthHandler(deps);
+  const leaveDeps: HostMembershipRouteDeps = { ...deps, evictHealthCache: deps.evictHealthCache ?? healthHandler.evictHost };
+
   server.registerRoute('POST', '/api/host-membership/join', createHostMembershipJoinHandler(deps));
-  server.registerRoute('POST', '/api/host-membership/leave', createHostMembershipLeaveHandler(deps));
+  server.registerRoute('POST', '/api/host-membership/leave', createHostMembershipLeaveHandler(leaveDeps));
   server.registerRoute('POST', '/api/host-membership/attach', createHostMembershipAttachHandler(deps));
   server.registerRoute('POST', '/api/host-membership/detach', createHostMembershipDetachHandler(deps));
   server.registerRoute('GET', '/api/host-membership/status', createHostMembershipStatusHandler(deps));
-  server.registerRoute('GET', '/api/host-membership/health', createHostMembershipHealthHandler(deps));
+  server.registerRoute('GET', '/api/host-membership/health', healthHandler);
 }

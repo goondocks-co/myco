@@ -380,8 +380,37 @@ export async function checkTeamHostDrainHealth(): Promise<DoctorCheck[]> {
   return checks;
 }
 
+/**
+ * The attached-host identity for a project's vaultDir, or null when it isn't
+ * attached (no manifest, no project id, or `resolveAttach` finds no ref —
+ * the common local-project case). Own dynamic import of `host/registry.js`
+ * (matches the `readHostRegistry()` pattern at {@link checkTeamHostReachability}
+ * and {@link checkTeamHostDrainHealth} above) rather than adding `resolveAttach`
+ * to the file's static imports — it is only ever needed on this narrow,
+ * attached-project path. `checkDatabase` and `checkCaptureFlow` below both
+ * call this first: a healthy ATTACHED project's data lives on the host, so
+ * this machine's local session counts/freshness are irrelevant and would
+ * otherwise false-report as "0 sessions" / "capture not flowing".
+ */
+async function resolveAttachedHost(vaultDir: string): Promise<{ label: string; hostId: string } | null> {
+  const projectId = loadProjectManifest(vaultDir)?.project.id;
+  if (!projectId) return null;
+  const { resolveAttach } = await import('../host/registry.js');
+  const attach = resolveAttach(projectId);
+  return attach ? { label: attach.host.label, hostId: attach.host.host_id } : null;
+}
+
 /** Check that the SQLite database exists and can be queried. */
 async function checkDatabase(vaultDir: string): Promise<DoctorCheck> {
+  const attached = await resolveAttachedHost(vaultDir);
+  if (attached) {
+    return {
+      name: 'Database',
+      status: 'ok',
+      detail: `hosted — sessions live on host ${attached.label} (${attached.hostId}), not this machine's local DB`,
+      fixable: false,
+    };
+  }
   const { resolveDaemonDataPaths } = await import('@myco/daemon/data-paths.js');
   const { databasePath, usingGrove } = resolveDaemonDataPaths(vaultDir);
   if (!fs.existsSync(databasePath)) {
@@ -429,6 +458,15 @@ function formatSessionAge(epochSeconds: number | null): string {
  * healthy, not alarming.
  */
 export async function checkCaptureFlow(vaultDir: string): Promise<DoctorCheck> {
+  const attached = await resolveAttachedHost(vaultDir);
+  if (attached) {
+    return {
+      name: 'Capture',
+      status: 'ok',
+      detail: `hosted — sessions live on host ${attached.label} (${attached.hostId}); capture isn't reflected in this machine's local DB`,
+      fixable: false,
+    };
+  }
   try {
     const { resolveDaemonDataPaths } = await import('@myco/daemon/data-paths.js');
     // Resolved inside the try: an unbound/half-provisioned vault makes

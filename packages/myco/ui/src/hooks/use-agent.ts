@@ -3,6 +3,7 @@ import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/rea
 import { usePowerQuery } from './use-power-query';
 import { fetchJson, postJson, putJson, deleteJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
+import { isAttachedTenancyPending, resolveAttachedEmpty } from '../lib/degrade';
 import { projectScopedQueryKey, useProjectScopedQueryKey, useProjectSelection } from './use-project-selection';
 import type { PhaseAudit } from '@myco/services/phase-audit';
 import type { WriteIntentRow } from '@myco/db/queries/write-intents';
@@ -148,6 +149,9 @@ export interface RunsResponse {
   offset: number;
   limit: number;
 }
+
+/** Empty agent-run list — the zero-state an attached project shows pre-first-capture. */
+const EMPTY_RUNS: RunsResponse = { runs: [], total: 0, offset: 0, limit: 0 };
 
 /**
  * Run shape returned by `GET /agent/runs/:id` — a strict superset of
@@ -453,14 +457,22 @@ export function useAgentRuns(filters?: {
   if (filters?.status) params.set('status', filters.status);
   if (filters?.task) params.set('task', filters.task);
   const qs = params.toString();
+  const selection = useProjectSelection();
 
-  return usePowerQuery<RunsResponse>({
-    queryKey: ['agent-runs', filters],
-    queryFn: ({ signal }) =>
-      fetchJson<RunsResponse>(`/agent/runs?${qs}`, { signal }),
-    pollCategory: 'standard',
-    refetchInterval: RUNS_POLL_INTERVAL,
-  });
+  return resolveAttachedEmpty(
+    usePowerQuery<RunsResponse>({
+      queryKey: ['agent-runs', filters],
+      queryFn: ({ signal }) =>
+        fetchJson<RunsResponse>(`/agent/runs?${qs}`, { signal }),
+      pollCategory: 'standard',
+      refetchInterval: (query) =>
+        isAttachedTenancyPending(query.state.error, selection) ? false : RUNS_POLL_INTERVAL,
+      retry: (failureCount, err) =>
+        isAttachedTenancyPending(err, selection) ? false : failureCount < 3,
+    }),
+    selection,
+    EMPTY_RUNS,
+  );
 }
 
 export function useAgentRun(id: string | undefined) {

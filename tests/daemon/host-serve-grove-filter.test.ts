@@ -25,14 +25,15 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 import { DaemonServer } from '@myco/daemon/server.js';
-import { DaemonLogger } from '@myco/daemon/logger.js';
+import { DaemonLogger, type LogEntry } from '@myco/daemon/logger.js';
+import { __resetLogThrottleForTests, __setLogThrottleClockForTests } from '@myco/daemon/log-throttle.js';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority.js';
 import { servedGroveRefusal, type HostServeRuntime } from '@myco/daemon/host-serve.js';
 import { createStreamableMcpHttpHandler } from '@myco/mcp/http.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
-import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
+import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants.js';
 import { vi } from '../helpers/vi-shim.js';
 
 // ---------------------------------------------------------------------------
@@ -103,6 +104,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
   let personalGrove: GroveRecord;
   let personalProjectId: string;
   let servers: DaemonServer[];
+  let logEntries: LogEntry[];
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-served-grove-filter-'));
@@ -113,7 +115,9 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
     clearGroveRegistryCaches();
+    __resetLogThrottleForTests();
     servers = [];
+    logEntries = [];
 
     // Two real Groves the host owns: the ONE it is designated to serve, and a
     // second "personal" Grove that stands in for the operator's own unrelated
@@ -147,6 +151,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
     else process.env.MYCO_TEAM_HOME = savedTeamHome;
     clearGroveRegistryCaches();
+    __resetLogThrottleForTests();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -179,6 +184,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     };
     const hostVaultDir = path.join(tmp, 'host-anchor', '.myco');
     const logger = new DaemonLogger(path.join(tmp, 'host-logs'));
+    logger.setPersistFn((entry) => logEntries.push(entry));
     const server = new DaemonServer({
       vaultDir: hostVaultDir,
       logger,
@@ -191,6 +197,10 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     server.registerRawRoute('/mcp', createStreamableMcpHttpHandler(hostVaultDir, {
       client: mockDaemonClient(),
       hostServe,
+      // Threaded exactly as production wires it (daemon/main.ts) so
+      // chokepoint 2's throttled refusal warn (Task 2, E-4 W2) is exercised
+      // here too, not just chokepoint 1's router-route dispatch.
+      logger,
     }));
     await server.start(0);
     servers.push(server);
@@ -392,5 +402,96 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     const body = await res.json() as { error: { data: { code: string; vault_dir: string } } };
     expect(body.error.data.code).toBe('legacy_vault');
     expect(body.error.data.vault_dir).toBeTruthy();
+  });
+
+  // -- (h) Task 2 (E-4 W2): served-grove refusal observability, both chokepoints --
+
+  function refusalLogs(): LogEntry[] {
+    return logEntries.filter((e) => e.kind === 'host.serve-refusal');
+  }
+
+  test('(h) router route: a foreign-grove refusal logs one throttled warn with the expected fields; response stays byte-identical', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const headers = overlayHeaders({
+      'x-myco-grove-id': personalGrove.id,
+      'x-myco-project-id': personalProjectId,
+    });
+
+    const res1 = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, { headers });
+    expect(res1.status).toBe(404);
+    const body1 = await res1.json();
+    expect(body1.error).toBe('not_found');
+
+    expect(refusalLogs()).toHaveLength(1);
+    const [entry] = refusalLogs();
+    expect(entry.level).toBe('warn');
+    expect(entry.path).toBe(PROBE_ROUTE);
+    expect(entry.resolved_grove_id).toBe(personalGrove.id);
+    expect(entry.served_grove_id).toBe(servedGrove.id);
+
+    // An identical repeat within the throttle interval: response byte-identical,
+    // no second log line (Task 2 is log-lines-only, zero wire/behavior change).
+    const res2 = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, { headers });
+    expect(res2.status).toBe(404);
+    expect(await res2.json()).toEqual(body1);
+    expect(refusalLogs()).toHaveLength(1);
+  });
+
+  test('(h) router route: the null-grove refusal branch also logs (throttled)', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const res = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, {
+      headers: overlayHeaders(),
+    });
+    expect(res.status).toBe(404);
+    expect(refusalLogs()).toHaveLength(1);
+    const [entry] = refusalLogs();
+    expect(entry.resolved_grove_id).toBeNull();
+    expect(entry.served_grove_id).toBe(servedGrove.id);
+  });
+
+  test('(h) /mcp: a foreign-grove refusal logs one throttled warn with the expected fields (chokepoint 2); once the interval elapses it logs again', async () => {
+    let fakeNow = 0;
+    __setLogThrottleClockForTests(() => fakeNow);
+    const server = await buildHostServer(servedGrove.id);
+    const headers = overlayHeaders({
+      'content-type': 'application/json',
+      'x-myco-grove-id': personalGrove.id,
+      'x-myco-project-id': personalProjectId,
+    });
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+
+    const res1 = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, { method: 'POST', headers, body });
+    expect(res1.status).toBe(404);
+    expect(refusalLogs()).toHaveLength(1);
+    const [entry] = refusalLogs();
+    expect(entry.level).toBe('warn');
+    expect(entry.path).toBe('/mcp');
+    expect(entry.resolved_grove_id).toBe(personalGrove.id);
+    expect(entry.served_grove_id).toBe(servedGrove.id);
+
+    // Repeat within the interval: throttled (silent).
+    const res2 = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, { method: 'POST', headers, body });
+    expect(res2.status).toBe(404);
+    expect(refusalLogs()).toHaveLength(1);
+
+    // Once the interval elapses, the same refusal logs again.
+    fakeNow += REFUSAL_LOG_THROTTLE_INTERVAL_MS + 1;
+    const res3 = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, { method: 'POST', headers, body });
+    expect(res3.status).toBe(404);
+    expect(refusalLogs()).toHaveLength(2);
+  });
+
+  test('(h) /mcp: the null-grove refusal branch also logs (chokepoint 2)', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, {
+      method: 'POST',
+      headers: overlayHeaders({ 'content-type': 'application/json', 'x-myco-project-id': servedProjectId }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    expect(res.status).toBe(404);
+    expect(refusalLogs()).toHaveLength(1);
+    const [entry] = refusalLogs();
+    expect(entry.resolved_grove_id).toBeNull();
+    expect(entry.served_grove_id).toBe(servedGrove.id);
   });
 });

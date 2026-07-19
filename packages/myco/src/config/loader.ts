@@ -39,6 +39,20 @@ function localConfigPath(vaultDir: string): string {
   return path.join(vaultDir, LOCAL_CONFIG_FILENAME);
 }
 
+/**
+ * The project-tier stand-in doc substituted when `myco.yaml` is ABSENT but the
+ * caller has opted into tolerating that absence — the optional project tier for
+ * a served project's merged read (`loadMergedConfig` `projectTierOptional`), and
+ * the attach carve's reads / create-on-write. `version` is the one
+ * project-tier-owned literal with no schema default (`config/scope.ts`'s
+ * SCOPE_REGISTRY has no other home for it), so the stand-in carries it exactly
+ * as every real project file does. Returns a fresh object per call so a caller
+ * can never mutate a shared reference into the merge pipeline.
+ */
+function projectTierStandinDoc(): Record<string, unknown> {
+  return { version: 3 };
+}
+
 /** Config overlay uses replace semantics: arrays in source overwrite arrays in target. */
 export function deepMergeConfig<T extends Record<string, unknown>>(target: T, source: Partial<T>): T {
   return deepMerge(target, source, { arrayStrategy: 'replace' });
@@ -805,6 +819,26 @@ export function loadConfig(vaultDir: string, options: LoadConfigOptions = {}): M
   return loadConfigInternal(vaultDir, options).config;
 }
 
+/**
+ * Load the single project tier, tolerating an ABSENT `myco.yaml` by returning
+ * the parsed stand-in skeleton instead of throwing "myco.yaml not found". The
+ * non-merged analog of `loadMergedConfig`'s `projectTierOptional`, for the
+ * attach carve's single-tier reads (`GET /api/config` and the scoped
+ * local-write project validation) whose fresh checkout has no project file yet.
+ *
+ * Only ABSENCE is tolerated: a PRESENT file is loaded strictly through
+ * `loadConfig`, so a malformed present file still throws. Callers on the LOCAL
+ * path keep the strict `loadConfig` — this tolerance is opt-in for the attach
+ * carve, exactly as `projectTierOptional` is on the merged path.
+ */
+export function loadConfigOptional(vaultDir: string): MycoConfig {
+  const configPath = path.join(vaultDir, CONFIG_FILENAME);
+  if (!fs.existsSync(configPath)) {
+    return MycoConfigSchema.parse(projectTierStandinDoc());
+  }
+  return loadConfig(vaultDir);
+}
+
 export function saveConfig(vaultDir: string, config: MycoConfig): void {
   // Validate full shape first (OAK lesson: validate on write, not just
   // read), then filter through ProjectConfigSchema so Grove/Machine-tier
@@ -890,11 +924,31 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   invalidateMergedConfigCache(vaultDir);
 }
 
+export interface UpdateConfigOptions {
+  /**
+   * Opt-in create-on-write for an ABSENT `myco.yaml`. When true and the project
+   * file does not exist, seed the update from the project-tier stand-in skeleton
+   * instead of throwing "myco.yaml not found", then persist through the normal
+   * atomic `saveConfig` path — the transform's output IS the newly-created file.
+   *
+   * Default (false) stays STRICT: a missing file throws exactly as before. This
+   * is the single sanctioned config write path (safe-config-updates invariant),
+   * so the opt-in extends it rather than adding a second writer. ONLY the
+   * attach-carve scoped-write path passes this; every other caller in the
+   * monorepo keeps the strict default.
+   */
+  createIfMissing?: boolean;
+}
+
 export function updateConfig(
   vaultDir: string,
   fn: (config: MycoConfig) => MycoConfig,
+  options: UpdateConfigOptions = {},
 ): MycoConfig {
-  const current = loadConfig(vaultDir);
+  const configPath = path.join(vaultDir, CONFIG_FILENAME);
+  const current = (options.createIfMissing === true && !fs.existsSync(configPath))
+    ? MycoConfigSchema.parse(projectTierStandinDoc())
+    : loadConfig(vaultDir);
   const updated = fn(current);
   saveConfig(vaultDir, updated);
   return updated;
@@ -1157,7 +1211,7 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
   // (`config/scope.ts`'s SCOPE_REGISTRY has no other home for it) — so the
   // stand-in doc carries it exactly as every real project file does.
   const projectRaw = (projectTierOptional && !configStat)
-    ? { version: 3 }
+    ? projectTierStandinDoc()
     : loadConfigInternal(vaultDir, { groveId, mycoHome, migrateTiers: true }).parsed;
 
   migrateLegacyLocalAppearanceToGrove(vaultDir, groveId, mycoHome);
@@ -1270,15 +1324,25 @@ export async function loadAttachedMergedConfig(
   options: LoadAttachedMergedConfigOptions,
 ): Promise<MycoConfig> {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
+  const configPath = path.join(vaultDir, CONFIG_FILENAME);
   const localPath = localConfigPath(vaultDir);
   const machinePath = resolveGlobalConfigPath(mycoHome);
 
   // Project tier — LOCAL. No local-grove materialization for the hosted Grove.
-  const { parsed: projectRaw } = loadConfigInternal(vaultDir, {
-    groveId: null,
-    mycoHome,
-    migrateTiers: false,
-  });
+  // A fresh clone-then-attach has no `myco.yaml` yet, so tolerate its ABSENCE
+  // exactly as loadMergedConfig's projectTierOptional path does
+  // (BEHAVE-LIKE-LOCAL): the project tier contributes only the stand-in
+  // `version` rather than throwing "myco.yaml not found". Gate on file absence
+  // (the member HAS the working tree, so `projectTreeAvailable` is the wrong
+  // signal) — a PRESENT-but-malformed file still throws, surfacing as the
+  // attached_config_failed envelope, because corruption is not absence.
+  const projectRaw = !fs.existsSync(configPath)
+    ? projectTierStandinDoc()
+    : loadConfigInternal(vaultDir, {
+        groveId: null,
+        mycoHome,
+        migrateTiers: false,
+      }).parsed;
 
   // Machine tier — LOCAL (the member's own machine mechanics), never the host's.
   const machineRaw = readRawYamlDoc(machinePath);

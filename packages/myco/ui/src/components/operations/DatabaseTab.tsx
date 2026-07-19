@@ -19,6 +19,8 @@ import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { SectionHeader } from '../ui/section-header';
 import { Button } from '../ui/button';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
+import { hostedDegradedInfo, type HostedDegradedInfo } from '../../lib/degrade';
 import { cn } from '../../lib/cn';
 import {
   OperationsScopePill,
@@ -145,9 +147,11 @@ function TablesTable({ tables }: { tables: DatabaseDetails['tables'] }) {
 function ScheduledMaintenanceCard({
   details,
   onActionResult,
+  onHosted,
 }: {
   details: DatabaseDetails;
   onActionResult: (r: { type: 'success' | 'error'; text: string }) => void;
+  onHosted: (info: HostedDegradedInfo) => void;
 }) {
   const { effective } = useScopedConfig();
   const queryClient = useQueryClient();
@@ -188,7 +192,9 @@ function ScheduledMaintenanceCard({
       }
       queryClient.invalidateQueries({ queryKey: ['database-details'] });
     } catch (err) {
-      onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
+      const degraded = hostedDegradedInfo(err);
+      if (degraded) onHosted(degraded);
+      else onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
     } finally {
       setRunning(false);
     }
@@ -261,8 +267,10 @@ interface ReleaseProvenanceReconcileResponse {
 
 function ReleaseProvenanceCard({
   onActionResult,
+  onHosted,
 }: {
   onActionResult: (r: { type: 'success' | 'error'; text: string }) => void;
+  onHosted: (info: HostedDegradedInfo) => void;
 }) {
   const [busy, setBusy] = useState(false);
 
@@ -290,7 +298,9 @@ function ReleaseProvenanceCard({
       const text = `Release reconcile: ${results.length} project(s), ${totals.reconciled} updated, ${totals.unchanged} unchanged${totals.failed ? `, ${totals.failed} rows failed` : ''}${totals.errors ? `, ${totals.errors} project errors` : ''}.`;
       onActionResult({ type: totals.errors > 0 ? 'error' : 'success', text });
     } catch (err) {
-      onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
+      const degraded = hostedDegradedInfo(err);
+      if (degraded) onHosted(degraded);
+      else onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
     } finally {
       setBusy(false);
     }
@@ -316,8 +326,10 @@ function ReleaseProvenanceCard({
 
 function DatabaseActions({
   onActionResult,
+  onHosted,
 }: {
   onActionResult: (r: { type: 'success' | 'error'; text: string }) => void;
+  onHosted: (info: HostedDegradedInfo) => void;
 }) {
   const queryClient = useQueryClient();
   const selection = useProjectSelection();
@@ -372,7 +384,9 @@ function DatabaseActions({
       }
       queryClient.invalidateQueries({ queryKey: ['database-details'] });
     } catch (err) {
-      onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
+      const degraded = hostedDegradedInfo(err);
+      if (degraded) onHosted(degraded);
+      else onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
     } finally {
       setBusy(false);
     }
@@ -414,7 +428,9 @@ function DatabaseActions({
           return;
         }
       }
-      onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
+      const degraded = hostedDegradedInfo(err);
+      if (degraded) onHosted(degraded);
+      else onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
     } finally {
       setBusy(false);
     }
@@ -442,7 +458,9 @@ function DatabaseActions({
       }
       queryClient.invalidateQueries({ queryKey: ['database-details'] });
     } catch (err) {
-      onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
+      const degraded = hostedDegradedInfo(err);
+      if (degraded) onHosted(degraded);
+      else onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
     } finally {
       setBusy(false);
     }
@@ -495,6 +513,20 @@ export function DatabaseTab() {
   // Sparkline history for DB size
   const [sizeHistory, setSizeHistory] = useState<number[]>([]);
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // Database maintenance mutations are degrade-stamped for attached (hosted)
+  // projects — they 409 capability_unavailable_hosted. When that's the failure,
+  // the child cards signal `onHosted` and the parent renders the uniform
+  // HostedUnavailable strip in the shared action-result slot instead of a raw
+  // "Error: …". The two setters are mutually exclusive.
+  const [hostedInfo, setHostedInfo] = useState<HostedDegradedInfo | null>(null);
+  const reportActionResult = (r: { type: 'success' | 'error'; text: string }) => {
+    setHostedInfo(null);
+    setActionResult(r);
+  };
+  const reportHosted = (info: HostedDegradedInfo) => {
+    setActionResult(null);
+    setHostedInfo(info);
+  };
   // Database operations target a whole SQLite file — there's no
   // project-narrowed path. Pill omits the project option.
   const [schemaScope, setSchemaScope] = useState<OperationsScope>('grove');
@@ -575,13 +607,15 @@ export function DatabaseTab() {
           information, not an action surface, so it lives next to
           the database stats. */}
 
-      <ScheduledMaintenanceCard details={data} onActionResult={setActionResult} />
+      <ScheduledMaintenanceCard details={data} onActionResult={reportActionResult} onHosted={reportHosted} />
 
-      <ReleaseProvenanceCard onActionResult={setActionResult} />
+      <ReleaseProvenanceCard onActionResult={reportActionResult} onHosted={reportHosted} />
 
-      <DatabaseActions onActionResult={setActionResult} />
+      <DatabaseActions onActionResult={reportActionResult} onHosted={reportHosted} />
 
-      {actionResult && (
+      {hostedInfo ? (
+        <HostedUnavailable info={hostedInfo} variant="inline" />
+      ) : actionResult ? (
         <p
           className={cn(
             'font-sans text-sm',
@@ -590,7 +624,7 @@ export function DatabaseTab() {
         >
           {actionResult.text}
         </p>
-      )}
+      ) : null}
 
       {/* Activity log moved to Logs (deep-link with database
           component pre-filtered) — keeps Maintenance focused on

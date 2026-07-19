@@ -33,7 +33,7 @@
 import crypto from 'node:crypto';
 
 import { loadMachineConfig, saveMachineConfig } from '../../config/loader.js';
-import { deleteSecrets, readSecrets, writeSecret } from '../../config/secrets.js';
+import { deleteSecrets, readSecrets, writeSecret, writeSecretIfAbsent } from '../../config/secrets.js';
 import { ExternalMcpSchema } from '../../config/schema.js';
 import { resolveGroveDir, resolveMycoHome } from '../../grove/paths.js';
 import { KEYED_CLOUD_PROVIDER_ENV } from '../../agent/harness/provider-health.js';
@@ -405,10 +405,15 @@ export async function handlePutExternalMcpToggle(
   }
 
   // Mint-if-absent — never overwrite an existing token (that is rotate's job).
-  const existing = readSecrets(mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
-  const freshlyMinted = !existing || !existing.trim();
-  const token = freshlyMinted ? crypto.randomBytes(32).toString('hex') : existing!.trim();
-  if (freshlyMinted) writeSecret(mycoHome, HOST_EXTERNAL_MCP_TOKEN_SECRET, token);
+  // The atomic secrets-layer primitive makes this cross-process-safe: two
+  // daemons racing the first enable converge on ONE stored token, and only the
+  // call that genuinely minted it (`minted`) reveals the raw value below — a
+  // loser adopts the winner's stored token and reveals nothing.
+  const { value: token, minted: freshlyMinted } = writeSecretIfAbsent(
+    mycoHome,
+    HOST_EXTERNAL_MCP_TOKEN_SECRET,
+    () => crypto.randomBytes(32).toString('hex'),
+  );
 
   let boundPort = requestedPort;
   if (deps.externalMcp) {

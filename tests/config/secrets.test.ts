@@ -11,6 +11,7 @@ import {
   readSecrets,
   tightenSecretsPermissions,
   writeSecret,
+  writeSecretIfAbsent,
 } from '@myco/config/secrets';
 
 const POSIX = process.platform !== 'win32';
@@ -278,6 +279,61 @@ describe('secrets', () => {
       propagateLegacySecrets(projectDir, mycoHomeDir);
       if (POSIX) {
         expect(fs.statSync(path.join(mycoHomeDir, 'secrets.env')).mode & 0o777).toBe(0o600);
+      }
+    });
+  });
+
+  describe('writeSecretIfAbsent (cross-process mint hardening)', () => {
+    const KEY = 'MYCO_HOST_SERVE_BEARER';
+    // Mirrors the private `mintClaimPath` layout in config/secrets.ts — the
+    // interleave test pre-creates this exact file to stand in for a concurrent
+    // process's claim (we cannot fork a real second process in the suite).
+    const claimPathFor = (dir: string) => path.join(dir, `secrets.env.${KEY}.mint-claim`);
+
+    it('mints once, stores the value, and reports minted:true on a fresh key', () => {
+      const result = writeSecretIfAbsent(testDir, KEY, () => 'freshly-minted');
+      expect(result).toEqual({ value: 'freshly-minted', minted: true });
+      expect(readSecrets(testDir)[KEY]).toBe('freshly-minted');
+      // No lingering secret-bearing claim file after a normal (uncontended) mint.
+      expect(fs.existsSync(claimPathFor(testDir))).toBe(false);
+    });
+
+    it('a second sequential minter ADOPTS the first stored token (fast path) — never re-mints', () => {
+      const winner = writeSecretIfAbsent(testDir, KEY, () => 'winner-token');
+      expect(winner.minted).toBe(true);
+
+      let loserMintCalled = false;
+      const loser = writeSecretIfAbsent(testDir, KEY, () => { loserMintCalled = true; return 'loser-token'; });
+      expect(loser).toEqual({ value: 'winner-token', minted: false });
+      expect(loserMintCalled).toBe(false); // fast path never mints
+      // ONE stored token — the winner's — and never the loser's candidate.
+      expect(readSecrets(testDir)[KEY]).toBe('winner-token');
+    });
+
+    it('the loser observes the winner CLAIM mid-mint (EEXIST) and converges on the winner token', () => {
+      // Simulate the cross-process interleave AT THE FS LAYER: the winner has
+      // atomically claimed (its candidate sits in the claim file) but has NOT
+      // yet merged into secrets.env — the precise window a plain
+      // read→mint→write would corrupt. secrets.env is still absent, so the
+      // loser passes its fast-path read and mints its OWN candidate, then hits
+      // EEXIST on the claim and must adopt the winner's value instead.
+      fs.writeFileSync(claimPathFor(testDir), 'winner-token', { mode: 0o600 });
+
+      let loserCandidate: string | undefined;
+      const loser = writeSecretIfAbsent(testDir, KEY, () => { loserCandidate = 'loser-token'; return loserCandidate; });
+
+      expect(loser.value).toBe('winner-token'); // adopted the winner's, not its own
+      expect(loser.minted).toBe(false);
+      expect(loserCandidate).toBe('loser-token'); // the loser DID mint a candidate…
+      // …but discarded it: the single stored token is the winner's, and the
+      // loser persisted it to the canonical store (winner was still mid-mint).
+      expect(readSecrets(testDir)[KEY]).toBe('winner-token');
+    });
+
+    it('written secrets.env stays 0o600 after a mint (POSIX)', () => {
+      writeSecretIfAbsent(testDir, KEY, () => 'perm-check');
+      if (POSIX) {
+        expect(fs.statSync(path.join(testDir, 'secrets.env')).mode & 0o777).toBe(0o600);
       }
     });
   });

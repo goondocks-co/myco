@@ -113,6 +113,18 @@ export const LOG_KINDS = {
   SERVER_ERROR: 'server.error',
   // Team Host — the overlay-facing transport boundary (second listener + gate).
   HOST_SERVE: 'host.serve',
+  // Team Host — a previously-silent overlay refusal (unknown-tenancy or
+  // served-grove) now surfaced as a throttled warn (E-4 W2 T2). One kind for
+  // both refusal classes keeps them a single filterable diagnostic stream,
+  // distinct from the general HOST_SERVE listener-lifecycle events above.
+  HOST_SERVE_REFUSAL: 'host.serve-refusal',
+  // Team Host — a served project registered on its first FORWARDED capture
+  // (registration-on-ingest, E-4 W2 T1); the host-side mirror of the local
+  // hook's ensureProjectRegistered.
+  HOSTED_PROJECT_REGISTER: 'host.hosted-register',
+  // Team Host — housekeeping prune of empty, past-TTL hosted (synthetic-root)
+  // registry rows (E-4 W2 T1e).
+  HOSTED_PROJECT_PRUNE: 'host.hosted-prune',
   // External read-only MCP — the dedicated Funnel-fronted listener (server-mode design spec §7).
   EXTERNAL_MCP: 'external.mcp',
 
@@ -176,6 +188,12 @@ export const LOG_KINDS = {
 
   // Symbionts
   MANAGED_FILES_RECONCILE: 'symbionts.managed-files-reconcile',
+
+  // Groves discovery API (daemon/api/groves.ts)
+  // A local-Grove row and an attached (Team Host) ref collide on the same
+  // project_id — the never-materialize invariant was violated elsewhere.
+  // Rare by construction; plain warn, no throttle.
+  GROVES_ATTACHED_COLLISION: 'groves.attached-collision',
 } as const;
 
 export type LogKind = (typeof LOG_KINDS)[keyof typeof LOG_KINDS];

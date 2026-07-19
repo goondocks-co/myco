@@ -26,6 +26,8 @@ import {
   createGrove,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
+import { hostedProjectRoot, maybeRegisterHostedProjectOnIngest } from '@myco/host/hosted-projects.js';
+import { createProjectId } from '@myco/grove/ids.js';
 
 const created: string[] = [];
 
@@ -182,6 +184,43 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
     expect(fs.readFileSync(path.join(devRoot, 'AGENTS.md'), 'utf-8'))
       .toContain('myco tool call myco_cortex --json --input');
     expect(fs.readFileSync(path.join(prodRoot, 'AGENTS.md'), 'utf-8'))
+      .toContain('myco tool call myco_cortex --json --input');
+  });
+
+  it('skips a hosted (treeless synthetic-root) row entirely — no fs writes, no error outcome (AC #10)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-reconcile-hosted-'));
+    created.push(home);
+    const grove = createGrove('Served', home);
+
+    // A REAL registered project — still reconciled.
+    const realRoot = makeGitProjectWithVault();
+    registerProjectInGrove(grove.id, { projectId: 'proj_real', projectName: 'Real', projectRoot: realRoot }, home);
+    fs.writeFileSync(
+      path.join(realRoot, 'AGENTS.md'),
+      '# R\n<!-- myco:managed:start -->\n- `node .agents/myco-cli.cjs tool call myco_cortex`\n<!-- myco:managed:end -->\n',
+    );
+
+    // A HOSTED row via registration-on-ingest — its synthetic root never exists.
+    const hostedProjectId = createProjectId();
+    maybeRegisterHostedProjectOnIngest({
+      method: 'POST',
+      pathname: '/sessions/register',
+      headers: { 'x-myco-grove-id': grove.id, 'x-myco-project-id': hostedProjectId },
+      servedGroveId: grove.id,
+      mycoHome: home,
+    });
+    const syntheticRoot = hostedProjectRoot(grove.id, hostedProjectId, home);
+    clearGroveRegistryCaches();
+
+    const outcomes = reconcileRegisteredManagedProjectFiles({ mycoHome: home });
+
+    // The hosted row is skipped: absent from outcomes (no result AND no error),
+    // and its synthetic root was never created on disk.
+    expect(outcomes.map((o) => o.projectId)).toEqual(['proj_real']);
+    expect(outcomes.every((o) => o.error === null)).toBe(true);
+    expect(fs.existsSync(syntheticRoot)).toBe(false);
+    // The real project is still reconciled.
+    expect(fs.readFileSync(path.join(realRoot, 'AGENTS.md'), 'utf-8'))
       .toContain('myco tool call myco_cortex --json --input');
   });
 });

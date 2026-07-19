@@ -203,6 +203,7 @@ import { createEventDispatcher } from './event-dispatch.js';
 import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
 import { createRoutedPlanHandler } from '../host/routed-plan.js';
 import type { RemoteTarget } from '../host/routing.js';
+import { pruneHostedProjects } from '../host/hosted-projects.js';
 import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
 import { createPlanDrainQueue } from '../capture/plan-drain.js';
 import { createEventReplayDrainQueue } from '../capture/event-replay-drain.js';
@@ -1782,8 +1783,8 @@ export async function main(): Promise<void> {
   }));
   const groveScope = servedGroveScopeForDaemon();
   const groveDaemonStateDir = daemonService.stateDir;
-  server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope, groveDaemonStateDir));
-  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope, groveDaemonStateDir));
+  server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope, groveDaemonStateDir, logger));
+  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope, groveDaemonStateDir, logger));
   server.registerRoute('POST', '/api/groves', createCreateGroveHandler(groveDaemonStateDir));
   server.registerRoute('PATCH', '/api/groves/:id', createRenameGroveHandler(groveDaemonStateDir));
   server.registerRoute('DELETE', '/api/groves/:id', createDeleteGroveHandler(groveDaemonStateDir));
@@ -2459,6 +2460,33 @@ export async function main(): Promise<void> {
     hold: { pending: () => eventReplayDrain.pendingCount() },
     fn: async () => {
       await eventReplayDrain.drainAll();
+    },
+  });
+
+  // Team Host hosted-project prune (E-4 W2 T1e / decision D-W2-5). Registration-
+  // on-ingest can leave an EMPTY hosted (synthetic-root) registry row when a
+  // forwarded capture registered the project but never landed a DB write. This
+  // GC removes such rows once they age past HOSTED_PROJECT_PRUNE_TTL_MS AND hold
+  // zero sessions/spores/plans in the served Grove — delete-only-if-empty, so a
+  // row with any data structurally survives regardless of age. No-op unless this
+  // daemon is a designated host; idle/sleep-only (never latency-sensitive).
+  jobRunner.register({
+    name: 'team-host-hosted-project-prune',
+    runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
+    fn: async () => {
+      const servedGroveId = hostServe?.servedGroveId;
+      if (!servedGroveId) return;
+      const dbPath = resolveGroveDbPath(servedGroveId, mycoHome);
+      if (!fs.existsSync(dbPath)) return;
+      await runtimeCache.withPinned(dbPath, async () => {
+        pruneHostedProjects({
+          servedGroveId,
+          db: runtimeCache.getDatabase(dbPath),
+          mycoHome,
+          logger,
+        });
+      });
     },
   });
 

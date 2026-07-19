@@ -672,6 +672,36 @@ export const HOST_EXTERNAL_MCP_TOKEN_SECRET = 'MYCO_HOST_EXTERNAL_MCP_TOKEN';
 export const EXTERNAL_MCP_DEFAULT_PORT = 8743;
 
 /**
+ * Directory segment under a served Grove's dir (`<grove>/hosted/<projectId>`)
+ * that namespaces the SYNTHETIC project roots minted by host registration-on-
+ * ingest (E-4 W2 T1). A member-attached project has no working tree on the host,
+ * so its registry row gets a synthetic root that (a) passes `assertSafeProjectRoot`
+ * and (b) never exists on disk — the same tree-absence signal `projectTreeAvailable`
+ * already keys the behave-like-local degrade on. The segment is the marker the
+ * status count and the prune job filter registered rows by.
+ */
+export const HOSTED_PROJECT_ROOT_SEGMENT = 'hosted';
+
+/**
+ * Length of the id suffix used as the placeholder display name for a hosted
+ * project registered on ingest (`registerProjectInGrove` requires a name, but the
+ * host never sees the member's chosen project name). The last N hex characters of
+ * the grove-era project id — enough to disambiguate in the operator dashboard
+ * without inventing a fake human name.
+ */
+export const HOSTED_PROJECT_NAME_ID_SUFFIX_LEN = 8;
+
+/**
+ * TTL after which a hosted (synthetic-root) registry row with ZERO Grove-DB
+ * references (no sessions/spores/plans for its project id) becomes eligible for
+ * the housekeeping prune (E-4 W2 T1e / decision D-W2-5). A row with any data is
+ * structurally never pruned regardless of age — this window only bounds how long
+ * an EMPTY stray row (an ingest that registered but never landed a DB write)
+ * lingers. Matches the 14-day tombstone/retention family already in this file.
+ */
+export const HOSTED_PROJECT_PRUNE_TTL_MS = 14 * MS_PER_DAY;
+
+/**
  * Wire protocol for member-daemon ↔ host-daemon overlay traffic. Bump on any
  * breaking change to the proxied request/response contract or tenancy headers.
  *
@@ -765,6 +795,25 @@ export const HOST_PROXY_MCP_IDLE_TIMEOUT_MS = 120_000;
  * `/mcp` tool-name peek. Mirrors the daemon's own 8 MB inbound cap.
  */
 export const HOST_PROXY_MAX_BUFFERED_BODY_BYTES = 8 * 1024 * 1024;
+
+// --- Refusal-log throttle (Task 2, E-4 W2) ---
+/**
+ * Throttle interval for structured Team Host refusal log lines — host-side
+ * unknown-tenancy and served-grove refusals (`daemon/server.ts`, `mcp/http.ts`)
+ * and the member-side relayed-upstream-failure warn (`daemon/host-proxy.ts`).
+ * Long enough that a member's capture-drain retry loop — which reissues the
+ * identical refused request every daemon tick — doesn't turn one still-refused
+ * condition into a log storm; short enough that a genuinely anomalous refusal
+ * resurfaces within a few minutes rather than going silent for the life of
+ * the daemon (`daemon/log-throttle.ts`'s `shouldLogOncePerInterval`).
+ */
+export const REFUSAL_LOG_THROTTLE_INTERVAL_MS = 5 * 60 * 1000;
+/**
+ * Cap on distinct keys `daemon/log-throttle.ts` tracks at once. Bounds memory
+ * against an effectively unbounded key space (arbitrary paths/Grove ids/host
+ * ids); the single oldest entry is evicted once the cap is reached.
+ */
+export const REFUSAL_LOG_THROTTLE_MAX_KEYS = 1000;
 
 // --- HTTP response flush ---
 /** Delay before initiating shutdown — allows the HTTP response to flush. */

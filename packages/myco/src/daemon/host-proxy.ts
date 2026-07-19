@@ -40,6 +40,7 @@ import {
   HOST_PROXY_HEADERS_TIMEOUT_MS,
   HOST_PROXY_MAX_BUFFERED_BODY_BYTES,
   HOST_PROXY_MCP_IDLE_TIMEOUT_MS,
+  REFUSAL_LOG_THROTTLE_INTERVAL_MS,
 } from '../constants.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { stampCollectRoute } from '../capture/collect-buffer-route.js';
@@ -48,11 +49,13 @@ import { getMachineId } from '../machine-id.js';
 import { resolveProjectBufferDir } from '../grove/paths.js';
 import { REQUEST_CONTEXT_AUTH_HEADER, REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import { TOOL_CORTEX, TOOL_SEARCH } from '../tools/definitions.js';
+import { shouldLogOncePerInterval } from './log-throttle.js';
 import {
   hostedCapabilityUnavailable,
   refusalMcpBody,
   type RemoteTarget,
   type RouteClassification,
+  type RouteStamp,
 } from '../host/routing.js';
 
 /** The three session-boundary capture routes that trigger transcript mining on
@@ -94,6 +97,15 @@ const STRIPPED_REQUEST_HEADERS = new Set([
   'origin',
   'referer',
   'cookie',
+  // TENANCY is the attach mapping's, never the caller's local claim — the same
+  // doctrine that overwrites grove/project below. The caller's `x-myco-project-root`
+  // names a MEMBER checkout path that does not exist on the host; forwarding it
+  // feeds `findRegisteredProject`'s root-equivalence filter, which rejects the
+  // host's synthetic-root hosted row (`pathsEquivalent` is false when either path
+  // is absent) and 404s the very capture registration-on-ingest just admitted.
+  // Dropped here (member-side only; NOT a wire addition) so the host resolves the
+  // hosted row by (grove, project) alone. E-4 W2 T1b.
+  REQUEST_CONTEXT_HEADERS.projectRoot,
 ]);
 
 /** Hop-by-hop response headers the relay drops; everything else (including
@@ -391,6 +403,36 @@ export function logVersionMismatchOnce(logger: ProxyLogger, target: RemoteTarget
 /** Test seam only: reset the once-per-host version-mismatch log de-dup. */
 export function __resetVersionMismatchLogForTests(): void {
   loggedVersionMismatch.clear();
+}
+
+/**
+ * Throttled once-per-key warn for an upstream host failure surfaced to the
+ * caller (Task 2, E-4 W2): the general 4xx/5xx relay pass-through and the
+ * dedicated host-bearer-rejected (401) branch were both previously silent.
+ * Mirrors {@link logVersionMismatchOnce}'s once-per-host posture but keyed
+ * finer (host + route class + status class) and bounded by TIME rather than
+ * forever — via `shouldLogOncePerInterval` (`daemon/log-throttle.ts`) — so a
+ * persistently-refused route resurfaces after the throttle interval instead
+ * of going silent for the daemon's whole lifetime. NEVER logs request/
+ * response body content (it can carry capture content) — only host_id,
+ * path, and the numeric status, the same posture `logVersionMismatchOnce`
+ * already holds.
+ */
+function logRelayFailureOnce(
+  logger: ProxyLogger,
+  target: RemoteTarget,
+  routeClass: RouteStamp,
+  status: number,
+  pathname: string,
+): void {
+  const statusClass = `${Math.floor(status / 100)}xx`;
+  const key = `relay:${target.host.host_id}:${routeClass}:${statusClass}`;
+  if (!shouldLogOncePerInterval(key, REFUSAL_LOG_THROTTLE_INTERVAL_MS)) return;
+  logger.warn('host rejected relayed request — response passed through unchanged', {
+    host_id: target.host.host_id,
+    path: pathname,
+    status,
+  });
 }
 
 function safePathname(url: string | undefined): string {
@@ -699,7 +741,7 @@ export async function handleAttachedRequest(
     return;
   }
 
-  await forwardAndRelay(req, res, target, pathname, isMcp, mcpId, bufferedBody, d);
+  await forwardAndRelay(req, res, target, pathname, isMcp, mcpId, bufferedBody, d, classification.stamp);
 }
 
 /**
@@ -896,6 +938,10 @@ async function forwardCollectInBackground(
  * the upstream response through unbuffered — status, headers, and body,
  * preserving `text/event-stream` framing. Client disconnect tears down the
  * upstream leg.
+ *
+ * @param routeClass the matched route's stamp (`classification.stamp`), used
+ *   ONLY to key the throttled relay-failure log (Task 2, E-4 W2) — never a
+ *   dispatch input.
  */
 async function forwardAndRelay(
   req: http.IncomingMessage,
@@ -906,6 +952,7 @@ async function forwardAndRelay(
   mcpId: JsonRpcId,
   bufferedBody: Buffer | null,
   d: HostProxyDeps,
+  routeClass: RouteStamp,
 ): Promise<void> {
   const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const headers = buildForwardHeaders(req, target, `${overlayHost}:${port}`, bufferedBody ? bufferedBody.length : null);
@@ -941,20 +988,35 @@ async function forwardAndRelay(
 
       // Version mismatch surfaced at runtime: log loudly once per host, then
       // pass the host's 409 through to the caller (routing-layer §5.3).
-      if (proxyRes.statusCode === 409 && proxyRes.headers[HOST_PROTOCOL_HEADER] !== undefined) {
+      const isVersionMismatch409 = proxyRes.statusCode === 409 && proxyRes.headers[HOST_PROTOCOL_HEADER] !== undefined;
+      if (isVersionMismatch409) {
         logVersionMismatchOnce(d.logger, target, Number(proxyRes.headers[HOST_PROTOCOL_HEADER]) || undefined);
       }
       // Host rejected the bearer: a member-actionable "re-join the host" error,
       // not a verbatim relay (the caller must not learn the host bearer shape).
+      // Still logged (throttled) — an upstream failure the operator needs
+      // visibility into even though the body itself is never relayed
+      // (Task 2, E-4 W2).
       if (proxyRes.statusCode === 401) {
         proxyRes.resume();
+        logRelayFailureOnce(d.logger, target, routeClass, 401, pathname);
         respondHostAuthRejected(res, target, isMcp, mcpId);
         finish();
         return;
       }
 
       if (res.headersSent) { proxyRes.resume(); finish(); return; }
-      res.writeHead(proxyRes.statusCode ?? 502, filterResponseHeaders(proxyRes.headers));
+      const upstreamStatus = proxyRes.statusCode ?? 502;
+      // Every OTHER upstream failure is relayed byte-for-byte to the caller
+      // (never synthesized) — log it once per throttle window so a
+      // persistently-refused route is diagnosable without turning a
+      // member's retry loop into a log storm (Task 2, E-4 W2). The 409
+      // protocol-mismatch case is already logged above via
+      // logVersionMismatchOnce; never double-log it here.
+      if (upstreamStatus >= 400 && !isVersionMismatch409) {
+        logRelayFailureOnce(d.logger, target, routeClass, upstreamStatus, pathname);
+      }
+      res.writeHead(upstreamStatus, filterResponseHeaders(proxyRes.headers));
 
       // Body/idle bound. `/mcp` may stream a long tool result, so it gets an
       // idle-read timeout (reset on each chunk) rather than a fixed body cap.

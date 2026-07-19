@@ -8,6 +8,8 @@ import {
   DialogTitle,
 } from '../ui/dialog';
 import { useCanopyInjectionBlob } from '../../hooks/use-canopy';
+import { hostedDegradedInfo } from '../../lib/degrade';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
 import type { ActivityRow } from '../../hooks/use-sessions';
 import { cn } from '../../lib/cn';
 
@@ -50,6 +52,16 @@ function BlobPanel({ sessionId, toolCallId }: { sessionId: string; toolCallId: n
         <div className="h-3 w-1/2 animate-pulse rounded bg-surface-container-high" />
       </div>
     );
+  }
+
+  const hostedDegraded = hostedDegradedInfo(error);
+  if (hostedDegraded) {
+    // Canopy is unavailable for hosted (attached) projects — the blob route 409s
+    // capability_unavailable_hosted. Render the uniform inline state rather than
+    // the raw refusal message. (The indicator itself is normally absent on hosted
+    // projects — no Read row carries a canopy_injection_tokens value — so this is
+    // a defense-in-depth path.)
+    return <HostedUnavailable info={hostedDegraded} variant="inline" />;
   }
 
   if (isError || data == null) {

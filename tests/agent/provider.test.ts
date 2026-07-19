@@ -109,19 +109,47 @@ describe('getProviderEnvVars', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildPhaseEnv', () => {
-  it('returns undefined when no provider is given (SDK uses process.env)', () => {
+  it('returns a process.env snapshot when no provider is given (no overrides)', () => {
     const result = buildPhaseEnv();
-    expect(result).toBeUndefined();
+    // A snapshot, never undefined — the SDK receives a frozen env, not the
+    // live process.env resolved lazily at query() time.
+    expect(result).toBeDefined();
+    expect(result['PATH']).toBe(process.env['PATH']);
+    // No provider means no overrides layered on top of the snapshot.
+    expect(result[ENV_ANTHROPIC_BASE_URL]).toBe(process.env[ENV_ANTHROPIC_BASE_URL]);
   });
 
-  it('returns undefined when provider is undefined', () => {
+  it('returns a process.env snapshot when provider is undefined', () => {
     const result = buildPhaseEnv(undefined);
-    expect(result).toBeUndefined();
+    expect(result).toBeDefined();
+    expect(result['PATH']).toBe(process.env['PATH']);
   });
 
-  it('anthropic provider returns undefined (no overrides needed)', () => {
+  it('anthropic provider returns a bare snapshot (no overrides needed)', () => {
     const result = buildPhaseEnv({ type: 'anthropic' });
-    expect(result).toBeUndefined();
+    expect(result).toBeDefined();
+    expect(result['PATH']).toBe(process.env['PATH']);
+    // anthropic layers no overrides — the snapshot's ANTHROPIC_BASE_URL is
+    // whatever process.env held, not a provider-injected value.
+    expect(result[ENV_ANTHROPIC_BASE_URL]).toBe(process.env[ENV_ANTHROPIC_BASE_URL]);
+  });
+
+  it('captures a frozen snapshot — a process.env mutation AFTER the call never leaks into the returned env', () => {
+    const sentinel = 'MYCO_PHASE_ENV_SNAPSHOT_SENTINEL';
+    // Prove isolation for BOTH a cloud (bare-snapshot) and a local
+    // (snapshot+overrides) provider: the returned object is a point-in-time
+    // copy, so a later mutation of the live process.env cannot appear in it.
+    const cloud = buildPhaseEnv({ type: 'anthropic' });
+    const local = buildPhaseEnv({ type: 'ollama' });
+    expect(cloud[sentinel]).toBeUndefined();
+    expect(local[sentinel]).toBeUndefined();
+    process.env[sentinel] = 'mutated-after-snapshot';
+    try {
+      expect(cloud[sentinel]).toBeUndefined();
+      expect(local[sentinel]).toBeUndefined();
+    } finally {
+      delete process.env[sentinel];
+    }
   });
 
   it('ollama provider overrides ANTHROPIC env vars', () => {

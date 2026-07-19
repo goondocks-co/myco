@@ -33,6 +33,7 @@ import {
   createHostMembershipJoinHandler,
   createHostMembershipLeaveHandler,
   createHostMembershipStatusHandler,
+  registerHostMembershipRoutes,
 } from '@myco/daemon/api/host-membership.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 
@@ -644,5 +645,99 @@ describe('GET /api/host-membership/health', () => {
     expect(callCount).toBe(1);
     expect((res1.body as { hosts: { reachable: boolean | null }[] }).hosts[0]!.reachable).toBe(true);
     expect((res2.body as { hosts: { reachable: boolean | null }[] }).hosts[0]!.reachable).toBe(true);
+  });
+
+  test('evictHost clears both the cache AND an in-flight probe entry for that host only', async () => {
+    const hostA = makeHost({ host_id: 'host_a', proxy_port: 1 });
+    const hostB = makeHost({ host_id: 'host_b', proxy_port: 1 });
+    let callCount = 0;
+    const handler = createHostMembershipHealthHandler({
+      readRegistry: () => [hostA, hostB],
+      checkReachable: async () => { callCount += 1; return true; },
+    });
+
+    await handler(req({}));
+    expect(callCount).toBe(2);
+
+    // Still within the TTL — a second call would normally short-circuit both
+    // hosts to their cached result with zero new probes.
+    handler.evictHost('host_a');
+    await handler(req({}));
+    // host_a was evicted (re-probed); host_b's cache entry is untouched.
+    expect(callCount).toBe(3);
+  });
+
+  test('evictHost is a no-op for a host with nothing cached', () => {
+    const handler = createHostMembershipHealthHandler({ readRegistry: () => [] });
+    expect(() => handler.evictHost('host_never_probed')).not.toThrow();
+  });
+});
+
+describe('Health cache eviction on leave (family c, E-4 W2 Task 7)', () => {
+  test('createHostMembershipLeaveHandler evicts the health cache for the left host via evictHealthCache', async () => {
+    const evicted: string[] = [];
+    const handler = createHostMembershipLeaveHandler({
+      leave: async () => ({ removed: true, tailscaledRemoved: true, notes: [] }),
+      evictHealthCache: (hostId) => { evicted.push(hostId); },
+    });
+
+    await handler(req({ host_ref: 'host_abc' }));
+    expect(evicted).toEqual(['host_abc']);
+  });
+
+  test('a failed leave does NOT evict the health cache', async () => {
+    const evicted: string[] = [];
+    const handler = createHostMembershipLeaveHandler({
+      leave: async () => { throw new Error('unreachable'); },
+      evictHealthCache: (hostId) => { evicted.push(hostId); },
+    });
+
+    const res = await handler(req({ host_ref: 'host_abc' }));
+    expect(res.status).toBe(400);
+    expect(evicted).toEqual([]);
+  });
+
+  test('with no evictHealthCache wired (a bare createHostMembershipLeaveHandler), leave is a no-op on the cache — never throws', async () => {
+    const handler = createHostMembershipLeaveHandler({
+      leave: async () => ({ removed: true, tailscaledRemoved: true, notes: [] }),
+    });
+    const res = await handler(req({ host_ref: 'host_abc' }));
+    expect(res.status).toBe(200);
+  });
+
+  test('registerHostMembershipRoutes wires the SAME health-handler instance into leave — end to end: health → leave → re-probed; other hosts keep their TTL', async () => {
+    const hostA = makeHost({ host_id: 'host_a', proxy_port: 1 });
+    const hostB = makeHost({ host_id: 'host_b', proxy_port: 1 });
+    let callCount = 0;
+    const routes = new Map<string, (req: RouteRequest) => Promise<unknown>>();
+    const registrar = {
+      registerRoute(method: string, routePath: string, routeHandler: (req: RouteRequest) => Promise<unknown>) {
+        routes.set(`${method} ${routePath}`, routeHandler);
+      },
+    };
+
+    registerHostMembershipRoutes(registrar, {
+      readRegistry: () => [hostA, hostB],
+      checkReachable: async () => { callCount += 1; return true; },
+      leave: async (hostRef) => ({ removed: true, tailscaledRemoved: true, notes: [`left ${hostRef}`] }),
+    });
+
+    const health = routes.get('GET /api/host-membership/health')!;
+    const leave = routes.get('POST /api/host-membership/leave')!;
+
+    await health(req({}));
+    expect(callCount).toBe(2);
+
+    // Still within the TTL: a bare re-probe would short-circuit BOTH hosts.
+    await health(req({}));
+    expect(callCount).toBe(2);
+
+    await leave(req({ host_ref: 'host_a' }));
+
+    // host_a's cache/inflight entries were evicted by the shared handler ->
+    // re-probed; host_b's TTL entry survives untouched (still 1 new call,
+    // not 2).
+    await health(req({}));
+    expect(callCount).toBe(3);
   });
 });

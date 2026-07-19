@@ -13,6 +13,7 @@ import {
   ForeignGroveError,
   REQUEST_CONTEXT_AUTH_ENV,
   REQUEST_CONTEXT_AUTH_HEADER,
+  REQUEST_CONTEXT_HEADERS,
   UnauthorizedRequestContextError,
   UnknownRequestContextError,
   enforceUrlTenancyAuth,
@@ -23,6 +24,7 @@ import {
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
 import { classifyRoute, overlayHostStampRefusal, refusalJson, type RefusalPayload } from '../host/routing.js';
+import { maybeRegisterHostedProjectOnIngest } from '../host/hosted-projects.js';
 import { defaultDial, handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from './host-proxy.js';
 import { handleAttachedConfigRequest } from './attached-config.js';
 import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
@@ -40,7 +42,8 @@ import {
   type HostServeRuntime,
 } from './host-serve.js';
 import { appendHostAction } from '../host/action-log.js';
-import { HOST_ENROLL_ROUTE } from '../constants.js';
+import { HOST_ENROLL_ROUTE, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '../constants.js';
+import { shouldLogOncePerInterval } from './log-throttle.js';
 import { type DaemonState } from './service-state.js';
 import {
   DaemonStateAuthority,
@@ -698,6 +701,14 @@ export class DaemonServer {
             this.writeRefusal(res, overlayRefusal, versionHeader);
             return;
           }
+          // Team Host registration-on-ingest (E-4 W2 T1a): a served project
+          // becomes real on its first FORWARDED capture — the host-side mirror
+          // of the local hook's ensureProjectRegistered. Runs PRE-resolution so
+          // the very collect request that triggers it then resolves against the
+          // freshly-written registry row (the served-grove filter and normal
+          // resolution below are unchanged). Gated inside the helper; a gate
+          // miss is byte-identical to today.
+          this.registerHostedProjectOnIngest(req.method!, match.pathname, req.headers);
         }
 
         // Team Host member-side chokepoint: an attached project is served by a
@@ -784,6 +795,22 @@ export class DaemonServer {
             // null-hostServe branch, never serve unauthenticated.
             : { status: 503, body: { error: 'host_serve_unavailable' } };
           if (groveRefusal) {
+            // Logged (throttled) — chokepoint 1 of 2 (see mcp/http.ts for
+            // chokepoint 2). T1's C2 fix removed the biggest legitimate
+            // source of null-grove refusals, so a remaining one is genuinely
+            // anomalous and worth an operator's attention; throttled for the
+            // same capture-drain-retry reason as the unknown-tenancy warn
+            // above (Task 2, E-4 W2).
+            const resolvedGroveId = requestContext.groveId;
+            const servedGroveId = this.hostServe?.servedGroveId ?? null;
+            const throttleKey = `served_grove:${pathname}:${resolvedGroveId ?? ''}:${servedGroveId ?? ''}`;
+            if (shouldLogOncePerInterval(throttleKey, REFUSAL_LOG_THROTTLE_INTERVAL_MS)) {
+              this.logger.warn(LOG_KINDS.HOST_SERVE_REFUSAL, 'Refused overlay request outside the served Grove', {
+                path: pathname,
+                resolved_grove_id: resolvedGroveId,
+                served_grove_id: servedGroveId,
+              });
+            }
             this.writeOverlayRefusal(res, groveRefusal.status, groveRefusal.body, versionHeader, groveRefusal.headers);
             return;
           }
@@ -845,6 +872,27 @@ export class DaemonServer {
         if (error instanceof UnknownRequestContextError) {
           // Stale/guessed Grove or project id (e.g. in a resource URL): the
           // requested tenancy doesn't exist. 404, not a 500 server error.
+          //
+          // Logged (throttled) ONLY over the overlay: a loopback caller's
+          // hook/dashboard sees this 404 body directly, but a member's proxy
+          // relay hides it from the operator entirely — this warn is the
+          // only host-side trace of a member naming Grove/project tenancy
+          // this host has never heard of. Throttled because a member's
+          // capture-drain retry reissues the identical refused request every
+          // daemon tick; an unthrottled warn here would be a log storm, not
+          // observability (Task 2, E-4 W2).
+          if (isOverlayRequest(req)) {
+            const groveHeaderValue = firstHeaderValue(req.headers[REQUEST_CONTEXT_HEADERS.groveId]);
+            const projectHeaderValue = firstHeaderValue(req.headers[REQUEST_CONTEXT_HEADERS.projectId]);
+            const throttleKey = `unknown_tenancy:${groveHeaderValue ?? ''}:${projectHeaderValue ?? ''}:${pathname}`;
+            if (shouldLogOncePerInterval(throttleKey, REFUSAL_LOG_THROTTLE_INTERVAL_MS)) {
+              this.logger.warn(LOG_KINDS.HOST_SERVE_REFUSAL, 'Refused overlay request for unknown tenancy', {
+                path: req.url,
+                grove_header: groveHeaderValue ?? null,
+                project_header: projectHeaderValue ?? null,
+              });
+            }
+          }
           res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
           res.end(JSON.stringify({ error: 'unknown_tenancy', message: error.message }));
           return;
@@ -1092,6 +1140,39 @@ export class DaemonServer {
     const { status, body } = refusalJson(payload);
     res.writeHead(status, { 'Content-Type': 'application/json', ...versionHeader });
     res.end(JSON.stringify(body));
+  }
+
+  /**
+   * Team Host registration-on-ingest seam (E-4 W2 T1a). Called for every
+   * overlay collect route BEFORE resolution; the gate lives in
+   * `maybeRegisterHostedProjectOnIngest`. Emits the one structured line on a
+   * fresh registration (project id, grove, route), and a warn on a registration
+   * that threw (self-heals on the next forwarded capture — resolution just 404s
+   * meanwhile, exactly as today). Never throws into dispatch.
+   */
+  private registerHostedProjectOnIngest(
+    method: string,
+    pathname: string,
+    headers: http.IncomingMessage['headers'],
+  ): void {
+    const outcome = maybeRegisterHostedProjectOnIngest({
+      method,
+      pathname,
+      headers,
+      servedGroveId: this.hostServe?.servedGroveId ?? null,
+    });
+    if (outcome.registered) {
+      this.logger.info(LOG_KINDS.HOSTED_PROJECT_REGISTER, 'Registered hosted project on first forwarded capture', {
+        project_id: outcome.projectId,
+        grove_id: outcome.groveId,
+        route: `${method} ${pathname}`,
+      });
+    } else if (outcome.error) {
+      this.logger.warn(LOG_KINDS.HOSTED_PROJECT_REGISTER, 'Hosted project registration-on-ingest failed', {
+        route: `${method} ${pathname}`,
+        error: outcome.error,
+      });
+    }
   }
 
   private databaseForRequestContext(context: MycoRequestContext): Database | null {
@@ -1413,6 +1494,18 @@ function isLoopbackOrigin(origin: string, port: number): boolean {
 // member's proxy sends `<overlay_ip>:<port>`). A bare-IP Host is also accepted.
 function isOverlayHost(host: string, overlayAddress: string, port: number): boolean {
   return host === `${overlayAddress}:${String(port)}` || host === overlayAddress;
+}
+
+/** First value of a possibly-repeated header, trimmed; `undefined` when
+ *  absent or blank. Used by the refusal-observability log sites (Task 2,
+ *  E-4 W2) to read the raw `x-myco-grove-id`/`x-myco-project-id` headers a
+ *  caller sent — resolution already failed by the time these log, so there
+ *  is no resolved `MycoRequestContext` to read the values from instead. */
+function firstHeaderValue(header: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(header) ? header[0] : header;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /**

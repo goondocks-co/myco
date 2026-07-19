@@ -36,6 +36,7 @@ import { readSecrets } from '../../config/secrets.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../../constants.js';
 import { resolveMycoHome } from '../../grove/paths.js';
 import { loadGroveRecord } from '../../grove/registry.js';
+import { countHostedProjects } from '../../host/hosted-projects.js';
 import {
   resolveExternalMcpCoherence,
   resolveServedGroveBackupHealth,
@@ -74,6 +75,10 @@ interface HostServeStatusBody {
   serving: true;
   served_grove_id: string | null;
   served_grove_name: string | null;
+  /** Registered rows under the served Grove's `hosted/` synthetic-root namespace
+   *  — the member-attached projects this host has admitted via registration-on-
+   *  ingest (E-4 W2 T1). Zero when undesignated/dangling (no served grove). */
+  hosted_project_count: number;
   overlay_address: string;
   host_id: string | null;
   label: string | null;
@@ -129,6 +134,7 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
       serving: true,
       served_grove_id: servedGroveId,
       served_grove_name: servedGroveName,
+      hosted_project_count: servedGroveId ? countHostedProjects(servedGroveId, mycoHome) : 0,
       overlay_address: runtime.overlayAddress,
       host_id: runtime.hostId ?? null,
       label: runtime.label ?? null,

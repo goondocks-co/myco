@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
+import { hostedDegradedInfo } from '../lib/degrade';
 import { useProjectScopedQueryKey } from './use-project-selection';
 import { usePowerQuery } from './use-power-query';
 
@@ -163,7 +164,13 @@ export function useSessionCanopy(sessionId: string | undefined) {
     enabled: sessionId !== undefined,
     staleTime: SESSION_CANOPY_STALE_TIME,
     // Don't retry 404s — they're a "no data" answer, not a transient failure.
+    // Canopy is `degrade`-stamped for attached (hosted) projects: the route 409s
+    // capability_unavailable_hosted, which `fetchJsonOrNullOn404` does NOT swallow
+    // (only 404), so it surfaces as a query error. Never retry that refusal — the
+    // tile renders HostedUnavailable instead of retry-storming a capability that's
+    // off for this project.
     retry: (failureCount, err) => {
+      if (hostedDegradedInfo(err)) return false;
       if (err instanceof ApiError && err.status === 404) return false;
       return failureCount < 2;
     },
@@ -178,7 +185,9 @@ export function useCanopyRollup() {
     queryFn: ({ signal }) =>
       fetchJsonOrNullOn404<CanopyRollup>('/canopy/rollup', signal),
     staleTime: ROLLUP_STALE_TIME,
+    // Same degrade-stamped-409 guard as the other Canopy reads (see useSessionCanopy).
     retry: (failureCount, err) => {
+      if (hostedDegradedInfo(err)) return false;
       if (err instanceof ApiError && err.status === 404) return false;
       return failureCount < 2;
     },
@@ -279,7 +288,14 @@ export function useCanopyEntries(args: CanopyEntriesQuery) {
       fetchJson<CanopyEntriesListResponse>(`/canopy/entries${buildEntriesQueryString(args)}`, { signal }),
     staleTime: ENTRIES_STALE_TIME,
     pollCategory: 'standard',
-    refetchInterval: POLL_INTERVALS.CANOPY_ENTRIES,
+    // Canopy is `degrade`-stamped for attached (hosted) projects — the list 409s
+    // capability_unavailable_hosted. Both knobs key off the SAME uniform detector
+    // (`hostedDegradedInfo`, the use-git-identity.ts pattern): never retry the
+    // refusal, and stop polling once it's been seen (the Dashboard/Cortex surfaces
+    // degrade to their empty/HostedUnavailable state) so we don't 409-storm.
+    refetchInterval: (query) =>
+      hostedDegradedInfo(query.state.error) ? false : POLL_INTERVALS.CANOPY_ENTRIES,
+    retry: (failureCount, err) => (hostedDegradedInfo(err) ? false : failureCount < 3),
   });
 }
 
@@ -296,7 +312,9 @@ export function useCanopyEntry(path: string | undefined) {
       fetchJsonOrNullOn404<CanopyEntryRow>(`/canopy/entries/${encodeURIComponent(path ?? '')}`, signal),
     enabled: typeof path === 'string' && path.length > 0,
     staleTime: ENTRIES_STALE_TIME,
+    // Same degrade-stamped-409 guard as the other Canopy reads (see useSessionCanopy).
     retry: (failureCount, err) => {
+      if (hostedDegradedInfo(err)) return false;
       if (err instanceof ApiError && err.status === 404) return false;
       return failureCount < 2;
     },
@@ -373,6 +391,10 @@ export function useCanopyMap() {
     queryKey,
     queryFn: ({ signal }) => fetchJson<CanopyMapResponse>('/canopy/map', { signal }),
     staleTime: MAP_STALE_TIME,
+    // Same degrade-stamped-409 guard as the other Canopy reads (see useSessionCanopy).
+    // The 409 surfaces as a query error here (fetchJson, no 404 tolerance); the
+    // CanopyMapPanel renders HostedUnavailable instead of "Failed to load Canopy Map".
+    retry: (failureCount, err) => (hostedDegradedInfo(err) ? false : failureCount < 3),
   });
 }
 
@@ -431,7 +453,9 @@ export function useCanopyInjectionBlob(
       ),
     enabled: sessionId !== undefined && toolCallId !== undefined,
     staleTime: BLOB_STALE_TIME,
+    // Same degrade-stamped-409 guard as the other Canopy reads (see useSessionCanopy).
     retry: (failureCount, err) => {
+      if (hostedDegradedInfo(err)) return false;
       if (err instanceof ApiError && err.status === 404) return false;
       return failureCount < 2;
     },

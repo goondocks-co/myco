@@ -7,6 +7,8 @@ import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useCanopyMap, useRegenerateCanopyMap } from '../../hooks/use-canopy';
+import { hostedDegradedInfo } from '../../lib/degrade';
+import { HostedUnavailable } from '../ui/hosted-unavailable';
 import { formatEpochAbsolute } from '../../lib/format';
 
 /**
@@ -218,6 +220,11 @@ export function CanopyMapPanel() {
             <div className="h-4 w-2/3 animate-pulse rounded bg-surface-container-high" />
           </div>
         </Surface>
+      ) : hostedDegradedInfo(mapQuery.error) ? (
+        // Canopy is unavailable for hosted (attached) projects — the route 409s
+        // capability_unavailable_hosted. Render the uniform panel state instead
+        // of "Failed to load Canopy Map".
+        <HostedUnavailable info={hostedDegradedInfo(mapQuery.error)!} variant="panel" />
       ) : mapQuery.isError ? (
         <Surface level="low" className="rounded-lg border border-tertiary/20 p-6">
           <div
