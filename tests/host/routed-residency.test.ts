@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
@@ -69,6 +70,17 @@ describe('residency route classification', () => {
     expect(rule).toBeDefined();
     expect(rule!.stamp).toBe('collect');
     expect(matchRouteRule('POST', ROUTED_RESIDENCY_ROWS_PATH)).toBe(rule!);
+  });
+
+  test('the daemon mounts the residency handler at ROUTED_RESIDENCY_ROWS_PATH', () => {
+    // The ROUTE_RULES entry + drift guard pin the stamp and the literal==constant;
+    // this pins that a handler is ACTUALLY registered at the constant (a stale rule
+    // with no live route would otherwise pass every check above but never serve).
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const mainSrc = fs.readFileSync(path.join(repoRoot, 'packages', 'myco', 'src', 'daemon', 'main.ts'), 'utf8');
+    const match = mainSrc.match(/\.registerRoute\(\s*'POST'\s*,\s*'([^']+)'\s*,\s*createRoutedResidencyHandler/);
+    expect(match, 'no registerRoute(POST, <path>, createRoutedResidencyHandler(...)) found in daemon/main.ts').not.toBeNull();
+    expect(match![1]).toBe(ROUTED_RESIDENCY_ROWS_PATH);
   });
 
   test('the apply matrix covers exactly the allow-list', () => {
