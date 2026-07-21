@@ -24,6 +24,7 @@ import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { createGrove } from '@myco/grove/registry.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import { codedMembershipError } from '@myco/host/membership-error.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { upsertHost, type HostRecord } from '@myco/host/registry.js';
 import {
   classifyHostProtocolSkew,
@@ -519,10 +520,11 @@ describe('classifyHostProtocolSkew', () => {
   test('within [HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION] → none', () => {
     expect(classifyHostProtocolSkew(1)).toBe('none');
     expect(classifyHostProtocolSkew(2)).toBe('none');
+    expect(classifyHostProtocolSkew(HOST_PROTOCOL_VERSION)).toBe('none');
   });
 
   test('above HOST_PROTOCOL_VERSION → host_newer (this member needs myco update)', () => {
-    expect(classifyHostProtocolSkew(3)).toBe('host_newer');
+    expect(classifyHostProtocolSkew(HOST_PROTOCOL_VERSION + 1)).toBe('host_newer');
   });
 
   test('below HOST_MIN_COMPAT_VERSION → host_older (that host needs myco update)', () => {
@@ -566,7 +568,7 @@ describe('GET /api/host-membership/health', () => {
   test('probes every joined host concurrently and reports protocol_skew + checked_at', async () => {
     const seen: { address: string; port: number }[] = [];
     const hostReachable = makeHost({ overlay_address: '100.64.0.1:7433', proxy_port: 1, protocol_version: 1 });
-    const hostUnreachable = makeHost({ overlay_address: '100.64.0.2:7433', proxy_port: 2, protocol_version: 3 });
+    const hostUnreachable = makeHost({ overlay_address: '100.64.0.2:7433', proxy_port: 2, protocol_version: HOST_PROTOCOL_VERSION + 1 });
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [hostReachable, hostUnreachable],
       checkReachable: async (address, port) => {
