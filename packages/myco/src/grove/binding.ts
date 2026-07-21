@@ -16,6 +16,7 @@ import {
   type ResolvedRegisteredProject,
 } from './registry.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
+import { residencyTransitionInFlight } from '../host/residency-journal.js';
 
 /**
  * Single source of truth for a project's Grove binding state.
@@ -199,7 +200,14 @@ function resolveAfterRepair(
   }
 
   // Repair 2: manifest + marker exist, registry row missing → re-register.
-  if (nextManifest?.grove?.binding_id && marker && !nextRegistered) {
+  // Suppressed while a residency transition is in flight: the missing registry
+  // row is the DELIBERATE parked state of a project mid-move to a host, so
+  // re-minting it here would re-materialize the local Grove state the transition
+  // just tore down (the never-materialize invariant's leak shape).
+  if (
+    nextManifest?.grove?.binding_id && marker && !nextRegistered
+    && !residencyTransitionInFlight(marker.project_id)
+  ) {
     registerProjectInGrove(marker.grove_id, {
       projectId: marker.project_id,
       projectName: marker.project_name,

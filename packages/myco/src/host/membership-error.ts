@@ -55,7 +55,17 @@ export type MembershipErrorCode =
    *  written. Distinct Grove concept from `attach_grove_mismatch` above:
    *  that one is about the host's served (hosted) Grove, this one is about
    *  the member's own local Grove — display-only, chosen at attach time. */
-  | 'unknown_local_grove';
+  | 'unknown_local_grove'
+  /** Attach or detach was refused because a residency transition (Phase F) is
+   *  already in flight for this project — a journal exists under the team home.
+   *  Surfaced by `attachCommand`/`detachCommand`; the running transition (or a
+   *  `residency abort`) resolves it, a second start does not. */
+  | 'residency_transition_in_flight'
+  /** A with-history attach cannot proceed because the joined host predates the
+   *  residency protocol (its recorded protocol version is below the minimum
+   *  the row push requires). Surfaced by the residency transition — nothing has
+   *  moved yet; update the host, then retry. */
+  | 'residency_requires_host_update';
 
 /** Build an Error carrying a stable membership code alongside its
  *  (CLI-voiced) message. The message still prints verbatim in terminals;
