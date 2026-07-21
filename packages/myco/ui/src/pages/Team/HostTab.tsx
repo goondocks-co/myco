@@ -410,23 +410,19 @@ function HostCard({
 }
 
 // ---------------------------------------------------------------------------
-// Attach a project — going-forward only (attach-command.ts): the checkout
-// must have NO local Grove data yet, so this deliberately does NOT offer a
-// picker built from `/api/groves` (every project it lists already has local
-// Grove state and would be refused with `ProjectRegisteredLocallyError`).
-// The operator types the checkout path directly, exactly like `myco attach
-// <project>` — same "typed, honestly unverified" posture as the join form's
-// host id. There is no picker for the HOST's served Grove: a host serves
-// exactly one designated Grove and self-reports it at join, so attach
-// sources it from the joined host record — the operator never supplies one.
+// Attach a project — the operator types the checkout path directly, exactly
+// like `myco attach <project>` (same "typed, honestly unverified" posture as
+// the join form's host id). A checkout with existing local history is NOT
+// refused: attaching migrates that history to the host (Phase F, D-F-1), while
+// a fresh checkout simply starts flowing from now on. There is no picker for
+// the HOST's served Grove — a host serves exactly one designated Grove and
+// self-reports it at join, so attach sources it from the joined host record and
+// the operator never supplies one.
 //
-// The "Show under" picker below IS built from `/api/groves` — but it is a
-// DIFFERENT Grove concept (E-4 local-view requirement, decision-ef693c71
-// D1): the member's OWN local Grove the newly-attached project displays
-// under in this machine's UI, sent as `local_grove_id`. That is orthogonal
-// to the "no picker" reasoning above, which is about the project being
-// attached and the host's served Grove — not about where the member chooses
-// to file the result locally.
+// The "Show under" picker below IS built from `/api/groves` — a DIFFERENT Grove
+// concept (E-4 local-view requirement, decision-ef693c71 D1): the member's OWN
+// local Grove the newly-attached project displays under in this machine's UI,
+// sent as `local_grove_id`.
 // ---------------------------------------------------------------------------
 
 function AttachProjectPanel({
@@ -484,9 +480,9 @@ function AttachProjectPanel({
   return (
     <Panel tone="sage" eyebrow={<IconEyebrow Icon={Link2}>Attach</IconEyebrow>} title="Route a project through a Team Host">
       <p className="text-xs text-on-surface-variant m-0 mb-3">
-        Attach a checkout that hasn't been used with Myco yet — going forward only, so a project that already has
-        local history is refused (migrate it off its local storage first). The path below isn't verified here.
-        The host's team storage is used automatically — nothing to supply for it.
+        Connect a checkout to the team. A project with local history moves that history to the team host
+        (Myco saves a local backup first); a fresh checkout simply starts flowing from now on. The path below
+        isn't verified here. The host's team storage is used automatically — nothing to supply for it.
       </p>
       <div className="flex flex-col gap-2">
         <label className={labelClass} htmlFor="host-attach-project">Project path</label>

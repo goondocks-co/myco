@@ -429,9 +429,9 @@ describe('AttachProjectPanel', () => {
     };
     renderHostTab();
 
-    // Attach is going-forward only (attach-command.ts): any project already
-    // visible via /api/groves has local Grove state and would be refused, so
-    // the field is a free-text path, not a picker built from that list.
+    // Attach takes a typed checkout path (like `myco attach <project>`), not a
+    // picker built from /api/groves — a project with local history is migrated
+    // to the host on attach (Phase F), so this is a path field, not a list.
     const submit = screen.getByRole('button', { name: /attach project/i });
     expect(submit).toBeDisabled();
 
@@ -530,7 +530,9 @@ describe('Residency round trip', () => {
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_abc' } });
     fireEvent.click(screen.getByRole('button', { name: /attach project/i }));
 
-    expect(screen.getByText(/Myco saves a local backup first/)).toBeInTheDocument();
+    // Assert on a phrase unique to the confirm dialog — the card's own intro
+    // paragraph now shares the "local backup" wording with it by design.
+    expect(screen.getByText(/earlier sessions carry their knowledge summaries/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(attachMutateAsync).not.toHaveBeenCalled();
   });
