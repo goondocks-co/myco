@@ -57,12 +57,12 @@ describe('migrateV43ToV44 — phantom recovered cleanup + activity_count repair'
     ).run(now, now);
 
     // 1. A normal INITIAL batch from a turn that completed.
-    const realBatch = seed.prepare(
-      `INSERT INTO prompt_batches (session_id, prompt_number, user_prompt,
+    const realBatchId = `pbat_${'1'.repeat(32)}`;
+    seed.prepare(
+      `INSERT INTO prompt_batches (id, session_id, prompt_number, user_prompt,
                                     started_at, ended_at, created_at, kind, status, machine_id, origin)
-       VALUES ('sess-fix', 1, 'real turn prompt', ?, ?, ?, 'initial', 'completed', 'local', 'system')`,
-    ).run(now, now + 60, now);
-    const realBatchId = Number(realBatch.lastInsertRowid);
+       VALUES (?, 'sess-fix', 1, 'real turn prompt', ?, ?, ?, 'initial', 'completed', 'local', 'system')`,
+    ).run(realBatchId, now, now + 60, now);
 
     // Three tool_use activities on the real batch — but activity_count
     // intentionally left at 0 to simulate the drift bug.
@@ -76,12 +76,12 @@ describe('migrateV43ToV44 — phantom recovered cleanup + activity_count repair'
 
     // 2. A phantom RECOVERED batch from PR #346's ensureOpenBatch fallback,
     //    holding a single synthetic subagent_stop activity.
-    const phantomBatch = seed.prepare(
-      `INSERT INTO prompt_batches (session_id, prompt_number, user_prompt,
+    const phantomBatchId = `pbat_${'2'.repeat(32)}`;
+    seed.prepare(
+      `INSERT INTO prompt_batches (id, session_id, prompt_number, user_prompt,
                                     started_at, ended_at, created_at, kind, status, machine_id, origin)
-       VALUES ('sess-fix', 0, '(implicit batch — capture recovered)', ?, ?, ?, 'recovered', 'completed', 'local', 'system')`,
-    ).run(now + 70, now + 72, now + 70);
-    const phantomBatchId = Number(phantomBatch.lastInsertRowid);
+       VALUES (?, 'sess-fix', 0, '(implicit batch — capture recovered)', ?, ?, ?, 'recovered', 'completed', 'local', 'system')`,
+    ).run(phantomBatchId, now + 70, now + 72, now + 70);
     seed.prepare(
       `INSERT INTO activities (session_id, prompt_batch_id, tool_name, tool_input, timestamp, created_at)
        VALUES ('sess-fix', ?, 'subagent_stop', '{"agent_id":"a3c68fc","agent_type":""}', ?, ?)`,
@@ -90,10 +90,10 @@ describe('migrateV43ToV44 — phantom recovered cleanup + activity_count repair'
     // 3. A pre-#346 recovery batch (legitimate orphan backfill). Body
     //    differs — must survive the migration.
     seed.prepare(
-      `INSERT INTO prompt_batches (session_id, prompt_number, user_prompt,
+      `INSERT INTO prompt_batches (id, session_id, prompt_number, user_prompt,
                                     started_at, ended_at, created_at, kind, status, machine_id, origin)
-       VALUES ('sess-fix', 0, '(recovered — pre-invariant orphans)', ?, ?, ?, 'recovered', 'completed', 'local', 'system')`,
-    ).run(now - 100, now - 90, now - 100);
+       VALUES (?, 'sess-fix', 0, '(recovered — pre-invariant orphans)', ?, ?, ?, 'recovered', 'completed', 'local', 'system')`,
+    ).run(`pbat_${'3'.repeat(32)}`, now - 100, now - 90, now - 100);
 
     seed.close();
   }
