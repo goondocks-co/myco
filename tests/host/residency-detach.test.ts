@@ -45,6 +45,7 @@ import {
   type ResolveResidencyTarget,
 } from '@myco/host/residency-drain.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
+import { applyResidencyRows } from '@myco/db/queries/residency-apply.js';
 
 let home: string;
 let teamHome: string;
@@ -337,6 +338,29 @@ describe('detach drain — crash-resume + freshness', () => {
     expect(fs.existsSync(path.join(resolveProjectBufferDir(local.id, projectId, home), 'sess_orphan.jsonl'))).toBe(true);
     expect(readResidencyJournal(projectId)).toBeNull();
     expect(countResidencyInFlight()).toBe(0);
+  });
+
+  test('integration: the real shared apply engine lands pulled rows into the local Grove (production seam)', async () => {
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    upsertHost(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachRef(host, projectId, root, local.id);
+    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
+
+    const { transport } = pagingPull([[{
+      table: 'spores',
+      row: { id: 'sp_new', project_id: projectId, agent_id: 'user', observation_type: 'note', content: 'from-host', created_at: 1, updated_at: 1, machine_id: 'local' },
+    }]]);
+
+    // The exact production wiring from main.ts — the real engine, one transaction.
+    const applyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[]) => { applyResidencyRows(db, table, rows, {}); };
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows });
+
+    const landed = getDatabase().prepare(`SELECT content FROM spores WHERE id = 'sp_new'`).get() as { content: string } | undefined;
+    expect(landed?.content).toBe('from-host');
+    expect(readResidencyJournal(projectId)).toBeNull(); // completed
   });
 
   test('post-flip freshness: a newer local row survives the apply of an older host snapshot', async () => {

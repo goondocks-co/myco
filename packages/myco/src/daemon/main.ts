@@ -207,6 +207,7 @@ import type { RemoteTarget } from '../host/routing.js';
 import { pruneHostedProjects } from '../host/hosted-projects.js';
 import { beginAttachResidency, beginDetachResidency, type ResidencyDaemonDeps } from '../host/residency-transition.js';
 import { countResidencyInFlight, runResidencyTransitions } from '../host/residency-drain.js';
+import { applyResidencyRows } from '../db/queries/residency-apply.js';
 import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
 import { createPlanDrainQueue } from '../capture/plan-drain.js';
 import { createEventReplayDrainQueue } from '../capture/event-replay-drain.js';
@@ -2505,17 +2506,21 @@ export async function main(): Promise<void> {
   // any transition is unfinished, so a half-moved project is never abandoned to
   // sleep. Runs in every power state, like the other member drains.
   //
-  // PENDING one-line wiring: `applyStagedRows: (db, table, rows) => { applyResidencyRows(db, table, rows, { logger }); }`
-  // once T3 extracts the shared engine to `db/queries/residency-apply.ts`. Until
-  // then applyStagedRows is unset and a detach that reaches `applying` fails
-  // loudly (the drain guard) and retries — never silent data loss.
+  // `applyStagedRows` wires the detach apply to the SHARED engine
+  // (`db/queries/residency-apply.ts`), so the member re-materialize applies with
+  // the same per-table rules as the host ingest. The drain wraps it in one
+  // transaction; the engine throws on an absent FK, which rolls the batch back
+  // and leaves the journal in `applying` to retry — never a silent skip.
   jobRunner.register({
     name: 'residency-transition',
     runIn: ['active', 'idle', 'sleep'],
     kind: 'housekeeping',
     hold: { pending: () => countResidencyInFlight() },
     fn: async () => {
-      await runResidencyTransitions(residencyDeps);
+      await runResidencyTransitions({
+        ...residencyDeps,
+        applyStagedRows: (db, table, rows) => { applyResidencyRows(db, table, rows, { logger }); },
+      });
     },
   });
 
