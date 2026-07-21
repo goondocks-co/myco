@@ -50,7 +50,7 @@ export function findDerivedRecords(input: FindDerivedRecordsInput): DerivedRecor
     const params: unknown[] = [];
     if (sourceNamespace === 'prompt_batches') {
       conditions.push('prompt_batch_id = ?');
-      params.push(Number(sourceRecordId));
+      params.push(sourceRecordId);
     } else {
       // Only inherit from session when a more specific batch lineage is absent.
       conditions.push('session_id = ? AND prompt_batch_id IS NULL');
