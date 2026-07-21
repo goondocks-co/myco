@@ -1564,12 +1564,26 @@ describe('Database schema', () => {
 
       it('v34: replaces global project-scoped uniqueness with project-aware indexes', () => {
         createSchema(db);
+        // A faithful pre-v34 vault keys prompt_batches/digest_extracts INTEGER,
+        // and the v34 rebuild recreates them with that historical key.
+        // createSchema now builds them TEXT (the v73 rekey), so revert here or
+        // the rebuild copies a text id into an INTEGER PRIMARY KEY and throws.
+        db.exec('PRAGMA foreign_keys = OFF');
+        db.exec('DROP TABLE IF EXISTS prompt_batches_fts');
+        db.exec('DROP TABLE prompt_batches');
+        db.exec(`CREATE TABLE prompt_batches (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT, session_id TEXT NOT NULL REFERENCES sessions(id), parent_prompt_batch_id INTEGER REFERENCES prompt_batches(id), kind TEXT NOT NULL DEFAULT 'initial', origin TEXT NOT NULL DEFAULT 'human', prompt_number INTEGER, user_prompt TEXT, response_summary TEXT, classification TEXT, started_at INTEGER, ended_at INTEGER, status TEXT DEFAULT 'active', activity_count INTEGER DEFAULT 0, processed INTEGER DEFAULT 0, content_hash TEXT, created_at INTEGER NOT NULL, machine_id TEXT NOT NULL DEFAULT 'local', synced_at INTEGER, thread_id TEXT, thread_label TEXT)`);
+        db.exec('DROP TABLE digest_extracts');
+        db.exec(`CREATE TABLE digest_extracts (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT, agent_id TEXT NOT NULL REFERENCES agents(id), tier INTEGER NOT NULL, content TEXT NOT NULL, substrate_hash TEXT, generated_at INTEGER NOT NULL, machine_id TEXT NOT NULL DEFAULT 'local', synced_at INTEGER)`);
+        db.exec('PRAGMA foreign_keys = ON');
         db.prepare(`INSERT INTO agents (id, name, created_at) VALUES ('agent-test', 'Test', 1000)`).run();
         db.prepare(
           `INSERT INTO sessions (id, agent, started_at, created_at, content_hash, title)
            VALUES ('sess-a', 'test', 1000, 1000, 'session-hash', 'searchabletitle')`,
         ).run();
-        const batchId = `pbat_${'1'.repeat(32)}`;
+        // A pre-v34 (integer-era) batch id: the v34 rebuild recreates
+        // prompt_batches with its historical INTEGER key, so the seeded id must
+        // be integer-coercible (the v73 text rekey happens far later in the chain).
+        const batchId = 1;
         db.prepare(
           `INSERT INTO prompt_batches (id, session_id, user_prompt, created_at, content_hash)
            VALUES (?, 'sess-a', 'searchable prompt', 1000, 'batch-hash')`,
