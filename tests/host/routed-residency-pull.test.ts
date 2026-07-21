@@ -14,8 +14,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { classifyRouteStamp } from '@myco/host/routing.js';
+import { ROUTED_RESIDENCY_PULL_PATH } from '@myco/host/residency-journal.js';
 import { getDatabase } from '@myco/db/client.js';
 import {
   pullResidencyPage,
@@ -90,6 +93,27 @@ function claimState(id: string): string | undefined {
 function reqCtx(groveId: string, projectId: string, machineId: string): MycoRequestContext {
   return { groveId, projectId: assertGroveProjectId(projectId), machineId } as MycoRequestContext;
 }
+
+// ---------------------------------------------------------------------------
+// (0) Route wiring
+// ---------------------------------------------------------------------------
+
+describe('residency-pull route wiring', () => {
+  test('the pull route is collect-stamped with the Collection capability', () => {
+    expect(classifyRouteStamp('POST', ROUTED_RESIDENCY_PULL_PATH)).toEqual({
+      stamp: 'collect',
+      capability: 'Collection',
+    });
+  });
+
+  test('the daemon mounts the pull handler at ROUTED_RESIDENCY_PULL_PATH', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const mainSrc = fs.readFileSync(path.join(repoRoot, 'packages', 'myco', 'src', 'daemon', 'main.ts'), 'utf8');
+    const match = mainSrc.match(/\.registerRoute\(\s*'POST'\s*,\s*'([^']+)'\s*,\s*createRoutedResidencyPullHandler/);
+    expect(match, 'no registerRoute(POST, <path>, createRoutedResidencyPullHandler(...)) in daemon/main.ts').not.toBeNull();
+    expect(match![1]).toBe(ROUTED_RESIDENCY_PULL_PATH);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // (1) Pull enumerator
