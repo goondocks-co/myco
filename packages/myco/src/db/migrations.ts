@@ -1903,7 +1903,10 @@ interface V34TableRebuild {
 // schema evolution: referencing the live constants (which the v73 rekey turned
 // TEXT) would make v34 rebuild to TEXT ids mid-chain, storing numeric-string
 // ids that skip the v73 rekey and mismatch the still-integer FK columns. Pin
-// the key type back to INTEGER; migration-matrix.test.ts guards this.
+// the key type back to INTEGER. Guarded by
+// tests/db/migrate-v34-v73-integer-origin.test.ts, which carries real rows and
+// FK children through v34+v73 and fails iff this pin is removed (the
+// structure-only migration-matrix test does NOT catch the data corruption).
 const V34_PROMPT_BATCHES_DDL = PROMPT_BATCHES_TABLE
   .replace(/\n(\s+)id(\s+)TEXT PRIMARY KEY,/, '\n$1id$2INTEGER PRIMARY KEY AUTOINCREMENT,')
   .replace(/parent_prompt_batch_id(\s+)TEXT REFERENCES/, 'parent_prompt_batch_id$1INTEGER REFERENCES');
@@ -4423,14 +4426,22 @@ function migrateV73RekeyPromptBatches(db: Database): void {
     .filter((c) => c !== 'id' && c !== 'parent_prompt_batch_id');
   const insertCols = ['id', 'parent_prompt_batch_id', ...copyCols];
   const selectExprs = ['m.new_id', 'pm.new_id', ...copyCols.map((c) => `pb."${c}"`)];
+  // ORDER BY the old integer id so the rebuilt table's fresh rowids are assigned
+  // in old-id order — every downstream `ORDER BY rowid` reproduces the pre-rekey
+  // `ORDER BY id` insertion order, which SQL does not otherwise guarantee for an
+  // unordered INSERT ... SELECT.
   db.exec(
     `INSERT INTO prompt_batches_new (${insertCols.map((c) => `"${c}"`).join(', ')})
        SELECT ${selectExprs.join(', ')}
        FROM prompt_batches pb
        JOIN _v73_pb_idmap m ON m.old_id = pb.id
-       LEFT JOIN _v73_pb_idmap pm ON pm.old_id = pb.parent_prompt_batch_id`,
+       LEFT JOIN _v73_pb_idmap pm ON pm.old_id = pb.parent_prompt_batch_id
+       ORDER BY pb.id`,
   );
 
+  // Each inbound FK column keeps its INTEGER declaration but now stores the
+  // grove-era text id; SQLite type affinity holds the text value losslessly in
+  // an INTEGER-affinity column, so no child table needs a rebuild.
   for (const { table, column } of V73_PROMPT_BATCH_INBOUND_FKS) {
     if (!v73TableExists(db, table)) continue;
     db.exec(
@@ -4523,9 +4534,12 @@ function migrateV73RekeySimpleTextId(
  * This is the first table rebuild in the migration chain, so it deviates from
  * the in-transaction house style in one way it must: a rebuild needs foreign
  * keys OFF, and `PRAGMA foreign_keys` is a no-op inside a transaction. The
- * toggle therefore brackets the transaction from the outside, and a
- * `foreign_key_check` inside the transaction proves the rewrite left no
- * dangling reference before the version is stamped.
+ * toggle therefore brackets the transaction from the outside. The rewrite is
+ * map-driven from every existing prompt_batches row, so it cannot introduce a
+ * dangling reference; a whole-DB `foreign_key_check` is deliberately NOT run
+ * here (it would trip on pre-existing orphans and brick a legitimate upgrade —
+ * see the inline note below). Integrity of the rekey itself is asserted in
+ * tests/db/migrate-v72-to-v73-rekey.test.ts.
  *
  * prompt_batches is rekeyed first: while its inbound FK columns still hold
  * integer values they are rewritten to the new text ids, so the subsequent
