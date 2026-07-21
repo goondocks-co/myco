@@ -90,16 +90,22 @@ const RICH_TABLES = [
 
 /**
  * Seed a project across every rekeyed table plus the FK-carrying text
- * tables, using EXPLICIT integer ids from `base` so two projects seeded
- * with the same base collide on every AUTOINCREMENT primary key.
+ * tables. The still-integer tables (knowledge_git_provenance, activities,
+ * agent_reports/turns/write_intents, digest_extract_revisions, log_entries)
+ * use EXPLICIT integer ids from `base`, so two projects seeded with the same
+ * base collide on every AUTOINCREMENT primary key and exercise the move's
+ * integer remap. prompt_batches, knowledge_release_state, and digest_extracts
+ * now carry globally-unique Grove-era text ids (keyed by `sfx`) — they never
+ * collide and are copied id-preserving.
  *
- * Layout: prompt batch `base` is the parent of batch `base+1`;
- * plans/spores/kgp/krs reference batch `base`; activities/attachments
- * reference batch `base+1`; digest_extract_revision `base` is the
- * parent of revision `base+1`.
+ * Layout: `parent-batch` is the parent of `child-batch`; plans/spores/kgp/krs
+ * reference the parent batch; activities/attachments reference the child batch;
+ * digest_extract_revision `base` is the parent of revision `base+1`.
  */
 function seedRichProject(db: Database, projectId: string, sfx: string, base: number): void {
   seedAgent(db);
+  const parentBatchId = `pbat_${sfx}_parent`;
+  const childBatchId = `pbat_${sfx}_child`;
   db.prepare(
     `INSERT INTO sessions (id, agent, project_root, project_id, started_at, created_at, machine_id)
      VALUES (?, 'claude-code', ?, ?, 100, 100, 'test-machine')`,
@@ -107,35 +113,35 @@ function seedRichProject(db: Database, projectId: string, sfx: string, base: num
   db.prepare(
     `INSERT INTO prompt_batches (id, project_id, session_id, user_prompt, created_at)
      VALUES (?, ?, ?, ?, 110)`,
-  ).run(base, projectId, `sess-${sfx}`, `parent-batch-${sfx}`);
+  ).run(parentBatchId, projectId, `sess-${sfx}`, `parent-batch-${sfx}`);
   db.prepare(
     `INSERT INTO prompt_batches (id, project_id, session_id, parent_prompt_batch_id, user_prompt, created_at)
      VALUES (?, ?, ?, ?, ?, 111)`,
-  ).run(base + 1, projectId, `sess-${sfx}`, base, `child-batch-${sfx}`);
+  ).run(childBatchId, projectId, `sess-${sfx}`, parentBatchId, `child-batch-${sfx}`);
   db.prepare(
     `INSERT INTO knowledge_git_provenance (id, project_id, identity_key, session_id, prompt_batch_id, capture_point, captured_at, status_hash, created_at)
      VALUES (?, ?, ?, ?, ?, 'prompt', 120, 'hash', 120)`,
-  ).run(base, projectId, `kgp-${sfx}`, `sess-${sfx}`, base);
+  ).run(base, projectId, `kgp-${sfx}`, `sess-${sfx}`, parentBatchId);
   db.prepare(
     `INSERT INTO knowledge_release_state (id, project_id, identity_key, namespace, record_id, source_prompt_batch_id, state, confidence, checked_at, created_at)
      VALUES (?, ?, ?, 'spores', ?, ?, 'released', 'high', 130, 130)`,
-  ).run(base, projectId, `krs-${sfx}`, `rec-${sfx}`, base);
+  ).run(`krel_${sfx}`, projectId, `krs-${sfx}`, `rec-${sfx}`, parentBatchId);
   db.prepare(
     `INSERT INTO activities (id, project_id, session_id, prompt_batch_id, tool_name, timestamp, created_at)
      VALUES (?, ?, ?, ?, ?, 140, 140)`,
-  ).run(base, projectId, `sess-${sfx}`, base + 1, `tool-${sfx}`);
+  ).run(base, projectId, `sess-${sfx}`, childBatchId, `tool-${sfx}`);
   db.prepare(
     `INSERT INTO plans (id, project_id, logical_key, title, prompt_batch_id, created_at)
      VALUES (?, ?, ?, ?, ?, 150)`,
-  ).run(`plan-${sfx}`, projectId, `plan:${sfx}`, `Plan ${sfx}`, base);
+  ).run(`plan-${sfx}`, projectId, `plan:${sfx}`, `Plan ${sfx}`, parentBatchId);
   db.prepare(
     `INSERT INTO attachments (id, project_id, session_id, prompt_batch_id, file_path, data, created_at)
      VALUES (?, ?, ?, ?, ?, ?, 160)`,
-  ).run(`att-${sfx}`, projectId, `sess-${sfx}`, base + 1, `/tmp/${sfx}.png`, Buffer.from([1, 2, 3, base]));
+  ).run(`att-${sfx}`, projectId, `sess-${sfx}`, childBatchId, `/tmp/${sfx}.png`, Buffer.from([1, 2, 3, base]));
   db.prepare(
     `INSERT INTO spores (id, project_id, agent_id, session_id, prompt_batch_id, observation_type, content, created_at)
      VALUES (?, ?, 'claude-code', ?, ?, 'gotcha', ?, 170)`,
-  ).run(`spore-${sfx}`, projectId, `sess-${sfx}`, base, `spore content ${sfx}`);
+  ).run(`spore-${sfx}`, projectId, `sess-${sfx}`, parentBatchId, `spore content ${sfx}`);
   db.prepare(
     `INSERT INTO entities (id, project_id, agent_id, type, name, first_seen, last_seen)
      VALUES (?, ?, 'claude-code', 'thing', ?, 180, 180)`,
@@ -147,7 +153,7 @@ function seedRichProject(db: Database, projectId: string, sfx: string, base: num
   db.prepare(
     `INSERT INTO digest_extracts (id, project_id, agent_id, tier, content, generated_at)
      VALUES (?, ?, 'claude-code', 1, ?, 190)`,
-  ).run(base, projectId, `digest ${sfx}`);
+  ).run(`dext_${sfx}`, projectId, `digest ${sfx}`);
   db.prepare(
     `INSERT INTO agent_runs (id, project_id, agent_id, task, status)
      VALUES (?, ?, 'claude-code', 'digest', 'completed')`,
@@ -264,43 +270,44 @@ describe('copyProjectBetweenGroveDbs', () => {
         expect(`${table}:${got}`).toBe(`${table}:${want}`);
       }
 
-      // Rekeyed parent/child chain: fresh ids, child points at parent.
+      // Globally-unique text ids are copied id-preserving (not remapped);
+      // the child still points at the parent.
       const parentBatch = db.prepare(
         `SELECT id, parent_prompt_batch_id FROM prompt_batches WHERE user_prompt = 'parent-batch-moved'`,
-      ).get() as { id: number; parent_prompt_batch_id: number | null };
+      ).get() as { id: string; parent_prompt_batch_id: string | null };
       const childBatch = db.prepare(
         `SELECT id, parent_prompt_batch_id FROM prompt_batches WHERE user_prompt = 'child-batch-moved'`,
-      ).get() as { id: number; parent_prompt_batch_id: number | null };
-      expect(parentBatch.id).not.toBe(1);
-      expect(childBatch.id).not.toBe(2);
+      ).get() as { id: string; parent_prompt_batch_id: string | null };
+      expect(parentBatch.id).toBe('pbat_moved_parent');
+      expect(childBatch.id).toBe('pbat_moved_child');
       expect(parentBatch.parent_prompt_batch_id).toBeNull();
       expect(childBatch.parent_prompt_batch_id).toBe(parentBatch.id);
 
-      // The seven prompt-batch FK columns point at the REMAPPED parents.
+      // The prompt-batch FK columns carry the preserved text ids.
       const kgp = db.prepare(
         `SELECT prompt_batch_id FROM knowledge_git_provenance WHERE identity_key = 'kgp-moved'`,
-      ).get() as { prompt_batch_id: number };
+      ).get() as { prompt_batch_id: string };
       expect(kgp.prompt_batch_id).toBe(parentBatch.id);
       const krs = db.prepare(
         `SELECT source_prompt_batch_id FROM knowledge_release_state WHERE identity_key = 'krs-moved'`,
-      ).get() as { source_prompt_batch_id: number };
+      ).get() as { source_prompt_batch_id: string };
       expect(krs.source_prompt_batch_id).toBe(parentBatch.id);
       const activity = db.prepare(
         `SELECT prompt_batch_id FROM activities WHERE tool_name = 'tool-moved'`,
-      ).get() as { prompt_batch_id: number };
+      ).get() as { prompt_batch_id: string };
       expect(activity.prompt_batch_id).toBe(childBatch.id);
       const plan = db.prepare(
         `SELECT prompt_batch_id FROM plans WHERE id = 'plan-moved'`,
-      ).get() as { prompt_batch_id: number };
+      ).get() as { prompt_batch_id: string };
       expect(plan.prompt_batch_id).toBe(parentBatch.id);
       const attachment = db.prepare(
         `SELECT prompt_batch_id, data FROM attachments WHERE id = 'att-moved'`,
-      ).get() as { prompt_batch_id: number; data: Uint8Array };
+      ).get() as { prompt_batch_id: string; data: Uint8Array };
       expect(attachment.prompt_batch_id).toBe(childBatch.id);
       expect(Buffer.from(attachment.data)).toEqual(Buffer.from([1, 2, 3, 1]));
       const spore = db.prepare(
         `SELECT prompt_batch_id FROM spores WHERE id = 'spore-moved'`,
-      ).get() as { prompt_batch_id: number };
+      ).get() as { prompt_batch_id: string };
       expect(spore.prompt_batch_id).toBe(parentBatch.id);
 
       // Self-FK revision chain remapped the same way.
@@ -366,7 +373,7 @@ describe('copyProjectBetweenGroveDbs', () => {
     }
   });
 
-  it('refuses to copy a row whose FK references a parent outside the moved project', () => {
+  it('refuses to copy an integer-remapped row whose FK references a parent outside the moved project', () => {
     const source = createGrove('Source', mycoHome);
     const target = createGrove('Target', mycoHome);
     ensureGroveDb(source.id);
@@ -377,12 +384,14 @@ describe('copyProjectBetweenGroveDbs', () => {
     withGroveDb(source.id, (db) => {
       seedRichProject(db, projectId, 'main', 1);
       seedRichProject(db, otherProjectId, 'other', 10);
-      // Cross-project FK: a spore of the moved project pointing at the
-      // OTHER project's prompt batch. Copying the literal id would attach
-      // it to an arbitrary target parent.
+      // Cross-project remapped FK: a digest revision of the moved project
+      // pointing at the OTHER project's revision. Reallocating the literal
+      // integer id would attach it to an arbitrary target parent.
+      db.run('PRAGMA foreign_keys = OFF');
       db.prepare(
-        `UPDATE spores SET prompt_batch_id = 10 WHERE id = 'spore-main'`,
+        `UPDATE digest_extract_revisions SET parent_revision_id = 10 WHERE id = 2`,
       ).run();
+      db.run('PRAGMA foreign_keys = ON');
     });
 
     const sourceDb = openDatabase(resolveGroveDbPath(source.id, mycoHome));
@@ -394,13 +403,9 @@ describe('copyProjectBetweenGroveDbs', () => {
       } catch (err) {
         caught = err as Error;
       }
-      expect(caught?.message).toMatch(/spores\.prompt_batch_id references prompt_batches id 10/);
-      // Triage detail: the polluted row, the foreign parent's owner, and
-      // the manual remedy — every retry hits the same row, so the error
-      // must be actionable without re-deriving the lineage.
-      expect(caught?.message).toContain('spores row id spore-main');
-      expect(caught?.message).toContain(`belongs to project ${otherProjectId}`);
-      expect(caught?.message).toContain('Repair or delete');
+      // The parent-chain sort refuses to order a child whose remapped parent
+      // is not part of the moved project's rows, so the copy never inserts it.
+      expect(caught?.message).toMatch(/Missing source digest_extract_revisions parent 10 for 2/);
       // The transaction rolled back: nothing landed in the target.
       const n = (targetDb.prepare(
         `SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?`,
@@ -445,7 +450,7 @@ describe('copyProjectBetweenGroveDbs', () => {
 });
 
 describe('findOrphanRemappedRows', () => {
-  it('reports children whose parent is missing or belongs to another project', () => {
+  it('reports remapped children whose parent is missing or belongs to another project', () => {
     const grove = createGrove('Solo', mycoHome);
     ensureGroveDb(grove.id);
     const projectId = createProjectId();
@@ -457,16 +462,15 @@ describe('findOrphanRemappedRows', () => {
       expect(findOrphanRemappedRows(db, projectId)).toEqual([]);
 
       db.run('PRAGMA foreign_keys = OFF');
-      // Parent gone entirely.
-      db.prepare(`UPDATE activities SET prompt_batch_id = 999 WHERE tool_name = 'tool-main'`).run();
-      // Parent exists but under the other project.
-      db.prepare(`UPDATE spores SET prompt_batch_id = 10 WHERE id = 'spore-main'`).run();
+      // The self-referential revision chain is the only remapped FK left after
+      // the text-id rekey: point the moved project's child revision at a
+      // missing parent so the orphan check fires.
+      db.prepare(`UPDATE digest_extract_revisions SET parent_revision_id = 999 WHERE id = 2`).run();
       db.run('PRAGMA foreign_keys = ON');
 
       const problems = findOrphanRemappedRows(db, projectId);
-      expect(problems).toHaveLength(2);
-      expect(problems.join('; ')).toContain('activities.prompt_batch_id');
-      expect(problems.join('; ')).toContain('spores.prompt_batch_id');
+      expect(problems).toHaveLength(1);
+      expect(problems.join('; ')).toContain('digest_extract_revisions.parent_revision_id');
     });
   });
 
@@ -477,15 +481,14 @@ describe('findOrphanRemappedRows', () => {
 
     withGroveDb(grove.id, (db) => {
       seedRichProject(db, projectId, 'main', 1);
-      // Break one checked table without removing it: the orphan query's
+      // Break the one remapped table without removing it: the orphan query's
       // project_id filter now fails with "no such column" — a swallowed
       // error here would blind the verify phase the check serves.
-      db.run('DROP INDEX idx_knowledge_git_provenance_project_captured');
-      db.run('DROP INDEX idx_knowledge_git_provenance_project_id');
-      db.run('ALTER TABLE knowledge_git_provenance DROP COLUMN project_id');
+      db.run('DROP INDEX IF EXISTS idx_digest_extract_revisions_project_id');
+      db.run('ALTER TABLE digest_extract_revisions DROP COLUMN project_id');
 
       expect(() => findOrphanRemappedRows(db, projectId))
-        .toThrow(/orphan check failed reading knowledge_git_provenance\.prompt_batch_id/);
+        .toThrow(/orphan check failed reading digest_extract_revisions\.parent_revision_id/);
     });
   });
 });

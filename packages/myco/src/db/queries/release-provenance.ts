@@ -68,7 +68,7 @@ export interface GitProvenanceInsert {
   project_id?: string | null;
   machine_id?: string;
   session_id?: string | null;
-  prompt_batch_id?: number | null;
+  prompt_batch_id?: string | null;
   capture_point: ReleaseCapturePoint;
   captured_at: number;
   project_root?: string | null;
@@ -102,7 +102,7 @@ export interface GitProvenanceRow extends Required<Omit<GitProvenanceInsert,
   machine_id: string;
   identity_key: string;
   session_id: string | null;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   project_root: string | null;
   branch: string | null;
   head_sha: string | null;
@@ -124,7 +124,7 @@ export interface ReleaseStateUpsert {
   namespace: ReleaseNamespace;
   record_id: string;
   source_session_id?: string | null;
-  source_prompt_batch_id?: number | null;
+  source_prompt_batch_id?: string | null;
   state: ReleaseStateValue;
   confidence: ReleaseConfidence;
   basis_kind?: string | null;
@@ -148,7 +148,7 @@ export interface ReleaseStateRow extends Required<Omit<ReleaseStateUpsert,
   machine_id: string;
   identity_key: string;
   source_session_id: string | null;
-  source_prompt_batch_id: number | null;
+  source_prompt_batch_id: string | null;
   basis_kind: string | null;
   basis_ref: string | null;
   basis_sha: string | null;
@@ -167,7 +167,7 @@ export interface ReleaseStateRow extends Required<Omit<ReleaseStateUpsert,
 export interface ListGitProvenanceOptions {
   scope: ProjectScope;
   session_id?: string;
-  prompt_batch_id?: number;
+  prompt_batch_id?: string;
   capture_point?: ReleaseCapturePoint;
   head_sha?: string;
   limit?: number;
@@ -181,7 +181,7 @@ export interface ListReleaseStateOptions {
   state?: ReleaseStateValue;
   confidence?: ReleaseConfidence;
   source_session_id?: string;
-  source_prompt_batch_id?: number;
+  source_prompt_batch_id?: string;
   checked_before?: number;
   limit?: number;
   db?: Database;
@@ -200,7 +200,7 @@ function projectIdentityPart(projectId: string | null | undefined): string {
 export function buildGitProvenanceIdentityKey(input: {
   project_id?: string | null;
   session_id?: string | null;
-  prompt_batch_id?: number | null;
+  prompt_batch_id?: string | null;
   capture_point: ReleaseCapturePoint;
   status_hash: string;
 }): string {
@@ -228,7 +228,7 @@ function toGitProvenanceRow(row: Record<string, unknown>): GitProvenanceRow {
     machine_id: (row.machine_id as string) ?? 'local',
     identity_key: row.identity_key as string,
     session_id: (row.session_id as string) ?? null,
-    prompt_batch_id: (row.prompt_batch_id as number) ?? null,
+    prompt_batch_id: (row.prompt_batch_id as string) ?? null,
     capture_point: row.capture_point as ReleaseCapturePoint,
     captured_at: row.captured_at as number,
     project_root: (row.project_root as string) ?? null,
@@ -261,7 +261,7 @@ function toReleaseStateRow(row: Record<string, unknown>): ReleaseStateRow {
     namespace: row.namespace as ReleaseNamespace,
     record_id: row.record_id as string,
     source_session_id: (row.source_session_id as string) ?? null,
-    source_prompt_batch_id: (row.source_prompt_batch_id as number) ?? null,
+    source_prompt_batch_id: (row.source_prompt_batch_id as string) ?? null,
     state: row.state as ReleaseStateValue,
     confidence: row.confidence as ReleaseConfidence,
     basis_kind: (row.basis_kind as string) ?? null,

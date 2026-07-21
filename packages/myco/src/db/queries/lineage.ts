@@ -32,7 +32,7 @@ export function createSporeLineage(spore: {
   agent_id: string;
   project_id?: GroveProjectId | null;
   session_id?: string | null;
-  prompt_batch_id?: number | null;
+  prompt_batch_id?: string | null;
   observation_type?: string;
   properties?: string | null;
   created_at: number;
@@ -93,7 +93,7 @@ export function createSporeLineage(spore: {
 export function createBatchLineage(
   agentId: string,
   sessionId: string,
-  batchId: number,
+  batchId: string,
   createdAt: number,
   projectId: GroveProjectId | null,
 ): void {

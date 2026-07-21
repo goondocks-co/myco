@@ -42,7 +42,7 @@ export function createWriteTools(deps: VaultToolDeps) {
         ),
       content: z.string().describe('The observation content in markdown'),
       session_id: z.string().optional().describe('Associated session ID'),
-      prompt_batch_id: z.number().optional().describe('Associated prompt batch ID'),
+      prompt_batch_id: z.string().optional().describe('Associated prompt batch ID'),
       importance: z.number().optional().describe('Importance score 1-10 (default 5)'),
       tags: z.array(z.string()).optional().describe('Tags for categorization'),
       context: z.string().optional().describe('Additional context about the observation'),
@@ -315,7 +315,7 @@ export function createWriteTools(deps: VaultToolDeps) {
     'vault_mark_processed',
     'Mark a prompt batch as processed so it is not returned by vault_unprocessed.',
     {
-      batch_id: z.number().describe('ID of the prompt batch to mark as processed'),
+      batch_id: z.string().describe('ID of the prompt batch to mark as processed'),
     },
     async (args) => {
       const batch = markBatchProcessed(args.batch_id, scope);

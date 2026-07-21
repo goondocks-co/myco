@@ -206,7 +206,7 @@ function ActivityItem({ activity }: { activity: ActivityRow }) {
 /* ---------- Component ---------- */
 
 export interface ActivityListProps {
-  batchId: number;
+  batchId: string;
   activityCount: number;
 }
 

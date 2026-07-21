@@ -385,7 +385,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
   function replayEvent(
     sessionId: string,
     event: Record<string, unknown>,
-    passCreatedBatchIds?: Set<number>,
+    passCreatedBatchIds?: Set<string>,
   ): 'prompt' | 'activity' | null {
     if (event.type === 'user_prompt') {
       // Live hooks forward `origin` from the manifest decision; pre-v49 buffer
@@ -962,7 +962,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     let duplicatesSuppressed = 0;
     let eventsConverged = 0;
     let summariesRecovered = 0;
-    const passCreatedBatchIds = new Set<number>();
+    const passCreatedBatchIds = new Set<string>();
     const matchEvent = createConvergenceMatcher(sessionId);
 
     for (const event of allEvents) {
