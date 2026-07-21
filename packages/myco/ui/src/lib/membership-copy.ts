@@ -1,6 +1,11 @@
 import { ApiError } from './api';
 import type { ResidencyDirection, ResidencyPhase } from '../hooks/use-host-membership';
 
+/** Direction-agnostic `residency_abort_too_late` line — the map entry and the
+ *  `residencyAbortTooLateCopy` fallback share it so they never drift. */
+const RESIDENCY_ABORT_TOO_LATE_GENERIC =
+  "This move is too far along to cancel — it'll finish on its own in a moment.";
+
 /**
  * Outcome copy for Team Host membership failures (copy doctrine,
  * decision-6a2ccfac) — mirrors the claims UI's `materializeErrorCopy`
@@ -41,8 +46,7 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
     "This host is running an older Myco version and can't send this project's data back yet — you can disconnect without bringing it back, or update the host first.",
   residency_detach_needs_root:
     'Reconnect this project once first so Myco learns its folder, then disconnect.',
-  residency_abort_too_late:
-    "This move is too far along to cancel — it'll finish on its own in a moment.",
+  residency_abort_too_late: RESIDENCY_ABORT_TOO_LATE_GENERIC,
 };
 
 /**
@@ -227,3 +231,23 @@ export function residencyPendingDetail(rowsPending: number | null | undefined): 
  *  hover title by the caller) — this states the outcome and the way out. */
 export const RESIDENCY_STALLED_COPY =
   'The last step ran into a problem and will keep retrying. Cancel the move to put the project back, then try again.';
+
+/**
+ * `residency_abort_too_late` copy for the Cancel-move control, branched on the
+ * transition's direction (the progress line knows it). Attach past the point of
+ * no return means the history already moved and the local rows are gone — so
+ * the recovery is to disconnect, which brings the data back. Detach past the
+ * point of no return means the project already switched back to local and is
+ * just finishing. `undefined` falls back to a direction-agnostic line (the same
+ * one the `MEMBERSHIP_ERROR_COPY` map carries for non-directional callers).
+ */
+export function residencyAbortTooLateCopy(direction: ResidencyDirection | undefined): string {
+  switch (direction) {
+    case 'attach':
+      return "This move already completed — it can't be cancelled. To bring your data back, disconnect the project.";
+    case 'detach':
+      return 'Too late to cancel — the project is already back on this machine; let it finish.';
+    default:
+      return RESIDENCY_ABORT_TOO_LATE_GENERIC;
+  }
+}

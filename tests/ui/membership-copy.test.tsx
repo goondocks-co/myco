@@ -27,6 +27,7 @@ import {
   membershipErrorCopy,
   protocolSkewNote,
   reachabilityHintSuffix,
+  residencyAbortTooLateCopy,
   residencyPendingDetail,
   residencyPhaseLabel,
   residencyProgressHeadline,
@@ -213,6 +214,18 @@ describe('Residency round-trip copy (Phase F, T5)', () => {
   it('residency_abort_too_late explains the move will finish on its own', () => {
     const copy = membershipErrorCopy(new ApiError(400, { error: { code: 'residency_abort_too_late', message: 'phase applying' } }));
     expect(copy).toContain('too far along to cancel');
+  });
+
+  it('residencyAbortTooLateCopy branches on direction — attach points at Disconnect, detach says let it finish', () => {
+    const attach = residencyAbortTooLateCopy('attach');
+    expect(attach).toContain('disconnect the project');
+    expect(attach).toContain("can't be cancelled");
+
+    const detach = residencyAbortTooLateCopy('detach');
+    expect(detach).toContain('already back on this machine');
+
+    // Unknown direction falls back to the direction-agnostic map line.
+    expect(residencyAbortTooLateCopy(undefined)).toContain('too far along to cancel');
   });
 
   it('membershipErrorCode extracts the coded refusal (used by the detach pull-unavailable fallback) and is null for uncoded/non-ApiError', () => {

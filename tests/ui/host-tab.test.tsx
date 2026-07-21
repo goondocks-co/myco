@@ -587,6 +587,24 @@ describe('Residency round trip', () => {
     confirmSpy.mockRestore();
   });
 
+  it('a too-late cancel on an attach shows the direction-appropriate recovery (disconnect to get data back)', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    abortMutateAsync.mockImplementationOnce(async () => {
+      throw new ApiError(400, { error: { code: 'residency_abort_too_late', message: 'phase rehoming' } });
+    });
+    residencyFixture = { in_flight: true, direction: 'attach', phase: 'pushing', rows_pending: 1 };
+    statusFixture = { hosts: [attachedHost], hint: null };
+    renderHostTab();
+
+    fireEvent.click(screen.getByRole('button', { name: /detach proj_x/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    const progress = await screen.findByTestId('residency-progress-proj_x');
+    fireEvent.click(within(progress).getByRole('button', { name: /cancel move/i }));
+
+    await waitFor(() => expect(within(progress).getByText(/disconnect the project/)).toBeInTheDocument());
+    confirmSpy.mockRestore();
+  });
+
   it('surfaces the stalled warning when the last attempt erred, without leaking the raw error into the visible line', async () => {
     residencyFixture = { in_flight: true, direction: 'attach', phase: 'pushing', rows_pending: null, last_error: 'ECONNRESET at drain step 3' };
     statusFixture = { hosts: [attachedHost], hint: null };

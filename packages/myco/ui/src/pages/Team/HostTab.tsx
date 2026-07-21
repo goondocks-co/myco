@@ -27,6 +27,7 @@ import {
   membershipErrorCode,
   membershipErrorCopy,
   reachabilityHintSuffix,
+  residencyAbortTooLateCopy,
   residencyPendingDetail,
   residencyPhaseLabel,
   residencyProgressHeadline,
@@ -197,7 +198,13 @@ function ResidencyProgress({ status, projectId }: { status: ResidencyStatus; pro
     try {
       await abort.mutateAsync({ project_id: projectId });
     } catch (err) {
-      setError(membershipErrorCopy(err));
+      // The move can pass the point of no return between the poll and the
+      // click; name the direction-appropriate recovery rather than the raw code.
+      setError(
+        membershipErrorCode(err) === 'residency_abort_too_late'
+          ? residencyAbortTooLateCopy(status.direction)
+          : membershipErrorCopy(err),
+      );
     }
   };
 
