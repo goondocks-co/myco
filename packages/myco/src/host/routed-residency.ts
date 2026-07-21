@@ -262,8 +262,16 @@ function insertableColumns(row: Record<string, unknown>, columns: Set<string>): 
  * Ensure a placeholder `agents` row exists for every `agent_id` the batch
  * references, so the FK is satisfiable. `INSERT OR IGNORE` never overwrites a real
  * agent the host already has (its own intelligence run, or an earlier ensure); a
- * later real `registerAgent` upserts over the placeholder. Mirrors the local
- * write path, where `registerAgent` runs before any agent-referencing write.
+ * later real `registerAgent` upserts over the placeholder (its `ON CONFLICT DO
+ * UPDATE` overwrites name/source/enabled/config). Mirrors the local write path,
+ * where `registerAgent` runs before any agent-referencing write.
+ *
+ * The placeholder is a FK + attribution anchor, never a runnable agent, so it is
+ * `enabled = 0` and carries the `hosted-residency` source sentinel: nothing on the
+ * host enumerates the table to RUN agents (execution is loader-driven from task
+ * YAML), and the loader's seed check is `source = 'built-in'`-filtered, so a
+ * placeholder neither runs nor blocks the host from registering the real agent —
+ * that registration upgrades this row in place.
  */
 function ensureReferencedAgents(db: Database, rows: Record<string, unknown>[], now: number): void {
   const ids = new Set<string>();
@@ -274,7 +282,7 @@ function ensureReferencedAgents(db: Database, rows: Record<string, unknown>[], n
   if (ids.size === 0) return;
   const stmt = db.prepare(
     `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at)
-     VALUES (?, ?, 'hosted-residency', 1, ?)`,
+     VALUES (?, ?, 'hosted-residency', 0, ?)`,
   );
   for (const id of ids) stmt.run(id, id, now);
 }

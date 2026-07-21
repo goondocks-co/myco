@@ -18,6 +18,7 @@ import path from 'node:path';
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
+import { registerAgent } from '@myco/db/queries/agents.js';
 import { REBUILD_TABLES } from '@myco/db/queries/team-outbox.js';
 import {
   RESIDENCY_ALLOWED_TABLES,
@@ -183,6 +184,41 @@ describe('residency registration seam + adoption', () => {
       teardownTestDb();
     }
   });
+
+  test('an adoption-only request (empty rows) names the project with no row side effects', async () => {
+    // The drain's adoption backstop: a with-history attach with ZERO sync-eligible
+    // rows still ships one { table: 'sessions', rows: [], adoption } request so the
+    // host learns the name. It must apply nothing and answer { ok, applied: 0 }.
+    setupTestDb();
+    try {
+      resetResidencyColumnCache();
+      const projectId = assertGroveProjectId(createProjectId());
+      maybeRegisterHostedProjectOnIngest({
+        method: 'POST',
+        pathname: ROUTED_RESIDENCY_ROWS_PATH,
+        headers: { 'x-myco-grove-id': servedGrove.id, 'x-myco-project-id': projectId },
+        servedGroveId: servedGrove.id,
+        mycoHome: home,
+      });
+
+      const handler = createRoutedResidencyHandler({ mycoHome: home });
+      const res = await handler({
+        body: { table: 'sessions', rows: [], adoption: { project_name: 'Empty History Project' } },
+        query: {}, params: {}, pathname: ROUTED_RESIDENCY_ROWS_PATH,
+        requestContext: reqCtx(servedGrove.id, projectId),
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, applied: 0 });
+      // Name adopted...
+      expect(getRegisteredProjectInGrove(servedGrove.id, projectId, home)!.name).toBe('Empty History Project');
+      // ...and nothing was written to the Grove DB.
+      expect(count('sessions')).toBe(0);
+      expect(count('agents')).toBe(0);
+    } finally {
+      teardownTestDb();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -239,14 +275,28 @@ describe('residency apply matrix', () => {
   }
 
   // -- ensure-agent: an agent-referencing row with a novel agent id applies -----
-  test('ensure-agent seeds a placeholder so a novel agent id never FK-fails', () => {
+  test('ensure-agent seeds an inert placeholder so a novel agent id never FK-fails', () => {
     expect(count('agents')).toBe(0);
     apply('spores', [sporeRow('sp1', PROJ, { agent_id: 'novel-member-agent' })]);
     expect(getRow('spores', 'sp1')).toBeDefined();
-    // The placeholder agent row was created to satisfy the FK.
+    // The placeholder agent row was created to satisfy the FK — inert: the
+    // hosted-residency sentinel source and disabled so nothing runs it.
     const agent = getRow('agents', 'novel-member-agent');
     expect(agent).toBeDefined();
     expect(agent!.source).toBe('hosted-residency');
+    expect(agent!.enabled).toBe(0);
+  });
+
+  test('a later real registerAgent upgrades the placeholder in place (never stranded)', () => {
+    apply('spores', [sporeRow('sp1', PROJ, { agent_id: 'myco-agent' })]);
+    expect(getRow('agents', 'myco-agent')!.source).toBe('hosted-residency');
+    // The host runs its own intelligence and registers the real agent — the
+    // ON CONFLICT DO UPDATE overwrites the placeholder rather than being ignored.
+    registerAgent({ id: 'myco-agent', name: 'Myco Agent', source: 'built-in', enabled: 1, created_at: NOW });
+    const upgraded = getRow('agents', 'myco-agent')!;
+    expect(upgraded.source).toBe('built-in');
+    expect(upgraded.enabled).toBe(1);
+    expect(upgraded.name).toBe('Myco Agent');
   });
 
   // -- if-newer via updated_at (both directions) --------------------------------
