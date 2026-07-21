@@ -40,6 +40,8 @@ import {
   useDetachProject,
   useDrainHealth,
   useHostMembershipHealth,
+  useResidencyStatus,
+  useResidencyAbort,
   type HostMembershipStatusResponse,
 } from '../../packages/myco/ui/src/hooks/use-host-membership';
 
@@ -102,6 +104,55 @@ describe('useDrainHealth', () => {
         pollCategory: 'standard',
       }),
     );
+  });
+});
+
+describe('useResidencyStatus', () => {
+  type CapturedOptions = {
+    queryKey: unknown[];
+    enabled: boolean;
+    contextFree: boolean;
+    queryFn: (ctx: { signal?: AbortSignal }) => unknown;
+    refetchInterval: (query: { state: { data: unknown } }) => number | false | undefined;
+  };
+
+  beforeEach(() => {
+    usePowerQueryMock.mockReset();
+    fetchJsonMock.mockReset();
+    usePowerQueryMock.mockReturnValue({ data: undefined, isLoading: true, isError: false });
+  });
+
+  it('queries residency-status for the project id, context-free, under the standard category', async () => {
+    renderHook(() => useResidencyStatus('proj_x', true));
+
+    const call = usePowerQueryMock.mock.calls.at(-1)?.[0] as CapturedOptions;
+    expect(call.queryKey).toEqual(['residency-status', 'proj_x']);
+    expect(call.enabled).toBe(true);
+    expect(call.contextFree).toBe(true);
+
+    fetchJsonMock.mockResolvedValue({ in_flight: false });
+    await call.queryFn({});
+    expect(fetchJsonMock).toHaveBeenCalledWith(
+      `/host-membership/residency-status?project_id=${encodeURIComponent('proj_x')}`,
+      expect.anything(),
+    );
+  });
+
+  it('is disabled when no project id is given, or when the caller has not enabled the watch', () => {
+    renderHook(() => useResidencyStatus(undefined, true));
+    expect((usePowerQueryMock.mock.calls.at(-1)?.[0] as CapturedOptions).enabled).toBe(false);
+
+    renderHook(() => useResidencyStatus('proj_x', false));
+    expect((usePowerQueryMock.mock.calls.at(-1)?.[0] as CapturedOptions).enabled).toBe(false);
+  });
+
+  it('self-disarms: polls at RESIDENCY_STATUS while a transition may be running, stops once in_flight is false', () => {
+    renderHook(() => useResidencyStatus('proj_x', true));
+    const call = usePowerQueryMock.mock.calls.at(-1)?.[0] as CapturedOptions;
+
+    expect(call.refetchInterval({ state: { data: undefined } })).toBe(POLL_INTERVALS.RESIDENCY_STATUS);
+    expect(call.refetchInterval({ state: { data: { in_flight: true } } })).toBe(POLL_INTERVALS.RESIDENCY_STATUS);
+    expect(call.refetchInterval({ state: { data: { in_flight: false } } })).toBe(false);
   });
 });
 
@@ -228,6 +279,28 @@ describe('mutations', () => {
     expect(postJsonMock).toHaveBeenCalledWith('/host-membership/detach', { project_root: '/checkout' });
   });
 
+  it('useDetachProject forwards allow_no_pull when the member accepts the no-data fallback', async () => {
+    postJsonMock.mockResolvedValue({ project_id: 'proj_x', detached_from_host_id: 'host_abc' });
+    const { result } = renderHook(() => useDetachProject(), { wrapper });
+
+    result.current.mutate({ project_root: '/checkout', project_id: 'proj_x', allow_no_pull: true });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(postJsonMock).toHaveBeenCalledWith('/host-membership/detach', {
+      project_root: '/checkout', project_id: 'proj_x', allow_no_pull: true,
+    });
+  });
+
+  it('useResidencyAbort posts { project_id } to /host-membership/residency-abort', async () => {
+    postJsonMock.mockResolvedValue({ ok: true });
+    const { result } = renderHook(() => useResidencyAbort(), { wrapper });
+
+    result.current.mutate({ project_id: 'proj_x' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(postJsonMock).toHaveBeenCalledWith('/host-membership/residency-abort', { project_id: 'proj_x' });
+  });
+
   it('mutations invalidate BOTH the membership status and the degrade-affected git-identity query on settle', async () => {
     // Detach is the case that matters most: useGitIdentity deliberately
     // STOPS polling once it has seen the hosted-degraded 409 (the storm
@@ -246,5 +319,23 @@ describe('mutations', () => {
 
     await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['host-membership-status'] }));
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['git-identity'] });
+    // Also nudges the residency-status watch so the progress line re-arms even
+    // when the same project is transitioned again (unchanged query key).
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['residency-status'] });
+  });
+
+  it('useResidencyAbort invalidates the residency-status watch on settle so the progress line clears', async () => {
+    postJsonMock.mockResolvedValue({ ok: true });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const invalidateSpy = vi.spyOn(client, 'invalidateQueries');
+    const spyWrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+
+    const { result } = renderHook(() => useResidencyAbort(), { wrapper: spyWrapper });
+    result.current.mutate({ project_id: 'proj_x' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['residency-status'] });
   });
 });
