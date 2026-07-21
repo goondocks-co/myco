@@ -202,6 +202,7 @@ import { captureBatchImages } from './capture-images.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
 import { createRoutedPlanHandler } from '../host/routed-plan.js';
+import { createRoutedResidencyHandler } from '../host/routed-residency.js';
 import type { RemoteTarget } from '../host/routing.js';
 import { pruneHostedProjects } from '../host/hosted-projects.js';
 import { beginAttachResidency, type ResidencyDaemonDeps } from '../host/residency-transition.js';
@@ -1514,6 +1515,15 @@ export async function main(): Promise<void> {
   // Stamped `collect` in host/routing.ts, so it rides the overlay bearer/version
   // gate and is served locally on the host (never re-proxied).
   server.registerRoute('POST', '/routed-capture/plan', createRoutedPlanHandler({ logger }));
+  // Team Host — routed residency-rows ingest (Phase F T2). A with-history attach
+  // drains a project's rows here, one allow-listed table per request; the host
+  // applies them to its served Grove DB under the per-table residency apply rules.
+  // Stamped `collect` in host/routing.ts (as ROUTED_RESIDENCY_ROWS_PATH), so it
+  // rides the overlay bearer/version gate and is served locally on the host. The
+  // path is written as a literal here (the route-stamp completeness scanner only
+  // parses literal registerRoute paths); it MUST equal ROUTED_RESIDENCY_ROWS_PATH,
+  // pinned by tests/host/routed-residency.test.ts.
+  server.registerRoute('POST', '/routed-capture/residency-rows', createRoutedResidencyHandler({ logger }));
 
   // --- Context injection (cortex brief + semantic spore search) ---
   const contextDeps = {

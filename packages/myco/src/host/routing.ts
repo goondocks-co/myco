@@ -53,6 +53,7 @@ import { HOST_BEARER_SECRET } from '../constants.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { scopePolicyForPath } from '../config/scope.js';
 import { readHostSecrets, resolveAttach } from './registry.js';
+import { ROUTED_RESIDENCY_ROWS_PATH } from './residency-journal.js';
 
 /** The scope-map stamp a route carries. See the module docstring. */
 export type RouteStamp = 'serve' | 'collect' | 'degrade' | 'config-lock' | 'config-carve' | 'team-write' | 'localhost-only';
@@ -278,6 +279,15 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   // POSTs the content here; the host runs the SAME capturePlan against its Grove DB.
   // Origin-side capture, so `collect`: served locally on the host, proxied from a member.
   { method: 'POST', pattern: '/routed-capture/plan', stamp: 'collect', capability: COLLECTION },
+  // Routed residency-rows ingest — the host RECEIVE side of a with-history attach
+  // (Phase F T2). When a project attaches to a host WITH its local history, the
+  // member drains that project's rows (`host/residency-drain.ts`) one allow-listed
+  // table per request to this route; the host applies them to its served Grove DB
+  // under the per-table residency apply rules. Origin-side capture, so `collect`:
+  // it rides the overlay bearer/version gate, registers the hosted project on the
+  // first batch (the collect-stamped registration-on-ingest seam), and is served
+  // locally on the host, proxied from a member.
+  { method: 'POST', pattern: ROUTED_RESIDENCY_ROWS_PATH, stamp: 'collect', capability: COLLECTION },
 
   // --- degrade: Code intelligence (Canopy) OFF for hosted projects v1 (§1c, §2) ---
   { method: 'POST', pattern: '/canopy/inject', stamp: 'degrade', capability: CANOPY },
