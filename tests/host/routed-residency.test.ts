@@ -24,9 +24,9 @@ import {
   RESIDENCY_ALLOWED_TABLES,
   RESIDENCY_APPLY_RULES,
   applyResidencyRows,
-  createRoutedResidencyHandler,
   resetResidencyColumnCache,
-} from '@myco/host/routed-residency.js';
+} from '@myco/db/queries/residency-apply.js';
+import { createRoutedResidencyHandler } from '@myco/host/routed-residency.js';
 import { classifyRouteStamp, matchRouteRule, ROUTE_RULES } from '@myco/host/routing.js';
 import { ROUTED_RESIDENCY_ROWS_PATH } from '@myco/host/residency-journal.js';
 import {

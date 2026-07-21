@@ -1,0 +1,508 @@
+/**
+ * Residency apply engine (Phase F) — the ONE per-table rule matrix both transition
+ * directions run.
+ *
+ * Attach ingest (T2, `host/routed-residency.ts`) applies rows a member pushed to the
+ * host's served Grove; detach apply (T4, member side) applies rows the member pulled
+ * back into its local Grove. Both must converge on the SAME end state under the SAME
+ * rules, so the engine lives here — DB-layer, transport-free — and each side wraps it
+ * in its own transaction + HTTP/staging shell.
+ *
+ * The residency set spans three write disciplines a single upsert cannot serve:
+ *
+ *   - **if-newer** (spores, plans, artifacts, skills, OKF, release state, entities):
+ *     a monotonic timestamp orders versions, so a batch that arrives out of date
+ *     never regresses the target — the older row is skipped, not written, and still
+ *     counts as applied.
+ *   - **insert-only** (append-only logs: resolution/lineage/usage/revisions/edges):
+ *     rows are immutable once written, so a de-duping insert is correct and a replay
+ *     is a no-op.
+ *   - **field-merge** (`sessions`, `prompt_batches`): neither carries an `updated_at`
+ *     and both mutate heavily post-insert (title/summary enrichment, activity counts,
+ *     status transitions), so a whole-row replace would clobber one side's enrichment
+ *     with the other's stub. These merge per field: prefer a non-null incoming
+ *     enrichment value, take the NULL-safe max of monotonic counters, and never
+ *     regress a terminal status to an in-flight one.
+ *
+ * `applyResidencyRows` MUST run inside a caller-owned transaction so any failure rolls
+ * the whole batch back. Foreign keys stay ON: a child row that arrives before its
+ * parent TABLE fails the transaction and self-heals when the parent lands on a later
+ * tick. The one FK that never self-heals is `agents` (not in the residency set, lazily
+ * registered per DB) — every agent-referencing row therefore ensures a placeholder
+ * agent row first, mirroring the local `registerAgent`-before-write path so member
+ * knowledge is preserved rather than dropped.
+ */
+import { epochSeconds } from '@myco/constants.js';
+import type { Database } from '@myco/db/client.js';
+import { REBUILD_TABLES } from '@myco/db/queries/team-outbox.js';
+import type { Logger } from '@myco/daemon/logger.js';
+
+/** The two sidecar tables that ride the residency route but are not in
+ *  `REBUILD_TABLES` (no `id`/`synced_at` outbox contract). */
+const RESIDENCY_SIDECAR_TABLES = ['entity_mentions', 'content_publications'] as const;
+
+/**
+ * Every table a residency batch may target: the 18 `REBUILD_TABLES` plus the two
+ * sidecars. A batch naming anything else is member/host version skew (the protocol
+ * gate should have refused it). Exported so the ingest handler can 400 an unknown
+ * table and tests can assert the matrix covers the allow-list.
+ */
+export const RESIDENCY_ALLOWED_TABLES: ReadonlySet<string> = new Set<string>([
+  ...REBUILD_TABLES,
+  ...RESIDENCY_SIDECAR_TABLES,
+]);
+
+// ---------------------------------------------------------------------------
+// Apply-rule matrix (NORMATIVE) — one rule per allow-listed table.
+// ---------------------------------------------------------------------------
+
+/**
+ * Replace the existing row only when the incoming one is newer by `timestamp`
+ * (falling back to `fallbackTimestamp` when the primary is NULL, so a row that
+ * never set it still orders by a stable time rather than making every conflict a
+ * silent no-op). `tiebreak` breaks an exact-timestamp tie (skill generation).
+ * Older-or-equal incoming → skipped, counted as applied.
+ */
+interface IfNewerRule {
+  kind: 'if-newer';
+  timestamp: string;
+  fallbackTimestamp?: string;
+  tiebreak?: string;
+}
+
+/** if-newer keyed by a logical identity tuple rather than the PK — `digest_extracts`
+ *  is unique on `(project_id, agent_id, tier)`, so a member row with a different id
+ *  but the same identity updates the existing row in place. */
+interface IdentityRule {
+  kind: 'identity';
+  identity: string[];
+  timestamp: string;
+}
+
+/** Append-only: a de-duping `INSERT OR IGNORE` on the PK. Replays are no-ops. */
+interface InsertOnlyRule {
+  kind: 'insert-only';
+}
+
+/**
+ * Per-field merge for a table with no `updated_at` that mutates post-insert.
+ * `prefer` columns take a non-null incoming value (COALESCE), `max` columns take
+ * the NULL-safe maximum (monotonic counters + `ended_at`), `status` never regresses
+ * a terminal value to an in-flight one, and every other column is insert-only
+ * (kept as-is on conflict).
+ */
+interface FieldMergeRule {
+  kind: 'field-merge';
+  prefer: string[];
+  max: string[];
+}
+
+/** `content_publications`: upsert on `(artifact_kind, artifact_id)`, keeping the
+ *  MAX `published_generation` so a teammate's later publish never regresses. */
+interface PublicationsRule {
+  kind: 'publications';
+}
+
+/** `entity_mentions`: `INSERT OR IGNORE` on the four-column UNIQUE key; a row whose
+ *  `entity_id` FK is absent THROWS (retryable rollback) rather than being dropped. */
+interface EntityMentionsRule {
+  kind: 'entity-mentions';
+}
+
+/** A recognized table the residency drain never actually sends (`team_members` is
+ *  machine-scoped, has no `project_id`, and is excluded member-side). Allow-listed
+ *  for parity with `REBUILD_TABLES`, but applied as a no-op: writing a machine's
+ *  roster row into the host would corrupt the host's own roster. */
+interface IgnoreRule {
+  kind: 'ignore';
+}
+
+type ApplyRule =
+  | IfNewerRule
+  | IdentityRule
+  | InsertOnlyRule
+  | FieldMergeRule
+  | PublicationsRule
+  | EntityMentionsRule
+  | IgnoreRule;
+
+/**
+ * The normative per-table apply rule. Keyed exactly to {@link RESIDENCY_ALLOWED_TABLES};
+ * a table present in the allow-list but absent here is a programming error surfaced
+ * at apply time. Exported so tests can assert the matrix covers the allow-list.
+ */
+export const RESIDENCY_APPLY_RULES: Readonly<Record<string, ApplyRule>> = {
+  // -- if-newer via updated_at (fallback created_at for the nullable ones) --
+  spores: { kind: 'if-newer', timestamp: 'updated_at', fallbackTimestamp: 'created_at' },
+  plans: { kind: 'if-newer', timestamp: 'updated_at', fallbackTimestamp: 'created_at' },
+  artifacts: { kind: 'if-newer', timestamp: 'updated_at', fallbackTimestamp: 'created_at' },
+  skill_candidates: { kind: 'if-newer', timestamp: 'updated_at', fallbackTimestamp: 'created_at' },
+  skill_records: { kind: 'if-newer', timestamp: 'updated_at', fallbackTimestamp: 'created_at', tiebreak: 'generation' },
+  okf_generations: { kind: 'if-newer', timestamp: 'updated_at', fallbackTimestamp: 'created_at' },
+  okf_pages: { kind: 'if-newer', timestamp: 'updated_at', fallbackTimestamp: 'created_at' },
+  knowledge_release_state: { kind: 'if-newer', timestamp: 'updated_at', fallbackTimestamp: 'checked_at' },
+  // -- if-newer via a surrogate timestamp --
+  entities: { kind: 'if-newer', timestamp: 'last_seen' },
+  digest_extracts: { kind: 'identity', identity: ['project_id', 'agent_id', 'tier'], timestamp: 'generated_at' },
+  // -- insert-only (append-only logs) --
+  resolution_events: { kind: 'insert-only' },
+  skill_lineage: { kind: 'insert-only' },
+  skill_usage: { kind: 'insert-only' },
+  okf_page_revisions: { kind: 'insert-only' },
+  graph_edges: { kind: 'insert-only' },
+  // -- field-level merge (no updated_at; mutate post-insert) --
+  sessions: {
+    kind: 'field-merge',
+    prefer: ['title', 'summary', 'content_hash', 'parent_session_id', 'parent_session_reason', 'transcript_path'],
+    max: ['prompt_count', 'tool_count', 'ended_at', 'processed'],
+  },
+  prompt_batches: {
+    kind: 'field-merge',
+    prefer: ['user_prompt', 'response_summary', 'classification', 'content_hash', 'parent_prompt_batch_id', 'thread_id', 'thread_label'],
+    max: ['activity_count', 'ended_at', 'processed'],
+  },
+  // -- sidecars --
+  content_publications: { kind: 'publications' },
+  entity_mentions: { kind: 'entity-mentions' },
+  // -- recognized-but-never-sent --
+  team_members: { kind: 'ignore' },
+};
+
+/** Tables whose rows carry an `agent_id` that FKs `agents` (not in the residency
+ *  set) — every one ensures a placeholder agent row before its rows are applied. */
+const AGENT_REFERENCING_TABLES: ReadonlySet<string> = new Set<string>([
+  'spores', 'entities', 'graph_edges', 'resolution_events', 'digest_extracts',
+  'skill_candidates', 'skill_records', 'entity_mentions',
+]);
+
+/**
+ * Ranked session/batch status: a terminal value (completed/failed) outranks an
+ * in-flight one (active/processing), so a merge never regresses a finished row to
+ * active. An unknown status ranks lowest. Kept as SQL so the whole merge is one
+ * statement.
+ */
+function statusRankSql(col: string): string {
+  return `(CASE ${col} `
+    + `WHEN 'completed' THEN 3 WHEN 'failed' THEN 3 `
+    + `WHEN 'processing' THEN 2 WHEN 'active' THEN 1 ELSE 0 END)`;
+}
+
+/** NULL-safe max: prefer whichever side is non-null, else the larger. SQLite's
+ *  scalar `max()` returns NULL if ANY argument is NULL, which would drop a live
+ *  `ended_at` against a still-null one — this expression never does. */
+function nullSafeMaxSql(col: string): string {
+  return `CASE WHEN excluded.${col} IS NULL THEN ${col} `
+    + `WHEN ${col} IS NULL THEN excluded.${col} `
+    + `WHEN excluded.${col} > ${col} THEN excluded.${col} ELSE ${col} END`;
+}
+
+/** The freshness comparison for an if-newer rule (incoming strictly newer). */
+function ifNewerConditionSql(rule: IfNewerRule): string {
+  const inc = rule.fallbackTimestamp
+    ? `COALESCE(excluded.${rule.timestamp}, excluded.${rule.fallbackTimestamp})`
+    : `excluded.${rule.timestamp}`;
+  const cur = rule.fallbackTimestamp
+    ? `COALESCE(${rule.timestamp}, ${rule.fallbackTimestamp})`
+    : rule.timestamp;
+  const primary = `${inc} > ${cur}`;
+  if (!rule.tiebreak) return primary;
+  return `(${primary}) OR (${inc} = ${cur} AND excluded.${rule.tiebreak} > ${rule.tiebreak})`;
+}
+
+// ---------------------------------------------------------------------------
+// Column resolution + generic row inserts
+// ---------------------------------------------------------------------------
+
+const columnCache = new Map<string, Set<string>>();
+
+/** The real column set of a table (cached per process). A member row's keys are
+ *  intersected with this so a stray/renamed key never reaches the SQL. */
+function tableColumns(db: Database, table: string): Set<string> {
+  const cached = columnCache.get(table);
+  if (cached) return cached;
+  const cols = new Set(
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((r) => r.name),
+  );
+  columnCache.set(table, cols);
+  return cols;
+}
+
+/** Reset the per-process column cache. Tests that recreate the schema between
+ *  cases call this so a stale column set never leaks across DBs. */
+export function resetResidencyColumnCache(): void {
+  columnCache.clear();
+}
+
+/** The row's keys that are real columns of `table`, in a stable order. */
+function insertableColumns(row: Record<string, unknown>, columns: Set<string>): string[] {
+  return Object.keys(row).filter((k) => columns.has(k));
+}
+
+// ---------------------------------------------------------------------------
+// Placeholder agents (the un-shipped-FK closer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ensure a placeholder `agents` row exists for every `agent_id` the batch
+ * references, so the FK is satisfiable. `INSERT OR IGNORE` never overwrites a real
+ * agent the host already has (its own intelligence run, or an earlier ensure); a
+ * later real `registerAgent` upserts over the placeholder (its `ON CONFLICT DO
+ * UPDATE` overwrites name/source/enabled/config). Mirrors the local write path,
+ * where `registerAgent` runs before any agent-referencing write.
+ *
+ * The placeholder is a FK + attribution anchor, never a runnable agent, so it is
+ * `enabled = 0` and carries the `hosted-residency` source sentinel: nothing
+ * enumerates the table to RUN agents (execution is loader-driven from task YAML),
+ * and the loader's seed check is `source = 'built-in'`-filtered, so a placeholder
+ * neither runs nor blocks registering the real agent — that registration upgrades
+ * this row in place.
+ */
+function ensureReferencedAgents(db: Database, rows: Record<string, unknown>[], now: number): void {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const agentId = row.agent_id;
+    if (typeof agentId === 'string' && agentId) ids.add(agentId);
+  }
+  if (ids.size === 0) return;
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at)
+     VALUES (?, ?, 'hosted-residency', 0, ?)`,
+  );
+  for (const id of ids) stmt.run(id, id, now);
+}
+
+// ---------------------------------------------------------------------------
+// Per-kind apply
+// ---------------------------------------------------------------------------
+
+/** Order rows so any row whose self-referential parent is ALSO in the batch comes
+ *  after its parent (`prompt_batches.parent_prompt_batch_id`), so a forward
+ *  reference never fails the transaction. A reference to a parent NOT in the batch
+ *  (already in the DB, or genuinely absent) is left in place — present-in-DB
+ *  satisfies the FK, absent fails and self-heals on retry. Stable; a cycle (never
+ *  produced by capture) falls through in original order. */
+function topoSortBySelfRef(
+  rows: Record<string, unknown>[],
+  idKey: string,
+  parentKey: string,
+): Record<string, unknown>[] {
+  const idsInBatch = new Set(rows.map((r) => r[idKey]).filter((v) => v != null));
+  const emitted = new Set<unknown>();
+  const result: Record<string, unknown>[] = [];
+  let remaining = rows;
+  while (remaining.length > 0) {
+    const next: Record<string, unknown>[] = [];
+    let progressed = false;
+    for (const row of remaining) {
+      const parent = row[parentKey];
+      if (parent == null || !idsInBatch.has(parent) || emitted.has(parent)) {
+        result.push(row);
+        emitted.add(row[idKey]);
+        progressed = true;
+      } else {
+        next.push(row);
+      }
+    }
+    if (!progressed) { result.push(...next); break; }
+    remaining = next;
+  }
+  return result;
+}
+
+/** Build an `INSERT [OR IGNORE]` for one row over its insertable columns. */
+function insertRow(
+  db: Database,
+  table: string,
+  row: Record<string, unknown>,
+  columns: string[],
+  orIgnore: boolean,
+): void {
+  const placeholders = columns.map(() => '?').join(', ');
+  db.prepare(
+    `INSERT ${orIgnore ? 'OR IGNORE ' : ''}INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`,
+  ).run(...columns.map((c) => row[c] as never));
+}
+
+/** if-newer / field-merge insert with an ON CONFLICT(id) DO UPDATE clause. */
+function upsertRow(
+  db: Database,
+  table: string,
+  row: Record<string, unknown>,
+  columns: string[],
+  setClause: string,
+  whereClause: string | null,
+): void {
+  const placeholders = columns.map(() => '?').join(', ');
+  const where = whereClause ? ` WHERE ${whereClause}` : '';
+  db.prepare(
+    `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`
+    + ` ON CONFLICT(id) DO UPDATE SET ${setClause}${where}`,
+  ).run(...columns.map((c) => row[c] as never));
+}
+
+/** if-newer: whole-row replace on conflict, guarded by the freshness condition. */
+function applyIfNewer(db: Database, table: string, rows: Record<string, unknown>[], rule: IfNewerRule): void {
+  const columns = tableColumns(db, table);
+  const where = ifNewerConditionSql(rule);
+  for (const row of rows) {
+    const cols = insertableColumns(row, columns);
+    const setClause = cols.filter((c) => c !== 'id').map((c) => `${c} = excluded.${c}`).join(', ');
+    if (!setClause) { insertRow(db, table, row, cols, true); continue; }
+    upsertRow(db, table, row, cols, setClause, where);
+  }
+}
+
+/** field-merge: per-field COALESCE / NULL-safe-max / status-rank on conflict. */
+function applyFieldMerge(db: Database, table: string, rows: Record<string, unknown>[], rule: FieldMergeRule): void {
+  const columns = tableColumns(db, table);
+  const preferSet = new Set(rule.prefer);
+  const maxSet = new Set(rule.max);
+  const ordered = table === 'prompt_batches'
+    ? topoSortBySelfRef(rows, 'id', 'parent_prompt_batch_id')
+    : rows;
+  for (const row of ordered) {
+    const cols = insertableColumns(row, columns);
+    const setParts: string[] = [];
+    for (const c of cols) {
+      if (c === 'id') continue;
+      if (preferSet.has(c)) setParts.push(`${c} = COALESCE(excluded.${c}, ${c})`);
+      else if (maxSet.has(c)) setParts.push(`${c} = ${nullSafeMaxSql(c)}`);
+      else if (c === 'status') setParts.push(`status = CASE WHEN ${statusRankSql('excluded.status')} > ${statusRankSql('status')} THEN excluded.status ELSE status END`);
+      // any other column is insert-only: kept as-is on conflict (absent from SET).
+    }
+    if (setParts.length === 0) { insertRow(db, table, row, cols, true); continue; }
+    upsertRow(db, table, row, cols, setParts.join(', '), null);
+  }
+}
+
+/** identity upsert (`digest_extracts`): resolve by identity tuple, replace when
+ *  the incoming row is newer by `timestamp`, keeping the existing PK. */
+function applyIdentity(db: Database, table: string, rows: Record<string, unknown>[], rule: IdentityRule): void {
+  const columns = tableColumns(db, table);
+  const mutable = [...columns].filter((c) => c !== 'id' && !rule.identity.includes(c));
+  for (const row of rows) {
+    const whereParts: string[] = [];
+    const whereParams: unknown[] = [];
+    for (const key of rule.identity) {
+      if (row[key] == null) { whereParts.push(`${key} IS NULL`); }
+      else { whereParts.push(`${key} = ?`); whereParams.push(row[key]); }
+    }
+    const existing = db.prepare(
+      `SELECT id, ${rule.timestamp} AS ts FROM ${table} WHERE ${whereParts.join(' AND ')}`,
+    ).get(...(whereParams as never[])) as { id: string; ts: number } | undefined;
+
+    if (!existing) {
+      insertRow(db, table, row, insertableColumns(row, columns), false);
+      continue;
+    }
+    const incomingTs = row[rule.timestamp];
+    if (typeof incomingTs === 'number' && incomingTs > existing.ts) {
+      const setCols = mutable.filter((c) => c in row);
+      if (setCols.length > 0) {
+        db.prepare(
+          `UPDATE ${table} SET ${setCols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`,
+        ).run(...setCols.map((c) => row[c] as never), existing.id);
+      }
+    }
+    // else: existing is newer-or-equal — skip, counted as applied.
+  }
+}
+
+/** content_publications: MAX-generation upsert on the composite PK. */
+function applyPublications(db: Database, rows: Record<string, unknown>[]): void {
+  const columns = tableColumns(db, 'content_publications');
+  for (const row of rows) {
+    const cols = insertableColumns(row, columns);
+    const placeholders = cols.map(() => '?').join(', ');
+    // Adopt the newer publish's metadata only when its generation is strictly
+    // higher; otherwise keep existing and only raise the generation to the max.
+    const setParts = cols
+      .filter((c) => c !== 'artifact_kind' && c !== 'artifact_id')
+      .map((c) => c === 'published_generation'
+        ? `published_generation = MAX(excluded.published_generation, content_publications.published_generation)`
+        : `${c} = CASE WHEN excluded.published_generation > content_publications.published_generation THEN excluded.${c} ELSE content_publications.${c} END`);
+    db.prepare(
+      `INSERT INTO content_publications (${cols.join(', ')}) VALUES (${placeholders})`
+      + ` ON CONFLICT(artifact_kind, artifact_id) DO UPDATE SET ${setParts.join(', ')}`,
+    ).run(...cols.map((c) => row[c] as never));
+  }
+}
+
+/**
+ * entity_mentions: dedup on the four-column UNIQUE key. The row FKs `entities(id)`
+ * and `agents(id)`; agents are ensured before this runs (agent-referencing table),
+ * so the only FK that can miss is `entities`. An absent entity THROWS — rolling the
+ * whole batch back to a retryable failure — rather than being silently dropped:
+ * entities always precede mentions in the send order, so it self-heals on the next
+ * tick, and a genuinely-orphaned mention surfaces loudly instead of being acked and
+ * lost. `INSERT OR IGNORE` dedups an already-present mention — the idempotent replay
+ * path — but never swallows the FK violation.
+ */
+function applyEntityMentions(db: Database, rows: Record<string, unknown>[]): void {
+  const columns = tableColumns(db, 'entity_mentions');
+  const entityStmt = db.prepare('SELECT 1 FROM entities WHERE id = ?');
+  for (const row of rows) {
+    if (!entityStmt.get(row.entity_id as never)) {
+      throw new Error(`entity_mentions references an absent entity ${String(row.entity_id)}`);
+    }
+    insertRow(db, 'entity_mentions', row, insertableColumns(row, columns), true);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Batch apply (one transaction)
+// ---------------------------------------------------------------------------
+
+export interface ResidencyApplyResult {
+  /** Rows the batch handled — written, deduped, or skipped-as-stale (if-newer).
+   *  A batch that fails any row throws (rollback) instead of returning a count. */
+  applied: number;
+}
+
+/**
+ * Apply one table's rows under its rule. MUST run inside a transaction (the caller
+ * wraps it) so a throw rolls the whole batch back. Ensures referenced agents first
+ * for agent-bearing tables. Every row is applied or the whole batch throws — there
+ * is no silent-drop path (an absent FK, including an entity_mentions orphan, rolls
+ * back to a retryable failure). `logger` is retained for signature stability (both
+ * transition directions call this) even where the apply itself is silent.
+ */
+export function applyResidencyRows(
+  db: Database,
+  table: string,
+  rows: Record<string, unknown>[],
+  deps: { logger?: Logger } = {},
+): ResidencyApplyResult {
+  const rule = RESIDENCY_APPLY_RULES[table];
+  if (!rule) throw new Error(`no residency apply rule for table ${table}`);
+  if (rows.length === 0) return { applied: 0 };
+
+  if (AGENT_REFERENCING_TABLES.has(table)) {
+    ensureReferencedAgents(db, rows, epochSeconds());
+  }
+
+  switch (rule.kind) {
+    case 'if-newer':
+      applyIfNewer(db, table, rows, rule);
+      break;
+    case 'identity':
+      applyIdentity(db, table, rows, rule);
+      break;
+    case 'insert-only':
+      for (const row of rows) insertRow(db, table, row, insertableColumns(row, tableColumns(db, table)), true);
+      break;
+    case 'field-merge':
+      applyFieldMerge(db, table, rows, rule);
+      break;
+    case 'publications':
+      applyPublications(db, rows);
+      break;
+    case 'entity-mentions':
+      applyEntityMentions(db, rows);
+      break;
+    case 'ignore':
+      // Recognized but never sent by the drain (team_members is machine-scoped).
+      break;
+  }
+  return { applied: rows.length };
+}
