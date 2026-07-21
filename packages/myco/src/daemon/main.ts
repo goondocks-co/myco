@@ -207,7 +207,7 @@ import { createRoutedResidencyPullHandler } from '../host/routed-residency-pull.
 import type { RemoteTarget } from '../host/routing.js';
 import { pruneHostedProjects } from '../host/hosted-projects.js';
 import { abortResidency, beginAttachResidency, beginDetachResidency, residencyStatus, type ResidencyDaemonDeps } from '../host/residency-transition.js';
-import { countResidencyInFlight, runResidencyTransitions } from '../host/residency-drain.js';
+import { countResidencyInFlight, createResidencyKicker, runResidencyTransitions } from '../host/residency-drain.js';
 import { applyResidencyRows } from '../db/queries/residency-apply.js';
 import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
 import { createPlanDrainQueue } from '../capture/plan-drain.js';
@@ -1611,6 +1611,14 @@ export async function main(): Promise<void> {
       );
     },
   };
+  // One serialized runner drives BOTH the immediate kick (on begin/abort) and the
+  // periodic job, so a user-initiated transition starts in milliseconds instead
+  // of waiting out the housekeeping round-robin — with no overlapping passes.
+  const residencyKicker = createResidencyKicker(() => runResidencyTransitions({
+    ...residencyDeps,
+    applyStagedRows: (db, table, rows) => { applyResidencyRows(db, table, rows, { logger }); },
+  }));
+  residencyDeps.kickResidencyDrain = residencyKicker.kick;
 
   // Team Host MEMBERSHIP lifecycle (consolidation Task D-2): join/leave/
   // attach/detach as daemon API, the Team page's primary write surface (the
@@ -2515,21 +2523,21 @@ export async function main(): Promise<void> {
   // any transition is unfinished, so a half-moved project is never abandoned to
   // sleep. Runs in every power state, like the other member drains.
   //
-  // `applyStagedRows` wires the detach apply to the SHARED engine
-  // (`db/queries/residency-apply.ts`), so the member re-materialize applies with
-  // the same per-table rules as the host ingest. The drain wraps it in one
-  // transaction; the engine throws on an absent FK, which rolls the batch back
-  // and leaves the journal in `applying` to retry — never a silent skip.
+  // `applyStagedRows` (baked into residencyKicker's runPass above) wires the
+  // detach apply to the SHARED engine (`db/queries/residency-apply.ts`), so the
+  // member re-materialize applies with the same per-table rules as the host
+  // ingest, in one transaction; the engine throws on an absent FK, rolling the
+  // batch back and leaving the journal in `applying` to retry — never a silent
+  // skip. This periodic job is the retry/resume backstop; the on-begin/abort
+  // kick (residencyDeps.kickResidencyDrain) drives the SAME serialized runner for
+  // immediate progress.
   jobRunner.register({
     name: 'residency-transition',
     runIn: ['active', 'idle', 'sleep'],
     kind: 'housekeeping',
     hold: { pending: () => countResidencyInFlight() },
     fn: async () => {
-      await runResidencyTransitions({
-        ...residencyDeps,
-        applyStagedRows: (db, table, rows) => { applyResidencyRows(db, table, rows, { logger }); },
-      });
+      await residencyKicker.run();
     },
   });
 

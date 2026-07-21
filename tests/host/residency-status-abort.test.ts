@@ -197,6 +197,21 @@ describe('abortResidency — the abort matrix', () => {
     }
   });
 
+  test('a successful abort kicks a drain pass (so any other in-flight transition resumes promptly)', () => {
+    const source = createGrove('Source', home);
+    const host = makeHost();
+    upsertHost(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachProject(host.host_id, { grove_id: host.served_grove_id!, project_id: projectId, root }, home);
+    attachJournal(projectId, source.id, host, root, 'pushing');
+
+    let kicked = 0;
+    abortResidency(projectId, { ...baseDeps(), kickResidencyDrain: () => { kicked += 1; } });
+
+    expect(kicked).toBe(1);
+  });
+
   test('no in-flight transition: refuses residency_abort_too_late', () => {
     try {
       abortResidency(createProjectId(), baseDeps());

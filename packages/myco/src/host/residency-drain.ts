@@ -269,6 +269,39 @@ export function countResidencyInFlight(teamsHome?: string): number {
 }
 
 /**
+ * Serialize residency drain passes into a single-flight runner + a one-shot
+ * kick. `run()` never overlaps itself: a call while a pass is in flight sets a
+ * pending flag and returns, and the in-flight pass loops once more when it
+ * finishes (coalescing bursts of kicks into one follow-up pass, so a begin's
+ * kick can't race the periodic job into a double pass). `kick()` schedules a
+ * `run()` on the next tick — used AFTER a route response is sent, so a begin's
+ * transition starts in milliseconds instead of waiting for the housekeeping
+ * round-robin. The periodic job also drives `run()`, so failures/restarts still
+ * resume. `schedule` is injectable for deterministic tests (default setImmediate).
+ */
+export function createResidencyKicker(
+  runPass: () => Promise<unknown>,
+  schedule: (fn: () => void) => void = (fn) => { setImmediate(fn); },
+): { run: () => Promise<void>; kick: () => void } {
+  let running = false;
+  let pending = false;
+  const run = async (): Promise<void> => {
+    if (running) { pending = true; return; }
+    running = true;
+    try {
+      do {
+        pending = false;
+        await runPass();
+      } while (pending);
+    } finally {
+      running = false;
+    }
+  };
+  const kick = (): void => { schedule(() => { void run(); }); };
+  return { run, kick };
+}
+
+/**
  * Per-host residency drain health for the drain-health surface (T6): each
  * in-flight journal is a pending entry for its host, and one carrying a
  * `last_error` stamp is a failing entry. Residency does not classify

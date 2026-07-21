@@ -24,6 +24,7 @@ import { upsertHost, type HostRecord } from '@myco/host/registry.js';
 import { abortResidency, beginAttachResidency, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import {
   countResidencyInFlight,
+  createResidencyKicker,
   runResidencyTransitions,
   type ResidencyPostTransport,
   type ResolveResidencyTarget,
@@ -283,5 +284,40 @@ describe('residency drain — abort races the drain', () => {
     expect(countProjectRows(projectId)).toBe(rowsBefore);
     expect(findRegisteredProjectById(projectId, home)?.grove.id).toBe(source.id); // restored by abort
     expect(readResidencyJournal(projectId)).toBeNull(); // aborted
+  });
+});
+
+describe('createResidencyKicker — single-flight + coalesce', () => {
+  test('run() never overlaps and coalesces a burst of concurrent runs into ONE follow-up pass', async () => {
+    let calls = 0;
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((r) => { releaseFirst = r; });
+    const runPass = async () => { calls += 1; if (calls === 1) await firstGate; };
+    const { run } = createResidencyKicker(runPass, (fn) => fn());
+
+    const first = run(); // pass 1 starts, awaits the gate
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    const second = run(); // in-flight → coalesces (pending), no new pass
+    const third = run();
+    await Promise.resolve();
+    expect(calls).toBe(1); // still exactly one pass running, no overlap
+
+    releaseFirst(); // pass 1 finishes → ONE follow-up for the coalesced kicks
+    await Promise.all([first, second, third]);
+    expect(calls).toBe(2); // two passes total, not four
+  });
+
+  test('kick() schedules a run via the injected scheduler, not synchronously', async () => {
+    let calls = 0;
+    let scheduled: (() => void) | null = null;
+    const { kick } = createResidencyKicker(async () => { calls += 1; }, (fn) => { scheduled = fn; });
+
+    kick();
+    expect(calls).toBe(0); // deferred to the scheduler, not run inline
+    scheduled!();
+    await Promise.resolve();
+    expect(calls).toBe(1);
   });
 });

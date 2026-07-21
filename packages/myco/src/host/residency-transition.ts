@@ -57,6 +57,16 @@ export interface ResidencyDaemonDeps {
   withGroveDb: <T>(groveId: string, fn: (db: Database) => T) => T;
   logger?: Pick<DaemonLogger, 'info' | 'warn'>;
   now?: () => number;
+  /**
+   * Kick an immediate residency drain pass (mirrors the capture live-forward
+   * pattern). Called after a begin/abort writes its journal so the transition
+   * makes progress in milliseconds instead of waiting for the housekeeping
+   * round-robin to re-dispatch the periodic job (which starved a live detach for
+   * 20+ minutes). Wired in `daemon/main.ts` to a serialized one-shot pass — a
+   * kick during a running pass coalesces, never overlaps. The periodic job stays
+   * the retry/resume driver for failures, restarts, and backoff.
+   */
+  kickResidencyDrain?: () => void;
 }
 
 /**
@@ -121,6 +131,9 @@ export function beginAttachResidency(
     host_id: ctx.hostId,
     grove_id: divertGroveId,
   });
+
+  // Live-forward: run the first drain pass now, don't wait for the periodic job.
+  deps.kickResidencyDrain?.();
 
   return {
     projectId: ctx.projectId,
@@ -277,6 +290,8 @@ export function abortResidency(projectId: string, deps: ResidencyDaemonDeps): { 
       backup_ref: journal.backup_ref,
     });
     clearResidencyJournal(projectId);
+    // Kick a pass so any OTHER in-flight transition resumes promptly.
+    deps.kickResidencyDrain?.();
     return { ok: true };
   }
 
@@ -286,6 +301,7 @@ export function abortResidency(projectId: string, deps: ResidencyDaemonDeps): { 
     deps.logger?.info(LOG_KINDS.RESIDENCY_ABORT, 'residency detach aborted before flip — still attached', {
       project_id: projectId,
     });
+    deps.kickResidencyDrain?.();
     return { ok: true };
   }
 
@@ -352,6 +368,9 @@ export function beginDetachResidency(ctx: ResidencyDetachContext, deps: Residenc
     host_id: ctx.hostId,
     target_grove_id: targetGroveId,
   });
+
+  // Live-forward: run the first pull pass now, don't wait for the periodic job.
+  deps.kickResidencyDrain?.();
 
   return { projectId: ctx.projectId, detachedFromHostId: ctx.hostId };
 }

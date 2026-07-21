@@ -140,6 +140,24 @@ describe('beginAttachResidency', () => {
     expect(result.alreadyAttached).toBe(false);
   });
 
+  test('kicks an immediate drain pass on begin (live-forward, not left to the housekeeping round-robin)', () => {
+    const source = createGrove('Source', home);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    registerProjectInGrove(source.id, { projectId, projectName: 'demo', projectRoot: root }, home);
+    seedProjectRows(projectId);
+    const host = makeHost();
+    upsertHost(host);
+
+    let kicked = 0;
+    beginAttachResidency(
+      { hostId: host.host_id, host, projectId, sourceGroveId: source.id, root, mycoHome: home },
+      { ...deps(), kickResidencyDrain: () => { kicked += 1; } },
+    );
+
+    expect(kicked).toBe(1);
+  });
+
   test('protocol gate: a host below the residency protocol refuses AND clears the journal (nothing moved)', () => {
     const source = createGrove('Source', home);
     const projectId = createProjectId();
