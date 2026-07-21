@@ -444,26 +444,26 @@ function applyPublications(db: Database, rows: Record<string, unknown>[]): void 
   }
 }
 
-/** The result of an entity_mentions apply: which rows were dropped for an absent FK. */
-interface EntityMentionsResult {
-  skipped: number;
-}
-
-/** entity_mentions: dedup on the four-column key, skipping rows whose `entity_id`
- *  or `agent_id` is absent (an FK an OR IGNORE would surface as a hard error). */
-function applyEntityMentions(db: Database, rows: Record<string, unknown>[]): EntityMentionsResult {
+/**
+ * entity_mentions: dedup on the four-column UNIQUE key. The row FKs `entities(id)`
+ * and `agents(id)`; agents are ensured before this runs (agent-referencing table),
+ * so the only FK that can miss is `entities`. An absent entity THROWS — rolling the
+ * whole batch back to a retryable 409 — rather than being silently dropped: entities
+ * always precede mentions in the send order, so it self-heals on the next tick, and
+ * a genuinely-orphaned mention surfaces loudly instead of being acked and lost (the
+ * one break the skip-and-count version left in the otherwise-uniform self-heal
+ * contract). `INSERT OR IGNORE` dedups an already-present mention — the idempotent
+ * replay path — but never swallows the FK violation.
+ */
+function applyEntityMentions(db: Database, rows: Record<string, unknown>[]): void {
   const columns = tableColumns(db, 'entity_mentions');
   const entityStmt = db.prepare('SELECT 1 FROM entities WHERE id = ?');
-  const agentStmt = db.prepare('SELECT 1 FROM agents WHERE id = ?');
-  let skipped = 0;
   for (const row of rows) {
-    if (!entityStmt.get(row.entity_id as never) || !agentStmt.get(row.agent_id as never)) {
-      skipped += 1;
-      continue;
+    if (!entityStmt.get(row.entity_id as never)) {
+      throw new Error(`entity_mentions references an absent entity ${String(row.entity_id)}`);
     }
     insertRow(db, 'entity_mentions', row, insertableColumns(row, columns), true);
   }
-  return { skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -471,17 +471,18 @@ function applyEntityMentions(db: Database, rows: Record<string, unknown>[]): Ent
 // ---------------------------------------------------------------------------
 
 export interface ResidencyApplyResult {
+  /** Rows the batch handled — written, deduped, or skipped-as-stale (if-newer).
+   *  A batch that fails any row throws (rollback) instead of returning a count. */
   applied: number;
-  /** entity_mentions rows dropped for an absent entity/agent FK (0 for other tables). */
-  skippedAbsentFk: number;
 }
 
 /**
  * Apply one table's rows under its rule. MUST run inside a transaction (the caller
  * wraps it) so a throw rolls the whole batch back. Ensures referenced agents first
- * for agent-bearing tables. `applied` counts every row the batch handled
- * (written, deduped, or skipped-as-stale); absent-FK entity_mention drops are
- * reported separately.
+ * for agent-bearing tables. Every row is applied or the whole batch throws — there
+ * is no silent-drop path (an absent FK, including an entity_mentions orphan,
+ * rolls back to a retryable failure). `logger` is retained for signature stability
+ * (both transition directions call this) even where the apply itself is silent.
  */
 export function applyResidencyRows(
   db: Database,
@@ -491,7 +492,7 @@ export function applyResidencyRows(
 ): ResidencyApplyResult {
   const rule = RESIDENCY_APPLY_RULES[table];
   if (!rule) throw new Error(`no residency apply rule for table ${table}`);
-  if (rows.length === 0) return { applied: 0, skippedAbsentFk: 0 };
+  if (rows.length === 0) return { applied: 0 };
 
   if (AGENT_REFERENCING_TABLES.has(table)) {
     ensureReferencedAgents(db, rows, epochSeconds());
@@ -500,32 +501,27 @@ export function applyResidencyRows(
   switch (rule.kind) {
     case 'if-newer':
       applyIfNewer(db, table, rows, rule);
-      return { applied: rows.length, skippedAbsentFk: 0 };
+      break;
     case 'identity':
       applyIdentity(db, table, rows, rule);
-      return { applied: rows.length, skippedAbsentFk: 0 };
+      break;
     case 'insert-only':
       for (const row of rows) insertRow(db, table, row, insertableColumns(row, tableColumns(db, table)), true);
-      return { applied: rows.length, skippedAbsentFk: 0 };
+      break;
     case 'field-merge':
       applyFieldMerge(db, table, rows, rule);
-      return { applied: rows.length, skippedAbsentFk: 0 };
+      break;
     case 'publications':
       applyPublications(db, rows);
-      return { applied: rows.length, skippedAbsentFk: 0 };
-    case 'entity-mentions': {
-      const { skipped } = applyEntityMentions(db, rows);
-      if (skipped > 0 && shouldLogOncePerInterval('residency.entity_mentions_absent_fk', INGEST_LOG_INTERVAL_MS)) {
-        deps.logger?.warn(LOG_KINDS.RESIDENCY_ATTACH_PUSH, 'Skipped entity_mentions rows with an absent entity/agent', {
-          skipped,
-        });
-      }
-      return { applied: rows.length - skipped, skippedAbsentFk: skipped };
-    }
+      break;
+    case 'entity-mentions':
+      applyEntityMentions(db, rows);
+      break;
     case 'ignore':
       // Recognized but never sent by the drain (team_members is machine-scoped).
-      return { applied: rows.length, skippedAbsentFk: 0 };
+      break;
   }
+  return { applied: rows.length };
 }
 
 // ---------------------------------------------------------------------------

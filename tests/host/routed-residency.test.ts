@@ -468,17 +468,15 @@ describe('residency entity_mentions absent-FK handling', () => {
     return db.transaction(() => applyResidencyRows(db, table, rows))();
   }
 
-  test('a mention whose entity is absent is skipped, not FK-failed; a satisfiable one applies', () => {
-    // Seed a real entity (which ensure-agents its agent_id too).
+  test('an absent-entity mention throws and rolls the WHOLE batch back (no partial, never silently dropped)', () => {
+    // e1 exists; the orphan references an absent entity. The batch must not
+    // half-apply — the good row rolls back with the orphan (one transaction).
     apply('entities', [{ id: 'e1', project_id: PROJ, agent_id: 'myco-agent', type: 't', name: 'n', first_seen: NOW, last_seen: NOW, status: 'active' }]);
-
     const good = { project_id: PROJ, entity_id: 'e1', note_id: 'sp1', note_type: 'spore', agent_id: 'myco-agent', machine_id: 'm' };
     const orphan = { project_id: PROJ, entity_id: 'MISSING', note_id: 'sp2', note_type: 'spore', agent_id: 'myco-agent', machine_id: 'm' };
 
-    const result = apply('entity_mentions', [good, orphan]);
-    // The orphan was skipped (not a transaction-killing FK error); the good one applied.
-    expect(result.skippedAbsentFk).toBe(1);
-    expect(count('entity_mentions')).toBe(1);
+    expect(() => apply('entity_mentions', [good, orphan])).toThrow();
+    expect(count('entity_mentions')).toBe(0);
   });
 
   test('entity_mentions dedups on the four-column key', () => {
@@ -543,5 +541,32 @@ describe('residency ingest handler', () => {
     const retry = await post({ table: 'spores', rows: [orphanSpore] });
     expect(retry.status).toBe(200);
     expect(count('spores')).toBe(1);
+  });
+
+  test('an entity_mentions batch before its entity self-heals: 409, nothing written, then 200 after entities land', async () => {
+    const mentions = [
+      { project_id: PROJ, entity_id: 'e1', note_id: 'sp1', note_type: 'spore', agent_id: 'myco-agent', machine_id: 'm' },
+      { project_id: PROJ, entity_id: 'e1', note_id: 'sp2', note_type: 'spore', agent_id: 'myco-agent', machine_id: 'm' },
+    ];
+    // Mentions arrive before entity e1 exists → retryable 409, whole batch rolled back.
+    const first = await post({ table: 'entity_mentions', rows: mentions });
+    expect(first.status).toBe(409);
+    expect(first.body.retryable).toBe(true);
+    expect(count('entity_mentions')).toBe(0);
+
+    // The entities batch lands (entities precede mentions in the send order)...
+    expect((await post({ table: 'entities', rows: [{ id: 'e1', project_id: PROJ, agent_id: 'myco-agent', type: 't', name: 'n', first_seen: NOW, last_seen: NOW, status: 'active' }] })).status).toBe(200);
+    // ...and the identical retried mentions batch now applies.
+    const retry = await post({ table: 'entity_mentions', rows: mentions });
+    expect(retry.status).toBe(200);
+    expect(count('entity_mentions')).toBe(2);
+  });
+
+  test('a genuinely-orphaned mention keeps surfacing as a retryable 409 (never acked-and-lost)', async () => {
+    const res = await post({ table: 'entity_mentions', rows: [
+      { project_id: PROJ, entity_id: 'never_lands', note_id: 'sp1', note_type: 'spore', agent_id: 'myco-agent', machine_id: 'm' },
+    ] });
+    expect(res.status).toBe(409);
+    expect(count('entity_mentions')).toBe(0);
   });
 });
