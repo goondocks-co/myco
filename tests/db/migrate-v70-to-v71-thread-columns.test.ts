@@ -17,6 +17,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
+import { createGroveEraId } from '@myco/grove/ids.js';
 
 function columnNames(db: Database, table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
@@ -37,20 +38,25 @@ function seedV70Db(): Database {
   db.exec('DROP INDEX IF EXISTS idx_prompt_batches_session_thread');
   db.exec('ALTER TABLE prompt_batches DROP COLUMN thread_id');
   db.exec('ALTER TABLE prompt_batches DROP COLUMN thread_label');
-  db.prepare('DELETE FROM schema_version WHERE version > 70').run();
+  // createSchema stamps only the final version, so clearing >70 would empty the
+  // table and force a full replay from v2 (which re-runs the v34 rebuild). Stamp
+  // exactly 70 so only migrateV70ToV71 applies on the next createSchema.
+  db.exec('DELETE FROM schema_version');
+  db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (70, 0)').run();
   return db;
 }
 
-function seedSessionAndBatch(db: Database, sessionId: string, batchOverrides: Record<string, unknown> = {}): number {
+function seedSessionAndBatch(db: Database, sessionId: string, batchOverrides: Record<string, unknown> = {}): string {
   db.prepare(`INSERT OR IGNORE INTO agents (id, name, created_at) VALUES ('agent-1', 'Agent', 1000)`).run();
   db.prepare(
     `INSERT INTO sessions (id, agent, started_at, created_at) VALUES (?, 'test', 1000, 1000)`,
   ).run(sessionId);
   const userPrompt = (batchOverrides.user_prompt as string) ?? 'hello world';
-  const result = db.prepare(
-    `INSERT INTO prompt_batches (session_id, user_prompt, created_at) VALUES (?, ?, 1000)`,
-  ).run(sessionId, userPrompt);
-  return Number(result.lastInsertRowid);
+  const batchId = createGroveEraId('prompt_batch');
+  db.prepare(
+    `INSERT INTO prompt_batches (id, session_id, user_prompt, created_at) VALUES (?, ?, ?, 1000)`,
+  ).run(batchId, sessionId, userPrompt);
+  return batchId;
 }
 
 describe('migrateV70ToV71 — prompt_batches thread_id/thread_label', () => {

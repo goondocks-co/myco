@@ -16,7 +16,7 @@ export interface CaptureGitProvenanceInput {
   projectId?: string | null;
   machineId?: string;
   sessionId?: string | null;
-  promptBatchId?: number | null;
+  promptBatchId?: string | null;
   capturePoint: ReleaseCapturePoint;
   capturedAt?: number;
   productionRef?: string | null;

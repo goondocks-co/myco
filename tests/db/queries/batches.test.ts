@@ -24,7 +24,7 @@ import {
   setResponseSummary,
 } from '@myco/db/queries/batches.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
-import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, isGroveEraId, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -75,7 +75,7 @@ describe('prompt batch query helpers', () => {
       const data = makeBatch(sessionId, { user_prompt: 'Hello world' });
       const row = insertBatch(data);
 
-      expect(row.id).toBeGreaterThan(0);
+      expect(isGroveEraId(row.id, 'prompt_batch')).toBe(true);
       expect(row.session_id).toBe(sessionId);
       expect(row.user_prompt).toBe('Hello world');
       expect(row.status).toBe('active');
@@ -83,11 +83,13 @@ describe('prompt batch query helpers', () => {
       expect(row.processed).toBe(0);
     });
 
-    it('assigns sequential ids', () => {
+    it('assigns distinct grove-era ids', () => {
       const b1 = insertBatch(makeBatch(sessionId));
       const b2 = insertBatch(makeBatch(sessionId));
 
-      expect(b2.id).toBeGreaterThan(b1.id);
+      expect(isGroveEraId(b1.id, 'prompt_batch')).toBe(true);
+      expect(isGroveEraId(b2.id, 'prompt_batch')).toBe(true);
+      expect(b2.id).not.toBe(b1.id);
     });
 
     it('atomically bumps sessions.prompt_count without an explicit caller update', async () => {

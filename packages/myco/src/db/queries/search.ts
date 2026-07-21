@@ -162,12 +162,12 @@ export function fullTextSearch(
               substr(COALESCE(pb.user_prompt, '') || ' ' || COALESCE(pb.response_summary, ''), 1, ?) AS preview,
               fts.rank
        FROM prompt_batches_fts fts
-       JOIN prompt_batches pb ON pb.id = fts.rowid
+       JOIN prompt_batches pb ON pb.rowid = fts.rowid
        WHERE ${conditions.join(' AND ')}
        ORDER BY fts.rank
        LIMIT ?`
     ).all(SEARCH_PREVIEW_CHARS, ...params, limit) as Array<{
-      id: number;
+      id: string;
       prompt_number: number | null;
       session_id: string | null;
       preview: string;

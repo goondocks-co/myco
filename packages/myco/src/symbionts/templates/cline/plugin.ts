@@ -440,7 +440,7 @@ async function mycoUnregisterSession(directory: string, sessionId: string): Prom
   await postJson(directory, "/sessions/unregister", { session_id: sessionId }, sessionId);
 }
 
-async function mycoPostUserPrompt(directory: string, sessionId: string, prompt: string): Promise<{ batchId?: number }> {
+async function mycoPostUserPrompt(directory: string, sessionId: string, prompt: string): Promise<{ batchId?: string }> {
   const parentBatch = currentParentBatchBySession.get(sessionId);
   const kind: BatchKind = parentBatch == null ? BATCH_KIND.INITIAL : BATCH_KIND.STEERING;
   const result = await postEventWithBuffer(directory, sessionId, {
@@ -451,7 +451,7 @@ async function mycoPostUserPrompt(directory: string, sessionId: string, prompt: 
     kind,
     parent_prompt_batch_id: kind === BATCH_KIND.INITIAL ? null : parentBatch,
   });
-  const batchId = isRecord(result) && typeof result.batchId === "number" ? result.batchId : undefined;
+  const batchId = isRecord(result) && typeof result.batchId === "string" ? result.batchId : undefined;
   if (kind === BATCH_KIND.INITIAL && batchId != null) currentParentBatchBySession.set(sessionId, batchId);
   return { batchId };
 }
@@ -499,7 +499,7 @@ async function fetchPerPromptContext(
   directory: string,
   sessionId: string,
   prompt: string,
-  batchId: number | undefined,
+  batchId: string | undefined,
 ): Promise<string | null> {
   const result = await postJson(directory, "/context/prompt", {
     session_id: sessionId,
@@ -523,7 +523,7 @@ function makeSyntheticUserMessage(text: string): AnyRecord {
   };
 }
 
-async function maybeInjectContext(context: unknown, directory: string, sessionId: string, prompt: string, batchId?: number): Promise<AnyRecord | undefined> {
+async function maybeInjectContext(context: unknown, directory: string, sessionId: string, prompt: string, batchId?: string): Promise<AnyRecord | undefined> {
   const request = isRecord(context) && isRecord(context.request) ? context.request : undefined;
   if (!request || !Array.isArray(request.messages)) return undefined;
   const additions: string[] = [];

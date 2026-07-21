@@ -333,13 +333,15 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     }, result);
 
     const promptBatches = listSourcePromptBatches(ctx.sourceDb);
-    ensureIntegerMappings(ctx, {
-      rows: promptBatches,
-      sourceTable: 'prompt_batches',
-      targetTable: 'prompt_batches',
-      sourceId: (row) => row.id,
-      sourceMachineId: (row) => row.machine_id,
-    });
+    for (const row of promptBatches) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'prompt_batches',
+        sourceId: row.id,
+        targetTable: 'prompt_batches',
+        targetId: () => createGroveEraId('prompt_batch'),
+        sourceMachineId: row.machine_id,
+      });
+    }
     runTable({
       rows: sortPromptBatchesForImport(promptBatches),
       run: (row) => importPromptBatch(ctx, row),
@@ -634,13 +636,15 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     }, result);
 
     const digestExtracts = listSourceDigestExtracts(ctx.sourceDb);
-    ensureIntegerMappings(ctx, {
-      rows: digestExtracts,
-      sourceTable: 'digest_extracts',
-      targetTable: 'digest_extracts',
-      sourceId: (row) => row.id,
-      sourceMachineId: (row) => row.machine_id,
-    });
+    for (const row of digestExtracts) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'digest_extracts',
+        sourceId: row.id,
+        targetTable: 'digest_extracts',
+        targetId: () => createGroveEraId('digest_extract'),
+        sourceMachineId: row.machine_id,
+      });
+    }
     runTable({
       rows: digestExtracts,
       run: (row) => importDigestExtract(ctx, row),
@@ -912,55 +916,33 @@ function importSession(ctx: ImportContext, row: SourceSessionRow): ImportOutcome
 }
 
 function importPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow): ImportOutcome {
-  const existing = lookupSourceMapping(ctx, 'prompt_batches', row.id);
-  if (existing) {
-    const targetId = parseMappedInteger(existing);
-    if (targetRowExists(ctx.targetDb, 'prompt_batches', targetId)) {
-      markImported(ctx, 'prompt_batches', row.id);
-      return 'unchanged';
-    }
-    insertPromptBatch(ctx, row, targetId);
+  const mapping = requireMapping(ctx, 'prompt_batches', row.id);
+  if (targetRowExists(ctx.targetDb, 'prompt_batches', mapping.target_id)) {
     markImported(ctx, 'prompt_batches', row.id);
-    return 'imported';
+    return 'unchanged';
   }
-
-  const info = insertPromptBatch(ctx, row);
-  const targetId = Number(info.lastInsertRowid);
-  recordImportedMapping(ctx, {
-    sourceTable: 'prompt_batches',
-    sourceId: row.id,
-    targetTable: 'prompt_batches',
-    targetId: String(targetId),
-    sourceMachineId: row.machine_id,
-  });
+  insertPromptBatch(ctx, row, mapping.target_id);
+  markImported(ctx, 'prompt_batches', row.id);
   return 'imported';
 }
 
-function insertPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow, targetId?: number) {
+function insertPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow, targetId: string): void {
   const sessionId = mapRequiredTextId(ctx, 'sessions', row.session_id);
-  const parentPromptBatchId = mapOptionalIntegerId(ctx, 'prompt_batches', row.parent_prompt_batch_id);
+  const parentPromptBatchId = mapOptionalTextId(ctx, 'prompt_batches', row.parent_prompt_batch_id);
   const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
 
-  const sql = targetId == null
-    ? `INSERT INTO prompt_batches (
-         project_id, session_id, parent_prompt_batch_id, kind, prompt_number,
-         user_prompt, response_summary, classification, started_at, ended_at,
-         status, activity_count, processed, content_hash, created_at, machine_id, synced_at
-       ) VALUES (
-         ?, ?, ?, ?, ?,
-         ?, ?, ?, ?, ?,
-         ?, ?, ?, ?, ?, ?, ?
-       )`
-    : `INSERT INTO prompt_batches (
-         id, project_id, session_id, parent_prompt_batch_id, kind, prompt_number,
-         user_prompt, response_summary, classification, started_at, ended_at,
-         status, activity_count, processed, content_hash, created_at, machine_id, synced_at
-       ) VALUES (
-         ?, ?, ?, ?, ?, ?,
-         ?, ?, ?, ?, ?,
-         ?, ?, ?, ?, ?, ?, ?
-       )`;
-  const params = [
+  ctx.targetDb.prepare(
+    `INSERT INTO prompt_batches (
+       id, project_id, session_id, parent_prompt_batch_id, kind, prompt_number,
+       user_prompt, response_summary, classification, started_at, ended_at,
+       status, activity_count, processed, content_hash, created_at, machine_id, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?, ?
+     )`,
+  ).run(
+    targetId,
     ctx.targetProjectId,
     sessionId,
     parentPromptBatchId,
@@ -978,11 +960,7 @@ function insertPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow, target
     row.created_at,
     machineId,
     row.synced_at,
-  ];
-
-  return targetId == null
-    ? ctx.targetDb.prepare(sql).run(...params)
-    : ctx.targetDb.prepare(sql).run(targetId, ...params);
+  );
 }
 
 function importActivity(ctx: ImportContext, row: SourceActivityRow): ImportOutcome {
@@ -1012,7 +990,7 @@ function importActivity(ctx: ImportContext, row: SourceActivityRow): ImportOutco
 
 function insertActivity(ctx: ImportContext, row: SourceActivityRow, targetId?: number) {
   const sessionId = mapRequiredTextId(ctx, 'sessions', row.session_id);
-  const promptBatchId = mapOptionalIntegerId(ctx, 'prompt_batches', row.prompt_batch_id);
+  const promptBatchId = mapOptionalTextId(ctx, 'prompt_batches', row.prompt_batch_id);
 
   const sql = targetId == null
     ? `INSERT INTO activities (
@@ -1069,7 +1047,7 @@ function importAttachment(ctx: ImportContext, row: SourceAttachmentRow): ImportO
   }
 
   const sessionId = mapOptionalTextId(ctx, 'sessions', row.session_id);
-  const promptBatchId = mapOptionalIntegerId(ctx, 'prompt_batches', row.prompt_batch_id);
+  const promptBatchId = mapOptionalTextId(ctx, 'prompt_batches', row.prompt_batch_id);
 
   ctx.targetDb.prepare(
     `INSERT INTO attachments (
@@ -1104,7 +1082,7 @@ function importPlan(ctx: ImportContext, row: SourcePlanRow): ImportOutcome {
   }
 
   const sessionId = mapOptionalTextId(ctx, 'sessions', row.session_id);
-  const promptBatchId = mapOptionalIntegerId(ctx, 'prompt_batches', row.prompt_batch_id);
+  const promptBatchId = mapOptionalTextId(ctx, 'prompt_batches', row.prompt_batch_id);
   const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
 
   ctx.targetDb.prepare(
@@ -1190,7 +1168,7 @@ function importSpore(ctx: ImportContext, row: SourceSporeRow): ImportOutcome {
 
   const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
   const sessionId = mapOptionalTextId(ctx, 'sessions', row.session_id);
-  const promptBatchId = mapOptionalIntegerId(ctx, 'prompt_batches', row.prompt_batch_id);
+  const promptBatchId = mapOptionalTextId(ctx, 'prompt_batches', row.prompt_batch_id);
   const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
 
   ctx.targetDb.prepare(
@@ -1884,44 +1862,27 @@ function importCanopyMap(ctx: ImportContext, row: SourceCanopyMapRow): ImportOut
 }
 
 function importDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow): ImportOutcome {
-  const existing = lookupSourceMapping(ctx, 'digest_extracts', row.id);
-  if (existing) {
-    const targetId = parseMappedInteger(existing);
-    if (targetRowExists(ctx.targetDb, 'digest_extracts', targetId)) {
-      markImported(ctx, 'digest_extracts', row.id);
-      return 'unchanged';
-    }
-    insertDigestExtract(ctx, row, targetId);
+  const mapping = requireMapping(ctx, 'digest_extracts', row.id);
+  if (targetRowExists(ctx.targetDb, 'digest_extracts', mapping.target_id)) {
     markImported(ctx, 'digest_extracts', row.id);
-    return 'imported';
+    return 'unchanged';
   }
-
-  const info = insertDigestExtract(ctx, row);
-  const targetId = Number(info.lastInsertRowid);
-  recordImportedMapping(ctx, {
-    sourceTable: 'digest_extracts',
-    sourceId: row.id,
-    targetTable: 'digest_extracts',
-    targetId: String(targetId),
-    sourceMachineId: row.machine_id,
-  });
+  insertDigestExtract(ctx, row, mapping.target_id);
+  markImported(ctx, 'digest_extracts', row.id);
   return 'imported';
 }
 
-function insertDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow, targetId?: number) {
+function insertDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow, targetId: string): void {
   const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
   const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
 
-  const sql = targetId == null
-    ? `INSERT INTO digest_extracts (
-         project_id, agent_id, tier, content, substrate_hash,
-         generated_at, machine_id, synced_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    : `INSERT INTO digest_extracts (
-         id, project_id, agent_id, tier, content, substrate_hash,
-         generated_at, machine_id, synced_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-  const params = [
+  ctx.targetDb.prepare(
+    `INSERT INTO digest_extracts (
+       id, project_id, agent_id, tier, content, substrate_hash,
+       generated_at, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    targetId,
     ctx.targetProjectId,
     agentId,
     row.tier,
@@ -1930,11 +1891,7 @@ function insertDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow, ta
     row.generated_at,
     machineId,
     row.synced_at,
-  ];
-
-  return targetId == null
-    ? ctx.targetDb.prepare(sql).run(...params)
-    : ctx.targetDb.prepare(sql).run(targetId, ...params);
+  );
 }
 
 function importDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtractRevisionRow): ImportOutcome {
@@ -2334,7 +2291,7 @@ function lookupPolymorphicMapping(ctx: ImportContext, sourceType: string, source
       return lookupSourceMapping(ctx, 'sessions', sourceId);
     case 'batch':
     case 'prompt_batch':
-      return lookupSourceMapping(ctx, 'prompt_batches', parseIntegerSourceId(sourceType, sourceId));
+      return lookupSourceMapping(ctx, 'prompt_batches', sourceId);
     case 'spore':
       return lookupSourceMapping(ctx, 'spores', sourceId);
     case 'entity':
@@ -2348,13 +2305,6 @@ function lookupPolymorphicMapping(ctx: ImportContext, sourceType: string, source
   }
 }
 
-function parseIntegerSourceId(sourceType: string, sourceId: string): number {
-  const value = Number(sourceId);
-  if (!Number.isSafeInteger(value) || value <= 0 || String(value) !== sourceId) {
-    throw new Error(`Invalid integer ${sourceType} id: ${sourceId}`);
-  }
-  return value;
-}
 
 function parseMappedInteger(mapping: ImportMappingRow): number {
   const value = Number(mapping.target_id);

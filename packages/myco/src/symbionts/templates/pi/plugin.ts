@@ -611,7 +611,7 @@ async function mycoPostUserPrompt(
   prompt: string,
   images: Array<{ data: string; mediaType: string }>,
   options: { kind?: BatchKind; parentPromptBatchId?: number | null } = {},
-): Promise<{ batchId?: number }> {
+): Promise<{ batchId?: string }> {
   const kind: BatchKind = options.kind ?? BATCH_KIND.INITIAL;
   const parentPromptBatchId = options.parentPromptBatchId ?? null;
   const result = await postEventWithBuffer(directory, sessionId, {
@@ -623,7 +623,7 @@ async function mycoPostUserPrompt(
     parent_prompt_batch_id: parentPromptBatchId,
     ...(images.length > 0 ? { images } : {}),
   });
-  const batchId = (result as { batchId?: number } | undefined)?.batchId;
+  const batchId = (result as { batchId?: string } | undefined)?.batchId;
   return { batchId };
 }
 

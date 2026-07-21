@@ -156,7 +156,7 @@ export function isPlanWriteEvent(
 export interface PlanWriteActivity {
   tool_name: string;
   file_path: string | null;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   timestamp: number;
 }
 
@@ -169,7 +169,7 @@ export interface AuthoredPlanWrite {
    */
   filePath: string;
   /** Prompt batch of the most-recent authoring write, for attribution. */
-  promptBatchId: number | null;
+  promptBatchId: string | null;
 }
 
 /**
@@ -259,7 +259,7 @@ export interface PersistPlanInput {
   content: string | null;
   logicalKey: string;
   sourcePath?: string | null;
-  promptBatchId?: number | null;
+  promptBatchId?: string | null;
   title?: string | null;
   status?: string;
   tags?: string[] | string | null;
@@ -367,7 +367,7 @@ export interface CapturePlanInput {
   /** Session ID that triggered the write event. */
   sessionId: string;
   /** Optional prompt batch ID at the time of capture. */
-  promptBatchId?: number | null;
+  promptBatchId?: string | null;
   /** Optional logger forwarded to persistPlan for cross-channel overwrite detection. */
   logger?: Logger;
 }
@@ -401,7 +401,7 @@ export interface CaptureTaggedPlanInput {
   content: string;
   sessionId: string;
   projectId?: string | null;
-  promptBatchId?: number | null;
+  promptBatchId?: string | null;
   logger?: Logger;
 }
 

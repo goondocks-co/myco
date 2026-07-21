@@ -49,7 +49,7 @@ describe('migrateV48ToV49 — prompt_batches origin backfill', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function seedHumanBatches(): Record<string, number> {
+  function seedHumanBatches(): Record<string, string> {
     const seed = new Database(dbPath);
     const now = epochSeconds();
     seed.prepare(
@@ -57,9 +57,9 @@ describe('migrateV48ToV49 — prompt_batches origin backfill', () => {
     ).run(now, now);
 
     const insert = seed.prepare(
-      `INSERT INTO prompt_batches (session_id, prompt_number, user_prompt,
+      `INSERT INTO prompt_batches (id, session_id, prompt_number, user_prompt,
                                     started_at, created_at, kind, status, machine_id, origin)
-       VALUES ('sess-bf', ?, ?, ?, ?, 'initial', 'active', 'local', 'human')`,
+       VALUES (?, 'sess-bf', ?, ?, ?, ?, 'initial', 'active', 'local', 'human')`,
     );
 
     const fixtures = [
@@ -76,11 +76,12 @@ describe('migrateV48ToV49 — prompt_batches origin backfill', () => {
       ['human_real', 'fix the bug in foo.ts'],
     ];
 
-    const ids: Record<string, number> = {};
+    const ids: Record<string, string> = {};
     for (let i = 0; i < fixtures.length; i++) {
       const [label, text] = fixtures[i];
-      const info = insert.run(i + 1, text, now + i, now + i);
-      ids[label] = Number(info.lastInsertRowid);
+      const id = `pbat_${(i + 1).toString(16).padStart(32, '0')}`;
+      insert.run(id, i + 1, text, now + i, now + i);
+      ids[label] = id;
     }
     seed.close();
     return ids;

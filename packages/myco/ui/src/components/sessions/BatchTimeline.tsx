@@ -22,7 +22,7 @@ interface BatchGroup {
 }
 
 function groupBatches(sortedBatches: BatchRow[]): BatchGroup[] {
-  const childrenByParentId = new Map<number, BatchRow[]>();
+  const childrenByParentId = new Map<string, BatchRow[]>();
   const parents: BatchRow[] = [];
 
   for (const batch of sortedBatches) {
@@ -67,7 +67,7 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
   const allAttachments = attachments ?? [];
 
   const { byBatchId, byTurnNumber } = useMemo(() => {
-    const byBatchId = new Map<number, AttachmentRow[]>();
+    const byBatchId = new Map<string, AttachmentRow[]>();
     const byTurnNumber = new Map<number, AttachmentRow[]>();
     for (const a of allAttachments) {
       if (a.prompt_batch_id != null) {

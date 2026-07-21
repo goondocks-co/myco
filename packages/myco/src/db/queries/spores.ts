@@ -36,7 +36,7 @@ export interface SporeInsert {
   content: string;
   created_at: number;
   session_id?: string | null;
-  prompt_batch_id?: number | null;
+  prompt_batch_id?: string | null;
   status?: string;
   context?: string | null;
   importance?: number;
@@ -54,7 +54,7 @@ export interface SporeRow {
   project_id: string | null;
   agent_id: string;
   session_id: string | null;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   observation_type: string;
   status: string;
   content: string;
@@ -133,7 +133,7 @@ function toSporeRow(row: Record<string, unknown>): SporeRow {
     project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     session_id: (row.session_id as string) ?? null,
-    prompt_batch_id: (row.prompt_batch_id as number) ?? null,
+    prompt_batch_id: (row.prompt_batch_id as string) ?? null,
     observation_type: row.observation_type as string,
     status: row.status as string,
     content: row.content as string,

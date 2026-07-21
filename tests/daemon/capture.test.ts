@@ -35,7 +35,7 @@ import {
   handleTaskCompleted,
   handleCompact,
 } from '@myco/daemon/main.js';
-import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, isGroveEraId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -69,7 +69,7 @@ describe('daemon capture flow', () => {
 
     // --- UserPromptSubmit #1 ---
     const result1 = handleUserPrompt(sessionId, 'Write a hello world program');
-    expect(result1.batchId).toBeGreaterThan(0);
+    expect(isGroveEraId(result1.batchId, 'prompt_batch')).toBe(true);
     expect(result1.promptNumber).toBe(1);
 
     // --- PostToolUse × 3 ---
@@ -79,7 +79,7 @@ describe('daemon capture flow', () => {
 
     // --- UserPromptSubmit #2 (closes batch 1, opens batch 2) ---
     const result2 = handleUserPrompt(sessionId, 'Now add tests');
-    expect(result2.batchId).toBeGreaterThan(result1.batchId);
+    expect(result2.batchId).not.toBe(result1.batchId);
     expect(result2.promptNumber).toBe(2);
 
     // --- PostToolUse × 1 ---

@@ -66,7 +66,7 @@ export interface PlanSaveSuccess {
   status: string;
   source_path: string | null;
   session_id: string | null;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   tags: string[];
   created_at: number;
   updated_at: number | null;

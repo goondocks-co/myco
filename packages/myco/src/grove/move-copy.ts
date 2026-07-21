@@ -32,11 +32,8 @@ export const MOVE_COPY_TABLES: readonly string[] = GROVE_PROJECT_SCOPED_TABLES;
  * tests/grove/move-copy.test.ts, which re-derives this set from the DDL.
  */
 export const MOVE_REKEYED_TABLES = [
-  'prompt_batches',
   'knowledge_git_provenance',
-  'knowledge_release_state',
   'activities',
-  'digest_extracts',
   'agent_reports',
   'agent_turns',
   'agent_run_write_intents',
@@ -61,19 +58,11 @@ export interface MoveFkRemap {
  * Drift-guarded against the DDL by tests/grove/move-copy.test.ts.
  */
 export const MOVE_FK_REMAPS: readonly MoveFkRemap[] = [
-  { table: 'prompt_batches', column: 'parent_prompt_batch_id', via: 'prompt_batches' },
-  { table: 'knowledge_git_provenance', column: 'prompt_batch_id', via: 'prompt_batches' },
-  { table: 'knowledge_release_state', column: 'source_prompt_batch_id', via: 'prompt_batches' },
-  { table: 'activities', column: 'prompt_batch_id', via: 'prompt_batches' },
-  { table: 'plans', column: 'prompt_batch_id', via: 'prompt_batches' },
-  { table: 'attachments', column: 'prompt_batch_id', via: 'prompt_batches' },
-  { table: 'spores', column: 'prompt_batch_id', via: 'prompt_batches' },
   { table: 'digest_extract_revisions', column: 'parent_revision_id', via: 'digest_extract_revisions' },
 ];
 
 /** Self-referential parent columns requiring parents-before-children insert order. */
 const SELF_FK_PARENT_COLUMNS: Record<string, string> = {
-  prompt_batches: 'parent_prompt_batch_id',
   digest_extract_revisions: 'parent_revision_id',
 };
 
