@@ -15,7 +15,7 @@ import { stringify } from 'smol-toml';
 
 import { clearProjectManifestCache, saveProjectManifest } from '@myco/config/project-manifest.js';
 import { activationMarkerPath, type ActivationMarker } from '@myco/grove/activation.js';
-import { createGroveBindingId, createGroveId, createProjectId } from '@myco/grove/ids.js';
+import { createGroveBindingId, createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import { resolveProjectVaultDir, resolveProjectBufferDir } from '@myco/grove/paths.js';
 import {
   clearGroveRegistryCaches,
@@ -26,6 +26,7 @@ import {
 } from '@myco/grove/registry.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
 import { resolveProjectGroveBinding } from '@myco/grove/binding.js';
+import { upsertHost } from '@myco/host/registry.js';
 import { resolveProjectBufferDirFromRoot } from '@myco/capture/buffer-location.js';
 import { startResidencyJournal } from '@myco/host/residency-journal.js';
 
@@ -164,6 +165,23 @@ describe('residency suppression — binding repair', () => {
     resolveProjectGroveBinding(vaultDir, { repair: true, mycoHome: home });
 
     expect(findRegisteredProjectById(projectId, home)).not.toBeNull();
+  });
+
+  test('with an attach ref but NO journal, repair does NOT re-register (the F-3 attached-project hole)', () => {
+    const grove = createGrove('Source', home);
+    const { vaultDir, projectId } = makeParkedBinding(grove);
+    // Attach the project to a host (records a ref; no local row exists to block
+    // it) — a settled attached project with no transition in flight.
+    const hostGrove = createGroveId();
+    upsertHost({
+      host_id: createHostId(), label: 'h', overlay_address: '100.64.0.1:7433',
+      protocol_version: 3, served_grove_id: hostGrove, created_at: new Date().toISOString(),
+      projects: [{ grove_id: hostGrove, project_id: projectId, root: path.dirname(vaultDir) }],
+    });
+
+    resolveProjectGroveBinding(vaultDir, { repair: true, mycoHome: home });
+
+    expect(findRegisteredProjectById(projectId, home)).toBeNull();
   });
 
   test('with a live journal, repair does NOT re-register (the parked row stays parked)', () => {

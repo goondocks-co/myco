@@ -380,6 +380,40 @@ export async function checkTeamHostDrainHealth(): Promise<DoctorCheck[]> {
   return checks;
 }
 
+/** A residency journal older than this since its last update reads as stalled. */
+const RESIDENCY_STALL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Residency-transition chips (Phase F T6). One per in-flight project move
+ * (attach or detach). A fresh journal is informational (`ok`) — a move is
+ * underway; a journal untouched for over 24h is `warn` and names the remedy.
+ * There is no `residency abort` CLI verb, so the remedy points at the Team page
+ * Cancel action (or the localhost residency-abort route). Machine-global:
+ * returns nothing when no transition is in flight.
+ */
+export async function checkResidencyTransitions(teamsHome?: string): Promise<DoctorCheck[]> {
+  const { listResidencyJournals } = await import('../host/residency-journal.js');
+  const journals = listResidencyJournals(teamsHome).filter((j) => j.phase !== 'done');
+  if (journals.length === 0) return [];
+  const now = Date.now();
+  return journals.map((journal, index) => {
+    const name = index === 0 ? 'Residency' : '';
+    const move = `${journal.direction} of ${journal.project_id} (${journal.phase})`;
+    const stalled = Number.isFinite(Date.parse(journal.updated_at))
+      && now - Date.parse(journal.updated_at) > RESIDENCY_STALL_MS;
+    if (stalled) {
+      return {
+        name,
+        status: 'warn' as const,
+        detail: `Project move appears stalled (>24h): ${move}. Cancel it from the Team page (Team Host → the `
+          + 'project\'s Cancel action), then retry.',
+        fixable: false,
+      };
+    }
+    return { name, status: 'ok' as const, detail: `Project move in flight: ${move}.`, fixable: false };
+  });
+}
+
 /**
  * The attached-host identity for a project's vaultDir, or null when it isn't
  * attached (no manifest, no project id, or `resolveAttach` finds no ref —
@@ -950,6 +984,7 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   // `myco.yaml`, same as the hint above.
   checks.push(...await checkTeamHostReachability());
   checks.push(...await checkTeamHostDrainHealth());
+  checks.push(...await checkResidencyTransitions());
   const servedGroveDesignation = await checkServedGroveDesignation();
   if (servedGroveDesignation) checks.push(servedGroveDesignation);
   const servedGroveBackupStaleness = await checkServedGroveBackupStaleness();
