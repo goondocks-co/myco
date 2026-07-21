@@ -184,6 +184,32 @@ describe('residency detach-pull enumeration', () => {
     expect(second.done).toBe(true);
   });
 
+  test('resumes across a table boundary (sessions exhausted, cursor crosses into spores)', () => {
+    seedNoFk(() => {
+      insertSession('s_a1', PROJ, MEMBER_A);
+      insertSession('s_a2', PROJ, MEMBER_A);
+      insertSpore('sp_a1', PROJ, MEMBER_A);
+      insertSpore('sp_a2', PROJ, MEMBER_A);
+    });
+    // A page size of 2 fills exactly at the sessions boundary, so the next page must
+    // resume from an end-of-sessions cursor and cross into spores.
+    const collected: { table: string; id: unknown }[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const page = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A, cursor, maxRows: 2 });
+      pages += 1;
+      for (const r of page.rows) collected.push({ table: r.table, id: r.row.id });
+      if (page.done) break;
+      cursor = page.nextCursor;
+      expect(pages).toBeLessThan(10); // never-advancing cursor guard
+    }
+    expect(pages).toBeGreaterThan(1); // it actually paged across the boundary
+    expect(collected.filter((r) => r.table === 'sessions').map((r) => r.id).sort()).toEqual(['s_a1', 's_a2']);
+    expect(collected.filter((r) => r.table === 'spores').map((r) => r.id).sort()).toEqual(['sp_a1', 'sp_a2']);
+    expect(collected).toHaveLength(4); // every row exactly once, no dupes across pages
+  });
+
   test('an empty project pulls one done page with no rows', () => {
     const page = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A });
     expect(page.rows).toHaveLength(0);

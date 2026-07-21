@@ -159,6 +159,13 @@ function queryTablePage(
  * Walks the fixed table order, filling the page up to the row/byte budget; the
  * cursor points at the last row emitted so the next call resumes exactly. `done`
  * (and a null cursor) is returned only once every table is exhausted.
+ *
+ * Not a repeatable-read snapshot: the cursor is key-ordered, so a row INSERTed mid
+ * pull whose key sorts BELOW the current cursor (in a table already passed) is not
+ * re-scanned and would be skipped. This is rare and non-lossy in practice — the host
+ * keeps every row (D-F-3, no delete on detach), and capture DIVERTS the caller's own
+ * forwards away from this project during the `pulling` window — so a missed row is
+ * still on the host for a later re-attach/reconcile, never dropped.
  */
 export function pullResidencyPage(
   db: Database,
@@ -170,7 +177,9 @@ export function pullResidencyPage(
     maxBytes?: number;
   },
 ): ResidencyPullPage {
-  const maxRows = input.maxRows ?? RESIDENCY_PULL_PAGE_ROWS;
+  // Clamp to >= 1 so the per-table LIMIT is always positive and the row loop's
+  // fill-return is the only way a page fills mid-table (below).
+  const maxRows = Math.max(1, input.maxRows ?? RESIDENCY_PULL_PAGE_ROWS);
   const maxBytes = input.maxBytes ?? RESIDENCY_PULL_PAGE_BYTES;
   const decoded = decodeCursor(input.cursor);
   const startIndex = decoded
@@ -189,9 +198,12 @@ export function pullResidencyPage(
 
     for (;;) {
       const need = maxRows - rows.length;
-      if (need <= 0) {
-        return { rows, nextCursor: encodeCursor({ table: table.name, key: afterKey ?? [] }), done: false };
-      }
+      // A table is only entered with room to spare: the row loop's fill-return
+      // (below) caps `rows.length` at `maxRows` and returns the moment the page
+      // fills, so `need >= 1` here (given the maxRows >= 1 clamp). This guard is a
+      // belt-and-suspenders against a zero LIMIT, never the page-full exit — so it
+      // stops scanning rather than minting a (would-be empty-key) resume cursor.
+      if (need <= 0) break;
       const page = queryTablePage(db, table, input.projectId, input.machineId, afterKey, need);
       for (const raw of page) {
         const sanitized = sanitizeSyncPayload(table.name, raw);
