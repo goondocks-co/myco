@@ -29,7 +29,7 @@ import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
 import { attachProject, resolveAttach, upsertHost, type AttachRef, type HostRecord } from '@myco/host/registry.js';
 import { detachCommand, type BeginDetachResidency } from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
-import { beginDetachResidency, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
+import { abortResidency, beginDetachResidency, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import {
   appendResidencyStagingRows,
   listResidencyStagingTables,
@@ -263,6 +263,31 @@ describe('detach drain — round trip', () => {
     expect(readResidencyJournal(projectId)).toBeNull();
     expect(listResidencyStagingTables(projectId)).toEqual([]);
     expect(countResidencyInFlight()).toBe(0);
+  });
+
+  test('an abort mid-pull stops before the flip: the project stays attached, no local row, staging cleared', async () => {
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    upsertHost(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachRef(host, projectId, root, local.id);
+    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
+    const deps = baseDeps();
+
+    // A concurrent Cancel fires during the pull await — clears journal + staging,
+    // leaves the ref attached (nothing flipped).
+    const racingPull: ResidencyPullTransport = async () => {
+      abortResidency(projectId, deps);
+      return { status: 200, rows: [{ table: 'spores', row: { id: 'sp1', project_id: projectId } }], next_cursor: null, done: true };
+    };
+
+    await runResidencyTransitions({ ...deps, pullTransport: racingPull, resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
+
+    expect(resolveAttach(projectId)).not.toBeNull(); // still attached — the flip bailed
+    expect(findRegisteredProjectById(projectId, home)).toBeNull(); // no local Grove row re-materialized
+    expect(readResidencyJournal(projectId)).toBeNull(); // aborted
+    expect(listResidencyStagingTables(projectId)).toEqual([]); // guard stopped re-staging after abort cleared it
   });
 
   test('a failed pull does not advance: the journal stays pulling and the ref survives', async () => {

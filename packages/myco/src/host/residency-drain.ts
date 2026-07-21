@@ -374,6 +374,12 @@ async function runDetachTransition(
           recordJournalFailure(journal, new Error(`host returned ${page.status}`), deps, teamsHome);
           return;
         }
+        // Re-confirm after the network await: a concurrent abort (synchronous,
+        // from the localhost route) may have cleared this journal + staging while
+        // we were pulling. Stop, so we don't stage into — or flip — a transition
+        // that no longer exists.
+        const stillPulling = readResidencyJournal(journal.project_id, teamsHome);
+        if (!stillPulling || stillPulling.phase !== 'pulling') return;
         // Append THEN advance the cursor — at-least-once; a resumed re-pull of the
         // same page re-appends, which the idempotent apply engine flattens.
         appendResidencyStagingRows(journal.project_id, page.rows, teamsHome);
@@ -386,6 +392,14 @@ async function runDetachTransition(
         await yieldToLoop();
       }
     }
+
+    // Re-confirm at the TOP of this synchronous critical section before the
+    // irreversible flip: a concurrent abort during the pull awaits may have
+    // cleared the journal (leaving the project attached, unchanged). Since both
+    // this section and the abort are synchronous, this read is race-free — bail
+    // unless the journal still exists and is still pulling.
+    const beforeFlip = readResidencyJournal(journal.project_id, teamsHome);
+    if (!beforeFlip || beforeFlip.phase !== 'pulling') return;
 
     // Flip: the journal already records target_grove_id + root (written at begin),
     // so a crash between these two steps re-drives idempotently next tick.
@@ -630,6 +644,16 @@ async function shipSidecar(
  * deleted first, while its owning artifacts still exist to scope the join.
  */
 function deleteAfterAck(journal: ResidencyJournal, deps: ResidencyDrainDeps): void {
+  // Re-confirm at the TOP of this synchronous critical section: pushTransition
+  // reached here through network awaits, during which a concurrent abort
+  // (synchronous, from the localhost route) may have restored the local
+  // registration and cleared the journal. Bail unless the journal still exists
+  // and is still pushing — otherwise this delete would empty the project the
+  // abort just restored. Race-free: both this section and the abort are
+  // synchronous.
+  const current = readResidencyJournal(journal.project_id, deps.teamsHome);
+  if (!current || current.phase !== 'pushing') return;
+
   deps.withGroveDb(journal.source_grove_id, (db) => {
     deleteContentPublicationsForProject(journal.project_id);
     // Tolerate an older/partial Grove DB by pre-checking which tables exist,

@@ -128,8 +128,7 @@ export const LOG_KINDS = {
   // Residency transition (Phase F) — a project moving between local and host
   // residency. `attach-push`/`detach-pull` are the per-direction row transfers
   // (throttled — a failing drain retries every tick), `complete` marks a
-  // finished transition, `abort` a rolled-back one (the pull/abort kinds are
-  // reserved here now for the later detach/abort tasks).
+  // finished transition, `abort` a rolled-back one.
   RESIDENCY_ATTACH_PUSH: 'residency.attach-push',
   RESIDENCY_DETACH_PULL: 'residency.detach-pull',
   RESIDENCY_COMPLETE: 'residency.complete',

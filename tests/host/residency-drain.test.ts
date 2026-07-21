@@ -19,8 +19,9 @@ import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
 import { upsertHost, type HostRecord } from '@myco/host/registry.js';
-import { beginAttachResidency, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
+import { abortResidency, beginAttachResidency, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import {
   countResidencyInFlight,
   runResidencyTransitions,
@@ -258,5 +259,29 @@ describe('residency drain — push + delete-after-ack', () => {
     // But the sidecar failure blocked the delete: rows survive, journal pushing.
     expect(countProjectRows(projectId)).toBeGreaterThan(0);
     expect(readResidencyJournal(projectId)?.phase).toBe('pushing');
+  });
+});
+
+describe('residency drain — abort races the drain', () => {
+  test('an abort mid-push makes delete-after-ack skip: the restored project keeps its rows', async () => {
+    const { projectId, source } = beginTransition(); // pushing: rows seeded + queued, local row parked
+    const rowsBefore = countProjectRows(projectId);
+    const deps = baseDeps();
+
+    // A concurrent Cancel fires during the first ship's await — restores the
+    // local registration, drops the ref + queued rows, clears the journal.
+    let aborted = false;
+    const racingTransport: ResidencyPostTransport = async (_target, body) => {
+      if (!aborted) { abortResidency(projectId, deps); aborted = true; }
+      return { status: 200, applied: body.rows.length };
+    };
+
+    await runResidencyTransitions({ ...deps, transport: racingTransport, resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
+
+    // deleteAfterAck re-confirmed the (now-cleared) journal and skipped — the
+    // project the abort restored still has all its rows.
+    expect(countProjectRows(projectId)).toBe(rowsBefore);
+    expect(findRegisteredProjectById(projectId, home)?.grove.id).toBe(source.id); // restored by abort
+    expect(readResidencyJournal(projectId)).toBeNull(); // aborted
   });
 });
