@@ -338,8 +338,8 @@ export function detachCommand(options: DetachOptions): DetachResult {
       throw codedMembershipError(
         'residency_pull_unavailable',
         `Cannot pull ${projectId} back from host ${existing.host.host_id}: the host predates the residency `
-        + `protocol (needs version ${RESIDENCY_MIN_HOST_PROTOCOL}+). Update the host, or detach without pulling `
-        + 'your data back.',
+        + `protocol (needs version ${RESIDENCY_MIN_HOST_PROTOCOL}+). Update the team host first (hosts update `
+        + 'before members, D-F-5), or detach without pulling your data back.',
       );
     }
   }

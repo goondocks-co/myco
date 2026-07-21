@@ -152,8 +152,8 @@ export function completeAttachParking(journal: ResidencyJournal, deps: Residency
     throw codedMembershipError(
       'residency_requires_host_update',
       `Host ${journal.host_id} predates the residency protocol (needs version `
-      + `${RESIDENCY_MIN_HOST_PROTOCOL}+). Update the host (run \`myco update\` on that machine and `
-      + 're-enable Team Host serving), then retry the attach.',
+      + `${RESIDENCY_MIN_HOST_PROTOCOL}+). Update the team host first (run \`myco update\` on that machine and `
+      + 're-enable Team Host serving), then re-attach — hosts update before members (D-F-5).',
     );
   }
 
