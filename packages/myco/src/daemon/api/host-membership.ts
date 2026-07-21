@@ -56,10 +56,10 @@ import {
   type DetachOptions,
 } from '../../host/attach-command.js';
 import { resolveTeamHostHintState, teamHostHintMessage } from '../../host/hint.js';
-import { defaultCheckHostReachable, joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
+import { dialHostHealth, joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
 import type { ResidencyStatus } from '../../host/residency-transition.js';
 import { membershipErrorCode } from '../../host/membership-error.js';
-import { readHostRegistry, type HostRecord } from '../../host/registry.js';
+import { readHostRegistry, recordHostProtocolVersion, type HostRecord } from '../../host/registry.js';
 import type { DaemonLogger } from '../logger.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
@@ -415,8 +415,9 @@ interface HostHealthEntry {
 }
 
 export interface HostMembershipHealthRouteDeps {
-  /** Test seam: override the reachability probe (default the real overlay dial). */
-  checkReachable?: typeof defaultCheckHostReachable;
+  /** Test seam: override the reachability + live-version probe (default the real
+   *  overlay dial, {@link dialHostHealth}). */
+  checkReachable?: typeof dialHostHealth;
   /** Test seam: override the registry read. */
   readRegistry?: typeof readHostRegistry;
   /** Test seam: override the probe TTL (default {@link HOST_HEALTH_CACHE_TTL_MS}). */
@@ -435,7 +436,7 @@ export interface HostMembershipHealthRouteDeps {
  * in this module): a call within {@link HOST_HEALTH_CACHE_TTL_MS} of the last
  * probe for a host returns the cached result with NO new probe; two requests
  * that overlap a host's in-flight probe share the SAME promise rather than
- * each starting their own dial. `defaultCheckHostReachable` is already
+ * each starting their own dial. `dialHostHealth` is already
  * individually bounded (`HOST_PROXY_CONNECT_TIMEOUT_MS`) and never throws in
  * practice, but the `catch` here is the same fail-closed shape doctor's
  * `checkTeamHostReachability` uses, so a probe that somehow rejects still
@@ -453,7 +454,7 @@ export type HostMembershipHealthHandler = RouteHandler & {
 };
 
 export function createHostMembershipHealthHandler(deps: HostMembershipHealthRouteDeps = {}): HostMembershipHealthHandler {
-  const checkReachable = deps.checkReachable ?? defaultCheckHostReachable;
+  const checkReachable = deps.checkReachable ?? dialHostHealth;
   const readRegistry = deps.readRegistry ?? readHostRegistry;
   const ttlMs = deps.ttlMs ?? HOST_HEALTH_CACHE_TTL_MS;
   const now = deps.now ?? Date.now;
@@ -473,21 +474,31 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
       // checkTeamHostReachability): no proxy port on record means there is
       // nothing to dial — `null` ("not confirmable"), never a false negative.
       let reachable: boolean | null;
+      let observedVersion: number | null = null;
       if (host.proxy_port === undefined) {
         reachable = null;
       } else {
         try {
-          reachable = await checkReachable(host.overlay_address, host.proxy_port);
+          const probe = await checkReachable(host.overlay_address, host.proxy_port);
+          reachable = probe.reachable;
+          observedVersion = probe.protocolVersion;
         } catch {
           reachable = false;
         }
       }
+      // Persist a host that upgraded since join (monotonic — never a probe
+      // downgrade), so the residency gates classify + refuse against the host's
+      // CURRENT version, not the stale join-time one. Skew is classified from the
+      // effective (post-write) version.
+      const effectiveVersion = observedVersion !== null
+        ? recordHostProtocolVersion(host.host_id, observedVersion)
+        : host.protocol_version;
       return {
         host_id: host.host_id,
         label: host.label,
         reachable,
         checked_at: new Date(now()).toISOString(),
-        protocol_skew: classifyHostProtocolSkew(host.protocol_version),
+        protocol_skew: classifyHostProtocolSkew(effectiveVersion),
       };
     })();
 
