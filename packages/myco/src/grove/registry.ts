@@ -28,7 +28,7 @@ import {
 import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
 import { loadMachineConfig } from '../config/loader.js';
 import { resolveAttach, type AttachRef, type HostRecord } from '../host/registry.js';
-import { readResidencyJournal, residencyDirExists } from '../host/residency-journal.js';
+import { isResidencyDivertActive, readResidencyJournal, residencyDirExists } from '../host/residency-journal.js';
 import { noticeTeamHostHintOnce } from '../host/hint.js';
 
 export interface GroveRecord {
@@ -743,7 +743,10 @@ function resolveResidencyDivert(projectRoot: string): ResolvedRegisteredProject 
   const projectId = manifest?.project.id;
   if (!projectId || !isGroveEraId(projectId, 'project')) return null;
   const journal = readResidencyJournal(projectId);
-  if (!journal) return null;
+  // Divert only during the data-in-motion window: once a detach reaches
+  // `rehoming` the flip is done and the local Grove is live, so new capture must
+  // resolve there, not keep landing in the host-Grove buffer the sweep is draining.
+  if (!journal || !isResidencyDivertActive(journal.phase)) return null;
   const epoch = new Date(0).toISOString();
   const root = path.resolve(projectRoot);
   return {

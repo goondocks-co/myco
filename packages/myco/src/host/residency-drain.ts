@@ -395,13 +395,26 @@ async function runDetachTransition(
         }
       })();
     });
+    // Advance to the terminal sweep. The journal PERSISTS through `rehoming` so a
+    // crash mid-sweep resumes it, and divert is now OFF (rehoming ∉ divert-active)
+    // so no new event lands in the host-Grove buffer after the flip.
+    advanceResidencyPhase(journal.project_id, 'rehoming', {}, teamsHome);
+    const swept = readResidencyJournal(journal.project_id, teamsHome);
+    if (!swept) return;
+    journal = swept;
+  }
 
-    // Capture the buffer paths before clearing the journal (which turns divert off).
-    const fromDir = resolveProjectBufferDir(journal.divert_grove_id, journal.project_id, deps.mycoHome);
-    const toDir = resolveProjectBufferDir(targetGroveId, journal.project_id, deps.mycoHome);
-
-    // (8) purge the host drain-store entries for this project (existing detach
-    // cleanup), then finish. Best-effort — never block completion.
+  if (journal.phase === 'rehoming') {
+    // (7) re-home the events diverted under the host Grove during the window into
+    // the local buffer, and (8) purge the host drain stores. Both idempotent, so
+    // a crash mid-sweep re-runs cleanly. The journal is cleared ONLY after they
+    // complete — that is what makes the sweep itself crash-resumable (clearing it
+    // earlier would orphan any residual buffered events with no journal to drive
+    // the resume).
+    rehomeBufferedEvents(
+      resolveProjectBufferDir(journal.divert_grove_id, journal.project_id, deps.mycoHome),
+      resolveProjectBufferDir(targetGroveId, journal.project_id, deps.mycoHome),
+    );
     try {
       createFsDrainStore().purgeProject(journal.host_id, journal.project_id);
       createFsPlanDrainStore().purgeProject(journal.host_id, journal.project_id);
@@ -410,9 +423,6 @@ async function runDetachTransition(
 
     advanceResidencyPhase(journal.project_id, 'done', {}, teamsHome);
     clearResidencyJournal(journal.project_id, teamsHome);
-    // (7) re-home AFTER the journal is cleared, so divert is off and no new event
-    // lands in the host-Grove buffer after this sweep — closing the race.
-    rehomeBufferedEvents(fromDir, toDir);
     clearResidencyStaging(journal.project_id, teamsHome);
 
     deps.logger?.info(LOG_KINDS.RESIDENCY_COMPLETE, 'residency detach transition complete', {

@@ -54,10 +54,27 @@ export type ResidencyDirection = 'attach' | 'detach';
 
 /**
  * Where a transition is. Attach walks `parking → pushing → done`; detach walks
- * `pulling → applying → done`. A journal that reaches `done` is cleared, so a
- * `done` entry on disk is only ever a momentary pre-clear state.
+ * `pulling → applying → rehoming → done`. A journal that reaches `done` is
+ * cleared, so a `done` entry on disk is only ever a momentary pre-clear state.
+ *
+ * `rehoming` is the detach terminal sweep (move the diverted buffer home, purge
+ * the host drain stores). It PERSISTS the journal through the sweep so a crash
+ * mid-sweep resumes it, while divert is already OFF (see
+ * {@link isResidencyDivertActive}) so no new event lands in the host-Grove
+ * buffer after the flip.
  */
-export type ResidencyPhase = 'parking' | 'pushing' | 'pulling' | 'applying' | 'done';
+export type ResidencyPhase = 'parking' | 'pushing' | 'pulling' | 'applying' | 'rehoming' | 'done';
+
+/**
+ * True while capture must DIVERT to the journal's destination tenancy — the
+ * data-in-motion window. Excludes `rehoming` (the flip has happened and the
+ * local Grove is live, so new capture goes straight there) and `done`. The
+ * suppression gate keys off this, NOT mere journal existence, so the terminal
+ * sweep can drive its own crash-resume without re-diverting new events.
+ */
+export function isResidencyDivertActive(phase: ResidencyPhase): boolean {
+  return phase === 'parking' || phase === 'pushing' || phase === 'pulling' || phase === 'applying';
+}
 
 export interface ResidencyJournal {
   direction: ResidencyDirection;

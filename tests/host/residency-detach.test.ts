@@ -23,6 +23,7 @@ import {
   clearGroveRegistryCaches,
   createGrove,
   ensureProjectRegistered,
+  registerProjectInGrove,
 } from '@myco/grove/registry.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
 import { attachProject, resolveAttach, upsertHost, type AttachRef, type HostRecord } from '@myco/host/registry.js';
@@ -315,6 +316,29 @@ describe('detach drain — crash-resume + freshness', () => {
     expect(applyCount).toBe(1); // only the first tick had a live journal to apply
   });
 
+  test('crash mid-sweep (journal in rehoming) resumes and finishes the re-home — zero orphaned files', async () => {
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    // Post-flip state: journal left in `rehoming` by a crash before the sweep
+    // completed, with a diverted buffer file still under the host Grove.
+    const bufferFile = seedDivertedBuffer(host, projectId, 'sess_orphan');
+    startResidencyJournal({
+      direction: 'detach', phase: 'rehoming', host_id: host.host_id, project_id: projectId,
+      divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: local.id,
+      project_name: 'demo', root, backup_ref: null, cursors: { pull: 'done' },
+    });
+
+    await runResidencyTransitions({ ...baseDeps(), resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
+
+    // The residual buffered file was re-homed; nothing orphaned; journal cleared.
+    expect(fs.existsSync(bufferFile)).toBe(false);
+    expect(fs.existsSync(path.join(resolveProjectBufferDir(local.id, projectId, home), 'sess_orphan.jsonl'))).toBe(true);
+    expect(readResidencyJournal(projectId)).toBeNull();
+    expect(countResidencyInFlight()).toBe(0);
+  });
+
   test('post-flip freshness: a newer local row survives the apply of an older host snapshot', async () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
@@ -372,5 +396,25 @@ describe('detach — suppression during the window', () => {
     const resolved = ensureProjectRegistered(root, home);
     expect(resolved?.grove.id).toBe(host.served_grove_id);
     expect(resolved?.project.project_id).toBe(projectId);
+  });
+
+  test('a rehoming journal does NOT divert — new capture resolves to the (re-materialized) local Grove', () => {
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    // Post-flip: the local Grove row is live again; the journal is in the terminal
+    // sweep. Divert must be OFF so a fresh hook lands locally, not in the host buffer.
+    registerProjectInGrove(local.id, { projectId, projectName: 'demo', projectRoot: root }, home);
+    clearGroveRegistryCaches();
+    startResidencyJournal({
+      direction: 'detach', phase: 'rehoming', host_id: host.host_id, project_id: projectId,
+      divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: local.id,
+      project_name: 'demo', root, backup_ref: null, cursors: { pull: 'done' },
+    });
+
+    const resolved = ensureProjectRegistered(root, home);
+    expect(resolved?.grove.id).toBe(local.id); // local, not the host divert grove
+    expect(resolved?.grove.id).not.toBe(host.served_grove_id);
   });
 });
