@@ -320,7 +320,7 @@ describe('POST /api/host-membership/detach', () => {
       detach: (options) => { seen = options; return { projectId: 'proj_x', detachedFromHostId: 'host_abc' }; },
     });
     const res = await handler(req({ project_root: '/checkout' }));
-    expect(seen).toEqual({ projectPath: '/checkout', projectId: undefined });
+    expect(seen).toEqual({ projectPath: '/checkout', projectId: undefined, beginDetachResidency: undefined, allowNoPull: false });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ project_id: 'proj_x', detached_from_host_id: 'host_abc' });
   });

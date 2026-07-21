@@ -305,11 +305,17 @@ export function listPending(limit?: number): OutboxRow[] {
  */
 export function listPendingForProject(projectId: string, limit?: number): OutboxRow[] {
   const db = getDatabase();
+  // The residency backfill enqueues every table under ONE shared timestamp, so
+  // created_at alone leaves equal-timestamp order unspecified by SQLite. The
+  // autoincrement `id` tiebreak preserves enqueue order, and the backfill
+  // enqueues in FK-topological table order (parents before children) — so a
+  // child never ships before its parent within a tick, which would otherwise
+  // wedge the give-up-on-409 drain (parent never re-ordered ahead).
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM team_outbox
      WHERE sent_at IS NULL AND project_id = ?
-     ORDER BY created_at ASC
+     ORDER BY created_at ASC, id ASC
      LIMIT ?`,
   ).all(projectId, limit ?? BURST_BATCH_SIZE) as Record<string, unknown>[];
 

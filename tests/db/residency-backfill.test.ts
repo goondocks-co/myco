@@ -63,6 +63,26 @@ describe('backfillProjectForresidency', () => {
     expect(listPending().filter((r) => r.row_id === 'sp_a1')).toHaveLength(1);
   });
 
+  test('cross-table send order matches enqueue order under the shared backfill timestamp (parent before child)', () => {
+    // The backfill stamps every table with ONE timestamp, so created_at alone
+    // leaves order unspecified; the id tiebreak must keep the FK-topological
+    // enqueue order (sessions before prompt_batches) so a child never ships
+    // ahead of its parent and wedges the give-up-on-409 drain.
+    seedWithoutFk(() => {
+      const db = getDatabase();
+      db.prepare(`INSERT INTO sessions (id, agent, started_at, created_at, project_id, machine_id) VALUES ('sess1', 'claude-code', 1, 1, ?, 'local')`).run(PROJ_A);
+      db.prepare(`INSERT INTO prompt_batches (id, project_id, session_id, created_at, machine_id) VALUES ('pbatch1', ?, 'sess1', 1, 'local')`).run(PROJ_A);
+    });
+
+    backfillProjectForResidency(PROJ_A, 'local');
+
+    const pending = listPendingForProject(PROJ_A);
+    expect(pending.map((r) => r.table_name)).toEqual(['sessions', 'prompt_batches']);
+    // Equal timestamps, so it is the id order (enqueue order) doing the work.
+    expect(pending[0].created_at).toBe(pending[1].created_at);
+    expect(pending[0].id).toBeLessThan(pending[1].id);
+  });
+
   test('strips local-only columns from the shipped payload (knowledge_release_state.basis_ref)', () => {
     seedWithoutFk(() => {
       getDatabase().prepare(
