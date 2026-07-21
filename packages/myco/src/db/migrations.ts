@@ -13,6 +13,7 @@ import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import {
   SESSIONS_TABLE,
   PROMPT_BATCHES_TABLE,
+  KNOWLEDGE_RELEASE_STATE_TABLE,
   ACTIVITIES_TABLE,
   LOG_ENTRIES_TABLE,
   TEAM_OUTBOX_TABLE,
@@ -54,6 +55,7 @@ import {
   SECONDARY_INDEXES,
   TEAM_SYNC_OBSERVED_TABLES,
 } from './schema-ddl.js';
+import { GROVE_ID_PREFIXES } from '@myco/grove/ids.js';
 import {
   buildPlanId,
   deriveStoredPlanLogicalKey,
@@ -142,6 +144,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 70, migrate: (db) => migrateV69ToV70(db) },
   { version: 71, migrate: (db) => migrateV70ToV71(db) },
   { version: 72, migrate: (db) => migrateV71ToV72(db) },
+  { version: 73, migrate: (db) => migrateV72ToV73(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1895,6 +1898,18 @@ interface V34TableRebuild {
   columns: readonly string[];
 }
 
+// v34 rebuilds prompt_batches and digest_extracts to add project-scoped
+// uniqueness. It must produce their v34-era INTEGER key regardless of later
+// schema evolution: referencing the live constants (which the v73 rekey turned
+// TEXT) would make v34 rebuild to TEXT ids mid-chain, storing numeric-string
+// ids that skip the v73 rekey and mismatch the still-integer FK columns. Pin
+// the key type back to INTEGER; migration-matrix.test.ts guards this.
+const V34_PROMPT_BATCHES_DDL = PROMPT_BATCHES_TABLE
+  .replace(/\n(\s+)id(\s+)TEXT PRIMARY KEY,/, '\n$1id$2INTEGER PRIMARY KEY AUTOINCREMENT,')
+  .replace(/parent_prompt_batch_id(\s+)TEXT REFERENCES/, 'parent_prompt_batch_id$1INTEGER REFERENCES');
+const V34_DIGEST_EXTRACTS_DDL = DIGEST_EXTRACTS_TABLE
+  .replace(/\n(\s+)id(\s+)TEXT PRIMARY KEY,/, '\n$1id$2INTEGER PRIMARY KEY AUTOINCREMENT,');
+
 const V34_PROJECT_UNIQUE_REBUILDS: readonly V34TableRebuild[] = [
   {
     table: 'sessions',
@@ -1933,7 +1948,7 @@ const V34_PROJECT_UNIQUE_REBUILDS: readonly V34TableRebuild[] = [
   },
   {
     table: 'prompt_batches',
-    ddl: PROMPT_BATCHES_TABLE,
+    ddl: V34_PROMPT_BATCHES_DDL,
     columns: [
       'id',
       'project_id',
@@ -2022,7 +2037,7 @@ const V34_PROJECT_UNIQUE_REBUILDS: readonly V34TableRebuild[] = [
   },
   {
     table: 'digest_extracts',
-    ddl: DIGEST_EXTRACTS_TABLE,
+    ddl: V34_DIGEST_EXTRACTS_DDL,
     columns: [
       'id',
       'project_id',
@@ -4315,6 +4330,247 @@ function migrateV71ToV72(db: Database): void {
   } catch (err) {
     db.prepare('ROLLBACK').run();
     throw err;
+  }
+}
+
+/**
+ * Inbound foreign-key columns that point at `prompt_batches.id` from other
+ * tables. The self-reference (`prompt_batches.parent_prompt_batch_id`) is
+ * remapped during the row copy, so it is not listed here. These columns keep
+ * their INTEGER declaration; SQLite affinity stores the new text id losslessly,
+ * which keeps fresh-install and migrated schemas identical without rebuilding
+ * six more tables.
+ */
+const V73_PROMPT_BATCH_INBOUND_FKS: ReadonlyArray<{ table: string; column: string }> = [
+  { table: 'knowledge_git_provenance', column: 'prompt_batch_id' },
+  { table: 'knowledge_release_state', column: 'source_prompt_batch_id' },
+  { table: 'activities', column: 'prompt_batch_id' },
+  { table: 'plans', column: 'prompt_batch_id' },
+  { table: 'attachments', column: 'prompt_batch_id' },
+  { table: 'spores', column: 'prompt_batch_id' },
+];
+
+/** SQL expression that mints a Grove-era id (`<prefix>_<32 lowercase hex>`),
+ *  byte-for-byte the shape `createGroveEraId` produces, one per row. */
+function v73GroveIdSql(prefix: string): string {
+  return `'${prefix}_' || lower(hex(randomblob(16)))`;
+}
+
+function v73TableExists(db: Database, name: string): boolean {
+  return db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`,
+  ).get(name) !== undefined;
+}
+
+function v73OrderedColumns(db: Database, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+    .map((r) => r.name);
+}
+
+/** True while `table.id` is still the pre-v73 INTEGER key. Once the rekey has
+ *  run the column reads TEXT, so re-running the migration is a no-op — the
+ *  guard that keeps a direct replay from re-randomizing already-migrated ids. */
+function v73IdIsInteger(db: Database, table: string): boolean {
+  const idCol = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; type: string }>)
+    .find((c) => c.name === 'id');
+  return !!idCol && idCol.type.toUpperCase().includes('INT');
+}
+
+/** Derive a `<name>_new` rebuild table from a fresh-install DDL constant so the
+ *  rebuilt shape can never drift from what a fresh install creates. Only the
+ *  leading table name is renamed; a self-referential FK keeps the final name. */
+function v73NewTableDdl(constDdl: string, table: string, newName: string): string {
+  return constDdl.replace(`CREATE TABLE IF NOT EXISTS ${table}`, `CREATE TABLE ${newName}`);
+}
+
+/** Recreate every secondary index that belongs to `table` (dropped with the
+ *  old table during the rebuild). */
+function v73RecreateIndexes(db: Database, table: string): void {
+  for (const ddl of SECONDARY_INDEXES) {
+    if (ddl.includes(` ON ${table} `)) db.exec(ddl);
+  }
+}
+
+/** Recreate the team-sync AFTER DELETE trigger for `table` (dropped with the
+ *  old table). Scoped to the rebuilt table so a partial-schema vault whose
+ *  other synced tables are absent does not trip a CREATE TRIGGER on a missing
+ *  base table. */
+function v73RecreateTeamTrigger(db: Database, table: string): void {
+  for (const trg of TEAM_DELETE_TRIGGERS) {
+    if (trg.includes(`${table}_team_ad`)) db.exec(trg);
+  }
+}
+
+/**
+ * Rebuild `prompt_batches` with a text primary key and remap every reference
+ * to it. Assumes the caller has foreign keys OFF and an open transaction.
+ */
+function migrateV73RekeyPromptBatches(db: Database): void {
+  // old integer id -> new text id, one distinct id per existing row.
+  db.exec('DROP TABLE IF EXISTS _v73_pb_idmap');
+  db.exec(
+    `CREATE TEMP TABLE _v73_pb_idmap AS
+       SELECT id AS old_id, (${v73GroveIdSql(GROVE_ID_PREFIXES.prompt_batch)}) AS new_id
+       FROM prompt_batches`,
+  );
+  db.exec('CREATE INDEX _v73_pb_idmap_old ON _v73_pb_idmap(old_id)');
+
+  db.exec(v73NewTableDdl(PROMPT_BATCHES_TABLE, 'prompt_batches', 'prompt_batches_new'));
+
+  // Copy rows: id and the self-referential parent both remap through the map;
+  // every other column is carried by name so future columns need no edit here.
+  const copyCols = v73OrderedColumns(db, 'prompt_batches_new')
+    .filter((c) => c !== 'id' && c !== 'parent_prompt_batch_id');
+  const insertCols = ['id', 'parent_prompt_batch_id', ...copyCols];
+  const selectExprs = ['m.new_id', 'pm.new_id', ...copyCols.map((c) => `pb."${c}"`)];
+  db.exec(
+    `INSERT INTO prompt_batches_new (${insertCols.map((c) => `"${c}"`).join(', ')})
+       SELECT ${selectExprs.join(', ')}
+       FROM prompt_batches pb
+       JOIN _v73_pb_idmap m ON m.old_id = pb.id
+       LEFT JOIN _v73_pb_idmap pm ON pm.old_id = pb.parent_prompt_batch_id`,
+  );
+
+  for (const { table, column } of V73_PROMPT_BATCH_INBOUND_FKS) {
+    if (!v73TableExists(db, table)) continue;
+    db.exec(
+      `UPDATE ${table}
+          SET "${column}" = (SELECT new_id FROM _v73_pb_idmap WHERE old_id = ${table}."${column}")
+        WHERE "${column}" IN (SELECT old_id FROM _v73_pb_idmap)`,
+    );
+  }
+
+  // Lineage edges store batch ids as numeric strings in target_id; rewrite them
+  // or the EXTRACTED_FROM / HAS_BATCH edges dangle.
+  if (v73TableExists(db, 'graph_edges')) {
+    db.exec(
+      `UPDATE graph_edges
+          SET target_id = (SELECT new_id FROM _v73_pb_idmap WHERE CAST(old_id AS TEXT) = graph_edges.target_id)
+        WHERE target_type = 'batch'
+          AND target_id IN (SELECT CAST(old_id AS TEXT) FROM _v73_pb_idmap)`,
+    );
+  }
+
+  // Host-local routed-capture dedup ledger (soft reference, no FK constraint).
+  if (v73TableExists(db, 'routed_event_dedup')) {
+    db.exec(
+      `UPDATE routed_event_dedup
+          SET prompt_batch_id = (SELECT new_id FROM _v73_pb_idmap WHERE old_id = routed_event_dedup.prompt_batch_id)
+        WHERE prompt_batch_id IN (SELECT old_id FROM _v73_pb_idmap)`,
+    );
+  }
+
+  // The intelligence agent persists its pagination cursor as a batch id in
+  // agent_state; convert it so the next run resumes where it left off instead
+  // of re-scanning the whole backlog.
+  if (v73TableExists(db, 'agent_state')) {
+    db.exec(
+      `UPDATE agent_state
+          SET value = (SELECT new_id FROM _v73_pb_idmap WHERE CAST(old_id AS TEXT) = agent_state.value)
+        WHERE key = 'last_processed_batch_id'
+          AND value IN (SELECT CAST(old_id AS TEXT) FROM _v73_pb_idmap)`,
+    );
+  }
+
+  db.exec('DROP TABLE prompt_batches');
+  db.exec('ALTER TABLE prompt_batches_new RENAME TO prompt_batches');
+  db.exec('DROP TABLE _v73_pb_idmap');
+
+  v73RecreateIndexes(db, 'prompt_batches');
+  v73RecreateTeamTrigger(db, 'prompt_batches');
+
+  // The FTS index was bound to the old integer rowid alias; rebind to the table
+  // rowid and repopulate. CREATE VIRTUAL TABLE IF NOT EXISTS keeps a stale
+  // content_rowid, so the shadow table must be dropped first. Only the
+  // prompt_batches FTS objects are re-execed — the other tables' FTS DDL would
+  // trip on a missing base table in a partial-schema vault.
+  db.exec('DROP TABLE IF EXISTS prompt_batches_fts');
+  for (const ddl of FTS_TABLES) {
+    if (ddl.includes('prompt_batches_fts')) db.exec(ddl);
+  }
+  db.exec(`INSERT INTO prompt_batches_fts(prompt_batches_fts) VALUES('rebuild')`);
+}
+
+/**
+ * Rebuild a table whose only rekey is its own text primary key (no inbound
+ * foreign keys). Assumes foreign keys OFF and an open transaction.
+ */
+function migrateV73RekeySimpleTextId(
+  db: Database,
+  table: string,
+  constDdl: string,
+  prefix: string,
+): void {
+  db.exec(v73NewTableDdl(constDdl, table, `${table}_new`));
+  const copyCols = v73OrderedColumns(db, `${table}_new`).filter((c) => c !== 'id');
+  db.exec(
+    `INSERT INTO ${table}_new (${['id', ...copyCols].map((c) => `"${c}"`).join(', ')})
+       SELECT ${v73GroveIdSql(prefix)}, ${copyCols.map((c) => `"${c}"`).join(', ')}
+       FROM ${table}`,
+  );
+  db.exec(`DROP TABLE ${table}`);
+  db.exec(`ALTER TABLE ${table}_new RENAME TO ${table}`);
+  v73RecreateIndexes(db, table);
+  v73RecreateTeamTrigger(db, table);
+}
+
+/**
+ * v73 — rekey `prompt_batches`, `knowledge_release_state`, and
+ * `digest_extracts` from `INTEGER PRIMARY KEY AUTOINCREMENT` to portable
+ * Grove-era text ids so project data can move between machines without id
+ * collisions.
+ *
+ * This is the first table rebuild in the migration chain, so it deviates from
+ * the in-transaction house style in one way it must: a rebuild needs foreign
+ * keys OFF, and `PRAGMA foreign_keys` is a no-op inside a transaction. The
+ * toggle therefore brackets the transaction from the outside, and a
+ * `foreign_key_check` inside the transaction proves the rewrite left no
+ * dangling reference before the version is stamped.
+ *
+ * prompt_batches is rekeyed first: while its inbound FK columns still hold
+ * integer values they are rewritten to the new text ids, so the subsequent
+ * knowledge_release_state rebuild copies an already-text source_prompt_batch_id.
+ * digest_extract_revisions keeps its integer id and is untouched.
+ */
+function migrateV72ToV73(db: Database): void {
+  const fkRow = db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number } | undefined;
+  const fkWasOn = fkRow?.foreign_keys === 1;
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.prepare('BEGIN').run();
+  try {
+    if (v73TableExists(db, 'prompt_batches') && v73IdIsInteger(db, 'prompt_batches')) {
+      migrateV73RekeyPromptBatches(db);
+    }
+    if (v73TableExists(db, 'knowledge_release_state') && v73IdIsInteger(db, 'knowledge_release_state')) {
+      migrateV73RekeySimpleTextId(
+        db, 'knowledge_release_state', KNOWLEDGE_RELEASE_STATE_TABLE,
+        GROVE_ID_PREFIXES.knowledge_release_state,
+      );
+    }
+    if (v73TableExists(db, 'digest_extracts') && v73IdIsInteger(db, 'digest_extracts')) {
+      migrateV73RekeySimpleTextId(
+        db, 'digest_extracts', DIGEST_EXTRACTS_TABLE,
+        GROVE_ID_PREFIXES.digest_extract,
+      );
+    }
+
+    // The FK rewrites are map-driven from every existing prompt_batches row, so
+    // a valid reference is always remapped; only a pre-existing orphan (a child
+    // pointing at a batch that never existed — e.g. the v43 orphan-activity
+    // scenario) can dangle afterward, and it dangled identically before. A
+    // whole-DB `PRAGMA foreign_key_check` here would throw on those historical
+    // inconsistencies and brick a legitimate upgrade, so verification of the
+    // rekey's own integrity lives in migrate-v72-to-v73-rekey.test.ts instead.
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(73, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  } finally {
+    if (fkWasOn) db.exec('PRAGMA foreign_keys = ON');
   }
 }
 

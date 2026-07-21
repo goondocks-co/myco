@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(72);
+      expect(SCHEMA_VERSION).toBe(73);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -1569,11 +1569,11 @@ describe('Database schema', () => {
           `INSERT INTO sessions (id, agent, started_at, created_at, content_hash, title)
            VALUES ('sess-a', 'test', 1000, 1000, 'session-hash', 'searchabletitle')`,
         ).run();
-        const batchInsert = db.prepare(
-          `INSERT INTO prompt_batches (session_id, user_prompt, created_at, content_hash)
-           VALUES ('sess-a', 'searchable prompt', 1000, 'batch-hash')`,
-        ).run();
-        const batchId = Number(batchInsert.lastInsertRowid);
+        const batchId = `pbat_${'1'.repeat(32)}`;
+        db.prepare(
+          `INSERT INTO prompt_batches (id, session_id, user_prompt, created_at, content_hash)
+           VALUES (?, 'sess-a', 'searchable prompt', 1000, 'batch-hash')`,
+        ).run(batchId);
         db.prepare(
           `INSERT INTO activities (session_id, prompt_batch_id, tool_name, timestamp, created_at, content_hash)
            VALUES ('sess-a', ?, 'Read', 1000, 1000, 'activity-hash')`,
