@@ -40,11 +40,11 @@ import {
   type OutboxRow,
 } from '../db/queries/team-outbox.js';
 import {
-  RESIDENCY_APPLY_ORDER,
   deleteContentPublicationsForProject,
   listContentPublicationPages,
   listEntityMentionPages,
 } from '../db/queries/residency-backfill.js';
+import { RESIDENCY_TABLE_ORDER } from '../db/queries/residency-apply.js';
 import { createFsDrainStore } from '../capture/transcript-drain.js';
 import { createFsPlanDrainStore } from '../capture/plan-drain.js';
 import { createFsReplayStore } from '../capture/event-replay-drain.js';
@@ -410,15 +410,16 @@ async function runDetachTransition(
     // (6) apply staged pages into the local Grove DB via the shared engine, one
     // transaction. Post-flip live capture already in the DB wins over older host
     // snapshots — the engine's if-newer / insert-only rules guarantee it. Tables
-    // apply in FK-topological order (RESIDENCY_APPLY_ORDER), NOT the arbitrary
-    // readdirSync order the staging enumerator returns — a child before its
-    // parent throws in the immediate-FK transaction and would wedge the retry.
+    // apply in the engine's canonical FK-topological order (RESIDENCY_TABLE_ORDER),
+    // NOT the arbitrary readdirSync order the staging enumerator returns — a child
+    // before its parent throws in the immediate-FK transaction and would wedge the
+    // retry.
     const staged = new Set(listResidencyStagingTables(journal.project_id, teamsHome));
-    const ordered = RESIDENCY_APPLY_ORDER.filter((table) => staged.has(table));
+    const ordered = RESIDENCY_TABLE_ORDER.filter((table) => staged.has(table));
     // An unexpected staged table (outside the allow-listed residency set) applies
     // last; the engine rejects an unknown table, surfacing the drift loudly rather
     // than dropping data silently.
-    const extras = [...staged].filter((table) => !RESIDENCY_APPLY_ORDER.includes(table));
+    const extras = [...staged].filter((table) => !RESIDENCY_TABLE_ORDER.includes(table));
     deps.withGroveDb(targetGroveId, (db) => {
       db.transaction(() => {
         for (const table of [...ordered, ...extras]) {

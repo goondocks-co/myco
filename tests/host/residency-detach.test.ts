@@ -246,7 +246,7 @@ describe('detach drain — round trip', () => {
     // Pull resumed page-by-page from the journal cursor.
     expect(calls).toEqual([null, 'c1']);
     // Apply saw both staged tables in FK-topological order (sessions before
-    // spores per RESIDENCY_APPLY_ORDER) — NOT the readdirSync/pull order.
+    // spores per RESIDENCY_TABLE_ORDER) — NOT the readdirSync/pull order.
     expect(applied.map((a) => a.table)).toEqual(['sessions', 'spores']);
     expect(applied.find((a) => a.table === 'spores')?.ids).toEqual(['sp_pull']);
 
@@ -377,7 +377,7 @@ describe('detach drain — crash-resume + freshness', () => {
     // sessions and entity_mentions.entity_id → entities. Applied in readdirSync
     // order (alphabetical: entities, entity_mentions, prompt_batches, sessions)
     // prompt_batches would insert before sessions and the FK transaction would
-    // roll back and wedge. RESIDENCY_APPLY_ORDER must fix it.
+    // roll back and wedge. RESIDENCY_TABLE_ORDER must fix it.
     const { transport } = pagingPull([[
       { table: 'entity_mentions', row: { project_id: projectId, entity_id: 'ent_r', note_id: 'sess_r', note_type: 'session', agent_id: 'user', machine_id: 'local' } },
       { table: 'prompt_batches', row: { id: 'pbatch_r', project_id: projectId, session_id: 'sess_r', created_at: 1, machine_id: 'local' } },

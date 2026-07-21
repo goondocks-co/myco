@@ -30,26 +30,6 @@ import {
 export const RESIDENCY_SIDECAR_PAGE_SIZE = 500;
 
 /**
- * FK-topological order for applying staged detach rows: parents strictly before
- * children (sessions before prompt_batches, entities before entity_mentions,
- * artifacts before content_publications). The detach apply runs in ONE
- * immediate-FK transaction against a local DB with NO project rows yet — so a
- * child applied before its parent throws, rolls the whole batch back, and next
- * tick re-runs the identical order: a permanent wedge. Staging enumerates tables
- * in `readdirSync` order (arbitrary — alphabetically `prompt_batches` sorts
- * before `sessions`), so the apply MUST re-order by this list.
- *
- * Mirrors the pull enumerator's emit order (`db/queries/residency-pull.ts`
- * RESIDENCY_PULL_TABLES) = REBUILD_TABLES (minus the machine-scoped `team_members`
- * roster, never a residency table) + the two sidecars.
- */
-export const RESIDENCY_APPLY_ORDER: readonly string[] = [
-  ...REBUILD_TABLES.filter((t) => t !== 'team_members'),
-  'entity_mentions',
-  'content_publications',
-];
-
-/**
  * Enqueue every sync-eligible row of `projectId` into `team_outbox` as `upsert`
  * records with a null `team_id`. Idempotent: a row already pending (a resumed
  * transition re-running this) is skipped via the outbox NOT-EXISTS guard, so a

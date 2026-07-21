@@ -11,7 +11,6 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
 import { listPending, listPendingForProject } from '@myco/db/queries/team-outbox.js';
 import {
-  RESIDENCY_APPLY_ORDER,
   backfillProjectForResidency,
   deleteContentPublicationsForProject,
   listContentPublicationPages,
@@ -62,19 +61,6 @@ describe('backfillProjectForresidency', () => {
     expect(backfillProjectForResidency(PROJ_A, 'local')).toBe(1);
     expect(backfillProjectForResidency(PROJ_A, 'local')).toBe(0);
     expect(listPending().filter((r) => r.row_id === 'sp_a1')).toHaveLength(1);
-  });
-
-  test('RESIDENCY_APPLY_ORDER is FK-topological: parents before children, sidecars last, no team_members', () => {
-    const at = (t: string) => RESIDENCY_APPLY_ORDER.indexOf(t);
-    expect(at('sessions')).toBeGreaterThanOrEqual(0);
-    expect(at('sessions')).toBeLessThan(at('prompt_batches'));
-    expect(at('entities')).toBeLessThan(at('entity_mentions'));
-    expect(at('skill_candidates')).toBeLessThan(at('skill_records'));
-    expect(at('skill_records')).toBeLessThan(at('skill_lineage'));
-    // Sidecars are last.
-    expect(at('entity_mentions')).toBe(RESIDENCY_APPLY_ORDER.length - 2);
-    expect(at('content_publications')).toBe(RESIDENCY_APPLY_ORDER.length - 1);
-    expect(RESIDENCY_APPLY_ORDER).not.toContain('team_members');
   });
 
   test('cross-table send order matches enqueue order under the shared backfill timestamp (parent before child)', () => {
