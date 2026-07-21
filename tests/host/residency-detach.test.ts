@@ -245,8 +245,9 @@ describe('detach drain — round trip', () => {
 
     // Pull resumed page-by-page from the journal cursor.
     expect(calls).toEqual([null, 'c1']);
-    // Apply saw both staged tables.
-    expect(applied.map((a) => a.table).sort()).toEqual(['sessions', 'spores']);
+    // Apply saw both staged tables in FK-topological order (sessions before
+    // spores per RESIDENCY_APPLY_ORDER) — NOT the readdirSync/pull order.
+    expect(applied.map((a) => a.table)).toEqual(['sessions', 'spores']);
     expect(applied.find((a) => a.table === 'spores')?.ids).toEqual(['sp_pull']);
 
     // Flip: ref removed, local Grove row re-materialized.
@@ -361,6 +362,37 @@ describe('detach drain — crash-resume + freshness', () => {
     const landed = getDatabase().prepare(`SELECT content FROM spores WHERE id = 'sp_new'`).get() as { content: string } | undefined;
     expect(landed?.content).toBe('from-host');
     expect(readResidencyJournal(projectId)).toBeNull(); // completed
+  });
+
+  test('apply orders staged tables FK-topologically through the real engine (parents before children, one transaction)', async () => {
+    const local = createGrove('Local', home);
+    const host = makeHost();
+    upsertHost(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachRef(host, projectId, root, local.id);
+    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
+
+    // A page with CHILDREN before their PARENTS: prompt_batches.session_id →
+    // sessions and entity_mentions.entity_id → entities. Applied in readdirSync
+    // order (alphabetical: entities, entity_mentions, prompt_batches, sessions)
+    // prompt_batches would insert before sessions and the FK transaction would
+    // roll back and wedge. RESIDENCY_APPLY_ORDER must fix it.
+    const { transport } = pagingPull([[
+      { table: 'entity_mentions', row: { project_id: projectId, entity_id: 'ent_r', note_id: 'sess_r', note_type: 'session', agent_id: 'user', machine_id: 'local' } },
+      { table: 'prompt_batches', row: { id: 'pbatch_r', project_id: projectId, session_id: 'sess_r', created_at: 1, machine_id: 'local' } },
+      { table: 'entities', row: { id: 'ent_r', project_id: projectId, agent_id: 'user', type: 'file', name: 'n', first_seen: 1, last_seen: 1, machine_id: 'local' } },
+      { table: 'sessions', row: { id: 'sess_r', project_id: projectId, agent: 'claude-code', started_at: 1, created_at: 1, machine_id: 'local' } },
+    ]]);
+
+    const applyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[]) => { applyResidencyRows(db, table, rows, {}); };
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows });
+
+    // Both FK-children landed → their parents were applied first (else the whole
+    // immediate-FK transaction would have thrown and left the journal stuck).
+    expect(getDatabase().prepare(`SELECT id FROM prompt_batches WHERE id = 'pbatch_r'`).get()).toBeTruthy();
+    expect(getDatabase().prepare(`SELECT entity_id FROM entity_mentions WHERE entity_id = 'ent_r'`).get()).toBeTruthy();
+    expect(readResidencyJournal(projectId)).toBeNull(); // completed, not wedged
   });
 
   test('post-flip freshness: a newer local row survives the apply of an older host snapshot', async () => {
