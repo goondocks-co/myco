@@ -23,11 +23,16 @@ import { resolveGroveBackupDir } from '../backup/location.js';
 import { listActiveContentClaims, releaseContentClaim } from '../db/queries/content-claims.js';
 import { backfillProjectForResidency } from '../db/queries/residency-backfill.js';
 import { slugifyGroveName, projectScope, type GroveProjectId } from '../grove/ids.js';
-import { deregisterProjectInGrove } from '../grove/registry.js';
+import { deregisterProjectInGrove, resolveDefaultGrove } from '../grove/registry.js';
 import { findRegisteredProjectById } from '../grove/registry-resolve.js';
 import type { DaemonLogger } from '../daemon/logger.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
-import type { AttachResult, ResidencyAttachContext } from './attach-command.js';
+import type {
+  AttachResult,
+  DetachResult,
+  ResidencyAttachContext,
+  ResidencyDetachContext,
+} from './attach-command.js';
 import { codedMembershipError } from './membership-error.js';
 import { attachProject, getHost, type AttachRef } from './registry.js';
 import {
@@ -201,4 +206,64 @@ export function completeAttachParking(journal: ResidencyJournal, deps: Residency
 function isProtocolRefusal(err: unknown): boolean {
   return err instanceof Error
     && (err as Error & { membershipCode?: unknown }).membershipCode === 'residency_requires_host_update';
+}
+
+/**
+ * Start a detach-pull transition. Pure orchestration over the journal: validate
+ * the ref carries a root (the re-materialize anchor) and resolve the local Grove
+ * to land in, then open the journal in `pulling`. The pull, flip, re-materialize,
+ * and apply all run in the drain — this returns "pull started" like the attach
+ * begin. Suppression-divert is active from the moment the journal exists, so
+ * capture during the window buffers under the host Grove and is re-homed at the
+ * end.
+ */
+export function beginDetachResidency(ctx: ResidencyDetachContext, deps: ResidencyDaemonDeps): DetachResult {
+  if (!ctx.ref.root) {
+    throw codedMembershipError(
+      'residency_detach_needs_root',
+      `Cannot pull ${ctx.projectId} back: its attach ref has no checkout root (a legacy ref). Re-attach the `
+      + 'project once first (that backfills the root), then detach.',
+    );
+  }
+  const divertGroveId = ctx.host.served_grove_id;
+  if (!divertGroveId) {
+    throw codedMembershipError(
+      'host_predates_served_grove',
+      `Host ${ctx.hostId} has no served Grove; cannot pull the project back.`,
+    );
+  }
+  const targetGroveId = ctx.ref.local_grove_id ?? resolveDefaultGrove(deps.mycoHome)?.id;
+  if (!targetGroveId) {
+    throw codedMembershipError(
+      'unknown_local_grove',
+      `Cannot pull ${ctx.projectId} back: this machine has no local Grove to re-materialize it into. Create a `
+      + 'Grove first, then detach.',
+    );
+  }
+
+  // project_name: the attach-era journal is gone and the AttachRef carries no
+  // name, so basename(root) is the honest fallback (see the T4 report flag).
+  const root = path.resolve(ctx.ref.root);
+  startResidencyJournal({
+    direction: 'detach',
+    phase: 'pulling',
+    host_id: ctx.hostId,
+    project_id: ctx.projectId,
+    divert_grove_id: divertGroveId,
+    source_grove_id: divertGroveId,
+    target_grove_id: targetGroveId,
+    project_name: path.basename(root),
+    root,
+    local_grove_id: ctx.ref.local_grove_id,
+    backup_ref: null,
+    cursors: {},
+  });
+
+  deps.logger?.info(LOG_KINDS.RESIDENCY_DETACH_PULL, 'residency detach pull started', {
+    project_id: ctx.projectId,
+    host_id: ctx.hostId,
+    target_grove_id: targetGroveId,
+  });
+
+  return { projectId: ctx.projectId, detachedFromHostId: ctx.hostId };
 }

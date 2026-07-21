@@ -51,6 +51,7 @@ import {
   attachCommand,
   detachCommand,
   type AttachOptions,
+  type BeginDetachResidency,
   type BeginResidencyAttach,
   type DetachOptions,
 } from '../../host/attach-command.js';
@@ -85,6 +86,13 @@ export interface HostMembershipRouteDeps extends HostMembershipHealthRouteDeps {
    * tests / non-daemon wiring, where a with-history attach still refuses.
    */
   beginResidency?: BeginResidencyAttach;
+  /**
+   * DAEMON-ONLY (Phase F): the detach transition to run when a detach should
+   * pull this machine's data back before flipping to local. Built in
+   * `daemon/main.ts`; absent in tests / non-daemon wiring, where a detach is the
+   * plain mapping flip.
+   */
+  beginDetachResidency?: BeginDetachResidency;
   /**
    * Evicts a host's cached health entry (and any in-flight probe) on a
    * successful leave — `registerHostMembershipRoutes` wires this to the
@@ -269,7 +277,12 @@ export function createHostMembershipDetachHandler(deps: HostMembershipRouteDeps)
     const projectRoot = str(body.project_root);
     if (!projectRoot) return { status: 400, body: errorBody('missing_project_root', 'project_root is required.') };
 
-    const options: DetachOptions = { projectPath: projectRoot, projectId: str(body.project_id) };
+    const options: DetachOptions = {
+      projectPath: projectRoot,
+      projectId: str(body.project_id),
+      beginDetachResidency: deps.beginDetachResidency,
+      allowNoPull: body.allow_no_pull === true,
+    };
 
     try {
       const result = detach(options);

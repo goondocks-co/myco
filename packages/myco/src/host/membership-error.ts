@@ -65,7 +65,15 @@ export type MembershipErrorCode =
    *  residency protocol (its recorded protocol version is below the minimum
    *  the row push requires). Surfaced by the residency transition — nothing has
    *  moved yet; update the host, then retry. */
-  | 'residency_requires_host_update';
+  | 'residency_requires_host_update'
+  /** Detach-pull cannot re-materialize the project because its attach ref has no
+   *  `root` (a legacy ref recorded before `root` existed). Surfaced up-front by
+   *  `detachCommand`; a re-attach backfills the root, then detach can pull. */
+  | 'residency_detach_needs_root'
+  /** Detach-pull is unavailable because the joined host predates the residency
+   *  protocol, and the caller did not opt into a plain (no-data) detach. Surfaced
+   *  by `detachCommand` — update the host, or detach without pulling. */
+  | 'residency_pull_unavailable';
 
 /** Build an Error carrying a stable membership code alongside its
  *  (CLI-voiced) message. The message still prints verbatim in terminals;

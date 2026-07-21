@@ -57,7 +57,7 @@ import {
   type AttachRef,
   type HostRecord,
 } from './registry.js';
-import { residencyTransitionInFlight } from './residency-journal.js';
+import { RESIDENCY_MIN_HOST_PROTOCOL, residencyTransitionInFlight } from './residency-journal.js';
 
 export interface AttachOptions {
   /** The `<project>` positional — a path to the local checkout (default cwd). */
@@ -122,14 +122,39 @@ export interface AttachResult {
 export interface DetachOptions {
   projectPath?: string;
   projectId?: string;
+  /**
+   * DAEMON-ONLY (Phase F): pull this machine's data back from the host before
+   * flipping the project to local. The daemon detach handler wires this to the
+   * DB-backed detach transition (`host/residency-transition.ts`); a CLI/in-process
+   * caller that omits it gets today's plain mapping-flip detach (no data pulled).
+   */
+  beginDetachResidency?: BeginDetachResidency;
+  /**
+   * When the joined host predates the residency protocol, proceed with a plain
+   * (no-data) detach instead of refusing. An explicit caller choice (T5 wires the
+   * UI confirm); ignored when the host supports the pull.
+   */
+  allowNoPull?: boolean;
 }
 
 export interface DetachResult {
   projectId: string;
   /** The host the project was detached from, or null when it was not attached
-   *  (a clean no-op). */
+   *  (a clean no-op). For a with-pull detach this is the host the pull started
+   *  against — the ref is removed by the drain once the pull completes. */
   detachedFromHostId: string | null;
 }
+
+/** Everything the detach transition needs to begin: the host it is pulling from
+ *  (with its served Grove) and the attach ref (its `root` + chosen local Grove). */
+export interface ResidencyDetachContext {
+  hostId: string;
+  host: HostRecord;
+  projectId: string;
+  ref: AttachRef;
+}
+
+export type BeginDetachResidency = (ctx: ResidencyDetachContext) => DetachResult;
 
 /** Resolve the routing project id for a checkout: the explicit override, else the
  *  committed manifest's `project.id`. Must be a well-formed `proj_<32hex>` — the
@@ -298,6 +323,26 @@ export function detachCommand(options: DetachOptions): DetachResult {
 
   const existing = resolveAttach(projectId);
   if (!existing) return { projectId, detachedFromHostId: null };
+
+  // With-pull detach (daemon-only, Phase F): pull this machine's data back before
+  // flipping to local. Only the daemon injects the capability; a plain
+  // in-process/CLI detach keeps the legacy mapping-flip behavior below.
+  if (options.beginDetachResidency) {
+    const host = getHost(existing.host.host_id);
+    if (host && host.protocol_version >= RESIDENCY_MIN_HOST_PROTOCOL) {
+      return options.beginDetachResidency({ hostId: existing.host.host_id, host, projectId, ref: existing.ref });
+    }
+    // Host predates the residency protocol: refuse the pull unless the caller
+    // explicitly opted into a plain detach, which then falls through below.
+    if (!options.allowNoPull) {
+      throw codedMembershipError(
+        'residency_pull_unavailable',
+        `Cannot pull ${projectId} back from host ${existing.host.host_id}: the host predates the residency `
+        + `protocol (needs version ${RESIDENCY_MIN_HOST_PROTOCOL}+). Update the host, or detach without pulling `
+        + 'your data back.',
+      );
+    }
+  }
 
   detachProject(existing.host.host_id, projectId);
   // Purge-on-detach (capture-push §5.2, §5.5): drop this project's un-shipped

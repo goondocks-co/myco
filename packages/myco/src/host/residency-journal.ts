@@ -32,6 +32,14 @@ export const RESIDENCY_DIRNAME = 'residency';
 export const ROUTED_RESIDENCY_ROWS_PATH = '/routed-capture/residency-rows';
 
 /**
+ * Host route the detach pull reads project rows from, page by page. The single
+ * literal both sides build against — the member drain (`host/residency-drain.ts`)
+ * POSTs to it, and the host pull route (T3, `host/routed-residency.ts`) mounts
+ * the same string.
+ */
+export const ROUTED_RESIDENCY_PULL_PATH = '/routed-capture/residency-pull';
+
+/**
  * Minimum host protocol version a with-history residency transition requires.
  * The host row-ingest route (T2) ships at HOST_PROTOCOL_VERSION 3; a member
  * whose joined host records an older version refuses the move up front (nothing
@@ -59,8 +67,12 @@ export interface ResidencyJournal {
   /** The tenancy capture DIVERTS to during the window (attach: the host's
    *  served Grove; detach: the host Grove events buffer under until re-homed). */
   divert_grove_id: string;
-  /** The project's own local Grove before the move — the park/restore anchor. */
+  /** Attach: the project's own local Grove before the move (the park/restore
+   *  anchor). Detach: the data source, which is the host's served Grove. */
   source_grove_id: string;
+  /** Detach only: the local Grove the pulled project re-materializes into
+   *  (`AttachRef.local_grove_id ?? default grove`). Absent for an attach. */
+  target_grove_id?: string;
   project_name: string;
   root: string;
   /** The member's chosen display Grove for the attach ref (E-4 local-view),
@@ -207,4 +219,80 @@ export function residencyTransitionInFlight(
   if (!residencyDirExists(teamsHome)) return false;
   const journal = readResidencyJournal(projectId, teamsHome);
   return journal !== null && journal.phase !== 'done';
+}
+
+// ---------------------------------------------------------------------------
+// Detach-pull staging — per-table NDJSON page files under
+// `<teamsHome>/residency/<projectId>-staging/`, appended as pages are pulled.
+// ---------------------------------------------------------------------------
+
+/** A table name is joined onto a staging filename, so it must be a plain
+ *  identifier — never a path fragment. The host route allow-lists tables, this
+ *  is defense in depth. */
+const SAFE_STAGING_TABLE = /^[a-z_][a-z0-9_]*$/;
+
+function residencyStagingDir(projectId: string, teamsHome: string = resolveTeamsHome()): string {
+  return path.join(residencyDir(teamsHome), `${projectId}-staging`);
+}
+
+/** Append a pulled page (`{table, row}` items) to the per-table NDJSON files.
+ *  Append-then-advance-cursor is at-least-once; a resumed re-pull re-appends a
+ *  page, and the idempotent apply engine makes the duplicate a no-op. */
+export function appendResidencyStagingRows(
+  projectId: string,
+  rows: ReadonlyArray<{ table: string; row: Record<string, unknown> }>,
+  teamsHome: string = resolveTeamsHome(),
+): void {
+  if (!isGroveEraId(projectId, 'project') || rows.length === 0) return;
+  const dir = residencyStagingDir(projectId, teamsHome);
+  fs.mkdirSync(dir, { recursive: true });
+  const byTable = new Map<string, string[]>();
+  for (const { table, row } of rows) {
+    if (!SAFE_STAGING_TABLE.test(table)) continue;
+    const lines = byTable.get(table) ?? [];
+    lines.push(JSON.stringify(row));
+    byTable.set(table, lines);
+  }
+  for (const [table, lines] of byTable) {
+    fs.appendFileSync(path.join(dir, `${table}.ndjson`), `${lines.join('\n')}\n`, 'utf-8');
+  }
+}
+
+/** Every table with a staged page file (apply order is the caller's concern). */
+export function listResidencyStagingTables(projectId: string, teamsHome: string = resolveTeamsHome()): string[] {
+  try {
+    return fs.readdirSync(residencyStagingDir(projectId, teamsHome))
+      .filter((f) => f.endsWith('.ndjson'))
+      .map((f) => f.slice(0, -'.ndjson'.length));
+  } catch {
+    return [];
+  }
+}
+
+/** Read one table's staged rows (skips a torn trailing line rather than throw). */
+export function readResidencyStagingRows(
+  projectId: string,
+  table: string,
+  teamsHome: string = resolveTeamsHome(),
+): Record<string, unknown>[] {
+  if (!SAFE_STAGING_TABLE.test(table)) return [];
+  let content: string;
+  try {
+    content = fs.readFileSync(path.join(residencyStagingDir(projectId, teamsHome), `${table}.ndjson`), 'utf-8');
+  } catch {
+    return [];
+  }
+  const out: Record<string, unknown>[] = [];
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try { out.push(JSON.parse(trimmed) as Record<string, unknown>); } catch { /* skip a torn line */ }
+  }
+  return out;
+}
+
+/** Remove a project's staging tree (final detach cleanup). Idempotent. */
+export function clearResidencyStaging(projectId: string, teamsHome: string = resolveTeamsHome()): void {
+  if (!isGroveEraId(projectId, 'project')) return;
+  fs.rmSync(residencyStagingDir(projectId, teamsHome), { recursive: true, force: true });
 }

@@ -205,7 +205,7 @@ import { createRoutedPlanHandler } from '../host/routed-plan.js';
 import { createRoutedResidencyHandler } from '../host/routed-residency.js';
 import type { RemoteTarget } from '../host/routing.js';
 import { pruneHostedProjects } from '../host/hosted-projects.js';
-import { beginAttachResidency, type ResidencyDaemonDeps } from '../host/residency-transition.js';
+import { beginAttachResidency, beginDetachResidency, type ResidencyDaemonDeps } from '../host/residency-transition.js';
 import { countResidencyInFlight, runResidencyTransitions } from '../host/residency-drain.js';
 import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
 import { createPlanDrainQueue } from '../capture/plan-drain.js';
@@ -1611,6 +1611,7 @@ export async function main(): Promise<void> {
     mycoHome,
     logger,
     beginResidency: (ctx) => beginAttachResidency(ctx, residencyDeps),
+    beginDetachResidency: (ctx) => beginDetachResidency(ctx, residencyDeps),
   });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
@@ -2497,13 +2498,17 @@ export async function main(): Promise<void> {
     },
   });
 
-  // Residency transition drain (Phase F). Carries a with-history attach the rest
-  // of the way: re-drives a crash-interrupted `parking` journal to `pushing`,
-  // ships the project's queued rows + the two sidecar streams to the host, and —
-  // only after the host acknowledges the FULL push — deletes the local rows and
-  // clears the journal. `hold.pending` keeps the machine awake while any
-  // transition is unfinished, so a half-moved project is never abandoned to
+  // Residency transition drain (Phase F). Carries a transition the rest of the
+  // way in both directions: attach re-drives `parking` → `pushing` → push → local
+  // delete; detach pulls `pulling` → staging → flip → `applying` → apply into the
+  // local Grove → re-home → done. `hold.pending` keeps the machine awake while
+  // any transition is unfinished, so a half-moved project is never abandoned to
   // sleep. Runs in every power state, like the other member drains.
+  //
+  // PENDING one-line wiring: `applyStagedRows: (db, table, rows) => { applyResidencyRows(db, table, rows, { logger }); }`
+  // once T3 extracts the shared engine to `db/queries/residency-apply.ts`. Until
+  // then applyStagedRows is unset and a detach that reaches `applying` fails
+  // loudly (the drain guard) and retries — never silent data loss.
   jobRunner.register({
     name: 'residency-transition',
     runIn: ['active', 'idle', 'sleep'],

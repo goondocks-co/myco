@@ -1,20 +1,26 @@
 /**
- * Member-side residency drain (Phase F, attach direction) — the daemon job that
- * carries a with-history attach the rest of the way: it re-drives any `parking`
- * journal a crash left mid-setup, ships a `pushing` journal's queued rows (and
- * the two sidecar streams) to the Team Host, and — only after the host
- * acknowledges the FULL push — deletes the project's local rows (the backup is
- * the safety copy) and clears the journal.
+ * Member-side residency drain (Phase F) — the daemon job that carries a
+ * residency transition the rest of the way in both directions.
+ *
+ * ATTACH: re-drives a crash-interrupted `parking` journal, ships a `pushing`
+ * journal's queued rows (+ the two sidecar streams) to the host, and — only
+ * after the host acknowledges the FULL push — deletes the project's local rows
+ * (the backup is the safety copy) and clears the journal.
+ *
+ * DETACH: pulls a `pulling` journal's project rows back into per-table NDJSON
+ * staging page by page, then flips (remove the attach ref, re-materialize the
+ * local Grove row) → `applying`, applies the staged rows into the local Grove DB
+ * via the shared apply engine, re-homes any events buffered under the host Grove
+ * during the window, purges the host drain stores, and clears the journal.
  *
  * Discipline mirrors the other member drains (`capture/plan-drain.ts`): at-
  * least-once with host-side idempotency, a failed POST logs (throttled) and
- * retries next tick, and NOTHING advances on failure. The one difference is the
- * terminal act — a local delete — which runs exactly once, gated on full ack.
- *
- * Transport is the injectable seam so the ship discipline is unit-testable
- * without a real host; production POSTs through the host's `proxy_port` via
- * {@link defaultResidencyTransport}, exactly like the transcript/plan drains.
+ * retries next tick, and NOTHING advances on failure. Transports are injectable
+ * seams so the ship/pull discipline is unit-testable without a real host.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+
 import {
   HOST_BEARER_SECRET,
   HOST_PROTOCOL_HEADER,
@@ -24,6 +30,7 @@ import {
   epochSeconds,
 } from '../constants.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
+import { type Database } from '../db/client.js';
 import { GROVE_PROJECT_SCOPED_TABLES } from '../db/schema-ddl.js';
 import {
   listPendingForProject,
@@ -37,20 +44,30 @@ import {
   listContentPublicationPages,
   listEntityMentionPages,
 } from '../db/queries/residency-backfill.js';
+import { createFsDrainStore } from '../capture/transcript-drain.js';
+import { createFsPlanDrainStore } from '../capture/plan-drain.js';
+import { createFsReplayStore } from '../capture/event-replay-drain.js';
 import { defaultDial, parseOverlayAddress } from '../daemon/host-proxy.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
-import { getHost, readHostSecrets } from './registry.js';
+import { resolveProjectBufferDir } from '../grove/paths.js';
+import { detachProject, getHost, readHostSecrets } from './registry.js';
+import { registerProjectInGrove } from '../grove/registry.js';
 import type { RemoteTarget } from './routing.js';
 import { completeAttachParking, type ResidencyDaemonDeps } from './residency-transition.js';
 import {
   ROUTED_RESIDENCY_ROWS_PATH,
+  ROUTED_RESIDENCY_PULL_PATH,
   RESIDENCY_MIN_HOST_PROTOCOL,
   advanceResidencyPhase,
+  appendResidencyStagingRows,
   clearResidencyJournal,
+  clearResidencyStaging,
   listResidencyJournals,
+  listResidencyStagingTables,
   readResidencyJournal,
+  readResidencyStagingRows,
   type ResidencyJournal,
 } from './residency-journal.js';
 
@@ -89,9 +106,36 @@ export type ResolveResidencyTarget = (
   projectId: string,
 ) => RemoteTarget | null;
 
+/** One pulled page of the detach transfer. */
+export interface ResidencyPullResponse {
+  status: number;
+  rows: { table: string; row: Record<string, unknown> }[];
+  next_cursor: string | null;
+  done: boolean;
+}
+
+/** The pull transport seam — reads one page of the machine's rows from the host. */
+export type ResidencyPullTransport = (
+  target: RemoteTarget,
+  body: { cursor: string | null },
+  machineId: string,
+) => Promise<ResidencyPullResponse>;
+
+/**
+ * Apply staged detach rows into the local Grove DB. Wraps the SHARED apply
+ * engine (`db/queries/residency-apply.ts` `applyResidencyRows`, extracted by T3)
+ * so both directions use identical per-table rules with no duplication. MUST run
+ * inside a transaction — the caller wraps it. Injected so the drain stays
+ * testable and decoupled from the engine's extraction timing.
+ */
+export type ApplyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[]) => void;
+
 export interface ResidencyDrainDeps extends ResidencyDaemonDeps {
   transport?: ResidencyPostTransport;
+  pullTransport?: ResidencyPullTransport;
   resolveHostTarget?: ResolveResidencyTarget;
+  /** Apply staged detach rows into the local Grove DB (the shared engine). */
+  applyStagedRows?: ApplyStagedRows;
   teamsHome?: string;
 }
 
@@ -165,37 +209,94 @@ const defaultResolveResidencyTarget: ResolveResidencyTarget = (hostId, groveId, 
   };
 };
 
+/**
+ * Production pull transport: POST the resume cursor to the host's residency-pull
+ * route and read one page. Same dial + tenancy-header shape as the push (grove =
+ * the HOST's served Grove, project, THIS machine); parses `{rows, next_cursor,
+ * done}`.
+ */
+export const defaultResidencyPullTransport: ResidencyPullTransport = async (target, body, machineId) => {
+  const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
+  const payload = Buffer.from(JSON.stringify(body), 'utf-8');
+  const headers = {
+    host: `${overlayHost}:${port}`,
+    authorization: `Bearer ${target.bearer}`,
+    'content-type': 'application/json',
+    'content-length': String(payload.length),
+    [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
+    [REQUEST_CONTEXT_HEADERS.projectId]: String(target.projectId),
+    [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
+    [REQUEST_CONTEXT_HEADERS.machineId]: machineId,
+  };
+  const req = await defaultDial(target, { method: 'POST', path: ROUTED_RESIDENCY_PULL_PATH, headers });
+
+  return new Promise<ResidencyPullResponse>((resolve, reject) => {
+    let settled = false;
+    const fail = (err: Error) => { if (!settled) { settled = true; req.destroy(); reject(err); } };
+    const headersTimer = setTimeout(() => fail(new Error('headers_timeout')), HOST_PROXY_HEADERS_TIMEOUT_MS);
+
+    req.on('response', (res) => {
+      clearTimeout(headersTimer);
+      const bodyTimer = setTimeout(() => fail(new Error('body_timeout')), HOST_PROXY_BODY_TIMEOUT_MS);
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => {
+        clearTimeout(bodyTimer);
+        if (settled) return;
+        settled = true;
+        let parsed: { rows?: unknown; next_cursor?: unknown; done?: unknown } = {};
+        try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf-8')); } catch { /* non-JSON body */ }
+        resolve({
+          status: res.statusCode ?? 0,
+          rows: Array.isArray(parsed.rows) ? (parsed.rows as ResidencyPullResponse['rows']) : [],
+          next_cursor: typeof parsed.next_cursor === 'string' ? parsed.next_cursor : null,
+          done: parsed.done === true,
+        });
+      });
+      res.on('error', fail);
+    });
+    req.on('error', fail);
+    req.end(payload);
+  });
+};
+
 /** How many transitions are still in flight — the deep-sleep `hold.pending`
- *  signal, so the machine never sleeps mid-move. */
+ *  signal, so the machine never sleeps mid-move. Covers both directions. */
 export function countResidencyInFlight(teamsHome?: string): number {
   return listResidencyJournals(teamsHome).filter((j) => j.phase !== 'done').length;
 }
 
 /**
- * One drain tick: advance every attach journal as far as it will go. `parking`
- * journals are re-driven to `pushing`; `pushing` journals ship their rows and,
- * on full ack, purge locally and finish. Detach journals belong to the pull
- * task and are skipped here.
+ * One drain tick: advance every journal as far as it will go. Attach `parking`
+ * journals are re-driven to `pushing`; `pushing` journals ship + purge + finish.
+ * Detach `pulling` journals pull to staging then flip; `applying` journals apply
+ * + re-home + finish.
  */
 export async function runResidencyTransitions(deps: ResidencyDrainDeps): Promise<{ processed: number }> {
   const transport = deps.transport ?? defaultResidencyTransport;
+  const pullTransport = deps.pullTransport ?? defaultResidencyPullTransport;
   const resolveTarget = deps.resolveHostTarget ?? defaultResolveResidencyTarget;
   const teamsHome = deps.teamsHome;
   let processed = 0;
 
   for (const journal of listResidencyJournals(teamsHome)) {
-    if (journal.direction !== 'attach') continue;
     if (journal.phase === 'done') {
       clearResidencyJournal(journal.project_id, teamsHome);
+      clearResidencyStaging(journal.project_id, teamsHome);
       continue;
     }
     try {
-      if (journal.phase === 'parking') {
-        completeAttachParking(journal, deps);
-      }
-      const current = readResidencyJournal(journal.project_id, teamsHome);
-      if (current?.phase === 'pushing') {
-        await pushTransition(current, deps, transport, resolveTarget, teamsHome);
+      if (journal.direction === 'attach') {
+        if (journal.phase === 'parking') {
+          completeAttachParking(journal, deps);
+        }
+        const current = readResidencyJournal(journal.project_id, teamsHome);
+        if (current?.phase === 'pushing') {
+          await pushTransition(current, deps, transport, resolveTarget, teamsHome);
+          processed += 1;
+        }
+      } else {
+        await runDetachTransition(journal, deps, pullTransport, resolveTarget, teamsHome);
         processed += 1;
       }
     } catch (err) {
@@ -204,6 +305,143 @@ export async function runResidencyTransitions(deps: ResidencyDrainDeps): Promise
   }
 
   return { processed };
+}
+
+/**
+ * Carry a detach journal forward. `pulling`: pull remaining pages into staging
+ * (resume-exact from the journal cursor), then flip — remove the attach ref and
+ * re-materialize the local Grove row (both idempotent, so a crash between them
+ * heals) — and advance to `applying`. `applying`: apply the staged rows via the
+ * shared engine (double-apply is a no-op under its freshness rules), re-home the
+ * events buffered under the host Grove during the window, purge the host drain
+ * stores, and finish.
+ */
+async function runDetachTransition(
+  journal: ResidencyJournal,
+  deps: ResidencyDrainDeps,
+  pullTransport: ResidencyPullTransport,
+  resolveTarget: ResolveResidencyTarget,
+  teamsHome: string | undefined,
+): Promise<void> {
+  const targetGroveId = journal.target_grove_id;
+  if (!targetGroveId) {
+    // A detach journal always carries its re-materialize target; a missing one is
+    // a corrupt journal, not something a retry fixes.
+    recordJournalFailure(journal, new Error('detach journal has no target_grove_id'), deps, teamsHome);
+    return;
+  }
+
+  if (journal.phase === 'pulling') {
+    if (journal.cursors.pull !== CURSOR_DONE) {
+      const target = resolveTarget(journal.host_id, journal.divert_grove_id, journal.project_id);
+      if (!target) return; // host record gone — leave for a later tick
+      if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {
+        if (shouldLogOncePerInterval(`residency.proto.${journal.project_id}`, FAILURE_LOG_INTERVAL_MS, Date.now())) {
+          deps.logger?.warn(LOG_KINDS.RESIDENCY_DETACH_PULL, 'host below residency protocol — pull skipped', {
+            project_id: journal.project_id, host_id: journal.host_id, host_protocol: target.host.protocol_version,
+          });
+        }
+        return;
+      }
+      let cursor: string | null = typeof journal.cursors.pull === 'string' && journal.cursors.pull ? journal.cursors.pull : null;
+      for (;;) {
+        let page: ResidencyPullResponse;
+        try { page = await pullTransport(target, { cursor }, deps.machineId); }
+        catch (err) { recordJournalFailure(journal, err, deps, teamsHome); return; }
+        if (page.status !== 200) {
+          recordJournalFailure(journal, new Error(`host returned ${page.status}`), deps, teamsHome);
+          return;
+        }
+        // Append THEN advance the cursor — at-least-once; a resumed re-pull of the
+        // same page re-appends, which the idempotent apply engine flattens.
+        appendResidencyStagingRows(journal.project_id, page.rows, teamsHome);
+        if (page.done) {
+          advanceResidencyPhase(journal.project_id, 'pulling', { cursors: { pull: CURSOR_DONE } }, teamsHome);
+          break;
+        }
+        cursor = page.next_cursor;
+        advanceResidencyPhase(journal.project_id, 'pulling', { cursors: { pull: cursor ?? '' } }, teamsHome);
+        await yieldToLoop();
+      }
+    }
+
+    // Flip: the journal already records target_grove_id + root (written at begin),
+    // so a crash between these two steps re-drives idempotently next tick.
+    detachProject(journal.host_id, journal.project_id);
+    registerProjectInGrove(targetGroveId, {
+      projectId: journal.project_id,
+      projectName: journal.project_name,
+      projectRoot: journal.root,
+    }, deps.mycoHome);
+    advanceResidencyPhase(journal.project_id, 'applying', {}, teamsHome);
+    const refreshed = readResidencyJournal(journal.project_id, teamsHome);
+    if (!refreshed) return;
+    journal = refreshed;
+  }
+
+  if (journal.phase === 'applying') {
+    const applyRows = deps.applyStagedRows;
+    if (!applyRows) {
+      recordJournalFailure(journal, new Error('residency apply engine not wired'), deps, teamsHome);
+      return;
+    }
+    // (6) apply staged pages into the local Grove DB via the shared engine, one
+    // transaction. Post-flip live capture already in the DB wins over older host
+    // snapshots — the engine's if-newer / insert-only rules guarantee it.
+    deps.withGroveDb(targetGroveId, (db) => {
+      db.transaction(() => {
+        for (const table of listResidencyStagingTables(journal.project_id, teamsHome)) {
+          applyRows(db, table, readResidencyStagingRows(journal.project_id, table, teamsHome));
+        }
+      })();
+    });
+
+    // Capture the buffer paths before clearing the journal (which turns divert off).
+    const fromDir = resolveProjectBufferDir(journal.divert_grove_id, journal.project_id, deps.mycoHome);
+    const toDir = resolveProjectBufferDir(targetGroveId, journal.project_id, deps.mycoHome);
+
+    // (8) purge the host drain-store entries for this project (existing detach
+    // cleanup), then finish. Best-effort — never block completion.
+    try {
+      createFsDrainStore().purgeProject(journal.host_id, journal.project_id);
+      createFsPlanDrainStore().purgeProject(journal.host_id, journal.project_id);
+      createFsReplayStore().purgeProject(journal.host_id, journal.project_id);
+    } catch { /* best-effort machine-scoped cleanup */ }
+
+    advanceResidencyPhase(journal.project_id, 'done', {}, teamsHome);
+    clearResidencyJournal(journal.project_id, teamsHome);
+    // (7) re-home AFTER the journal is cleared, so divert is off and no new event
+    // lands in the host-Grove buffer after this sweep — closing the race.
+    rehomeBufferedEvents(fromDir, toDir);
+    clearResidencyStaging(journal.project_id, teamsHome);
+
+    deps.logger?.info(LOG_KINDS.RESIDENCY_COMPLETE, 'residency detach transition complete', {
+      project_id: journal.project_id, host_id: journal.host_id,
+    });
+  }
+}
+
+/** Move the durable capture files (`<session>.jsonl`) diverted under the host
+ *  Grove during the window into the local Grove's buffer dir — a byte-level move
+ *  (no re-parse), merging by append on a same-session collision so the local
+ *  reconciler dedups by event id. */
+function rehomeBufferedEvents(fromDir: string, toDir: string): void {
+  let files: string[];
+  try { files = fs.readdirSync(fromDir); } catch { return; } // nothing buffered
+  for (const file of files) {
+    if (!file.endsWith('.jsonl')) continue; // durable capture only; skip .lock / quarantine
+    const src = path.join(fromDir, file);
+    const dest = path.join(toDir, file);
+    try {
+      fs.mkdirSync(toDir, { recursive: true });
+      if (fs.existsSync(dest)) {
+        fs.appendFileSync(dest, fs.readFileSync(src));
+        fs.rmSync(src, { force: true });
+      } else {
+        fs.renameSync(src, dest);
+      }
+    } catch { /* skip a file that vanished mid-move; a retry re-home catches the rest */ }
+  }
 }
 
 /** Ship a `pushing` journal's outbox rows and sidecars; on full ack, purge and
