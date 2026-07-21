@@ -11,6 +11,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { getTeamMachineId } from '@myco/team/context.js';
+import { createGroveEraId } from '@myco/grove/ids.js';
 
 export const RELEASE_CAPTURE_POINTS = [
   'session_start',
@@ -369,12 +370,12 @@ export function upsertReleaseState(input: ReleaseStateUpsert, dbArg?: Database):
   const identityKey = buildReleaseStateIdentityKey(input);
   db.prepare(
     `INSERT INTO knowledge_release_state (
-       project_id, machine_id, identity_key, namespace, record_id,
+       id, project_id, machine_id, identity_key, namespace, record_id,
        source_session_id, source_prompt_batch_id, state, confidence,
        basis_kind, basis_ref, basis_sha, release_pr_number,
        reason, evidence_json, checked_at, created_at, updated_at
      ) VALUES (
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?, ?
@@ -394,6 +395,7 @@ export function upsertReleaseState(input: ReleaseStateUpsert, dbArg?: Database):
        checked_at              = EXCLUDED.checked_at,
        updated_at              = EXCLUDED.updated_at`,
   ).run(
+    createGroveEraId('knowledge_release_state'),
     input.project_id ?? null,
     input.machine_id ?? getTeamMachineId(),
     identityKey,

@@ -8,7 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { DIGEST_TIERS, epochSeconds } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/team/context.js';
-import { type ProjectScope } from '@myco/grove/ids.js';
+import { createGroveEraId, type ProjectScope } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -215,9 +215,9 @@ export function upsertDigestExtract(
       ).run(data.content, data.generated_at, machineId, existingRow.id);
     } else {
       db.prepare(
-        `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at, machine_id)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(projectId, data.agent_id, data.tier, data.content, data.generated_at, machineId);
+        `INSERT INTO digest_extracts (id, project_id, agent_id, tier, content, generated_at, machine_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(createGroveEraId('digest_extract'), projectId, data.agent_id, data.tier, data.content, data.generated_at, machineId);
     }
 
     const row = db.prepare(
@@ -438,9 +438,9 @@ export function rollbackDigestExtract(
       ).run(targetContent, now, currentRow.id);
     } else {
       db.prepare(
-        `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at, machine_id)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(projectId, agentId, tier, targetContent, now, getTeamMachineId());
+        `INSERT INTO digest_extracts (id, project_id, agent_id, tier, content, generated_at, machine_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(createGroveEraId('digest_extract'), projectId, agentId, tier, targetContent, now, getTeamMachineId());
     }
 
     const restored = db.prepare(
