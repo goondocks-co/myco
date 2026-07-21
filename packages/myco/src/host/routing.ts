@@ -472,6 +472,11 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   // every host it has joined — never proxied, never meaningful to answer on
   // another machine's behalf, same posture as the mutation routes above.
   { method: 'GET', pattern: '/api/host-membership/health', stamp: 'localhost-only', capability: HOST_ADMIN },
+  // Residency-transition progress + Cancel (Phase F T6). Both read/mutate THIS
+  // machine's own journal + local state (an in-flight project move), never
+  // proxied, same posture as the membership routes above.
+  { method: 'GET', pattern: '/api/host-membership/residency-status', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-membership/residency-abort', stamp: 'localhost-only', capability: HOST_ADMIN },
 
   // --- localhost-only: Team Host operator-side serving status (Task T4,
   //     decision-ef693c71 D3). Reports THIS machine's OWN host-serve

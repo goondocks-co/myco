@@ -73,7 +73,12 @@ export type MembershipErrorCode =
   /** Detach-pull is unavailable because the joined host predates the residency
    *  protocol, and the caller did not opt into a plain (no-data) detach. Surfaced
    *  by `detachCommand` — update the host, or detach without pulling. */
-  | 'residency_pull_unavailable';
+  | 'residency_pull_unavailable'
+  /** A residency transition can no longer be aborted: an attach whose rows
+   *  already moved to the host (the local copy is gone — detach is the way back),
+   *  or a detach that already flipped to local (`applying`/`rehoming` — let the
+   *  drain finish). Surfaced by the residency-abort route. */
+  | 'residency_abort_too_late';
 
 /** Build an Error carrying a stable membership code alongside its
  *  (CLI-voiced) message. The message still prints verbatim in terminals;

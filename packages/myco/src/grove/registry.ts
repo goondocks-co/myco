@@ -28,7 +28,7 @@ import {
 import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
 import { loadMachineConfig } from '../config/loader.js';
 import { resolveAttach, type AttachRef, type HostRecord } from '../host/registry.js';
-import { isResidencyDivertActive, readResidencyJournal, residencyDirExists } from '../host/residency-journal.js';
+import { isResidencyDivertActive, readResidencyJournal, residencyDirExists, residencyTransitionInFlight } from '../host/residency-journal.js';
 import { noticeTeamHostHintOnce } from '../host/hint.js';
 
 export interface GroveRecord {
@@ -660,6 +660,21 @@ export function resolveAttachForProjectRoot(
   const projectId = manifest?.project.id;
   if (!projectId || !isGroveEraId(projectId, 'project')) return null;
   return resolveAttach(projectId);
+}
+
+/**
+ * The shared never-materialize gate for registration vectors BEYOND the hook
+ * path (`myco init`/activation, the legacy importer, the binding-repair
+ * re-register): a local Grove row must not be minted for a project that is
+ * already attached to a host (F-3 latent hole — a repair/init re-register of a
+ * settled attached project, no transition even in flight) or mid-residency
+ * transition. Keyed on the project id alone — both an attach ref and a residency
+ * journal are resolvable from it — so a caller with the id can gate before it
+ * writes. `ensureProjectRegistered` already inlines both checks for the hot hook
+ * path; this is the same policy for the colder vectors.
+ */
+export function isLocalRegistrationSuppressed(projectId: string): boolean {
+  return residencyTransitionInFlight(projectId) || resolveAttach(projectId) !== null;
 }
 
 /**

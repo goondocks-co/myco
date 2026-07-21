@@ -57,6 +57,7 @@ import {
 } from '../../host/attach-command.js';
 import { resolveTeamHostHintState, teamHostHintMessage } from '../../host/hint.js';
 import { defaultCheckHostReachable, joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
+import type { ResidencyStatus } from '../../host/residency-transition.js';
 import { membershipErrorCode } from '../../host/membership-error.js';
 import { readHostRegistry, type HostRecord } from '../../host/registry.js';
 import type { DaemonLogger } from '../logger.js';
@@ -93,6 +94,17 @@ export interface HostMembershipRouteDeps extends HostMembershipHealthRouteDeps {
    * plain mapping flip.
    */
   beginDetachResidency?: BeginDetachResidency;
+  /**
+   * DAEMON-ONLY (Phase F): read a project's residency-transition status for the
+   * Team page progress surface. Built in `daemon/main.ts`; absent in tests /
+   * non-daemon wiring, where the status route answers `{in_flight:false}`.
+   */
+  residencyStatus?: (projectId: string) => ResidencyStatus;
+  /**
+   * DAEMON-ONLY (Phase F): abort an in-flight residency transition. Built in
+   * `daemon/main.ts`; throws a coded membership error the route maps to the wire.
+   */
+  residencyAbort?: (projectId: string) => { ok: true };
   /**
    * Evicts a host's cached health entry (and any in-flight probe) on a
    * successful leave — `registerHostMembershipRoutes` wires this to the
@@ -508,6 +520,48 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
 }
 
 // ---------------------------------------------------------------------------
+// residency-status / residency-abort (Phase F — the Team page progress + Cancel)
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /api/host-membership/residency-status?project_id=<proj>` — the in-flight
+ * transition for a project, or `{in_flight:false}` when none. Localhost-only
+ * (`host/routing.ts` ROUTE_RULES): it reads this member machine's own journal
+ * and local outbox, meaningless to answer for another machine. Without the
+ * daemon capability wired (tests) it degrades to `{in_flight:false}`.
+ */
+export function createHostMembershipResidencyStatusHandler(deps: HostMembershipRouteDeps): RouteHandler {
+  return async (req) => {
+    const projectId = str(req.query.project_id);
+    if (!projectId) return { status: 400, body: errorBody('missing_project_id', 'project_id is required.') };
+    if (!deps.residencyStatus) return { status: 200, body: { in_flight: false } };
+    return { status: 200, body: deps.residencyStatus(projectId) };
+  };
+}
+
+/**
+ * `POST /api/host-membership/residency-abort` `{project_id}` — abort an in-flight
+ * transition, `{ok:true}` on success or a coded membership error (e.g.
+ * `residency_abort_too_late`). Localhost-only, daemon-only (it restores/clears
+ * local state); a caller without the capability wired gets a clean refusal.
+ */
+export function createHostMembershipResidencyAbortHandler(deps: HostMembershipRouteDeps): RouteHandler {
+  return async (req) => {
+    const body = asRecord(req.body);
+    const projectId = str(body.project_id);
+    if (!projectId) return { status: 400, body: errorBody('missing_project_id', 'project_id is required.') };
+    if (!deps.residencyAbort) {
+      return { status: 400, body: errorBody('residency_abort_unavailable', 'Aborting a residency transition requires the running daemon.') };
+    }
+    try {
+      return { status: 200, body: deps.residencyAbort(projectId) };
+    } catch (err) {
+      return failure('residency_abort_failed', err);
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -524,4 +578,6 @@ export function registerHostMembershipRoutes(server: RouteRegistrar, deps: HostM
   server.registerRoute('POST', '/api/host-membership/detach', createHostMembershipDetachHandler(deps));
   server.registerRoute('GET', '/api/host-membership/status', createHostMembershipStatusHandler(deps));
   server.registerRoute('GET', '/api/host-membership/health', healthHandler);
+  server.registerRoute('GET', '/api/host-membership/residency-status', createHostMembershipResidencyStatusHandler(deps));
+  server.registerRoute('POST', '/api/host-membership/residency-abort', createHostMembershipResidencyAbortHandler(deps));
 }

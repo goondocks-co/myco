@@ -47,6 +47,7 @@ import {
 import { createFsDrainStore } from '../capture/transcript-drain.js';
 import { createFsPlanDrainStore } from '../capture/plan-drain.js';
 import { createFsReplayStore } from '../capture/event-replay-drain.js';
+import type { DrainHealthCounters } from '../capture/drain-health.js';
 import { defaultDial, parseOverlayAddress } from '../daemon/host-proxy.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
@@ -264,6 +265,26 @@ export const defaultResidencyPullTransport: ResidencyPullTransport = async (targ
  *  signal, so the machine never sleeps mid-move. Covers both directions. */
 export function countResidencyInFlight(teamsHome?: string): number {
   return listResidencyJournals(teamsHome).filter((j) => j.phase !== 'done').length;
+}
+
+/**
+ * Per-host residency drain health for the drain-health surface (T6): each
+ * in-flight journal is a pending entry for its host, and one carrying a
+ * `last_error` stamp is a failing entry. Residency does not classify
+ * unreachable-vs-rejected (the reason is in the last_error message), so
+ * `hostUnreachableEntries` stays 0. Same {@link DrainHealthCounters} shape as
+ * the three capture drains, so the route renders a fourth kind uniformly.
+ */
+export function residencyHealthByHost(teamsHome?: string): Map<string, DrainHealthCounters> {
+  const out = new Map<string, DrainHealthCounters>();
+  for (const journal of listResidencyJournals(teamsHome)) {
+    if (journal.phase === 'done') continue;
+    const counters = out.get(journal.host_id) ?? { pendingEntries: 0, failingEntries: 0, hostUnreachableEntries: 0 };
+    counters.pendingEntries += 1;
+    if (journal.last_error) counters.failingEntries += 1;
+    out.set(journal.host_id, counters);
+  }
+  return out;
 }
 
 /**

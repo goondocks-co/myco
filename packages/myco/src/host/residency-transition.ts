@@ -22,8 +22,9 @@ import { createBackup } from '../backup/engine.js';
 import { resolveGroveBackupDir } from '../backup/location.js';
 import { listActiveContentClaims, releaseContentClaim } from '../db/queries/content-claims.js';
 import { backfillProjectForResidency } from '../db/queries/residency-backfill.js';
+import { countPendingForProjects, dropPendingForProjects } from '../db/queries/team-outbox.js';
 import { slugifyGroveName, projectScope, type GroveProjectId } from '../grove/ids.js';
-import { deregisterProjectInGrove, resolveDefaultGrove } from '../grove/registry.js';
+import { deregisterProjectInGrove, registerProjectInGrove, resolveDefaultGrove } from '../grove/registry.js';
 import { findRegisteredProjectById } from '../grove/registry-resolve.js';
 import type { DaemonLogger } from '../daemon/logger.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
@@ -34,14 +35,17 @@ import type {
   ResidencyDetachContext,
 } from './attach-command.js';
 import { codedMembershipError } from './membership-error.js';
-import { attachProject, getHost, type AttachRef } from './registry.js';
+import { attachProject, detachProject, getHost, type AttachRef } from './registry.js';
 import {
   RESIDENCY_MIN_HOST_PROTOCOL,
   advanceResidencyPhase,
   clearResidencyJournal,
+  clearResidencyStaging,
   readResidencyJournal,
   startResidencyJournal,
+  type ResidencyDirection,
   type ResidencyJournal,
+  type ResidencyPhase,
 } from './residency-journal.js';
 
 /** Daemon-owned capabilities the transition and drain both need. `withGroveDb`
@@ -206,6 +210,90 @@ export function completeAttachParking(journal: ResidencyJournal, deps: Residency
 function isProtocolRefusal(err: unknown): boolean {
   return err instanceof Error
     && (err as Error & { membershipCode?: unknown }).membershipCode === 'residency_requires_host_update';
+}
+
+/** The residency-status wire body (`GET /api/host-membership/residency-status`). */
+export interface ResidencyStatus {
+  in_flight: boolean;
+  direction?: ResidencyDirection;
+  phase?: ResidencyPhase;
+  /** Attach: pending outbox rows still to push. Detach (or none): null. */
+  rows_pending?: number | null;
+  last_error?: string | null;
+}
+
+/** Read a project's transition status for the Team page progress surface. */
+export function residencyStatus(projectId: string, deps: ResidencyDaemonDeps): ResidencyStatus {
+  const journal = readResidencyJournal(projectId);
+  if (!journal || journal.phase === 'done') return { in_flight: false };
+  const rowsPending = journal.direction === 'attach'
+    ? deps.withGroveDb(journal.source_grove_id, () => countPendingForProjects([projectId]))
+    : null;
+  return {
+    in_flight: true,
+    direction: journal.direction,
+    phase: journal.phase,
+    rows_pending: rowsPending,
+    last_error: journal.last_error ?? null,
+  };
+}
+
+/**
+ * Abort an in-flight transition. Valid from any non-done phase:
+ *  - ATTACH (parking/pushing): the local rows are still present (delete is
+ *    post-ack), so restore the parked local registration, drop the attach ref if
+ *    one was recorded, and clear the queued push. The safety backup stays on
+ *    disk; its ref is logged. Released content claims stay released (TTL
+ *    semantics — the holder re-claims on next use).
+ *  - DETACH (pulling): the flip hasn't happened, the project is still attached
+ *    and nothing local changed — drop the pull journal + staged pages.
+ *  - DETACH (applying/rehoming): the flip already happened; refuse
+ *    `residency_abort_too_late` and let the drain finish.
+ * A finished/absent transition refuses `residency_abort_too_late` — for attach
+ * the rows already live on the host (detach is the way back).
+ */
+export function abortResidency(projectId: string, deps: ResidencyDaemonDeps): { ok: true } {
+  const journal = readResidencyJournal(projectId);
+  if (!journal || journal.phase === 'done') {
+    throw codedMembershipError(
+      'residency_abort_too_late',
+      `Nothing to abort for ${projectId}: the residency transition has already finished. If it was an attach, the `
+      + 'data now lives on the host — detach to bring it back.',
+    );
+  }
+
+  if (journal.direction === 'attach') {
+    registerProjectInGrove(journal.source_grove_id, {
+      projectId,
+      projectName: journal.project_name,
+      projectRoot: journal.root,
+    }, deps.mycoHome);
+    detachProject(journal.host_id, projectId);
+    // Drop the residency-backfilled pending rows — inert otherwise (nothing ships
+    // them once the journal is gone), and a re-attach re-enqueues from scratch.
+    deps.withGroveDb(journal.source_grove_id, () => dropPendingForProjects([projectId]));
+    deps.logger?.info(LOG_KINDS.RESIDENCY_ABORT, 'residency attach aborted — local registration restored', {
+      project_id: projectId,
+      backup_ref: journal.backup_ref,
+    });
+    clearResidencyJournal(projectId);
+    return { ok: true };
+  }
+
+  if (journal.phase === 'pulling') {
+    clearResidencyJournal(projectId);
+    clearResidencyStaging(projectId);
+    deps.logger?.info(LOG_KINDS.RESIDENCY_ABORT, 'residency detach aborted before flip — still attached', {
+      project_id: projectId,
+    });
+    return { ok: true };
+  }
+
+  throw codedMembershipError(
+    'residency_abort_too_late',
+    `Cannot abort the detach of ${projectId}: it already flipped to local. Let the transition finish, then re-attach `
+    + 'to move it back.',
+  );
 }
 
 /**

@@ -206,7 +206,7 @@ import { createRoutedResidencyHandler } from '../host/routed-residency.js';
 import { createRoutedResidencyPullHandler } from '../host/routed-residency-pull.js';
 import type { RemoteTarget } from '../host/routing.js';
 import { pruneHostedProjects } from '../host/hosted-projects.js';
-import { beginAttachResidency, beginDetachResidency, type ResidencyDaemonDeps } from '../host/residency-transition.js';
+import { abortResidency, beginAttachResidency, beginDetachResidency, residencyStatus, type ResidencyDaemonDeps } from '../host/residency-transition.js';
 import { countResidencyInFlight, runResidencyTransitions } from '../host/residency-drain.js';
 import { applyResidencyRows } from '../db/queries/residency-apply.js';
 import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
@@ -1620,6 +1620,8 @@ export async function main(): Promise<void> {
     logger,
     beginResidency: (ctx) => beginAttachResidency(ctx, residencyDeps),
     beginDetachResidency: (ctx) => beginDetachResidency(ctx, residencyDeps),
+    residencyStatus: (projectId) => residencyStatus(projectId, residencyDeps),
+    residencyAbort: (projectId) => abortResidency(projectId, residencyDeps),
   });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
