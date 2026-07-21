@@ -53,7 +53,7 @@ import { HOST_BEARER_SECRET } from '../constants.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { scopePolicyForPath } from '../config/scope.js';
 import { readHostSecrets, resolveAttach } from './registry.js';
-import { ROUTED_RESIDENCY_ROWS_PATH } from './residency-journal.js';
+import { ROUTED_RESIDENCY_PULL_PATH, ROUTED_RESIDENCY_ROWS_PATH } from './residency-journal.js';
 
 /** The scope-map stamp a route carries. See the module docstring. */
 export type RouteStamp = 'serve' | 'collect' | 'degrade' | 'config-lock' | 'config-carve' | 'team-write' | 'localhost-only';
@@ -288,6 +288,15 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   // first batch (the collect-stamped registration-on-ingest seam), and is served
   // locally on the host, proxied from a member.
   { method: 'POST', pattern: ROUTED_RESIDENCY_ROWS_PATH, stamp: 'collect', capability: COLLECTION },
+  // Routed residency-pull — the host RECEIVE side of a DETACH (Phase F T3). A
+  // detaching member pages its own rows back from the host here. Same overlay
+  // data-plane family as residency-rows: bearer/version gated, proxied from the
+  // member, served locally on the host. `collect` (not `serve`): mechanically
+  // identical to serve for member-proxy + host-serve-locally, it keeps the whole
+  // residency transport family in one place and lets the registration-on-ingest
+  // seam harmlessly ensure the project row resolves. The route's own side effects
+  // (claim release, stub deregister) are the collector contract for this leg.
+  { method: 'POST', pattern: ROUTED_RESIDENCY_PULL_PATH, stamp: 'collect', capability: COLLECTION },
 
   // --- degrade: Code intelligence (Canopy) OFF for hosted projects v1 (§1c, §2) ---
   { method: 'POST', pattern: '/canopy/inject', stamp: 'degrade', capability: CANOPY },

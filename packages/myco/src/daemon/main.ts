@@ -203,6 +203,7 @@ import { createEventDispatcher } from './event-dispatch.js';
 import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
 import { createRoutedPlanHandler } from '../host/routed-plan.js';
 import { createRoutedResidencyHandler } from '../host/routed-residency.js';
+import { createRoutedResidencyPullHandler } from '../host/routed-residency-pull.js';
 import type { RemoteTarget } from '../host/routing.js';
 import { pruneHostedProjects } from '../host/hosted-projects.js';
 import { beginAttachResidency, beginDetachResidency, type ResidencyDaemonDeps } from '../host/residency-transition.js';
@@ -1525,6 +1526,12 @@ export async function main(): Promise<void> {
   // parses literal registerRoute paths); it MUST equal ROUTED_RESIDENCY_ROWS_PATH,
   // pinned by tests/host/routed-residency.test.ts.
   server.registerRoute('POST', '/routed-capture/residency-rows', createRoutedResidencyHandler({ logger }));
+  // Team Host — routed residency-pull ingest (Phase F T3). A detaching member pages
+  // its own rows back from the host here; the host serves the page and runs the
+  // detach side effects (first-page claim release, done-page transcript purge + stub
+  // deregister). Stamped `collect` in host/routing.ts (ROUTED_RESIDENCY_PULL_PATH);
+  // the literal here must equal that constant (pinned by tests).
+  server.registerRoute('POST', '/routed-capture/residency-pull', createRoutedResidencyPullHandler({ logger }));
 
   // --- Context injection (cortex brief + semantic spore search) ---
   const contextDeps = {
