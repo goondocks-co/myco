@@ -133,8 +133,8 @@ export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteR
 }
 
 export async function handleGetBatchActivities(req: RouteRequest): Promise<RouteResponse> {
-  const batchId = Number(req.params.id);
-  if (isNaN(batchId)) return { status: 400, body: { error: 'invalid_batch_id' } };
+  const batchId = req.params.id;
+  if (!batchId) return { status: 400, body: { error: 'invalid_batch_id' } };
   const scope = projectScopeFromRequestContext(req.requestContext);
   if (!getBatchById(batchId, scope)) return { status: 404, body: { error: 'not_found' } };
   const activities = listActivitiesByBatch(batchId, { scope });

@@ -10,6 +10,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
+import { createGroveEraId } from '@myco/grove/ids.js';
 import {
   handleGetSessionCanopy,
   handleGetCanopyToolCallBlob,
@@ -58,14 +59,14 @@ function seedRead(
   // session's batch (open one if absent).
   const db = getDatabase();
   let batchId = (db.prepare(
-    'SELECT id FROM prompt_batches WHERE session_id = ? ORDER BY id LIMIT 1',
-  ).get(sessionId) as { id: number } | undefined)?.id;
+    'SELECT id FROM prompt_batches WHERE session_id = ? ORDER BY rowid LIMIT 1',
+  ).get(sessionId) as { id: string } | undefined)?.id;
   if (batchId === undefined) {
-    const result = db.prepare(
-      `INSERT INTO prompt_batches (session_id, project_id, prompt_number, started_at, created_at, status)
-       VALUES (?, ?, 1, ?, ?, 'active')`,
-    ).run(sessionId, PROJECT_ID, ts, ts);
-    batchId = Number(result.lastInsertRowid);
+    batchId = createGroveEraId('prompt_batch');
+    db.prepare(
+      `INSERT INTO prompt_batches (id, session_id, project_id, prompt_number, started_at, created_at, status)
+       VALUES (?, ?, ?, 1, ?, ?, 'active')`,
+    ).run(batchId, sessionId, PROJECT_ID, ts, ts);
   }
   const result = db.prepare(`
     INSERT INTO activities (

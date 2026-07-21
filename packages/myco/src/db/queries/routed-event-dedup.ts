@@ -24,7 +24,7 @@ export interface RoutedEventDedupRow {
   kind: string;
   /** The batch a `user_prompt` event opened — returned on a deduped replay so the
    *  caller attaches downstream work to the SAME batch; NULL for activity events. */
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   created_at: number;
 }
 
@@ -51,7 +51,7 @@ export function recordRoutedEventDedup(input: {
   eventId: string;
   machineId?: string | null;
   kind: RoutedEventKind;
-  promptBatchId?: number | null;
+  promptBatchId?: string | null;
 }): void {
   getDatabase()
     .prepare(

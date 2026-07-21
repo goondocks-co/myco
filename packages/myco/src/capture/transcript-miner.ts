@@ -71,7 +71,7 @@ export interface MinerLogger {
 /** A matched turn's images, attributed to a batch during mining. */
 export interface MinedImageCapture {
   sessionId: string;
-  promptBatchId: number;
+  promptBatchId: string;
   promptNumber: number;
   images: TranscriptImage[];
   projectId: GroveProjectId;
@@ -400,19 +400,18 @@ export class TranscriptMiner {
     // ONLY thread_id IS NULL rows. Neither side can ever see the other's
     // batches, so a 60-char prompt-prefix collision between a thread row and
     // a main-thread prompt can't cross-contaminate via buildPrefixBuckets.
-    const batches = (reattribute
+    const batches = reattribute
       ? listBatchesBySessionThread(targetSessionId, threadId!)
-      : listMainThreadBatchesBySession(sessionId, { scope: { kind: 'all' } })
-    ).sort((a, b) => a.id - b.id);
+      : listMainThreadBatchesBySession(sessionId, { scope: { kind: 'all' } });
 
     let reclassified = 0;
     let inserted = 0;
     const errors: string[] = [];
 
-    // Prefix bucketing keeps reconcile idempotent when DB id order diverges
+    // Prefix bucketing keeps reconcile idempotent when insertion order diverges
     // from transcript order after a recovery insert.
     const buckets = buildPrefixBuckets(batches);
-    let currentParentId: number | null = null;
+    let currentParentId: string | null = null;
     let currentParentOrigin: PromptBatchOrigin | null = null;
 
     // content_hash ordinal source: the 0-based occurrence index of each
@@ -440,7 +439,7 @@ export class TranscriptMiner {
     const resolveKindParent = (
       kind: string,
       origin: PromptBatchOrigin,
-    ): { effectiveKind: string; parent: number | null } => {
+    ): { effectiveKind: string; parent: string | null } => {
       if (kind === BATCH_KIND.INITIAL) return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
       if (currentParentId == null) return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
       // System / agent_dispatch prompts are point-in-time records: they own a
@@ -563,14 +562,14 @@ export class TranscriptMiner {
     // Skip the renumber pass entirely for a thread mine: prompt_number is a
     // per-session (main-thread) ordering key, and renumbering across threads
     // would collide numbers between the parent's main thread and its sub-agent
-    // threads (§3.1). Thread rows are ordered by id, not prompt_number.
+    // threads (§3.1). Thread rows are ordered by insertion (rowid), not prompt_number.
     if (!reattribute && inserted > 0) {
-      const allBatches = listMainThreadBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
+      const allBatches = listMainThreadBatchesBySession(sessionId, { scope: { kind: 'all' } });
       const renumber = buildPrefixBuckets(allBatches);
       const reservedNumbers = new Set<number>();
       // First pass: walk records to identify which batches WILL be matched,
       // and reserve every other batch's existing prompt_number as off-limits.
-      const matchableIds = new Set<number>();
+      const matchableIds = new Set<string>();
       const previewBuckets = buildPrefixBuckets(allBatches);
       for (const record of records) {
         const match = previewBuckets.consume(record.text);
@@ -689,10 +688,9 @@ export class TranscriptMiner {
     // Thread-scoped when mining a sub-agent thread so images match only that
     // thread's batches; main-thread scoped otherwise so a thread row can
     // never absorb a main-thread image match.
-    const batches = (threadId != null
+    const batches = threadId != null
       ? listBatchesBySessionThread(sessionId, threadId)
-      : listMainThreadBatchesBySession(sessionId, { scope: { kind: 'all' } })
-    ).sort((a, b) => a.id - b.id);
+      : listMainThreadBatchesBySession(sessionId, { scope: { kind: 'all' } });
     const buckets = buildPrefixBuckets(batches);
     for (let i = 0; i < imageTurns.length; i++) {
       const turn = imageTurns[i]!;

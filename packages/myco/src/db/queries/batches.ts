@@ -9,7 +9,7 @@ import { getDatabase, isUniqueConstraintError } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
-import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, createGroveEraId } from '@myco/grove/ids.js';
 import { sha256Hex } from '@myco/canopy/hash.js';
 
 // ---------------------------------------------------------------------------
@@ -223,6 +223,8 @@ export interface ListBatchesBySessionOptions {
 
 /** Fields required (or optional) when inserting a prompt batch. */
 export interface BatchInsert {
+  /** Optional explicit id. Omit to mint a fresh Grove-era id at insert. */
+  id?: string;
   session_id: string;
   project_id?: string | null;
   created_at: number;
@@ -242,10 +244,10 @@ export interface BatchInsert {
 
 /** Row shape returned from batch queries. */
 export interface BatchRow {
-  id: number;
+  id: string;
   session_id: string;
   project_id: string | null;
-  parent_prompt_batch_id: number | null;
+  parent_prompt_batch_id: string | null;
   kind: string;
   origin: PromptBatchOrigin;
   prompt_number: number | null;
@@ -304,10 +306,10 @@ const SELECT_COLUMNS = BATCH_COLUMNS.join(', ');
 /** Normalize a SQLite result row into a typed BatchRow. */
 function toBatchRow(row: Record<string, unknown>): BatchRow {
   return {
-    id: row.id as number,
+    id: row.id as string,
     session_id: row.session_id as string,
     project_id: (row.project_id as string) ?? null,
-    parent_prompt_batch_id: row.parent_prompt_batch_id as number | null,
+    parent_prompt_batch_id: row.parent_prompt_batch_id as string | null,
     kind: (row.kind as string) ?? 'initial',
     origin: toPromptBatchOrigin(row.origin),
     prompt_number: (row.prompt_number as number) ?? null,
@@ -341,18 +343,21 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
 export function insertBatch(data: BatchInsert): BatchRow {
   const db = getDatabase();
 
+  const batchId = data.id ?? createGroveEraId('prompt_batch');
+
   const tx = db.transaction(() => {
-    const info = db.prepare(
+    db.prepare(
       `INSERT INTO prompt_batches (
-         session_id, project_id, origin, prompt_number, user_prompt, response_summary,
+         id, session_id, project_id, origin, prompt_number, user_prompt, response_summary,
          classification, started_at, ended_at, status,
          activity_count, processed, content_hash, created_at, machine_id
        ) VALUES (
-         ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?, ?,
+         ?, ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?, ?,
          ?, ?, ?, ?,
          ?, ?, ?, ?, ?
        )`,
     ).run(
+      batchId,
       data.session_id,
       data.project_id ?? null,
       data.session_id,
@@ -371,8 +376,6 @@ export function insertBatch(data: BatchInsert): BatchRow {
       data.machine_id ?? getTeamMachineId(),
     );
 
-    const batchId = Number(info.lastInsertRowid);
-
     // Atomic counter bump — same rationale as `insertBatchStateless`.
     // This function is the OTHER public writer for `prompt_batches`
     // (used by the Grove importer and tests, where the caller
@@ -387,11 +390,9 @@ export function insertBatch(data: BatchInsert): BatchRow {
          )
          WHERE id = ?`,
     ).run(data.session_id, data.session_id);
-
-    return batchId;
   });
 
-  const batchId = tx();
+  tx();
 
   const row = toBatchRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(batchId) as Record<string, unknown>,
@@ -408,7 +409,7 @@ export function insertBatch(data: BatchInsert): BatchRow {
  * @returns the updated row, or null if the batch does not exist.
  */
 export function closeBatch(
-  id: number,
+  id: string,
   endedAt: number,
 ): BatchRow | null {
   const db = getDatabase();
@@ -453,8 +454,8 @@ export function populateBatchResponses(
     `SELECT id, user_prompt, response_summary, origin
        FROM prompt_batches
       WHERE session_id = ? ${threadClause}
-      ORDER BY id ASC`,
-  ).all(sessionId, ...threadParams) as Array<{ id: number; user_prompt: string | null; response_summary: string | null; origin: string }>;
+      ORDER BY rowid ASC`,
+  ).all(sessionId, ...threadParams) as Array<{ id: string; user_prompt: string | null; response_summary: string | null; origin: string }>;
 
   const prefixOf = (s: string | null | undefined) =>
     (s ?? '').trim().slice(0, PROMPT_PREFIX_MATCH_CHARS);
@@ -462,7 +463,7 @@ export function populateBatchResponses(
   // Phase 1 — match each transcript turn to a batch by prompt prefix. The
   // transcript is authoritative, so a newer response overwrites stale data.
   const available = batches.map((b) => ({ id: b.id, key: prefixOf(b.user_prompt) }));
-  const matched = new Map<number, string>();
+  const matched = new Map<string, string>();
   for (const { prompt, response } of turns) {
     const key = prefixOf(prompt);
     if (!key) continue;
@@ -484,7 +485,7 @@ export function populateBatchResponses(
   // batch's matched response into the nearest preceding human batch and clear
   // the system batch's own summary so the answer lives on the prompt the user
   // actually sees. System turns before any human prompt keep their own response
-  // (nothing to anchor to). Batches are id-ordered ≈ transcript order.
+  // (nothing to anchor to). Batches are rowid-ordered ≈ transcript order.
   //
   // Only batches with matched content this pass are touched: a batch whose
   // prompt isn't in this transcript snapshot keeps its existing response_summary
@@ -492,9 +493,9 @@ export function populateBatchResponses(
   // cover every prior batch). `newResponse` rebuilds from matched turns (so the
   // attribution is idempotent across re-mines); `clear` holds system batches
   // whose answer was moved to an anchor.
-  const newResponse = new Map<number, string>();
-  const clear = new Set<number>();
-  let anchorId: number | null = null;
+  const newResponse = new Map<string, string>();
+  const clear = new Set<string>();
+  let anchorId: string | null = null;
   // Whether the current human anchor matched a transcript turn THIS pass. A
   // system batch's response is rolled into the anchor ONLY when the anchor was
   // itself matched — otherwise we'd synthesize the human turn's answer purely
@@ -557,8 +558,8 @@ export function rehomeSystemActivitiesToHumanAnchor(sessionId: string): number {
           SELECT h.id FROM prompt_batches h
            WHERE h.session_id = ?
              AND h.origin = ?
-             AND h.id < activities.prompt_batch_id
-           ORDER BY h.id DESC LIMIT 1
+             AND h.rowid < (SELECT sys.rowid FROM prompt_batches sys WHERE sys.id = activities.prompt_batch_id)
+           ORDER BY h.rowid DESC LIMIT 1
         )
       WHERE activities.session_id = ?
         AND activities.prompt_batch_id IN (
@@ -568,7 +569,7 @@ export function rehomeSystemActivitiesToHumanAnchor(sessionId: string): number {
           SELECT 1 FROM prompt_batches h
            WHERE h.session_id = ?
              AND h.origin = ?
-             AND h.id < activities.prompt_batch_id
+             AND h.rowid < (SELECT sys.rowid FROM prompt_batches sys WHERE sys.id = activities.prompt_batch_id)
         )`,
   ).run(
     sessionId, PROMPT_BATCH_ORIGIN.HUMAN,
@@ -580,7 +581,7 @@ export function rehomeSystemActivitiesToHumanAnchor(sessionId: string): number {
 }
 
 /**
- * Get unprocessed batches, ordered by id ASC (insertion order).
+ * Get unprocessed batches, ordered by rowid ASC (insertion order).
  *
  * Supports cursor-based pagination via `after_id` and a `limit` cap.
  *
@@ -597,7 +598,7 @@ export function rehomeSystemActivitiesToHumanAnchor(sessionId: string): number {
  */
 export function getUnprocessedBatches(
   options: {
-    after_id?: number;
+    after_id?: string;
     limit?: number;
     includeActive?: boolean;
     origins?: readonly PromptBatchOrigin[];
@@ -610,7 +611,11 @@ export function getUnprocessedBatches(
   const params: unknown[] = [DEFAULT_PROCESSED];
 
   if (options.after_id !== undefined) {
-    conditions.push(`id > ?`);
+    // Text ids are not ordered, so page by the (insertion-ordered) rowid of the
+    // cursor batch. An unknown/deleted cursor resolves to 0, which restarts from
+    // the first unprocessed row rather than stalling — processed=0 still gates
+    // out anything already handled.
+    conditions.push(`rowid > COALESCE((SELECT rowid FROM prompt_batches WHERE id = ?), 0)`);
     params.push(options.after_id);
   }
 
@@ -637,7 +642,7 @@ export function getUnprocessedBatches(
     `SELECT ${SELECT_COLUMNS}
      FROM prompt_batches
      WHERE ${where}
-     ORDER BY id ASC
+     ORDER BY rowid ASC
      LIMIT ?`,
   ).all(...params) as Record<string, unknown>[];
 
@@ -710,7 +715,7 @@ export function countUnprocessedSettledBatches(
  * @returns the updated row, or null if the batch does not exist.
  */
 export function incrementActivityCount(
-  id: number,
+  id: string,
 ): BatchRow | null {
   const db = getDatabase();
 
@@ -733,7 +738,7 @@ export function incrementActivityCount(
  * @returns the updated row, or null if the batch does not exist.
  */
 export function markBatchProcessed(
-  id: number,
+  id: string,
   scope: ProjectScope,
 ): BatchRow | null {
   const db = getDatabase();
@@ -758,7 +763,7 @@ export function markBatchProcessed(
 /**
  * Fetch a single batch by id. Returns null if not found.
  */
-export function getBatchById(id: number, scope: ProjectScope): BatchRow | null {
+export function getBatchById(id: string, scope: ProjectScope): BatchRow | null {
   const db = getDatabase();
   const conditions = ['id = ?'];
   const params: unknown[] = [id];
@@ -776,12 +781,12 @@ export function getBatchById(id: number, scope: ProjectScope): BatchRow | null {
 export function getBatchIdByPromptNumber(
   sessionId: string,
   promptNumber: number,
-): number | null {
+): string | null {
   const db = getDatabase();
 
   const row = db.prepare(
     `SELECT id FROM prompt_batches WHERE session_id = ? AND prompt_number = ? LIMIT 1`,
-  ).get(sessionId, promptNumber) as { id: number } | undefined;
+  ).get(sessionId, promptNumber) as { id: string } | undefined;
 
   return row ? row.id : null;
 }
@@ -794,7 +799,7 @@ export function getBatchIdByPromptNumber(
 export function findBatchByPromptPrefix(
   sessionId: string,
   promptPrefix: string,
-): { id: number; prompt_number: number } | null {
+): { id: string; prompt_number: number } | null {
   const db = getDatabase();
   // Match first N chars — enough to be unique, tolerant of minor differences
   const prefix = promptPrefix.slice(0, PROMPT_PREFIX_MATCH_CHARS);
@@ -802,7 +807,7 @@ export function findBatchByPromptPrefix(
     `SELECT id, prompt_number FROM prompt_batches
      WHERE session_id = ? AND user_prompt LIKE ? || '%'
      LIMIT 1`,
-  ).get(sessionId, prefix) as { id: number; prompt_number: number } | undefined;
+  ).get(sessionId, prefix) as { id: string; prompt_number: number } | undefined;
   return row ?? null;
 }
 
@@ -827,7 +832,7 @@ export interface StatelessBatchInsert {
   machine_id?: string;
   kind?: string;                            // defaults to 'initial'
   origin?: PromptBatchOrigin;               // defaults to 'human'
-  parent_prompt_batch_id?: number | null;   // defaults to null
+  parent_prompt_batch_id?: string | null;   // defaults to null
   /**
    * Transcript-positional occurrence index for the dedup `content_hash`
    * (see {@link PromptBatchHashInput}). When supplied alongside a non-null
@@ -898,16 +903,18 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
         })
       : null;
 
+  const batchId = createGroveEraId('prompt_batch');
+
   const tx = db.transaction(() => {
-    const info = db.prepare(
+    db.prepare(
       `INSERT INTO prompt_batches (
-         session_id, project_id, parent_prompt_batch_id, kind, origin,
+         id, session_id, project_id, parent_prompt_batch_id, kind, origin,
          prompt_number, user_prompt, response_summary,
          classification, started_at, ended_at, status,
          activity_count, processed, content_hash, created_at, machine_id,
          thread_id, thread_label
        ) VALUES (
-         ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
+         ?, ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
          (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
          ?, NULL,
          NULL, ?, ?, ?,
@@ -915,6 +922,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
          ?, ?
        )`,
     ).run(
+      batchId,
       data.session_id,
       data.project_id ?? null,
       data.session_id,
@@ -941,8 +949,6 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
       data.thread_label ?? null,
     );
 
-    const batchId = Number(info.lastInsertRowid);
-
     // Atomic counter bump — folded INTO the single-writer for
     // `prompt_batches`. Sets `sessions.prompt_count` to the
     // freshly-derived `MAX(prompt_number)` for this session, which
@@ -954,13 +960,10 @@ export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatch
          )
          WHERE id = ?`,
     ).run(data.session_id, data.session_id);
-
-    return batchId;
   });
 
-  let batchId: number;
   try {
-    batchId = tx();
+    tx();
   } catch (err) {
     // A row with this content_hash already exists (the UNIQUE index fired). The
     // INSERT rolled back the whole transaction, so prompt_count was not bumped —
@@ -1027,7 +1030,7 @@ export function closeOpenBatches(
  * (later-emitted) assistant text.
  */
 export function setResponseSummary(
-  batchId: number,
+  batchId: string,
   summary: string,
 ): void {
   const db = getDatabase();
@@ -1047,9 +1050,9 @@ export function setResponseSummary(
 
 /**
  * Get the most recent batch for a session in transcript order, regardless
- * of status. Orders by `prompt_number DESC` with `id DESC` as the tie-
+ * of status. Orders by `prompt_number DESC` with `rowid DESC` as the tie-
  * breaker — this matters when the Stop-time reconciler inserts recovered
- * prompts that end up with high ids but earlier prompt_numbers, because
+ * prompts that end up later in insertion order but earlier prompt_numbers, because
  * the summary for the current turn belongs on the last transcript-order
  * batch, not the last-inserted one.
  *
@@ -1075,7 +1078,7 @@ export function getLatestBatch(
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
      WHERE session_id = ? AND thread_id IS NULL ${originClause}
-     ORDER BY prompt_number DESC, id DESC LIMIT 1`,
+     ORDER BY prompt_number DESC, rowid DESC LIMIT 1`,
   ).get(...params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
@@ -1133,7 +1136,7 @@ export function resolveResponseSummaryTarget(
 }
 
 /**
- * Get the most recent active batch for a session (by id DESC).
+ * Get the most recent active batch for a session (by rowid DESC).
  *
  * Thread batches are never a session's open turn — excluded structurally,
  * not by the born-closed convention alone.
@@ -1146,7 +1149,7 @@ export function getLatestOpenBatch(
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
      WHERE session_id = ? AND status = ? AND thread_id IS NULL
-     ORDER BY id DESC LIMIT 1`,
+     ORDER BY rowid DESC LIMIT 1`,
   ).get(sessionId, DEFAULT_STATUS) as Record<string, unknown> | undefined;
 
   if (!row) return null;
@@ -1187,8 +1190,9 @@ export function listBatchesBySession(
  * List every main-thread batch for a session — the non-reattribute mining
  * counterpart of `listBatchesBySessionThread`. Structurally excludes every
  * sub-agent thread row (`thread_id IS NOT NULL`) via `AND thread_id IS NULL`,
- * mirroring `listBatchesBySession` in every other respect (options, column
- * set, ordering).
+ * mirroring `listBatchesBySession` in options and column set, but ordered by
+ * rowid (insertion order) — the miner's prefix bucketing needs the row order
+ * to be stable against prompt_number renumbering after a recovery insert.
  *
  * Why this exists: the transcript miner's non-reattribute (main-thread) mine
  * used to source its bucket/reclassify, renumber, and image-capture batches
@@ -1224,7 +1228,7 @@ export function listMainThreadBatchesBySession(
     `SELECT ${SELECT_COLUMNS}
      FROM prompt_batches
      WHERE ${conditions.join(' AND ')}
-     ORDER BY prompt_number ASC
+     ORDER BY rowid ASC
      LIMIT ?
      OFFSET ?`,
   ).all(...params, limit, offset) as Record<string, unknown>[];
@@ -1233,9 +1237,11 @@ export function listMainThreadBatchesBySession(
 }
 
 /**
- * List every batch for one sub-agent thread within a session, in transcript
- * order — the thread-mining counterpart of `listBatchesBySession`. Unlike
- * that function, this is unconditionally scoped to a single `thread_id` and
+ * List every batch for one sub-agent thread within a session, in insertion
+ * (rowid) order — the thread-mining counterpart of `listBatchesBySession`.
+ * Thread rows are ordered by insertion, not prompt_number, which is a
+ * per-main-thread key. Unlike that function, this is unconditionally scoped to
+ * a single `thread_id` and
  * carries no project-scope / origin-filter / pagination options: thread
  * mining always wants "every row of this one thread", not a paginated view.
  */
@@ -1249,7 +1255,7 @@ export function listBatchesBySessionThread(
     `SELECT ${SELECT_COLUMNS}
      FROM prompt_batches
      WHERE session_id = ? AND thread_id = ?
-     ORDER BY prompt_number ASC`,
+     ORDER BY rowid ASC`,
   ).all(sessionId, threadId) as Record<string, unknown>[];
 
   return rows.map(toBatchRow);
@@ -1260,9 +1266,9 @@ export function listBatchesBySessionThread(
  * Used by the transcript miner to reconcile batch kinds post-turn.
  */
 export function updateBatchKind(
-  batchId: number,
+  batchId: string,
   kind: string,
-  parentPromptBatchId: number | null,
+  parentPromptBatchId: string | null,
 ): void {
   const db = getDatabase();
   db.prepare(
@@ -1279,7 +1285,7 @@ export function updateBatchKind(
  * recovered prompts — `insertBatchStateless` assigns MAX+1, so a prompt that
  * should land between two existing rows needs its number fixed up afterward.
  */
-export function setBatchPromptNumber(batchId: number, promptNumber: number): void {
+export function setBatchPromptNumber(batchId: string, promptNumber: number): void {
   const db = getDatabase();
   db.prepare(`UPDATE prompt_batches SET prompt_number = ? WHERE id = ?`).run(promptNumber, batchId);
 }
@@ -1292,7 +1298,7 @@ export function setBatchPromptNumber(batchId: number, promptNumber: number): voi
  * tagged correctly. Returns true when a row was updated.
  */
 export function replaceRecoveredBatchUserPrompt(
-  batchId: number,
+  batchId: string,
   realPrompt: string,
   origin: PromptBatchOrigin = PROMPT_BATCH_ORIGIN.HUMAN,
 ): boolean {
@@ -1339,7 +1345,7 @@ export function findOpenParentBatch(sessionId: string): BatchRow | null {
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
      WHERE session_id = ? AND ended_at IS NULL AND kind = 'initial' AND thread_id IS NULL
-     ORDER BY id DESC LIMIT 1`,
+     ORDER BY rowid DESC LIMIT 1`,
   ).get(sessionId) as Record<string, unknown> | undefined;
   return row ? toBatchRow(row) : null;
 }

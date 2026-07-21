@@ -69,7 +69,7 @@ export interface CapturedImage {
 
 export interface CaptureBatchImagesInput {
   sessionId: string;
-  promptBatchId: number | null | undefined;
+  promptBatchId: string | null | undefined;
   promptNumber: number;
   images: CapturedImage[];
   logger: CaptureImagesLogger;

@@ -6,15 +6,15 @@
  * written. Shared by the Grove importer and the move rekey copy.
  */
 
-export function sortRowsByParentChain<T>(
+export function sortRowsByParentChain<T, Id = number>(
   rows: readonly T[],
   table: string,
-  idOf: (row: T) => number,
-  parentIdOf: (row: T) => number | null,
+  idOf: (row: T) => Id,
+  parentIdOf: (row: T) => Id | null,
 ): T[] {
-  const byId = new Map(rows.map((row) => [idOf(row), row]));
-  const visited = new Set<number>();
-  const visiting = new Set<number>();
+  const byId = new Map<Id, T>(rows.map((row) => [idOf(row), row]));
+  const visited = new Set<Id>();
+  const visiting = new Set<Id>();
   const ordered: T[] = [];
 
   function visit(row: T): void {

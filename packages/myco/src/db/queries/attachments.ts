@@ -17,7 +17,7 @@ import { projectScopeClause, type ProjectScope } from './project-scope.js';
 export interface AttachmentInsert {
   id: string;
   session_id: string;
-  prompt_batch_id?: number;
+  prompt_batch_id?: string;
   file_path: string;
   media_type?: string;
   description?: string;
@@ -32,7 +32,7 @@ export interface AttachmentInsert {
 export interface AttachmentRow {
   id: string;
   session_id: string;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   file_path: string;
   media_type: string | null;
   description: string | null;
@@ -108,7 +108,7 @@ function toAttachmentBase(row: Record<string, unknown>): AttachmentListRow {
   return {
     id: row.id as string,
     session_id: row.session_id as string,
-    prompt_batch_id: (row.prompt_batch_id as number) ?? null,
+    prompt_batch_id: (row.prompt_batch_id as string) ?? null,
     file_path: filePath,
     media_type: (row.media_type as string) ?? null,
     description: (row.description as string) ?? null,
@@ -129,7 +129,7 @@ function toAttachmentRow(row: Record<string, unknown>): AttachmentRow {
   return {
     id: row.id as string,
     session_id: row.session_id as string,
-    prompt_batch_id: (row.prompt_batch_id as number) ?? null,
+    prompt_batch_id: (row.prompt_batch_id as string) ?? null,
     file_path: row.file_path as string,
     media_type: (row.media_type as string) ?? null,
     description: (row.description as string) ?? null,
@@ -234,7 +234,7 @@ export function setAttachmentContentHash(id: string, contentHash: string): void 
  * Used on content-dedup hits: a row first captured before its batch was
  * known gains the linkage on re-capture instead of staying orphaned.
  */
-export function linkAttachmentToBatchIfUnlinked(id: string, promptBatchId: number): void {
+export function linkAttachmentToBatchIfUnlinked(id: string, promptBatchId: string): void {
   getDatabase().prepare(
     `UPDATE attachments SET prompt_batch_id = ? WHERE id = ? AND prompt_batch_id IS NULL`,
   ).run(promptBatchId, id);

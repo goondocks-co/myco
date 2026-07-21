@@ -83,10 +83,10 @@ export const SESSION_TOMBSTONES_TABLE = `
 
 export const PROMPT_BATCHES_TABLE = `
   CREATE TABLE IF NOT EXISTS prompt_batches (
-    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                     TEXT PRIMARY KEY,
     project_id             TEXT,
     session_id             TEXT NOT NULL REFERENCES sessions(id),
-    parent_prompt_batch_id INTEGER REFERENCES prompt_batches(id),
+    parent_prompt_batch_id TEXT REFERENCES prompt_batches(id),
     kind                   TEXT NOT NULL DEFAULT 'initial',
     origin                 TEXT NOT NULL DEFAULT 'human',
     prompt_number          INTEGER,
@@ -140,14 +140,14 @@ export const KNOWLEDGE_GIT_PROVENANCE_TABLE = `
 
 export const KNOWLEDGE_RELEASE_STATE_TABLE = `
   CREATE TABLE IF NOT EXISTS knowledge_release_state (
-    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                       TEXT PRIMARY KEY,
     project_id               TEXT,
     machine_id               TEXT NOT NULL DEFAULT 'local',
     identity_key             TEXT NOT NULL UNIQUE,
     namespace                TEXT NOT NULL,
     record_id                TEXT NOT NULL,
     source_session_id        TEXT REFERENCES sessions(id),
-    source_prompt_batch_id   INTEGER REFERENCES prompt_batches(id),
+    source_prompt_batch_id   TEXT REFERENCES prompt_batches(id),
     state                    TEXT NOT NULL,
     confidence               TEXT NOT NULL,
     basis_kind               TEXT,
@@ -354,7 +354,7 @@ export const RESOLUTION_EVENTS_TABLE = `
 
 export const DIGEST_EXTRACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS digest_extracts (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              TEXT PRIMARY KEY,
     project_id      TEXT,
     agent_id        TEXT NOT NULL REFERENCES agents(id),
     tier            INTEGER NOT NULL,
@@ -1082,7 +1082,7 @@ export const OKF_INDEX_DDLS: readonly string[] = [
 
 export const FTS_TABLES = [
   `CREATE VIRTUAL TABLE IF NOT EXISTS prompt_batches_fts
-     USING fts5(user_prompt, response_summary, content='prompt_batches', content_rowid='id')`,
+     USING fts5(user_prompt, response_summary, content='prompt_batches', content_rowid='rowid')`,
 
   `CREATE VIRTUAL TABLE IF NOT EXISTS activities_fts
      USING fts5(tool_name, tool_input, file_path, content='activities', content_rowid='id')`,
@@ -1107,16 +1107,16 @@ export const FTS_TABLES = [
 
   // FTS5 sync triggers for prompt_batches
   `CREATE TRIGGER IF NOT EXISTS prompt_batches_fts_ai AFTER INSERT ON prompt_batches BEGIN
-     INSERT INTO prompt_batches_fts(rowid, user_prompt, response_summary) VALUES (new.id, new.user_prompt, new.response_summary);
+     INSERT INTO prompt_batches_fts(rowid, user_prompt, response_summary) VALUES (new.rowid, new.user_prompt, new.response_summary);
    END`,
 
   `CREATE TRIGGER IF NOT EXISTS prompt_batches_fts_au AFTER UPDATE OF user_prompt, response_summary ON prompt_batches BEGIN
-     INSERT INTO prompt_batches_fts(prompt_batches_fts, rowid, user_prompt, response_summary) VALUES('delete', old.id, old.user_prompt, old.response_summary);
-     INSERT INTO prompt_batches_fts(rowid, user_prompt, response_summary) VALUES (new.id, new.user_prompt, new.response_summary);
+     INSERT INTO prompt_batches_fts(prompt_batches_fts, rowid, user_prompt, response_summary) VALUES('delete', old.rowid, old.user_prompt, old.response_summary);
+     INSERT INTO prompt_batches_fts(rowid, user_prompt, response_summary) VALUES (new.rowid, new.user_prompt, new.response_summary);
    END`,
 
   `CREATE TRIGGER IF NOT EXISTS prompt_batches_fts_ad AFTER DELETE ON prompt_batches BEGIN
-     INSERT INTO prompt_batches_fts(prompt_batches_fts, rowid, user_prompt, response_summary) VALUES('delete', old.id, old.user_prompt, old.response_summary);
+     INSERT INTO prompt_batches_fts(prompt_batches_fts, rowid, user_prompt, response_summary) VALUES('delete', old.rowid, old.user_prompt, old.response_summary);
    END`,
 
   // FTS5 sync triggers for activities

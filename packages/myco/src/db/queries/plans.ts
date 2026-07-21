@@ -40,7 +40,7 @@ export interface PlanInsert {
   source_path?: string | null;
   tags?: string | null;
   session_id?: string | null;
-  prompt_batch_id?: number | null;
+  prompt_batch_id?: string | null;
   content_hash?: string | null;
   processed?: number;
   updated_at?: number | null;
@@ -59,7 +59,7 @@ export interface PlanRow {
   source_path: string | null;
   tags: string | null;
   session_id: string | null;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   content_hash: string | null;
   processed: number;
   embedded: number;
@@ -120,7 +120,7 @@ function toPlanRow(row: Record<string, unknown>): PlanRow {
     source_path: (row.source_path as string) ?? null,
     tags: (row.tags as string) ?? null,
     session_id: (row.session_id as string) ?? null,
-    prompt_batch_id: (row.prompt_batch_id as number) ?? null,
+    prompt_batch_id: (row.prompt_batch_id as string) ?? null,
     content_hash: (row.content_hash as string) ?? null,
     processed: row.processed as number,
     embedded: (row.embedded as number) ?? 0,

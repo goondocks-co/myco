@@ -48,9 +48,9 @@ export interface SourceSessionRow {
 }
 
 export interface SourcePromptBatchRow {
-  id: number;
+  id: string;
   session_id: string;
-  parent_prompt_batch_id: number | null;
+  parent_prompt_batch_id: string | null;
   kind: string | null;
   prompt_number: number | null;
   user_prompt: string | null;
@@ -70,7 +70,7 @@ export interface SourcePromptBatchRow {
 export interface SourceActivityRow {
   id: number;
   session_id: string;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   tool_name: string;
   tool_input: string | null;
   tool_output_summary: string | null;
@@ -89,7 +89,7 @@ export interface SourceActivityRow {
 export interface SourceAttachmentRow {
   id: string;
   session_id: string | null;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   file_path: string;
   media_type: string | null;
   description: string | null;
@@ -108,7 +108,7 @@ export interface SourcePlanRow {
   source_path: string | null;
   tags: string | null;
   session_id: string | null;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   content_hash: string | null;
   processed: number | null;
   created_at: number;
@@ -177,7 +177,7 @@ export interface SourceSporeRow {
   id: string;
   agent_id: string;
   session_id: string | null;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   observation_type: string;
   status: string | null;
   content: string;
@@ -338,7 +338,7 @@ export interface SourceCanopyMapRow {
 }
 
 export interface SourceDigestExtractRow {
-  id: number;
+  id: string;
   agent_id: string;
   tier: number;
   content: string;

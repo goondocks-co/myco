@@ -26,7 +26,7 @@ import {
   hasSessionTombstone,
   pruneSessionTombstones,
 } from '@myco/db/queries/session-tombstones.js';
-import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, createGroveEraId, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -164,9 +164,9 @@ describe('session query helpers', () => {
       upsertSession(data);
       const db = getDatabase();
       db.prepare(
-        `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
-         VALUES (?, 1, ?, ?, 'active')`,
-      ).run(data.id, epochNow(), epochNow());
+        `INSERT INTO prompt_batches (id, session_id, prompt_number, started_at, created_at, status)
+         VALUES (?, ?, 1, ?, ?, 'active')`,
+      ).run(createGroveEraId('prompt_batch'), data.id, epochNow(), epochNow());
       const openCount = (): number =>
         (db.prepare(`SELECT COUNT(*) AS n FROM prompt_batches WHERE session_id = ? AND ended_at IS NULL`)
           .get(data.id) as { n: number }).n;
@@ -442,13 +442,14 @@ describe('session query helpers', () => {
   }
 
   /** Insert a prompt_batch row directly and return its generated id. */
-  function createBatch(sessionId: string): number {
+  function createBatch(sessionId: string): string {
     const db = getDatabase();
     const now = epochNow();
-    const info = db.prepare(
-      `INSERT INTO prompt_batches (session_id, started_at, created_at) VALUES (?, ?, ?)`,
-    ).run(sessionId, now, now);
-    return info.lastInsertRowid as number;
+    const id = createGroveEraId('prompt_batch');
+    db.prepare(
+      `INSERT INTO prompt_batches (id, session_id, started_at, created_at) VALUES (?, ?, ?, ?)`,
+    ).run(id, sessionId, now, now);
+    return id;
   }
 
   /**
@@ -463,7 +464,7 @@ describe('session query helpers', () => {
     agentId: string,
     sessionId: string,
     sporeId: string,
-    promptBatchId?: number,
+    promptBatchId?: string,
   ): string {
     const db = getDatabase();
     const now = epochNow();
@@ -475,7 +476,7 @@ describe('session query helpers', () => {
   }
 
   /** Insert a plan row directly — exercises plans.session_id / prompt_batch_id FKs. */
-  function createPlan(sessionId: string, planId: string, promptBatchId?: number): void {
+  function createPlan(sessionId: string, planId: string, promptBatchId?: string): void {
     const db = getDatabase();
     const now = epochNow();
     db.prepare(
@@ -513,7 +514,7 @@ describe('session query helpers', () => {
   }
 
   /** Insert release provenance rows that hold FKs to sessions / prompt_batches. */
-  function createReleaseEvidence(sessionId: string, promptBatchId?: number): void {
+  function createReleaseEvidence(sessionId: string, promptBatchId?: string): void {
     const db = getDatabase();
     const now = epochNow();
     const suffix = Math.random().toString(36).slice(2, 8);

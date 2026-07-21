@@ -77,20 +77,21 @@ describe('team delete triggers', () => {
     expect(rows[0].row_id).toBe('sp_paused');
   });
 
-  it('an INTEGER-PK delete journals row_id as the decimal string of the id', () => {
+  it('a prompt_batches delete journals its grove-era text id in row_id and payload', () => {
     const db = newDb();
     setTeamSyncEnabled(true, db);
     markProjectMember(db, 'proj_x');
+    const batchId = `pbat_${'a'.repeat(32)}`;
     db.prepare(
       `INSERT INTO prompt_batches (id, session_id, project_id, created_at, machine_id)
-       VALUES (101, 's1', 'proj_x', 1, 'local')`,
-    ).run();
-    db.prepare(`DELETE FROM prompt_batches WHERE id = 101`).run();
+       VALUES (?, 's1', 'proj_x', 1, 'local')`,
+    ).run(batchId);
+    db.prepare(`DELETE FROM prompt_batches WHERE id = ?`).run(batchId);
     const row = db.prepare(
       `SELECT row_id, payload FROM team_outbox WHERE table_name='prompt_batches' AND operation='delete'`,
     ).get() as { row_id: string; payload: string };
-    expect(row.row_id).toBe('101');
-    expect(JSON.parse(row.payload).id).toBe(101);
+    expect(row.row_id).toBe(batchId);
+    expect(JSON.parse(row.payload).id).toBe(batchId);
   });
 
   it('deletes do NOT journal for a non-member project (even with sync enabled)', () => {

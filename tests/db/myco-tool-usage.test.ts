@@ -22,6 +22,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
+import { createGroveEraId } from '@myco/grove/ids.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import {
   aggregateSessionMycoToolCalls,
@@ -57,13 +58,13 @@ function seedActivities(sessionId: string, activities: SeedActivity[]) {
   const db = getDatabase();
   const base = Math.floor(Date.now() / 1000);
   // activities.prompt_batch_id is NOT NULL (v43 invariant) — open a batch.
-  const batchInsert = db
+  const batchId = createGroveEraId('prompt_batch');
+  db
     .prepare(
-      `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
-       VALUES (?, 1, ?, ?, 'active')`,
+      `INSERT INTO prompt_batches (id, session_id, prompt_number, started_at, created_at, status)
+       VALUES (?, ?, 1, ?, ?, 'active')`,
     )
-    .run(sessionId, base, base);
-  const batchId = Number(batchInsert.lastInsertRowid);
+    .run(batchId, sessionId, base, base);
 
   const insert = db.prepare(
     `INSERT INTO activities (

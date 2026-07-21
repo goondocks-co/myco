@@ -264,7 +264,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       });
     }
 
-    let userPromptBatchId: number | undefined;
+    let userPromptBatchId: string | undefined;
     // Honest response contract: `persisted` reports whether every per-type
     // handler that ran for this event committed its writes; `buffered`
     // reports whether the daemon-side buffer append (which runs BEFORE the

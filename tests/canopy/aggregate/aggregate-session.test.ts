@@ -28,7 +28,7 @@ import {
   listCanopyReads,
   getCanopyToolCallContext,
 } from '@myco/db/queries/canopy.js';
-import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, createGroveEraId } from '@myco/grove/ids.js';
 
 const PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const PROJECT_ROOT = '/repo/myco';
@@ -66,11 +66,11 @@ function seedActivities(sessionId: string, activities: SeedActivity[]) {
   const base = epochNow();
   // v43 invariant: activities.prompt_batch_id is NOT NULL. Open a batch
   // for the session and reuse its id for every seeded activity.
-  const batchInsert = db.prepare(`
-    INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
-    VALUES (?, 1, ?, ?, 'active')
-  `).run(sessionId, base, base);
-  const batchId = Number(batchInsert.lastInsertRowid);
+  const batchId = createGroveEraId('prompt_batch');
+  db.prepare(`
+    INSERT INTO prompt_batches (id, session_id, prompt_number, started_at, created_at, status)
+    VALUES (?, ?, 1, ?, ?, 'active')
+  `).run(batchId, sessionId, base, base);
 
   const insert = db.prepare(`
     INSERT INTO activities (

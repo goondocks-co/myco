@@ -142,7 +142,7 @@ function claimInitialBatchSlot(
   prompt: string,
   now: number,
   origin: PromptBatchOrigin = PROMPT_BATCH_ORIGIN.HUMAN,
-): { batchId: number; promptNumber: number } | null {
+): { batchId: string; promptNumber: number } | null {
   const latest = getLatestBatch(sessionId);
   if (!latest) return null;
   if (latest.user_prompt !== RECOVERED_BATCH_SENTINEL) return null;
@@ -256,7 +256,7 @@ export function handleUserPrompt(
   sessionId: string,
   prompt: string | undefined,
   options: UserPromptOptions = {},
-): { batchId: number; promptNumber: number } {
+): { batchId: string; promptNumber: number } {
   // Idempotent sink for routed capture (residency §4a): a re-delivery of the same
   // source event (live + drain, or a lost-ack retry) returns the batch the first
   // delivery opened — no second batch. Scoped by id PRESENCE: local events and the
@@ -265,7 +265,7 @@ export function handleUserPrompt(
   const eventId = options.sourceEventId;
   if (eventId) {
     const seen = getRoutedEventDedup(eventId);
-    if (seen) return { batchId: seen.prompt_batch_id ?? 0, promptNumber: 0 };
+    if (seen) return { batchId: seen.prompt_batch_id ?? '', promptNumber: 0 };
   }
   if (!eventId) return handleUserPromptCore(sessionId, prompt, options);
 
@@ -297,11 +297,11 @@ function handleUserPromptCore(
   sessionId: string,
   prompt: string | undefined,
   options: UserPromptOptions = {},
-): { batchId: number; promptNumber: number } {
+): { batchId: string; promptNumber: number } {
   const now = epochSeconds();
   const incomingKind = options.kind ?? BATCH_KIND.INITIAL;
 
-  let parentId: number | null = null;
+  let parentId: string | null = null;
   let effectiveKind = incomingKind;
 
   const incomingOrigin = options.origin ?? PROMPT_BATCH_ORIGIN.HUMAN;

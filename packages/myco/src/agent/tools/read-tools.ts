@@ -122,7 +122,7 @@ export function createReadTools(deps: VaultToolDeps) {
     'vault_unprocessed',
     "Get unprocessed prompt batches, ordered by id ASC. Supports cursor-based pagination. Defaults exclude in-flight sessions AND non-human-origin batches (env_context, task notifications, sub-agent dispatches) — intelligence tasks should reason over user intent, not harness chatter. Pass include_active=true for live data (e.g., title-summary). Pass include_origins to broaden beyond the default ['human']. Pass grouping_only=true for a content-free projection (ids/counts/timestamps, no user_prompt/response_summary) — use this to group batches by session_id before fetching one session's content at a time, so a multi-session listing never mixes two sessions' content into one context.",
     {
-      after_id: z.number().optional().describe('Return batches with id greater than this'),
+      after_id: z.string().optional().describe('Return batches inserted after the batch with this id (pass the last id you saw to page forward)'),
       limit: z.number().optional().describe('Maximum number of batches to return'),
       include_active: z.boolean().optional().describe('Include batches from sessions still in active status (default: false)'),
       include_metadata: z.boolean().optional().describe('Return full batch metadata instead of the compact task-oriented projection'),
@@ -460,7 +460,7 @@ export function createReadTools(deps: VaultToolDeps) {
       state: z.enum(RELEASE_STATES).optional().describe('Filter by release state'),
       confidence: z.enum(RELEASE_CONFIDENCE).optional().describe('Filter by confidence'),
       session_id: z.string().optional().describe('Filter by source session id'),
-      prompt_batch_id: z.number().optional().describe('Filter by source prompt batch id'),
+      prompt_batch_id: z.string().optional().describe('Filter by source prompt batch id'),
       checked_before: z.number().optional().describe('Only include rows checked before this epoch second'),
       limit: z.number().optional().describe('Maximum rows to return'),
     },

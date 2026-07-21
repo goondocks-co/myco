@@ -32,7 +32,7 @@ export interface ReleaseProvenanceDetailResponse {
     reason: string | null;
     checked_at: number;
     source_session_id: string | null;
-    source_prompt_batch_id: number | null;
+    source_prompt_batch_id: string | null;
     release_pr_number: number | null;
   };
   evidence: {

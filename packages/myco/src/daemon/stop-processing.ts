@@ -646,7 +646,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       // 2. Earlier turns → match by prompt text prefix against DB
       // 3. Fallback → null batch_id (still saved, UI matches by filename pattern)
       const isLastTurn = i === allTurns.length - 1;
-      let resolvedBatchId: number | null = null;
+      let resolvedBatchId: string | null = null;
       let resolvedPromptNumber: number = i + 1; // default to turn index (pre-compaction compatible)
 
       if (isLastTurn && latestBatch) {

@@ -13,7 +13,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
 import { completeStaleActiveSessions } from '@myco/daemon/jobs/session-maintenance.js';
 import { MS_PER_SECOND, STALE_SESSION_THRESHOLD_MS } from '@myco/constants.js';
-import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, createGroveEraId } from '@myco/grove/ids.js';
 
 const epochNow = () => Math.floor(Date.now() / MS_PER_SECOND);
 const STALE_THRESHOLD_S = STALE_SESSION_THRESHOLD_MS / MS_PER_SECOND;
@@ -41,13 +41,13 @@ function seedSession(id: string, opts: {
 
   const db = getDatabase();
 
-  let batchId: number | null = null;
+  let batchId: string | null = null;
   if (opts.batchStartedAt !== undefined) {
-    const result = db.prepare(
-      `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
-       VALUES (?, 1, ?, ?, 'active')`,
-    ).run(id, opts.batchStartedAt, now);
-    batchId = Number(result.lastInsertRowid);
+    batchId = createGroveEraId('prompt_batch');
+    db.prepare(
+      `INSERT INTO prompt_batches (id, session_id, prompt_number, started_at, created_at, status)
+       VALUES (?, ?, 1, ?, ?, 'active')`,
+    ).run(batchId, id, opts.batchStartedAt, now);
   }
 
   if (opts.activityTimestamp !== undefined) {
@@ -55,11 +55,11 @@ function seedSession(id: string, opts: {
     // didn't ask for a real batch, attach the activity to a synthetic
     // recovery batch (mirrors what handleToolUse does in production).
     if (batchId === null) {
-      const result = db.prepare(
-        `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status, kind, user_prompt, origin)
-         VALUES (?, 0, ?, ?, 'completed', 'recovered', '(implicit batch — capture recovered)', 'system')`,
-      ).run(id, opts.activityTimestamp, now);
-      batchId = Number(result.lastInsertRowid);
+      batchId = createGroveEraId('prompt_batch');
+      db.prepare(
+        `INSERT INTO prompt_batches (id, session_id, prompt_number, started_at, created_at, status, kind, user_prompt, origin)
+         VALUES (?, ?, 0, ?, ?, 'completed', 'recovered', '(implicit batch — capture recovered)', 'system')`,
+      ).run(batchId, id, opts.activityTimestamp, now);
     }
     db.prepare(
       `INSERT INTO activities

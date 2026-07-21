@@ -51,6 +51,25 @@ function seedV42Database(dbPath: string): void {
     canopy_injection_tokens FROM activities`);
   db.exec('DROP TABLE activities');
   db.exec('ALTER TABLE activities_legacy RENAME TO activities');
+  // The current schema keys prompt_batches with a TEXT id; a faithful v42 vault
+  // keyed it INTEGER AUTOINCREMENT. Revert so v43's recovery-batch backfill (a
+  // raw INSERT that relies on rowid allocation) and the v73 rekey exercise the
+  // production integer→text path. The table is empty here, so no data copy.
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('DROP TABLE IF EXISTS prompt_batches_fts');
+  db.exec('DROP TABLE prompt_batches');
+  db.exec(`CREATE TABLE prompt_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    parent_prompt_batch_id INTEGER REFERENCES prompt_batches(id),
+    kind TEXT NOT NULL DEFAULT 'initial', origin TEXT NOT NULL DEFAULT 'human',
+    prompt_number INTEGER, user_prompt TEXT, response_summary TEXT, classification TEXT,
+    started_at INTEGER, ended_at INTEGER, status TEXT DEFAULT 'active',
+    activity_count INTEGER DEFAULT 0, processed INTEGER DEFAULT 0, content_hash TEXT,
+    created_at INTEGER NOT NULL, machine_id TEXT NOT NULL DEFAULT 'local', synced_at INTEGER,
+    thread_id TEXT, thread_label TEXT
+  )`);
+  db.exec('PRAGMA foreign_keys = ON');
   db.exec('DELETE FROM schema_version');
   db.prepare(
     'INSERT INTO schema_version (version, applied_at) VALUES (42, ?)',
@@ -112,14 +131,17 @@ describe('migrateV42ToV43 — activity NOT NULL + recovery batch backfill', () =
     ).get() as { n: number }).n;
     expect(remainingNull).toBe(0);
 
-    const sessARecovery = db.prepare("SELECT id FROM prompt_batches WHERE session_id = 'sess-A' AND kind = 'recovered'").get() as { id: number };
-    const sessBRecovery = db.prepare("SELECT id FROM prompt_batches WHERE session_id = 'sess-B' AND kind = 'recovered'").get() as { id: number };
-    const sessAActs = db.prepare("SELECT prompt_batch_id FROM activities WHERE session_id = 'sess-A'").all() as Array<{ prompt_batch_id: number }>;
+    // The v73 rekey turns every prompt_batch id into a Grove-era text id, so
+    // compare against post-migration ids, not the pre-migration integer keys.
+    const sessARecovery = db.prepare("SELECT id FROM prompt_batches WHERE session_id = 'sess-A' AND kind = 'recovered'").get() as { id: string };
+    const sessBRecovery = db.prepare("SELECT id FROM prompt_batches WHERE session_id = 'sess-B' AND kind = 'recovered'").get() as { id: string };
+    const sessAActs = db.prepare("SELECT prompt_batch_id FROM activities WHERE session_id = 'sess-A'").all() as Array<{ prompt_batch_id: string }>;
     expect(sessAActs.every((a) => a.prompt_batch_id === sessARecovery.id)).toBe(true);
-    const sessBActs = db.prepare("SELECT prompt_batch_id FROM activities WHERE session_id = 'sess-B'").all() as Array<{ prompt_batch_id: number }>;
+    const sessBActs = db.prepare("SELECT prompt_batch_id FROM activities WHERE session_id = 'sess-B'").all() as Array<{ prompt_batch_id: string }>;
     expect(sessBActs.every((a) => a.prompt_batch_id === sessBRecovery.id)).toBe(true);
-    const cleanAct = db.prepare("SELECT prompt_batch_id FROM activities WHERE session_id = 'sess-clean'").get() as { prompt_batch_id: number };
-    expect(cleanAct.prompt_batch_id).toBe(cleanBatchId);
+    const cleanBatch = db.prepare("SELECT id FROM prompt_batches WHERE session_id = 'sess-clean' AND kind != 'recovered'").get() as { id: string };
+    const cleanAct = db.prepare("SELECT prompt_batch_id FROM activities WHERE session_id = 'sess-clean'").get() as { prompt_batch_id: string };
+    expect(cleanAct.prompt_batch_id).toBe(cleanBatch.id);
 
     const version = (db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v;
     expect(version).toBe(SCHEMA_VERSION);

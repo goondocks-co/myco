@@ -10,6 +10,7 @@ export const GROVE_ID_PREFIXES = {
   migration_mapping: 'mmap',
   session: 'sess',
   prompt_batch: 'pbat',
+  knowledge_release_state: 'krel',
   activity: 'act',
   plan: 'plan',
   artifact: 'art',

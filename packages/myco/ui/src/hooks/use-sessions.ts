@@ -96,7 +96,7 @@ const EMPTY_SESSIONS: SessionsResponse = { sessions: [], total: 0, offset: 0, li
 export type PromptBatchOrigin = 'human' | 'system' | 'agent_dispatch' | 'hook_injected';
 
 export interface BatchRow {
-  id: number;
+  id: string;
   session_id: string;
   prompt_number: number | null;
   user_prompt: string | null;
@@ -109,7 +109,7 @@ export interface BatchRow {
   processed: number;
   content_hash: string | null;
   created_at: number;
-  parent_prompt_batch_id: number | null;
+  parent_prompt_batch_id: string | null;
   kind: string;
   origin: PromptBatchOrigin;
   /** Sub-agent thread identity (see `prompt_batches.thread_id`); null for main-thread batches. */
@@ -122,7 +122,7 @@ export interface BatchRow {
 export interface ActivityRow {
   id: number;
   session_id: string;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   tool_name: string;
   tool_input: string | null;
   tool_output_summary: string | null;
@@ -144,7 +144,7 @@ export interface ActivityRow {
 export interface AttachmentRow {
   id: string;
   session_id: string;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   file_path: string;
   media_type: string | null;
   description: string | null;
@@ -257,7 +257,7 @@ export function useSessionBatches(
   });
 }
 
-export function useBatchActivities(batchId: number | undefined) {
+export function useBatchActivities(batchId: string | undefined) {
   const queryKey = useProjectScopedQueryKey(['batch-activities', batchId]);
   return useQuery<ActivityRow[]>({
     queryKey,

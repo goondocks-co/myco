@@ -33,7 +33,7 @@ export interface ActivityInsert {
   tool_name: string;
   timestamp: number;
   created_at: number;
-  prompt_batch_id?: number | null;
+  prompt_batch_id?: string | null;
   tool_input?: string | null;
   tool_output_summary?: string | null;
   file_path?: string | null;
@@ -50,7 +50,7 @@ export interface ActivityRow {
   id: number;
   project_id: string | null;
   session_id: string;
-  prompt_batch_id: number | null;
+  prompt_batch_id: string | null;
   tool_name: string;
   tool_input: string | null;
   tool_output_summary: string | null;
@@ -78,7 +78,7 @@ export interface ActivityRow {
 /** Filter options for `listActivities`. */
 export interface ListActivitiesOptions {
   session_id?: string;
-  prompt_batch_id?: number;
+  prompt_batch_id?: string;
   scope: ProjectScope;
   limit?: number;
 }
@@ -121,7 +121,7 @@ function toActivityRow(row: Record<string, unknown>): ActivityRow {
     id: row.id as number,
     project_id: (row.project_id as string) ?? null,
     session_id: row.session_id as string,
-    prompt_batch_id: (row.prompt_batch_id as number) ?? null,
+    prompt_batch_id: (row.prompt_batch_id as string) ?? null,
     tool_name: row.tool_name as string,
     tool_input: (row.tool_input as string) ?? null,
     tool_output_summary: (row.tool_output_summary as string) ?? null,
@@ -252,7 +252,7 @@ export function insertActivityWithBatch(
          (SELECT project_id FROM sessions WHERE id = ?),
          ?,
          (SELECT id FROM prompt_batches WHERE session_id = ?
-            ORDER BY (ended_at IS NULL) DESC, (origin = 'human') DESC, id DESC LIMIT 1),
+            ORDER BY (ended_at IS NULL) DESC, (origin = 'human') DESC, rowid DESC LIMIT 1),
          ?, ?,
          ?, ?, ?, ?,
          ?, ?, ?, ?,
@@ -372,7 +372,7 @@ export function listSessionFileActivities(
  * List all activities for a specific batch, ordered by timestamp ASC.
  */
 export function listActivitiesByBatch(
-  batchId: number,
+  batchId: string,
   options: { scope: ProjectScope },
 ): ActivityRow[] {
   const db = getDatabase();
@@ -397,7 +397,7 @@ export function listActivitiesByBatch(
  * when the batch has no activities. Single indexed MAX() — the liveness
  * signal the stop-replay freshness guard reads for open batches.
  */
-export function latestActivityTimestampForBatch(promptBatchId: number): number | null {
+export function latestActivityTimestampForBatch(promptBatchId: string): number | null {
   const row = getDatabase().prepare(
     `SELECT MAX(timestamp) AS ts FROM activities WHERE prompt_batch_id = ?`,
   ).get(promptBatchId) as { ts: number | null };

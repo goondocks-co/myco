@@ -7,7 +7,7 @@ import {
   lookupImportMappingBySource,
 } from '@myco/db/queries/migration-import-journal.js';
 import { type ImportOutcome, importProjectCoreRows } from '@myco/grove/importer.js';
-import { createMigrationId } from '@myco/grove/ids.js';
+import { createMigrationId, isGroveEraId } from '@myco/grove/ids.js';
 
 const TARGET_GROVE_ID = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const TARGET_PROJECT_ID = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -119,8 +119,8 @@ describe('Grove project core importer', () => {
     const skippedAgentState = lookupImportMappingBySource(migrationId, 'agent_state', 'missing-agent\u001forphan-state', targetDb);
     const parentSessionId = lookupImportMappingBySource(migrationId, 'sessions', 'legacy-parent', targetDb)?.target_id;
     const childSessionId = lookupImportMappingBySource(migrationId, 'sessions', 'legacy-session', targetDb)?.target_id;
-    const parentBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 2, targetDb)?.target_id);
-    const childBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 1, targetDb)?.target_id);
+    const parentBatchId = lookupImportMappingBySource(migrationId, 'prompt_batches', 2, targetDb)?.target_id;
+    const childBatchId = lookupImportMappingBySource(migrationId, 'prompt_batches', 1, targetDb)?.target_id;
     const activityId = Number(lookupImportMappingBySource(migrationId, 'activities', 1, targetDb)?.target_id);
     const attachmentId = lookupImportMappingBySource(migrationId, 'attachments', 'legacy-attachment', targetDb)?.target_id;
     const planId = lookupImportMappingBySource(migrationId, 'plans', 'legacy-plan', targetDb)?.target_id;
@@ -156,7 +156,7 @@ describe('Grove project core importer', () => {
       `${SOURCE_PROJECT_ROOT}\u001fsource-machine`,
       targetDb,
     )?.target_id;
-    const digestExtractId = Number(lookupImportMappingBySource(migrationId, 'digest_extracts', 7, targetDb)?.target_id);
+    const digestExtractId = lookupImportMappingBySource(migrationId, 'digest_extracts', 7, targetDb)?.target_id;
     const digestRevisionId = Number(lookupImportMappingBySource(migrationId, 'digest_extract_revisions', 8, targetDb)?.target_id);
     const digestParentRevisionId = Number(lookupImportMappingBySource(migrationId, 'digest_extract_revisions', 9, targetDb)?.target_id);
     const cortexInstructionsId = lookupImportMappingBySource(migrationId, 'cortex_instructions', 'myco-agent:session-start', targetDb)?.target_id;
@@ -210,7 +210,7 @@ describe('Grove project core importer', () => {
     expect(skippedSkillUsage?.notes).toContain('unmapped session reference missing-session');
     expect(canopyEntryId).toBe(`${TARGET_PROJECT_ID}\u001fpackages/myco/src/grove/importer.ts`);
     expect(canopyMapId).toBe(`${TARGET_PROJECT_ID}\u001fsource-machine`);
-    expect(digestExtractId).not.toBe(7);
+    expect(isGroveEraId(digestExtractId!, 'digest_extract')).toBe(true);
     expect(digestRevisionId).not.toBe(8);
     expect(digestParentRevisionId).not.toBe(9);
     expect(cortexInstructionsId).toBe('myco-agent:session-start');
@@ -218,8 +218,8 @@ describe('Grove project core importer', () => {
     expect(notificationId).not.toBe('legacy-notification');
     expect(logEntryId).not.toBe(42);
     expect(orphanLogEntryId).not.toBe(43);
-    expect(parentBatchId).not.toBe(2);
-    expect(childBatchId).not.toBe(1);
+    expect(isGroveEraId(parentBatchId!, 'prompt_batch')).toBe(true);
+    expect(isGroveEraId(childBatchId!, 'prompt_batch')).toBe(true);
     expect(activityId).not.toBe(1);
     expect(skippedGraphEdge?.status).toBe('skipped');
     expect(skippedGraphEdge?.notes).toContain('unmapped endpoint entity/missing-entity');
@@ -287,7 +287,7 @@ describe('Grove project core importer', () => {
     const childBatch = getRow<{
       project_id: string;
       session_id: string;
-      parent_prompt_batch_id: number;
+      parent_prompt_batch_id: string;
       machine_id: string;
     }>(targetDb, 'SELECT project_id, session_id, parent_prompt_batch_id, machine_id FROM prompt_batches WHERE id = ?', childBatchId);
     expect(childBatch.project_id).toBe(TARGET_PROJECT_ID);
@@ -298,7 +298,7 @@ describe('Grove project core importer', () => {
     const activity = getRow<{
       project_id: string;
       session_id: string;
-      prompt_batch_id: number;
+      prompt_batch_id: string;
       tool_name: string;
     }>(targetDb, 'SELECT project_id, session_id, prompt_batch_id, tool_name FROM activities WHERE id = ?', activityId);
     expect(activity.project_id).toBe(TARGET_PROJECT_ID);
@@ -309,7 +309,7 @@ describe('Grove project core importer', () => {
     const attachment = getRow<{
       project_id: string;
       session_id: string;
-      prompt_batch_id: number;
+      prompt_batch_id: string;
       file_path: string;
       media_type: string;
       description: string;
@@ -327,7 +327,7 @@ describe('Grove project core importer', () => {
       id: string;
       project_id: string;
       session_id: string;
-      prompt_batch_id: number;
+      prompt_batch_id: string;
       content: string;
       embedded: number;
       machine_id: string;
@@ -362,7 +362,7 @@ describe('Grove project core importer', () => {
       project_id: string;
       agent_id: string;
       session_id: string;
-      prompt_batch_id: number;
+      prompt_batch_id: string;
       content: string;
       embedded: number;
       machine_id: string;
@@ -2072,9 +2072,10 @@ function seedTargetExistingRows(db: Database): void {
 
   db.prepare(
     `INSERT INTO prompt_batches (
-       project_id, session_id, kind, created_at, machine_id, content_hash
-     ) VALUES (?, ?, ?, ?, ?, ?)`,
+       id, project_id, session_id, kind, created_at, machine_id, content_hash
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
+    'pbat_cccccccccccccccccccccccccccccccc',
     'proj_cccccccccccccccccccccccccccccccc',
     'sess_cccccccccccccccccccccccccccccccc',
     'initial',
@@ -2090,7 +2091,7 @@ function seedTargetExistingRows(db: Database): void {
   ).run(
     'proj_cccccccccccccccccccccccccccccccc',
     'sess_cccccccccccccccccccccccccccccccc',
-    1,
+    'pbat_cccccccccccccccccccccccccccccccc',
     'Write',
     2,
     2,
