@@ -24,7 +24,6 @@ import {
   epochSeconds,
 } from '../constants.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
-import { changesSince, type Database } from '../db/client.js';
 import { GROVE_PROJECT_SCOPED_TABLES } from '../db/schema-ddl.js';
 import {
   listPendingForProject,
@@ -54,10 +53,6 @@ import {
   readResidencyJournal,
   type ResidencyJournal,
 } from './residency-journal.js';
-
-/** Rows deleted per DELETE batch during the post-ack local purge. A giant
- *  synchronous delete stalls the main loop; we yield between batches. */
-const DELETE_BATCH_SIZE = 500;
 
 /** Throttle window for repeated per-project drain-failure warnings. */
 const FAILURE_LOG_INTERVAL_MS = 60_000;
@@ -235,43 +230,82 @@ async function pushTransition(
     return;
   }
 
-  const ship = async (body: ResidencyRowsRequest): Promise<boolean> => {
+  // Raw POST: attaches the pending adoption (first batch only) and returns the
+  // HTTP status (0 on a transport error). No failure is recorded here — the
+  // caller decides, after subdivision, whether the whole ship gave up.
+  let lastStatus = 0;
+  const post = async (body: ResidencyRowsRequest): Promise<number> => {
     if (!journal.adopted) body.adoption = { project_name: journal.project_name };
-    const resp = await transport(target, body, deps.machineId);
-    if (resp.status !== 200) {
-      recordJournalFailure(journal, new Error(`host returned ${resp.status}`), deps, teamsHome);
-      return false;
+    try {
+      lastStatus = (await transport(target, body, deps.machineId)).status;
+    } catch {
+      lastStatus = 0;
     }
-    if (!journal.adopted) {
+    if (lastStatus === 200 && !journal.adopted) {
       journal.adopted = true;
       advanceResidencyPhase(journal.project_id, 'pushing', { adopted: true }, teamsHome);
     }
-    return true;
+    return lastStatus;
   };
+
+  // A non-200 STATUS on a multi-row batch may just be an over-cap payload (near
+  // the 8MB per-request limit); halve and retry so an oversized batch can't wedge
+  // retry-forever. A transport error (status 0 — host unreachable) never
+  // self-heals by splitting, so it fails straight to a next-tick retry.
+  const shipOutboxRows = async (table: string, rows: OutboxRow[]): Promise<boolean> => {
+    if (rows.length === 0) return true;
+    const status = await post({ table, rows: rows.map((r) => r.payload) });
+    if (status === 200) {
+      const sentAt = epochSeconds();
+      deps.withGroveDb(journal.source_grove_id, () => {
+        markSent(rows.map((r) => r.id), sentAt);
+        markSourceRowsSynced(rows, sentAt);
+      });
+      return true;
+    }
+    if (status !== 0 && rows.length > 1) {
+      const mid = Math.floor(rows.length / 2);
+      return (await shipOutboxRows(table, rows.slice(0, mid))) && (await shipOutboxRows(table, rows.slice(mid)));
+    }
+    return false;
+  };
+
+  const shipPlainRows = async (table: string, rows: Record<string, unknown>[]): Promise<boolean> => {
+    if (rows.length === 0) return true;
+    const status = await post({ table, rows });
+    if (status === 200) return true;
+    if (status !== 0 && rows.length > 1) {
+      const mid = Math.floor(rows.length / 2);
+      return (await shipPlainRows(table, rows.slice(0, mid))) && (await shipPlainRows(table, rows.slice(mid)));
+    }
+    return false;
+  };
+
+  const giveUp = (): void =>
+    recordJournalFailure(journal, new Error(`residency push failed (host status ${lastStatus})`), deps, teamsHome);
 
   // (1) outbox rows — drain project-filtered batches, one POST per table.
   for (;;) {
     const pending = deps.withGroveDb(journal.source_grove_id, () => listPendingForProject(journal.project_id));
     if (pending.length === 0) break;
     for (const [table, rows] of groupByTable(pending)) {
-      const ok = await ship({ table, rows: rows.map((r) => r.payload) });
-      if (!ok) return;
-      const sentAt = epochSeconds();
-      deps.withGroveDb(journal.source_grove_id, () => {
-        markSent(rows.map((r) => r.id), sentAt);
-        markSourceRowsSynced(rows, sentAt);
-      });
+      if (!(await shipOutboxRows(table, rows))) { giveUp(); return; }
     }
     await yieldToLoop();
   }
 
-  // (2) sidecars — page each stream, cursor advancing only on a 200.
-  if (!(await shipSidecar(journal, deps, ship, teamsHome, 'entity_mentions', listEntityMentionPages))) return;
-  if (!(await shipSidecar(journal, deps, ship, teamsHome, 'content_publications', listContentPublicationPages))) return;
+  // (2) sidecars — page each stream, cursor advancing only after the page ships.
+  if (!(await shipSidecar(journal, deps, shipPlainRows, teamsHome, 'entity_mentions', listEntityMentionPages))) { giveUp(); return; }
+  if (!(await shipSidecar(journal, deps, shipPlainRows, teamsHome, 'content_publications', listContentPublicationPages))) { giveUp(); return; }
 
-  // (3) full ack — clear failure state, purge local rows, finish.
+  // (3) adoption backstop — a project with a registry row but no sync-eligible
+  // rows ships zero batches, so the host never learns its name. Send one
+  // adoption-only request before the local rows go.
+  if (!journal.adopted && (await post({ table: 'sessions', rows: [] })) !== 200) { giveUp(); return; }
+
+  // (4) full ack — clear failure state, purge local rows, finish.
   clearJournalFailure(journal, deps, teamsHome);
-  await deleteAfterAck(journal, deps);
+  deleteAfterAck(journal, deps);
   deps.logger?.info(LOG_KINDS.RESIDENCY_COMPLETE, 'residency attach transition complete', {
     project_id: journal.project_id,
     host_id: journal.host_id,
@@ -283,7 +317,7 @@ async function pushTransition(
 async function shipSidecar(
   journal: ResidencyJournal,
   deps: ResidencyDrainDeps,
-  ship: (body: ResidencyRowsRequest) => Promise<boolean>,
+  shipRows: (table: string, rows: Record<string, unknown>[]) => Promise<boolean>,
   teamsHome: string | undefined,
   table: 'entity_mentions' | 'content_publications',
   pager: (projectId: string, cursor: string | null) => { rows: Record<string, unknown>[]; nextCursor: string | null },
@@ -293,7 +327,7 @@ async function shipSidecar(
     const startToken = typeof cursor === 'string' && cursor ? cursor : null;
     const page = deps.withGroveDb(journal.source_grove_id, () => pager(journal.project_id, startToken));
     if (page.rows.length > 0) {
-      if (!(await ship({ table, rows: page.rows }))) return false;
+      if (!(await shipRows(table, page.rows))) return false;
     }
     const nextToken = page.nextCursor ?? CURSOR_DONE;
     advanceResidencyPhase(journal.project_id, 'pushing', { cursors: { [table]: nextToken } }, teamsHome);
@@ -304,21 +338,34 @@ async function shipSidecar(
 }
 
 /**
- * Delete the project's local rows after the host has the full push. FK
- * enforcement is disabled around the sweep (the existing project-delete
- * pattern) so table order is irrelevant, and each table is deleted in batches
- * with a yield between them so a large project never stalls the main loop.
- * `content_publications` (no `project_id`, so not in the scoped set) is deleted
- * first, while its owning artifacts still exist to scope it.
+ * Delete the project's local rows after the host has the full push, in the
+ * house project-delete shape (`grove/project-lifecycle.ts` `deleteProjectRows`):
+ * ONE synchronous FK-off transaction — plain `DELETE ... WHERE project_id = ?`
+ * per table, no yields inside the FK-off window. Two requirements force this
+ * exact shape: FK enforcement must not straddle a yield on the shared pinned
+ * connection (a grove-mate project's write mid-yield would run FK-off), and a
+ * plain project-id delete removes the WITHOUT ROWID tables (`canopy_entries`,
+ * `canopy_maps`) that a `rowid`-keyed delete cannot even prepare against.
+ * `content_publications` (no `project_id`, so absent from the scoped set) is
+ * deleted first, while its owning artifacts still exist to scope the join.
  */
-async function deleteAfterAck(journal: ResidencyJournal, deps: ResidencyDrainDeps): Promise<void> {
-  await deps.withGroveDb(journal.source_grove_id, async (db) => {
+function deleteAfterAck(journal: ResidencyJournal, deps: ResidencyDrainDeps): void {
+  deps.withGroveDb(journal.source_grove_id, (db) => {
+    deleteContentPublicationsForProject(journal.project_id);
+    // Tolerate an older/partial Grove DB by pre-checking which tables exist,
+    // rather than swallowing every DELETE error (which would also hide a real
+    // failure — the bug a catch-all here would reintroduce).
+    const present = new Set(
+      (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map((r) => r.name),
+    );
     db.run('PRAGMA foreign_keys = OFF');
     try {
-      deleteContentPublicationsForProject(journal.project_id);
-      for (const table of GROVE_PROJECT_SCOPED_TABLES) {
-        await deleteTableRowsBatched(db, table, journal.project_id);
-      }
+      db.transaction(() => {
+        for (const table of GROVE_PROJECT_SCOPED_TABLES) {
+          if (!present.has(table)) continue;
+          db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(journal.project_id);
+        }
+      })();
     } finally {
       db.run('PRAGMA foreign_keys = ON');
     }
@@ -326,20 +373,6 @@ async function deleteAfterAck(journal: ResidencyJournal, deps: ResidencyDrainDep
   advanceResidencyPhase(journal.project_id, 'done', {}, deps.teamsHome);
   clearResidencyJournal(journal.project_id, deps.teamsHome);
   deps.withGroveDb(journal.source_grove_id, () => pruneOld());
-}
-
-async function deleteTableRowsBatched(db: Database, table: string, projectId: string): Promise<void> {
-  let stmt: ReturnType<Database['prepare']>;
-  try {
-    stmt = db.prepare(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE project_id = ? LIMIT ?)`);
-  } catch {
-    return; // an older/partial Grove DB may lack this table — skip, like deleteProjectRows
-  }
-  for (;;) {
-    stmt.run(projectId, DELETE_BATCH_SIZE);
-    if (changesSince(db) === 0) break;
-    await yieldToLoop();
-  }
 }
 
 function groupByTable(rows: OutboxRow[]): Map<string, OutboxRow[]> {

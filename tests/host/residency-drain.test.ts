@@ -81,6 +81,10 @@ function seedProjectRows(projectId: string, suffix: string): void {
     db.prepare(`INSERT INTO entity_mentions (project_id, entity_id, note_id, note_type, agent_id, machine_id) VALUES (?, ?, ?, 'session', 'user', 'local')`).run(projectId, `ent_${suffix}`, `note_${suffix}`);
     db.prepare(`INSERT INTO skill_records (id, project_id, agent_id, name, display_name, description, path, created_at, updated_at) VALUES (?, ?, 'user', 'n', 'N', 'd', 'p', 1, 1)`).run(`skill_${suffix}`, projectId);
     db.prepare(`INSERT INTO content_publications (artifact_kind, artifact_id, published_generation, published_at, published_by, machine_id) VALUES ('skill', ?, 1, 1, 'user', 'local')`).run(`skill_${suffix}`);
+    // WITHOUT ROWID tables — a rowid-keyed delete cannot even prepare against
+    // these, so the purge must reach them via a plain project_id delete.
+    db.prepare(`INSERT INTO canopy_entries (project_id, machine_id, path, content_hash, size_bytes, token_estimate, line_count, mechanical_updated_at) VALUES (?, 'local', ?, 'h', 1, 1, 1, 1)`).run(projectId, `p/${suffix}`);
+    db.prepare(`INSERT INTO canopy_maps (project_id, machine_id, content, inputs_hash, generated_at, token_estimate) VALUES (?, 'local', 'c', 'h', 1, 1)`).run(projectId);
   } finally {
     db.run('PRAGMA foreign_keys = ON');
   }
@@ -176,6 +180,11 @@ describe('residency drain — push + delete-after-ack', () => {
 
     // Purge: zero project rows across EVERY scoped table; journal cleared.
     expect(countProjectRows(projectId)).toBe(0);
+    // Explicitly pin the WITHOUT ROWID tables the rowid-keyed delete skipped.
+    const canopyEntries = getDatabase().prepare(`SELECT COUNT(*) AS n FROM canopy_entries WHERE project_id = ?`).get(projectId) as { n: number };
+    const canopyMaps = getDatabase().prepare(`SELECT COUNT(*) AS n FROM canopy_maps WHERE project_id = ?`).get(projectId) as { n: number };
+    expect(canopyEntries.n).toBe(0);
+    expect(canopyMaps.n).toBe(0);
     expect(readResidencyJournal(projectId)).toBeNull();
     expect(countResidencyInFlight()).toBe(0);
 
@@ -189,6 +198,30 @@ describe('residency drain — push + delete-after-ack', () => {
     expect(countProjectRows(otherProject)).toBe(otherRowsBefore);
     const otherPub = getDatabase().prepare(`SELECT COUNT(*) AS n FROM content_publications WHERE artifact_id = 'skill_b'`).get() as { n: number };
     expect(otherPub.n).toBe(1);
+  });
+
+  test('an empty-history project still ships one adoption-only request so the host learns its name', async () => {
+    // A registry row but zero sync-eligible rows: nothing to backfill, so no
+    // batch would otherwise carry the adoption.
+    const source = createGrove('Source', home);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    registerProjectInGrove(source.id, { projectId, projectName: 'demo', projectRoot: root }, home);
+    const host = makeHost();
+    upsertHost(host);
+    beginAttachResidency({ hostId: host.host_id, host, projectId, sourceGroveId: source.id, root, mycoHome: home }, baseDeps());
+
+    const requests: { table: string; rowCount: number; adoption?: { project_name: string } }[] = [];
+    const transport: ResidencyPostTransport = async (_target, body) => {
+      requests.push({ table: body.table, rowCount: body.rows.length, adoption: body.adoption });
+      return { status: 200, applied: body.rows.length };
+    };
+
+    await runResidencyTransitions({ ...baseDeps(), transport, resolveHostTarget: targetResolver() });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toEqual({ table: 'sessions', rowCount: 0, adoption: { project_name: 'demo' } });
+    expect(readResidencyJournal(projectId)).toBeNull(); // transition completed
   });
 
   test('a failed push does not advance: the journal stays pushing and the local rows survive', async () => {
