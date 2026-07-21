@@ -147,7 +147,7 @@ import {
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerNotificationRoutes } from './routes/notifications.js';
 import { registerScheduledTasks } from './task-scheduling.js';
-import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, type Database } from '../db/client.js';
+import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove, forEachRegisteredProject, isProjectActive } from './scope-iteration.js';
 import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
@@ -204,6 +204,8 @@ import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
 import { createRoutedPlanHandler } from '../host/routed-plan.js';
 import type { RemoteTarget } from '../host/routing.js';
 import { pruneHostedProjects } from '../host/hosted-projects.js';
+import { beginAttachResidency, type ResidencyDaemonDeps } from '../host/residency-transition.js';
+import { countResidencyInFlight, runResidencyTransitions } from '../host/residency-drain.js';
 import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
 import { createPlanDrainQueue } from '../capture/plan-drain.js';
 import { createEventReplayDrainQueue } from '../capture/event-replay-drain.js';
@@ -1574,10 +1576,32 @@ export async function main(): Promise<void> {
   // derived-counters summary for the member's own dashboard. No new state —
   // reads the drains' already-persisted queue stores.
   registerDrainHealthRoute(server, { transcriptDrain, planDrain, eventReplayDrain });
+
+  // Residency transition (Phase F) daemon capabilities, shared by the attach
+  // API handler (which starts a with-history transition) and the drain job
+  // (which ships it and, on full ack, purges locally). `withGroveDb` pins +
+  // scopes a Grove connection so the transition/backfill helpers' `getDatabase()`
+  // resolves to it.
+  const residencyDeps: ResidencyDaemonDeps = {
+    machineId,
+    mycoHome,
+    logger,
+    withGroveDb: <T,>(groveId: string, fn: (db: Database) => T): T => {
+      const dbPath = resolveGroveDbPath(groveId, mycoHome);
+      return runtimeCache.withPinned(dbPath, () =>
+        withDatabase(runtimeCache.getDatabase(dbPath), () => fn(runtimeCache.getDatabase(dbPath))),
+      );
+    },
+  };
+
   // Team Host MEMBERSHIP lifecycle (consolidation Task D-2): join/leave/
   // attach/detach as daemon API, the Team page's primary write surface (the
   // CLI wrappers become a thin fallback over this same route set).
-  registerHostMembershipRoutes(server, { mycoHome, logger });
+  registerHostMembershipRoutes(server, {
+    mycoHome,
+    logger,
+    beginResidency: (ctx) => beginAttachResidency(ctx, residencyDeps),
+  });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};
@@ -2460,6 +2484,23 @@ export async function main(): Promise<void> {
     hold: { pending: () => eventReplayDrain.pendingCount() },
     fn: async () => {
       await eventReplayDrain.drainAll();
+    },
+  });
+
+  // Residency transition drain (Phase F). Carries a with-history attach the rest
+  // of the way: re-drives a crash-interrupted `parking` journal to `pushing`,
+  // ships the project's queued rows + the two sidecar streams to the host, and —
+  // only after the host acknowledges the FULL push — deletes the local rows and
+  // clears the journal. `hold.pending` keeps the machine awake while any
+  // transition is unfinished, so a half-moved project is never abandoned to
+  // sleep. Runs in every power state, like the other member drains.
+  jobRunner.register({
+    name: 'residency-transition',
+    runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
+    hold: { pending: () => countResidencyInFlight() },
+    fn: async () => {
+      await runResidencyTransitions(residencyDeps);
     },
   });
 

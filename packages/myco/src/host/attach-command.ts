@@ -55,7 +55,9 @@ import {
   ProjectRegisteredLocallyError,
   resolveAttach,
   type AttachRef,
+  type HostRecord,
 } from './registry.js';
+import { residencyTransitionInFlight } from './residency-journal.js';
 
 export interface AttachOptions {
   /** The `<project>` positional — a path to the local checkout (default cwd). */
@@ -76,7 +78,34 @@ export interface AttachOptions {
   localGroveId?: string;
   /** MYCO_HOME override (tests). Threaded to the never-materialize local-row check. */
   mycoHome?: string;
+  /**
+   * DAEMON-ONLY injection (Phase F): run the residency transition when the
+   * project still has local Grove data, instead of refusing. The daemon attach
+   * handler (`daemon/api/host-membership.ts`) wires this to the DB-backed
+   * transition (`host/residency-transition.ts`); a CLI/in-process caller that
+   * omits it gets the coded `project_registered_locally` refusal, since it has
+   * no daemon-owned DB to move the rows with.
+   */
+  beginResidency?: BeginResidencyAttach;
 }
+
+/**
+ * Everything the residency transition needs to begin, handed over when a
+ * with-history attach is detected. `host` carries the resolved
+ * `served_grove_id` (the divert target); `sourceGroveId` is the local Grove the
+ * project is moving off.
+ */
+export interface ResidencyAttachContext {
+  hostId: string;
+  host: HostRecord;
+  projectId: string;
+  sourceGroveId: string;
+  root: string;
+  localGroveId?: string;
+  mycoHome: string;
+}
+
+export type BeginResidencyAttach = (ctx: ResidencyAttachContext) => AttachResult;
 
 export interface AttachResult {
   projectId: string;
@@ -159,6 +188,17 @@ export function attachCommand(options: AttachOptions): AttachResult {
   const root = path.resolve(options.projectPath ?? '.');
   const projectId = resolveProjectId(root, options.projectId);
 
+  // A live residency journal means a transition is already underway for this
+  // project (attach or detach). Starting a second one would race the first; the
+  // running transition (or a `residency abort`) is how it resolves.
+  if (residencyTransitionInFlight(projectId)) {
+    throw codedMembershipError(
+      'residency_transition_in_flight',
+      `Cannot attach ${projectId}: a residency transition is already in flight for it. Let it finish (or `
+      + 'abort it) before attaching again.',
+    );
+  }
+
   const manifest = loadProjectManifest(resolveProjectVaultDir(root));
   const hostId = options.hostId?.trim() || teamHostHintFromManifest(manifest)?.host_id;
   if (!hostId) {
@@ -206,6 +246,22 @@ export function attachCommand(options: AttachOptions): AttachResult {
   try {
     attachProject(hostId, ref, mycoHome);
   } catch (err) {
+    // With-history attach (Phase F, D-F-1): a project that still holds local
+    // Grove data is no longer refused — the daemon runs the residency
+    // transition (backup, then move) instead. Only the daemon injects
+    // `beginResidency`; without it (a CLI/in-process caller with no DB) the
+    // mapped refusal stands.
+    if (err instanceof ProjectRegisteredLocallyError && options.beginResidency) {
+      return options.beginResidency({
+        hostId,
+        host,
+        projectId: err.projectId,
+        sourceGroveId: err.groveId,
+        root,
+        localGroveId,
+        mycoHome,
+      });
+    }
     throw mapAttachError(err, hostId);
   }
 
@@ -229,6 +285,16 @@ export function attachCommand(options: AttachOptions): AttachResult {
 export function detachCommand(options: DetachOptions): DetachResult {
   const root = path.resolve(options.projectPath ?? '.');
   const projectId = resolveProjectId(root, options.projectId);
+
+  // A live residency journal means a transition is already underway (attach or
+  // detach); refuse rather than race it.
+  if (residencyTransitionInFlight(projectId)) {
+    throw codedMembershipError(
+      'residency_transition_in_flight',
+      `Cannot detach ${projectId}: a residency transition is already in flight for it. Let it finish (or `
+      + 'abort it) before detaching.',
+    );
+  }
 
   const existing = resolveAttach(projectId);
   if (!existing) return { projectId, detachedFromHostId: null };
@@ -258,10 +324,10 @@ function mapAttachError(err: unknown, hostId: string): Error {
   if (err instanceof ProjectRegisteredLocallyError) {
     return codedMembershipError(
       'project_registered_locally',
-      `Cannot attach ${err.projectId}: it still has local Grove data (Grove ${err.groveId}). Adopting `
-      + 'existing local history into a team host requires the residency-transition migration, which is '
-      + 'not yet available (task A2). This command attaches a project going forward only — detach/migrate '
-      + 'the project off its local Grove first.',
+      `Cannot attach ${err.projectId}: it still has local Grove data (Grove ${err.groveId}). Moving existing `
+      + 'local history onto a team host runs as a residency transition, which the daemon performs — attach '
+      + 'through the running daemon (the Team page, or `myco attach` with the daemon up) rather than in a '
+      + 'context with no daemon-owned database.',
     );
   }
   if (err instanceof ProjectAttachedToOtherHostError) {

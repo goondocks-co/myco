@@ -47,7 +47,13 @@ import { loadProjectManifest } from '../../config/project-manifest.js';
 import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION } from '../../constants.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '../../grove/paths.js';
 import { resolveAttachRefHomeGroveId } from '../../grove/registry.js';
-import { attachCommand, detachCommand, type AttachOptions, type DetachOptions } from '../../host/attach-command.js';
+import {
+  attachCommand,
+  detachCommand,
+  type AttachOptions,
+  type BeginResidencyAttach,
+  type DetachOptions,
+} from '../../host/attach-command.js';
 import { resolveTeamHostHintState, teamHostHintMessage } from '../../host/hint.js';
 import { defaultCheckHostReachable, joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
 import { membershipErrorCode } from '../../host/membership-error.js';
@@ -71,6 +77,14 @@ export interface HostMembershipRouteDeps extends HostMembershipHealthRouteDeps {
   detach?: typeof detachCommand;
   mycoHome?: string;
   logger?: DaemonLogger;
+  /**
+   * DAEMON-ONLY (Phase F): the residency transition to run when an attach
+   * targets a project that still has local Grove data. Built in `daemon/main.ts`
+   * (it needs a Grove DB) and threaded through so the attach handler is the only
+   * production caller that can move existing history onto a host. Absent in
+   * tests / non-daemon wiring, where a with-history attach still refuses.
+   */
+  beginResidency?: BeginResidencyAttach;
   /**
    * Evicts a host's cached health entry (and any in-flight probe) on a
    * successful leave — `registerHostMembershipRoutes` wires this to the
@@ -225,6 +239,7 @@ export function createHostMembershipAttachHandler(deps: HostMembershipRouteDeps)
       projectId: str(body.project_id),
       localGroveId: str(body.local_grove_id),
       mycoHome,
+      beginResidency: deps.beginResidency,
     };
 
     try {
