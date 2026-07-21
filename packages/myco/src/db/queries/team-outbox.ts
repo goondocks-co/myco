@@ -297,6 +297,25 @@ export function listPending(limit?: number): OutboxRow[] {
   return rows.map(toOutboxRow);
 }
 
+/**
+ * List pending outbox records for a single project (oldest-first). The
+ * residency drain (`host/residency-drain.ts`) ships one project's queued rows
+ * to its Team Host; the global {@link listPending} would interleave other
+ * projects' rows. Reuses the same pending predicate and row shape.
+ */
+export function listPendingForProject(projectId: string, limit?: number): OutboxRow[] {
+  const db = getDatabase();
+  const rows = db.prepare(
+    `SELECT ${SELECT_COLUMNS}
+     FROM team_outbox
+     WHERE sent_at IS NULL AND project_id = ?
+     ORDER BY created_at ASC
+     LIMIT ?`,
+  ).all(projectId, limit ?? BURST_BATCH_SIZE) as Record<string, unknown>[];
+
+  return rows.map(toOutboxRow);
+}
+
 /** Mark outbox records as sent by setting sent_at. */
 export function markSent(ids: number[], sentAt: number): void {
   if (ids.length === 0) return;
@@ -481,7 +500,7 @@ export function countPendingByTable(): Record<string, number> {
  * `sanitizeSyncPayload` call, and the single-table transaction wrapping so
  * callers can't drift on the payload shape.
  */
-function insertOutboxRowsForUpsert(
+export function insertOutboxRowsForUpsert(
   db: ReturnType<typeof getDatabase>,
   tableName: string,
   rows: ReadonlyArray<Record<string, unknown>>,
