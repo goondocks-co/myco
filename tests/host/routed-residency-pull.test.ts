@@ -32,7 +32,8 @@ import {
   registerProjectInGrove,
   type GroveRecord,
 } from '@myco/grove/registry.js';
-import { hostedProjectRoot } from '@myco/host/hosted-projects.js';
+import { hostedProjectRoot, maybeRegisterHostedProjectOnIngest } from '@myco/host/hosted-projects.js';
+import { ROUTED_RESIDENCY_ROWS_PATH } from '@myco/host/residency-journal.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
 import { resolveRoutedTranscriptsDir } from '@myco/grove/paths.js';
@@ -286,6 +287,27 @@ describe('detach-pull handler side effects', () => {
     const res = await pull(null); // small project → single done page
     expect(res.body.done).toBe(true);
     expect(getRegisteredProjectInGrove(grove.id, projectId, home)).toBeNull();
+  });
+
+  test('a stub deregister self-heals: a later first-capture re-registers via the ingest seam', async () => {
+    // The attached-but-never-captured edge: a member with no host-visible rows is
+    // invisible to the stub check, so a sole-contributor detach deregisters the
+    // project. That member's first forwarded capture must re-register it.
+    registerHosted();
+    seedNoFk(() => insertSession('s_a', projectId, MEMBER_A)); // only the departing caller
+    await pull(null);
+    expect(getRegisteredProjectInGrove(grove.id, projectId, home)).toBeNull(); // deregistered
+
+    // The (previously never-captured) member's first collect capture hits the seam.
+    const outcome = maybeRegisterHostedProjectOnIngest({
+      method: 'POST',
+      pathname: ROUTED_RESIDENCY_ROWS_PATH,
+      headers: { 'x-myco-grove-id': grove.id, 'x-myco-project-id': projectId },
+      servedGroveId: grove.id,
+      mycoHome: home,
+    });
+    expect(outcome.registered).toBe(true);
+    expect(getRegisteredProjectInGrove(grove.id, projectId, home)).not.toBeNull();
   });
 
   test('done page with another member still present does NOT deregister', async () => {

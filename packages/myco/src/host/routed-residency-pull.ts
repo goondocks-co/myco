@@ -65,6 +65,14 @@ function finishDetachPull(
 
   // (b) True-stub check: the host's own machine and the departing member's machine
   //     are both excluded, so this asks "does any OTHER member still have rows here".
+  //     Deregisters the REGISTRY row only — the DB rows stay as the team's kept
+  //     record (D-F-3 copy-out); true removal is an explicit operator delete.
+  //
+  //     Edge (accepted, self-healing): a member who ATTACHED but never captured has
+  //     no host-visible rows — attach state is member-local, the host cannot see its
+  //     refs — so a sole-contributor detach deregisters despite that member existing.
+  //     That is fine: that member's FIRST forwarded capture re-registers the project
+  //     via the registration-on-ingest seam and reconciles idempotently.
   const hostMachineId = getTeamMachineId();
   if (!projectHasForeignMachineRows(db, input.projectId, [hostMachineId, input.machineId])) {
     deregisterProjectInGrove(input.groveId, input.projectId, input.mycoHome, { force: true });
