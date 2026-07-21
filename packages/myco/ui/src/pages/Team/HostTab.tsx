@@ -1,20 +1,35 @@
 import { useMemo, useState } from 'react';
-import { Server, Link2, AlertTriangle, Activity } from 'lucide-react';
+import { Server, Link2, AlertTriangle, Activity, Loader2 } from 'lucide-react';
 import { Panel } from '../../components/ui/panel';
 import { IconEyebrow } from '../../components/ui/icon-eyebrow';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { AccentSurface } from '../../components/ui/accent-surface';
 import { SlideoutDetailPanel } from '../../components/ui/slideout-detail-panel';
+import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { DrainCell } from '../../components/team/DrainCell';
 import { LeaveHostControl } from '../../components/team/LeaveHostControl';
 import { HostDetailPanel } from '../../components/team/HostDetailPanel';
 import {
+  ATTACH_CONFIRM_COPY,
+  ATTACH_CONFIRM_LABEL,
+  ATTACH_CONFIRM_TITLE,
   ATTACH_MISMATCH_WARNING_COPY,
+  CANCEL_MOVE_CONFIRM_COPY,
+  DETACH_CONFIRM_COPY,
+  DETACH_CONFIRM_LABEL,
+  DETACH_CONFIRM_TITLE,
+  DETACH_NO_PULL_CONFIRM_COPY,
+  DETACH_NO_PULL_CONFIRM_LABEL,
   LOCAL_GROVE_PICKER_HELPER,
   LOCAL_GROVE_PICKER_LABEL,
+  RESIDENCY_STALLED_COPY,
+  membershipErrorCode,
   membershipErrorCopy,
   reachabilityHintSuffix,
+  residencyPendingDetail,
+  residencyPhaseLabel,
+  residencyProgressHeadline,
 } from '../../lib/membership-copy';
 import { useActiveProjectSelection } from '../../hooks/use-project-selection';
 import { useGroves } from '../../hooks/use-groves';
@@ -27,9 +42,12 @@ import {
   useDetachProject,
   useDrainHealth,
   useHostMembershipHealth,
+  useResidencyStatus,
+  useResidencyAbort,
   type HostMembershipHost,
   type HostMembershipHint,
   type HostMembershipProjectRef,
+  type ResidencyStatus,
 } from '../../hooks/use-host-membership';
 
 const inputClass =
@@ -145,10 +163,11 @@ function DrainHealthPanel() {
           {hosts.map((h) => (
             <div key={h.host_id} className="rounded-md border border-[var(--ghost-border)] px-3 py-2">
               <span className="text-xs font-medium text-on-surface">{h.label}</span>
-              <div className="grid grid-cols-3 gap-2 mt-1">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1">
                 <DrainCell label="Transcript" counters={h.drains.transcript} />
                 <DrainCell label="Plan" counters={h.drains.plan} />
                 <DrainCell label="Live events" counters={h.drains.event_replay} />
+                <DrainCell label="Residency" counters={h.drains.residency} />
               </div>
             </div>
           ))}
@@ -162,19 +181,106 @@ function DrainHealthPanel() {
 // Joined hosts — per-project attach refs, leave/detach.
 // ---------------------------------------------------------------------------
 
-function ProjectRefRow({ hostId, projectRef }: { hostId: string; projectRef: HostMembershipProjectRef }) {
-  const detach = useDetachProject();
+// Compact in-flight progress for a residency round trip, rendered inside the
+// transitioning project's row. Direction-aware headline, a friendly phase
+// step, a subdued pending count, a quiet warning when the last drain attempt
+// erred, and a Cancel-move control (confirm → residency-abort).
+function ResidencyProgress({ status, projectId }: { status: ResidencyStatus; projectId: string }) {
+  const abort = useResidencyAbort();
   const [error, setError] = useState<string | null>(null);
+  const phase = residencyPhaseLabel(status.phase);
+  const pending = residencyPendingDetail(status.rows_pending);
 
-  const handleDetach = async () => {
-    if (!projectRef.root) return;
+  const handleCancel = async () => {
+    if (!window.confirm(CANCEL_MOVE_CONFIRM_COPY)) return;
     setError(null);
     try {
-      await detach.mutateAsync({ project_root: projectRef.root, project_id: projectRef.project_id });
+      await abort.mutateAsync({ project_id: projectId });
     } catch (err) {
       setError(membershipErrorCopy(err));
     }
   };
+
+  return (
+    <div
+      className="flex flex-col gap-1 rounded bg-surface-container px-2 py-1.5"
+      role="status"
+      data-testid={`residency-progress-${projectId}`}
+    >
+      <div className="flex items-center gap-2">
+        <Loader2 className="size-3 shrink-0 animate-spin text-sage" aria-hidden />
+        <span className="text-xs text-on-surface">{residencyProgressHeadline(status.direction)}</span>
+        {phase && <span className="text-xs text-on-surface-variant">· {phase}</span>}
+        <button
+          type="button"
+          disabled={abort.isPending}
+          onClick={handleCancel}
+          className="ml-auto text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50 shrink-0"
+        >
+          {abort.isPending ? 'Cancelling…' : 'Cancel move'}
+        </button>
+      </div>
+      {pending && <span className="text-xs text-on-surface-variant">{pending}</span>}
+      {status.last_error && (
+        <span className="flex items-center gap-1 text-xs text-ochre" title={status.last_error}>
+          <AlertTriangle className="size-3 shrink-0" aria-hidden />
+          {RESIDENCY_STALLED_COPY}
+        </span>
+      )}
+      {error && <p className="text-xs text-terracotta m-0">{error}</p>}
+    </div>
+  );
+}
+
+function ProjectRefRow({
+  hostId,
+  projectRef,
+  status,
+  transitionInFlight,
+  onTransitionStart,
+}: {
+  hostId: string;
+  projectRef: HostMembershipProjectRef;
+  /** Live residency status, present only when THIS project is the one being
+   *  transitioned; `undefined` for every other row. */
+  status: ResidencyStatus | undefined;
+  /** A transition (this project's or another's) is in flight — detach is held
+   *  off everywhere while one runs (the backend also refuses). */
+  transitionInFlight: boolean;
+  onTransitionStart: (projectId: string) => void;
+}) {
+  const detach = useDetachProject();
+  const [error, setError] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  // Second-stage detach: set when the host refused with
+  // `residency_pull_unavailable`; the next confirm retries with allow_no_pull.
+  const [noPullConfirm, setNoPullConfirm] = useState(false);
+
+  const runDetach = async (allowNoPull: boolean) => {
+    if (!projectRef.root) return;
+    setError(null);
+    try {
+      await detach.mutateAsync({
+        project_root: projectRef.root,
+        project_id: projectRef.project_id,
+        ...(allowNoPull ? { allow_no_pull: true } : {}),
+      });
+      setConfirmOpen(false);
+      setNoPullConfirm(false);
+      onTransitionStart(projectRef.project_id);
+    } catch (err) {
+      // Host too old to return data: keep the dialog open and offer the
+      // explicit "disconnect anyway" fallback instead of a dead-end error.
+      if (!allowNoPull && membershipErrorCode(err) === 'residency_pull_unavailable') {
+        setNoPullConfirm(true);
+        setError(null);
+      } else {
+        setError(membershipErrorCopy(err));
+      }
+    }
+  };
+
+  const showProgress = status?.in_flight === true;
 
   return (
     <div className="flex flex-col gap-1">
@@ -184,8 +290,8 @@ function ProjectRefRow({ hostId, projectRef }: { hostId: string; projectRef: Hos
         </span>
         <button
           type="button"
-          disabled={detach.isPending || !projectRef.root}
-          onClick={handleDetach}
+          disabled={detach.isPending || !projectRef.root || transitionInFlight}
+          onClick={() => { setNoPullConfirm(false); setError(null); setConfirmOpen(true); }}
           className="text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50 shrink-0"
           aria-label={`Detach ${projectRef.project_id} from host ${hostId}`}
         >
@@ -202,12 +308,39 @@ function ProjectRefRow({ hostId, projectRef }: { hostId: string; projectRef: Hos
           {ATTACH_MISMATCH_WARNING_COPY}
         </p>
       )}
-      {error && <p className="text-xs text-terracotta m-0">{error}</p>}
+      {showProgress && status && <ResidencyProgress status={status} projectId={projectRef.project_id} />}
+      {error && !confirmOpen && <p className="text-xs text-terracotta m-0">{error}</p>}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) { setNoPullConfirm(false); setError(null); } }}
+        title={DETACH_CONFIRM_TITLE}
+        description={noPullConfirm ? DETACH_NO_PULL_CONFIRM_COPY : DETACH_CONFIRM_COPY}
+        icon={<AlertTriangle className="h-4 w-4 text-tertiary" />}
+        meta={[{ label: 'Project', value: projectRef.project_id }]}
+        confirmLabel={noPullConfirm ? DETACH_NO_PULL_CONFIRM_LABEL : DETACH_CONFIRM_LABEL}
+        onConfirm={() => runDetach(noPullConfirm)}
+        isPending={detach.isPending}
+        errorMessage={error}
+      />
     </div>
   );
 }
 
-function HostCard({ host, onSelect }: { host: HostMembershipHost; onSelect: () => void }) {
+function HostCard({
+  host,
+  onSelect,
+  transitionProjectId,
+  residencyStatus,
+  transitionInFlight,
+  onTransitionStart,
+}: {
+  host: HostMembershipHost;
+  onSelect: () => void;
+  transitionProjectId: string | null;
+  residencyStatus: ResidencyStatus | undefined;
+  transitionInFlight: boolean;
+  onTransitionStart: (projectId: string) => void;
+}) {
   return (
     <div className="flex flex-col gap-2 rounded-md border border-[var(--ghost-border)] px-4 py-3">
       <div className="flex items-start justify-between gap-3">
@@ -227,7 +360,14 @@ function HostCard({ host, onSelect }: { host: HostMembershipHost; onSelect: () =
       {host.projects.length > 0 && (
         <div className="flex flex-col gap-1">
           {host.projects.map((ref) => (
-            <ProjectRefRow key={ref.project_id} hostId={host.host_id} projectRef={ref} />
+            <ProjectRefRow
+              key={ref.project_id}
+              hostId={host.host_id}
+              projectRef={ref}
+              status={ref.project_id === transitionProjectId ? residencyStatus : undefined}
+              transitionInFlight={transitionInFlight}
+              onTransitionStart={onTransitionStart}
+            />
           ))}
         </div>
       )}
@@ -256,7 +396,15 @@ function HostCard({ host, onSelect }: { host: HostMembershipHost; onSelect: () =
 // to file the result locally.
 // ---------------------------------------------------------------------------
 
-function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
+function AttachProjectPanel({
+  hosts,
+  transitionInFlight,
+  onTransitionStart,
+}: {
+  hosts: HostMembershipHost[];
+  transitionInFlight: boolean;
+  onTransitionStart: (projectId: string) => void;
+}) {
   const attach = useAttachProject();
   const groves = useGroves();
   // Cache-only read (`enabled: false`) — this panel never triggers its own
@@ -268,6 +416,7 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
   const [localGroveId, setLocalGroveId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   if (hosts.length === 0) return null;
 
@@ -275,7 +424,7 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
   const defaultGroveId = localGroves.find((g) => g.is_default)?.id ?? '';
   const effectiveLocalGroveId = localGroveId || defaultGroveId;
 
-  const canSubmit = Boolean(projectRoot.trim() && hostId.trim()) && !attach.isPending;
+  const canSubmit = Boolean(projectRoot.trim() && hostId.trim()) && !attach.isPending && !transitionInFlight;
 
   const handleAttach = async () => {
     setError(null);
@@ -291,7 +440,10 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
         : `Project attached — new work now routes to ${result.host_label}.`);
       setProjectRoot('');
       setLocalGroveId('');
+      setConfirmOpen(false);
+      onTransitionStart(result.project_id);
     } catch (err) {
+      // Keep the dialog open so the failure shows next to the Confirm button.
       setError(membershipErrorCopy(err));
     }
   };
@@ -333,13 +485,28 @@ function AttachProjectPanel({ hosts }: { hosts: HostMembershipHost[] }) {
           </>
         )}
         <div className="flex justify-end">
-          <Button size="sm" disabled={!canSubmit} onClick={handleAttach}>
+          <Button
+            size="sm"
+            disabled={!canSubmit}
+            onClick={() => { setError(null); setSuccess(null); setConfirmOpen(true); }}
+          >
             {attach.isPending ? 'Attaching…' : 'Attach project'}
           </Button>
         </div>
       </div>
-      {error && <p className="text-sm text-terracotta m-0 mt-2" data-testid="host-attach-error">{error}</p>}
+      {error && !confirmOpen && <p className="text-sm text-terracotta m-0 mt-2" data-testid="host-attach-error">{error}</p>}
       {success && <p className="text-sm text-sage m-0 mt-2" data-testid="host-attach-success">{success}</p>}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) setError(null); }}
+        title={ATTACH_CONFIRM_TITLE}
+        description={ATTACH_CONFIRM_COPY}
+        icon={<Link2 className="h-4 w-4 text-tertiary" />}
+        confirmLabel={ATTACH_CONFIRM_LABEL}
+        onConfirm={handleAttach}
+        isPending={attach.isPending}
+        errorMessage={error}
+      />
     </Panel>
   );
 }
@@ -436,6 +603,14 @@ export function HostTab() {
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
   const selectedHost = hosts.find((h) => h.host_id === selectedHostId) ?? null;
 
+  // The project whose residency round trip we're actively watching. Set when an
+  // attach/detach mutation resolves; the status poll self-disarms once the
+  // transition finishes (only one runs at a time — the backend enforces it).
+  const [transitionProjectId, setTransitionProjectId] = useState<string | null>(null);
+  const residency = useResidencyStatus(transitionProjectId ?? undefined, transitionProjectId !== null);
+  const residencyStatus = residency.data;
+  const transitionInFlight = residencyStatus?.in_flight === true;
+
   return (
     <div className="flex flex-col gap-4">
       {status.data?.hint && <AffiliationHintBanner hint={status.data.hint} />}
@@ -447,11 +622,25 @@ export function HostTab() {
           title={`${hosts.length} host${hosts.length === 1 ? '' : 's'}`}
         >
           <div className="flex flex-col gap-2">
-            {hosts.map((h) => <HostCard key={h.host_id} host={h} onSelect={() => setSelectedHostId(h.host_id)} />)}
+            {hosts.map((h) => (
+              <HostCard
+                key={h.host_id}
+                host={h}
+                onSelect={() => setSelectedHostId(h.host_id)}
+                transitionProjectId={transitionProjectId}
+                residencyStatus={residencyStatus}
+                transitionInFlight={transitionInFlight}
+                onTransitionStart={setTransitionProjectId}
+              />
+            ))}
           </div>
         </Panel>
       )}
-      <AttachProjectPanel hosts={hosts} />
+      <AttachProjectPanel
+        hosts={hosts}
+        transitionInFlight={transitionInFlight}
+        onTransitionStart={setTransitionProjectId}
+      />
       {hosts.length > 0 && <DrainHealthPanel />}
       <TeamSettingsSection hosts={hosts} />
       <SlideoutDetailPanel

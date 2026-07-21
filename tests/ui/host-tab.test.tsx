@@ -16,6 +16,27 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PowerProvider } from '../../packages/myco/ui/src/providers/power';
 import { ApiError } from '../../packages/myco/ui/src/lib/api';
 
+// Radix Dialog (the attach/detach ConfirmDialog) reaches for MutationObserver /
+// ResizeObserver in its focus scope; the bun+jsdom test env doesn't define
+// them. Same stub the grove-modal dialog tests install.
+class MutationObserverStub {
+  observe(): void {}
+  disconnect(): void {}
+  takeRecords(): unknown[] { return []; }
+}
+class ResizeObserverStub {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+const _g = globalThis as unknown as Record<string, unknown>;
+if (typeof _g.MutationObserver === 'undefined') _g.MutationObserver = MutationObserverStub;
+if (typeof _g.ResizeObserver === 'undefined') _g.ResizeObserver = ResizeObserverStub;
+if (typeof _g.NodeFilter === 'undefined' && typeof document !== 'undefined') {
+  const win = document.defaultView as unknown as Record<string, unknown> | null;
+  if (win && win.NodeFilter) _g.NodeFilter = win.NodeFilter;
+}
+
 const joinMutateAsync = vi.fn(async () => ({
   host_id: 'host_abc', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
   member_overlay_ip: '100.64.0.5', host_reachable: true, created: true, notes: [],
@@ -26,12 +47,26 @@ const attachMutateAsync = vi.fn(async () => ({
   root: '/checkout', already_attached: false, notes: [],
 }));
 const detachMutateAsync = vi.fn(async () => ({ project_id: 'proj_x', detached_from_host_id: 'host_abc' }));
+const abortMutateAsync = vi.fn(async () => ({ ok: true }));
 const healthRefetchMock = vi.fn();
+
+type ResidencyStatusFixture = {
+  in_flight: boolean;
+  direction?: 'attach' | 'detach';
+  phase?: 'parking' | 'pushing' | 'pulling' | 'applying' | 'rehoming';
+  rows_pending?: number | null;
+  last_error?: string | null;
+};
 
 let statusFixture: { hosts: unknown[]; hint: unknown } = { hosts: [], hint: null };
 let drainFixture: { hosts: unknown[] } = { hosts: [] };
 let healthFixture: { hosts: unknown[] } = { hosts: [] };
 let healthIsLoading = false;
+// Residency status the mocked hook hands back regardless of the (projectId,
+// enabled) args HostTab calls it with — `undefined` (default) is "no
+// transition," so no progress line renders and no button is held off.
+let residencyFixture: ResidencyStatusFixture | undefined;
+const useResidencyStatusCalls: Array<{ projectId: string | undefined; enabled: boolean }> = [];
 // Records every `enabled` argument the mocked hook is called with — lets
 // the attach-panel tests confirm it reads the health query in cache-only
 // mode (`enabled: false`, decision-ef693c71 D3) rather than probing itself.
@@ -54,6 +89,13 @@ mock.module('../../packages/myco/ui/src/hooks/use-host-membership', () => ({
     useHostMembershipHealthCalls.push(enabled);
     return { data: healthFixture, isLoading: healthIsLoading, isFetching: healthIsLoading, refetch: healthRefetchMock };
   },
+  useResidencyStatus: (projectId: string | undefined, enabled: boolean) => {
+    useResidencyStatusCalls.push({ projectId, enabled });
+    // Model the real hook's gating: no data until the caller enables the watch
+    // (i.e. until an attach/detach mutation has set the transition project id).
+    return { data: enabled ? residencyFixture : undefined };
+  },
+  useResidencyAbort: () => ({ mutateAsync: abortMutateAsync, isPending: false }),
 }));
 
 mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
@@ -179,14 +221,17 @@ beforeEach(() => {
   healthFixture = { hosts: [] };
   healthIsLoading = false;
   grovesFixture = { groves: [] };
+  residencyFixture = undefined;
   useHostMembershipHealthCalls.length = 0;
   useGrovesCalls.length = 0;
+  useResidencyStatusCalls.length = 0;
   teamKeyHealth = 'missing_key';
   teamTargetCalls.length = 0;
   joinMutateAsync.mockClear();
   leaveMutateAsync.mockClear();
   attachMutateAsync.mockClear();
   detachMutateAsync.mockClear();
+  abortMutateAsync.mockClear();
   healthRefetchMock.mockClear();
 });
 
@@ -320,7 +365,7 @@ describe('Joined hosts list', () => {
     expect(screen.queryByTestId('project-ref-mismatch-proj_x')).not.toBeInTheDocument();
   });
 
-  it('Detach calls useDetachProject with the project root + id', async () => {
+  it('Detach confirms first, then calls useDetachProject with the project root + id (no allow_no_pull on the happy path)', async () => {
     statusFixture = {
       hosts: [{
         host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
@@ -331,8 +376,15 @@ describe('Joined hosts list', () => {
     };
     renderHostTab();
 
+    // The row Detach opens an honest confirmation; nothing mutates until the
+    // dialog's own Disconnect is pressed.
     fireEvent.click(screen.getByRole('button', { name: /detach proj_x/i }));
+    expect(detachMutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByText(/Everything your machine contributed comes back/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     await waitFor(() => expect(detachMutateAsync).toHaveBeenCalledWith({ project_root: '/checkout', project_id: 'proj_x' }));
+    expect(detachMutateAsync.mock.calls[0]?.[0]).not.toHaveProperty('allow_no_pull');
   });
 
   it('Leave host confirms, then calls useLeaveHost with the host id', async () => {
@@ -388,6 +440,11 @@ describe('AttachProjectPanel', () => {
     expect(submit).not.toBeDisabled();
     fireEvent.click(submit);
 
+    // Attach now confirms first (the move is honest about what happens).
+    expect(attachMutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByText(/that history moves to the team host/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to team' }));
+
     await waitFor(() => expect(attachMutateAsync).toHaveBeenCalledWith({
       project_root: '/checkout/fresh', host_id: 'host_abc',
     }));
@@ -415,9 +472,11 @@ describe('AttachProjectPanel', () => {
     fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/used' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_abc' } });
     fireEvent.click(screen.getByRole('button', { name: /attach project/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to team' }));
 
-    await waitFor(() => expect(screen.getByTestId('host-attach-error')).toHaveTextContent(/already has local Myco data/));
-    const rendered = screen.getByTestId('host-attach-error').textContent ?? '';
+    // The coded refusal surfaces inside the still-open confirm dialog.
+    await waitFor(() => expect(screen.getByTestId('confirm-dialog-error')).toHaveTextContent(/already has local Myco data/));
+    const rendered = screen.getByTestId('confirm-dialog-error').textContent ?? '';
     expect(rendered).not.toContain('task A2');
     expect(rendered).not.toContain('`');
     expect(rendered).not.toContain('myco ');
@@ -425,7 +484,7 @@ describe('AttachProjectPanel', () => {
 });
 
 describe('DrainHealthPanel', () => {
-  it('renders pending/failing counters per host per drain, with units per drain kind', () => {
+  it('renders pending/failing counters per host per drain, with units per drain kind — including the residency drain', () => {
     statusFixture = {
       hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
@@ -437,6 +496,7 @@ describe('DrainHealthPanel', () => {
           transcript: { pending_entries: 2, pending_bytes: 18234, failing_entries: 1, host_unreachable_entries: 1 },
           plan: { pending_entries: 0, failing_entries: 0, host_unreachable_entries: 0 },
           event_replay: { pending_entries: 3, pending_records: 9, failing_entries: 0, host_unreachable_entries: 0 },
+          residency: { pending_entries: 5, pending_records: 12, failing_entries: 0, host_unreachable_entries: 0 },
         },
       }],
     };
@@ -444,6 +504,124 @@ describe('DrainHealthPanel', () => {
 
     expect(screen.getByText(/2 pending \(18,234 bytes\) · 1 failing/)).toBeInTheDocument();
     expect(screen.getByText(/3 pending \(9 records\)/)).toBeInTheDocument();
+    // The residency drain renders with the same treatment as the other three.
+    expect(screen.getByText('Residency')).toBeInTheDocument();
+    expect(screen.getByText(/5 pending \(12 records\)/)).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Residency round trip (Phase F, T5) — honest attach/detach confirmations, the
+// in-flight progress line, cancel-move, and the pull-unavailable fallback.
+// ---------------------------------------------------------------------------
+
+describe('Residency round trip', () => {
+  const attachedHost = {
+    host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+    protocol_version: 3, created_at: '',
+    projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: null }],
+  };
+
+  it('attach confirm sets the honest expectation and is cancelable — Cancel moves nothing', () => {
+    statusFixture = { hosts: [attachedHost], hint: null };
+    renderHostTab();
+
+    fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/fresh' } });
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_abc' } });
+    fireEvent.click(screen.getByRole('button', { name: /attach project/i }));
+
+    expect(screen.getByText(/Myco saves a local backup first/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(attachMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('detach falls back to allow_no_pull once the member accepts "disconnect anyway"', async () => {
+    detachMutateAsync.mockImplementationOnce(async () => {
+      throw new ApiError(400, { error: { code: 'residency_pull_unavailable', message: 'host predates residency pull' } });
+    });
+    statusFixture = { hosts: [attachedHost], hint: null };
+    renderHostTab();
+
+    fireEvent.click(screen.getByRole('button', { name: /detach proj_x/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+
+    // The refusal keeps the dialog open and offers the explicit fallback.
+    await waitFor(() => expect(screen.getByText(/Disconnect anyway without bringing data back\?/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect anyway' }));
+
+    await waitFor(() => expect(detachMutateAsync).toHaveBeenLastCalledWith({
+      project_root: '/checkout', project_id: 'proj_x', allow_no_pull: true,
+    }));
+  });
+
+  it('shows a direction-aware progress line with phase + pending count once a transition is watched', async () => {
+    residencyFixture = { in_flight: true, direction: 'detach', phase: 'pulling', rows_pending: 42 };
+    statusFixture = { hosts: [attachedHost], hint: null };
+    renderHostTab();
+
+    // No progress until a transition is actually watched (post-mutation).
+    expect(screen.queryByTestId('residency-progress-proj_x')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /detach proj_x/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+
+    const progress = await screen.findByTestId('residency-progress-proj_x');
+    expect(within(progress).getByText(/Bringing your data back/)).toBeInTheDocument();
+    expect(within(progress).getByText(/retrieving/)).toBeInTheDocument();
+    expect(within(progress).getByText(/42 items left/)).toBeInTheDocument();
+    expect(within(progress).getByRole('button', { name: /cancel move/i })).toBeInTheDocument();
+  });
+
+  it('Cancel move confirms, then calls residency-abort for the project', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    residencyFixture = { in_flight: true, direction: 'attach', phase: 'pushing', rows_pending: 3 };
+    statusFixture = { hosts: [attachedHost], hint: null };
+    renderHostTab();
+
+    fireEvent.click(screen.getByRole('button', { name: /detach proj_x/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    const progress = await screen.findByTestId('residency-progress-proj_x');
+    fireEvent.click(within(progress).getByRole('button', { name: /cancel move/i }));
+
+    await waitFor(() => expect(abortMutateAsync).toHaveBeenCalledWith({ project_id: 'proj_x' }));
+    confirmSpy.mockRestore();
+  });
+
+  it('surfaces the stalled warning when the last attempt erred, without leaking the raw error into the visible line', async () => {
+    residencyFixture = { in_flight: true, direction: 'attach', phase: 'pushing', rows_pending: null, last_error: 'ECONNRESET at drain step 3' };
+    statusFixture = { hosts: [attachedHost], hint: null };
+    renderHostTab();
+
+    fireEvent.click(screen.getByRole('button', { name: /detach proj_x/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+
+    const progress = await screen.findByTestId('residency-progress-proj_x');
+    expect(within(progress).getByText(/ran into a problem and will keep retrying/)).toBeInTheDocument();
+    expect(progress.textContent ?? '').not.toContain('ECONNRESET');
+  });
+
+  it('holds off other projects\' Detach while a transition is in flight (belt and suspenders with the backend)', async () => {
+    residencyFixture = { in_flight: true, direction: 'detach', phase: 'pulling' };
+    statusFixture = {
+      hosts: [{
+        ...attachedHost,
+        projects: [
+          { grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: null },
+          { grove_id: 'grove_y', project_id: 'proj_y', root: '/checkout-y', mismatch: null },
+        ],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    // Both enabled before any transition starts.
+    expect(screen.getByRole('button', { name: /detach proj_y/i })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: /detach proj_x/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+
+    // Once proj_x is transitioning, proj_y's Detach is held off too.
+    await waitFor(() => expect(screen.getByRole('button', { name: /detach proj_y/i })).toBeDisabled());
   });
 });
 
@@ -790,6 +968,7 @@ describe('AttachProjectPanel — local Grove picker (Task T5, decision-ef693c71 
     fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/fresh' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_a' } });
     fireEvent.click(screen.getByRole('button', { name: /attach project/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to team' }));
 
     await waitFor(() => expect(attachMutateAsync).toHaveBeenCalledWith({
       project_root: '/checkout/fresh', host_id: 'host_a', local_grove_id: 'grove_b',
@@ -810,6 +989,7 @@ describe('AttachProjectPanel — local Grove picker (Task T5, decision-ef693c71 
     fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/checkout/fresh' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'host_a' } });
     fireEvent.click(screen.getByRole('button', { name: /attach project/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to team' }));
 
     await waitFor(() => expect(attachMutateAsync).toHaveBeenCalledWith({
       project_root: '/checkout/fresh', host_id: 'host_a', local_grove_id: 'grove_a',
