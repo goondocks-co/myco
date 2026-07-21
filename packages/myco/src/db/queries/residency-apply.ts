@@ -52,6 +52,18 @@ export const RESIDENCY_ALLOWED_TABLES: ReadonlySet<string> = new Set<string>([
   ...RESIDENCY_SIDECAR_TABLES,
 ]);
 
+/**
+ * The canonical FK-topological table order for a residency transition — the SINGLE
+ * source of truth both directions build against: the attach send/apply order
+ * (`residency-backfill.ts`, `residency-drain.ts`) and the detach pull order
+ * (`residency-pull.ts`). Every child TABLE follows its parent, `team_members` is
+ * excluded (machine-scoped roster, no `project_id`), and the two sidecars come last.
+ */
+export const RESIDENCY_TABLE_ORDER: readonly string[] = [
+  ...REBUILD_TABLES.filter((t) => t !== 'team_members'),
+  ...RESIDENCY_SIDECAR_TABLES,
+];
+
 // ---------------------------------------------------------------------------
 // Apply-rule matrix (NORMATIVE) — one rule per allow-listed table.
 // ---------------------------------------------------------------------------

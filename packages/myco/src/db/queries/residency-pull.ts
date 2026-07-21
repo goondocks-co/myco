@@ -17,6 +17,7 @@
  * `sanitizeSyncPayload`-consistent with the ingest path.
  */
 import type { Database } from '@myco/db/client.js';
+import { RESIDENCY_TABLE_ORDER } from '@myco/db/queries/residency-apply.js';
 import { sanitizeSyncPayload } from '@myco/db/queries/team-outbox.js';
 
 /** Default rows per page and byte budget — both comfortably under the 8MB
@@ -68,32 +69,13 @@ const PROJECT_ARTIFACT_IDS_SQL = `
   UNION
   SELECT id FROM okf_pages WHERE project_id = ?`;
 
-/**
- * The FK-topological table order the pull walks: every child TABLE follows its
- * parent, so a member applying pages in order never references an unapplied parent
- * (the same order the attach send uses). `team_members` is excluded (machine-scoped
- * roster, no `project_id`). `content_publications` is last and all-machine.
- */
-const RESIDENCY_PULL_TABLES: readonly PullTable[] = [
-  machineScoped('sessions', ['id']),
-  machineScoped('prompt_batches', ['id']),
-  machineScoped('spores', ['id']),
-  machineScoped('entities', ['id']),
-  machineScoped('graph_edges', ['id']),
-  machineScoped('resolution_events', ['id']),
-  machineScoped('plans', ['id']),
-  machineScoped('artifacts', ['id']),
-  machineScoped('digest_extracts', ['id']),
-  machineScoped('skill_candidates', ['id']),
-  machineScoped('skill_records', ['id']),
-  machineScoped('skill_lineage', ['id']),
-  machineScoped('knowledge_release_state', ['id']),
-  machineScoped('okf_generations', ['id']),
-  machineScoped('okf_pages', ['id']),
-  machineScoped('okf_page_revisions', ['id']),
-  machineScoped('skill_usage', ['id']),
-  machineScoped('entity_mentions', ['entity_id', 'note_id', 'note_type', 'agent_id']),
-  {
+/** The two tables whose scope/key differs from the machine-scoped `id` default:
+ *  `entity_mentions` (machine-scoped, but keyed by its four-column UNIQUE) and
+ *  `content_publications` (no `project_id` — scoped via the artifact join, and NOT
+ *  machine-filtered, so a teammate's published-generation truth still comes back). */
+const SPECIAL_PULL_TABLES: Readonly<Record<string, PullTable>> = {
+  entity_mentions: machineScoped('entity_mentions', ['entity_id', 'note_id', 'note_type', 'agent_id']),
+  content_publications: {
     name: 'content_publications',
     orderCols: ['artifact_kind', 'artifact_id'],
     baseWhere: (projectId) => ({
@@ -101,7 +83,17 @@ const RESIDENCY_PULL_TABLES: readonly PullTable[] = [
       params: [projectId, projectId],
     }),
   },
-];
+};
+
+/**
+ * The tables the pull walks, DERIVED from the canonical {@link RESIDENCY_TABLE_ORDER}
+ * (the single source of truth both directions share) so the FK-topological order can
+ * never drift from the attach send/apply order. Every table not in
+ * {@link SPECIAL_PULL_TABLES} is a plain machine-scoped, `id`-keyed pull.
+ */
+const RESIDENCY_PULL_TABLES: readonly PullTable[] = RESIDENCY_TABLE_ORDER.map(
+  (name) => SPECIAL_PULL_TABLES[name] ?? machineScoped(name, ['id']),
+);
 
 interface PullCursor {
   table: string;

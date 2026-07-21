@@ -24,6 +24,7 @@ import { REBUILD_TABLES } from '@myco/db/queries/team-outbox.js';
 import {
   RESIDENCY_ALLOWED_TABLES,
   RESIDENCY_APPLY_RULES,
+  RESIDENCY_TABLE_ORDER,
   applyResidencyRows,
   resetResidencyColumnCache,
 } from '@myco/db/queries/residency-apply.js';
@@ -81,6 +82,23 @@ describe('residency route classification', () => {
     const match = mainSrc.match(/\.registerRoute\(\s*'POST'\s*,\s*'([^']+)'\s*,\s*createRoutedResidencyHandler/);
     expect(match, 'no registerRoute(POST, <path>, createRoutedResidencyHandler(...)) found in daemon/main.ts').not.toBeNull();
     expect(match![1]).toBe(ROUTED_RESIDENCY_ROWS_PATH);
+  });
+
+  test('RESIDENCY_TABLE_ORDER is the canonical FK-topological order: parents first, sidecars last, no team_members', () => {
+    const at = (t: string) => RESIDENCY_TABLE_ORDER.indexOf(t);
+    // Every child TABLE follows its parent.
+    expect(at('sessions')).toBeLessThan(at('prompt_batches'));
+    expect(at('prompt_batches')).toBeLessThan(at('spores'));
+    expect(at('entities')).toBeLessThan(at('entity_mentions'));
+    expect(at('skill_candidates')).toBeLessThan(at('skill_records'));
+    expect(at('skill_records')).toBeLessThan(at('skill_lineage'));
+    expect(at('okf_pages')).toBeLessThan(at('okf_page_revisions'));
+    // team_members is excluded (machine-scoped, no project_id); sidecars are last.
+    expect(at('team_members')).toBe(-1);
+    expect(at('entity_mentions')).toBe(RESIDENCY_TABLE_ORDER.length - 2);
+    expect(at('content_publications')).toBe(RESIDENCY_TABLE_ORDER.length - 1);
+    // Every ordered table is allow-listed.
+    for (const t of RESIDENCY_TABLE_ORDER) expect(RESIDENCY_ALLOWED_TABLES.has(t)).toBe(true);
   });
 
   test('the apply matrix covers exactly the allow-list', () => {
