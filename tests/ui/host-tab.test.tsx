@@ -641,6 +641,43 @@ describe('Residency round trip', () => {
     // Once proj_x is transitioning, proj_y's Detach is held off too.
     await waitFor(() => expect(screen.getByRole('button', { name: /detach proj_y/i })).toBeDisabled());
   });
+
+  it('keeps a standalone progress line in the host card after a detach drops the ref mid-transition (no Cancel past the flip)', async () => {
+    residencyFixture = { in_flight: true, direction: 'detach', phase: 'pulling', rows_pending: null };
+    statusFixture = { hosts: [attachedHost], hint: null };
+
+    // Own the tree + client so a rerender preserves HostTab's transition state
+    // across the fixture change (the ref-drop can't be driven from the outside).
+    // A FRESH element each time — passing the same object makes React bail out
+    // of the rerender and the mocked hooks never re-read the new fixtures.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const makeTree = () => (
+      <PowerProvider>
+        <QueryClientProvider client={qc}>
+          <HostTab />
+        </QueryClientProvider>
+      </PowerProvider>
+    );
+    const { rerender } = render(makeTree());
+
+    // Start the detach: the row is present with an in-row, cancelable progress.
+    fireEvent.click(screen.getByRole('button', { name: /detach proj_x/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    const inRow = await screen.findByTestId('residency-progress-proj_x');
+    expect(within(inRow).getByRole('button', { name: /cancel move/i })).toBeInTheDocument();
+
+    // The pulling→applying flip: T4 drops the member ref while the transition
+    // keeps restoring. Ref gone from the host, phase now applying.
+    statusFixture = { hosts: [{ ...attachedHost, projects: [] }], hint: null };
+    residencyFixture = { in_flight: true, direction: 'detach', phase: 'applying', rows_pending: null };
+    rerender(makeTree());
+
+    // Progress persists standalone in the same host card, now without Cancel.
+    const standalone = screen.getByTestId('residency-progress-proj_x');
+    expect(within(standalone).getByText(/Bringing your data back/)).toBeInTheDocument();
+    expect(within(standalone).getByText(/restoring/)).toBeInTheDocument();
+    expect(within(standalone).queryByRole('button', { name: /cancel move/i })).not.toBeInTheDocument();
+  });
 });
 
 describe('Team settings — per-host selection (Task 9)', () => {

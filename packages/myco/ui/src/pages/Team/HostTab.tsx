@@ -182,15 +182,22 @@ function DrainHealthPanel() {
 // Joined hosts — per-project attach refs, leave/detach.
 // ---------------------------------------------------------------------------
 
-// Compact in-flight progress for a residency round trip, rendered inside the
-// transitioning project's row. Direction-aware headline, a friendly phase
-// step, a subdued pending count, a quiet warning when the last drain attempt
-// erred, and a Cancel-move control (confirm → residency-abort).
+// Compact in-flight progress for a residency round trip. Direction-aware
+// headline, a friendly phase step, a subdued pending count, a quiet warning
+// when the last drain attempt erred, and a Cancel-move control (confirm →
+// residency-abort). Cancel-move and the cancel-oriented warning drop out once
+// the transition passes the point of no return (detach `applying`/`rehoming`):
+// the backend refuses abort there, so offering it would only dead-end. This
+// renders both inside the transitioning project's row AND, once a detach has
+// dropped that row, standalone in the same host card (see HostCard).
 function ResidencyProgress({ status, projectId }: { status: ResidencyStatus; projectId: string }) {
   const abort = useResidencyAbort();
   const [error, setError] = useState<string | null>(null);
   const phase = residencyPhaseLabel(status.phase);
   const pending = residencyPendingDetail(status.rows_pending);
+  // Past the flip (the member ref is already gone) abort is refused; don't
+  // offer it. Keyed on phase so it holds whether the row is present or not.
+  const cancelable = status.phase !== 'applying' && status.phase !== 'rehoming';
 
   const handleCancel = async () => {
     if (!window.confirm(CANCEL_MOVE_CONFIRM_COPY)) return;
@@ -218,23 +225,25 @@ function ResidencyProgress({ status, projectId }: { status: ResidencyStatus; pro
         <Loader2 className="size-3 shrink-0 animate-spin text-sage" aria-hidden />
         <span className="text-xs text-on-surface">{residencyProgressHeadline(status.direction)}</span>
         {phase && <span className="text-xs text-on-surface-variant">· {phase}</span>}
-        <button
-          type="button"
-          disabled={abort.isPending}
-          onClick={handleCancel}
-          className="ml-auto text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50 shrink-0"
-        >
-          {abort.isPending ? 'Cancelling…' : 'Cancel move'}
-        </button>
+        {cancelable && (
+          <button
+            type="button"
+            disabled={abort.isPending}
+            onClick={handleCancel}
+            className="ml-auto text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50 shrink-0"
+          >
+            {abort.isPending ? 'Cancelling…' : 'Cancel move'}
+          </button>
+        )}
       </div>
       {pending && <span className="text-xs text-on-surface-variant">{pending}</span>}
-      {status.last_error && (
+      {cancelable && status.last_error && (
         <span className="flex items-center gap-1 text-xs text-ochre" title={status.last_error}>
           <AlertTriangle className="size-3 shrink-0" aria-hidden />
           {RESIDENCY_STALLED_COPY}
         </span>
       )}
-      {error && <p className="text-xs text-terracotta m-0">{error}</p>}
+      {cancelable && error && <p className="text-xs text-terracotta m-0">{error}</p>}
     </div>
   );
 }
@@ -254,7 +263,7 @@ function ProjectRefRow({
   /** A transition (this project's or another's) is in flight — detach is held
    *  off everywhere while one runs (the backend also refuses). */
   transitionInFlight: boolean;
-  onTransitionStart: (projectId: string) => void;
+  onTransitionStart: (projectId: string, hostId: string) => void;
 }) {
   const detach = useDetachProject();
   const [error, setError] = useState<string | null>(null);
@@ -274,7 +283,7 @@ function ProjectRefRow({
       });
       setConfirmOpen(false);
       setNoPullConfirm(false);
-      onTransitionStart(projectRef.project_id);
+      onTransitionStart(projectRef.project_id, hostId);
     } catch (err) {
       // Host too old to return data: keep the dialog open and offer the
       // explicit "disconnect anyway" fallback instead of a dead-end error.
@@ -336,18 +345,32 @@ function ProjectRefRow({
 function HostCard({
   host,
   onSelect,
-  transitionProjectId,
+  transition,
   residencyStatus,
   transitionInFlight,
   onTransitionStart,
 }: {
   host: HostMembershipHost;
   onSelect: () => void;
-  transitionProjectId: string | null;
+  /** The project + host currently being transitioned, if any. */
+  transition: { projectId: string; hostId: string } | null;
   residencyStatus: ResidencyStatus | undefined;
   transitionInFlight: boolean;
-  onTransitionStart: (projectId: string) => void;
+  onTransitionStart: (projectId: string, hostId: string) => void;
 }) {
+  const watchingThisHost = transition?.hostId === host.host_id;
+  const hasWatchedRef = host.projects.some((p) => p.project_id === transition?.projectId);
+  // A detach drops the member ref at the pulling→applying flip while the
+  // transition keeps restoring (T4). Keep the progress visible standalone in
+  // this card once the row is gone, so the user doesn't read the disappearance
+  // as "done" or "broke". Only detach loses its ref; attach keeps it.
+  const showOrphanedProgress =
+    watchingThisHost
+    && !hasWatchedRef
+    && residencyStatus?.in_flight === true
+    && residencyStatus.direction === 'detach'
+    && transition !== null;
+
   return (
     <div className="flex flex-col gap-2 rounded-md border border-[var(--ghost-border)] px-4 py-3">
       <div className="flex items-start justify-between gap-3">
@@ -364,18 +387,21 @@ function HostCard({
         </button>
         <Badge variant="outline">{host.projects.length} project{host.projects.length === 1 ? '' : 's'}</Badge>
       </div>
-      {host.projects.length > 0 && (
+      {(host.projects.length > 0 || showOrphanedProgress) && (
         <div className="flex flex-col gap-1">
           {host.projects.map((ref) => (
             <ProjectRefRow
               key={ref.project_id}
               hostId={host.host_id}
               projectRef={ref}
-              status={ref.project_id === transitionProjectId ? residencyStatus : undefined}
+              status={ref.project_id === transition?.projectId ? residencyStatus : undefined}
               transitionInFlight={transitionInFlight}
               onTransitionStart={onTransitionStart}
             />
           ))}
+          {showOrphanedProgress && transition && residencyStatus && (
+            <ResidencyProgress status={residencyStatus} projectId={transition.projectId} />
+          )}
         </div>
       )}
       <LeaveHostControl host={host} />
@@ -410,7 +436,7 @@ function AttachProjectPanel({
 }: {
   hosts: HostMembershipHost[];
   transitionInFlight: boolean;
-  onTransitionStart: (projectId: string) => void;
+  onTransitionStart: (projectId: string, hostId: string) => void;
 }) {
   const attach = useAttachProject();
   const groves = useGroves();
@@ -448,7 +474,7 @@ function AttachProjectPanel({
       setProjectRoot('');
       setLocalGroveId('');
       setConfirmOpen(false);
-      onTransitionStart(result.project_id);
+      onTransitionStart(result.project_id, result.host_id);
     } catch (err) {
       // Keep the dialog open so the failure shows next to the Confirm button.
       setError(membershipErrorCopy(err));
@@ -610,11 +636,15 @@ export function HostTab() {
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
   const selectedHost = hosts.find((h) => h.host_id === selectedHostId) ?? null;
 
-  // The project whose residency round trip we're actively watching. Set when an
-  // attach/detach mutation resolves; the status poll self-disarms once the
-  // transition finishes (only one runs at a time — the backend enforces it).
-  const [transitionProjectId, setTransitionProjectId] = useState<string | null>(null);
-  const residency = useResidencyStatus(transitionProjectId ?? undefined, transitionProjectId !== null);
+  // The project (and its host) whose residency round trip we're actively
+  // watching. Set when an attach/detach mutation resolves; the status poll
+  // (keyed by project id, not the ref) self-disarms once the transition
+  // finishes. The host id lets the progress line stay put in that host's card
+  // even after a detach drops the member ref mid-transition. Only one runs at
+  // a time — the backend enforces it.
+  const [transition, setTransition] = useState<{ projectId: string; hostId: string } | null>(null);
+  const onTransitionStart = (projectId: string, hostId: string) => setTransition({ projectId, hostId });
+  const residency = useResidencyStatus(transition?.projectId, transition !== null);
   const residencyStatus = residency.data;
   const transitionInFlight = residencyStatus?.in_flight === true;
 
@@ -634,10 +664,10 @@ export function HostTab() {
                 key={h.host_id}
                 host={h}
                 onSelect={() => setSelectedHostId(h.host_id)}
-                transitionProjectId={transitionProjectId}
+                transition={transition}
                 residencyStatus={residencyStatus}
                 transitionInFlight={transitionInFlight}
-                onTransitionStart={setTransitionProjectId}
+                onTransitionStart={onTransitionStart}
               />
             ))}
           </div>
@@ -646,7 +676,7 @@ export function HostTab() {
       <AttachProjectPanel
         hosts={hosts}
         transitionInFlight={transitionInFlight}
-        onTransitionStart={setTransitionProjectId}
+        onTransitionStart={onTransitionStart}
       />
       {hosts.length > 0 && <DrainHealthPanel />}
       <TeamSettingsSection hosts={hosts} />
