@@ -22,6 +22,7 @@ const WORKFLOW_PATH = path.resolve('.github/workflows/ci.yml');
 const HELPER_PATH = path.resolve('tests/helpers/windows-native-contract.ts');
 
 interface WorkflowStep {
+  name?: string;
   uses?: string;
   run?: string;
   if?: string;
@@ -46,6 +47,14 @@ describe('Windows native CI contract', () => {
     expect(job['runs-on']).toBe('windows-latest');
     expect(job['timeout-minutes']).toBe(15);
     expect(job.env).not.toHaveProperty('MYCO_LAUNCH_AGENTS_DIR');
+    expect(job.env).not.toHaveProperty('MYCO_WINDOWS_NATIVE_SCRATCH');
+    expect(job.env).not.toHaveProperty('MYCO_WINDOWS_NATIVE_EXE');
+
+    const pathSetup = job.steps?.find(
+      (step) => step.name === 'Configure Windows native contract paths',
+    );
+    expect(pathSetup?.run).toContain('$env:RUNNER_TEMP');
+    expect(pathSetup?.run).toContain('$env:GITHUB_ENV');
 
     const uses = job.steps?.flatMap((step) => step.uses ? [step.uses] : []) ?? [];
     expect(uses).toEqual(expect.arrayContaining([
