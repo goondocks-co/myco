@@ -134,6 +134,30 @@ function spawnSelf(args: string[], env: NodeJS.ProcessEnv = process.env): ChildP
   });
 }
 
+function spawnCapturedProcess(
+  executable: string,
+  args: string[],
+  cwd: string,
+): {
+  child: ChildProcess;
+  output: () => { stdout: string; stderr: string };
+} {
+  const child = spawn(executable, args, {
+    cwd,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
+  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+  return {
+    child,
+    output: () => ({ stdout, stderr }),
+  };
+}
+
 function waitForExit(child: ChildProcess, timeoutMs = CHILD_TIMEOUT_MS): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -267,6 +291,30 @@ async function forceTerminate(child: ChildProcess): Promise<void> {
   await exited;
 }
 
+async function forceTerminateProcessTree(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  assertCondition(child.pid !== undefined, 'direct launcher probe has no process id');
+  const exited = waitForExit(child);
+  const taskkill = spawn('taskkill.exe', [
+    '/PID',
+    String(child.pid),
+    '/T',
+    '/F',
+  ], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  let stderr = '';
+  taskkill.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+  await waitForExit(taskkill);
+  if (taskkill.exitCode !== 0
+    && child.exitCode === null
+    && child.signalCode === null) {
+    throw new Error(`taskkill failed for direct launcher ${child.pid}: ${stderr}`);
+  }
+  await exited;
+}
+
 async function proveNativeLifecycleLock(scratch: string): Promise<void> {
   const lockPath = path.win32.join(scratch, 'locks', 'native.lock');
   const holder = spawnSelf([LOCK_HOLDER_CHILD_MODE, lockPath]);
@@ -345,8 +393,9 @@ async function proveNativeTaskScheduler(
   taskLabel: string,
 ): Promise<void> {
   const runner = new RealSchtasksRunner();
+  const scriptDir = path.win32.join(scratch, 'Task Scripts %PATH% & ! Ω');
   const manager = new WindowsTaskServiceManager({
-    scriptDir: path.win32.join(scratch, 'Task Scripts %PATH% & ! Ω'),
+    scriptDir,
     resolveDaemonPort: () => null,
   });
   const spec = buildWindowsNativeTaskSpec({ taskLabel, executable, scratch });
@@ -373,8 +422,40 @@ async function proveNativeTaskScheduler(
     'runAtLoad:false unexpectedly installed a logon trigger',
   );
 
-  await manager.start(taskLabel);
   const markerPath = path.win32.join(scratch, TASK_MARKER_NAME);
+  const taskHost = path.win32.join(
+    process.env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  const direct = spawnCapturedProcess(
+    taskHost,
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      path.win32.join(scriptDir, `${taskLabel}.ps1`),
+    ],
+    scratch,
+  );
+  try {
+    await waitForFile(markerPath);
+  } catch (error) {
+    throw new Error(
+      `direct Windows PowerShell launcher probe failed: ${JSON.stringify(direct.output())}`,
+      { cause: error },
+    );
+  } finally {
+    await forceTerminateProcessTree(direct.child);
+  }
+  fs.unlinkSync(markerPath);
+
+  await manager.start(taskLabel);
   try {
     await waitForFile(markerPath);
   } catch (error) {

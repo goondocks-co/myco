@@ -193,7 +193,7 @@ describe('WindowsTaskServiceManager', () => {
     const create = runner.calls.find((c) => c[0] === '/create')!;
     const trValue = create[create.indexOf('/tr') + 1];
     expect(trValue).toBe(
-      `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`,
+      `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`,
     );
   });
 
@@ -237,7 +237,7 @@ describe('WindowsTaskServiceManager', () => {
     const create = runner.calls.find((call) => call[0] === '/create');
     expect(create?.[create.indexOf('/tr') + 1])
       .toBe(
-        `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`,
+        `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`,
       );
   });
 

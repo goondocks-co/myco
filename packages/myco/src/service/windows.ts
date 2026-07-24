@@ -118,7 +118,13 @@ export interface WindowsManagerOptions {
 
 const WINDOWS_TEARDOWN_TIMEOUT_MS = 10_000;
 const WINDOWS_TEARDOWN_POLL_INTERVAL_MS = 100;
-const WINDOWS_TASK_HOST = 'powershell.exe';
+const WINDOWS_TASK_HOST = path.win32.join(
+  process.env.SystemRoot ?? 'C:\\Windows',
+  'System32',
+  'WindowsPowerShell',
+  'v1.0',
+  'powershell.exe',
+);
 const WINDOWS_POWERSHELL_UTF8_BOM = '\uFEFF';
 
 function windowsTaskHostArguments(scriptPath: string): string {
@@ -256,7 +262,7 @@ export class WindowsTaskServiceManager implements ServiceManager {
       );
     }
     const taskAction = parseTaskAction(task.stdout);
-    if (taskAction?.command.toLowerCase() !== WINDOWS_TASK_HOST
+    if (taskAction?.command.toLowerCase() !== WINDOWS_TASK_HOST.toLowerCase()
       || taskAction.arguments !== windowsTaskHostArguments(scriptPath)) {
       return null;
     }
