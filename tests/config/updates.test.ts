@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { afterEach, describe, it, expect } from 'bun:test';
 import { MycoConfigSchema } from '@myco/config/schema';
 import type { MycoConfig } from '@myco/config/schema';
 import { withValue, withEmbedding, withTaskConfig } from '@myco/config/updates';
@@ -8,6 +8,18 @@ import {
   unsetAtPath,
   UnsafeDotPathError,
 } from '@myco/utils/dot-path';
+
+const originalPollutedDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'polluted');
+
+function restorePrototypePollutedProperty(): void {
+  if (originalPollutedDescriptor) {
+    Object.defineProperty(Object.prototype, 'polluted', originalPollutedDescriptor);
+  } else {
+    delete (Object.prototype as Record<string, unknown>).polluted;
+  }
+}
+
+afterEach(restorePrototypePollutedProperty);
 
 function baseConfig(): MycoConfig {
   return MycoConfigSchema.parse({ version: 3 });
@@ -56,6 +68,47 @@ describe('dot-path safety', () => {
 
     expect(getAtPath(target, 'inherited.value')).toBeUndefined();
     expect(unsetAtPath(target, 'inherited.value')).toBe(false);
+  });
+
+  it('creates an own leaf property instead of invoking an inherited setter', () => {
+    let setterCalls = 0;
+    const prototype = {};
+    Object.defineProperty(prototype, 'inherited', {
+      configurable: true,
+      set() {
+        setterCalls += 1;
+      },
+    });
+    const target = Object.create(prototype) as Record<string, unknown>;
+
+    setAtPath(target, 'inherited', 123);
+
+    expect(setterCalls).toBe(0);
+    expect(Object.getOwnPropertyDescriptor(target, 'inherited')).toEqual({
+      configurable: true,
+      enumerable: true,
+      value: 123,
+      writable: true,
+    });
+  });
+
+  it('creates an own intermediate property over an inherited non-writable property', () => {
+    const prototype = {};
+    Object.defineProperty(prototype, 'inherited', {
+      configurable: false,
+      value: 'locked',
+      writable: false,
+    });
+    const target = Object.create(prototype) as Record<string, unknown>;
+
+    setAtPath(target, 'inherited.value', 123);
+
+    expect(Object.getOwnPropertyDescriptor(target, 'inherited')).toMatchObject({
+      configurable: true,
+      enumerable: true,
+      writable: true,
+    });
+    expect(target).toEqual({ inherited: { value: 123 } });
   });
 
   it('preserves bracket index reads', () => {

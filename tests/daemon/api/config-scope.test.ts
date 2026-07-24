@@ -10,6 +10,18 @@ import {
   handlePutScopedConfig,
 } from '@myco/daemon/api/config';
 
+const originalPollutedDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'polluted');
+
+function restorePrototypePollutedProperty(): void {
+  if (originalPollutedDescriptor) {
+    Object.defineProperty(Object.prototype, 'polluted', originalPollutedDescriptor);
+  } else {
+    delete (Object.prototype as Record<string, unknown>).polluted;
+  }
+}
+
+afterEach(restorePrototypePollutedProperty);
+
 function seedProject(dir: string) {
   fs.writeFileSync(path.join(dir, 'myco.yaml'),
     `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n`);

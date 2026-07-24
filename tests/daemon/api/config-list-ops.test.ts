@@ -4,6 +4,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+const originalPollutedDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'polluted');
+
+function restorePrototypePollutedProperty(): void {
+  if (originalPollutedDescriptor) {
+    Object.defineProperty(Object.prototype, 'polluted', originalPollutedDescriptor);
+  } else {
+    delete (Object.prototype as Record<string, unknown>).polluted;
+  }
+}
+
+afterEach(restorePrototypePollutedProperty);
+
 /**
  * P4 — Race-free list-config mutation primitive.
  *

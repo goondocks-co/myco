@@ -2,8 +2,8 @@
  * Shared dotted-path navigation helpers for objects that represent configs,
  * hook inputs, or settings. Paths may be a dot-string (`'appearance.theme'`,
  * with bracketed numeric indices `foo[0].bar`) or pre-split segment array
- * (`['daemon', 'port']`). The segment-array form skips parsing and is
- * preferred when call-sites already have segments in hand (loader, etc).
+ * (`['daemon', 'port']`). The segment-array form skips string tokenization
+ * while still receiving safety validation.
  */
 
 export type DotPath = string | readonly string[];
@@ -38,6 +38,19 @@ export function parseDotPath(path: DotPath): string[] {
 
 function hasOwn(target: object, key: PropertyKey): boolean {
   return Object.prototype.hasOwnProperty.call(target, key);
+}
+
+function setOwnValue(target: Record<string, unknown>, key: string, value: unknown): void {
+  if (hasOwn(target, key)) {
+    target[key] = value;
+    return;
+  }
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
 }
 
 /**
@@ -76,11 +89,11 @@ export function setAtPath(obj: Record<string, unknown>, path: DotPath, value: un
     const seg = segments[i]!;
     const existing = hasOwn(cursor, seg) ? cursor[seg] : undefined;
     if (existing === undefined || existing === null || typeof existing !== 'object' || Array.isArray(existing)) {
-      cursor[seg] = {};
+      setOwnValue(cursor, seg, {});
     }
     cursor = cursor[seg] as Record<string, unknown>;
   }
-  cursor[segments[segments.length - 1]!] = value;
+  setOwnValue(cursor, segments[segments.length - 1]!, value);
 }
 
 /**
