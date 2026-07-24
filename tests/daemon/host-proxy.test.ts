@@ -518,6 +518,69 @@ describe('host-proxy forwarder', () => {
     fixture = createFixture();
   });
 
+  test('collect route with simultaneous buffer append and live-forward failures requires hook fallback without an unhandled rejection', async () => {
+    const cap = capturingLogger();
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => { rejections.push(reason); };
+    config.classification = { capability: 'Collection', stamp: 'collect' };
+    config.deps = {
+      logger: cap.logger,
+      bufferAppend: () => { throw new Error('disk unavailable'); },
+    };
+    __resetLogThrottleForTests();
+
+    process.on('unhandledRejection', onRejection);
+    try {
+      await close(fixture.server);
+      config.target = makeTarget(fixturePort);
+
+      const started = Date.now();
+      const res = await fetch(memberUrl('/events'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'tool', session_id: 'sess-append-failed' }),
+      });
+
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(await res.json()).toEqual({ ok: true, persisted: false, buffered: false });
+      expect(shouldBufferFallback({ ok: true, data: { ok: true, persisted: false, buffered: false } }, 'tool')).toBe(true);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(cap.errors).toContainEqual([
+        'collector buffer append failed',
+        {
+          host_id: config.target.host.host_id,
+          session_id: 'sess-append-failed',
+          error: 'disk unavailable',
+        },
+      ]);
+      expect(cap.warns.some(([message]) => message === 'collect forward failed — hook fallback required')).toBe(true);
+      expect(rejections).toEqual([]);
+    } finally {
+      process.removeListener('unhandledRejection', onRejection);
+      fixture = createFixture();
+    }
+  });
+
+  test('collect route without a resolvable session ID requires hook fallback', async () => {
+    const cap = capturingLogger();
+    config.classification = { capability: 'Collection', stamp: 'collect' };
+    config.deps = { logger: cap.logger };
+
+    const res = await fetch(memberUrl('/events'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'tool' }),
+    });
+
+    expect(await res.json()).toEqual({ ok: true, persisted: false, buffered: false });
+    expect(shouldBufferFallback({ ok: true, data: { ok: true, persisted: false, buffered: false } }, 'tool')).toBe(true);
+    expect(cap.errors).toContainEqual([
+      'collect route missing resolvable session_id',
+      { host_id: config.target.host.host_id, path: '/events' },
+    ]);
+  });
+
   // --- flush-before-forward ordering ---
 
   test('flush hook runs before forwarding the three mining-trigger routes, not others', async () => {
