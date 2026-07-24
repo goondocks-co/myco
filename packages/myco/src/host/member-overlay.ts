@@ -47,11 +47,13 @@ import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager, ServiceSpec } from '@myco/service/types.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import { acquireTunnelBridgePort } from '@myco/daemon/host-proxy.js';
+import { isGroveEraId } from '@myco/grove/ids.js';
 
 import {
   ENROLLMENT_RETRY_BACKOFFS_MS,
   HOST_BEARER_SECRET,
   HOST_ENROLL_ROUTE,
+  HOST_MIN_COMPAT_VERSION,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
   HOST_PROXY_CONNECT_TIMEOUT_MS,
@@ -176,7 +178,7 @@ export interface EnrollmentClient {
  */
 export const stubEnrollmentClient: EnrollmentClient = {
   async enroll(ctx: EnrollmentContext): Promise<HostEnrollment> {
-    if (!ctx.overlayAddress || !ctx.bearer) {
+    if (!ctx.overlayAddress || ctx.bearer === undefined) {
       throw new Error(
         'The manual enrollment bridge requires BOTH --overlay-address and --bearer. '
         + 'Omit --bearer to enroll automatically over the overlay (the default), or pass both:\n'
@@ -231,6 +233,15 @@ function enrollmentIdentity(
   return candidate;
 }
 
+function isCanonicalOverlayAuthority(value: string): boolean {
+  const { host, port } = splitOverlayAddress(value);
+  return isOverlayRangeAddress(host)
+    && Number.isSafeInteger(port)
+    && port >= 1
+    && port <= 65535
+    && value === `${host}:${port}`;
+}
+
 /** Validate all wire values before they reach enrollment, reachability, or disk. */
 function parseEnrollmentResponse(
   value: unknown,
@@ -253,20 +264,28 @@ function parseEnrollmentResponse(
   }
 
   const protocolVersion = response.protocol_version;
-  if (typeof protocolVersion !== 'number' || !Number.isSafeInteger(protocolVersion) || protocolVersion < 1) {
+  if (typeof protocolVersion !== 'number'
+    || !Number.isSafeInteger(protocolVersion)
+    || protocolVersion < HOST_MIN_COMPAT_VERSION
+    || protocolVersion > HOST_PROTOCOL_VERSION) {
     throw enrollmentFailure('Host enrollment response has an invalid protocol_version.');
   }
 
   const servedGroveId = response.served_grove_id;
   if (servedGroveId !== undefined && servedGroveId !== null
-    && (typeof servedGroveId !== 'string' || servedGroveId.trim().length === 0)) {
+    && (typeof servedGroveId !== 'string' || !isGroveEraId(servedGroveId, 'grove'))) {
     throw enrollmentFailure('Host enrollment response has an invalid served_grove_id.');
+  }
+
+  const overlayAddress = requiredEnrollmentString(response, 'overlay_address');
+  if (!isCanonicalOverlayAuthority(overlayAddress)) {
+    throw enrollmentFailure('Host enrollment response has an invalid overlay_address.');
   }
 
   return {
     host_id: enrollmentIdentity(response, 'host_id', identityFallback.hostId),
     label: enrollmentIdentity(response, 'label', identityFallback.label),
-    overlay_address: requiredEnrollmentString(response, 'overlay_address'),
+    overlay_address: overlayAddress,
     protocol_version: protocolVersion,
     bearer,
     served_grove_id: servedGroveId ?? undefined,
@@ -529,7 +548,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
   // Default to the REAL client (fetches the bearer over the overlay). An explicit
   // --bearer means the operator already holds it and wants the manual bridge (no
   // HTTP handshake); tests inject their own client via deps.
-  const enrollmentClient = deps.enrollmentClient ?? (options.bearer?.trim() ? stubEnrollmentClient : realEnrollmentClient);
+  const enrollmentClient = deps.enrollmentClient ?? (options.bearer !== undefined ? stubEnrollmentClient : realEnrollmentClient);
   const hostname = sanitizeHostname(options.hostname ?? os.hostname());
 
   // Canonical per-host key: everything about THIS host's tailscaled instance
@@ -630,7 +649,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     memberOverlayIp,
     overlayAddress: options.overlayAddress?.trim(),
     proxyPort,
-    bearer: options.bearer?.trim(),
+    bearer: options.bearer,
     protocolVersion: options.protocolVersion,
     label: options.label?.trim(),
   }, sleep, log), {

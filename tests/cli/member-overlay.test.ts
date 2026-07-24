@@ -420,6 +420,90 @@ describe('member overlay — multi-host join / leave', () => {
     expect(readHostSecrets(id)).toEqual({});
   });
 
+  test.each([
+    ['a scheme-bearing overlay address', { overlay_address: 'http://100.64.0.1:7433' }],
+    ['a loopback overlay address', { overlay_address: '127.0.0.1:7433' }],
+    ['a LAN overlay address', { overlay_address: '192.168.1.2:7433' }],
+    ['a public overlay address', { overlay_address: '8.8.8.8:7433' }],
+    ['an out-of-range overlay address', { overlay_address: '100.128.0.1:7433' }],
+    ['an overlay address without an explicit port', { overlay_address: '100.64.0.1' }],
+    ['a zero overlay port', { overlay_address: '100.64.0.1:0' }],
+    ['an oversized overlay port', { overlay_address: '100.64.0.1:65536' }],
+    ['a non-numeric overlay port', { overlay_address: '100.64.0.1:port' }],
+    ['an overlay address with a normalized port', { overlay_address: '100.64.0.1:07433' }],
+    ['an overlay address with a path', { overlay_address: '100.64.0.1:7433/enroll' }],
+    ['an invalid served grove id', { served_grove_id: 'grove_not_an_id' }],
+    ['an empty served grove id', { served_grove_id: '' }],
+    ['a protocol below the compatibility window', { protocol_version: 0 }],
+    ['a protocol above the compatibility window', { protocol_version: HOST_PROTOCOL_VERSION + 1 }],
+    ['a non-integer protocol', { protocol_version: 1.5 }],
+    ['a non-number protocol', { protocol_version: '3' }],
+    ['a non-string host id', { host_id: {} }],
+    ['a non-string label', { label: [] }],
+  ])('a real enrollment response with %s fails before join probes or persists', async (_label, response) => {
+    const id = hostId();
+    let reachabilityCalls = 0;
+    const client = createEnrollmentClient(async () => ({
+      status: 200,
+      body: JSON.stringify({
+        host_id: id,
+        label: 'host',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: HOST_PROTOCOL_VERSION,
+        bearer: 'bearer-valid',
+        ...response,
+      }),
+    }));
+
+    const caught = await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080', overlayAddress: '100.64.0.1:7433' },
+      deps({
+        enrollmentClient: client,
+        sleep: async () => {},
+        checkHostReachable: async () => { reachabilityCalls += 1; return true; },
+      }),
+    ).catch((error) => error);
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(reachabilityCalls).toBe(0);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id))).toBe(false);
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
+
+  test.each([
+    ['leading carriage return', '\rmanual-bearer'],
+    ['trailing carriage return', 'manual-bearer\r'],
+    ['leading line feed', '\nmanual-bearer'],
+    ['trailing line feed', 'manual-bearer\n'],
+    ['internal carriage return', 'manual\rbearer'],
+    ['internal line feed', 'manual\nbearer'],
+    ['internal NUL', 'manual\0bearer'],
+  ])('a manual bearer with %s fails before join probes or persists', async (_label, bearer) => {
+    const id = hostId();
+    let reachabilityCalls = 0;
+
+    const caught = await joinHost(
+      {
+        hostRef: id,
+        key: 'onetime',
+        serverUrl: 'https://host:8080',
+        overlayAddress: '100.64.0.1:7433',
+        bearer,
+      },
+      deps({
+        sleep: async () => {},
+        checkHostReachable: async () => { reachabilityCalls += 1; return true; },
+      }),
+    ).catch((error) => error);
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(reachabilityCalls).toBe(0);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id))).toBe(false);
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
+
   test('a secret filesystem failure leaves a new join without a host record', async () => {
     const id = hostId();
     const hostDir = path.join(tmp, 'hosts', id);

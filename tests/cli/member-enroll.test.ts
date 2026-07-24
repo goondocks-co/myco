@@ -67,10 +67,13 @@ describe('member enrollment client — unit (injected transport)', () => {
     expect(enrollment.projects).toBeUndefined();
   });
 
-  test('falls back to the member-known host_id and label when an old host omits them', async () => {
+  test.each([
+    ['omits', undefined, undefined],
+    ['returns empty strings for', '', ''],
+  ])('falls back to the member-known host_id and label when an old host %s them', async (_case, hostId, label) => {
     const transport: EnrollmentTransport = async () => ({
       status: 200,
-      body: JSON.stringify({ overlay_address: '100.64.0.1:7433', protocol_version: 1, bearer: 'b' }),
+      body: JSON.stringify({ host_id: hostId, label, overlay_address: '100.64.0.1:7433', protocol_version: 1, bearer: 'b' }),
     });
     const enrollment = await createEnrollmentClient(transport).enroll(ctx({ hostId: 'the-ref', hostRef: 'the-ref', label: undefined }));
     expect(enrollment.host_id).toBe('the-ref');
@@ -165,13 +168,21 @@ describe('member enrollment client — end-to-end through the CONNECT proxy', ()
   });
 
   test('the real client tunnels through the proxy to the host enrollment route and receives the bearer', async () => {
-    const client = createEnrollmentClient(connectProxyEnrollTransport);
+    const transport: EnrollmentTransport = async (input) => {
+      const response = await connectProxyEnrollTransport(input);
+      const payload = JSON.parse(response.body) as Record<string, unknown>;
+      return {
+        ...response,
+        body: JSON.stringify({ ...payload, overlay_address: '100.64.0.1:7433' }),
+      };
+    };
+    const client = createEnrollmentClient(transport);
     const enrollment = await client.enroll(ctx({
       overlayAddress: `127.0.0.1:${server.overlayPort}`,
       proxyPort,
     }));
     expect(enrollment.bearer).toBe(HOST_BEARER);
-    expect(enrollment.overlay_address).toBe(`127.0.0.1:${server.overlayPort}`);
+    expect(enrollment.overlay_address).toBe('100.64.0.1:7433');
     expect(enrollment.protocol_version).toBe(HOST_PROTOCOL_VERSION);
     expect(enrollment.host_id).toBe('host_e2e');
   });
