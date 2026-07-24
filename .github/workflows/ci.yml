@@ -59,7 +59,7 @@ jobs:
         shell: pwsh
         run: |
           $scratch = Join-Path $env:RUNNER_TEMP "Myco Native Ω $env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          $executable = Join-Path $env:RUNNER_TEMP 'Myco Native Ω Contract.exe'
+          $executable = Join-Path $env:RUNNER_TEMP 'Myco Native Contract.exe'
           "MYCO_WINDOWS_NATIVE_SCRATCH=$scratch" >> $env:GITHUB_ENV
           "MYCO_WINDOWS_NATIVE_EXE=$executable" >> $env:GITHUB_ENV
       - run: npm ci

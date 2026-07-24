@@ -55,6 +55,8 @@ describe('Windows native CI contract', () => {
     );
     expect(pathSetup?.run).toContain('$env:RUNNER_TEMP');
     expect(pathSetup?.run).toContain('$env:GITHUB_ENV');
+    expect(pathSetup?.run).toContain("'Myco Native Contract.exe'");
+    expect(pathSetup?.run).not.toContain("'Myco Native Ω Contract.exe'");
 
     const uses = job.steps?.flatMap((step) => step.uses ? [step.uses] : []) ?? [];
     expect(uses).toEqual(expect.arrayContaining([
