@@ -576,6 +576,40 @@ describe('ExternalMcpContainmentAuthority', () => {
     });
   });
 
+  test('an unresolved journal retains a valid raw port from an invalid external leaf', async () => {
+    const fixture = containmentFixture({ port: 8743 });
+    writeExternalMcpContainmentIntent(fixture.serviceDir, intent({
+      phase: 'port_recovery_pending',
+    }));
+    fs.writeFileSync(path.join(fixture.home, 'config.yaml'), YAML.stringify({
+      daemon: {
+        external_mcp: {
+          enabled: 'invalid',
+          port: 9123,
+        },
+      },
+    }));
+    const offCalls: number[] = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (port) => {
+        offCalls.push(port);
+        return { ok: true, detail: `off ${port}` };
+      },
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    await expect(authority.contain('retire')).rejects.toThrow(/port.*recover/i);
+
+    expect(offCalls).toEqual([8743, 9123]);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toMatchObject({
+      phase: 'port_recovery_pending',
+      ports: [8743, 9123],
+    });
+  });
+
   test('resolves a port-recovery journal from the valid external leaf before unrelated config validation', async () => {
     const fixture = containmentFixture({ port: 8743, listenerPort: 8743 });
     writeExternalMcpContainmentIntent(fixture.serviceDir, intent({
@@ -713,8 +747,8 @@ describe('ExternalMcpContainmentAuthority', () => {
     expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toBeUndefined();
   });
 
-  test('missing config with a legacy token keeps recovery unresolved instead of certifying the default port', async () => {
-    const fixture = containmentFixture({ enabled: false });
+  test('missing config with a legacy token contains every known port before remaining unresolved', async () => {
+    const fixture = containmentFixture({ enabled: false, listenerPort: 9100 });
     fs.unlinkSync(path.join(fixture.home, 'config.yaml'));
     writeSecret(
       fixture.home,
@@ -734,11 +768,48 @@ describe('ExternalMcpContainmentAuthority', () => {
       lockNamespace: testPerUserLockNamespace,
     });
 
-    await expect(authority.contain('retire')).rejects.toThrow(/port.*recover/i);
+    await expect(
+      authority.contain('retire', { additionalPorts: [9200] }),
+    ).rejects.toThrow(/port.*recover/i);
 
-    expect(offCalls).toEqual([]);
-    expect(readExternalMcpContainmentIntent(fixture.serviceDir)?.phase)
-      .toBe('port_recovery_pending');
+    expect(offCalls).toEqual([8743, 9100, 9200]);
+    expect(fixture.listener.isBound).toBe(true);
+    expect(fixture.listener.unbindCalls).toBe(0);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toMatchObject({
+      phase: 'port_recovery_pending',
+      ports: [8743, 9100, 9200],
+    });
+  });
+
+  test('a valid custom port survives an otherwise invalid external MCP leaf', async () => {
+    const fixture = containmentFixture({ enabled: false });
+    fs.writeFileSync(path.join(fixture.home, 'config.yaml'), YAML.stringify({
+      daemon: {
+        external_mcp: {
+          enabled: 'invalid',
+          port: 9123,
+        },
+      },
+    }));
+    const offCalls: number[] = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (port) => {
+        offCalls.push(port);
+        return { ok: true, detail: `off ${port}` };
+      },
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    await expect(authority.contain('retire')).rejects.toThrow();
+
+    expect(offCalls).toEqual([8743, 9123]);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toMatchObject({
+      phase: 'config_disable_pending',
+      ports: [8743, 9123],
+    });
   });
 
   test('enabling Team Host on a sparse machine does not create external MCP evidence', async () => {

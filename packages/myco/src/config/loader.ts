@@ -279,6 +279,22 @@ export function readExplicitExternalMcpConfigStrict(
   );
 }
 
+/** Recover a valid raw external MCP port even when a sibling field is invalid. */
+export function readRecoverableExternalMcpPortStrict(
+  mycoHome = resolveMycoHome(),
+): number | undefined {
+  const filePath = resolveGlobalConfigPath(mycoHome);
+  const raw = getAtPath(readRawYamlDocStrict(filePath), EXTERNAL_MCP_PATH);
+  if (!raw
+    || typeof raw !== 'object'
+    || Array.isArray(raw)
+    || !Object.hasOwn(raw, 'port')) return undefined;
+  const parsed = ExternalMcpSchema.shape.port.safeParse(
+    (raw as Record<string, unknown>).port,
+  );
+  return parsed.success ? parsed.data : undefined;
+}
+
 export class ProtectedMachineConfigPathError extends Error {
   constructor() {
     super('daemon.external_mcp is managed by the external MCP containment authority');

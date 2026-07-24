@@ -22,6 +22,7 @@ import {
   disableExternalMcpConfig,
   loadMachineConfigStrict,
   readExplicitExternalMcpConfigStrict,
+  readRecoverableExternalMcpPortStrict,
 } from '@myco/config/loader.js';
 import { readSecrets } from '@myco/config/secrets.js';
 import {
@@ -513,12 +514,20 @@ export class ExternalMcpContainmentAuthority {
 
     if (existingIntent) {
       let recoverableExternalMcp: ExternalMcpContainmentState | undefined;
+      let recoverableExternalMcpPort: number | undefined;
       try {
         recoverableExternalMcp = readExplicitExternalMcpConfigStrict(
           this.options.mycoHome,
         );
       } catch {
         recoverableExternalMcp = undefined;
+      }
+      try {
+        recoverableExternalMcpPort = readRecoverableExternalMcpPortStrict(
+          this.options.mycoHome,
+        );
+      } catch {
+        recoverableExternalMcpPort = undefined;
       }
       let resumableIntent = existingIntent;
       if (existingIntent.phase === 'port_recovery_pending') {
@@ -529,6 +538,7 @@ export class ExternalMcpContainmentAuthority {
               ...existingIntent.ports,
               ...additionalPorts,
               ...(this.options.listener.isBound ? [this.options.listener.port] : []),
+              ...(recoverableExternalMcpPort ? [recoverableExternalMcpPort] : []),
             ],
             phase: 'port_recovery_pending',
           });
@@ -554,6 +564,7 @@ export class ExternalMcpContainmentAuthority {
           ...additionalPorts,
           ...(this.options.listener.isBound ? [this.options.listener.port] : []),
           ...(recoverableExternalMcp ? [recoverableExternalMcp.port] : []),
+          ...(recoverableExternalMcpPort ? [recoverableExternalMcpPort] : []),
         ],
         phase: 'funnel_off_pending',
       };
@@ -595,13 +606,22 @@ export class ExternalMcpContainmentAuthority {
     let machineConfig: ReturnType<typeof loadMachineConfigStrict>;
     let explicitExternalMcpConfig: boolean;
     let recoverableExternalMcp: ExternalMcpContainmentState | undefined;
+    let recoverableExternalMcpPort: number | undefined;
     try {
       recoverableExternalMcp = readExplicitExternalMcpConfigStrict(
         this.options.mycoHome,
       );
+      recoverableExternalMcpPort = recoverableExternalMcp?.port;
       explicitExternalMcpConfig = recoverableExternalMcp !== undefined;
       machineConfig = loadMachineConfigStrict(this.options.mycoHome);
     } catch (error) {
+      try {
+        recoverableExternalMcpPort = readRecoverableExternalMcpPortStrict(
+          this.options.mycoHome,
+        );
+      } catch {
+        recoverableExternalMcpPort = undefined;
+      }
       const fallbackExternalMcp = recoverableExternalMcp ?? {
         enabled: false,
         port: EXTERNAL_MCP_DEFAULT_PORT,
@@ -613,6 +633,7 @@ export class ExternalMcpContainmentAuthority {
         to: { enabled: false, port: fallbackExternalMcp.port },
         ports: [
           fallbackExternalMcp.port,
+          ...(recoverableExternalMcpPort ? [recoverableExternalMcpPort] : []),
           ...additionalPorts,
           ...(this.options.listener.isBound ? [this.options.listener.port] : []),
         ],
@@ -649,10 +670,18 @@ export class ExternalMcpContainmentAuthority {
         operation,
         from: externalMcp,
         to: { enabled: false, port: externalMcp.port },
-        ports: [externalMcp.port],
+        ports: [
+          externalMcp.port,
+          ...additionalPorts,
+          ...(this.options.listener.isBound ? [this.options.listener.port] : []),
+        ],
         phase: 'port_recovery_pending',
         requested_at: this.options.now().toISOString(),
       });
+      const unresolvedIntent = readExternalMcpContainmentIntent(
+        this.options.stateDir,
+      )!;
+      await runPorts(unresolvedIntent.ports);
       throw new ExternalMcpContainmentPortRecoveryError();
     }
     const requiresContainment = operation === 'disable'
