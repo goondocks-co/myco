@@ -73,11 +73,14 @@ import {
   type BinaryFetcher,
   type CommandRunner,
 } from './overlay-binaries.js';
+import { assertValidSecretEntry, InvalidSecretValueError } from '@myco/config/secrets.js';
 import { codedMembershipError } from './membership-error.js';
 import {
   getHost,
   readHostRegistry,
   removeHost,
+  restoreHostRecord,
+  snapshotHostRecord,
   upsertHost,
   writeHostSecret,
   type AttachRef,
@@ -191,20 +194,106 @@ export const stubEnrollmentClient: EnrollmentClient = {
   },
 };
 
-/** The wire response the host enrollment endpoint returns (mirrors the host-side
- *  `buildHostEnrollmentPayload`). host_id/label may be empty on a host enabled before
- *  Task 2.4 wrote them, so the client falls back to what it already knows.
- *  `served_grove_id` is `undefined` when the KEY is absent (a pre-v2 host that
- *  never sends the field), `null` when a v2 host reports it explicitly as
- *  undesignated — both collapse to "no grove source" on {@link HostEnrollment}. */
+/** The wire response the host enrollment endpoint returns. */
 interface HostEnrollmentResponse {
-  host_id?: string;
-  label?: string;
-  overlay_address?: string;
-  protocol_version?: number;
-  bearer?: string;
-  served_grove_id?: string | null;
-  projects?: unknown;
+  host_id: string;
+  label: string;
+  overlay_address: string;
+  protocol_version: number;
+  bearer: string;
+  served_grove_id?: string;
+}
+
+function enrollmentFailure(message: string): Error {
+  return codedMembershipError('host_enroll_failed', message);
+}
+
+function requiredEnrollmentString(value: Record<string, unknown>, field: string): string {
+  const candidate = value[field];
+  if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+    throw enrollmentFailure(`Host enrollment response has an invalid ${field}.`);
+  }
+  return candidate;
+}
+
+function enrollmentIdentity(
+  value: Record<string, unknown>,
+  field: 'host_id' | 'label',
+  fallback: string,
+): string {
+  const candidate = value[field];
+  if (candidate === undefined || (typeof candidate === 'string' && candidate.trim().length === 0)) {
+    return fallback;
+  }
+  if (typeof candidate !== 'string') {
+    throw enrollmentFailure(`Host enrollment response has an invalid ${field}.`);
+  }
+  return candidate;
+}
+
+/** Validate all wire values before they reach enrollment, reachability, or disk. */
+function parseEnrollmentResponse(
+  value: unknown,
+  identityFallback: { hostId: string; label: string },
+): HostEnrollmentResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw enrollmentFailure('Host enrollment returned a response Myco could not read.');
+  }
+  const response = value as Record<string, unknown>;
+  if (Object.hasOwn(response, 'projects')) {
+    throw enrollmentFailure('Host enrollment cannot assign project attachments.');
+  }
+
+  const bearer = requiredEnrollmentString(response, 'bearer');
+  try {
+    assertValidSecretEntry(HOST_BEARER_SECRET, bearer);
+  } catch (error) {
+    if (!(error instanceof InvalidSecretValueError)) throw error;
+    throw enrollmentFailure('Host enrollment response has an invalid bearer.');
+  }
+
+  const protocolVersion = response.protocol_version;
+  if (typeof protocolVersion !== 'number' || !Number.isSafeInteger(protocolVersion) || protocolVersion < 1) {
+    throw enrollmentFailure('Host enrollment response has an invalid protocol_version.');
+  }
+
+  const servedGroveId = response.served_grove_id;
+  if (servedGroveId !== undefined && servedGroveId !== null
+    && (typeof servedGroveId !== 'string' || servedGroveId.trim().length === 0)) {
+    throw enrollmentFailure('Host enrollment response has an invalid served_grove_id.');
+  }
+
+  return {
+    host_id: enrollmentIdentity(response, 'host_id', identityFallback.hostId),
+    label: enrollmentIdentity(response, 'label', identityFallback.label),
+    overlay_address: requiredEnrollmentString(response, 'overlay_address'),
+    protocol_version: protocolVersion,
+    bearer,
+    served_grove_id: servedGroveId ?? undefined,
+  };
+}
+
+function validateEnrollment(
+  enrollment: EnrollmentResult,
+  identityFallback: { hostId: string; label: string },
+): EnrollmentResult {
+  return parseEnrollmentResponse(enrollment, identityFallback);
+}
+
+/** Persist the record and bearer together, rolling the record back if the bearer fails. */
+function persistEnrollmentMembership(record: HostRecord, bearer: string): void {
+  const previousRecord = snapshotHostRecord(record.host_id);
+  try {
+    upsertHost(record);
+    writeHostSecret(record.host_id, HOST_BEARER_SECRET, bearer);
+  } catch (writeError) {
+    try {
+      restoreHostRecord(previousRecord);
+    } catch (rollbackError) {
+      throw new AggregateError([writeError, rollbackError], `Could not restore host record ${record.host_id} after bearer persistence failed.`);
+    }
+    throw writeError;
+  }
 }
 
 /** How the real client puts an enrollment request on the wire. Injectable so tests
@@ -308,21 +397,13 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
         const code = status === 401 || status === 403 ? 'host_enroll_rejected' : 'host_enroll_failed';
         throw codedMembershipError(code, `Host enrollment failed (HTTP ${status}).`);
       }
-      let parsed: HostEnrollmentResponse;
-      try { parsed = JSON.parse(responseBody) as HostEnrollmentResponse; }
+      let parsed: unknown;
+      try { parsed = JSON.parse(responseBody); }
       catch { throw codedMembershipError('host_enroll_failed', 'Host enrollment returned a response Myco could not read.'); }
-      if (!parsed.bearer || !parsed.overlay_address) {
-        throw codedMembershipError('host_enroll_failed', 'Host enrollment response is missing the bearer or overlay_address — cannot complete join.');
-      }
-      return {
-        host_id: parsed.host_id || ctx.hostId,
-        label: parsed.label || ctx.label || ctx.hostRef,
-        overlay_address: parsed.overlay_address,
-        protocol_version: parsed.protocol_version ?? ctx.protocolVersion ?? HOST_PROTOCOL_VERSION,
-        bearer: parsed.bearer,
-        served_grove_id: parsed.served_grove_id ?? undefined,
-        projects: parsed.projects,
-      };
+      return parseEnrollmentResponse(parsed, {
+        hostId: ctx.hostId,
+        label: ctx.label?.trim() || ctx.hostRef,
+      });
     },
   };
 }
@@ -540,7 +621,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
   //    Bounded retry-with-backoff (design spec §4) — a transient overlay/DERP-
   //    settling failure shouldn't burn the whole join.
   const sleep = deps.sleep ?? defaultSleep;
-  const enrollment = await enrollWithRetry(enrollmentClient, {
+  const enrollment = validateEnrollment(await enrollWithRetry(enrollmentClient, {
     hostId,
     hostRef: options.hostRef.trim(),
     serverUrl: options.serverUrl?.trim(),
@@ -552,7 +633,10 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     bearer: options.bearer?.trim(),
     protocolVersion: options.protocolVersion,
     label: options.label?.trim(),
-  }, sleep, log);
+  }, sleep, log), {
+    hostId,
+    label: options.label?.trim() || options.hostRef.trim(),
+  });
 
   if (enrollment.projects !== undefined) {
     throw codedMembershipError(
@@ -603,9 +687,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     created_at: existing?.created_at ?? new Date().toISOString(),
     projects: existing?.projects ?? [],
   };
-  upsertHost(record);
-  // The bearer NEVER lands in host.json — only in the record's secrets.env.
-  writeHostSecret(hostId, HOST_BEARER_SECRET, enrollment.bearer);
+  persistEnrollmentMembership(record, enrollment.bearer);
   log(`${existing ? 'Updated' : 'Wrote'} host record ${hostId} (proxy_port=${proxyPort}).`);
 
   return {

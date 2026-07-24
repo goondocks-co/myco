@@ -19,6 +19,7 @@ import { resolveMemberTailscaledSocketPath } from '@myco/grove/paths';
 import { classifyRoute } from '@myco/host/routing';
 import { attachProject, getHost, readHostRegistry, readHostSecrets } from '@myco/host/registry';
 import {
+  createEnrollmentClient,
   memberTailscaledLabel,
   joinHost,
   leaveHost,
@@ -28,6 +29,7 @@ import {
   type HostEnrollment,
   type MemberOverlayDeps,
 } from '@myco/host/member-overlay';
+import { membershipErrorCode } from '@myco/host/membership-error';
 import { TAILSCALE_VERSION, type CommandRunner } from '@myco/host/overlay-binaries';
 import { getServiceManager } from '@myco/service/manager';
 import type { InstallResult, ServiceManager, ServiceSpec, ServiceStatus } from '@myco/service/types';
@@ -387,6 +389,75 @@ describe('member overlay — multi-host join / leave', () => {
     expect(rec.proxy_port).toBe(port); // persisted port reused, not re-allocated
     expect(runnerState.ups).toHaveLength(1); // still only the first join ran `tailscale up`
     expect(readHostSecrets(id)[HOST_BEARER_SECRET]).toBe('bearer-2'); // bearer refreshed
+  });
+
+  test.each([
+    ['an object bearer', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: {} }],
+    ['a control-character bearer', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: 'bad\0bearer' }],
+    ['a remote projects field', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: 'bearer-valid', projects: [] }],
+  ])('a real enrollment response with %s fails before join mutates the host registry', async (_label, response) => {
+    const id = hostId();
+    let reachabilityCalls = 0;
+    const client = createEnrollmentClient(async () => ({
+      status: 200,
+      body: JSON.stringify({ ...response, host_id: id }),
+    }));
+    const hostDir = path.join(tmp, 'hosts', id);
+
+    const caught = await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080', overlayAddress: '100.64.0.1:7433' },
+      deps({
+        enrollmentClient: client,
+        sleep: async () => {},
+        checkHostReachable: async () => { reachabilityCalls += 1; return true; },
+      }),
+    ).catch((error) => error);
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(reachabilityCalls).toBe(0);
+    expect(fs.existsSync(hostDir)).toBe(false);
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
+
+  test('a secret filesystem failure leaves a new join without a host record', async () => {
+    const id = hostId();
+    const hostDir = path.join(tmp, 'hosts', id);
+    fs.mkdirSync(path.join(hostDir, 'secrets.env'), { recursive: true });
+
+    await expect(joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-new') }),
+    )).rejects.toThrow();
+
+    expect(fs.existsSync(path.join(hostDir, 'host.json'))).toBe(false);
+    expect(getHost(id)).toBeNull();
+    expect(fs.statSync(path.join(hostDir, 'secrets.env')).isDirectory()).toBe(true);
+  });
+
+  test('a secret filesystem failure restores the exact prior host record on rejoin', async () => {
+    const id = hostId();
+    const project = createProjectId();
+    await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-original') }),
+    );
+    attachProject(id, { grove_id: createGroveId(), project_id: project });
+
+    const hostJsonPath = path.join(tmp, 'hosts', id, 'host.json');
+    const before = fs.readFileSync(hostJsonPath, 'utf-8');
+    const secretsPath = path.join(tmp, 'hosts', id, 'secrets.env');
+    fs.rmSync(secretsPath);
+    fs.mkdirSync(secretsPath);
+
+    await expect(joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-updated', '100.64.0.9:7433') }),
+    )).rejects.toThrow();
+
+    expect(fs.readFileSync(hostJsonPath, 'utf-8')).toBe(before);
+    expect(getHost(id)?.projects).toEqual([{ grove_id: expect.any(String), project_id: project }]);
+    expect(fs.statSync(secretsPath).isDirectory()).toBe(true);
   });
 
   // --- leave (single) ------------------------------------------------------

@@ -50,7 +50,7 @@ describe('member enrollment client — unit (injected transport)', () => {
       captured = input;
       return { status: 200, body: JSON.stringify({
         host_id: 'canonical-host', label: 'Canonical', overlay_address: '100.64.0.1:7433',
-        protocol_version: 1, bearer: 'the-shared-bearer', projects: [],
+        protocol_version: 1, bearer: 'the-shared-bearer',
       }) };
     };
     const enrollment = await createEnrollmentClient(transport).enroll(ctx());
@@ -64,17 +64,17 @@ describe('member enrollment client — unit (injected transport)', () => {
     expect(enrollment.host_id).toBe('canonical-host');
     expect(enrollment.label).toBe('Canonical');
     expect(enrollment.overlay_address).toBe('100.64.0.1:7433');
-    expect(enrollment.projects).toEqual([]);
+    expect(enrollment.projects).toBeUndefined();
   });
 
-  test('falls back to the member-known host_id/label when the host does not self-report them', async () => {
+  test('falls back to the member-known host_id and label when an old host omits them', async () => {
     const transport: EnrollmentTransport = async () => ({
       status: 200,
-      body: JSON.stringify({ host_id: '', label: '', overlay_address: '100.64.0.1:7433', protocol_version: 1, bearer: 'b' }),
+      body: JSON.stringify({ overlay_address: '100.64.0.1:7433', protocol_version: 1, bearer: 'b' }),
     });
     const enrollment = await createEnrollmentClient(transport).enroll(ctx({ hostId: 'the-ref', hostRef: 'the-ref', label: undefined }));
     expect(enrollment.host_id).toBe('the-ref');
-    expect(enrollment.label).toBe('the-ref'); // label ?? hostRef
+    expect(enrollment.label).toBe('the-ref');
   });
 
   test('a 409 from the host maps to a loud version-mismatch error', async () => {

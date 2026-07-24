@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import {
   readSecrets as readSecretsFile,
   writeSecret as writeSecretFile,
@@ -86,6 +87,12 @@ export interface HostRecord {
   projects: AttachRef[];
 }
 
+/** An exact on-disk host-record snapshot for rollback inside a larger membership write. */
+export interface HostRecordSnapshot {
+  hostId: string;
+  bytes: Buffer | null;
+}
+
 /**
  * True when `value` has the minimum shape every reader below relies on
  * (`host_id` as a string, `projects` as an array) — the two fields
@@ -135,6 +142,27 @@ export function upsertHost(record: HostRecord): void {
   const tmpPath = configPath + '.tmp';
   fs.writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
   fs.renameSync(tmpPath, configPath);
+}
+
+/** Capture the exact current host record bytes, including the absence of a record. */
+export function snapshotHostRecord(hostId: string): HostRecordSnapshot {
+  try {
+    return { hostId, bytes: fs.readFileSync(resolveHostConfigPath(hostId)) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { hostId, bytes: null };
+    throw error;
+  }
+}
+
+/** Restore an exact host-record snapshot through the registry's atomic writer. */
+export function restoreHostRecord(snapshot: HostRecordSnapshot): void {
+  const configPath = resolveHostConfigPath(snapshot.hostId);
+  if (snapshot.bytes === null) {
+    fs.rmSync(configPath, { force: true });
+    return;
+  }
+  fs.mkdirSync(resolveHostDir(snapshot.hostId), { recursive: true });
+  atomicWriteFileSync(configPath, snapshot.bytes);
 }
 
 /** Remove a host record, its attach refs, and its secrets.env (bearer). */
@@ -353,4 +381,6 @@ export const hostRegistry = {
   attachTargetProjectIds,
   readHostSecrets,
   writeHostSecret,
+  snapshotHostRecord,
+  restoreHostRecord,
 };
