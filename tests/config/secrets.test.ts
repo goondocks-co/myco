@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {
+  assertValidSecretEntry,
   deleteSecrets,
   InvalidSecretValueError,
   loadLayeredSecrets,
@@ -50,6 +51,15 @@ describe('secrets', () => {
     it('handles values with equals signs', () => {
       fs.writeFileSync(path.join(testDir, 'secrets.env'), 'TOKEN=abc=def\n', 'utf-8');
       expect(readSecrets(testDir)).toEqual({ TOKEN: 'abc=def' });
+    });
+
+    it.each([
+      ['a carriage-return line', 'BROKEN\rVALUE\nVALID=kept\n'],
+      ['an unparseable line', 'BROKEN VALUE\nVALID=kept\n'],
+      ['a NUL-containing value', 'TOKEN=abc\0def\n'],
+    ])('rejects %s instead of dropping or returning it', (_label, content) => {
+      fs.writeFileSync(path.join(testDir, 'secrets.env'), content);
+      expect(() => readSecrets(testDir)).toThrow(InvalidSecretValueError);
     });
   });
 
@@ -106,6 +116,70 @@ describe('secrets', () => {
 
       expect(() => deleteSecrets(testDir, ['REMOVE'])).toThrow(InvalidSecretValueError);
       expect(fs.readFileSync(secretsPath)).toEqual(before);
+    });
+
+    it.each([
+      ['carriage-return line', 'add', 'BROKEN\rVALUE\nREMOVE=old\n'],
+      ['carriage-return line', 'delete', 'BROKEN\rVALUE\nREMOVE=old\n'],
+      ['unparseable line', 'add', 'BROKEN VALUE\nREMOVE=old\n'],
+      ['unparseable line', 'delete', 'BROKEN VALUE\nREMOVE=old\n'],
+    ])('rejects a retained %s before %s changes bytes or permissions', (_label, operation, content) => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, content, { mode: 0o644 });
+      const before = fs.readFileSync(secretsPath);
+      const beforeMode = fs.statSync(secretsPath).mode & 0o777;
+
+      const mutate = operation === 'add'
+        ? () => writeSecret(testDir, 'NEW', 'safe')
+        : () => deleteSecrets(testDir, ['REMOVE']);
+      expect(mutate).toThrow(InvalidSecretValueError);
+      expect(fs.readFileSync(secretsPath)).toEqual(before);
+      if (POSIX) expect(fs.statSync(secretsPath).mode & 0o777).toBe(beforeMode);
+    });
+
+    it.each(['add', 'delete'])(
+      'preserves a __proto__ entry when a later %s rewrites the file',
+      (operation) => {
+        const secretsPath = path.join(testDir, 'secrets.env');
+        fs.writeFileSync(secretsPath, '__proto__=preserved\nREMOVE=old\n');
+
+        const before = readSecrets(testDir);
+        expect(Object.hasOwn(before, '__proto__')).toBe(true);
+        expect(before.__proto__).toBe('preserved');
+
+        if (operation === 'add') {
+          writeSecret(testDir, 'NEW', 'safe');
+        } else {
+          deleteSecrets(testDir, ['REMOVE']);
+        }
+
+        const after = readSecrets(testDir);
+        expect(Object.hasOwn(after, '__proto__')).toBe(true);
+        expect(after.__proto__).toBe('preserved');
+      },
+    );
+
+    it('rejects deletion of the malformed target instead of unlinking its file', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, 'REMOVE=malformed\0value\n');
+      const before = fs.readFileSync(secretsPath);
+
+      expect(() => deleteSecrets(testDir, ['REMOVE'])).toThrow(InvalidSecretValueError);
+      expect(fs.readFileSync(secretsPath)).toEqual(before);
+    });
+
+    it('rejects an invalid delete key before creating or changing its target', () => {
+      const target = path.join(testDir, 'not-created');
+      expect(() => deleteSecrets(target, ['BAD\nKEY'])).toThrow(InvalidSecretValueError);
+      expect(fs.existsSync(target)).toBe(false);
+    });
+
+    it.each([
+      ['key', { unsafe: true }, 'value'],
+      ['value', 'KEY', { unsafe: true }],
+    ])('rejects a non-string runtime %s without coercion', (_field, key, value) => {
+      expect(() => assertValidSecretEntry(key as string, value as string))
+        .toThrow(InvalidSecretValueError);
     });
   });
 
@@ -272,6 +346,15 @@ describe('secrets', () => {
       expect(propagateLegacySecrets(projectDir, mycoHomeDir)).toEqual([]);
     });
 
+    it('does not inspect the destination when the project has no secrets to propagate', () => {
+      const destinationPath = path.join(mycoHomeDir, 'secrets.env');
+      fs.writeFileSync(destinationPath, 'BROKEN VALUE\n');
+      const before = fs.readFileSync(destinationPath);
+
+      expect(propagateLegacySecrets(projectDir, mycoHomeDir)).toEqual([]);
+      expect(fs.readFileSync(destinationPath)).toEqual(before);
+    });
+
     it('lifts every project key when global secrets.env is absent', () => {
       writeSecret(projectDir, 'ANTHROPIC_API_KEY', 'sk-ant-legacy');
       writeSecret(projectDir, 'OPENAI_API_KEY', 'sk-openai-legacy');
@@ -316,6 +399,34 @@ describe('secrets', () => {
       if (POSIX) {
         expect(fs.statSync(path.join(mycoHomeDir, 'secrets.env')).mode & 0o777).toBe(0o600);
       }
+    });
+
+    it('rejects a malformed source before partially mutating the destination', () => {
+      const sourcePath = path.join(projectDir, 'secrets.env');
+      const destinationPath = path.join(mycoHomeDir, 'secrets.env');
+      fs.writeFileSync(sourcePath, 'FIRST=one\nBROKEN\rVALUE\nSECOND=two\n');
+      fs.writeFileSync(destinationPath, 'EXISTING=preserved\n');
+      const sourceBefore = fs.readFileSync(sourcePath);
+      const destinationBefore = fs.readFileSync(destinationPath);
+
+      expect(() => propagateLegacySecrets(projectDir, mycoHomeDir))
+        .toThrow(InvalidSecretValueError);
+      expect(fs.readFileSync(sourcePath)).toEqual(sourceBefore);
+      expect(fs.readFileSync(destinationPath)).toEqual(destinationBefore);
+    });
+
+    it('rejects a malformed destination before rewriting either store', () => {
+      const sourcePath = path.join(projectDir, 'secrets.env');
+      const destinationPath = path.join(mycoHomeDir, 'secrets.env');
+      fs.writeFileSync(sourcePath, 'NEW=value\n');
+      fs.writeFileSync(destinationPath, 'BROKEN VALUE\nEXISTING=preserved\n');
+      const sourceBefore = fs.readFileSync(sourcePath);
+      const destinationBefore = fs.readFileSync(destinationPath);
+
+      expect(() => propagateLegacySecrets(projectDir, mycoHomeDir))
+        .toThrow(InvalidSecretValueError);
+      expect(fs.readFileSync(sourcePath)).toEqual(sourceBefore);
+      expect(fs.readFileSync(destinationPath)).toEqual(destinationBefore);
     });
   });
 
@@ -378,6 +489,31 @@ describe('secrets', () => {
         .toThrow(InvalidSecretValueError);
       expect(fs.existsSync(path.join(testDir, 'secrets.env'))).toBe(false);
       expect(fs.existsSync(claimPathFor(testDir))).toBe(false);
+    });
+
+    it('rejects a malformed stored fast-path value without returning or mutating it', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, `${KEY}=abc\0def\n`);
+      const before = fs.readFileSync(secretsPath);
+      let mintCalled = false;
+
+      expect(() => writeSecretIfAbsent(testDir, KEY, () => {
+        mintCalled = true;
+        return 'candidate';
+      })).toThrow(InvalidSecretValueError);
+      expect(mintCalled).toBe(false);
+      expect(fs.readFileSync(secretsPath)).toEqual(before);
+    });
+
+    it('rejects malformed claim content before returning or persisting it', () => {
+      const claimPath = claimPathFor(testDir);
+      fs.writeFileSync(claimPath, 'winner-token\n', { mode: 0o600 });
+      const claimBefore = fs.readFileSync(claimPath);
+
+      expect(() => writeSecretIfAbsent(testDir, KEY, () => 'loser-token'))
+        .toThrow(InvalidSecretValueError);
+      expect(fs.existsSync(path.join(testDir, 'secrets.env'))).toBe(false);
+      expect(fs.readFileSync(claimPath)).toEqual(claimBefore);
     });
   });
 });

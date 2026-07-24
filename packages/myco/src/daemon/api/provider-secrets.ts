@@ -1,10 +1,9 @@
 import {
-  assertValidSecretEntry,
   deleteSecrets,
-  InvalidSecretValueError,
   readSecrets,
   writeSecret,
 } from '@myco/config/secrets.js';
+import { normalizeRawSecretInput } from '@myco/daemon/api/secret-input.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -117,36 +116,25 @@ export async function handleGetProviderSecrets(_req?: RouteRequest): Promise<Rou
 
 export async function handlePutProviderSecret(req: RouteRequest): Promise<RouteResponse> {
   const provider = req.params.provider;
-  const body = req.body as { api_key?: string; secret?: string; scope?: SecretScope } | undefined;
+  const body = req.body as { api_key?: unknown; secret?: unknown; scope?: SecretScope } | undefined;
 
   if (!provider || !isSecretProvider(provider)) {
     return { status: 400, body: { error: 'provider must be one of: openai, openrouter, github' } };
   }
   const raw = body?.secret ?? body?.api_key;
-  if (typeof raw !== 'string') {
-    return { status: 400, body: { error: 'secret is required' } };
-  }
+  const envKey = SECRET_DEFINITIONS[provider].envKey;
+  const normalized = normalizeRawSecretInput(
+    envKey,
+    raw,
+    { status: 400, body: { error: 'secret is required' } },
+  );
+  if (!normalized.ok) return normalized.response;
 
   const scope = body?.scope ?? SECRET_DEFINITIONS[provider].defaultScope;
   const store = resolveWritableSecretStore(provider, scope);
   if (isRouteResponse(store)) return store;
 
-  const envKey = SECRET_DEFINITIONS[provider].envKey;
-  try {
-    assertValidSecretEntry(envKey, raw);
-  } catch (error) {
-    if (error instanceof InvalidSecretValueError) {
-      return {
-        status: 400,
-        body: { error: error.code, message: error.message },
-      };
-    }
-    throw error;
-  }
-  if (!raw.trim()) {
-    return { status: 400, body: { error: 'secret is required' } };
-  }
-  const secret = raw.trim();
+  const secret = normalized.value;
   writeSecret(store.dir, envKey, secret);
   setProcessSecret(provider, secret);
 

@@ -26,17 +26,17 @@ const SECRETS_DIR_MODE = 0o700;
 export class InvalidSecretValueError extends Error {
   readonly code = 'invalid_secret_value';
 
-  constructor(readonly field: 'key' | 'value') {
+  constructor(readonly field: 'key' | 'value' | 'entry') {
     super(`Secret ${field} contains unsupported characters`);
     this.name = 'InvalidSecretValueError';
   }
 }
 
-export function assertValidSecretEntry(key: string, value: string): void {
-  if (key.length === 0 || /[\0\r\n=]/.test(key)) {
+export function assertValidSecretEntry(key: unknown, value: unknown): void {
+  if (typeof key !== 'string' || key.length === 0 || /[\0\r\n=]/.test(key)) {
     throw new InvalidSecretValueError('key');
   }
-  if (/[\0\r\n]/.test(value)) {
+  if (typeof value !== 'string' || /[\0\r\n]/.test(value)) {
     throw new InvalidSecretValueError('value');
   }
 }
@@ -44,16 +44,8 @@ export function assertValidSecretEntry(key: string, value: string): void {
 /** Read all secrets from <vault>/secrets.env as key-value pairs. */
 export function readSecrets(vaultDir: string): Record<string, string> {
   const secretsPath = path.join(vaultDir, SECRETS_FILE);
-  if (!fs.existsSync(secretsPath)) return {};
-
-  const secrets: Record<string, string> = {};
-  for (const line of fs.readFileSync(secretsPath, 'utf-8').split('\n')) {
-    const match = line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);
-    if (match) {
-      secrets[match[1]] = match[2];
-    }
-  }
-  return secrets;
+  if (!fs.existsSync(secretsPath)) return Object.create(null) as Record<string, string>;
+  return decodeSecrets(fs.readFileSync(secretsPath, 'utf-8'));
 }
 
 /**
@@ -64,6 +56,7 @@ export function readSecrets(vaultDir: string): Record<string, string> {
  * leak secrets into the user-readable namespace.
  */
 export function writeSecret(vaultDir: string, key: string, value: string): void {
+  assertValidSecretEntry(key, value);
   const existing = readSecrets(vaultDir);
   existing[key] = value;
   persistSecrets(vaultDir, existing);
@@ -177,8 +170,14 @@ function adoptMintedSecret(vaultDir: string, key: string, claimPath: string): st
   const fromSecrets = readSecrets(vaultDir)[key];
   if (fromSecrets && fromSecrets.trim()) return fromSecrets.trim();
 
-  let fromClaim = '';
-  try { fromClaim = fs.readFileSync(claimPath, 'utf-8').trim(); } catch { /* claim released after a merge */ }
+  let rawClaim: string | undefined;
+  try {
+    rawClaim = fs.readFileSync(claimPath, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  if (rawClaim !== undefined) assertValidSecretEntry(key, rawClaim);
+  const fromClaim = rawClaim?.trim() ?? '';
   if (fromClaim) {
     const recheck = readSecrets(vaultDir)[key];
     if (!recheck || !recheck.trim()) writeSecret(vaultDir, key, fromClaim);
@@ -208,22 +207,27 @@ function adoptMintedSecret(vaultDir: string, key: string, claimPath: string): st
  *   already canonical" semantics.
  * - Returns the list of keys actually propagated, for audit logging.
  *
- * Permissions are tightened on every write by the underlying
- * `writeSecret`. Idempotent: a second call after migration is a no-op
+ * Permissions are tightened on every persisted write. Idempotent: a second
+ * call after migration is a no-op
  * because the global file now has every legacy key.
  */
 export function propagateLegacySecrets(vaultDir: string, mycoHome: string): string[] {
   const legacy = readSecrets(vaultDir);
-  const keys = Object.keys(legacy);
-  if (keys.length === 0) return [];
+  const legacyEntries = Object.entries(legacy);
+  if (legacyEntries.length === 0) return [];
 
-  const propagated: string[] = [];
   const existing = readSecrets(mycoHome);
-  for (const key of keys) {
-    if (existing[key] !== undefined) continue;
-    writeSecret(mycoHome, key, legacy[key]);
+  const merged = Object.assign(
+    Object.create(null) as Record<string, string>,
+    existing,
+  );
+  const propagated: string[] = [];
+  for (const [key, value] of legacyEntries) {
+    if (merged[key] !== undefined) continue;
+    merged[key] = value;
     propagated.push(key);
   }
+  if (propagated.length > 0) persistSecrets(mycoHome, merged);
   return propagated;
 }
 
@@ -268,6 +272,7 @@ export function relocateLegacyProjectSecrets(vaultDir: string, mycoHome: string)
 
 /** Remove one or more secrets from <vault>/secrets.env, preserving remaining entries. */
 export function deleteSecrets(vaultDir: string, keys: string[]): void {
+  for (const key of keys) assertValidSecretEntry(key, '');
   const secretsPath = path.join(vaultDir, SECRETS_FILE);
   if (!fs.existsSync(secretsPath)) return;
 
@@ -288,8 +293,8 @@ export function deleteSecrets(vaultDir: string, keys: string[]): void {
  * see `tightenSecretsPermissions` for the no-op-on-missing semantics.
  */
 export function loadSecrets(vaultDir: string): void {
-  tightenSecretsPermissions(vaultDir);
   const secrets = readSecrets(vaultDir);
+  tightenSecretsPermissions(vaultDir);
   for (const [key, value] of Object.entries(secrets)) {
     if (!process.env[key]) {
       process.env[key] = value;
@@ -333,6 +338,9 @@ export function loadLayeredSecrets(
   secretsDirs: string[],
   env: NodeJS.ProcessEnv = process.env,
 ): void {
+  const stores = secretsDirs.map((dir) => ({ dir, secrets: readSecrets(dir) }));
+  for (const { dir } of stores) tightenSecretsPermissions(dir);
+
   const owned = layeredSecretOwnership.get(env) ?? new Map<string, string>();
   layeredSecretOwnership.set(env, owned);
 
@@ -343,10 +351,9 @@ export function loadLayeredSecrets(
     if (env[key] !== written) owned.delete(key);
   }
 
-  const merged: Record<string, string> = {};
-  for (const dir of secretsDirs) {
-    tightenSecretsPermissions(dir);
-    Object.assign(merged, readSecrets(dir));
+  const merged = Object.create(null) as Record<string, string>;
+  for (const { secrets } of stores) {
+    Object.assign(merged, secrets);
   }
 
   // Owned keys that vanished from every layered file: the secret was deleted
@@ -378,6 +385,7 @@ export function loadLayeredSecrets(
  * we care about; we rely on NTFS ACLs there and skip without erroring.
  */
 export function tightenSecretsPermissions(vaultDir: string): void {
+  readSecrets(vaultDir);
   const secretsPath = path.join(vaultDir, SECRETS_FILE);
   try {
     const stat = fs.statSync(secretsPath);
@@ -412,12 +420,29 @@ function ensureSecretsDirSecure(vaultDir: string): void {
   }
 }
 
-function encodeSecrets(secrets: Readonly<Record<string, string>>): string {
+function decodeSecrets(content: unknown): Record<string, string> {
+  if (typeof content !== 'string' || /[\0\r]/.test(content)) {
+    throw new InvalidSecretValueError('entry');
+  }
+
+  const secrets = Object.create(null) as Record<string, string>;
+  for (const line of content.split('\n')) {
+    if (line.trim().length === 0 || /^\s*#/.test(line)) continue;
+    const match = line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);
+    if (!match) throw new InvalidSecretValueError('entry');
+    const [, key, value] = match;
+    assertValidSecretEntry(key, value);
+    secrets[key] = value;
+  }
+  return secrets;
+}
+
+function encodeSecrets(secrets: Readonly<Record<string, unknown>>): string {
   const entries = Object.entries(secrets);
   for (const [key, value] of entries) {
     assertValidSecretEntry(key, value);
   }
-  return entries.map(([key, value]) => `${key}=${value}`).join('\n') + '\n';
+  return entries.map(([key, value]) => `${key}=${value as string}`).join('\n') + '\n';
 }
 
 function persistSecrets(vaultDir: string, secrets: Readonly<Record<string, string>>): void {
