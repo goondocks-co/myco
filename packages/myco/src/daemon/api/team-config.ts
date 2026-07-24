@@ -581,20 +581,18 @@ export async function handlePutExternalMcpToggle(
       if (!payload.enabled) {
         const port = machine.daemon.external_mcp.port;
         let funnel: Awaited<ReturnType<FunnelRunner>> | undefined;
-        let funnelDisabled = false;
+        let funnelDisableAttempted = false;
         try {
-          funnel = deps.externalMcp
-            ? await deps.externalMcp.runFunnel(port, false)
-            : undefined;
-          if (funnel) {
+          if (deps.externalMcp) {
+            funnelDisableAttempted = true;
+            funnel = await deps.externalMcp.runFunnel(port, false);
             requireFunnelSuccess(funnel, 'Could not disable Tailscale Funnel');
-            funnelDisabled = true;
           }
           if (deps.externalMcp) await deps.externalMcp.listener.unbind();
           persist(false, port);
           return { body: { enabled: false, port, funnel } };
         } catch (error) {
-          if (!funnelDisabled) throw error;
+          if (!funnelDisableAttempted) throw error;
           return await failWithCompensation(error, [
             { port, on: machine.daemon.external_mcp.enabled },
           ]);
@@ -683,10 +681,8 @@ export async function handlePutExternalMcpToggle(
         if (candidate !== undefined && committed === candidate) {
           token = committed;
           freshlyMinted = true;
-        } else if (!committed) {
-          return await failWithCompensation(error, enableFunnelRestorations());
         } else {
-          throw error;
+          return await failWithCompensation(error, enableFunnelRestorations());
         }
       }
 

@@ -952,6 +952,26 @@ describe('GET /api/team/external-mcp + PUT .../toggle — mint-if-absent, bind/u
     expect(fs.readFileSync(secretsPath, 'utf8')).toBe('malformed-entry\n');
   });
 
+  test('a readable token reached through an untrusted store path is never adopted after commit failure', async () => {
+    const existingToken = 'external-store-token';
+    const externalStore = path.join(tmp(), 'external-secrets.env');
+    fs.writeFileSync(
+      externalStore,
+      `${HOST_EXTERNAL_MCP_TOKEN_SECRET}=${existingToken}\n`,
+    );
+    fs.symlinkSync(externalStore, path.join(home(), 'secrets.env'));
+
+    await expect(handlePutExternalMcpToggle(deps(), { enabled: true }))
+      .rejects.toThrow(/non-regular secret store/);
+
+    expect(listener.isBound).toBe(false);
+    expect(funnelCalls).toEqual([
+      { port: EXTERNAL_MCP_DEFAULT_PORT, on: true },
+      { port: EXTERNAL_MCP_DEFAULT_PORT, on: false },
+    ]);
+    expect(loadMachineConfig(home()).daemon.external_mcp.enabled).toBe(false);
+  });
+
   test('token inspection and rollback failures preserve every underlying error', async () => {
     fs.writeFileSync(path.join(home(), 'secrets.env'), 'malformed-entry\n');
     const failingRollbackFunnel: FunnelRunner = async (port, on) => (
@@ -1000,7 +1020,9 @@ describe('GET /api/team/external-mcp + PUT .../toggle — mint-if-absent, bind/u
 
   test('a resolved Funnel disable failure preserves the enabled listener and config', async () => {
     await handlePutExternalMcpToggle(deps(), { enabled: true });
+    const disableFunnelCalls: Array<{ port: number; on: boolean }> = [];
     const failingDisableFunnel: FunnelRunner = async (port, on) => (
+      disableFunnelCalls.push({ port, on }),
       on
         ? { ok: true, detail: `stub ${port} ${on}` }
         : { ok: false, detail: 'funnel disable refused' }
@@ -1013,6 +1035,38 @@ describe('GET /api/team/external-mcp + PUT .../toggle — mint-if-absent, bind/u
 
     await expect(handlePutExternalMcpToggle(toggleDeps, { enabled: false }))
       .rejects.toThrow(/funnel disable refused/);
+    expect(loadMachineConfig(home()).daemon.external_mcp.enabled).toBe(true);
+    expect(listener.isBound).toBe(true);
+    expect(disableFunnelCalls).toEqual([
+      { port: EXTERNAL_MCP_DEFAULT_PORT, on: false },
+      { port: EXTERNAL_MCP_DEFAULT_PORT, on: true },
+    ]);
+  });
+
+  test('a failed Funnel-off restoration preserves both returned failures', async () => {
+    await handlePutExternalMcpToggle(deps(), { enabled: true });
+    const failingFunnel: FunnelRunner = async (_port, on) => ({
+      ok: false,
+      detail: on ? 'funnel restoration refused' : 'funnel disable refused',
+    });
+    let caught: unknown;
+    try {
+      await handlePutExternalMcpToggle({
+        hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id },
+        mycoHome: home(),
+        externalMcp: { listener, runFunnel: failingFunnel },
+      }, { enabled: false });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    const messages = (caught as AggregateError).errors
+      .map((error: unknown) => error instanceof Error ? error.message : String(error));
+    expect(messages.some((message: string) => message.includes('funnel disable refused')))
+      .toBe(true);
+    expect(messages.some((message: string) => message.includes('funnel restoration refused')))
+      .toBe(true);
     expect(loadMachineConfig(home()).daemon.external_mcp.enabled).toBe(true);
     expect(listener.isBound).toBe(true);
   });
