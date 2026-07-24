@@ -119,6 +119,7 @@ export interface WindowsManagerOptions {
 const WINDOWS_TEARDOWN_TIMEOUT_MS = 10_000;
 const WINDOWS_TEARDOWN_POLL_INTERVAL_MS = 100;
 const WINDOWS_TASK_HOST = 'powershell.exe';
+const WINDOWS_POWERSHELL_UTF8_BOM = '\uFEFF';
 
 function windowsTaskHostArguments(scriptPath: string): string {
   return `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`;
@@ -264,7 +265,7 @@ export class WindowsTaskServiceManager implements ServiceManager {
 
   async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
     const scriptPath = this.scriptPath(spec.label);
-    const rendered = renderWindowsServiceScript(spec);
+    const rendered = `${WINDOWS_POWERSHELL_UTF8_BOM}${renderWindowsServiceScript(spec)}`;
     let existing: string | null = null;
     try { existing = fs.readFileSync(scriptPath, 'utf-8'); } catch { /* ENOENT */ }
     const installed = existing === rendered

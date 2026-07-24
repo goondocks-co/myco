@@ -159,7 +159,11 @@ describe('WindowsTaskServiceManager', () => {
     const r1 = await mgr.install(spec);
     expect(r1.changed).toBe(true);
     expect(r1.supervisorReloaded).toBe(true);
-    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.ps1`))).toBe(true);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(fs.readFileSync(scriptPath).subarray(0, 3)).toEqual(
+      Buffer.from([0xef, 0xbb, 0xbf]),
+    );
 
     const create = runner.calls.find((c) => c[0] === '/create');
     expect(create).toBeDefined();
