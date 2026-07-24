@@ -21,7 +21,13 @@ import {
   type MachineConfig,
 } from '../../config/schema.js';
 import { tierAllowsPath, type Tier } from '../../config/scope.js';
-import { getAtPath, setAtPath, unsetAtPath } from '../../utils/dot-path.js';
+import {
+  getAtPath,
+  parseDotPath,
+  setAtPath,
+  unsetAtPath,
+  UnsafeDotPathError,
+} from '../../utils/dot-path.js';
 import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import { projectTreeAvailable } from '../../vault/resolve.js';
@@ -115,6 +121,52 @@ function pathsOverlap(a: string, b: string): boolean {
   return a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
 }
 
+function assertSafeConfigTree(
+  value: unknown,
+  prefix: readonly string[] = [],
+): void {
+  if (value === null || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      assertSafeConfigTree(entry, [...prefix, String(index)]);
+    });
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const path = [...prefix, key];
+    parseDotPath(path);
+    assertSafeConfigTree(child, path);
+  }
+}
+
+function unsafeConfigPathResponse(): RouteResponse {
+  return {
+    status: 400,
+    body: {
+      error: 'unsafe_config_path',
+      message: 'Config path contains an unsafe segment',
+    },
+  };
+}
+
+function validateConfigWritePaths(
+  patch: Record<string, unknown>,
+  clearList: readonly string[],
+  addOps: readonly ListDeltaEntry[],
+  removeOps: readonly ListDeltaEntry[],
+): RouteResponse | undefined {
+  try {
+    assertSafeConfigTree(patch);
+    for (const path of clearList) parseDotPath(path);
+    for (const { path } of addOps) parseDotPath(path);
+    for (const { path } of removeOps) parseDotPath(path);
+  } catch (err) {
+    if (err instanceof UnsafeDotPathError) return unsafeConfigPathResponse();
+    throw err;
+  }
+  return undefined;
+}
+
 /**
  * Registry-driven write gate, shared by the scoped and tier PUT handlers.
  * Returns the subset of `paths` the given tier may NOT write: paths whose
@@ -186,6 +238,13 @@ export async function handlePutScopedConfig(
   if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
     return { status: 400, body: { error: 'patch must be an object' } };
   }
+  const unsafePathResponse = validateConfigWritePaths(
+    patch as Record<string, unknown>,
+    clearList,
+    addOpsOrError,
+    removeOpsOrError,
+  );
+  if (unsafePathResponse) return unsafePathResponse;
   const patchLeaves = enumerateLeafPaths(patch);
   const hasPatch = patchLeaves.length > 0;
   const hasClear = clearList.length > 0;
@@ -447,6 +506,14 @@ async function handlePutTierConfig<TConfig>(
   if (!Array.isArray(addOpsRaw)) return { response: addOpsRaw, touchedPaths: [] };
   const removeOpsRaw = validateListDeltaOps(payload.removeFromList);
   if (!Array.isArray(removeOpsRaw)) return { response: removeOpsRaw, touchedPaths: [] };
+
+  const unsafePathResponse = validateConfigWritePaths(
+    incoming as Record<string, unknown>,
+    clearListOrError,
+    addOpsRaw,
+    removeOpsRaw,
+  );
+  if (unsafePathResponse) return { response: unsafePathResponse, touchedPaths: [] };
 
   const patch = options.sanitizePatch
     ? options.sanitizePatch(incoming as Record<string, unknown>)

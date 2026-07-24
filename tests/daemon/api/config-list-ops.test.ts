@@ -142,4 +142,28 @@ describe('machine config addToList / removeFromList', () => {
     const cfg = await handleGetMachineConfig();
     expect((cfg.body as any).config.grove?.default_grove_id).toBeUndefined();
   });
+
+  for (const operation of ['clear', 'addToList', 'removeFromList'] as const) {
+    it(`rejects unsafe ${operation} paths before mutating the machine config`, async () => {
+      const configPath = path.join(mycoHome, 'config.yaml');
+      fs.writeFileSync(configPath, 'daemon:\n  log_level: info\n');
+      const before = fs.readFileSync(configPath, 'utf-8');
+      const unsafePath = 'safe.__proto__.polluted';
+      const body = operation === 'clear'
+        ? { clear: [unsafePath] }
+        : { [operation]: [{ path: unsafePath, values: ['unsafe'] }] };
+
+      const result = await handlePutMachineConfig(body);
+
+      expect(result.response).toEqual({
+        status: 400,
+        body: {
+          error: 'unsafe_config_path',
+          message: 'Config path contains an unsafe segment',
+        },
+      });
+      expect(Object.prototype).not.toHaveProperty('polluted');
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    });
+  }
 });
