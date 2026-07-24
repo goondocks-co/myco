@@ -202,7 +202,7 @@ describe('attach/detach command', () => {
     // be caught instead of silently skipped (`attach.ref.root && …`).
   });
 
-  test('attach maps ProjectRegisteredLocallyError to a migration-needed (A2) message', () => {
+  test('attach without a daemon residency capability still refuses a project with local Grove data (coded project_registered_locally)', () => {
     const grove = createGrove('Default', home);
     const projectId = createProjectId();
     // A local Grove registry row for the project — the never-materialize guard.
@@ -216,8 +216,15 @@ describe('attach/detach command', () => {
     upsertHost(host);
     const root = makeCheckout(projectId);
 
+    // No `beginResidency` injected (a CLI/in-process caller with no daemon DB):
+    // the with-history move needs the daemon, so the refusal stands.
     expect(() => attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home }))
-      .toThrow(/still has local Grove data.*task A2/s);
+      .toThrow(/still has local Grove data.*residency transition.*daemon/s);
+    try {
+      attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
+    } catch (err) {
+      expect(membershipErrorCode(err)).toBe('project_registered_locally');
+    }
     // The guard wrote nothing.
     expect(resolveAttach(projectId)).toBeNull();
   });

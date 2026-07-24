@@ -12,6 +12,7 @@ import {
 } from './activation.js';
 import {
   findRegisteredProject,
+  isLocalRegistrationSuppressed,
   registerProjectInGrove,
   type ResolvedRegisteredProject,
 } from './registry.js';
@@ -199,7 +200,16 @@ function resolveAfterRepair(
   }
 
   // Repair 2: manifest + marker exist, registry row missing → re-register.
-  if (nextManifest?.grove?.binding_id && marker && !nextRegistered) {
+  // Suppressed when the project is attached to a host OR mid-residency
+  // transition (isLocalRegistrationSuppressed): the missing registry row is the
+  // DELIBERATE parked/attached state of a hosted project, so re-minting it here
+  // would re-materialize the local Grove state the never-materialize invariant
+  // forbids — including the F-3 hole where a settled attached project (no
+  // transition in flight) hits the repair path.
+  if (
+    nextManifest?.grove?.binding_id && marker && !nextRegistered
+    && !isLocalRegistrationSuppressed(marker.project_id)
+  ) {
     registerProjectInGrove(marker.grove_id, {
       projectId: marker.project_id,
       projectName: marker.project_name,

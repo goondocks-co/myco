@@ -257,6 +257,27 @@ export function attachProject(
   upsertHost({ ...record, projects: [...record.projects, ref] });
 }
 
+/**
+ * Monotonic protocol-version refresh: when a live probe observes a host running
+ * a HIGHER protocol version than the recorded one (the host upgraded since join),
+ * persist it so the residency gates stop refusing a host that is actually
+ * current (D-F-5: hosts update first, then members work — without this the
+ * recorded version stays at the join-time value forever and every member
+ * dead-ends). NEVER downgrades on a probe: a transient lower reading (a
+ * mid-restart, a stale cache) must not roll the recorded version back and strand
+ * the member — a real downgrade stays the skew classifier's surface, not a
+ * silent write. Returns the effective (post-write) recorded version.
+ */
+export function recordHostProtocolVersion(hostId: string, observedVersion: number): number {
+  const record = getHost(hostId);
+  if (!record) return observedVersion;
+  if (!Number.isFinite(observedVersion) || observedVersion <= record.protocol_version) {
+    return record.protocol_version;
+  }
+  upsertHost({ ...record, protocol_version: observedVersion });
+  return observedVersion;
+}
+
 /** Detach a project from a host. No-op if the host, or the attach ref, doesn't exist. */
 export function detachProject(hostId: string, projectId: string): void {
   const record = getHost(hostId);

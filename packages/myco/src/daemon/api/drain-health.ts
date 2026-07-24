@@ -26,7 +26,8 @@
  *         "drains": {
  *           "transcript":   { "pending_entries": 2, "pending_bytes":   4096, "failing_entries": 0, "host_unreachable_entries": 0 },
  *           "plan":         { "pending_entries": 0,                          "failing_entries": 0, "host_unreachable_entries": 0 },
- *           "event_replay": { "pending_entries": 1, "pending_records":    3, "failing_entries": 1, "host_unreachable_entries": 1 }
+ *           "event_replay": { "pending_entries": 1, "pending_records":    3, "failing_entries": 1, "host_unreachable_entries": 1 },
+ *           "residency":    { "pending_entries": 1,                          "failing_entries": 0, "host_unreachable_entries": 0 }
  *         }
  *       }
  *     ]
@@ -45,12 +46,16 @@ import type { PlanDrainQueue } from '../../capture/plan-drain.js';
 import type { TranscriptDrainQueue } from '../../capture/transcript-drain.js';
 import type { DrainHealthCounters } from '../../capture/drain-health.js';
 import { readHostRegistry } from '../../host/registry.js';
+import { residencyHealthByHost } from '../../host/residency-drain.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 
 export interface DrainHealthRouteDeps {
   transcriptDrain: Pick<TranscriptDrainQueue, 'health'>;
   planDrain: Pick<PlanDrainQueue, 'health'>;
   eventReplayDrain: Pick<EventReplayDrainQueue, 'health'>;
+  /** Per-host residency-transition health (T6). Defaults to the journal scan;
+   *  injectable for tests. */
+  residencyHealth?: () => Map<string, DrainHealthCounters>;
 }
 
 interface WireDrainCounters {
@@ -78,6 +83,7 @@ export function createDrainHealthHandler(deps: DrainHealthRouteDeps): RouteHandl
     const transcriptHealth = deps.transcriptDrain.health();
     const planHealth = deps.planDrain.health();
     const eventReplayHealth = deps.eventReplayDrain.health();
+    const residencyHealth = (deps.residencyHealth ?? residencyHealthByHost)();
 
     // Every joined host appears once, even with zero counters everywhere —
     // "healthy" is a row, not an absence.
@@ -88,6 +94,9 @@ export function createDrainHealthHandler(deps: DrainHealthRouteDeps): RouteHandl
         transcript: toWire(transcriptHealth.get(host.host_id) ?? EMPTY_COUNTERS, 'pending_bytes'),
         plan: toWire(planHealth.get(host.host_id) ?? EMPTY_COUNTERS, 'pending_bytes'),
         event_replay: toWire(eventReplayHealth.get(host.host_id) ?? EMPTY_COUNTERS, 'pending_records'),
+        // Residency has no per-entry unit size (it's whole transitions), so the
+        // optional pending_bytes/records is omitted — same three required fields.
+        residency: toWire(residencyHealth.get(host.host_id) ?? EMPTY_COUNTERS, 'pending_records'),
       },
     }));
 

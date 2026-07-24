@@ -710,8 +710,19 @@ export const HOSTED_PROJECT_PRUNE_TTL_MS = 14 * MS_PER_DAY;
  * `[HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION]` is the inclusive window a
  * member accepts from a host, mirroring the sync
  * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]` discipline.
+ *
+ * History:
+ *   - v1: base overlay contract (proxied capture/serve + tenancy headers).
+ *   - v2: enrollment self-reports `served_grove_id` (additive; see
+ *         HOST_MIN_COMPAT_VERSION).
+ *   - v3: residency ingest — the host serves `POST /routed-capture/residency-rows`
+ *         (a with-history attach pushes a project's rows here) and accepts the
+ *         request's `adoption` field to upgrade a hosted project's placeholder
+ *         name to the member's real name. A member gates a with-history attach on
+ *         a recorded host protocol ≥ 3 (RESIDENCY_MIN_HOST_PROTOCOL) — the
+ *         lockstep bump: update the host before members.
  */
-export const HOST_PROTOCOL_VERSION = 2;
+export const HOST_PROTOCOL_VERSION = 3;
 /**
  * Oldest host protocol a member still talks to (inclusive window with
  * HOST_PROTOCOL_VERSION). Stays at 1: the v2 addition (enrollment

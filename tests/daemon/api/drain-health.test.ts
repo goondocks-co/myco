@@ -69,9 +69,46 @@ describe('GET /api/team-host/drain-health', () => {
           transcript: { pending_entries: 0, failing_entries: 0, host_unreachable_entries: 0 },
           plan: { pending_entries: 0, failing_entries: 0, host_unreachable_entries: 0 },
           event_replay: { pending_entries: 0, failing_entries: 0, host_unreachable_entries: 0 },
+          residency: { pending_entries: 0, failing_entries: 0, host_unreachable_entries: 0 },
         },
       }],
     });
+  });
+
+  test('the residency kind reports per-host in-flight/failing transition counts (same per-kind shape)', async () => {
+    upsertHost(host(HOST_A, 'mac-studio'));
+
+    const handler = createDrainHealthHandler({
+      transcriptDrain: fakeQueue({}),
+      planDrain: fakeQueue({}),
+      eventReplayDrain: fakeQueue({}),
+      residencyHealth: () => new Map([[HOST_A, { pendingEntries: 2, failingEntries: 1, hostUnreachableEntries: 0 }]]),
+    });
+    const res = await handler({ params: {}, query: {}, body: {}, pathname: '/api/team-host/drain-health' });
+    const body = res.body as { hosts: Array<{ drains: Record<string, Record<string, unknown>> }> };
+    // No pendingUnits for residency (whole transitions), so only the three
+    // required fields — never a pending_bytes/records.
+    expect(body.hosts[0].drains.residency).toEqual({ pending_entries: 2, failing_entries: 1, host_unreachable_entries: 0 });
+  });
+
+  test('the default residency health scans the journal store: an in-flight journal with a last_error is a failing entry', async () => {
+    upsertHost(host(HOST_A, 'mac-studio'));
+    // Write an in-flight attach journal for HOST_A carrying a last_error.
+    const { startResidencyJournal, advanceResidencyPhase } = await import('@myco/host/residency-journal.js');
+    const projectId = 'proj_dddddddddddddddddddddddddddddddd';
+    startResidencyJournal({
+      direction: 'attach', phase: 'pushing', host_id: HOST_A, project_id: projectId,
+      divert_grove_id: 'grove_dddddddddddddddddddddddddddddddd', source_grove_id: 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      project_name: 'demo', root: '/x', backup_ref: null, cursors: {},
+    });
+    advanceResidencyPhase(projectId, 'pushing', { last_error: 'host returned 503', last_error_at: new Date().toISOString() });
+
+    const handler = createDrainHealthHandler({
+      transcriptDrain: fakeQueue({}), planDrain: fakeQueue({}), eventReplayDrain: fakeQueue({}),
+    });
+    const res = await handler({ params: {}, query: {}, body: {}, pathname: '/api/team-host/drain-health' });
+    const body = res.body as { hosts: Array<{ drains: Record<string, Record<string, unknown>> }> };
+    expect(body.hosts[0].drains.residency).toEqual({ pending_entries: 1, failing_entries: 1, host_unreachable_entries: 0 });
   });
 
   test('pendingUnits maps to the drain-specific wire field: pending_bytes for transcript/plan, pending_records for event-replay', async () => {

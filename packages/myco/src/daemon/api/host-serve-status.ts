@@ -98,12 +98,29 @@ interface HostServeStatusBody {
 }
 
 /**
+ * Process-global invalidation epoch for the served-grove status cache. Bumped by
+ * {@link invalidateHostServeStatusCache} when a state change must be reflected
+ * before the TTL would otherwise expire — the detach-pull deregistering a stub
+ * project (Phase F T3), so `hosted_project_count` is honest immediately rather than
+ * up to `HOST_SERVE_STATUS_CACHE_TTL_MS` stale. Each handler closure remembers the
+ * epoch it cached at and treats a mismatch as a miss.
+ */
+let statusCacheEpoch = 0;
+
+/** Force the next `GET /api/host-serve/status` to recompute (drops every closure's
+ *  cached bundle via the epoch check). Idempotent and cheap. */
+export function invalidateHostServeStatusCache(): void {
+  statusCacheEpoch += 1;
+}
+
+/**
  * `GET /api/host-serve/status` handler. The served-grove classifier bundle
  * (health.*, external_mcp.token_present) is cached for `ttlMs` inside this
  * closure — one cache per daemon process, matching every other TTL-cached
  * probe in this route family (`host-membership.ts`'s health handler). Never
  * triggered by a timer: a cache miss/expiry is only ever populated by an
- * actual incoming request.
+ * actual incoming request. A bump of the process-global epoch
+ * ({@link invalidateHostServeStatusCache}) also drops the cache early.
  */
 export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): RouteHandler {
   const loadConfig = deps.loadMachineConfig ?? loadMachineConfig;
@@ -111,13 +128,15 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
   const ttlMs = deps.ttlMs ?? HOST_SERVE_STATUS_CACHE_TTL_MS;
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
-  let cache: { body: HostServeStatusBody; expiresAt: number } | null = null;
+  let cache: { body: HostServeStatusBody; expiresAt: number; epoch: number } | null = null;
 
   return async (): Promise<RouteResponse> => {
     const runtime = deps.hostServe;
     if (!runtime) return { status: 200, body: { serving: false } };
 
-    if (cache && now() < cache.expiresAt) return { status: 200, body: cache.body };
+    if (cache && now() < cache.expiresAt && cache.epoch === statusCacheEpoch) {
+      return { status: 200, body: cache.body };
+    }
 
     const machine = loadConfig(mycoHome);
     const servedGroveId = runtime.servedGroveId ?? null;
@@ -152,7 +171,7 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
         mcp_coherence: mcpCoherence.kind,
       },
     };
-    cache = { body, expiresAt: now() + ttlMs };
+    cache = { body, expiresAt: now() + ttlMs, epoch: statusCacheEpoch };
     return { status: 200, body };
   };
 }

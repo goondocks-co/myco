@@ -47,11 +47,19 @@ import { loadProjectManifest } from '../../config/project-manifest.js';
 import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION } from '../../constants.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '../../grove/paths.js';
 import { resolveAttachRefHomeGroveId } from '../../grove/registry.js';
-import { attachCommand, detachCommand, type AttachOptions, type DetachOptions } from '../../host/attach-command.js';
+import {
+  attachCommand,
+  detachCommand,
+  type AttachOptions,
+  type BeginDetachResidency,
+  type BeginResidencyAttach,
+  type DetachOptions,
+} from '../../host/attach-command.js';
 import { resolveTeamHostHintState, teamHostHintMessage } from '../../host/hint.js';
-import { defaultCheckHostReachable, joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
+import { dialHostHealth, joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
+import type { ResidencyStatus } from '../../host/residency-transition.js';
 import { membershipErrorCode } from '../../host/membership-error.js';
-import { readHostRegistry, type HostRecord } from '../../host/registry.js';
+import { readHostRegistry, recordHostProtocolVersion, type HostRecord } from '../../host/registry.js';
 import type { DaemonLogger } from '../logger.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
@@ -71,6 +79,32 @@ export interface HostMembershipRouteDeps extends HostMembershipHealthRouteDeps {
   detach?: typeof detachCommand;
   mycoHome?: string;
   logger?: DaemonLogger;
+  /**
+   * DAEMON-ONLY (Phase F): the residency transition to run when an attach
+   * targets a project that still has local Grove data. Built in `daemon/main.ts`
+   * (it needs a Grove DB) and threaded through so the attach handler is the only
+   * production caller that can move existing history onto a host. Absent in
+   * tests / non-daemon wiring, where a with-history attach still refuses.
+   */
+  beginResidency?: BeginResidencyAttach;
+  /**
+   * DAEMON-ONLY (Phase F): the detach transition to run when a detach should
+   * pull this machine's data back before flipping to local. Built in
+   * `daemon/main.ts`; absent in tests / non-daemon wiring, where a detach is the
+   * plain mapping flip.
+   */
+  beginDetachResidency?: BeginDetachResidency;
+  /**
+   * DAEMON-ONLY (Phase F): read a project's residency-transition status for the
+   * Team page progress surface. Built in `daemon/main.ts`; absent in tests /
+   * non-daemon wiring, where the status route answers `{in_flight:false}`.
+   */
+  residencyStatus?: (projectId: string) => ResidencyStatus;
+  /**
+   * DAEMON-ONLY (Phase F): abort an in-flight residency transition. Built in
+   * `daemon/main.ts`; throws a coded membership error the route maps to the wire.
+   */
+  residencyAbort?: (projectId: string) => { ok: true };
   /**
    * Evicts a host's cached health entry (and any in-flight probe) on a
    * successful leave — `registerHostMembershipRoutes` wires this to the
@@ -225,6 +259,7 @@ export function createHostMembershipAttachHandler(deps: HostMembershipRouteDeps)
       projectId: str(body.project_id),
       localGroveId: str(body.local_grove_id),
       mycoHome,
+      beginResidency: deps.beginResidency,
     };
 
     try {
@@ -254,7 +289,12 @@ export function createHostMembershipDetachHandler(deps: HostMembershipRouteDeps)
     const projectRoot = str(body.project_root);
     if (!projectRoot) return { status: 400, body: errorBody('missing_project_root', 'project_root is required.') };
 
-    const options: DetachOptions = { projectPath: projectRoot, projectId: str(body.project_id) };
+    const options: DetachOptions = {
+      projectPath: projectRoot,
+      projectId: str(body.project_id),
+      beginDetachResidency: deps.beginDetachResidency,
+      allowNoPull: body.allow_no_pull === true,
+    };
 
     try {
       const result = detach(options);
@@ -375,8 +415,9 @@ interface HostHealthEntry {
 }
 
 export interface HostMembershipHealthRouteDeps {
-  /** Test seam: override the reachability probe (default the real overlay dial). */
-  checkReachable?: typeof defaultCheckHostReachable;
+  /** Test seam: override the reachability + live-version probe (default the real
+   *  overlay dial, {@link dialHostHealth}). */
+  checkReachable?: typeof dialHostHealth;
   /** Test seam: override the registry read. */
   readRegistry?: typeof readHostRegistry;
   /** Test seam: override the probe TTL (default {@link HOST_HEALTH_CACHE_TTL_MS}). */
@@ -395,7 +436,7 @@ export interface HostMembershipHealthRouteDeps {
  * in this module): a call within {@link HOST_HEALTH_CACHE_TTL_MS} of the last
  * probe for a host returns the cached result with NO new probe; two requests
  * that overlap a host's in-flight probe share the SAME promise rather than
- * each starting their own dial. `defaultCheckHostReachable` is already
+ * each starting their own dial. `dialHostHealth` is already
  * individually bounded (`HOST_PROXY_CONNECT_TIMEOUT_MS`) and never throws in
  * practice, but the `catch` here is the same fail-closed shape doctor's
  * `checkTeamHostReachability` uses, so a probe that somehow rejects still
@@ -413,7 +454,7 @@ export type HostMembershipHealthHandler = RouteHandler & {
 };
 
 export function createHostMembershipHealthHandler(deps: HostMembershipHealthRouteDeps = {}): HostMembershipHealthHandler {
-  const checkReachable = deps.checkReachable ?? defaultCheckHostReachable;
+  const checkReachable = deps.checkReachable ?? dialHostHealth;
   const readRegistry = deps.readRegistry ?? readHostRegistry;
   const ttlMs = deps.ttlMs ?? HOST_HEALTH_CACHE_TTL_MS;
   const now = deps.now ?? Date.now;
@@ -433,21 +474,31 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
       // checkTeamHostReachability): no proxy port on record means there is
       // nothing to dial — `null` ("not confirmable"), never a false negative.
       let reachable: boolean | null;
+      let observedVersion: number | null = null;
       if (host.proxy_port === undefined) {
         reachable = null;
       } else {
         try {
-          reachable = await checkReachable(host.overlay_address, host.proxy_port);
+          const probe = await checkReachable(host.overlay_address, host.proxy_port);
+          reachable = probe.reachable;
+          observedVersion = probe.protocolVersion;
         } catch {
           reachable = false;
         }
       }
+      // Persist a host that upgraded since join (monotonic — never a probe
+      // downgrade), so the residency gates classify + refuse against the host's
+      // CURRENT version, not the stale join-time one. Skew is classified from the
+      // effective (post-write) version.
+      const effectiveVersion = observedVersion !== null
+        ? recordHostProtocolVersion(host.host_id, observedVersion)
+        : host.protocol_version;
       return {
         host_id: host.host_id,
         label: host.label,
         reachable,
         checked_at: new Date(now()).toISOString(),
-        protocol_skew: classifyHostProtocolSkew(host.protocol_version),
+        protocol_skew: classifyHostProtocolSkew(effectiveVersion),
       };
     })();
 
@@ -480,6 +531,48 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
 }
 
 // ---------------------------------------------------------------------------
+// residency-status / residency-abort (Phase F — the Team page progress + Cancel)
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /api/host-membership/residency-status?project_id=<proj>` — the in-flight
+ * transition for a project, or `{in_flight:false}` when none. Localhost-only
+ * (`host/routing.ts` ROUTE_RULES): it reads this member machine's own journal
+ * and local outbox, meaningless to answer for another machine. Without the
+ * daemon capability wired (tests) it degrades to `{in_flight:false}`.
+ */
+export function createHostMembershipResidencyStatusHandler(deps: HostMembershipRouteDeps): RouteHandler {
+  return async (req) => {
+    const projectId = str(req.query.project_id);
+    if (!projectId) return { status: 400, body: errorBody('missing_project_id', 'project_id is required.') };
+    if (!deps.residencyStatus) return { status: 200, body: { in_flight: false } };
+    return { status: 200, body: deps.residencyStatus(projectId) };
+  };
+}
+
+/**
+ * `POST /api/host-membership/residency-abort` `{project_id}` — abort an in-flight
+ * transition, `{ok:true}` on success or a coded membership error (e.g.
+ * `residency_abort_too_late`). Localhost-only, daemon-only (it restores/clears
+ * local state); a caller without the capability wired gets a clean refusal.
+ */
+export function createHostMembershipResidencyAbortHandler(deps: HostMembershipRouteDeps): RouteHandler {
+  return async (req) => {
+    const body = asRecord(req.body);
+    const projectId = str(body.project_id);
+    if (!projectId) return { status: 400, body: errorBody('missing_project_id', 'project_id is required.') };
+    if (!deps.residencyAbort) {
+      return { status: 400, body: errorBody('residency_abort_unavailable', 'Aborting a residency transition requires the running daemon.') };
+    }
+    try {
+      return { status: 200, body: deps.residencyAbort(projectId) };
+    } catch (err) {
+      return failure('residency_abort_failed', err);
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -496,4 +589,6 @@ export function registerHostMembershipRoutes(server: RouteRegistrar, deps: HostM
   server.registerRoute('POST', '/api/host-membership/detach', createHostMembershipDetachHandler(deps));
   server.registerRoute('GET', '/api/host-membership/status', createHostMembershipStatusHandler(deps));
   server.registerRoute('GET', '/api/host-membership/health', healthHandler);
+  server.registerRoute('GET', '/api/host-membership/residency-status', createHostMembershipResidencyStatusHandler(deps));
+  server.registerRoute('POST', '/api/host-membership/residency-abort', createHostMembershipResidencyAbortHandler(deps));
 }

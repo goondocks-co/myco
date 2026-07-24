@@ -766,21 +766,37 @@ export async function defaultResolveMemberOverlayIp(
  * bridge port, so a hung CONNECT/GET never leaks the socket past this call's
  * return the way a resolve-only timeout would.
  */
-export async function defaultCheckHostReachable(overlayAddress: string, proxyPort: number): Promise<boolean> {
+/** The reachability probe's full result: whether the tunnel + host listener are
+ *  up, and the host's LIVE protocol version if it stamped one on the response
+ *  (the overlay 401 the bearer-less probe receives carries it). `protocolVersion`
+ *  is null when the response carried no valid version header (or unreachable). */
+export interface HostHealthProbe {
+  reachable: boolean;
+  protocolVersion: number | null;
+}
+
+/**
+ * Dial the host's `/health` over the overlay through the local CONNECT proxy and
+ * read both liveness and the host's live protocol version from the response.
+ * Any HTTP response (even the bearer-gate 401) proves the tunnel + host listener
+ * are up AND carries `x-myco-host-protocol` — so one dial confirms reachability
+ * and learns whether the host has upgraded since join. Never throws.
+ */
+export async function dialHostHealth(overlayAddress: string, proxyPort: number): Promise<HostHealthProbe> {
   const { host, port } = splitOverlayAddress(overlayAddress);
-  if (!host || !port) return false;
-  return await new Promise<boolean>((resolve) => {
+  if (!host || !port) return { reachable: false, protocolVersion: null };
+  return await new Promise<HostHealthProbe>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let probe: import('node:http').ClientRequest | undefined;
-    const done = (v: boolean) => {
+    const done = (reachable: boolean, protocolVersion: number | null) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       probe?.destroy(); // release the one-shot tunnel on every exit path — success, error, AND outer timeout
-      resolve(v);
+      resolve({ reachable, protocolVersion });
     };
-    timer = setTimeout(() => done(false), HOST_PROXY_CONNECT_TIMEOUT_MS);
+    timer = setTimeout(() => done(false, null), HOST_PROXY_CONNECT_TIMEOUT_MS);
     Promise.all([import('node:http'), acquireTunnelBridgePort(proxyPort, host, port)]).then(([http, bridgePort]) => {
       // The outer timer may have already fired while the dynamic import / bridge
       // acquisition was in flight — don't open a request `done` no longer tracks.
@@ -788,14 +804,24 @@ export async function defaultCheckHostReachable(overlayAddress: string, proxyPor
       probe = http.request(
         { host: '127.0.0.1', port: bridgePort, path: '/health', method: 'GET', headers: { host: `${host}:${port}` }, agent: false },
         (probeRes) => {
+          const raw = probeRes.headers[HOST_PROTOCOL_HEADER];
+          const value = Array.isArray(raw) ? raw[0] : raw;
+          const parsed = value !== undefined ? Number(value) : NaN;
           probeRes.resume();
-          done(true); // any response proves the tunnel + host listener are up
+          done(true, Number.isFinite(parsed) ? parsed : null); // any response proves the tunnel + host listener are up
         },
       );
-      probe.once('error', () => done(false));
+      probe.once('error', () => done(false, null));
       probe.end();
-    }).catch(() => done(false));
+    }).catch(() => done(false, null));
   });
+}
+
+/** Backward-compatible boolean reachability probe (join + doctor). Wraps
+ *  {@link dialHostHealth}; callers that also need the host's live protocol
+ *  version use `dialHostHealth` directly. */
+export async function defaultCheckHostReachable(overlayAddress: string, proxyPort: number): Promise<boolean> {
+  return (await dialHostHealth(overlayAddress, proxyPort)).reachable;
 }
 
 function splitOverlayAddress(overlayAddress: string): { host: string; port: number } {

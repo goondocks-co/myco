@@ -8,6 +8,9 @@ import { MetricCard } from '../ui/metric-card';
 import { SectionHeader } from '../ui/section-header';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { useSession, useDeleteSession, useSessionImpact, useSessionPlans, useCompleteSession } from '../../hooks/use-sessions';
+import { useHostMembershipStatus } from '../../hooks/use-host-membership';
+import { useActiveProjectSelection } from '../../hooks/use-project-selection';
+import { displaySessionProjectRoot } from '../../lib/session-project-root';
 import { useSymbionts, buildResumeCommand } from '../../hooks/use-symbionts';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
@@ -106,6 +109,12 @@ export interface SessionDetailProps {
 export function SessionDetail({ id }: SessionDetailProps) {
   const navigate = useNavigate();
   const { data: session, isLoading, isError, error } = useSession(id);
+  // For a session captured under a Team Host, `project_root` is the host's
+  // internal synthetic path (`<grove>/hosted/<id>`); join the session back to
+  // its membership ref to show the member's own checkout path instead (W2
+  // follow-up). `useHostMembershipStatus()` here reads the shared host list.
+  const selection = useActiveProjectSelection();
+  const { data: membership } = useHostMembershipStatus();
   const { data: symbiontsData } = useSymbionts();
   const symbiontDisplayName = useMemo(() => {
     return buildSymbiontDisplayNameResolver(symbiontsData?.symbionts ?? []);
@@ -171,6 +180,17 @@ export function SessionDetail({ id }: SessionDetailProps) {
   const resumeCmd = symbiontsData
     ? buildResumeCommand(symbiontsData.symbionts, session.agent, id)
     : null;
+
+  // Join on the session's project id across every joined host's attach refs;
+  // the substitution only takes effect for an attached project whose root is a
+  // host synthetic path, and otherwise renders the captured value unchanged.
+  const membershipRef = session.project_id
+    ? membership?.hosts.flatMap((h) => h.projects).find((p) => p.project_id === session.project_id)
+    : undefined;
+  const projectRootDisplay = displaySessionProjectRoot(session.project_root, {
+    attached: selection?.project.attached === true,
+    ref: membershipRef,
+  });
 
   return (
     <div className="space-y-6 overflow-hidden">
@@ -299,8 +319,8 @@ export function SessionDetail({ id }: SessionDetailProps) {
           {session.parent_session_reason && (
             <MetaItem label="Reason" value={session.parent_session_reason} mono={false} />
           )}
-          {session.project_root && (
-            <MetaItem label="Project" value={session.project_root} />
+          {projectRootDisplay && (
+            <MetaItem label="Project" value={projectRootDisplay} />
           )}
         </div>
       </Surface>

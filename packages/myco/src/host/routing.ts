@@ -53,6 +53,7 @@ import { HOST_BEARER_SECRET } from '../constants.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { scopePolicyForPath } from '../config/scope.js';
 import { readHostSecrets, resolveAttach } from './registry.js';
+import { ROUTED_RESIDENCY_PULL_PATH, ROUTED_RESIDENCY_ROWS_PATH } from './residency-journal.js';
 
 /** The scope-map stamp a route carries. See the module docstring. */
 export type RouteStamp = 'serve' | 'collect' | 'degrade' | 'config-lock' | 'config-carve' | 'team-write' | 'localhost-only';
@@ -278,6 +279,24 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   // POSTs the content here; the host runs the SAME capturePlan against its Grove DB.
   // Origin-side capture, so `collect`: served locally on the host, proxied from a member.
   { method: 'POST', pattern: '/routed-capture/plan', stamp: 'collect', capability: COLLECTION },
+  // Routed residency-rows ingest — the host RECEIVE side of a with-history attach
+  // (Phase F T2). When a project attaches to a host WITH its local history, the
+  // member drains that project's rows (`host/residency-drain.ts`) one allow-listed
+  // table per request to this route; the host applies them to its served Grove DB
+  // under the per-table residency apply rules. Origin-side capture, so `collect`:
+  // it rides the overlay bearer/version gate, registers the hosted project on the
+  // first batch (the collect-stamped registration-on-ingest seam), and is served
+  // locally on the host, proxied from a member.
+  { method: 'POST', pattern: ROUTED_RESIDENCY_ROWS_PATH, stamp: 'collect', capability: COLLECTION },
+  // Routed residency-pull — the host RECEIVE side of a DETACH (Phase F T3). A
+  // detaching member pages its own rows back from the host here. Same overlay
+  // data-plane family as residency-rows: bearer/version gated, proxied from the
+  // member, served locally on the host. `collect` (not `serve`): mechanically
+  // identical to serve for member-proxy + host-serve-locally, it keeps the whole
+  // residency transport family in one place and lets the registration-on-ingest
+  // seam harmlessly ensure the project row resolves. The route's own side effects
+  // (claim release, stub deregister) are the collector contract for this leg.
+  { method: 'POST', pattern: ROUTED_RESIDENCY_PULL_PATH, stamp: 'collect', capability: COLLECTION },
 
   // --- degrade: Code intelligence (Canopy) OFF for hosted projects v1 (§1c, §2) ---
   { method: 'POST', pattern: '/canopy/inject', stamp: 'degrade', capability: CANOPY },
@@ -453,6 +472,11 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   // every host it has joined — never proxied, never meaningful to answer on
   // another machine's behalf, same posture as the mutation routes above.
   { method: 'GET', pattern: '/api/host-membership/health', stamp: 'localhost-only', capability: HOST_ADMIN },
+  // Residency-transition progress + Cancel (Phase F T6). Both read/mutate THIS
+  // machine's own journal + local state (an in-flight project move), never
+  // proxied, same posture as the membership routes above.
+  { method: 'GET', pattern: '/api/host-membership/residency-status', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-membership/residency-abort', stamp: 'localhost-only', capability: HOST_ADMIN },
 
   // --- localhost-only: Team Host operator-side serving status (Task T4,
   //     decision-ef693c71 D3). Reports THIS machine's OWN host-serve

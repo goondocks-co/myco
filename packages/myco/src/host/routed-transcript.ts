@@ -440,3 +440,37 @@ export function pruneRoutedTranscriptSessionDir(dirPath: string): void {
     /* best-effort — GC retries next tick */
   }
 }
+
+/**
+ * Purge the materialized transcript trees for a detaching member's SESSIONS
+ * (Phase F T3 done-page side effect). The cache is `(machine, session)`-keyed, NOT
+ * project-keyed — one member may host sessions for several attached projects under
+ * the same `<machine>` dir — so a detach purges only the DETACHING project's session
+ * trees (`<root>/<machine>/<session>`), never the whole machine dir. Idempotent and
+ * best-effort: an already-gone or malformed-id tree is skipped, never thrown.
+ * Returns the count of trees removed. `machineId`/`sessionId` funnel through
+ * {@link assertSafeCaptureSegment} — a hostile id resolves to no path, never an escape.
+ */
+export function pruneRoutedTranscriptSessionsForMachine(machineId: string, sessionIds: string[]): number {
+  let safeMachine: string;
+  try {
+    safeMachine = assertSafeCaptureSegment(machineId, 'machine_id');
+  } catch {
+    return 0;
+  }
+  const root = resolveRoutedTranscriptsDir();
+  let removed = 0;
+  for (const sessionId of sessionIds) {
+    let safeSession: string;
+    try {
+      safeSession = assertSafeCaptureSegment(sessionId, 'session_id');
+    } catch {
+      continue;
+    }
+    const dir = path.join(root, safeMachine, safeSession);
+    if (!fs.existsSync(dir)) continue;
+    pruneRoutedTranscriptSessionDir(dir);
+    removed += 1;
+  }
+  return removed;
+}

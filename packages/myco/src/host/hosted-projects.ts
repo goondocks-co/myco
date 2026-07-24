@@ -40,6 +40,7 @@ import { resolveGroveDir, resolveMycoHome } from '../grove/paths.js';
 import {
   deregisterProjectInGrove,
   findRegisteredProject,
+  getRegisteredProjectInGrove,
   listRegisteredProjects,
   registerProjectInGrove,
   type RegisteredProject,
@@ -151,6 +152,60 @@ export function maybeRegisterHostedProjectOnIngest(input: {
     return { registered: false, error: err instanceof Error ? err.message : String(err) };
   }
   return { registered: true, projectId, groveId: servedGroveId };
+}
+
+/** Result of an adoption attempt. `adopted` is true only when a placeholder name
+ *  was upgraded to the provided name; false for every no-op (row absent, or the
+ *  name was already real). */
+export interface HostedAdoptionOutcome {
+  adopted: boolean;
+  projectId: string;
+  name?: string;
+}
+
+/**
+ * Adopt the member's real project name onto a hosted registry row (Phase F T2).
+ *
+ * A hosted project is registered on its first forwarded capture with the
+ * placeholder name {@link hostedProjectName} (the last-N-hex of the id — the host
+ * never learns the member's chosen name from ordinary capture). A with-history
+ * attach DOES carry the name: it rides the residency push's first batch, and the
+ * ingest handler calls this once that batch arrives.
+ *
+ * Idempotent by construction — the upgrade fires ONLY while the row still carries
+ * the placeholder shape, so a re-sent first batch (a lost ack) is a no-op. It
+ * updates the name in place via the registry's idempotent upsert
+ * ({@link registerProjectInGrove}), passing the row's EXISTING synthetic root so
+ * the root is never changed (the synthetic-root convention is uniform, D-W2-2)
+ * and `created_at` is preserved. Absent row → no-op (the registration seam writes
+ * the row before this runs, but a race/miss must not synthesize one here).
+ */
+export function adoptHostedProjectName(
+  groveId: string,
+  projectId: string,
+  name: string,
+  mycoHome = resolveMycoHome(),
+): HostedAdoptionOutcome {
+  const existing = getRegisteredProjectInGrove(groveId, projectId, mycoHome, { includeArchived: true });
+  if (!existing) return { adopted: false, projectId };
+  // Only a still-placeholder name is adopted: a real name (already adopted, or a
+  // locally-registered project) must never be clobbered by a replayed batch.
+  if (existing.name !== hostedProjectName(projectId)) return { adopted: false, projectId };
+  // A blank/whitespace name is not a real name — leave the placeholder in place.
+  const trimmed = name.trim();
+  if (!trimmed) return { adopted: false, projectId };
+
+  registerProjectInGrove(
+    groveId,
+    {
+      projectId,
+      projectName: trimmed,
+      projectRoot: existing.root,
+      ...(existing.binding_id ? { bindingId: existing.binding_id } : {}),
+    },
+    mycoHome,
+  );
+  return { adopted: true, projectId, name: trimmed };
 }
 
 /** Outcome of one prune sweep: rows removed vs. rows kept (young or referenced). */

@@ -4,6 +4,8 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { PowerProvider } from '../../packages/myco/ui/src/providers/power';
 import type { SessionDetail, SessionSummary } from '../../packages/myco/ui/src/hooks/use-sessions';
 
 let sessionsFixture: SessionSummary[] = [];
@@ -87,6 +89,7 @@ function makeDetail(overrides: Partial<SessionDetail>): SessionDetail {
     id: 'sess-detail',
     agent: 'codex',
     user: null,
+    project_id: null,
     project_root: null,
     branch: null,
     started_at: Date.UTC(2026, 5, 28, 10, 0, 0) / 1000,
@@ -195,10 +198,19 @@ describe('session symbiont labels', () => {
   it('uses the display label in the session detail header badge', async () => {
     sessionDetailFixture = makeDetail({ id: 'detail-1', agent: 'codex' });
 
+    // SessionDetail reads the host membership list + active project selection
+    // to un-synthesize an attached session's project root, both of which run
+    // through React Query — provide a client (retry off; the reads settle to
+    // empty, which the un-synthesize path treats as "no substitution").
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <MemoryRouter initialEntries={['/sessions/detail-1']}>
-        <SessionDetail id="detail-1" />
-      </MemoryRouter>,
+      <PowerProvider>
+        <QueryClientProvider client={client}>
+          <MemoryRouter initialEntries={['/sessions/detail-1']}>
+            <SessionDetail id="detail-1" />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </PowerProvider>,
     );
 
     await waitFor(() => expect(screen.getByText('Codex')).toBeDefined());

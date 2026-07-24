@@ -13,14 +13,24 @@
 import { describe, expect, it } from 'bun:test';
 import { ApiError } from '../../packages/myco/ui/src/lib/api';
 import {
+  ATTACH_CONFIRM_COPY,
+  CANCEL_MOVE_CONFIRM_COPY,
+  DETACH_CONFIRM_COPY,
+  DETACH_NO_PULL_CONFIRM_COPY,
   HOST_DETAIL_NO_PROJECTS_COPY,
   HOST_REACHABILITY_COPY,
   LOCAL_GROVE_PICKER_HELPER,
   LOCAL_GROVE_PICKER_LABEL,
+  RESIDENCY_STALLED_COPY,
   leaveHostConfirmMessage,
+  membershipErrorCode,
   membershipErrorCopy,
   protocolSkewNote,
   reachabilityHintSuffix,
+  residencyAbortTooLateCopy,
+  residencyPendingDetail,
+  residencyPhaseLabel,
+  residencyProgressHeadline,
 } from '../../packages/myco/ui/src/lib/membership-copy';
 
 function membershipApiError(code: string, message: string): ApiError {
@@ -165,5 +175,106 @@ describe('Local Grove picker copy (AttachProjectPanel, Task T5, decision-ef693c7
 describe('Host detail — empty attached-projects copy (Task T5)', () => {
   it('is non-empty and names "this host"', () => {
     expect(HOST_DETAIL_NO_PROJECTS_COPY).toContain('this host');
+  });
+});
+
+describe('Residency round-trip copy (Phase F, T5)', () => {
+  const RESIDENCY_CODES = [
+    'residency_transition_in_flight',
+    'residency_requires_host_update',
+    'residency_pull_unavailable',
+    'residency_detach_needs_root',
+    // Returned by residency-abort when the move is past the cancelable phases
+    // (detach applying/rehoming, or a finished/absent transition) — the
+    // Cancel-move control surfaces it through membershipErrorCopy.
+    'residency_abort_too_late',
+  ];
+
+  it('maps every residency refusal code to outcome copy free of CLI syntax and mechanism nouns', () => {
+    for (const code of RESIDENCY_CODES) {
+      const copy = membershipErrorCopy(new ApiError(400, { error: { code, message: 'run `myco detach` — outbox/journal rows pending' } }));
+      expect(copy.length).toBeGreaterThan(20);
+      expect(copy).not.toContain('`');
+      expect(copy).not.toContain('myco ');
+      expect(copy.toLowerCase()).not.toContain('outbox');
+      expect(copy.toLowerCase()).not.toContain('journal');
+    }
+  });
+
+  it('residency_detach_needs_root tells the member to reconnect once first', () => {
+    const copy = membershipErrorCopy(new ApiError(400, { error: { code: 'residency_detach_needs_root', message: 'no root on record' } }));
+    expect(copy).toContain('Reconnect this project once first');
+  });
+
+  it('residency_transition_in_flight tells the member a move is already running', () => {
+    const copy = membershipErrorCopy(new ApiError(400, { error: { code: 'residency_transition_in_flight', message: 'busy' } }));
+    expect(copy).toContain('already in progress');
+  });
+
+  it('residency_abort_too_late explains the move will finish on its own', () => {
+    const copy = membershipErrorCopy(new ApiError(400, { error: { code: 'residency_abort_too_late', message: 'phase applying' } }));
+    expect(copy).toContain('too far along to cancel');
+  });
+
+  it('residencyAbortTooLateCopy branches on direction — attach points at Disconnect, detach says let it finish', () => {
+    const attach = residencyAbortTooLateCopy('attach');
+    expect(attach).toContain('disconnect the project');
+    expect(attach).toContain("can't be cancelled");
+
+    const detach = residencyAbortTooLateCopy('detach');
+    expect(detach).toContain('already back on this machine');
+
+    // Unknown direction falls back to the direction-agnostic map line.
+    expect(residencyAbortTooLateCopy(undefined)).toContain('too far along to cancel');
+  });
+
+  it('membershipErrorCode extracts the coded refusal (used by the detach pull-unavailable fallback) and is null for uncoded/non-ApiError', () => {
+    expect(membershipErrorCode(new ApiError(400, { error: { code: 'residency_pull_unavailable', message: 'x' } }))).toBe('residency_pull_unavailable');
+    expect(membershipErrorCode(new ApiError(400, { message: 'no code here' }))).toBeNull();
+    expect(membershipErrorCode(new Error('plain'))).toBeNull();
+    expect(membershipErrorCode('nope')).toBeNull();
+  });
+
+  it('attach / detach / no-pull / cancel confirmations read in user-outcome voice', () => {
+    expect(ATTACH_CONFIRM_COPY).toContain('moves to the team host');
+    expect(ATTACH_CONFIRM_COPY).toContain('local backup first');
+    expect(DETACH_CONFIRM_COPY).toContain('comes back');
+    expect(DETACH_NO_PULL_CONFIRM_COPY).toContain('Disconnect anyway without bringing data back?');
+    expect(CANCEL_MOVE_CONFIRM_COPY).toBe('Cancel and put the project back the way it was?');
+    for (const s of [ATTACH_CONFIRM_COPY, DETACH_CONFIRM_COPY, DETACH_NO_PULL_CONFIRM_COPY, CANCEL_MOVE_CONFIRM_COPY]) {
+      expect(s).not.toContain('`');
+      expect(s.toLowerCase()).not.toContain('outbox');
+      expect(s.toLowerCase()).not.toContain('journal');
+    }
+  });
+
+  it('residencyProgressHeadline is direction-aware', () => {
+    expect(residencyProgressHeadline('attach')).toBe('Moving history to the team host…');
+    expect(residencyProgressHeadline('detach')).toBe('Bringing your data back…');
+    // An unknown/absent direction reads as the attach ("moving out") case.
+    expect(residencyProgressHeadline(undefined)).toBe('Moving history to the team host…');
+  });
+
+  it('residencyPhaseLabel maps every phase to a friendly step, and empty for none', () => {
+    expect(residencyPhaseLabel('parking')).toBe('backing up');
+    expect(residencyPhaseLabel('pushing')).toBe('moving');
+    expect(residencyPhaseLabel('pulling')).toBe('retrieving');
+    expect(residencyPhaseLabel('applying')).toBe('restoring');
+    expect(residencyPhaseLabel('rehoming')).toBe('finishing');
+    expect(residencyPhaseLabel(undefined)).toBe('');
+  });
+
+  it('residencyPendingDetail renders a plain "items" count (never "rows"), or null when absent', () => {
+    expect(residencyPendingDetail(1)).toBe('1 item left');
+    expect(residencyPendingDetail(1234)).toBe('1,234 items left');
+    expect(residencyPendingDetail(0)).toBe('0 items left');
+    expect(residencyPendingDetail(null)).toBeNull();
+    expect(residencyPendingDetail(undefined)).toBeNull();
+    expect(residencyPendingDetail(42)).not.toContain('row');
+  });
+
+  it('the stalled warning states the outcome + the way out without leaking mechanism', () => {
+    expect(RESIDENCY_STALLED_COPY).toContain('Cancel the move');
+    expect(RESIDENCY_STALLED_COPY.toLowerCase()).not.toContain('drain');
   });
 });
