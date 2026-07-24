@@ -17,6 +17,7 @@
  * Hermetic: `MYCO_TEAM_HOME` (attach registry) and the daemon log dir are fresh
  * tmpdirs; the daemon state authority is stubbed so no `daemon.json` is written.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -34,10 +35,12 @@ import {
   createHostId,
   createProjectId,
 } from '@myco/grove/ids';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 
 interface HostHit { method: string; url: string; headers: http.IncomingHttpHeaders; }
 
@@ -94,6 +97,7 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
       runtimeCache,
     });
     server.registerRoute('GET', '/api/sessions', async () => {
@@ -142,7 +146,7 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: groveId, project_id: projectId }],
     };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'host-bearer');
     return { projectId, groveId };
   }

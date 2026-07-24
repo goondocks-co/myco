@@ -48,6 +48,7 @@ import {
   type RegisteredProject,
 } from '@myco/grove/registry.js';
 import { attachTargetGroveIds, attachTargetProjectIds } from '@myco/host/registry.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { Logger } from '@myco/daemon/logger.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -72,6 +73,7 @@ export interface GroveScope {
 export interface ForEachGroveOptions {
   /** Override Myco home for tests; defaults to the resolved global home. */
   mycoHome?: string;
+  lockNamespace?: PerUserLockNamespace;
   /**
    * @deprecated No longer used; the home is the grove filter. Kept for
    * call-site compatibility until T9 removes all pass-throughs.
@@ -133,7 +135,7 @@ export async function forEachGrove(
   // hosted, so by invariant they have no local Grove dir and never appear in
   // listGroves — but if local state ever leaked for one, skipping its id here
   // keeps every housekeeping/scheduler fan-out structurally clear of it.
-  const attachedGroveIds = attachTargetGroveIds();
+  const attachedGroveIds = attachTargetGroveIds(options.lockNamespace);
 
   // Apply the pre-open filters before any cache touch so cold or attached
   // Groves don't displace warm entries. Filtering happens here rather than
@@ -266,7 +268,7 @@ export async function forEachRegisteredProject(
   // Grove its row sits in. forEachGrove's grove-level skip only excludes rows
   // in the hosted Grove; a local→attached project's stale row can linger in
   // the local default Grove, and only a project-level filter catches that.
-  const attachedProjectIds = attachTargetProjectIds();
+  const attachedProjectIds = attachTargetProjectIds(options.lockNamespace);
 
   let attempted = 0;
   let ok = 0;
@@ -325,7 +327,11 @@ export async function forEachRegisteredProject(
         }
       }
     },
-    { mycoHome, daemonStateDir: options.daemonStateDir },
+    {
+      mycoHome,
+      daemonStateDir: options.daemonStateDir,
+      lockNamespace: options.lockNamespace,
+    },
   );
 
   return { attempted, ok, failed };

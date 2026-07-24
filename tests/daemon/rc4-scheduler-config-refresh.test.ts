@@ -37,9 +37,21 @@ mock.module('@myco/agent/registry.js', () => ({
   ]),
 }));
 
-import { registerScheduledTasks } from '@myco/daemon/task-scheduling.js';
+import {
+  registerScheduledTasks as registerScheduledTasksWith,
+  type TaskSchedulingDeps,
+} from '@myco/daemon/task-scheduling.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const registerScheduledTasks = (
+  runner: Parameters<typeof registerScheduledTasksWith>[0],
+  deps: TaskSchedulingDeps,
+) => registerScheduledTasksWith(runner, {
+  ...deps,
+  lockNamespace: testPerUserLockNamespace,
+});
 import { ProjectPowerStateTracker } from '@myco/daemon/project-power-state.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { invalidateMergedConfigCache } from '@myco/config/loader.js';

@@ -30,6 +30,10 @@ import {
   listRegisteredProjects,
   resolveAttachForProjectRoot,
 } from '../grove/registry.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 export interface ProjectBufferLocation {
   /** Owning Grove id. */
@@ -66,6 +70,7 @@ export interface ProjectBufferLocation {
 export function resolveProjectBufferDirFromRoot(
   projectRoot: string,
   mycoHome = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): ProjectBufferLocation | null {
   // Team Host never-materialize invariant: for an attached project, resolve
   // the buffer dir straight from the attach ref's ids via the DB-free
@@ -73,7 +78,7 @@ export function resolveProjectBufferDirFromRoot(
   // hosted Grove has no local registry row, so a divert here writes only a
   // buffer dir (a filesystem write, no Grove materialization) that the
   // attach-aware drain later pushes to the host.
-  const attach = resolveAttachForProjectRoot(projectRoot);
+  const attach = resolveAttachForProjectRoot(projectRoot, lockNamespace);
   if (attach) {
     return {
       groveId: attach.ref.grove_id,
@@ -82,7 +87,7 @@ export function resolveProjectBufferDirFromRoot(
     };
   }
 
-  const resolved = ensureProjectRegistered(projectRoot, mycoHome);
+  const resolved = ensureProjectRegistered(projectRoot, mycoHome, lockNamespace);
   if (!resolved) return null;
   return {
     groveId: resolved.grove.id,

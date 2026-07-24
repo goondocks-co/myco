@@ -2,6 +2,7 @@ import { captureCriticalEvent } from './send-event.js';
 import { readHookInput } from './input.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 /**
  * Parse `--phases response,transcript` from process.argv. The hook command
@@ -21,8 +22,8 @@ function parsePhasesArg(): ('response' | 'transcript')[] | undefined {
   return valid.length > 0 ? valid : undefined;
 }
 
-export async function main() {
-  const VAULT_DIR = resolveProvisionedVaultDir();
+export async function main(lockNamespace?: PerUserLockNamespace) {
+  const VAULT_DIR = resolveProvisionedVaultDir(undefined, lockNamespace);
   if (!VAULT_DIR) return;
 
   let symbiont: string | undefined;
@@ -62,6 +63,7 @@ export async function main() {
             agent: input.agent,
           }
         : null,
+      lockNamespace,
     });
   } catch (error) {
     process.stderr.write(`[myco] stop error: ${(error as Error).message}\n`);

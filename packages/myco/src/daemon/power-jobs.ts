@@ -73,6 +73,7 @@ import {
   type AutoAdoptDeps,
 } from '@myco/upgrade/auto-check.js';
 import { resolveMycoBinary, readUpdateConfig } from './update-checker.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -130,6 +131,7 @@ export interface PowerJobDeps {
   mycoHome?: string;
   /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
   daemonStateDir: string;
+  lockNamespace?: PerUserLockNamespace;
   onCanopyMassAdd?: (groveId: string, projectId: GroveProjectId) => void;
   /**
    * The buffer reconciler. The dead-session sweep consults
@@ -252,6 +254,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
     onCanopyMassAdd,
     daemonVaultDir,
     daemonStateDir,
+    lockNamespace,
   } = deps;
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
@@ -353,7 +356,12 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
   };
 
   const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
-    () => forEachGrove(cache, logger, body, { mycoHome, jobName }).then(() => undefined);
+    () => forEachGrove(
+      cache,
+      logger,
+      body,
+      { mycoHome, jobName, lockNamespace },
+    ).then(() => undefined);
 
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.
@@ -814,6 +822,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           mycoHome,
           daemonStateDir,
           machineId,
+          lockNamespace,
           // Skip projects under an in-flight move/vacuum so GC doesn't
           // race the op's exclusive view of the DB.
           shouldVisit: pauseAwareShouldVisit(mycoHome),
@@ -904,6 +913,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           mycoHome,
           daemonStateDir,
           machineId,
+          lockNamespace,
           shouldVisit: pauseAwareShouldVisit(mycoHome),
           notifyOnProjectFailure: buildProjectFailureNotifier(
             'daemon.release_provenance_failed',
@@ -969,6 +979,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           mycoHome,
           daemonStateDir,
           machineId,
+          lockNamespace,
           shouldVisit: pauseAwareShouldVisit(mycoHome),
           notifyOnProjectFailure: buildProjectFailureNotifier(
             'daemon.managed_files_reconcile_failed',
@@ -1143,6 +1154,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           mycoHome,
           daemonStateDir,
           machineId,
+          lockNamespace,
           // Skip projects under an in-flight move/vacuum so the canopy
           // scan doesn't write to a DB the op owns exclusively.
           shouldVisit: pauseAwareShouldVisit(mycoHome),

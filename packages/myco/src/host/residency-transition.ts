@@ -47,6 +47,10 @@ import {
   type ResidencyJournal,
   type ResidencyPhase,
 } from './residency-journal.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 /** Daemon-owned capabilities the transition and drain both need. `withGroveDb`
  *  pins + scopes a Grove connection so `getDatabase()` inside `fn` resolves to
@@ -57,6 +61,7 @@ export interface ResidencyDaemonDeps {
   withGroveDb: <T>(groveId: string, fn: (db: Database) => T) => T;
   logger?: Pick<DaemonLogger, 'info' | 'warn'>;
   now?: () => number;
+  lockNamespace?: PerUserLockNamespace;
   /**
    * Kick an immediate residency drain pass (mirrors the capture live-forward
    * pattern). Called after a begin/abort writes its journal so the transition
@@ -158,9 +163,10 @@ export function beginAttachResidency(
  * state changes, so the caller can cleanly abandon.
  */
 export function completeAttachParking(journal: ResidencyJournal, deps: ResidencyDaemonDeps): void {
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   // Step 2 — protocol gate. Runs before anything destructive so a refusal can be
   // cleanly abandoned.
-  const host = getHost(journal.host_id);
+  const host = getHost(journal.host_id, lockNamespace);
   if (!host || host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {
     throw codedMembershipError(
       'residency_requires_host_update',
@@ -198,7 +204,7 @@ export function completeAttachParking(journal: ResidencyJournal, deps: Residency
     root: journal.root,
     local_grove_id: journal.local_grove_id,
   };
-  attachProject(journal.host_id, ref, deps.mycoHome);
+  attachProject(journal.host_id, ref, deps.mycoHome, lockNamespace);
 
   // Step 6 — enqueue the project's rows for the drain to ship.
   deps.withGroveDb(journal.source_grove_id, () =>
@@ -266,6 +272,7 @@ export function residencyStatus(projectId: string, deps: ResidencyDaemonDeps): R
  * the rows already live on the host (detach is the way back).
  */
 export function abortResidency(projectId: string, deps: ResidencyDaemonDeps): { ok: true } {
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const journal = readResidencyJournal(projectId);
   if (!journal || journal.phase === 'done') {
     throw codedMembershipError(
@@ -281,7 +288,7 @@ export function abortResidency(projectId: string, deps: ResidencyDaemonDeps): { 
       projectName: journal.project_name,
       projectRoot: journal.root,
     }, deps.mycoHome);
-    detachProject(journal.host_id, projectId);
+    detachProject(journal.host_id, projectId, lockNamespace);
     // Drop the residency-backfilled pending rows — inert otherwise (nothing ships
     // them once the journal is gone), and a re-attach re-enqueues from scratch.
     deps.withGroveDb(journal.source_grove_id, () => dropPendingForProjects([projectId]));

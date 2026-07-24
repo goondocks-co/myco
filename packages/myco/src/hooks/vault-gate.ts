@@ -30,6 +30,7 @@ import {
 import { projectLifecycleForRoot } from '../grove/registry.js';
 import { isProjectRootIgnored, agentHomeIgnorePaths } from '../vault/capture-ignore.js';
 import { loadMachineConfig } from '../config/loader.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 const lifecycleMemo = new Map<string, 'active' | 'archived' | 'unregistered'>();
 
@@ -83,7 +84,10 @@ function isCaptureGateClosed(projectRoot: string): boolean {
  * provision logic on the cold path when the vault is genuinely
  * absent — which is once per project lifetime.
  */
-export function resolveProvisionedVaultDir(cwd: string = process.cwd()): string | null {
+export function resolveProvisionedVaultDir(
+  cwd: string = process.cwd(),
+  lockNamespace?: PerUserLockNamespace,
+): string | null {
   const vaultDir = resolveVaultDir(cwd);
   const mycoYamlPath = path.join(vaultDir, 'myco.yaml');
   const projectRoot = resolveProjectRoot(vaultDir);
@@ -105,7 +109,7 @@ export function resolveProvisionedVaultDir(cwd: string = process.cwd()): string 
     // idempotent (sentinel-gated) and fast on the cold path (a few
     // small file ops); subsequent hook fires skip the work entirely.
     if (!hasGlobalInstallMigrationCompleted(projectRoot)) {
-      try { migrateProjectToGlobalInstall(projectRoot); }
+      try { migrateProjectToGlobalInstall(projectRoot, { lockNamespace }); }
       catch {
         // Migration failure must never break capture for the user.
         // The next hook fire retries; `recordMigrationPass` (wired

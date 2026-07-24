@@ -20,6 +20,7 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { RealLaunchctlRunner } from '../../packages/myco/src/service/launchd';
 import { RealSystemctlRunner } from '../../packages/myco/src/service/systemd';
+import { RealSchtasksRunner } from '../../packages/myco/src/service/windows';
 import { SERVICE_UNIT_DIR_ENV } from '../../packages/myco/src/service/paths';
 
 const originalEnv = process.env[SERVICE_UNIT_DIR_ENV];
@@ -50,6 +51,138 @@ describe('Real runners refuse to shell out when sandbox env var is set', () => {
     const result = await runner.run(['--user', 'daemon-reload']);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toMatch(/^\[sandbox\] skipped systemctl /);
+  });
+
+  test('sandbox supervisor reads report the intentionally unregistered service as absent', async () => {
+    const launchd = await new RealLaunchctlRunner().run(['print', 'gui/501/co.goondocks.myco']);
+    const systemd = await new RealSystemctlRunner().run(['--user', 'show', 'co.goondocks.myco.service']);
+    const windows = await new RealSchtasksRunner().run(['/query', '/tn', 'co.goondocks.myco']);
+    const windowsState = await new RealSchtasksRunner().queryState('co.goondocks.myco');
+
+    expect(launchd.exitCode).not.toBe(0);
+    expect(systemd.exitCode).not.toBe(0);
+    expect(windows.exitCode).not.toBe(0);
+    expect(windowsState).toBe('absent');
+  });
+
+  test('RealSchtasksRunner skips structured task registration in sandbox mode', async () => {
+    const result = await new RealSchtasksRunner().register({
+      label: 'co.goondocks.myco',
+      command: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      arguments: '-EncodedCommand ZgBvAG8A',
+      runAtLoad: true,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      '[sandbox] skipped Task Scheduler registration co.goondocks.myco',
+    );
+  });
+
+  test('RealSchtasksRunner distinguishes a successful empty enumeration from provider failure', async () => {
+    class TestRunner extends RealSchtasksRunner {
+      command: string | undefined;
+      constructor(private readonly result: { stdout: string; exitCode: number }) { super(); }
+      protected override async runPowerShell(args: string[]): Promise<{ stdout: string; exitCode: number }> {
+        this.command = args.at(-1);
+        return this.result;
+      }
+    }
+    delete process.env[SERVICE_UNIT_DIR_ENV];
+    try {
+      const emptyRunner = new TestRunner({ stdout: '-1\r\n', exitCode: 0 });
+      await expect(emptyRunner.queryState('co.goondocks.myco'))
+        .resolves.toBe('absent');
+      expect(emptyRunner.command).toContain("}\nelseif");
+      expect(emptyRunner.command).not.toContain('}; elseif');
+      await expect(new TestRunner({ stdout: 'CIM provider unavailable', exitCode: 1 }).queryState('co.goondocks.myco'))
+        .rejects.toThrow(/Get-ScheduledTask.*failed.*exit 1/i);
+    } finally {
+      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir';
+    }
+  });
+
+  test('RealSchtasksRunner registers structured actions with a limited interactive principal', async () => {
+    class TestRunner extends RealSchtasksRunner {
+      calls: string[][] = [];
+      protected override async runPowerShell(args: string[]): Promise<{ stdout: string; exitCode: number }> {
+        this.calls.push(args);
+        return { stdout: '', exitCode: 0 };
+      }
+    }
+    delete process.env[SERVICE_UNIT_DIR_ENV];
+    try {
+      const runner = new TestRunner();
+      await runner.register({
+        label: "co.goondocks.myco O'Brien Ω",
+        command: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        arguments: '-EncodedCommand ZgBvAG8A',
+        runAtLoad: false,
+      });
+      await runner.register({
+        label: 'co.goondocks.myco-dev',
+        command: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        arguments: '-EncodedCommand YgBhAHIA',
+        runAtLoad: true,
+      });
+
+      for (const args of runner.calls) {
+        expect(args).toEqual(expect.arrayContaining([
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-EncodedCommand',
+        ]));
+      }
+      const onDemand = Buffer.from(runner.calls[0].at(-1)!, 'base64').toString('utf16le');
+      expect(onDemand).toContain(
+        "$action = New-ScheduledTaskAction -Execute 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -Argument '-EncodedCommand ZgBvAG8A'",
+      );
+      expect(onDemand).toContain(
+        "$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited",
+      );
+      expect(onDemand).toContain(
+        '$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)',
+      );
+      expect(onDemand).toContain("TaskName = 'co.goondocks.myco O''Brien Ω'");
+      expect(onDemand).not.toContain('New-ScheduledTaskTrigger');
+
+      const runAtLoad = Buffer.from(runner.calls[1].at(-1)!, 'base64').toString('utf16le');
+      expect(runAtLoad).toContain(
+        "$parameters['Trigger'] = New-ScheduledTaskTrigger -AtLogOn -User $userId",
+      );
+      expect(runAtLoad).toContain('Register-ScheduledTask @parameters | Out-Null');
+      expect(runAtLoad).toContain('} catch {');
+    } finally {
+      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir';
+    }
+  });
+
+  test('RealSchtasksRunner terminates exact scheduled-task process trees', async () => {
+    class TestRunner extends RealSchtasksRunner {
+      command: string | undefined;
+      protected override async runPowerShell(
+        args: string[],
+      ): Promise<{ stdout: string; exitCode: number }> {
+        this.command = Buffer.from(args.at(-1)!, 'base64').toString('utf16le');
+        return { stdout: '', exitCode: 0 };
+      }
+    }
+    delete process.env[SERVICE_UNIT_DIR_ENV];
+    try {
+      const runner = new TestRunner();
+      await runner.endProcessTree("co.goondocks.myco O'Brien");
+
+      expect(runner.command).toContain(
+        "$service.GetFolder('\\').GetTask('co.goondocks.myco O''Brien')",
+      );
+      expect(runner.command).toContain('$task.GetInstances(0)');
+      expect(runner.command).toContain('& $taskkill /PID $engineProcessId /T /F');
+      expect(runner.command).not.toContain('/IM');
+    } finally {
+      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir';
+    }
   });
 });
 

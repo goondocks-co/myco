@@ -7,6 +7,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
@@ -82,6 +83,7 @@ describe('captureCriticalEvent — policy-driven buffer fallback', () => {
       postBody: opts.postBody,
       bufferEvent: opts.bufferEvent,
       client: fakeClient(opts.result),
+      lockNamespace: testPerUserLockNamespace,
     });
   }
 
@@ -354,6 +356,7 @@ describe('captureCriticalEvent — policy-driven buffer fallback', () => {
           postBody: { type: 'tool_use', session_id: 'ccev-fail-open-001', agent: 'codex', tool_name: 'Bash' },
           bufferEvent: { type: 'tool_use', tool_name: 'Bash' },
           client: fakeClient({ ok: false }),
+          lockNamespace: testPerUserLockNamespace,
         });
         expect(result.ok).toBe(false);
       } finally {

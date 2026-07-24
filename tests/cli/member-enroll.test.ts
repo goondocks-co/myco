@@ -21,12 +21,14 @@ import path from 'node:path';
 
 import { HOST_ENROLL_ROUTE, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 import { DaemonServer } from '@myco/daemon/server';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import {
   connectProxyEnrollTransport,
   createEnrollmentClient,
   defaultCheckHostReachable,
+  dialHostHealth,
   type EnrollmentContext,
   type EnrollmentTransport,
 } from '@myco/host/member-overlay';
@@ -39,6 +41,7 @@ function ctx(overrides: Partial<EnrollmentContext> = {}): EnrollmentContext {
     hostId: 'host_local_ref', hostRef: 'host_local_ref', oneTimeKey: 'k',
     memberHostname: 'my-laptop', memberOverlayIp: '100.64.0.9',
     overlayAddress: '100.64.0.1:7433', proxyPort: 41080,
+    enrollmentNonce: '0123456789abcdef0123456789abcdef',
     ...overrides,
   };
 }
@@ -50,7 +53,7 @@ describe('member enrollment client — unit (injected transport)', () => {
       captured = input;
       return { status: 200, body: JSON.stringify({
         host_id: 'canonical-host', label: 'Canonical', overlay_address: '100.64.0.1:7433',
-        protocol_version: 1, bearer: 'the-shared-bearer', projects: [],
+        protocol_version: 1, bearer: 'the-shared-bearer',
       }) };
     };
     const enrollment = await createEnrollmentClient(transport).enroll(ctx());
@@ -59,21 +62,108 @@ describe('member enrollment client — unit (injected transport)', () => {
     expect(captured?.proxyPort).toBe(41080);
     // Body carries member identity for the host's action log.
     expect(JSON.parse(captured!.body)).toMatchObject({ member_hostname: 'my-laptop', member_overlay_ip: '100.64.0.9' });
+    expect(JSON.parse(captured!.body).enrollment_nonce).toBe('0123456789abcdef0123456789abcdef');
     // Host's authoritative values win when present.
     expect(enrollment.bearer).toBe('the-shared-bearer');
     expect(enrollment.host_id).toBe('canonical-host');
     expect(enrollment.label).toBe('Canonical');
     expect(enrollment.overlay_address).toBe('100.64.0.1:7433');
+    expect(enrollment.projects).toBeUndefined();
+    expect('served_grove_id' in enrollment).toBe(false);
   });
 
-  test('falls back to the member-known host_id/label when the host does not self-report them', async () => {
+  test('accepts a matching enrollment receipt and rejects a mismatched nonce', async () => {
+    const response = (nonce: string): EnrollmentTransport => async () => ({
+      status: 200,
+      body: JSON.stringify({
+        host_id: 'canonical-host',
+        label: 'Canonical',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: HOST_PROTOCOL_VERSION,
+        bearer: 'the-shared-bearer',
+        enrollment_receipt: {
+          enrollment_nonce: nonce,
+          host_id: 'canonical-host',
+          protocol_version: HOST_PROTOCOL_VERSION,
+        },
+      }),
+    });
+    const nonce = '0123456789abcdef0123456789abcdef';
+    const enrollment = await createEnrollmentClient(response(nonce)).enroll(
+      ctx({ enrollmentNonce: nonce }),
+    );
+    expect(enrollment.enrollment_receipt?.enrollment_nonce).toBe(nonce);
+
+    await expect(
+      createEnrollmentClient(response('ffffffffffffffffffffffffffffffff'))
+        .enroll(ctx({ enrollmentNonce: nonce })),
+    ).rejects.toThrow(/mismatched enrollment_receipt/);
+  });
+
+  test('replays a lost response with the same durable nonce and accepts an old host with no receipt', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const transport: EnrollmentTransport = async (input) => {
+      bodies.push(JSON.parse(input.body) as Record<string, unknown>);
+      if (bodies.length === 1) throw new Error('response was lost');
+      return {
+        status: 200,
+        body: JSON.stringify({
+          host_id: 'canonical-host',
+          label: 'Canonical',
+          overlay_address: '100.64.0.1:7433',
+          protocol_version: HOST_PROTOCOL_VERSION,
+          bearer: 'current-bearer',
+        }),
+      };
+    };
+    const client = createEnrollmentClient(transport);
+    const context = ctx();
+    await expect(client.enroll(context)).rejects.toThrow(/response was lost/);
+    const enrollment = await client.enroll(context);
+
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]!.enrollment_nonce).toBe(bodies[1]!.enrollment_nonce);
+    expect(enrollment.bearer).toBe('current-bearer');
+    expect(enrollment.enrollment_receipt).toBeUndefined();
+  });
+
+  test('accepts the exact legacy protocol-v3 payload with an empty projects list and ignores the list', async () => {
     const transport: EnrollmentTransport = async () => ({
       status: 200,
-      body: JSON.stringify({ host_id: '', label: '', overlay_address: '100.64.0.1:7433', protocol_version: 1, bearer: 'b' }),
+      body: JSON.stringify({
+        host_id: 'canonical-host',
+        label: 'Canonical',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: 3,
+        bearer: 'the-shared-bearer',
+        served_grove_id: null,
+        projects: [],
+      }),
+    });
+
+    const enrollment = await createEnrollmentClient(transport).enroll(ctx());
+
+    expect(enrollment).toEqual({
+      host_id: 'canonical-host',
+      label: 'Canonical',
+      overlay_address: '100.64.0.1:7433',
+      protocol_version: 3,
+      bearer: 'the-shared-bearer',
+      served_grove_id: null,
+    });
+  });
+
+  test.each([
+    ['omits', undefined, undefined],
+    ['returns empty strings for', '', ''],
+  ])('falls back to the member-known host_id and label when an old host %s them', async (_case, hostId, label) => {
+    const transport: EnrollmentTransport = async () => ({
+      status: 200,
+      body: JSON.stringify({ host_id: hostId, label, overlay_address: '100.64.0.1:7433', protocol_version: 1, bearer: 'b' }),
     });
     const enrollment = await createEnrollmentClient(transport).enroll(ctx({ hostId: 'the-ref', hostRef: 'the-ref', label: undefined }));
     expect(enrollment.host_id).toBe('the-ref');
-    expect(enrollment.label).toBe('the-ref'); // label ?? hostRef
+    expect(enrollment.label).toBe('the-ref');
   });
 
   test('a 409 from the host maps to a loud version-mismatch error', async () => {
@@ -135,6 +225,7 @@ describe('member enrollment client — end-to-end through the CONNECT proxy', ()
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, hostId: 'host_e2e', label: 'e2e' },
+      lockNamespace: testPerUserLockNamespace,
     });
     await server.start(0);
 
@@ -164,13 +255,21 @@ describe('member enrollment client — end-to-end through the CONNECT proxy', ()
   });
 
   test('the real client tunnels through the proxy to the host enrollment route and receives the bearer', async () => {
-    const client = createEnrollmentClient(connectProxyEnrollTransport);
+    const transport: EnrollmentTransport = async (input) => {
+      const response = await connectProxyEnrollTransport(input);
+      const payload = JSON.parse(response.body) as Record<string, unknown>;
+      return {
+        ...response,
+        body: JSON.stringify({ ...payload, overlay_address: '100.64.0.1:7433' }),
+      };
+    };
+    const client = createEnrollmentClient(transport);
     const enrollment = await client.enroll(ctx({
       overlayAddress: `127.0.0.1:${server.overlayPort}`,
       proxyPort,
     }));
     expect(enrollment.bearer).toBe(HOST_BEARER);
-    expect(enrollment.overlay_address).toBe(`127.0.0.1:${server.overlayPort}`);
+    expect(enrollment.overlay_address).toBe('100.64.0.1:7433');
     expect(enrollment.protocol_version).toBe(HOST_PROTOCOL_VERSION);
     expect(enrollment.host_id).toBe('host_e2e');
   });
@@ -194,6 +293,36 @@ describe('member enrollment client — end-to-end through the CONNECT proxy', ()
     });
     const reachable = await defaultCheckHostReachable(`127.0.0.1:${deadPort}`, proxyPort);
     expect(reachable).toBe(false);
+  });
+
+  test('the health probe ignores non-positive, fractional, and unsafe protocol headers', async () => {
+    let protocolHeader = '0';
+    const healthServer = http.createServer((_req, res) => {
+      res.setHeader(HOST_PROTOCOL_HEADER, protocolHeader);
+      res.end('ok');
+    });
+    await new Promise<void>((resolve) => healthServer.listen(0, '127.0.0.1', resolve));
+    const address = healthServer.address() as net.AddressInfo;
+
+    try {
+      for (const invalid of ['0', '-1', '3.5', String(Number.MAX_SAFE_INTEGER + 1)]) {
+        protocolHeader = invalid;
+        expect(await dialHostHealth(`127.0.0.1:${address.port}`, proxyPort)).toEqual({
+          reachable: true,
+          protocolVersion: null,
+        });
+      }
+
+      protocolHeader = String(HOST_PROTOCOL_VERSION + 1);
+      expect(await dialHostHealth(`127.0.0.1:${address.port}`, proxyPort)).toEqual({
+        reachable: true,
+        protocolVersion: HOST_PROTOCOL_VERSION + 1,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        healthServer.close((error) => error ? reject(error) : resolve());
+      });
+    }
   });
 
   test('an outer-timeout (host accepts the connection but never answers) destroys the probe socket, not just resolves false', async () => {

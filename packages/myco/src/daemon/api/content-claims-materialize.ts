@@ -87,6 +87,7 @@ import type { Dialer, ProxyLogger } from '../host-proxy.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
 import { resolveMemberProjectContext } from './member-project-context.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 // ---------------------------------------------------------------------------
 // Claim/content source abstraction — LOCAL (in-process DB) and REMOTE (dial
@@ -638,6 +639,7 @@ export interface ContentClaimMaterializeDeps {
    *  republish auto-close to the calling member, not itself. */
   machineId: string;
   mycoHome?: string;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 function asRecord(body: unknown): Record<string, unknown> {
@@ -649,7 +651,12 @@ export function createContentClaimMaterializeHandler(deps: ContentClaimMateriali
     const claimId = req.params.id;
     const body = asRecord(req.body);
 
-    const context = await resolveMemberProjectContext(req, body, deps.mycoHome);
+    const context = await resolveMemberProjectContext(
+      req,
+      body,
+      deps.mycoHome,
+      deps.lockNamespace,
+    );
     if ('status' in context) {
       return context;
     }

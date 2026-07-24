@@ -27,8 +27,9 @@ import { SymbiontInstaller, removeProjectLaunchers, MYCO_MCP_SERVER_NAME } from 
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { readJsonFile, writeOrDeleteJsonFile } from '../symbionts/json-helpers.js';
 import { propagateLegacyMachineId } from '@myco/machine-id.js';
-import { propagateLegacySecrets } from '../config/secrets.js';
+import { relocateLegacyProjectSecrets, SECRETS_FILE } from '@myco/config/secrets.js';
 import { epochSeconds } from '@myco/constants.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 /**
  * On-disk shape of the per-project sentinel that marks the global-install
@@ -128,6 +129,7 @@ export interface MigrateOptions {
    * Production callers leave undefined to use `resolvePackageRoot()`.
    */
   packageRoot?: string;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 /**
@@ -260,7 +262,12 @@ export function migrateProjectToGlobalInstall(
   // project level (the documented fallback per `feedback_secrets_not_in_yaml.md`)
   // would be deleted by the migration. Global-side keys win on conflict;
   // any key absent globally is lifted from the project file.
-  const secretsPropagated = propagateLegacySecrets(vaultDir, resolveMycoHome());
+  const hadLegacySecrets = fs.existsSync(path.join(vaultDir, SECRETS_FILE));
+  const secretsPropagated = relocateLegacyProjectSecrets(
+    vaultDir,
+    resolveMycoHome(),
+    options.lockNamespace,
+  );
 
   // Step 5 — cleanup empty co-tenant files and directories the strip
   // step may have hollowed out. We never delete a non-empty file; the
@@ -274,6 +281,9 @@ export function migrateProjectToGlobalInstall(
   // dir before deletion so user data is preserved on a forensic path
   // rather than destroyed. See PURGABLE_VAULT_ARTIFACTS.
   const purgedArtifacts = purgeLegacyPerMachineArtifacts(vaultDir, archiveDirAbs);
+  if (hadLegacySecrets && !fs.existsSync(path.join(vaultDir, SECRETS_FILE))) {
+    purgedArtifacts.push(SECRETS_FILE);
+  }
 
   const noLegacyArtifacts =
     archivedFiles.length === 0
@@ -517,7 +527,6 @@ const PURGABLE_VAULT_ARTIFACTS: Array<{ rel: string; mode: 'delete' | 'archive' 
   { rel: 'attachments',         mode: 'archive' }, // user content
   { rel: 'team',                mode: 'archive' }, // legacy team-sync state pre-Grove
   { rel: 'installer-audit',     mode: 'archive' }, // per-symbiont strip provenance
-  { rel: 'secrets.env',         mode: 'delete'  }, // propagated by propagateLegacySecrets; not archived (security)
 ];
 
 /**
@@ -609,6 +618,7 @@ export function runGlobalInstallMigrationPass(
     mycoHome?: string;
     manifests?: SymbiontManifest[];
     packageRoot?: string;
+    lockNamespace?: PerUserLockNamespace;
   } = {},
 ): MigrationPassResult {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
@@ -637,7 +647,11 @@ export function runGlobalInstallMigrationPass(
         continue;
       }
       try {
-        const result = migrateProjectToGlobalInstall(project.root, { manifests, packageRoot });
+        const result = migrateProjectToGlobalInstall(project.root, {
+          manifests,
+          packageRoot,
+          lockNamespace: options.lockNamespace,
+        });
         outcomes.push({
           groveId: grove.id,
           projectId: project.project_id,

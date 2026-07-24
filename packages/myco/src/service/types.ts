@@ -37,6 +37,12 @@ export interface ServiceStatus {
   unitPath: string | null;
 }
 
+/** Exact command proven from the platform's installed service configuration. */
+export interface InstalledServiceCommand {
+  executable: string;
+  args: string[];
+}
+
 /** Outcome of an `install` call. */
 export interface InstallResult {
   /** Did this call write the unit file? False on an idempotent no-op
@@ -70,6 +76,10 @@ export interface ServiceManager {
   readonly platformName: string;
   /** Cheap existence check — file-system level, no shell-out. */
   isInstalled(label: string): Promise<boolean>;
+  /** Read the exact installed executable and argv. Returns null when the
+   *  platform configuration is absent, malformed, ambiguous, or cannot be
+   *  proven to belong to the requested service. */
+  inspect(label: string): Promise<InstalledServiceCommand | null>;
   install(spec: ServiceSpec, opts?: InstallOptions): Promise<InstallResult>;
   uninstall(label: string): Promise<void>;
   start(label: string): Promise<void>;

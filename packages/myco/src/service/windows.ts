@@ -1,18 +1,24 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderWindowsServiceScript } from './windows-task.js';
 import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from './paths.js';
-import { requestCooperativeShutdown } from './cooperative-shutdown.js';
+import {
+  requestCooperativeShutdownResult,
+  type CooperativeShutdownResult,
+} from './cooperative-shutdown.js';
 import {
   resolveServiceDir,
   DAEMON_STATE_FILENAME,
 } from '../grove/paths.js';
+import { withExternalMcpContainment } from './daemon-termination.js';
 import type {
   InstallOptions,
   InstallResult,
+  InstalledServiceCommand,
   ServiceManager,
   ServiceSpec,
   ServiceStatus,
@@ -37,7 +43,32 @@ function readDaemonPortForLabel(_label: string): number | null {
 
 export interface SchtasksRunner {
   run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
+  queryState(label: string): Promise<TaskSchedulerState>;
+  currentUserSid(): Promise<string>;
+  register(registration: TaskSchedulerRegistration): Promise<{
+    stdout: string;
+    exitCode: number;
+  }>;
+  endProcessTree(label: string): Promise<{
+    stdout: string;
+    exitCode: number;
+  }>;
 }
+
+export interface TaskSchedulerRegistration {
+  label: string;
+  command: string;
+  arguments: string;
+  runAtLoad: boolean;
+}
+
+export type TaskSchedulerState =
+  | 'absent'
+  | 'unknown'
+  | 'disabled'
+  | 'queued'
+  | 'ready'
+  | 'running';
 
 /**
  * Real `schtasks.exe` shell-out. Gated on `MYCO_LAUNCH_AGENTS_DIR` (set by
@@ -49,27 +80,195 @@ export interface SchtasksRunner {
 export class RealSchtasksRunner implements SchtasksRunner {
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
-      return { stdout: `[sandbox] skipped schtasks ${args.join(' ')}`, exitCode: 0 };
+      return {
+        stdout: `[sandbox] skipped schtasks ${args.join(' ')}`,
+        exitCode: args[0] === '/query' ? 1 : 0,
+      };
     }
     return spawnCombinedOutput('schtasks', args);
+  }
+
+  async queryState(label: string): Promise<TaskSchedulerState> {
+    if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) return 'absent';
+    const escapedLabel = label.replace(/'/g, "''");
+    const command = [
+      'try {',
+      `$tasks = @(Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object { $_.TaskName -ceq '${escapedLabel}' })`,
+      "if ($tasks.Count -eq 0) { Write-Output '-1' }",
+      'elseif ($tasks.Count -eq 1) { Write-Output ([int]$tasks[0].State) }',
+      "else { throw 'Multiple exact-name tasks found' }",
+      '} catch { Write-Error $_; exit 1 }',
+    ].join('\n');
+    const result = await this.runPowerShell([
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      command,
+    ]);
+    assertRunSucceeded(result, `PowerShell Get-ScheduledTask ${label}`);
+    const output = result.stdout.trim();
+    if (!/^-?\d+$/.test(output)) {
+      throw new Error(`Invalid Task Scheduler state for ${label}: ${JSON.stringify(output)}`);
+    }
+    return taskSchedulerStateFromNumber(parseInt(output, 10), label);
+  }
+
+  async currentUserSid(): Promise<string> {
+    if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) return 'S-1-0-0';
+    const result = await this.runPowerShell([
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
+    ]);
+    assertRunSucceeded(result, 'PowerShell current Windows user SID');
+    const sid = result.stdout.trim();
+    if (!/^S-\d+(?:-\d+)+$/i.test(sid)) {
+      throw new Error(`Invalid current Windows user SID: ${JSON.stringify(sid)}`);
+    }
+    return sid;
+  }
+
+  async register(
+    registration: TaskSchedulerRegistration,
+  ): Promise<{ stdout: string; exitCode: number }> {
+    if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
+      return {
+        stdout: `[sandbox] skipped Task Scheduler registration ${registration.label}`,
+        exitCode: 0,
+      };
+    }
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      'try {',
+      '  $userId = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
+      `  $action = New-ScheduledTaskAction -Execute ${powerShellLiteral(registration.command)} -Argument ${powerShellLiteral(registration.arguments)}`,
+      "  $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited",
+      '  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)',
+      '  $parameters = @{',
+      `    TaskName = ${powerShellLiteral(registration.label)}`,
+      '    Action = $action',
+      '    Principal = $principal',
+      '    Settings = $settings',
+      '    Force = $true',
+      '  }',
+      ...(registration.runAtLoad
+        ? [
+            "  $parameters['Trigger'] = New-ScheduledTaskTrigger -AtLogOn -User $userId",
+          ]
+        : []),
+      '  Register-ScheduledTask @parameters | Out-Null',
+      '} catch {',
+      '  Write-Error $_',
+      '  exit 1',
+      '}',
+    ].join('\n');
+    return this.runPowerShell([
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      encodePowerShellCommand(command),
+    ]);
+  }
+
+  async endProcessTree(
+    label: string,
+  ): Promise<{ stdout: string; exitCode: number }> {
+    if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
+      return {
+        stdout: `[sandbox] skipped Task Scheduler process-tree termination ${label}`,
+        exitCode: 0,
+      };
+    }
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      'try {',
+      "  $service = New-Object -ComObject 'Schedule.Service'",
+      '  $service.Connect()',
+      `  $task = $service.GetFolder('\\').GetTask(${powerShellLiteral(label)})`,
+      '  $instances = @($task.GetInstances(0))',
+      '  foreach ($instance in $instances) {',
+      '    $engineProcessId = [int]$instance.EnginePID',
+      "    $taskkill = Join-Path $env:SystemRoot 'System32\\taskkill.exe'",
+      '    $output = & $taskkill /PID $engineProcessId /T /F 2>&1',
+      '    if ($LASTEXITCODE -ne 0) {',
+      "      throw \"taskkill failed for engine PID ${engineProcessId}: $output\"",
+      '    }',
+      '  }',
+      '} catch {',
+      '  Write-Error $_',
+      '  exit 1',
+      '}',
+    ].join('\n');
+    return this.runPowerShell([
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      encodePowerShellCommand(command),
+    ]);
+  }
+
+  protected runPowerShell(args: string[]): Promise<{ stdout: string; exitCode: number }> {
+    return spawnCombinedOutput(WINDOWS_TASK_HOST, args);
   }
 }
 
 export interface WindowsManagerOptions {
   runner?: SchtasksRunner;
-  /** Directory holding the launcher `.cmd` scripts. */
+  /** Directory holding the launcher `.ps1` scripts. */
   scriptDir?: string;
   /** Resolve the running daemon's loopback port for a label (reads daemon.json). */
   resolveDaemonPort?: (label: string) => number | null;
   /** Drain the daemon over HTTP before a hard `schtasks /end`. */
-  cooperativeShutdown?: (port: number) => Promise<boolean>;
+  cooperativeShutdown?: (port: number) => Promise<CooperativeShutdownResult>;
+  /** Hold external MCP containment across every `/end` and exit confirmation. */
+  withExternalMcpContainment?: <T>(continuation: () => Promise<T>) => Promise<T>;
+  /** Wait between Task Scheduler teardown observations. */
+  sleep?: (delayMs: number) => Promise<void>;
+}
+
+const WINDOWS_TEARDOWN_TIMEOUT_MS = 10_000;
+const WINDOWS_TEARDOWN_POLL_INTERVAL_MS = 100;
+const WINDOWS_TASK_HOST = path.win32.join(
+  process.env.SystemRoot ?? 'C:\\Windows',
+  'System32',
+  'WindowsPowerShell',
+  'v1.0',
+  'powershell.exe',
+);
+const WINDOWS_POWERSHELL_UTF8_BOM = '\uFEFF';
+
+function powerShellLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function encodePowerShellCommand(command: string): string {
+  return Buffer.from(command, 'utf16le').toString('base64');
+}
+
+function windowsTaskHostArguments(scriptPath: string): string {
+  const encodedCommand = encodePowerShellCommand(`& ${powerShellLiteral(scriptPath)}`);
+  return `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
+}
+
+export class ExternalMcpHardKillBlockedError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('External MCP containment was not confirmed; refusing hard process termination', options);
+    this.name = 'ExternalMcpHardKillBlockedError';
+  }
 }
 
 /**
  * Windows daemon service via Task Scheduler — the peer of the launchd /
  * systemd managers. There is no Windows equivalent of a launchd plist or a
  * systemd unit that both holds the env and supervises the process, so this
- * splits the two: a launcher `.cmd` carries the env + exec + log redirection
+ * splits the two: a launcher `.ps1` carries the env + exec + log redirection
  * (`windows-task.ts`), and a Task Scheduler task triggers it at logon.
  *
  * Why Task Scheduler and not a real Windows service (`sc.exe`): a
@@ -90,47 +289,134 @@ export class WindowsTaskServiceManager implements ServiceManager {
   private readonly runner: SchtasksRunner;
   readonly scriptDir: string;
   private readonly resolveDaemonPort: (label: string) => number | null;
-  private readonly cooperativeShutdown: (port: number) => Promise<boolean>;
+  private readonly cooperativeShutdown: (port: number) => Promise<CooperativeShutdownResult>;
+  private readonly withExternalMcpContainment: <T>(
+    continuation: () => Promise<T>,
+  ) => Promise<T>;
+  private readonly sleep: (delayMs: number) => Promise<void>;
 
   constructor(opts: WindowsManagerOptions = {}) {
     this.runner = opts.runner ?? new RealSchtasksRunner();
     this.scriptDir = opts.scriptDir ?? path.join(os.homedir(), '.myco', 'service');
     this.resolveDaemonPort = opts.resolveDaemonPort ?? readDaemonPortForLabel;
-    this.cooperativeShutdown = opts.cooperativeShutdown ?? requestCooperativeShutdown;
+    this.cooperativeShutdown = opts.cooperativeShutdown ?? requestCooperativeShutdownResult;
+    this.withExternalMcpContainment = opts.withExternalMcpContainment
+      ?? withExternalMcpContainment;
+    this.sleep = opts.sleep ?? sleep;
   }
 
   private scriptPath(label: string): string {
+    return path.join(this.scriptDir, `${label}.ps1`);
+  }
+
+  private legacyScriptPath(label: string): string {
     return path.join(this.scriptDir, `${label}.cmd`);
   }
 
+  private removeLauncherFiles(label: string): void {
+    for (const launcherPath of [
+      this.scriptPath(label),
+      this.legacyScriptPath(label),
+    ]) {
+      if (fs.existsSync(launcherPath)) fs.unlinkSync(launcherPath);
+    }
+  }
+
   /**
-   * Drain the daemon gracefully over HTTP before `schtasks /end` hard-kills it.
-   * `/end` is an uncatchable TerminateProcess, so without this the daemon's
-   * shutdown (in-flight runs, team-sync outbox, DB close) never runs and every
-   * Windows stop/restart/update defers that work to the next boot. Best-effort:
-   * a missing port or a wedged drain falls through to the `/end` that follows.
+   * Ask the daemon to drain before the independent containment gate decides
+   * whether an uncatchable Task Scheduler termination is safe.
    */
   private async drainBeforeEnd(label: string): Promise<void> {
     const port = this.resolveDaemonPort(label);
     if (port === null) return;
     try {
       await this.cooperativeShutdown(port);
-    } catch { /* fall through to schtasks /end */ }
+    } catch {
+      // The out-of-process containment gate determines hard-kill safety.
+    }
+  }
+
+  private async hardEnd(
+    label: string,
+    options: { allowAbsent?: boolean } = {},
+  ): Promise<boolean> {
+    await this.drainBeforeEnd(label);
+    let terminationStarted = false;
+    try {
+      return await this.withExternalMcpContainment(async () => {
+        terminationStarted = true;
+        if (options.allowAbsent
+          && await this.requireTaskState(label) === 'absent') {
+          return false;
+        }
+        assertRunSucceeded(
+          await this.runner.endProcessTree(label),
+          `Task Scheduler process-tree termination ${label}`,
+        );
+        await this.waitUntilNotRunning(label);
+        return true;
+      });
+    } catch (error) {
+      if (terminationStarted) throw error;
+      throw new ExternalMcpHardKillBlockedError({ cause: error });
+    }
   }
 
   async isInstalled(label: string): Promise<boolean> {
-    const { exitCode } = await this.runner.run(['/query', '/tn', label]);
-    return exitCode === 0;
+    return (await this.runner.queryState(label)) !== 'absent';
+  }
+
+  async inspect(label: string): Promise<InstalledServiceCommand | null> {
+    return this.inspectRegistration(label);
+  }
+
+  private async inspectRegistration(
+    label: string,
+    expectedRunAtLoad?: boolean,
+  ): Promise<InstalledServiceCommand | null> {
+    const scriptPath = this.scriptPath(label);
+    let script: string;
+    try {
+      script = fs.readFileSync(scriptPath, 'utf-8');
+    } catch {
+      return null;
+    }
+
+    const task = await this.runner.run(['/query', '/tn', label, '/xml']);
+    if (task.exitCode !== 0) {
+      if (await this.runner.queryState(label) === 'absent') return null;
+      throw new Error(
+        `Task Scheduler task inspection failed for ${label}: `
+        + `schtasks /query exited ${task.exitCode}: ${task.stdout}`,
+      );
+    }
+    const taskAction = parseTaskAction(task.stdout);
+    if (taskAction?.command.toLowerCase() !== WINDOWS_TASK_HOST.toLowerCase()
+      || taskAction.arguments !== windowsTaskHostArguments(scriptPath)) {
+      return null;
+    }
+    const currentUserSid = await this.runner.currentUserSid();
+    if (!taskPolicyMatches(task.stdout, currentUserSid, expectedRunAtLoad)) {
+      return null;
+    }
+    return parseWindowsLauncherCommand(script);
   }
 
   async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
     const scriptPath = this.scriptPath(spec.label);
-    const rendered = renderWindowsServiceScript(spec);
+    const rendered = `${WINDOWS_POWERSHELL_UTF8_BOM}${renderWindowsServiceScript(spec)}`;
     let existing: string | null = null;
     try { existing = fs.readFileSync(scriptPath, 'utf-8'); } catch { /* ENOENT */ }
-    const taskExists = await this.isInstalled(spec.label);
-    if (existing === rendered && taskExists) {
-      return { changed: false, supervisorReloaded: false };
+    const installed = existing === rendered
+      ? await this.inspectRegistration(spec.label, spec.runAtLoad)
+      : null;
+    if (installed?.executable === spec.executable
+      && installed.args.length === spec.args.length
+      && installed.args.every((arg, index) => arg === spec.args[index])) {
+      const legacyScriptPath = this.legacyScriptPath(spec.label);
+      const retiredLegacyLauncher = fs.existsSync(legacyScriptPath);
+      if (retiredLegacyLauncher) fs.unlinkSync(legacyScriptPath);
+      return { changed: retiredLegacyLauncher, supervisorReloaded: false };
     }
 
     fs.mkdirSync(this.scriptDir, { recursive: true });
@@ -138,29 +424,33 @@ export class WindowsTaskServiceManager implements ServiceManager {
     fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
     atomicWriteFileSync(scriptPath, rendered);
 
-    // `/sc onlogon` starts the daemon at user logon (RunAtLoad); `/f`
-    // overwrites an existing task; `/rl limited` runs with the user's normal
-    // (non-elevated) rights. A non-RunAtLoad spec gets an on-demand task with
-    // no automatic trigger.
-    const trigger = spec.runAtLoad ? ['/sc', 'onlogon'] : ['/sc', 'once', '/st', '00:00', '/sd', '01/01/2099'];
-    // Quote the /tr action: Task Scheduler re-parses the stored action string and
-    // splits an unquoted path at the first space, so a default script dir under a
-    // spaced user profile (`C:\Users\First Last\.myco\service\…cmd`) would fail to
-    // launch at logon. The embedded quotes are part of the argv value (the runner
-    // spawns schtasks without a shell), which is how schtasks delimits a spaced
-    // executable path.
     assertRunSucceeded(
-      await this.runner.run(['/create', '/tn', spec.label, '/tr', `"${scriptPath}"`, ...trigger, '/rl', 'limited', '/f']),
-      `schtasks /create /tn ${spec.label}`,
+      await this.runner.register({
+        label: spec.label,
+        command: WINDOWS_TASK_HOST,
+        arguments: windowsTaskHostArguments(scriptPath),
+        runAtLoad: spec.runAtLoad,
+      }),
+      `Register-ScheduledTask ${spec.label}`,
     );
+    const legacyScriptPath = this.legacyScriptPath(spec.label);
+    if (fs.existsSync(legacyScriptPath)) fs.unlinkSync(legacyScriptPath);
     return { changed: true, supervisorReloaded: true };
   }
 
   async uninstall(label: string): Promise<void> {
-    await this.runner.run(['/end', '/tn', label]);
-    await this.runner.run(['/delete', '/tn', label, '/f']);
-    const scriptPath = this.scriptPath(label);
-    if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath);
+    if (!await this.hardEnd(label, { allowAbsent: true })) {
+      this.removeLauncherFiles(label);
+      return;
+    }
+
+    await this.hardEnd(label);
+    assertRunSucceeded(
+      await this.runner.run(['/delete', '/tn', label, '/f']),
+      `schtasks /delete /tn ${label}`,
+    );
+    await this.waitUntilDeleted(label);
+    this.removeLauncherFiles(label);
   }
 
   async start(label: string): Promise<void> {
@@ -168,13 +458,11 @@ export class WindowsTaskServiceManager implements ServiceManager {
   }
 
   async stop(label: string): Promise<void> {
-    await this.drainBeforeEnd(label);
-    await this.runner.run(['/end', '/tn', label]);
+    await this.hardEnd(label);
   }
 
   async restart(label: string): Promise<void> {
-    await this.drainBeforeEnd(label);
-    await this.runner.run(['/end', '/tn', label]);
+    await this.hardEnd(label);
     assertRunSucceeded(await this.runner.run(['/run', '/tn', label]), `schtasks /run /tn ${label}`);
   }
 
@@ -186,22 +474,174 @@ export class WindowsTaskServiceManager implements ServiceManager {
   }
 
   async status(label: string): Promise<ServiceStatus> {
-    const { stdout, exitCode } = await this.runner.run(['/query', '/tn', label, '/fo', 'LIST', '/v']);
-    if (exitCode !== 0) {
+    const state = await this.requireTaskState(label);
+    if (state === 'absent') {
       return { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
     }
-    const statusMatch = stdout.match(/Status:\s*(\S+)/i);
-    const lastResultMatch = stdout.match(/Last Result:\s*(-?\d+)/i);
+    const result = await this.runner.run(['/query', '/tn', label, '/fo', 'LIST', '/v']);
+    const lastResultMatch = result.exitCode === 0
+      ? result.stdout.match(/Last Result:\s*(-?\d+)/i)
+      : null;
     const scriptPath = this.scriptPath(label);
     return {
       installed: true,
-      running: statusMatch ? /running/i.test(statusMatch[1]) : false,
+      running: state === 'running',
       // schtasks does not expose the action process's PID; the daemon's PID is
       // discoverable via daemon.json / the lifecycle-lock holder record.
       pid: null,
       lastExitCode: normalizeLastResult(lastResultMatch ? parseInt(lastResultMatch[1], 10) : null),
       unitPath: fs.existsSync(scriptPath) ? scriptPath : null,
     };
+  }
+
+  private async requireTaskState(label: string): Promise<TaskSchedulerState> {
+    const state = await this.runner.queryState(label);
+    if (state === 'unknown') {
+      throw new Error(`Unknown Task Scheduler state for ${label}`);
+    }
+    return state;
+  }
+
+  private async waitUntilNotRunning(label: string): Promise<void> {
+    const maxPolls = Math.ceil(WINDOWS_TEARDOWN_TIMEOUT_MS / WINDOWS_TEARDOWN_POLL_INTERVAL_MS);
+    for (let poll = 0; poll <= maxPolls; poll++) {
+      const state = await this.requireTaskState(label);
+      if (state === 'absent' || state !== 'running') return;
+      if (poll < maxPolls) await this.sleep(WINDOWS_TEARDOWN_POLL_INTERVAL_MS);
+    }
+    throw new Error(`Timed out waiting for Task Scheduler task ${label} to exit`);
+  }
+
+  private async waitUntilDeleted(label: string): Promise<void> {
+    const maxPolls = Math.ceil(WINDOWS_TEARDOWN_TIMEOUT_MS / WINDOWS_TEARDOWN_POLL_INTERVAL_MS);
+    for (let poll = 0; poll <= maxPolls; poll++) {
+      if ((await this.requireTaskState(label)) === 'absent') return;
+      if (poll < maxPolls) await this.sleep(WINDOWS_TEARDOWN_POLL_INTERVAL_MS);
+    }
+    throw new Error(`Timed out waiting for Task Scheduler task ${label} deletion`);
+  }
+}
+
+function parseTaskAction(
+  xml: string,
+): { command: string; arguments: string } | null {
+  const commands = [...xml.matchAll(/<Command>([\s\S]*?)<\/Command>/gi)];
+  const argumentsElements = [...xml.matchAll(/<Arguments>([\s\S]*?)<\/Arguments>/gi)];
+  if (commands.length !== 1 || argumentsElements.length !== 1) return null;
+  const command = decodeXmlText(commands[0][1]);
+  const argumentsValue = decodeXmlText(argumentsElements[0][1]);
+  return command === null || argumentsValue === null
+    ? null
+    : { command, arguments: argumentsValue };
+}
+
+function taskPolicyMatches(
+  xml: string,
+  currentUserSid: string,
+  expectedRunAtLoad?: boolean,
+): boolean {
+  const principal = singleXmlElementBody(xml, 'Principal');
+  const settings = singleXmlElementBody(xml, 'Settings');
+  if (principal === null || settings === null) return false;
+
+  const principalUserId = singleXmlText(principal, 'UserId');
+  const runLevel = singleOptionalXmlText(principal, 'RunLevel');
+  if (principalUserId?.toLowerCase() !== currentUserSid.toLowerCase()
+    || singleXmlText(principal, 'LogonType') !== 'InteractiveToken'
+    || runLevel === undefined
+    || (runLevel !== null && runLevel !== 'LeastPrivilege')
+    || singleXmlText(settings, 'DisallowStartIfOnBatteries')?.toLowerCase() !== 'false'
+    || singleXmlText(settings, 'StopIfGoingOnBatteries')?.toLowerCase() !== 'false'
+    || singleXmlText(settings, 'ExecutionTimeLimit')?.toUpperCase() !== 'PT0S') {
+    return false;
+  }
+
+  const triggers = singleXmlElementBody(xml, 'Triggers');
+  const triggerOpenings = triggers === null
+    ? []
+    : [...triggers.matchAll(/<([A-Za-z]+Trigger)\b/gi)];
+  const logonTriggers = triggers === null
+    ? []
+    : [...triggers.matchAll(/<LogonTrigger\b[\s\S]*?<\/LogonTrigger>/gi)];
+  const hasExpectedLogonTrigger = triggerOpenings.length === 1
+    && logonTriggers.length === 1
+    && singleXmlText(logonTriggers[0][0], 'UserId')?.toLowerCase()
+      === currentUserSid.toLowerCase();
+  if (expectedRunAtLoad === true) return hasExpectedLogonTrigger;
+  if (expectedRunAtLoad === false) return triggerOpenings.length === 0;
+  return triggerOpenings.length === 0 || hasExpectedLogonTrigger;
+}
+
+function singleXmlElementBody(xml: string, element: string): string | null {
+  const pattern = new RegExp(`<${element}\\b[^>]*>([\\s\\S]*?)<\\/${element}>`, 'gi');
+  const matches = [...xml.matchAll(pattern)];
+  return matches.length === 1 ? matches[0][1] : null;
+}
+
+function singleXmlText(xml: string, element: string): string | null {
+  const body = singleXmlElementBody(xml, element);
+  if (body === null) return null;
+  const decoded = decodeXmlText(body);
+  return decoded?.trim() ?? null;
+}
+
+function singleOptionalXmlText(
+  xml: string,
+  element: string,
+): string | null | undefined {
+  const openings = [...xml.matchAll(new RegExp(`<${element}\\b`, 'gi'))];
+  if (openings.length === 0) return null;
+  if (openings.length !== 1) return undefined;
+  return singleXmlText(xml, element) ?? undefined;
+}
+
+function parseWindowsLauncherCommand(script: string): InstalledServiceCommand | null {
+  const executableAssignments = script
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\$executable = ('.*')$/))
+    .filter((match): match is RegExpMatchArray => match !== null);
+  const argumentAssignments = script
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\$arguments = @\((.*)\)$/))
+    .filter((match): match is RegExpMatchArray => match !== null);
+  if (executableAssignments.length !== 1 || argumentAssignments.length !== 1) {
+    return null;
+  }
+  const executable = decodePowerShellLiteral(executableAssignments[0][1]);
+  const argumentText = argumentAssignments[0][1];
+  const argumentLiterals = argumentText === ''
+    ? []
+    : argumentText.split(', ');
+  const args = argumentLiterals.map(decodePowerShellLiteral);
+  if (executable === null || args.some((arg) => arg === null)) return null;
+  if (argumentLiterals.join(', ') !== argumentText) return null;
+  return { executable, args: args as string[] };
+}
+
+function decodePowerShellLiteral(value: string): string | null {
+  if (!/^'(?:[^']|'')*'$/.test(value)) return null;
+  return value.slice(1, -1).replace(/''/g, "'");
+}
+
+function decodeXmlText(value: string): string | null {
+  if (/&(?!(?:amp|lt|gt|quot|apos);)/.test(value)) return null;
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+function taskSchedulerStateFromNumber(state: number, label: string): TaskSchedulerState {
+  switch (state) {
+    case -1: return 'absent';
+    case 0: return 'unknown';
+    case 1: return 'disabled';
+    case 2: return 'queued';
+    case 3: return 'ready';
+    case 4: return 'running';
+    default: throw new Error(`Invalid Task Scheduler state ${state} for ${label}`);
   }
 }
 

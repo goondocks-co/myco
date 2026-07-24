@@ -11,6 +11,7 @@
  * personal tiers) is a fresh tmpdir addressed through the `x-myco-project-root`
  * header exactly as a real member client sends it.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -18,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import YAML from 'yaml';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 import {
   handleAttachedConfigRequest,
@@ -25,7 +27,7 @@ import {
   type AttachedConfigDeps,
 } from '@myco/daemon/attached-config';
 import { defaultDial, __resetVersionMismatchLogForTests } from '@myco/daemon/host-proxy';
-import { upsertHost, type HostRecord } from '@myco/host/registry';
+import { type HostRecord } from '@myco/host/registry';
 import { HOST_PROTOCOL_HEADER } from '@myco/constants';
 import type { RemoteTarget } from '@myco/host/routing';
 
@@ -69,6 +71,7 @@ function target(): RemoteTarget {
 function deps(): AttachedConfigDeps {
   return {
     dial: defaultDial,
+    lockNamespace: testPerUserLockNamespace,
     logger: {
       warn: (m, meta) => warns.push([m, meta]),
       error: (m, meta) => errors.push([m, meta]),
@@ -203,7 +206,7 @@ describe('handleAttachedConfigRequest — reads', () => {
     // attach record at attach time, so the carve works end to end.
     writeProjectConfig({ cortex: { enabled: false } });
     const t = target();
-    upsertHost({
+    writeHostRecordFixture({
       host_id: t.host.host_id,
       label: t.host.label,
       overlay_address: t.host.overlay_address,

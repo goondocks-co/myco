@@ -3,19 +3,32 @@
  * observability): the host-reachability probe (WS5 carried item) and the
  * drain-health summary lines, both machine-global (not vault-scoped).
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { checkTeamHostDrainHealth, checkTeamHostReachability, runChecks } from '@myco/cli/doctor.js';
-import { attachProject, upsertHost, type HostRecord } from '@myco/host/registry.js';
+import {
+  checkTeamHostDrainHealth as checkTeamHostDrainHealthWith,
+  checkTeamHostReachability as checkTeamHostReachabilityWith,
+  runChecks as runChecksWith,
+} from '@myco/cli/doctor.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { createFsDrainStore } from '@myco/capture/transcript-drain.js';
 import { deriveTranscriptId } from '@myco/host/routed-transcript.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { clearProjectManifestCache, ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const { attachProject } = createHostRegistryOperations(testPerUserLockNamespace);
+const checkTeamHostDrainHealth = () =>
+  checkTeamHostDrainHealthWith(testPerUserLockNamespace);
+const checkTeamHostReachability = () =>
+  checkTeamHostReachabilityWith(testPerUserLockNamespace);
+const runChecks = (vaultDir: string) =>
+  runChecksWith(vaultDir, testPerUserLockNamespace);
 
 function host(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
@@ -51,7 +64,7 @@ describe('checkTeamHostReachability', () => {
   });
 
   test('a host with no proxy_port on record warns to re-join, without probing', async () => {
-    upsertHost(host({ proxy_port: undefined }));
+    writeHostRecordFixture(host({ proxy_port: undefined }));
     const checks = await checkTeamHostReachability();
     expect(checks).toHaveLength(1);
     expect(checks[0].status).toBe('warn');
@@ -62,7 +75,7 @@ describe('checkTeamHostReachability', () => {
     mock.module('@myco/host/member-overlay.js', () => ({
       defaultCheckHostReachable: async () => true,
     }));
-    upsertHost(host());
+    writeHostRecordFixture(host());
     const checks = await checkTeamHostReachability();
     expect(checks).toHaveLength(1);
     expect(checks[0].name).toBe('Team Host');
@@ -74,7 +87,7 @@ describe('checkTeamHostReachability', () => {
     mock.module('@myco/host/member-overlay.js', () => ({
       defaultCheckHostReachable: async () => false,
     }));
-    upsertHost(host());
+    writeHostRecordFixture(host());
     const checks = await checkTeamHostReachability();
     expect(checks).toHaveLength(1);
     expect(checks[0].status).toBe('warn');
@@ -85,7 +98,7 @@ describe('checkTeamHostReachability', () => {
     mock.module('@myco/host/member-overlay.js', () => ({
       defaultCheckHostReachable: async () => { throw new Error('boom'); },
     }));
-    upsertHost(host());
+    writeHostRecordFixture(host());
     const checks = await checkTeamHostReachability();
     expect(checks[0].status).toBe('warn');
   });
@@ -94,8 +107,8 @@ describe('checkTeamHostReachability', () => {
     mock.module('@myco/host/member-overlay.js', () => ({
       defaultCheckHostReachable: async () => true,
     }));
-    upsertHost(host({ host_id: HOST_A, label: 'a' }));
-    upsertHost(host({ host_id: 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', label: 'b' }));
+    writeHostRecordFixture(host({ host_id: HOST_A, label: 'a' }));
+    writeHostRecordFixture(host({ host_id: 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', label: 'b' }));
     const checks = await checkTeamHostReachability();
     expect(checks).toHaveLength(2);
     expect(checks[0].name).toBe('Team Host');
@@ -123,7 +136,7 @@ describe('checkTeamHostDrainHealth', () => {
   });
 
   test('a joined host with no drain activity reports ok — nothing pending, no failures', async () => {
-    upsertHost(host());
+    writeHostRecordFixture(host());
     const checks = await checkTeamHostDrainHealth();
     expect(checks).toHaveLength(1);
     expect(checks[0].name).toBe('Drain health');
@@ -132,7 +145,7 @@ describe('checkTeamHostDrainHealth', () => {
   });
 
   test('a failing transcript entry (host unreachable) surfaces as a warn row naming the drain', async () => {
-    upsertHost(host());
+    writeHostRecordFixture(host());
     // A LIVE failing entry: the transcript file must actually exist, un-rotated
     // (transcript_id derived from its real inode) and have un-shipped bytes
     // past acked_offset — a failure only counts while there is pending content
@@ -163,7 +176,7 @@ describe('checkTeamHostDrainHealth', () => {
   });
 
   test('an inert entry\'s stale failure does NOT warn — rotated/deleted content is not a drain problem (reviewer repro)', async () => {
-    upsertHost(host());
+    writeHostRecordFixture(host());
     // Same failing entry shape, but its transcript file does not exist — the
     // inert case (deleted, or rotated so the recorded inode no longer
     // matches). Doctor must report ok, not a permanent false warning.
@@ -226,7 +239,7 @@ describe('checkDatabase / checkCaptureFlow — attached project hosted finding',
 
   test('an attached project renders an informational hosted finding for both Database and Capture — never "0 sessions" / "capture not flowing"', async () => {
     const manifest = ensureProjectManifest(vaultDir, { projectName: 'attached-proj' });
-    upsertHost({
+    writeHostRecordFixture({
       host_id: HOST_A,
       label: 'mac-studio',
       overlay_address: '127.0.0.1:9',
@@ -259,7 +272,7 @@ describe('checkDatabase / checkCaptureFlow — attached project hosted finding',
 
   test('a local (non-attached) project never renders the hosted finding — resolveAttach finds no ref', async () => {
     ensureProjectManifest(vaultDir, { projectName: 'local-proj' });
-    // No upsertHost/attachProject — this project is not attached to anything.
+    // No host fixture or attachProject — this project is not attached to anything.
 
     const checks = await runChecks(vaultDir);
     const database = checks.find((c) => c.name === 'Database')!;

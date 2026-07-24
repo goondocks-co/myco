@@ -17,6 +17,7 @@ import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
 import { getManifestByName } from '../symbionts/detect.js';
 import { resolveCanopyReadTool } from '../symbionts/canopy-read-tools.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 const INJECT_TIMEOUT_MS = 1500;
 
@@ -52,12 +53,12 @@ function parseInjectResponse(data: unknown): InjectResponse | null {
   return { inject: false, reason: typeof obj.reason === 'string' ? obj.reason : undefined };
 }
 
-export async function main(): Promise<void> {
+export async function main(lockNamespace?: PerUserLockNamespace): Promise<void> {
   let symbiont: string | undefined;
   let blob: string | undefined;
 
   try {
-    const vaultDir = resolveProvisionedVaultDir();
+    const vaultDir = resolveProvisionedVaultDir(undefined, lockNamespace);
     if (!vaultDir) return;
 
     const input = await readHookInput();
@@ -72,7 +73,11 @@ export async function main(): Promise<void> {
     const resolved = resolveCanopyReadTool(manifest, input.toolName, input.toolInput);
     if (!resolved) return;
 
-    const client = createHookDaemonClient(vaultDir, { sessionId: input.sessionId });
+    const client = createHookDaemonClient(
+      vaultDir,
+      { sessionId: input.sessionId },
+      lockNamespace,
+    );
     const result = await client.post(
       '/canopy/inject',
       {

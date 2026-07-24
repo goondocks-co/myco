@@ -15,7 +15,8 @@
  *
  * Hermetic: MYCO_HOME / MYCO_TEAM_HOME are fresh tmpdirs per test.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { writeHostRecordFixture } from '../../helpers/host-registry-fixture.js';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,21 +26,22 @@ import http from 'node:http';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
-import { classifyRoute, matchRouteRule } from '@myco/host/routing';
+import { classifyRoute as classifyRouteWith, matchRouteRule } from '@myco/host/routing';
 import type { HostServeRuntime } from '@myco/daemon/host-serve';
-import { resolveServedGroveKeyHealthIsolated } from '@myco/daemon/host-serve';
 import {
-  handleGetTeamConfig,
+  resolveServedGroveKeyHealthIsolated as resolveServedGroveKeyHealthIsolatedWith,
+} from '@myco/daemon/host-serve';
+import {
+  handleGetTeamConfig as handleGetTeamConfigWith,
   handlePutTeamConfig,
-  handlePutTeamSecret,
-  handleDeleteTeamSecret,
-  handleRotateExternalMcpToken,
-  handleGetExternalMcp,
-  handlePutExternalMcpToggle,
-  registerTeamConfigRoutes,
-  type ExternalMcpListenerControl,
+  handlePutTeamSecret as handlePutTeamSecretWith,
+  handleDeleteTeamSecret as handleDeleteTeamSecretWith,
+  handleRotateExternalMcpToken as handleRotateExternalMcpTokenWith,
+  handleGetExternalMcp as handleGetExternalMcpWith,
+  handlePutExternalMcpToggle as handlePutExternalMcpToggleWith,
+  registerTeamConfigRoutes as registerTeamConfigRoutesWith,
+  type TeamConfigRouteDeps,
 } from '@myco/daemon/api/team-config';
-import type { FunnelRunner } from '@myco/daemon/external-listener';
 import {
   handleGetTeamTaskConfig,
   handlePutTeamTaskConfig,
@@ -51,13 +53,57 @@ import {
   createHostId,
   createProjectId,
 } from '@myco/grove/ids';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
 import { resolveGroveConfigPath, resolveGroveDir, resolveMycoHome } from '@myco/grove/paths';
-import { readSecrets, writeSecret } from '@myco/config/secrets';
+import { createSecretsOperations, readSecrets } from '@myco/config/secrets';
 import { loadMachineConfig, loadGroveConfig, saveMachineConfig } from '@myco/config/loader';
 import { HOST_BEARER_SECRET, HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 import type { RouteRequest } from '@myco/daemon/router';
+import { ExternalMcpContainmentBusyError } from '@myco/daemon/external-mcp-containment';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+import { seedExternalMcpConfig } from '../../helpers/external-mcp-config-fixture.js';
+
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
+const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
+const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
+  classifyRouteWith(input, testPerUserLockNamespace);
+const resolveServedGroveKeyHealthIsolated = (
+  machineConfig: Parameters<typeof resolveServedGroveKeyHealthIsolatedWith>[0],
+  mycoHome?: string,
+) => resolveServedGroveKeyHealthIsolatedWith(
+  machineConfig,
+  mycoHome,
+  testPerUserLockNamespace,
+);
+
+function withTestLocks(deps: TeamConfigRouteDeps): TeamConfigRouteDeps {
+  return { ...deps, lockNamespace: testPerUserLockNamespace };
+}
+
+const handleGetTeamConfig = (deps: TeamConfigRouteDeps) =>
+  handleGetTeamConfigWith(withTestLocks(deps));
+const handlePutTeamSecret = (
+  deps: TeamConfigRouteDeps,
+  provider: string | undefined,
+  body: unknown,
+) => handlePutTeamSecretWith(withTestLocks(deps), provider, body);
+const handleDeleteTeamSecret = (
+  deps: TeamConfigRouteDeps,
+  provider: string | undefined,
+) => handleDeleteTeamSecretWith(withTestLocks(deps), provider);
+const handleRotateExternalMcpToken = (deps: TeamConfigRouteDeps) =>
+  handleRotateExternalMcpTokenWith(withTestLocks(deps));
+const handleGetExternalMcp = (deps: TeamConfigRouteDeps) =>
+  handleGetExternalMcpWith(withTestLocks(deps));
+const handlePutExternalMcpToggle = (
+  deps: TeamConfigRouteDeps,
+  body: unknown,
+) => handlePutExternalMcpToggleWith(withTestLocks(deps), body);
+const registerTeamConfigRoutes = (
+  server: Parameters<typeof registerTeamConfigRoutesWith>[0],
+  deps: TeamConfigRouteDeps,
+) => registerTeamConfigRoutesWith(server, withTestLocks(deps));
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 
@@ -108,7 +154,7 @@ describe('(a) classifyRoute: team-write routes to the host for an attached proje
       created_at: new Date().toISOString(),
       projects: [{ grove_id: groveId, project_id: projectId }],
     };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'host-bearer');
     return { projectId };
   }
@@ -594,6 +640,40 @@ describe('(d) PUT/DELETE /api/team/secrets/:provider — masked-echo-only', () =
     expect(res.status).toBe(400);
   });
 
+  test.each([
+    '\nvalid-secret',
+    'valid\nINJECTED=owned',
+    'valid-secret\n',
+    '\rvalid-secret',
+    'valid\rINJECTED=owned',
+    'valid-secret\r',
+    '\0valid-secret',
+    'valid\0INJECTED=owned',
+    'valid-secret\0',
+  ])('PUT rejects an unsafe raw secret before mutating the served-grove store: %p', async (value) => {
+    const groveDir = resolveGroveDir(grove.id, home());
+    const secretsPath = path.join(groveDir, 'secrets.env');
+    fs.writeFileSync(secretsPath, 'ANTHROPIC_API_KEY=stored-valid\n');
+    const before = fs.readFileSync(secretsPath);
+    const previous = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+
+    try {
+      const result = await handlePutTeamSecret(deps(), 'anthropic', { secret: value });
+
+      expect(result.status).toBe(400);
+      expect(result.body).toEqual({
+        error: 'invalid_secret_value',
+        message: 'Secret value contains unsupported characters',
+      });
+      expect(fs.readFileSync(secretsPath)).toEqual(before);
+      expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previous;
+    }
+  });
+
   test('PUT with no served-grove designation -> not_serving, nothing written', async () => {
     const res = await handlePutTeamSecret({ hostServe: null, mycoHome: home() }, 'anthropic', { secret: 'x' });
     expect(res.status).toBe(404);
@@ -620,267 +700,145 @@ describe('(d) PUT/DELETE /api/team/secrets/:provider — masked-echo-only', () =
   });
 });
 
-// ---------------------------------------------------------------------------
-// POST /api/team/mcp-token/rotate — the thin seam for Task 10
-// ---------------------------------------------------------------------------
-
-describe('POST /api/team/mcp-token/rotate — mint, store, one-time raw reveal + hash', () => {
+describe('external MCP routes — fail-closed activation and containment-only disable', () => {
   const { home } = withHermeticHomes();
   let grove: GroveRecord;
+  let containCalls: string[];
+  let containmentResult: {
+    enabled: false;
+    port: number;
+    funnel: Array<{ ok: boolean; detail: string }>;
+  };
 
   beforeEach(() => {
     grove = createGrove('Served', home());
+    containCalls = [];
+    containmentResult = {
+      enabled: false,
+      port: 8743,
+      funnel: [{ ok: true, detail: 'off 8743' }],
+    };
   });
 
-  function deps(): { hostServe: HostServeRuntime; mycoHome: string } {
+  function deps(): TeamConfigRouteDeps {
     return {
-      hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id },
+      hostServe: {
+        overlayAddress: '127.0.0.1',
+        bearer: 'b',
+        servedGroveId: grove.id,
+      },
       mycoHome: home(),
+      externalMcp: {
+        listener: {
+          isBound: false,
+          port: 0,
+          async unbind() {},
+        },
+        containment: {
+          async contain(operation) {
+            containCalls.push(operation);
+            return containmentResult;
+          },
+        },
+      },
     };
   }
 
-  test('mints a >=122-bit token, stores it machine-scoped beside the serve bearer, reveals the raw value ONCE plus a hash', async () => {
-    const res = await handleRotateExternalMcpToken(deps());
-    expect(res.status ?? 200).toBeLessThan(300);
-    const body = res.body as { token: string; tokenHash: string };
-    expect(typeof body.tokenHash).toBe('string');
-    expect(body.tokenHash.length).toBeGreaterThan(0);
+  test('enable refuses before port, config, token, listener, or journal mutation', async () => {
+    const configPath = path.join(home(), 'config.yaml');
+    fs.writeFileSync(configPath, [
+      'daemon:',
+      '  external_mcp:',
+      '    enabled: false',
+      '    port: 8743',
+      '',
+    ].join('\n'));
+    writeSecret(home(), HOST_EXTERNAL_MCP_TOKEN_SECRET, 'existing-token');
+    const secretsPath = path.join(home(), 'secrets.env');
+    const configBefore = fs.readFileSync(configPath);
+    const secretsBefore = fs.readFileSync(secretsPath);
 
-    const stored = readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET];
-    expect(stored).toBeDefined();
-    // 32 bytes hex-encoded = 64 hex chars = 256 bits, comfortably >= 122 bits.
-    expect(stored.length).toBeGreaterThanOrEqual(Math.ceil(122 / 4));
-    // The deliberate one-time reveal: the raw token IS the stored value,
-    // returned exactly here — a token that is never revealed is unusable.
-    expect(body.token).toBe(stored);
-  });
+    const response = await handlePutExternalMcpToggle(deps(), {
+      enabled: true,
+      port: 'invalid-but-unread',
+    });
 
-  test('rotating twice mints a NEW token each time (never reuses the previous value)', async () => {
-    await handleRotateExternalMcpToken(deps());
-    const first = readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET];
-    await handleRotateExternalMcpToken(deps());
-    const second = readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET];
-    expect(second).not.toBe(first);
-  });
-
-  test('no served-grove designation -> not_serving refusal, nothing minted', async () => {
-    const res = await handleRotateExternalMcpToken({ hostServe: null, mycoHome: home() });
-    expect(res.status).toBe(404);
-    expect(readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// GET /api/team/external-mcp, PUT /api/team/external-mcp/toggle — Task 10
-// ---------------------------------------------------------------------------
-
-describe('GET /api/team/external-mcp + PUT .../toggle — mint-if-absent, bind/unbind, one-time reveal', () => {
-  const { home } = withHermeticHomes();
-  let grove: GroveRecord;
-  let listener: ExternalMcpListenerControl & { bindCalls: number[]; unbindCalls: number; bound: boolean; boundPort: number };
-  let funnelCalls: Array<{ port: number; on: boolean }>;
-  let runFunnel: FunnelRunner;
-
-  beforeEach(() => {
-    grove = createGrove('Served', home());
-    funnelCalls = [];
-    runFunnel = async (port, on) => {
-      funnelCalls.push({ port, on });
-      return on
-        ? { ok: true, detail: `stub ${port} ${on}`, url: `https://stub-host.example.ts.net` }
-        : { ok: true, detail: `stub ${port} ${on}` };
-    };
-    listener = {
-      bindCalls: [],
-      unbindCalls: 0,
-      bound: false,
-      boundPort: 0,
-      async bind(port: number) {
-        this.bindCalls.push(port);
-        this.bound = true;
-        this.boundPort = port;
-        return { ok: true, port };
+    expect(response).toEqual({
+      status: 409,
+      body: {
+        error: {
+          code: 'external_mcp_unavailable',
+          message: 'Public external MCP activation is unavailable in this release.',
+        },
       },
-      async unbind() {
-        this.unbindCalls += 1;
-        this.bound = false;
-        this.boundPort = 0;
+    });
+    expect(containCalls).toEqual([]);
+    expect(fs.readFileSync(configPath)).toEqual(configBefore);
+    expect(fs.readFileSync(secretsPath)).toEqual(secretsBefore);
+  });
+
+  test('token rotation has the same unavailable posture without changing secrets', async () => {
+    writeSecret(home(), HOST_EXTERNAL_MCP_TOKEN_SECRET, 'existing-token');
+    const secretsPath = path.join(home(), 'secrets.env');
+    const before = fs.readFileSync(secretsPath);
+
+    const response = await handleRotateExternalMcpToken(deps());
+
+    expect(response).toEqual({
+      status: 409,
+      body: {
+        error: {
+          code: 'external_mcp_unavailable',
+          message: 'Public external MCP activation is unavailable in this release.',
+        },
       },
-      get isBound() { return this.bound; },
-      get port() { return this.boundPort; },
+    });
+    expect(containCalls).toEqual([]);
+    expect(fs.readFileSync(secretsPath)).toEqual(before);
+  });
+
+  test('disable delegates to the containment authority and preserves the response shape', async () => {
+    const response = await handlePutExternalMcpToggle(deps(), { enabled: false });
+
+    expect(response).toEqual({ body: containmentResult });
+    expect(containCalls).toEqual(['disable']);
+  });
+
+  test('a cross-process containment lock reports the stable busy refusal', async () => {
+    const busy = deps();
+    busy.externalMcp!.containment.contain = async () => {
+      throw new ExternalMcpContainmentBusyError();
     };
+
+    const response = await handlePutExternalMcpToggle(busy, { enabled: false });
+
+    expect(response).toEqual({
+      status: 409,
+      body: {
+        error: {
+          code: 'external_mcp_busy',
+          message: 'Another external MCP containment operation is already in progress.',
+        },
+      },
+    });
   });
 
-  function deps(withListener = true): Parameters<typeof handlePutExternalMcpToggle>[0] {
-    return {
-      hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id },
-      mycoHome: home(),
-      externalMcp: withListener ? { listener, runFunnel } : undefined,
+  test('invalid toggle input is rejected without entering containment', async () => {
+    const response = await handlePutExternalMcpToggle(deps(), {});
+
+    expect(response.status).toBe(400);
+    expect(containCalls).toEqual([]);
+  });
+
+  test('an undesignated host still refuses before any external MCP operation', async () => {
+    const noHost = {
+      ...deps(),
+      hostServe: null,
     };
-  }
 
-  test('GET before enable: not enabled, no tokenHash, bound reflects the listener (false)', async () => {
-    const res = await handleGetExternalMcp(deps());
-    expect(res.status ?? 200).toBeLessThan(300);
-    const body = res.body as { enabled: boolean; tokenHash: string | null; bound: boolean | null };
-    expect(body.enabled).toBe(false);
-    expect(body.tokenHash).toBeNull();
-    expect(body.bound).toBe(false);
-  });
-
-  test('enable: mints a token, binds the listener, turns Funnel on, reveals { token, tokenHash } ONCE', async () => {
-    const res = await handlePutExternalMcpToggle(deps(), { enabled: true });
-    expect(res.status ?? 200).toBeLessThan(300);
-    const body = res.body as { enabled: boolean; port: number; token: string; tokenHash: string };
-    expect(body.enabled).toBe(true);
-    expect(typeof body.token).toBe('string');
-    expect(body.token.length).toBeGreaterThan(0);
-    expect(typeof body.tokenHash).toBe('string');
-
-    expect(listener.bindCalls).toEqual([body.port]);
-    expect(funnelCalls).toEqual([{ port: body.port, on: true }]);
-
-    const stored = readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET];
-    expect(stored).toBe(body.token);
-
-    const machine = loadMachineConfig(home());
-    expect(machine.daemon.external_mcp.enabled).toBe(true);
-    expect(machine.daemon.external_mcp.port).toBe(body.port);
-  });
-
-  test('enable: the Funnel runner\'s public URL is threaded into the response as funnel.url (spec §7)', async () => {
-    const res = await handlePutExternalMcpToggle(deps(), { enabled: true });
-    const body = res.body as { funnel: { ok: boolean; detail: string; url?: string } };
-    expect(body.funnel.url).toBe('https://stub-host.example.ts.net');
-  });
-
-  test('enable twice: mint-if-absent never rotates an already-existing token, and re-enable does NOT re-reveal it', async () => {
-    const first = await handlePutExternalMcpToggle(deps(), { enabled: true });
-    const firstBody = first.body as { token: string; tokenHash: string };
-    expect(typeof firstBody.token).toBe('string');
-    expect(firstBody.token.length).toBeGreaterThan(0);
-
-    const second = await handlePutExternalMcpToggle(deps(), { enabled: true });
-    const secondBody = second.body as { token?: string; tokenHash: string };
-    // The strict reveal property (Task 10 Fix Round 1): a re-enable of an
-    // already-token'd listener returns tokenHash only — the raw token is
-    // NEVER re-revealed. A member who lost it must use rotate.
-    expect(secondBody.token).toBeUndefined();
-    expect(secondBody.tokenHash).toBe(firstBody.tokenHash);
-
-    const stored = readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET];
-    expect(stored).toBe(firstBody.token);
-    expect(listener.bindCalls.length).toBe(2); // re-enable re-binds (idempotent on the listener side)
-  });
-
-  test('port out of the schema range -> 400 BEFORE any side effect (no mint, no bind, no persist)', async () => {
-    const res = await handlePutExternalMcpToggle(deps(), { enabled: true, port: 80 });
-    expect(res.status).toBe(400);
-    expect(listener.bindCalls).toEqual([]);
-    expect(readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBeUndefined();
-    const machine = loadMachineConfig(home());
-    expect(machine.daemon.external_mcp.enabled).toBe(false);
-  });
-
-  test('port: 0 is rejected (below the schema floor), never persistable', async () => {
-    const res = await handlePutExternalMcpToggle(deps(), { enabled: true, port: 0 });
-    expect(res.status).toBe(400);
-    const machine = loadMachineConfig(home());
-    expect(machine.daemon.external_mcp.enabled).toBe(false);
-    expect(machine.daemon.external_mcp.port).not.toBe(0);
-  });
-
-  test('port above the schema ceiling -> 400', async () => {
-    const res = await handlePutExternalMcpToggle(deps(), { enabled: true, port: 70000 });
-    expect(res.status).toBe(400);
-  });
-
-  test('persists the ACTUALLY-bound port, not the raw requested value', async () => {
-    const boundPort = 9999;
-    const rebindingListener: ExternalMcpListenerControl = {
-      async bind() { return { ok: true, port: boundPort }; },
-      async unbind() {},
-      isBound: true,
-      port: boundPort,
-    };
-    const res = await handlePutExternalMcpToggle(
-      { hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id }, mycoHome: home(), externalMcp: { listener: rebindingListener, runFunnel } },
-      { enabled: true, port: 5000 },
-    );
-    expect(res.status ?? 200).toBeLessThan(300);
-    const body = res.body as { port: number };
-    expect(body.port).toBe(boundPort);
-    const machine = loadMachineConfig(home());
-    expect(machine.daemon.external_mcp.port).toBe(boundPort);
-    expect(funnelCalls.some((c) => c.port === boundPort)).toBe(true);
-  });
-
-  test('disable: turns Funnel off, unbinds, persists enabled:false, reveals nothing', async () => {
-    await handlePutExternalMcpToggle(deps(), { enabled: true });
-    funnelCalls = [];
-    const res = await handlePutExternalMcpToggle(deps(), { enabled: false });
-    expect(res.status ?? 200).toBeLessThan(300);
-    const body = res.body as { enabled: boolean; token?: string };
-    expect(body.enabled).toBe(false);
-    expect(body.token).toBeUndefined();
-    expect(listener.unbindCalls).toBe(1);
-    expect(funnelCalls.some((c) => c.on === false)).toBe(true);
-
-    const machine = loadMachineConfig(home());
-    expect(machine.daemon.external_mcp.enabled).toBe(false);
-  });
-
-  test('GET after enable: tokenHash present, raw token never echoed, bound reflects the listener', async () => {
-    const enableRes = await handlePutExternalMcpToggle(deps(), { enabled: true });
-    const token = (enableRes.body as { token: string }).token;
-
-    const res = await handleGetExternalMcp(deps());
-    const body = res.body as { enabled: boolean; tokenHash: string; bound: boolean };
-    expect(body.enabled).toBe(true);
-    expect(body.bound).toBe(true);
-    expect(JSON.stringify(body)).not.toContain(token);
-  });
-
-  test('bind failure refuses without persisting enabled:true or touching Funnel', async () => {
-    const failingListener: ExternalMcpListenerControl = {
-      async bind() { return { ok: false, error: 'EADDRINUSE' }; },
-      async unbind() {},
-      isBound: false,
-      port: 0,
-    };
-    const res = await handlePutExternalMcpToggle(
-      { hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id }, mycoHome: home(), externalMcp: { listener: failingListener, runFunnel } },
-      { enabled: true },
-    );
-    expect(res.status).toBe(500);
-    expect(funnelCalls).toEqual([]);
-    const machine = loadMachineConfig(home());
-    expect(machine.daemon.external_mcp.enabled).toBe(false);
-  });
-
-  test('no served-grove designation -> not_serving refusal for both routes, nothing bound/minted', async () => {
-    const noHostDeps = { hostServe: null, mycoHome: home(), externalMcp: { listener, runFunnel } };
-    const getRes = await handleGetExternalMcp(noHostDeps);
-    expect(getRes.status).toBe(404);
-    const putRes = await handlePutExternalMcpToggle(noHostDeps, { enabled: true });
-    expect(putRes.status).toBe(404);
-    expect(listener.bindCalls).toEqual([]);
-    expect(readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBeUndefined();
-  });
-
-  test('missing/invalid "enabled" in the PUT body -> 400, no side effects', async () => {
-    const res = await handlePutExternalMcpToggle(deps(), {});
-    expect(res.status).toBe(400);
-    expect(listener.bindCalls).toEqual([]);
-  });
-
-  test('works without a threaded listener (config/token layer stays unit-testable in isolation)', async () => {
-    const res = await handlePutExternalMcpToggle(deps(false), { enabled: true });
-    expect(res.status ?? 200).toBeLessThan(300);
-    const body = res.body as { token: string };
-    expect(typeof body.token).toBe('string');
-    const machine = loadMachineConfig(home());
-    expect(machine.daemon.external_mcp.enabled).toBe(true);
+    expect((await handlePutExternalMcpToggle(noHost, { enabled: true })).status).toBe(404);
+    expect((await handleRotateExternalMcpToken(noHost)).status).toBe(404);
+    expect(containCalls).toEqual([]);
   });
 });
 
@@ -901,11 +859,7 @@ describe('resolveExternalMcpCoherence — doctor listener/token coherence (Task 
 
   test('enabled with no minted token -> missing_token, warn row', async () => {
     const { resolveExternalMcpCoherence } = await import('@myco/daemon/host-serve');
-    const machine = loadMachineConfig(home());
-    saveMachineConfig({
-      ...machine,
-      daemon: { ...machine.daemon, external_mcp: { enabled: true, port: 8743 } },
-    }, home());
+    seedExternalMcpConfig(home(), { enabled: true, port: 8743 });
 
     expect(resolveExternalMcpCoherence(loadMachineConfig(home()), home())).toEqual({ kind: 'missing_token', port: 8743 });
 
@@ -917,11 +871,7 @@ describe('resolveExternalMcpCoherence — doctor listener/token coherence (Task 
 
   test('enabled with a minted token -> ok, no doctor row', async () => {
     const { resolveExternalMcpCoherence } = await import('@myco/daemon/host-serve');
-    const machine = loadMachineConfig(home());
-    saveMachineConfig({
-      ...machine,
-      daemon: { ...machine.daemon, external_mcp: { enabled: true, port: 8743 } },
-    }, home());
+    seedExternalMcpConfig(home(), { enabled: true, port: 8743 });
     writeSecret(home(), HOST_EXTERNAL_MCP_TOKEN_SECRET, 'a'.repeat(64));
 
     expect(resolveExternalMcpCoherence(loadMachineConfig(home()), home())).toEqual({ kind: 'ok', port: 8743 });

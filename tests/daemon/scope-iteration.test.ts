@@ -5,8 +5,8 @@ import path from 'node:path';
 import { DaemonLogger, type Logger } from '@myco/daemon/logger.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
 import {
-  forEachGrove,
-  forEachRegisteredProject,
+  forEachGrove as forEachGroveWithDefaults,
+  forEachRegisteredProject as forEachRegisteredProjectWithDefaults,
   isProjectActive,
 } from '@myco/daemon/scope-iteration.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -15,6 +15,25 @@ import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { createGrove, registerProjectInGrove, type GroveRecord } from '@myco/grove/registry.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const forEachGrove = (
+  ...args: Parameters<typeof forEachGroveWithDefaults>
+) => forEachGroveWithDefaults(
+  args[0],
+  args[1],
+  args[2],
+  { ...args[3], lockNamespace: testPerUserLockNamespace },
+);
+
+const forEachRegisteredProject = (
+  ...args: Parameters<typeof forEachRegisteredProjectWithDefaults>
+) => forEachRegisteredProjectWithDefaults(
+  args[0],
+  args[1],
+  args[2],
+  { ...args[3], lockNamespace: testPerUserLockNamespace },
+);
 
 const MACHINE_ID = 'machine-test';
 

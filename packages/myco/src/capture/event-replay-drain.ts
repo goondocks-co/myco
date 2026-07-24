@@ -42,7 +42,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  HOST_BEARER_SECRET,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
   HOST_PROXY_BODY_TIMEOUT_MS,
@@ -61,8 +60,12 @@ import {
   resolveProjectBufferDir,
 } from '../grove/paths.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
-import { readHostRegistry, readHostSecrets } from '../host/registry.js';
+import { readHostMembershipSnapshots } from '../host/registry.js';
 import type { RemoteTarget } from '../host/routing.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
 import {
@@ -147,10 +150,11 @@ export interface ReplayStore {
  * {@link resolveProjectBufferDir}. A host with no bearer on file yields an empty
  * bearer; the version/reachability guards downstream leave its entries pending.
  */
-export function listAttachedReplayTargets(): AttachedReplayTarget[] {
+export function listAttachedReplayTargets(
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): AttachedReplayTarget[] {
   const out: AttachedReplayTarget[] = [];
-  for (const record of readHostRegistry()) {
-    const bearer = readHostSecrets(record.host_id)[HOST_BEARER_SECRET] ?? '';
+  for (const { record, bearer } of readHostMembershipSnapshots(lockNamespace)) {
     for (const ref of record.projects) {
       out.push({
         hostId: record.host_id,
@@ -377,6 +381,7 @@ export interface EventReplayDrainDeps {
   transport?: EventReplayTransport;
   bufferReader?: CollectBufferReader;
   listTargets?: AttachedTargetLister;
+  lockNamespace?: PerUserLockNamespace;
   /** LOCKED conditional removal of a session's collector-buffer file
    *  (consolidation Task C-2, item 6). Implementations MUST hold the same
    *  per-session flock `EventBuffer.append()` takes, RE-READ the buffer
@@ -433,7 +438,8 @@ export class EventReplayDrainQueue {
     this.store = deps.store ?? createFsReplayStore();
     this.transport = deps.transport ?? makeDefaultTransport(deps.machineId);
     this.bufferReader = deps.bufferReader ?? defaultBufferReader;
-    this.listTargets = deps.listTargets ?? listAttachedReplayTargets;
+    this.listTargets = deps.listTargets
+      ?? (() => listAttachedReplayTargets(deps.lockNamespace ?? nativePerUserLockNamespace));
     this.deleteSessionBuffer = deps.deleteSessionBuffer
       ?? ((bufferDir, sessionId, shouldDelete) => new EventBuffer(bufferDir, sessionId).deleteIfSync(shouldDelete));
     this.logger = deps.logger;

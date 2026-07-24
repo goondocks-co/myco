@@ -15,7 +15,7 @@
  *   1. COLLECT routes read a copy of the request body to append it to the local
  *      collector buffer (`resolveProjectBufferDir`, DB-free) before forwarding —
  *      the bytes forwarded to the host are still the originals, untouched — and
- *      synthesize the member's OWN `{ok,persisted:false,buffered:true}` ack
+ *      synthesize the member's OWN `{ok,persisted:false,buffered}` ack
  *      rather than relaying the host response (routing-layer §3.1).
  *   2. The `/mcp` path peeks the JSON-RPC envelope's tool name + operation
  *      selector to degrade Canopy tool calls (the capability-off moat that must
@@ -437,10 +437,9 @@ function logRelayFailureOnce(
 
 /**
  * Throttled warn for a collect-forward failure (host rejection, dial error,
- * or unexpected throw). Never data loss — the member acked `buffered:true`
- * and the buffered copy drains on retry — but capture forwards fire per hook
- * event, so an unthrottled warn per event is a log storm the moment a host
- * goes unreachable. Same key discipline and interval as
+ * or unexpected throw). Capture forwards fire per hook event, so an
+ * unthrottled warn per event is a log storm when a host goes unreachable.
+ * Same key discipline and interval as
  * {@link logRelayFailureOnce}; body content is never logged.
  */
 function logCollectForwardFailureOnce(
@@ -775,13 +774,8 @@ export async function handleAttachedRequest(
 /**
  * COLLECT routes (routing-layer §3.1): durably append to the local collector
  * buffer FIRST, ack the hook with the member's own `{persisted:false,
- * buffered:true}` (never the host's response — opacity holds both directions),
- * then best-effort forward to the host in the background. The ack's truthfulness
- * rests on the local buffer, so the hook never depends on synchronous host
- * reachability and its buffer-fallback never fires — the daemon already holds the
- * durable copy, so a hook-side fallback would only DOUBLE-BUFFER the same event.
- * (Task 1.0 made the hook's `ensureProjectRegistered` attach-aware, so a fallback
- * no longer materializes a local Grove; redundant buffering is the residual harm.)
+ * buffered}` result (never the host's response — opacity holds both directions),
+ * then best-effort forward to the host in the background.
  */
 async function handleCollectRoute(
   req: http.IncomingMessage,
@@ -817,6 +811,7 @@ async function handleCollectRoute(
   }
 
   const sessionId = resolveSessionId(event, req);
+  let buffered = false;
   if (event && sessionId) {
     try {
       // Stamp the origin route onto the buffered copy so the attach-aware replay
@@ -826,11 +821,8 @@ async function handleCollectRoute(
       // A `/events` record also carries the event id stamped above; the drain
       // forwards it through unchanged so the replay dedups against the live copy.
       d.bufferAppend(target, sessionId, stampCollectRoute(event, pathname));
+      buffered = true;
     } catch (err) {
-      // A failed buffer append must not hard-fail the agent. We still synthesize
-      // the buffered ack rather than a fallback-tripping response: tripping the
-      // hook fallback would double-buffer the event (the daemon owns the durable
-      // copy), the worse outcome.
       d.logger.error('collector buffer append failed', {
         host_id: target.host.host_id,
         session_id: sessionId,
@@ -838,10 +830,7 @@ async function handleCollectRoute(
       });
     }
   } else {
-    // Contract violation — collect routes always carry a session_id. We cannot
-    // key the buffer, so log loudly, but still synthesize the buffered ack to
-    // avoid the redundant double-buffer a fallback-tripping response would cause.
-    d.logger.error('collect route missing resolvable session_id — buffered ack synthesized without append', {
+    d.logger.error('collect route missing resolvable session_id', {
       host_id: target.host.host_id,
       path: pathname,
     });
@@ -853,9 +842,7 @@ async function handleCollectRoute(
   // (the dep never throws); independent of the buffer append above.
   if (event) d.noteCollectEvent(target, event);
 
-  // Ack the hook now — it is unblocked and holds no reason to buffer (the daemon
-  // owns the durable copy).
-  sendCollectAck(res);
+  sendCollectAck(res, buffered);
 
   // Background best-effort forward: version-incompatible or unreachable hosts
   // leave the buffered copy for the attach-aware drain (capture-push Task 5).
@@ -867,7 +854,7 @@ async function handleCollectRoute(
   // live path carries the SAME id the buffer — and therefore the drain-replay —
   // will; other routes forward the original bytes unchanged (byte-opaque).
   const forwardBody = event && isEventsRoute ? Buffer.from(JSON.stringify(event), 'utf-8') : body;
-  void forwardCollectInBackground(req, target, pathname, sessionId, forwardBody, d);
+  void forwardCollectInBackground(req, target, pathname, sessionId, forwardBody, buffered, d);
 }
 
 /** The member `machine_id` (identity §4a) for stamping a collect event's id — the
@@ -879,10 +866,10 @@ function resolveMemberMachineId(req: http.IncomingMessage): string {
   return typeof value === 'string' && value.length > 0 ? value : getMachineId();
 }
 
-function sendCollectAck(res: http.ServerResponse): void {
+function sendCollectAck(res: http.ServerResponse, buffered: boolean): void {
   if (res.headersSent) return;
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ ok: true, persisted: false, buffered: true }));
+  res.end(JSON.stringify({ ok: true, persisted: false, buffered }));
 }
 
 function resolveSessionId(event: Record<string, unknown> | undefined, req: http.IncomingMessage): string | null {
@@ -895,16 +882,20 @@ function resolveSessionId(event: Record<string, unknown> | undefined, req: http.
 
 /** Forward a collect event to the host after flushing transcript deltas for the
  *  session-boundary routes. The host runs its own stateful capture handler; we
- *  discard its response (the member already acked). Errors are swallowed — the
- *  buffered copy + drain is the durability guarantee. */
+ *  discard its response and log failures with the acknowledgment's durability
+ *  outcome. */
 async function forwardCollectInBackground(
   req: http.IncomingMessage,
   target: RemoteTarget,
   pathname: string,
   sessionId: string | null,
   body: Buffer,
+  buffered: boolean,
   d: HostProxyDeps,
 ): Promise<void> {
+  const durabilityOutcome = buffered
+    ? 'buffered copy retained for drain'
+    : 'hook fallback required';
   try {
     if (FLUSH_BEFORE_FORWARD_ROUTES.has(pathname)) {
       await d.flushBeforeForward(target);
@@ -929,11 +920,8 @@ async function forwardCollectInBackground(
         if (status === 409 && proxyRes.headers[HOST_PROTOCOL_HEADER] !== undefined) {
           logVersionMismatchOnce(d.logger, target, Number(proxyRes.headers[HOST_PROTOCOL_HEADER]) || undefined);
         } else if (status >= 400) {
-          // The member already acked buffered:true; a host rejection (bad bearer,
-          // etc.) is not lost — the buffered copy drains on retry — but a
-          // persistent one must be visible.
           logCollectForwardFailureOnce(d.logger, target, `rejected:${Math.floor(status / 100)}xx`,
-            'host rejected collect forward — buffered copy retained for drain',
+            `host rejected collect forward — ${durabilityOutcome}`,
             { path: pathname, status });
         }
         proxyRes.resume(); // drain + discard; the member synthesized its own ack
@@ -943,7 +931,7 @@ async function forwardCollectInBackground(
       proxyReq.on('error', (err) => {
         clearTimeout(timer);
         logCollectForwardFailureOnce(d.logger, target, 'dial-error',
-          'collect forward failed — buffered copy retained for drain',
+          `collect forward failed — ${durabilityOutcome}`,
           { path: pathname, error: err.message });
         done();
       });
@@ -951,7 +939,7 @@ async function forwardCollectInBackground(
     });
   } catch (err) {
     logCollectForwardFailureOnce(d.logger, target, 'threw',
-      'collect forward threw — buffered copy retained for drain',
+      `collect forward threw — ${durabilityOutcome}`,
       { path: pathname, error: (err as Error).message });
   }
 }

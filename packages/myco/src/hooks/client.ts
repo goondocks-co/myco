@@ -34,8 +34,21 @@ import { readLockHolder } from '../utils/lifecycle-lock.js';
 import { findInstalledServiceLabel } from '../daemon/api/restart.js';
 import { getServiceManager } from '../service/manager.js';
 import type { ServiceManager } from '../service/types.js';
+import {
+  requestCooperativeShutdownResult,
+  type CooperativeShutdownResult,
+} from '../service/cooperative-shutdown.js';
+import {
+  prepareDaemonTermination,
+  terminateDaemonProcess,
+  type DaemonTerminationDeps,
+} from '../service/daemon-termination.js';
 import { ensureProjectRegistered } from '../grove/registry.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -122,13 +135,19 @@ interface RequestFailureRecovery {
   captureCritical?: boolean;
 }
 
-interface DaemonClientOptions {
+export interface DaemonClientOptions {
   requestContext?: MycoRequestContext;
   headers?: Record<string, string>;
   /** Optional override for the platform service manager. Defaults to
    *  `getServiceManager()`. Tests inject a fake to bypass real launchd /
    *  systemd state on the host. */
   serviceManager?: ServiceManager;
+  lockNamespace?: PerUserLockNamespace;
+  /** Process lifecycle dependencies; production defaults to the current platform. */
+  platform?: NodeJS.Platform;
+  cooperativeShutdown?: (port: number) => Promise<CooperativeShutdownResult>;
+  withExternalMcpContainment?: <T>(continuation: () => Promise<T>) => Promise<T>;
+  terminate?: (pid: number, signal: NodeJS.Signals) => void;
 }
 
 interface HookRequestContextInput {
@@ -161,6 +180,10 @@ function defaultIsPortBound(port: number, pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function isMissingProcess(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ESRCH';
 }
 
 /**
@@ -198,6 +221,10 @@ export class DaemonClient {
   private defaultHeaders: Record<string, string>;
   private daemonService: DaemonServiceState;
   private serviceManager: ServiceManager | null;
+  private lockNamespace: PerUserLockNamespace;
+  private platform: NodeJS.Platform;
+  private cooperativeShutdown: (port: number) => Promise<CooperativeShutdownResult>;
+  private terminationDeps: DaemonTerminationDeps;
 
   constructor(vaultDir: string, options: DaemonClientOptions = {}) {
     this.vaultDir = vaultDir;
@@ -211,6 +238,14 @@ export class DaemonClient {
       ...(options.headers ?? {}),
     };
     this.serviceManager = options.serviceManager ?? null;
+    this.lockNamespace = options.lockNamespace ?? nativePerUserLockNamespace;
+    this.platform = options.platform ?? process.platform;
+    this.cooperativeShutdown = options.cooperativeShutdown ?? requestCooperativeShutdownResult;
+    this.terminationDeps = {
+      platform: this.platform,
+      withExternalMcpContainment: options.withExternalMcpContainment,
+      kill: options.terminate,
+    };
   }
 
   async post(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
@@ -394,13 +429,21 @@ export class DaemonClient {
     }
   }
 
-  // SIGTERM only. Never unlinks daemon.json — see reconcileExistingDaemon
-  // for the cleanup-ownership-inversion rationale (the canonical comment).
-  private killDaemon(info: DaemonInfo | null): void {
+  /** Stop a daemon without deleting the state file owned by its successor. */
+  private async killDaemon(info: DaemonInfo | null): Promise<void> {
     if (!info) return;
+    if (this.platform === 'win32') {
+      const cooperative = await this.cooperativeShutdown(info.port);
+      if (cooperative.kind === 'stopped') {
+        await prepareDaemonTermination(this.terminationDeps);
+        return;
+      }
+    }
     try {
-      process.kill(info.pid, 'SIGTERM');
-    } catch { /* already dead */ }
+      await terminateDaemonProcess(info.pid, 'SIGTERM', this.terminationDeps);
+    } catch (error) {
+      if (!isMissingProcess(error)) throw error;
+    }
   }
 
   /**
@@ -415,7 +458,7 @@ export class DaemonClient {
     const info = await this.getInfoAsync();
 
     if (checkStale && info && await this.isStale(info)) {
-      this.killDaemon(info);
+      await this.killDaemon(info);
       // Brief pause for port release
       await new Promise((r) => setTimeout(r, 200));
     } else if (await this.isHealthy(info)) {
@@ -509,7 +552,11 @@ export class DaemonClient {
 
   private refreshedRequestContextHeaders(): Record<string, string> {
     try {
-      ensureProjectRegistered(resolveProjectRoot(this.vaultDir));
+      ensureProjectRegistered(
+        resolveProjectRoot(this.vaultDir),
+        undefined,
+        this.lockNamespace,
+      );
       const context = requestContextFromEnvironment(process.env, this.vaultDir);
       return context.groveId ? requestContextHeaders(context) : {};
     } catch {
@@ -556,7 +603,7 @@ export class DaemonClient {
     // cleanup once the recorded pid is confirmed dead. spawnDaemon (or the
     // service supervisor's KeepAlive) brings a fresh daemon up, which
     // overwrites daemon.json with its own pid as part of normal startup.
-    this.killDaemon(prevInfo);
+    await this.killDaemon(prevInfo);
     // Kick the spawn / supervisor start without blocking on retry delays —
     // the unified poll loop below is the single source of truth for the
     // deadline and stuck-detection behavior.
@@ -575,7 +622,14 @@ export class DaemonClient {
         d.isProcessAlive(prevPid) &&
         d.isPortBound(prevPort, prevPid)
       ) {
-        try { d.kill(prevPid, 'SIGKILL'); } catch { /* already dead */ }
+        try {
+          await terminateDaemonProcess(prevPid, 'SIGKILL', {
+            ...this.terminationDeps,
+            kill: d.kill,
+          });
+        } catch (error) {
+          if (!isMissingProcess(error)) throw error;
+        }
         stuckEscalated = true;
         // Loop continues; the supervisor's KeepAlive should respawn shortly.
       }
@@ -742,8 +796,12 @@ export function requestContextForHook(
 export function createHookDaemonClient(
   vaultDir: string,
   input: HookRequestContextInput = {},
+  lockNamespace?: PerUserLockNamespace,
 ): DaemonClient {
-  return new DaemonClient(vaultDir, { requestContext: requestContextForHook(vaultDir, input) });
+  return new DaemonClient(vaultDir, {
+    requestContext: requestContextForHook(vaultDir, input),
+    lockNamespace,
+  });
 }
 
 /**

@@ -35,6 +35,7 @@ import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
 import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants.js';
 import { vi } from '../helpers/vi-shim.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 // ---------------------------------------------------------------------------
 // Pure predicate — fast, isolated coverage of every servedGroveRefusal branch.
@@ -190,6 +191,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       logger,
       daemonStateAuthority: stubAuthority,
       hostServe,
+      lockNamespace: testPerUserLockNamespace,
     });
     server.registerRoute('GET', PROBE_ROUTE, async (req) => ({
       body: { ok: true, groveId: req.requestContext?.groveId ?? null },
@@ -201,6 +203,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       // chokepoint 2's throttled refusal warn (Task 2, E-4 W2) is exercised
       // here too, not just chokepoint 1's router-route dispatch.
       logger,
+      lockNamespace: testPerUserLockNamespace,
     }));
     await server.start(0);
     servers.push(server);
@@ -316,6 +319,40 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     await client.close();
   });
 
+  test('(d) /mcp: a tool-call body cannot pivot outside the designated served Grove', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const client = new Client({ name: 'served-grove-filter-test', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${server.overlayPort}/mcp`),
+      {
+        requestInit: {
+          headers: overlayHeaders({
+            'x-myco-grove-id': servedGrove.id,
+            'x-myco-project-id': servedProjectId,
+          }),
+        },
+      },
+    );
+    await client.connect(transport);
+
+    let message = 'DID NOT THROW';
+    try {
+      await client.callTool({
+        name: 'myco_plans',
+        arguments: { op: 'list', grove_id: personalGrove.id },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).not.toBe('DID NOT THROW');
+    expect(message).toContain(
+      "Requested Grove is outside this tool surface's authorized scope",
+    );
+    expect(message).not.toContain(personalGrove.id);
+    await client.close();
+  });
+
   // -- (e) loopback requests are entirely unaffected -------------------------
 
   test('(e) loopback requests are entirely unaffected by the overlay filter', async () => {
@@ -337,6 +374,32 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     expect(withPersonalGrove.status).toBe(200);
     const body = await withPersonalGrove.json() as { groveId: string | null };
     expect(body.groveId).toBe(personalGrove.id);
+  });
+
+  test('(e) loopback /mcp retains authenticated cross-Grove tool-call pivots', async () => {
+    const server = await buildHostServer(servedGrove.id);
+    const client = new Client({ name: 'served-grove-filter-test', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${server.port}/mcp`),
+      {
+        requestInit: {
+          headers: {
+            'x-myco-grove-id': servedGrove.id,
+            'x-myco-project-id': servedProjectId,
+            'x-myco-auth': server.getAuthToken(),
+          },
+        },
+      },
+    );
+    await client.connect(transport);
+
+    const plans = await client.callTool({
+      name: 'myco_plans',
+      arguments: { op: 'list', grove_id: personalGrove.id },
+    });
+
+    expect(plans.isError).not.toBe(true);
+    await client.close();
   });
 
   // -- (f) enabled && !served_grove_id -> refuses everything, both chokepoints

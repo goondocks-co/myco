@@ -1,12 +1,19 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
-  handleDeleteProviderSecret,
+  handleDeleteProviderSecret as handleDeleteProviderSecretWith,
   handleGetProviderSecrets,
-  handlePutProviderSecret,
+  handlePutProviderSecret as handlePutProviderSecretWith,
 } from '@myco/daemon/api/provider-secrets.js';
+import type { RouteRequest } from '@myco/daemon/router.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const handlePutProviderSecret = (req: RouteRequest) =>
+  handlePutProviderSecretWith(req, testPerUserLockNamespace);
+const handleDeleteProviderSecret = (req: RouteRequest) =>
+  handleDeleteProviderSecretWith(req, testPerUserLockNamespace);
 import { OPENAI_API_KEY_ENV } from '@myco/providers/env.js';
 import { GITHUB_TOKEN_ENV } from '@myco/release-provenance/github.js';
 
@@ -14,6 +21,15 @@ describe('provider secret handlers', () => {
   let projectVaultDir: string;
   let mycoHome: string;
   const originalMycoHome = process.env.MYCO_HOME;
+  let originalOpenAiApiKey: string | undefined;
+  let originalOpenAiApiKeyAlias: string | undefined;
+
+  beforeEach(() => {
+    originalOpenAiApiKey = process.env[OPENAI_API_KEY_ENV];
+    originalOpenAiApiKeyAlias = process.env.OPENAI_API_KEY;
+    delete process.env[OPENAI_API_KEY_ENV];
+    delete process.env.OPENAI_API_KEY;
+  });
 
   afterEach(() => {
     if (projectVaultDir && fs.existsSync(projectVaultDir)) {
@@ -27,8 +43,10 @@ describe('provider secret handlers', () => {
     } else {
       process.env.MYCO_HOME = originalMycoHome;
     }
-    delete process.env[OPENAI_API_KEY_ENV];
-    delete process.env.OPENAI_API_KEY;
+    if (originalOpenAiApiKey === undefined) delete process.env[OPENAI_API_KEY_ENV];
+    else process.env[OPENAI_API_KEY_ENV] = originalOpenAiApiKey;
+    if (originalOpenAiApiKeyAlias === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiApiKeyAlias;
     delete process.env[GITHUB_TOKEN_ENV];
   });
 
@@ -159,6 +177,43 @@ describe('provider secret handlers', () => {
     expect(github.source).toBe('machine');
     expect(github.defaultScope).toBe('machine');
     expect(github.availableScopes).toEqual(['machine']);
+  });
+
+  it.each([
+    '\nvalid-secret',
+    'valid\nINJECTED=owned',
+    'valid-secret\n',
+    '\rvalid-secret',
+    'valid\rINJECTED=owned',
+    'valid-secret\r',
+    '\0valid-secret',
+    'valid\0INJECTED=owned',
+    'valid-secret\0',
+  ])('rejects an unsafe raw OpenAI secret before mutating the store or process environment: %p', async (value) => {
+    setup();
+    const secretsPath = path.join(mycoHome, 'secrets.env');
+    fs.writeFileSync(secretsPath, `${OPENAI_API_KEY_ENV}=stored-valid\n`);
+    const before = fs.readFileSync(secretsPath);
+    const sentinel = 'external-openai-sentinel';
+    const aliasSentinel = 'external-openai-alias-sentinel';
+    process.env[OPENAI_API_KEY_ENV] = sentinel;
+    process.env.OPENAI_API_KEY = aliasSentinel;
+
+    const result = await handlePutProviderSecret({
+      body: { api_key: value },
+      params: { provider: 'openai' },
+      query: {},
+      pathname: '/api/providers/secrets/openai',
+    });
+
+    expect(result.status).toBe(400);
+    expect(result.body).toEqual({
+      error: 'invalid_secret_value',
+      message: 'Secret value contains unsupported characters',
+    });
+    expect(fs.readFileSync(secretsPath)).toEqual(before);
+    expect(process.env[OPENAI_API_KEY_ENV]).toBe(sentinel);
+    expect(process.env.OPENAI_API_KEY).toBe(aliasSentinel);
   });
 
   it('reports machine as the only scope across every provider', async () => {

@@ -46,6 +46,10 @@ import {
 } from '../host-serve.js';
 import type { ExternalMcpListenerControl } from './team-config.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 /** TTL for the served-grove health-classifier bundle (~15s, decision-ef693c71
  *  D3). The four classifiers below run `loadMergedConfig` + secrets reads per
@@ -69,6 +73,7 @@ export interface HostServeStatusRouteDeps {
   now?: () => number;
   /** Test seam: override the cache TTL (default {@link HOST_SERVE_STATUS_CACHE_TTL_MS}). */
   ttlMs?: number;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 interface HostServeStatusBody {
@@ -126,6 +131,7 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
   const loadConfig = deps.loadMachineConfig ?? loadMachineConfig;
   const now = deps.now ?? Date.now;
   const ttlMs = deps.ttlMs ?? HOST_SERVE_STATUS_CACHE_TTL_MS;
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
   let cache: { body: HostServeStatusBody; expiresAt: number; epoch: number } | null = null;
@@ -144,7 +150,7 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
 
     const designation = resolveServedGroveDesignationHealth(machine, mycoHome);
     const backup = resolveServedGroveBackupHealth(machine, mycoHome);
-    const key = resolveServedGroveKeyHealthIsolated(machine, mycoHome);
+    const key = resolveServedGroveKeyHealthIsolated(machine, mycoHome, lockNamespace);
     const mcpCoherence = resolveExternalMcpCoherence(machine, mycoHome);
 
     const existingToken = readSecrets(mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET];

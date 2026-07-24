@@ -1,4 +1,5 @@
 import { sendEvent } from './send-event.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 /**
  * Copilot's `errorOccurred` hook — fires when the agent encounters an
@@ -13,9 +14,9 @@ import { sendEvent } from './send-event.js';
  * whichever fields are populated for this Copilot version without us
  * having to track schema drift per release.
  */
-export async function main() {
+export async function main(lockNamespace?: PerUserLockNamespace) {
   await sendEvent('error-occurred', (input) => ({
     type: 'error_occurred',
     payload: input.raw,
-  }));
+  }), lockNamespace);
 }

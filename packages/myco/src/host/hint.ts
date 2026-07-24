@@ -28,6 +28,10 @@
  */
 import type { ProjectManifest } from '../config/project-manifest.js';
 import { getHost, resolveAttach } from './registry.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 /** The `grove.remote.provider` value that marks a Team Host affiliation hint. */
 const TEAM_HOST_HINT_PROVIDER = 'team-host';
@@ -71,11 +75,12 @@ export type TeamHostHintState =
 export function resolveTeamHostHintState(
   manifest: ProjectManifest | null | undefined,
   projectId: string | null | undefined,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): TeamHostHintState {
   const hint = teamHostHintFromManifest(manifest);
   if (!hint) return { kind: 'none' };
-  if (projectId && resolveAttach(projectId)) return { kind: 'resolved' };
-  return getHost(hint.host_id)
+  if (projectId && resolveAttach(projectId, lockNamespace)) return { kind: 'resolved' };
+  return getHost(hint.host_id, lockNamespace)
     ? { kind: 'not_attached', hostId: hint.host_id }
     : { kind: 'not_joined', hostId: hint.host_id };
 }
@@ -115,8 +120,9 @@ const noticedHints = new Set<string>();
 export function noticeTeamHostHintOnce(
   manifest: ProjectManifest | null | undefined,
   projectId: string | null | undefined,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
-  const state = resolveTeamHostHintState(manifest, projectId);
+  const state = resolveTeamHostHintState(manifest, projectId, lockNamespace);
   const message = teamHostHintMessage(state);
   if (!message) return;
   const hostId = state.kind === 'not_joined' || state.kind === 'not_attached' ? state.hostId : '';

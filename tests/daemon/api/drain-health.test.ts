@@ -6,16 +6,27 @@
  * and plan, `pending_records` for event-replay), omitted when nothing is
  * pending.
  */
+import { writeHostRecordFixture } from '../../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createDrainHealthHandler } from '@myco/daemon/api/drain-health.js';
-import { upsertHost, type HostRecord } from '@myco/host/registry.js';
+import {
+  createDrainHealthHandler as createDrainHealthHandlerWith,
+  type DrainHealthRouteDeps,
+} from '@myco/daemon/api/drain-health.js';
+import { type HostRecord } from '@myco/host/registry.js';
 import type { DrainHealthCounters } from '@myco/capture/drain-health.js';
 import { PlanDrainQueue, type PlanDrainStore, type PlanDrainEntry, type PlanFileReader, type PlanPostTransport } from '@myco/capture/plan-drain.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const createDrainHealthHandler = (deps: DrainHealthRouteDeps) =>
+  createDrainHealthHandlerWith({
+    ...deps,
+    lockNamespace: testPerUserLockNamespace,
+  });
 
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HOST_B = 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -51,7 +62,7 @@ describe('GET /api/team-host/drain-health', () => {
   });
 
   test('every joined host appears once, even with zero counters across all three drains', async () => {
-    upsertHost(host(HOST_A, 'mac-studio'));
+    writeHostRecordFixture(host(HOST_A, 'mac-studio'));
 
     const handler = createDrainHealthHandler({
       transcriptDrain: fakeQueue({}),
@@ -76,7 +87,7 @@ describe('GET /api/team-host/drain-health', () => {
   });
 
   test('the residency kind reports per-host in-flight/failing transition counts (same per-kind shape)', async () => {
-    upsertHost(host(HOST_A, 'mac-studio'));
+    writeHostRecordFixture(host(HOST_A, 'mac-studio'));
 
     const handler = createDrainHealthHandler({
       transcriptDrain: fakeQueue({}),
@@ -92,7 +103,7 @@ describe('GET /api/team-host/drain-health', () => {
   });
 
   test('the default residency health scans the journal store: an in-flight journal with a last_error is a failing entry', async () => {
-    upsertHost(host(HOST_A, 'mac-studio'));
+    writeHostRecordFixture(host(HOST_A, 'mac-studio'));
     // Write an in-flight attach journal for HOST_A carrying a last_error.
     const { startResidencyJournal, advanceResidencyPhase } = await import('@myco/host/residency-journal.js');
     const projectId = 'proj_dddddddddddddddddddddddddddddddd';
@@ -112,7 +123,7 @@ describe('GET /api/team-host/drain-health', () => {
   });
 
   test('pendingUnits maps to the drain-specific wire field: pending_bytes for transcript/plan, pending_records for event-replay', async () => {
-    upsertHost(host(HOST_A, 'mac-studio'));
+    writeHostRecordFixture(host(HOST_A, 'mac-studio'));
 
     const handler = createDrainHealthHandler({
       transcriptDrain: fakeQueue({ [HOST_A]: { pendingEntries: 2, pendingUnits: 4096, failingEntries: 1, hostUnreachableEntries: 1 } }),
@@ -128,8 +139,8 @@ describe('GET /api/team-host/drain-health', () => {
   });
 
   test('a host absent from a drain\'s health map (nothing ever queued for it) reports zero counters, not an absent row', async () => {
-    upsertHost(host(HOST_A, 'mac-studio'));
-    upsertHost(host(HOST_B, 'linux-box'));
+    writeHostRecordFixture(host(HOST_A, 'mac-studio'));
+    writeHostRecordFixture(host(HOST_B, 'linux-box'));
 
     // Only HOST_A ever had transcript activity.
     const handler = createDrainHealthHandler({
@@ -149,7 +160,7 @@ describe('GET /api/team-host/drain-health', () => {
     // A REAL PlanDrainQueue (not the fakeQueue canned-Map double the other
     // tests use) — the wire-mapping layer must not reintroduce staleness
     // even when the underlying queue's health() is doing real work.
-    upsertHost(host(HOST_A, 'mac-studio'));
+    writeHostRecordFixture(host(HOST_A, 'mac-studio'));
     const files = new Map<string, string>();
     files.set('/plans/x.md', '# plan');
     const fileReader: PlanFileReader = { read: (p) => files.get(p) ?? null };

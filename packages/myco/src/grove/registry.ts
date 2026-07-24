@@ -30,6 +30,10 @@ import { loadMachineConfig } from '../config/loader.js';
 import { resolveAttach, type AttachRef, type HostRecord } from '../host/registry.js';
 import { isResidencyDivertActive, readResidencyJournal, residencyDirExists, residencyTransitionInFlight } from '../host/residency-journal.js';
 import { noticeTeamHostHintOnce } from '../host/hint.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 export interface GroveRecord {
   id: string;
@@ -655,11 +659,12 @@ export function findRegisteredProject(
  */
 export function resolveAttachForProjectRoot(
   projectRoot: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): { host: HostRecord; ref: AttachRef } | null {
   const manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
   const projectId = manifest?.project.id;
   if (!projectId || !isGroveEraId(projectId, 'project')) return null;
-  return resolveAttach(projectId);
+  return resolveAttach(projectId, lockNamespace);
 }
 
 /**
@@ -673,8 +678,12 @@ export function resolveAttachForProjectRoot(
  * writes. `ensureProjectRegistered` already inlines both checks for the hot hook
  * path; this is the same policy for the colder vectors.
  */
-export function isLocalRegistrationSuppressed(projectId: string): boolean {
-  return residencyTransitionInFlight(projectId) || resolveAttach(projectId) !== null;
+export function isLocalRegistrationSuppressed(
+  projectId: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): boolean {
+  return residencyTransitionInFlight(projectId)
+    || resolveAttach(projectId, lockNamespace) !== null;
 }
 
 /**
@@ -812,6 +821,7 @@ function resolveResidencyDivert(projectRoot: string): ResolvedRegisteredProject 
 export function ensureProjectRegistered(
   projectRoot: string,
   mycoHome = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): ResolvedRegisteredProject | null {
   // Residency-transition divert (Phase F): while a project is mid-move to or
   // from a host, capture must resolve to the journal's destination tenancy, not
@@ -833,7 +843,7 @@ export function ensureProjectRegistered(
   // before any local write. It runs before isSafeProjectRoot's git probe so
   // the hosted hot path never pays for a subprocess it would never register
   // from.
-  const attach = resolveAttachForProjectRoot(projectRoot);
+  const attach = resolveAttachForProjectRoot(projectRoot, lockNamespace);
   if (attach) return attachedRegistration(attach.ref, projectRoot);
 
   if (!isSafeProjectRoot(projectRoot)) return null;
@@ -851,7 +861,7 @@ export function ensureProjectRegistered(
   // meant for a host. This branch runs at most once per project on this
   // machine — every later call finds `existing` above and never reaches
   // here — so the notice is naturally once-ever, not once-per-hook-call.
-  noticeTeamHostHintOnce(manifest, manifest?.project.id);
+  noticeTeamHostHintOnce(manifest, manifest?.project.id, lockNamespace);
   if (manifest && !manifest.grove?.binding_id) {
     manifest = ensureProjectManifest(resolveProjectVaultDir(projectRoot), {
       projectName,

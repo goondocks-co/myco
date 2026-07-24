@@ -33,6 +33,7 @@ import { Database } from 'bun:sqlite';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 
 import { setupTestDb, teardownTestDb } from '../helpers/db';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { makeTestRequestContext } from '../helpers/request-context';
 import { createEventDispatcher } from '@myco/daemon/event-dispatch.js';
 import { SessionRegistry } from '@myco/daemon/lifecycle.js';
@@ -127,7 +128,11 @@ describe('capture pipeline — HTTP end-to-end (client → server → Grove SQLi
       triggerTitleSummary: async () => {},
     });
 
-    server = new DaemonServer({ vaultDir, logger });
+    server = new DaemonServer({
+      vaultDir,
+      logger,
+      lockNamespace: testPerUserLockNamespace,
+    });
     server.registerRoute('POST', '/events', dispatcher);
     // Ephemeral port; start() writes daemon.json (host/port/pid/auth_token)
     // at the MYCO_HOME service path the client reads from.
@@ -145,7 +150,10 @@ describe('capture pipeline — HTTP end-to-end (client → server → Grove SQLi
     // daemon-issued bearer token from daemon.json. The grove-bound context
     // makes it emit the request-context headers the server resolves.
     const ctx = makeTestRequestContext({ vaultDir, groveId, projectId, sessionId });
-    return new DaemonClient(vaultDir, { requestContext: ctx });
+    return new DaemonClient(vaultDir, {
+      requestContext: ctx,
+      lockNamespace: testPerUserLockNamespace,
+    });
   }
 
   /** Open the Grove DB the server wrote to and run a query. Read-only; the

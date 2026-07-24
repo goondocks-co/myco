@@ -414,6 +414,34 @@ describe('myco remove (global) confirmation gate', () => {
     expect(fs.existsSync(sandbox.mycoHome)).toBe(true);
   });
 
+  it('preserves the full home on purge when Windows cannot confirm containment', async () => {
+    const { ExternalMcpHardKillBlockedError } = await import('@myco/service/windows.js');
+    const configPath = path.join(sandbox.mycoHome, 'config.yaml');
+    const journalPath = path.join(
+      sandbox.mycoHome,
+      'service',
+      'external-mcp-containment.json',
+    );
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
+    fs.writeFileSync(configPath, 'daemon:\n  external_mcp: true\n', 'utf-8');
+    fs.writeFileSync(journalPath, '{"phase":"funnel_disable_pending"}\n', 'utf-8');
+    fakeServiceManager.uninstall = async (label: string) => {
+      fakeServiceManager.uninstallCalls.push(label);
+      throw new ExternalMcpHardKillBlockedError();
+    };
+
+    const { run } = await import('@myco/cli/remove.js');
+    await expect(run(['--purge', '--yes']))
+      .rejects.toBeInstanceOf(ExternalMcpHardKillBlockedError);
+
+    expect(fakeServiceManager.uninstallCalls).toHaveLength(1);
+    expect(fs.existsSync(path.join(sandbox.mycoHome, 'launcher.cjs'))).toBe(true);
+    expect(fs.existsSync(path.join(sandbox.mycoHome, 'mcp-launcher.cjs'))).toBe(true);
+    expect(fs.existsSync(configPath)).toBe(true);
+    expect(fs.existsSync(journalPath)).toBe(true);
+    expect(fs.existsSync(sandbox.mycoHome)).toBe(true);
+  });
+
   it('mentions ~/.myco deletion in the summary and purges it on --purge --yes', async () => {
     confirmMock.mockResolvedValue(true);
 

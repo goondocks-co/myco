@@ -22,6 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { DaemonServer } from '@myco/daemon/server';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { readHostActionLog } from '@myco/host/action-log';
@@ -51,6 +52,7 @@ describe('Team Host enrollment endpoint (/api/host/enroll)', () => {
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, hostId: HOST_ID, label: HOST_LABEL },
+      lockNamespace: testPerUserLockNamespace,
     });
     // A different overlay route to prove the exemption did not widen the gate.
     server.registerRoute('GET', '/api/sessions', async () => {
@@ -85,7 +87,27 @@ describe('Team Host enrollment endpoint (/api/host/enroll)', () => {
     // This fixture's hostServe carries no servedGroveId — undesignated
     // reports as `null`, present but empty (protocol v2), never absent.
     expect(body.served_grove_id).toBeNull();
-    expect(body.projects).toEqual([]);
+    expect('projects' in body).toBe(false);
+  });
+
+  test('echoes a deterministic additive receipt for a supplied enrollment nonce', async () => {
+    const enrollmentNonce = '0123456789abcdef0123456789abcdef';
+    const res = await fetch(`${overlay}/api/host/enroll`, {
+      method: 'POST',
+      headers: enrollHeaders,
+      body: JSON.stringify({
+        member_hostname: 'a-member',
+        member_overlay_ip: '100.64.0.9',
+        enrollment_nonce: enrollmentNonce,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.enrollment_receipt).toEqual({
+      enrollment_nonce: enrollmentNonce,
+      host_id: HOST_ID,
+      protocol_version: HOST_PROTOCOL_VERSION,
+    });
   });
 
   test('SURGICAL exemption: a DIFFERENT overlay route STILL 401s without the bearer', async () => {

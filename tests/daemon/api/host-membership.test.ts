@@ -13,6 +13,7 @@
  * against the real `readHostRegistry()`/manifest-hint read (no orchestration
  * to fake).
  */
+import { writeHostRecordFixture } from '../../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,19 +26,41 @@ import { createGrove } from '@myco/grove/registry.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import { codedMembershipError } from '@myco/host/membership-error.js';
 import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
-import { getHost, upsertHost, type HostRecord } from '@myco/host/registry.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { RESIDENCY_MIN_HOST_PROTOCOL } from '@myco/host/residency-journal.js';
 import {
   classifyHostProtocolSkew,
   createHostMembershipAttachHandler,
   createHostMembershipDetachHandler,
-  createHostMembershipHealthHandler,
+  createHostMembershipHealthHandler as createHostMembershipHealthHandlerWith,
   createHostMembershipJoinHandler,
   createHostMembershipLeaveHandler,
-  createHostMembershipStatusHandler,
-  registerHostMembershipRoutes,
+  createHostMembershipStatusHandler as createHostMembershipStatusHandlerWith,
+  registerHostMembershipRoutes as registerHostMembershipRoutesWith,
+  type HostMembershipHealthRouteDeps,
+  type HostMembershipRouteDeps,
 } from '@myco/daemon/api/host-membership.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const { attachProject, getHost } = createHostRegistryOperations(testPerUserLockNamespace);
+const createHostMembershipHealthHandler = (deps: HostMembershipHealthRouteDeps = {}) =>
+  createHostMembershipHealthHandlerWith({
+    ...deps,
+    lockNamespace: testPerUserLockNamespace,
+  });
+const createHostMembershipStatusHandler = (deps: HostMembershipRouteDeps = {}) =>
+  createHostMembershipStatusHandlerWith({
+    ...deps,
+    lockNamespace: testPerUserLockNamespace,
+  });
+const registerHostMembershipRoutes = (
+  registrar: Parameters<typeof registerHostMembershipRoutesWith>[0],
+  deps: HostMembershipRouteDeps,
+) => registerHostMembershipRoutesWith(registrar, {
+  ...deps,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 function req(body: unknown, query: Record<string, string> = {}): RouteRequest {
   return { body, query, params: {}, pathname: '/api/host-membership/x' };
@@ -120,6 +143,66 @@ describe('POST /api/host-membership/join', () => {
     const noKey = await handler(req({ host_ref: 'h' }));
     expect(noKey.status).toBe(400);
     expect(called).toBe(false);
+  });
+
+  test.each([
+    ['server_url', {}],
+    ['hostname', []],
+    ['overlay_address', {}],
+    ['bearer', {}],
+    ['protocol_version', '3'],
+    ['host_id', 3],
+    ['label', false],
+  ])('rejects a present wrong-type optional %s before calling join', async (field, value) => {
+    let calls = 0;
+    const handler = createHostMembershipJoinHandler({
+      join: async () => { calls += 1; throw new Error('unreachable'); },
+    });
+
+    const res = await handler(req({ host_ref: 'host_abc', key: 'onetime', [field]: value }));
+
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { code: string } }).error.code).toBe('host_enroll_failed');
+    expect(calls).toBe(0);
+  });
+
+  test('preserves an explicit empty bearer so joinHost selects the manual enrollment path', async () => {
+    let seen: { bearer?: string } | undefined;
+    const handler = createHostMembershipJoinHandler({
+      join: async (options) => {
+        seen = options;
+        return {
+          hostId: options.hostRef,
+          overlayAddress: '100.64.0.1:7433',
+          proxyPort: 41200,
+          memberOverlayIp: '100.64.0.5',
+          hostReachable: false,
+          created: true,
+          notes: [],
+        };
+      },
+    });
+
+    const res = await handler(req({ host_ref: 'host_abc', key: 'onetime', bearer: '' }));
+
+    expect(res.status).toBe(200);
+    expect(seen?.bearer).toBe('');
+  });
+
+  test.each([
+    ['host_ref', {}],
+    ['key', []],
+  ])('preserves the missing required-field envelope for a wrong-type %s', async (field, value) => {
+    let calls = 0;
+    const handler = createHostMembershipJoinHandler({
+      join: async () => { calls += 1; throw new Error('unreachable'); },
+    });
+
+    const res = await handler(req({ host_ref: 'host_abc', key: 'onetime', [field]: value }));
+
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { code: string } }).error.code).toBe(field === 'host_ref' ? 'missing_host_ref' : 'missing_key');
+    expect(calls).toBe(0);
   });
 
   test('an UNCODED orchestration error maps to 400 with the route fallback code + message preserved', async () => {
@@ -390,7 +473,7 @@ describe('GET /api/host-membership/status', () => {
     // No explicit local_grove_id on this ref — a legacy shape — so it
     // resolves to the machine's current default Grove.
     const host = makeHost({ projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout' }] });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
@@ -417,7 +500,7 @@ describe('GET /api/host-membership/status', () => {
     const host = makeHost({
       projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout', local_grove_id: chosen.id }],
     });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
@@ -433,7 +516,7 @@ describe('GET /api/host-membership/status', () => {
     const host = makeHost({
       projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout', local_grove_id: danglingGroveId }],
     });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
@@ -453,7 +536,7 @@ describe('GET /api/host-membership/status', () => {
         { grove_id: staleGroveId, project_id: staleProjectId, root: '/checkout-b' },
       ],
     });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
@@ -470,13 +553,29 @@ describe('GET /api/host-membership/status', () => {
       served_grove_id: undefined,
       projects: [{ grove_id: createGroveId(), project_id: createProjectId(), root: '/checkout' }],
     });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
     const body = res.body as { hosts: { served_grove_id: string | null; projects: { mismatch: string | null }[] }[] };
     expect(body.hosts[0]!.served_grove_id).toBeNull();
     expect(body.hosts[0]!.projects[0]!.mismatch).toBeNull();
+  });
+
+  test('served_grove_id explicitly cleared flags existing refs as attach_grove_mismatch', async () => {
+    const host = makeHost({
+      served_grove_id: null,
+      projects: [{ grove_id: createGroveId(), project_id: createProjectId(), root: '/checkout' }],
+    });
+    writeHostRecordFixture(host);
+
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
+    const res = await handler(req({}, {}));
+    const body = res.body as {
+      hosts: { served_grove_id: string | null; projects: { mismatch: string | null }[] }[];
+    };
+    expect(body.hosts[0]!.served_grove_id).toBeNull();
+    expect(body.hosts[0]!.projects[0]!.mismatch).toBe('attach_grove_mismatch');
   });
 
   test('project_root with an unresolved hint (host not joined) surfaces the hint', async () => {
@@ -495,11 +594,10 @@ describe('GET /api/host-membership/status', () => {
 
   test('project_root for a project already attached (hint resolved) omits the hint', async () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId, host.host_id);
     // Attach it — resolveTeamHostHintState reads resolveAttach, not the raw hint.
-    const { attachProject } = await import('@myco/host/registry.js');
     attachProject(host.host_id, { grove_id: createGroveId(), project_id: projectId, root });
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
@@ -693,7 +791,7 @@ describe('health probe — records a host upgrade so residency gates stop dead-e
 
   test('a probe that observes a HIGHER protocol version persists it (monotonic) — the residency gate then passes', async () => {
     const host = makeHost({ protocol_version: 2, proxy_port: 1 }); // recorded at join = 2
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
       checkReachable: async () => ({ reachable: true, protocolVersion: 3 }), // host has upgraded to 3
@@ -711,7 +809,7 @@ describe('health probe — records a host upgrade so residency gates stop dead-e
 
   test('a probe that observes a LOWER version never downgrades the record', async () => {
     const host = makeHost({ protocol_version: 3, proxy_port: 1 });
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
       checkReachable: async () => ({ reachable: true, protocolVersion: 1 }),

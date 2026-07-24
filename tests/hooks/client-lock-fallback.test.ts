@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DaemonClient } from '@myco/hooks/client';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import {
   resolveServiceDaemonStatePath,
   resolveServiceDir,
@@ -163,7 +164,9 @@ describe('DaemonClient — auth header recovered from the lock', () => {
     // No daemon.json on disk. The client discovers the stub via the lock's
     // recorded port; the request must arrive with `x-myco-auth: token-from-lock`.
     try {
-      const client = new DaemonClient(vaultDir);
+      const client = new DaemonClient(vaultDir, {
+        lockNamespace: testPerUserLockNamespace,
+      });
       const result = await client.capturePost('/events', { type: 'user_prompt', session_id: 'probe' });
       expect(result.ok).toBe(true);
       expect(seenAuth).toContain('token-from-lock');

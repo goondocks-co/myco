@@ -12,8 +12,8 @@
  *       the hash-first design would surface as a crash on the length-mismatch
  *       branch, not a clean refusal)
  *   (d) the listener serves /mcp only — /health, /api/* -> 404
- *   (e) toggle-off state -> listener unbound (connection refused)
- *   (f) restart with the toggle already on -> re-binds
+ *   (e) listener teardown makes the surface unreachable
+ *   (f) persisted activation converges to confirmed Funnel-off at boot
  *
  * Fix Round 1 (server-mode spec §1 — groves are never external-facing) adds:
  * headerless requests succeed with grove-wide tenancy; a tool-call
@@ -38,19 +38,28 @@ import {
   createExternalTools,
   isAllowedExternalCall,
 } from '@myco/mcp/external-surface';
-import { ExternalMcpListener, constantTimeTokenEqual } from '@myco/daemon/external-listener';
+import {
+  ExternalMcpListener,
+  constantTimeTokenEqual,
+  createFunnelOffRunner,
+} from '@myco/daemon/external-listener';
+import { ExternalMcpContainmentAuthority } from '@myco/daemon/external-mcp-containment';
 import { ToolError } from '@myco/tools/error';
 import type { MycoTools } from '@myco/tools/index';
 import type { ToolDefinition } from '@myco/tools/definitions';
 import { DaemonLogger } from '@myco/daemon/logger';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids';
-import { writeSecret } from '@myco/config/secrets';
+import { createSecretsOperations } from '@myco/config/secrets';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '@myco/constants';
 import type { HostServeRuntime } from '@myco/daemon/host-serve';
 import type { DaemonClient } from '@myco/hooks/client';
 import { vi } from '../helpers/vi-shim.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { seedExternalMcpConfig } from '../helpers/external-mcp-config-fixture.js';
+
+const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
 
 // ---------------------------------------------------------------------------
 // (a)/(b) — pure allowlist unit tests (no HTTP, no daemon)
@@ -72,6 +81,224 @@ describe('EXTERNAL_TOOL_ALLOWLIST — verbatim per the plan brief', () => {
   it('myco_agent and every collective_* tool are absent entirely', () => {
     expect(EXTERNAL_TOOL_ALLOWLIST.myco_agent).toBeUndefined();
     expect(EXTERNAL_TOOL_ALLOWLIST.collective_search).toBeUndefined();
+  });
+});
+
+describe('external MCP production activation posture', () => {
+  test('production wiring exposes only exact-port Funnel-off containment', () => {
+    const sourceRoot = path.join(process.cwd(), 'packages/myco/src/daemon');
+    const listenerSource = fs.readFileSync(
+      path.join(sourceRoot, 'external-listener.ts'),
+      'utf-8',
+    );
+    const routeSource = fs.readFileSync(
+      path.join(sourceRoot, 'api/team-config.ts'),
+      'utf-8',
+    );
+    const mainSource = fs.readFileSync(path.join(sourceRoot, 'main.ts'), 'utf-8');
+
+    expect(listenerSource).toContain("'status', '--json'");
+    expect(listenerSource).toContain('`--set-path=${selector.mount}`');
+    expect(listenerSource).not.toContain("String(port), 'off'");
+    expect(listenerSource).not.toContain('defaultFunnelRunner');
+    expect(routeSource).not.toContain('runFunnel');
+    expect(routeSource).not.toContain('.bind(');
+    const bootContainment = mainSource.indexOf(
+      "return await externalMcpContainment.containWhile('retire'",
+    );
+    const routeRegistration = mainSource.indexOf('registerTeamConfigRoutes(');
+    const databaseInitialization = mainSource.indexOf('const db = initDatabase(');
+    const vectorInitialization = mainSource.indexOf('new SqliteVecVectorStore(');
+    const machineIdentity = mainSource.indexOf('const machineId = getMachineId()');
+    const secretsLoad = mainSource.indexOf('loadLayeredSecrets([');
+    const mergedConfigLoad = mainSource.indexOf('const config = loadMergedConfig(');
+    const manifestLoad = mainSource.indexOf('const manifests = loadManifests()');
+    const groveAssertion = mainSource.indexOf('assertGroveBound(');
+    const shutdownContainment = mainSource.indexOf(
+      "externalMcpContainment.contain('shutdown')",
+    );
+    const recurringWorkStop = mainSource.indexOf('selfReconcileLoop.stop()');
+    const serverStop = mainSource.indexOf('await server.stop()');
+    expect(bootContainment).toBeGreaterThanOrEqual(0);
+    expect(bootContainment).toBeLessThan(databaseInitialization);
+    expect(bootContainment).toBeLessThan(vectorInitialization);
+    expect(bootContainment).toBeLessThan(routeRegistration);
+    expect(bootContainment).toBeLessThan(machineIdentity);
+    expect(bootContainment).toBeLessThan(secretsLoad);
+    expect(bootContainment).toBeLessThan(mergedConfigLoad);
+    expect(bootContainment).toBeLessThan(manifestLoad);
+    expect(bootContainment).toBeLessThan(groveAssertion);
+    expect(shutdownContainment).toBeGreaterThanOrEqual(0);
+    expect(shutdownContainment).toBeLessThan(recurringWorkStop);
+    expect(shutdownContainment).toBeLessThan(serverStop);
+    expect(mainSource)
+      .toContain("await prepareShutdown('shutdown-request')");
+    expect(mainSource)
+      .toContain("return () => beginPreparedShutdown('shutdown-request')");
+  });
+
+  test('production runner removes the Myco handler and makes coexisting handlers private', async () => {
+    let config: Record<string, unknown> = {
+      TCP: { 443: { HTTPS: true } },
+      Web: {
+        'host.example.ts.net:443': {
+          Handlers: {
+            '/': { Proxy: 'http://127.0.0.1:8743' },
+            '/docs': { Proxy: 'http://127.0.0.1:9999' },
+          },
+        },
+      },
+      AllowFunnel: { 'host.example.ts.net:443': true },
+    };
+    const calls: string[][] = [];
+    const runner = createFunnelOffRunner(async (args) => {
+      calls.push(args);
+      if (args[1] === 'status') return { stdout: JSON.stringify(config) };
+      if (args.at(-1) !== 'off') {
+        expect(args).toEqual([
+          'serve',
+          '--bg',
+          '--yes',
+          '--https=443',
+          '--set-path=/',
+          'http://127.0.0.1:8743',
+        ]);
+        config = {
+          ...config,
+          AllowFunnel: {},
+        };
+      } else {
+        expect(args).toEqual([
+          'serve',
+          '--bg',
+          '--yes',
+          '--https=443',
+          '--set-path=/',
+          'off',
+        ]);
+        config = {
+          ...config,
+          Web: {
+            'host.example.ts.net:443': {
+              Handlers: {
+                '/docs': { Proxy: 'http://127.0.0.1:9999' },
+              },
+            },
+          },
+        };
+      }
+      return { stdout: '' };
+    });
+
+    await expect(runner(8743)).resolves.toEqual({
+      ok: true,
+      detail: 'confirmed no public Funnel handler targets local port 8743',
+    });
+    expect(calls).toEqual([
+      ['funnel', 'status', '--json'],
+      [
+        'serve',
+        '--bg',
+        '--yes',
+        '--https=443',
+        '--set-path=/',
+        'http://127.0.0.1:8743',
+      ],
+      ['serve', '--bg', '--yes', '--https=443', '--set-path=/', 'off'],
+      ['funnel', 'status', '--json'],
+    ]);
+  });
+
+  test('production runner clears AllowFunnel when Myco is the only handler', async () => {
+    let config: Record<string, unknown> = {
+      TCP: { 443: { HTTPS: true } },
+      Web: {
+        'host.example.ts.net:443': {
+          Handlers: {
+            '/mcp': { Proxy: 'http://127.0.0.1:8743' },
+          },
+        },
+      },
+      AllowFunnel: { 'host.example.ts.net:443': true },
+    };
+    const calls: string[][] = [];
+    const runner = createFunnelOffRunner(async (args) => {
+      calls.push(args);
+      if (args[1] === 'status') return { stdout: JSON.stringify(config) };
+      if (args.at(-1) !== 'off') {
+        config = {
+          ...config,
+          AllowFunnel: {},
+        };
+      } else {
+        config = {
+          ...config,
+          Web: {},
+        };
+      }
+      return { stdout: '' };
+    });
+
+    await expect(runner(8743)).resolves.toEqual({
+      ok: true,
+      detail: 'confirmed no public Funnel handler targets local port 8743',
+    });
+    expect(calls).toEqual([
+      ['funnel', 'status', '--json'],
+      [
+        'serve',
+        '--bg',
+        '--yes',
+        '--https=443',
+        '--set-path=/mcp',
+        'http://127.0.0.1:8743',
+      ],
+      ['serve', '--bg', '--yes', '--https=443', '--set-path=/mcp', 'off'],
+      ['funnel', 'status', '--json'],
+    ]);
+  });
+
+  test('production runner leaves an unrelated replacement untouched', async () => {
+    const calls: string[][] = [];
+    const runner = createFunnelOffRunner(async (args) => {
+      calls.push(args);
+      return {
+        stdout: JSON.stringify({
+          TCP: { 443: { HTTPS: true } },
+          Web: {
+            'host.example.ts.net:443': {
+              Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } },
+            },
+          },
+          AllowFunnel: { 'host.example.ts.net:443': true },
+        }),
+      };
+    });
+
+    expect(await runner(8743)).toEqual({
+      ok: true,
+      detail: 'confirmed no public Funnel handler targets local port 8743',
+    });
+    expect(calls).toEqual([['funnel', 'status', '--json']]);
+  });
+
+  test('production runner requires verified post-state after an accepted off command', async () => {
+    const status = JSON.stringify({
+      TCP: { 443: { HTTPS: true } },
+      Web: {
+        'host.example.ts.net:443': {
+          Handlers: { '/': { Proxy: 'http://127.0.0.1:8743' } },
+        },
+      },
+      AllowFunnel: { 'host.example.ts.net:443': true },
+    });
+    const runner = createFunnelOffRunner(async (args) => ({
+      stdout: args[1] === 'status' ? status : '',
+    }));
+
+    const result = await runner(8743);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('Funnel remains enabled');
   });
 });
 
@@ -456,40 +683,39 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     })).rejects.toBeTruthy();
   });
 
-  test('(f) restart with the toggle already on: a FRESH listener instance re-binds from persisted config', async () => {
-    // Simulate the enable side of the toggle route: persist enabled:true +
-    // a concrete port to machine config (the same write `handlePutExternalMcpToggle`
-    // performs), then bind + shut down (process exit).
-    const machine = loadMachineConfig(mycoHome);
+  test('(f) boot containment turns a persisted activation off without binding a fresh listener', async () => {
     const firstListener = newListener();
     const firstBind = await firstListener.bind(0);
     if (!firstBind.ok) throw new Error('bind failed');
     const boundPort = firstBind.port;
-    saveMachineConfig({
-      ...machine,
-      daemon: { ...machine.daemon, external_mcp: { enabled: true, port: boundPort } },
-    }, mycoHome);
+    seedExternalMcpConfig(mycoHome, { enabled: true, port: boundPort });
     await firstListener.unbind();
 
-    // "Restart": a brand-new listener instance reads the SAME persisted
-    // config `daemon/main.ts`'s boot path reads, and re-binds on the SAME
-    // port — exactly the re-bind-before-Funnel-traffic contract.
-    const reloaded = loadMachineConfig(mycoHome).daemon.external_mcp;
-    expect(reloaded.enabled).toBe(true);
-    expect(reloaded.port).toBe(boundPort);
-
     listener = newListener();
-    const secondBind = await listener.bind(reloaded.port);
-    expect(secondBind.ok).toBe(true);
-    if (!secondBind.ok) return;
-    expect(secondBind.port).toBe(boundPort);
+    const offPorts: number[] = [];
+    const containment = new ExternalMcpContainmentAuthority({
+      mycoHome,
+      stateDir: path.join(mycoHome, 'service'),
+      listener,
+      runFunnelOff: async (port) => {
+        offPorts.push(port);
+        return { ok: true, detail: `off ${port}` };
+      },
+      lockNamespace: testPerUserLockNamespace,
+    });
+    fs.mkdirSync(path.join(mycoHome, 'service'), { recursive: true });
 
-    const res = await fetch(`http://127.0.0.1:${boundPort}/mcp`, {
+    await containment.contain('retire');
+
+    expect(offPorts).toEqual([boundPort]);
+    expect(listener.isBound).toBe(false);
+    expect(loadMachineConfig(mycoHome).daemon.external_mcp)
+      .toEqual({ enabled: false, port: boundPort });
+    await expect(fetch(`http://127.0.0.1:${boundPort}/mcp`, {
       method: 'POST',
       headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...scopedHeaders() },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-    });
-    expect(res.status).toBe(200);
+    })).rejects.toBeTruthy();
   });
 
   test('a rotated token invalidates the previous one on the very next request (no restart needed)', async () => {
@@ -539,6 +765,42 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(res.status).toBe(404);
+  });
+
+  test('a body grove_id outside the served Grove is refused without revealing the target', async () => {
+    const other = createGrove('Other', mycoHome);
+    listener = newListener();
+    const bound = await listener.bind(0);
+    if (!bound.ok) throw new Error('bind failed');
+    const url = new URL(`http://127.0.0.1:${bound.port}/mcp`);
+    const client = new Client({ name: 'external-test', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: { headers: { authorization: `Bearer ${TOKEN}`, ...scopedHeaders() } },
+    });
+    await client.connect(transport);
+
+    let message = 'DID NOT THROW';
+    try {
+      await client.callTool({
+        name: 'myco_plans',
+        arguments: { op: 'list', grove_id: other.id },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).not.toBe('DID NOT THROW');
+    expect(message).toContain(
+      "Requested Grove is outside this tool surface's authorized scope",
+    );
+    expect(message).not.toContain(other.id);
+
+    const plans = await client.callTool({
+      name: 'myco_plans',
+      arguments: { op: 'list', grove_id: grove.id },
+    });
+    expect(plans.isError).not.toBe(true);
+
+    await client.close();
   });
 
   test('no headers at all -> 200: tenancy defaults to the served Grove (server-mode spec §1, Fix Round 1)', async () => {

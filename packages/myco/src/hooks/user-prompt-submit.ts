@@ -5,9 +5,10 @@ import { evaluateUserPromptRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
-export async function main() {
-  const VAULT_DIR = resolveProvisionedVaultDir();
+export async function main(lockNamespace?: PerUserLockNamespace) {
+  const VAULT_DIR = resolveProvisionedVaultDir(undefined, lockNamespace);
   if (!VAULT_DIR) return;
 
   let symbiont: string | undefined;
@@ -25,7 +26,7 @@ export async function main() {
       transcriptMeta: transcriptMeta ?? undefined,
     });
 
-    const client = createHookDaemonClient(VAULT_DIR, { sessionId });
+    const client = createHookDaemonClient(VAULT_DIR, { sessionId }, lockNamespace);
     // Await health so context injection on the first prompt after a reboot
     // actually gets a response; capture falls back to the buffer path on timeout.
     await client.ensureRunning();
@@ -80,6 +81,7 @@ export async function main() {
       },
       bufferEvent: { type: 'user_prompt', prompt, ...originField, transcript_path: input.transcriptPath },
       client,
+      lockNamespace,
     });
 
     const contextResult = await client.post('/context/prompt', {

@@ -48,6 +48,10 @@ import type { DrainHealthCounters } from '../../capture/drain-health.js';
 import { readHostRegistry } from '../../host/registry.js';
 import { residencyHealthByHost } from '../../host/residency-drain.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 export interface DrainHealthRouteDeps {
   transcriptDrain: Pick<TranscriptDrainQueue, 'health'>;
@@ -56,6 +60,7 @@ export interface DrainHealthRouteDeps {
   /** Per-host residency-transition health (T6). Defaults to the journal scan;
    *  injectable for tests. */
   residencyHealth?: () => Map<string, DrainHealthCounters>;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 interface WireDrainCounters {
@@ -79,6 +84,7 @@ function toWire(counters: DrainHealthCounters, unitsField: 'pending_bytes' | 'pe
 }
 
 export function createDrainHealthHandler(deps: DrainHealthRouteDeps): RouteHandler {
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   return async (): Promise<RouteResponse> => {
     const transcriptHealth = deps.transcriptDrain.health();
     const planHealth = deps.planDrain.health();
@@ -87,7 +93,7 @@ export function createDrainHealthHandler(deps: DrainHealthRouteDeps): RouteHandl
 
     // Every joined host appears once, even with zero counters everywhere —
     // "healthy" is a row, not an absence.
-    const hosts = readHostRegistry().map((host) => ({
+    const hosts = readHostRegistry(lockNamespace).map((host) => ({
       host_id: host.host_id,
       label: host.label,
       drains: {

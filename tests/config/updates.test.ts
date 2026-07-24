@@ -1,11 +1,144 @@
-import { describe, it, expect } from 'bun:test';
+import { afterEach, describe, it, expect } from 'bun:test';
 import { MycoConfigSchema } from '@myco/config/schema';
 import type { MycoConfig } from '@myco/config/schema';
 import { withValue, withEmbedding, withTaskConfig } from '@myco/config/updates';
+import {
+  getAtPath,
+  setAtPath,
+  unsetAtPath,
+  UnsafeDotPathError,
+} from '@myco/utils/dot-path';
+
+const originalPollutedDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'polluted');
+
+function restorePrototypePollutedProperty(): void {
+  if (originalPollutedDescriptor) {
+    Object.defineProperty(Object.prototype, 'polluted', originalPollutedDescriptor);
+  } else {
+    delete (Object.prototype as Record<string, unknown>).polluted;
+  }
+}
+
+afterEach(restorePrototypePollutedProperty);
 
 function baseConfig(): MycoConfig {
   return MycoConfigSchema.parse({ version: 3 });
 }
+
+describe('dot-path safety', () => {
+  const unsafePaths = [
+    '__proto__.polluted',
+    'safe.__proto__.polluted',
+    'constructor.prototype.polluted',
+    'safe.constructor.value',
+    'safe.prototype.value',
+  ];
+
+  for (const unsafePath of unsafePaths) {
+    it(`getAtPath rejects ${unsafePath} without mutating its target or Object.prototype`, () => {
+      const target = { safe: { value: 1 } } as Record<string, unknown>;
+      const original = structuredClone(target);
+
+      expect(() => getAtPath(target, unsafePath)).toThrow(UnsafeDotPathError);
+      expect(target).toEqual(original);
+      expect(Object.prototype).not.toHaveProperty('polluted');
+    });
+
+    it(`setAtPath rejects ${unsafePath} without mutating its target or Object.prototype`, () => {
+      const target = { safe: { value: 1 } } as Record<string, unknown>;
+      const original = structuredClone(target);
+
+      expect(() => setAtPath(target, unsafePath, 'unsafe')).toThrow(UnsafeDotPathError);
+      expect(target).toEqual(original);
+      expect(Object.prototype).not.toHaveProperty('polluted');
+    });
+
+    it(`unsetAtPath rejects ${unsafePath} without mutating its target or Object.prototype`, () => {
+      const target = { safe: { value: 1 } } as Record<string, unknown>;
+      const original = structuredClone(target);
+
+      expect(() => unsetAtPath(target, unsafePath)).toThrow(UnsafeDotPathError);
+      expect(target).toEqual(original);
+      expect(Object.prototype).not.toHaveProperty('polluted');
+    });
+  }
+
+  it('does not read or remove inherited paths', () => {
+    const target = Object.create({ inherited: { value: 1 } }) as Record<string, unknown>;
+
+    expect(getAtPath(target, 'inherited.value')).toBeUndefined();
+    expect(unsetAtPath(target, 'inherited.value')).toBe(false);
+  });
+
+  it('creates an own leaf property instead of invoking an inherited setter', () => {
+    let setterCalls = 0;
+    const prototype = {};
+    Object.defineProperty(prototype, 'inherited', {
+      configurable: true,
+      set() {
+        setterCalls += 1;
+      },
+    });
+    const target = Object.create(prototype) as Record<string, unknown>;
+
+    setAtPath(target, 'inherited', 123);
+
+    expect(setterCalls).toBe(0);
+    expect(Object.getOwnPropertyDescriptor(target, 'inherited')).toEqual({
+      configurable: true,
+      enumerable: true,
+      value: 123,
+      writable: true,
+    });
+  });
+
+  it('creates an own intermediate property over an inherited non-writable property', () => {
+    const prototype = {};
+    Object.defineProperty(prototype, 'inherited', {
+      configurable: false,
+      value: 'locked',
+      writable: false,
+    });
+    const target = Object.create(prototype) as Record<string, unknown>;
+
+    setAtPath(target, 'inherited.value', 123);
+
+    expect(Object.getOwnPropertyDescriptor(target, 'inherited')).toMatchObject({
+      configurable: true,
+      enumerable: true,
+      writable: true,
+    });
+    expect(target).toEqual({ inherited: { value: 123 } });
+  });
+
+  it('preserves bracket index reads', () => {
+    expect(getAtPath({ items: [{ name: 'a' }] }, 'items[0].name')).toBe('a');
+  });
+
+  it('preserves bracket index writes as object traversal', () => {
+    const target = { items: [{ name: 'a' }] } as Record<string, unknown>;
+
+    setAtPath(target, 'items[0].name', 'b');
+
+    expect(target).toEqual({ items: { 0: { name: 'b' } } });
+  });
+
+  it('does not unset through bracket indices', () => {
+    const target = { items: [{ name: 'a' }] } as Record<string, unknown>;
+
+    expect(unsetAtPath(target, 'items[0].name')).toBe(false);
+    expect(target).toEqual({ items: [{ name: 'a' }] });
+  });
+
+  it('preserves empty-path behavior', () => {
+    const target = { value: 1 } as Record<string, unknown>;
+
+    expect(getAtPath(target, '')).toBe(target);
+    setAtPath(target, '', { value: 2 });
+    expect(target).toEqual({ value: 1 });
+    expect(unsetAtPath(target, '')).toBe(false);
+  });
+});
 
 describe('withValue', () => {
   it('sets a top-level field', () => {

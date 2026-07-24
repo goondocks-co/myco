@@ -63,6 +63,10 @@ import { readHostRegistry, recordHostProtocolVersion, type HostRecord } from '..
 import type { DaemonLogger } from '../logger.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 /**
  * The single deps bag `registerHostMembershipRoutes` threads to every handler
@@ -129,6 +133,26 @@ function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+const JOIN_OPTION_STRING_FIELDS = [
+  'server_url',
+  'hostname',
+  'overlay_address',
+  'bearer',
+  'host_id',
+  'label',
+] as const;
+
+function invalidJoinOption(body: Record<string, unknown>): string | null {
+  for (const field of JOIN_OPTION_STRING_FIELDS) {
+    if (Object.hasOwn(body, field) && typeof body[field] !== 'string') return field;
+  }
+  if (Object.hasOwn(body, 'protocol_version')
+    && (typeof body.protocol_version !== 'number' || !Number.isFinite(body.protocol_version))) {
+    return 'protocol_version';
+  }
+  return null;
+}
+
 /** Render a thrown orchestration error as a uniform 400. The envelope's
  *  `code` prefers the error's stable membership code (`membership-error.ts` —
  *  `project_registered_locally`, `not_joined`, `protocol_mismatch`, …) so the
@@ -155,6 +179,10 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
     const key = str(body.key);
     if (!hostRef) return { status: 400, body: errorBody('missing_host_ref', 'host_ref is required.') };
     if (!key) return { status: 400, body: errorBody('missing_key', 'key is required.') };
+    const invalidOption = invalidJoinOption(body);
+    if (invalidOption) {
+      return { status: 400, body: errorBody('host_enroll_failed', `Invalid join field: ${invalidOption}.`) };
+    }
     const hostId = str(body.host_id) ?? hostRef;
 
     const options: JoinOptions = {
@@ -162,8 +190,8 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
       key,
       serverUrl: str(body.server_url),
       hostname: str(body.hostname),
-      overlayAddress: str(body.overlay_address),
-      bearer: str(body.bearer),
+      overlayAddress: body.overlay_address as string | undefined,
+      bearer: body.bearer as string | undefined,
       protocolVersion: num(body.protocol_version),
       hostId: str(body.host_id),
       label: str(body.label),
@@ -314,45 +342,49 @@ export function createHostMembershipDetachHandler(deps: HostMembershipRouteDeps)
 
 export function createHostMembershipStatusHandler(deps: HostMembershipRouteDeps = {}): RouteHandler {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   return async (req) => {
-    const hosts = readHostRegistry().map((record) => ({
-      host_id: record.host_id,
-      label: record.label,
-      overlay_address: record.overlay_address,
-      proxy_port: record.proxy_port ?? null,
-      protocol_version: record.protocol_version,
-      served_grove_id: record.served_grove_id ?? null,
-      created_at: record.created_at,
-      projects: record.projects.map((ref) => ({
-        grove_id: ref.grove_id,
-        project_id: ref.project_id,
-        root: ref.root ?? null,
-        // The LOCAL Grove this ref displays under (E-4 local-view
-        // requirement) — RESOLVED, not the raw stored value: `ref.local_grove_id`
-        // when it still names an existing local Grove, else the machine's
-        // current default Grove (`resolveAttachRefHomeGroveId`,
-        // `grove/registry.ts`). `null` only in the bootstrap-only case where
-        // this machine has no default Grove yet.
-        local_grove_id: resolveAttachRefHomeGroveId(ref, mycoHome),
-        // Existing-refs mitigation (server-mode design spec §2(c)): once the
-        // host's served_grove_id is known, a ref recorded against a
-        // DIFFERENT Grove (e.g. attached under the pre-designation
-        // operator-typed `--grove` flow) is flagged here rather than left to
-        // fail opaquely the next time a drain or request routes through it.
-        // `null` while the host's designation is unknown — there is nothing
-        // to compare against yet, not a clean bill of health.
-        mismatch: record.served_grove_id && ref.grove_id !== record.served_grove_id
-          ? ('attach_grove_mismatch' as const)
-          : null,
-      })),
-    }));
+    const hosts = readHostRegistry(lockNamespace).map((record) => {
+      const servedGroveKnown = Object.hasOwn(record, 'served_grove_id');
+      return {
+        host_id: record.host_id,
+        label: record.label,
+        overlay_address: record.overlay_address,
+        proxy_port: record.proxy_port ?? null,
+        protocol_version: record.protocol_version,
+        served_grove_id: record.served_grove_id ?? null,
+        created_at: record.created_at,
+        projects: record.projects.map((ref) => ({
+          grove_id: ref.grove_id,
+          project_id: ref.project_id,
+          root: ref.root ?? null,
+          // The LOCAL Grove this ref displays under (E-4 local-view
+          // requirement) — RESOLVED, not the raw stored value: `ref.local_grove_id`
+          // when it still names an existing local Grove, else the machine's
+          // current default Grove (`resolveAttachRefHomeGroveId`,
+          // `grove/registry.ts`). `null` only in the bootstrap-only case where
+          // this machine has no default Grove yet.
+          local_grove_id: resolveAttachRefHomeGroveId(ref, mycoHome),
+          // A known designation must match every existing ref. Explicit
+          // undesignation is known and therefore flags every retained ref;
+          // an omitted legacy field remains unknown and cannot be compared.
+          mismatch: servedGroveKnown && ref.grove_id !== record.served_grove_id
+            ? ('attach_grove_mismatch' as const)
+            : null,
+        })),
+      };
+    });
 
     const projectRoot = str(req.query.project_root);
     let hint: { host_id: string; state: string; message: string } | null = null;
     if (projectRoot) {
       try {
         const manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
-        const state = resolveTeamHostHintState(manifest, manifest?.project.id);
+        const state = resolveTeamHostHintState(
+          manifest,
+          manifest?.project.id,
+          lockNamespace,
+        );
         const message = teamHostHintMessage(state);
         if (message && (state.kind === 'not_joined' || state.kind === 'not_attached')) {
           hint = { host_id: state.hostId, state: state.kind, message };
@@ -424,6 +456,7 @@ export interface HostMembershipHealthRouteDeps {
   ttlMs?: number;
   /** Test seam: current-time source, for TTL determinism. */
   now?: () => number;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 /**
@@ -455,7 +488,8 @@ export type HostMembershipHealthHandler = RouteHandler & {
 
 export function createHostMembershipHealthHandler(deps: HostMembershipHealthRouteDeps = {}): HostMembershipHealthHandler {
   const checkReachable = deps.checkReachable ?? dialHostHealth;
-  const readRegistry = deps.readRegistry ?? readHostRegistry;
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
+  const readRegistry = deps.readRegistry ?? (() => readHostRegistry(lockNamespace));
   const ttlMs = deps.ttlMs ?? HOST_HEALTH_CACHE_TTL_MS;
   const now = deps.now ?? Date.now;
 
@@ -491,7 +525,7 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
       // CURRENT version, not the stale join-time one. Skew is classified from the
       // effective (post-write) version.
       const effectiveVersion = observedVersion !== null
-        ? recordHostProtocolVersion(host.host_id, observedVersion)
+        ? recordHostProtocolVersion(host.host_id, observedVersion, lockNamespace)
         : host.protocol_version;
       return {
         host_id: host.host_id,

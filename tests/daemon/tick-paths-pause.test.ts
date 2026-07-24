@@ -22,6 +22,7 @@ import { initDatabase, closeDatabase, getDatabase, withDatabase } from '@myco/db
 import { createSchema } from '@myco/db/schema';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import { registerPowerJobs, type PowerJobDeps } from '@myco/daemon/power-jobs.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { runInitialCanopyPopulateAcrossProjects } from '@myco/daemon/main.js';
 import { writeStagedSkill, stagingRoot } from '@myco/agent/tools/skill-staging.js';
 import { GroveRuntimeCache, type EmbeddingRuntimeFactory } from '@myco/daemon/grove-runtime-cache.js';
@@ -149,6 +150,7 @@ function buildDeps(fx: Fixture, configOverrides: Record<string, unknown> = {}): 
     embeddingRuntimeFactory: fx.factory,
     mycoHome: fx.mycoHome,
     daemonStateDir: path.join(fx.mycoHome, 'service'),
+    lockNamespace: testPerUserLockNamespace,
   };
 }
 
@@ -310,6 +312,7 @@ describe('runInitialCanopyPopulateAcrossProjects honors the project pause primit
       fakeRegistry(visited),
       makeLiveConfig(),
       path.join(fx.mycoHome, 'service'),
+      testPerUserLockNamespace,
     );
 
     expect(visited).toContain(PROJECT_LIVE);
@@ -327,6 +330,7 @@ describe('runInitialCanopyPopulateAcrossProjects honors the project pause primit
       fakeRegistry(visited),
       makeLiveConfig(),
       path.join(fx.mycoHome, 'service'),
+      testPerUserLockNamespace,
     );
 
     expect(new Set(visited)).toEqual(new Set([PROJECT_PAUSED, PROJECT_LIVE]));
@@ -352,6 +356,7 @@ describe('runInitialCanopyPopulateAcrossProjects honors the project pause primit
       fakeRegistry(visited),
       makeLiveConfig(),
       path.join(fx.mycoHome, 'service'),
+      testPerUserLockNamespace,
     )).resolves.toBeUndefined();
 
     expect(visited).not.toContain(projectId);

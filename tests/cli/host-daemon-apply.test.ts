@@ -9,9 +9,20 @@ import {
 } from '@myco/team-host/daemon-apply.js';
 import { clearHostState, readHostState, writeHostState, type HostState } from '@myco/team-host/state.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
-import { resolveHostServeConfig, isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
+import {
+  resolveHostServeConfig as resolveHostServeConfigWith,
+  isOverlayRangeAddress,
+} from '@myco/daemon/host-serve.js';
 import { SCOPE_REGISTRY } from '@myco/config/scope.js';
 import type { ServiceManager, ServiceStatus, InstallResult } from '@myco/service/types.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const resolveHostServeConfig = (
+  options: Parameters<typeof resolveHostServeConfigWith>[0],
+) => resolveHostServeConfigWith({
+  ...options,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 function fakeManager(over: Partial<ServiceManager> & { installed?: boolean; supported?: boolean } = {}): {
   manager: ServiceManager;
@@ -22,6 +33,7 @@ function fakeManager(over: Partial<ServiceManager> & { installed?: boolean; supp
     supported: over.supported ?? true,
     platformName: 'launchd',
     isInstalled: async () => over.installed ?? true,
+    inspect: async () => null,
     install: async (): Promise<InstallResult> => ({ changed: false, supervisorReloaded: false }),
     uninstall: async () => {},
     start: async () => {},

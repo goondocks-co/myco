@@ -10,6 +10,7 @@
  * pending plan content — the seam the host proxy calls BEFORE forwarding
  * `/events/stop`, so plan content is present when the host's Stop backstop mines.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -41,11 +42,13 @@ import {
   createHostId,
   createProjectId,
 } from '@myco/grove/ids';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { HOST_BEARER_SECRET } from '@myco/constants';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const MACHINE = 'alice_a1b2c3d4';
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HOST_B = 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
@@ -113,6 +116,7 @@ function target(opts: { hostId?: string; proxyPort?: number; overlay?: string; p
 
 /** PIN the mid-turn throttle off so the only drain is the explicit flush/drainAll. */
 const noThrottle = {
+  lockNamespace: testPerUserLockNamespace,
   now: () => 1000,
   intervalMs: 100_000,
   setTimer: (() => 0) as unknown as (fn: () => void, ms: number) => ReturnType<typeof setTimeout>,
@@ -677,6 +681,7 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
       hostProxyDeps: { ...q.proxyDeps(), bufferAppend: () => { /* keep the collect buffer off disk */ } },
     });
     // Stub both collect routes so the router matches them and the collect proxy
@@ -706,7 +711,7 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
-    upsertHost(rec);
+    writeHostRecordFixture(rec);
     writeHostSecret(rec.host_id, HOST_BEARER_SECRET, 'host-bearer');
 
     // 1) A plan-dir write forwarded via /events → the drain enqueues (no flush yet).
@@ -741,7 +746,7 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
-    upsertHost(rec);
+    writeHostRecordFixture(rec);
     writeHostSecret(rec.host_id, HOST_BEARER_SECRET, 'host-bearer');
 
     await fetch(`${base}/events`, {

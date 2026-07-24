@@ -33,6 +33,10 @@ import {
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import { ProjectGroveMissingError, resolveProjectTenancy } from '@myco/grove/project-tenancy.js';
 import type { RouteHandler } from '@myco/daemon/router.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { errorBody } from './error-envelope.js';
 
 export interface GroveProjectSummary {
@@ -152,18 +156,28 @@ export function servedGroveScopeForDaemon(): ServedGroveScope {
  *  recording fake without constructing a real `DaemonLogger`. */
 export type GrovesLogger = { warn(kind: string, message: string, data?: Record<string, unknown>): void };
 
-export function createListGrovesHandler(scope: ServedGroveScope, _daemonStateDir: string, logger?: GrovesLogger): RouteHandler {
+export function createListGrovesHandler(
+  scope: ServedGroveScope,
+  _daemonStateDir: string,
+  logger?: GrovesLogger,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): RouteHandler {
   return async (req) => ({
     body: listGroveSummaries(scope, {
       includeArchived: req.query.include_archived === 'true',
-    }, logger),
+    }, logger, lockNamespace),
   });
 }
 
-export function createListGroveProjectsHandler(scope: ServedGroveScope, _daemonStateDir: string, logger?: GrovesLogger): RouteHandler {
+export function createListGroveProjectsHandler(
+  scope: ServedGroveScope,
+  _daemonStateDir: string,
+  logger?: GrovesLogger,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): RouteHandler {
   return async (req) => {
     const groveId = req.params.id;
-    const summaries = listGroveSummaries(scope, {}, logger);
+    const summaries = listGroveSummaries(scope, {}, logger, lockNamespace);
     const grove = summaries.groves.find((row) => row.id === groveId || row.slug === groveId);
     if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
     const includes = parseTenancyInclude(req.query.include);
@@ -180,6 +194,7 @@ export function listGroveSummaries(
   scope: ServedGroveScope = { groveIds: null },
   options: { includeArchived?: boolean } = {},
   logger?: GrovesLogger,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): GrovesResponse {
   const mycoHome = resolveMycoHome();
   const defaultGroveId = getDefaultGroveId(mycoHome);
@@ -204,7 +219,12 @@ export function listGroveSummaries(
   // Attached projects, grouped by the LOCAL Grove each displays under. PURE
   // disk reads (host registry + local manifests) — no host is dialed, so a
   // down/unreachable host has no effect on this endpoint.
-  const attachedByGrove = attachedProjectSummariesByGrove(mycoHome, localProjectIds, logger);
+  const attachedByGrove = attachedProjectSummariesByGrove(
+    mycoHome,
+    localProjectIds,
+    logger,
+    lockNamespace,
+  );
 
   const groves = filtered.map((grove) => {
     const local = localByGrove.get(grove.id) ?? [];
@@ -241,9 +261,10 @@ function attachedProjectSummariesByGrove(
   mycoHome: string,
   localProjectIds: ReadonlySet<string>,
   logger?: GrovesLogger,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Map<string, GroveProjectSummary[]> {
   const byGrove = new Map<string, GroveProjectSummary[]>();
-  for (const host of readHostRegistry()) {
+  for (const host of readHostRegistry(lockNamespace)) {
     for (const ref of host.projects) {
       // Never-materialize invariant: an attached project has no local Grove
       // row. If one exists anyway (a bug elsewhere), prefer the local row and

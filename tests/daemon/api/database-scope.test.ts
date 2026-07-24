@@ -21,6 +21,7 @@ import { createGrove, UnknownGroveError } from '@myco/grove/registry';
 import { resolveGroveDbPath, resolveGroveDir } from '@myco/grove/paths';
 import { assertGroveProjectId } from '@myco/grove/ids';
 import type { RouteRequest } from '@myco/daemon/router';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 
 const VALID_PROJECT_ID = 'proj_' + 'a'.repeat(32);
 
@@ -85,6 +86,7 @@ describe('database scope-aware actions', () => {
       vaultDir: workDir,
       mycoHome,
       daemonStateDir: path.join(mycoHome, 'service'),
+      lockNamespace: testPerUserLockNamespace,
     });
   }
 

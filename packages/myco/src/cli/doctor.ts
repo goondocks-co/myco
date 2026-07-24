@@ -26,6 +26,10 @@ import { manifestToolTransport } from '../symbionts/capabilities.js';
 import { expandHome, resolveHomeDir, resolveMycoHome } from '../grove/paths.js';
 import type { ServiceStatus } from '../service/types.js';
 import { DOCTOR_FIXERS, type DoctorFixContext, type DoctorFixerId } from './doctor-fixes.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 // --- Named constants (no magic literals) ---
 
@@ -105,9 +109,16 @@ async function checkVault(vaultDir: string): Promise<{ check: DoctorCheck; confi
  * so the notice surfaces even before `myco.yaml` exists — a fresh clone of
  * a hosted project's checkout has a committed manifest but no vault yet.
  */
-export function checkTeamHostHint(vaultDir: string): DoctorCheck | null {
+export function checkTeamHostHint(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): DoctorCheck | null {
   const manifest = loadProjectManifest(vaultDir);
-  const detail = teamHostHintMessage(resolveTeamHostHintState(manifest, manifest?.project.id));
+  const detail = teamHostHintMessage(resolveTeamHostHintState(
+    manifest,
+    manifest?.project.id,
+    lockNamespace,
+  ));
   if (!detail) return null;
   return { name: 'Team Host', status: 'warn', detail, fixable: false };
 }
@@ -125,11 +136,13 @@ export function checkTeamHostHint(vaultDir: string): DoctorCheck | null {
  * machine has joined no host — that is a healthy, common state, not a
  * warning.
  */
-export async function checkTeamHostReachability(): Promise<DoctorCheck[]> {
+export async function checkTeamHostReachability(
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Promise<DoctorCheck[]> {
   const { readHostRegistry } = await import('../host/registry.js');
   const { defaultCheckHostReachable } = await import('../host/member-overlay.js');
 
-  const hosts = readHostRegistry();
+  const hosts = readHostRegistry(lockNamespace);
   if (hosts.length === 0) return [];
 
   // Probe every host CONCURRENTLY: each probe is individually bounded
@@ -242,11 +255,18 @@ export async function checkServedGroveBackupStaleness(mycoHome?: string): Promis
  * {@link checkServedGroveDesignation} instead), no explicit cloud provider
  * is configured, or a key is present.
  */
-export async function checkServedGroveKeyHealth(mycoHome?: string): Promise<DoctorCheck | null> {
+export async function checkServedGroveKeyHealth(
+  mycoHome?: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Promise<DoctorCheck | null> {
   const { loadMachineConfig } = await import('../config/loader.js');
   const { resolveServedGroveKeyHealth } = await import('../daemon/host-serve.js');
 
-  const health = resolveServedGroveKeyHealth(loadMachineConfig(mycoHome), mycoHome ?? resolveMycoHome());
+  const health = resolveServedGroveKeyHealth(
+    loadMachineConfig(mycoHome),
+    mycoHome ?? resolveMycoHome(),
+    lockNamespace,
+  );
   if (health.kind !== 'missing_key') return null;
   return {
     name: 'Team Host',
@@ -335,9 +355,11 @@ function summarizeDrainForDoctor(
  * `ok`; only a nonzero failing-entry count — the drain has actually been
  * unable to make progress — reports `warn`.
  */
-export async function checkTeamHostDrainHealth(): Promise<DoctorCheck[]> {
+export async function checkTeamHostDrainHealth(
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Promise<DoctorCheck[]> {
   const { readHostRegistry } = await import('../host/registry.js');
-  const hosts = readHostRegistry();
+  const hosts = readHostRegistry(lockNamespace);
   if (hosts.length === 0) return [];
 
   const { getMachineId } = await import('../machine-id.js');
@@ -351,7 +373,7 @@ export async function checkTeamHostDrainHealth(): Promise<DoctorCheck[]> {
   // enqueue) — never by `health()` — so a stub is safe here; doctor never
   // enqueues.
   const planDrain = createPlanDrainQueue({ machineId, planWatchConfig: { watchDirs: [], projectRoot: '' } });
-  const eventReplayDrain = createEventReplayDrainQueue({ machineId });
+  const eventReplayDrain = createEventReplayDrainQueue({ machineId, lockNamespace });
 
   const transcriptHealth = transcriptDrain.health();
   const planHealth = planDrain.health();
@@ -426,17 +448,23 @@ export async function checkResidencyTransitions(teamsHome?: string): Promise<Doc
  * this machine's local session counts/freshness are irrelevant and would
  * otherwise false-report as "0 sessions" / "capture not flowing".
  */
-async function resolveAttachedHost(vaultDir: string): Promise<{ label: string; hostId: string } | null> {
+async function resolveAttachedHost(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace,
+): Promise<{ label: string; hostId: string } | null> {
   const projectId = loadProjectManifest(vaultDir)?.project.id;
   if (!projectId) return null;
   const { resolveAttach } = await import('../host/registry.js');
-  const attach = resolveAttach(projectId);
+  const attach = resolveAttach(projectId, lockNamespace);
   return attach ? { label: attach.host.label, hostId: attach.host.host_id } : null;
 }
 
 /** Check that the SQLite database exists and can be queried. */
-async function checkDatabase(vaultDir: string): Promise<DoctorCheck> {
-  const attached = await resolveAttachedHost(vaultDir);
+async function checkDatabase(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace,
+): Promise<DoctorCheck> {
+  const attached = await resolveAttachedHost(vaultDir, lockNamespace);
   if (attached) {
     return {
       name: 'Database',
@@ -491,8 +519,11 @@ function formatSessionAge(epochSeconds: number | null): string {
  * that nothing surfaced before. A brand-new vault with zero sessions is
  * healthy, not alarming.
  */
-export async function checkCaptureFlow(vaultDir: string): Promise<DoctorCheck> {
-  const attached = await resolveAttachedHost(vaultDir);
+export async function checkCaptureFlow(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Promise<DoctorCheck> {
+  const attached = await resolveAttachedHost(vaultDir, lockNamespace);
   if (attached) {
     return {
       name: 'Capture',
@@ -969,27 +1000,30 @@ export async function checkInstallSource(): Promise<DoctorCheck> {
 // --- Public API ---
 
 /** Run all health checks against a vault directory. */
-export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
+export async function runChecks(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Promise<DoctorCheck[]> {
   const { check: vaultCheck, config } = await checkVault(vaultDir);
   const checks: DoctorCheck[] = [vaultCheck];
 
   // Reads project.toml directly (not `config`), so it applies even to a
   // freshly-cloned checkout that has a committed manifest but no
   // `myco.yaml` yet — exactly the scenario this hint exists for.
-  const teamHostHint = checkTeamHostHint(vaultDir);
+  const teamHostHint = checkTeamHostHint(vaultDir, lockNamespace);
   if (teamHostHint) checks.push(teamHostHint);
 
   // Machine-global, not vault-scoped (the host/attach registry lives under
   // `~/.myco-team`) — run regardless of whether this directory has a
   // `myco.yaml`, same as the hint above.
-  checks.push(...await checkTeamHostReachability());
-  checks.push(...await checkTeamHostDrainHealth());
+  checks.push(...await checkTeamHostReachability(lockNamespace));
+  checks.push(...await checkTeamHostDrainHealth(lockNamespace));
   checks.push(...await checkResidencyTransitions());
   const servedGroveDesignation = await checkServedGroveDesignation();
   if (servedGroveDesignation) checks.push(servedGroveDesignation);
   const servedGroveBackupStaleness = await checkServedGroveBackupStaleness();
   if (servedGroveBackupStaleness) checks.push(servedGroveBackupStaleness);
-  const servedGroveKeyHealth = await checkServedGroveKeyHealth();
+  const servedGroveKeyHealth = await checkServedGroveKeyHealth(undefined, lockNamespace);
   if (servedGroveKeyHealth) checks.push(servedGroveKeyHealth);
   const externalMcpCoherence = await checkExternalMcpCoherence();
   if (externalMcpCoherence) checks.push(externalMcpCoherence);
@@ -1012,8 +1046,8 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
     return checks;
   }
 
-  checks.push(await checkDatabase(vaultDir));
-  checks.push(await checkCaptureFlow(vaultDir));
+  checks.push(await checkDatabase(vaultDir, lockNamespace));
+  checks.push(await checkCaptureFlow(vaultDir, lockNamespace));
   checks.push(await checkIntelligence(config));
   checks.push(await checkEmbeddings(config));
   checks.push(...await checkAgents(vaultDir, config));
@@ -1354,7 +1388,11 @@ Options:
   -h, --help     Show this help
 `;
 
-export async function run(args: string[], vaultDir: string): Promise<void> {
+export async function run(
+  args: string[],
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(USAGE);
     return;
@@ -1368,7 +1406,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   console.log('\nmyco doctor\n');
 
-  const checks = await runChecks(vaultDir);
+  const checks = await runChecks(vaultDir, lockNamespace);
 
   for (const check of checks) {
     console.log(formatCheck(check));
@@ -1398,7 +1436,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
         console.log(`  Fixed: ${action}`);
       }
       console.log('');
-      finalChecks = await runChecks(vaultDir);
+      finalChecks = await runChecks(vaultDir, lockNamespace);
     } else {
       console.log('  No auto-fixable issues.\n');
     }

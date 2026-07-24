@@ -12,8 +12,12 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveProvisionedVaultDir } from '@myco/hooks/vault-gate.js';
+import { resolveProvisionedVaultDir as resolveProvisionedVaultDirWith } from '@myco/hooks/vault-gate.js';
 import { hasGlobalInstallMigrationCompleted } from '@myco/grove/global-install-migration.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const resolveProvisionedVaultDir = (cwd?: string) =>
+  resolveProvisionedVaultDirWith(cwd, testPerUserLockNamespace);
 
 function makeTmpProject(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'myco-vault-gate-project-'));

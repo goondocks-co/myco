@@ -6,6 +6,7 @@
  * (ZERO project rows across every scoped table, no delete tombstones, other
  * projects untouched, journal cleared).
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,7 +21,7 @@ import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
-import { upsertHost, type HostRecord } from '@myco/host/registry.js';
+import { type HostRecord } from '@myco/host/registry.js';
 import { abortResidency, beginAttachResidency, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import {
   countResidencyInFlight,
@@ -33,6 +34,7 @@ import { readResidencyJournal } from '@myco/host/residency-journal.js';
 import { listPendingForProject } from '@myco/db/queries/team-outbox.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 let home: string;
 let teamHome: string;
@@ -43,6 +45,7 @@ function baseDeps(): ResidencyDaemonDeps {
   return {
     machineId: 'local',
     mycoHome: home,
+    lockNamespace: testPerUserLockNamespace,
     withGroveDb: <T,>(_groveId: string, fn: (db: Database) => T): T => fn(getDatabase()),
   };
 }
@@ -111,7 +114,7 @@ function beginTransition(): { projectId: string; host: HostRecord; source: { id:
   registerProjectInGrove(source.id, { projectId, projectName: 'demo', projectRoot: root }, home);
   seedProjectRows(projectId, 'a');
   const host = makeHost();
-  upsertHost(host);
+  writeHostRecordFixture(host);
   beginAttachResidency({ hostId: host.host_id, host, projectId, sourceGroveId: source.id, root, mycoHome: home }, baseDeps());
   return { projectId, host, source };
 }
@@ -210,7 +213,7 @@ describe('residency drain — push + delete-after-ack', () => {
     const root = makeCheckout(projectId);
     registerProjectInGrove(source.id, { projectId, projectName: 'demo', projectRoot: root }, home);
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     beginAttachResidency({ hostId: host.host_id, host, projectId, sourceGroveId: source.id, root, mycoHome: home }, baseDeps());
 
     const requests: { table: string; rowCount: number; adoption?: { project_name: string } }[] = [];

@@ -2,7 +2,13 @@ import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { WindowsTaskServiceManager, type SchtasksRunner } from '../../packages/myco/src/service/windows';
+import {
+  WindowsTaskServiceManager,
+  type SchtasksRunner,
+  type TaskSchedulerRegistration,
+  type TaskSchedulerState,
+  type WindowsManagerOptions,
+} from '../../packages/myco/src/service/windows';
 import { renderWindowsServiceScript } from '../../packages/myco/src/service/windows-task';
 import type { ServiceSpec } from '../../packages/myco/src/service/types';
 
@@ -28,60 +34,189 @@ function makeSpec(over: Partial<ServiceSpec> = {}): ServiceSpec {
   };
 }
 
+function expectedTaskHost(): string {
+  return path.win32.join(
+    process.env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+}
+
+function expectedTaskHostArguments(scriptPath: string): string {
+  const literalScriptPath = `'${scriptPath.replace(/'/g, "''")}'`;
+  const encodedCommand = Buffer.from(`& ${literalScriptPath}`, 'utf16le').toString('base64');
+  return `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
+}
+
 /** Stub schtasks: records argv, fakes /query existence + /v status. */
 class StubRunner implements SchtasksRunner {
   calls: string[][] = [];
+  registrations: TaskSchedulerRegistration[] = [];
+  currentUserSidValue = 'S-1-5-21-1000';
   taskExists = false;
-  taskStatus = 'Ready';
+  taskState: TaskSchedulerState = 'ready';
+  taskStates: TaskSchedulerState[] = [];
   lastResult = '0';
   runExitCode = 0;
+  xmlQueryExitCode = 0;
+  deleteLeavesTask = false;
+  taskCommand: string | null = null;
+  taskArguments: string | null = null;
+  taskUserId = this.currentUserSidValue;
+  taskLogonType = 'InteractiveToken';
+  taskRunLevel: string | null = 'LeastPrivilege';
+  taskDisallowStartIfOnBatteries = 'false';
+  taskStopIfGoingOnBatteries = 'false';
+  taskExecutionTimeLimit = 'PT0S';
+  taskRunAtLoad = true;
+  extraTriggerXml = '';
+  registerResult = { stdout: '', exitCode: 0 };
+  exitOverrides: Map<string, { stdout: string; exitCode: number }> = new Map();
+  async queryState(label: string): Promise<TaskSchedulerState> {
+    this.calls.push(['/state', label]);
+    if (!this.taskExists) return 'absent';
+    return this.taskStates.shift() ?? this.taskState;
+  }
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     this.calls.push(args);
     if (args[0] === '/query') {
       if (!this.taskExists) return { stdout: 'ERROR: cannot find', exitCode: 1 };
+      if (args.includes('/xml')) {
+        if (this.xmlQueryExitCode !== 0) {
+          return { stdout: 'Task Scheduler provider unavailable', exitCode: this.xmlQueryExitCode };
+        }
+        const command = this.taskCommand ?? '';
+        const argumentsXml = this.taskArguments === null
+          ? ''
+          : `<Arguments>${this.taskArguments}</Arguments>`;
+        return {
+          stdout: [
+            '<Task>',
+            '<Principals><Principal>',
+            `<UserId>${this.taskUserId}</UserId>`,
+            `<LogonType>${this.taskLogonType}</LogonType>`,
+            ...(this.taskRunLevel === null
+              ? []
+              : [`<RunLevel>${this.taskRunLevel}</RunLevel>`]),
+            '</Principal></Principals>',
+            '<Settings>',
+            `<DisallowStartIfOnBatteries>${this.taskDisallowStartIfOnBatteries}</DisallowStartIfOnBatteries>`,
+            `<StopIfGoingOnBatteries>${this.taskStopIfGoingOnBatteries}</StopIfGoingOnBatteries>`,
+            `<ExecutionTimeLimit>${this.taskExecutionTimeLimit}</ExecutionTimeLimit>`,
+            '</Settings>',
+            '<Triggers>',
+            ...(this.taskRunAtLoad
+              ? [`<LogonTrigger><UserId>${this.taskUserId}</UserId></LogonTrigger>`]
+              : []),
+            this.extraTriggerXml,
+            '</Triggers>',
+            `<Actions><Exec><Command>${command}</Command>${argumentsXml}</Exec></Actions>`,
+            '</Task>',
+          ].join(''),
+          exitCode: 0,
+        };
+      }
       if (args.includes('/v')) {
-        return { stdout: `TaskName: ${args[2]}\r\nStatus: ${this.taskStatus}\r\nLast Result: ${this.lastResult}\r\n`, exitCode: 0 };
+        return { stdout: `TaskName: ${args[2]}\r\nLast Result: ${this.lastResult}\r\n`, exitCode: 0 };
       }
       return { stdout: '', exitCode: 0 };
     }
-    if (args[0] === '/create') this.taskExists = true;
-    if (args[0] === '/delete') this.taskExists = false;
+    const override = this.exitOverrides.get(args[0]);
+    if (override) return override;
+    if (args[0] === '/delete' && !this.deleteLeavesTask) this.taskExists = false;
     if (args[0] === '/run' && this.runExitCode !== 0) {
       return { stdout: 'ERROR: The system cannot find the path specified.', exitCode: this.runExitCode };
     }
     return { stdout: '', exitCode: 0 };
   }
+  async currentUserSid(): Promise<string> {
+    return this.currentUserSidValue;
+  }
+  async register(
+    registration: TaskSchedulerRegistration,
+  ): Promise<{ stdout: string; exitCode: number }> {
+    this.registrations.push(registration);
+    if (this.registerResult.exitCode === 0) {
+      this.taskExists = true;
+      this.taskCommand = registration.command;
+      this.taskArguments = registration.arguments;
+      this.taskUserId = this.currentUserSidValue;
+      this.taskLogonType = 'InteractiveToken';
+      this.taskRunLevel = 'LeastPrivilege';
+      this.taskDisallowStartIfOnBatteries = 'false';
+      this.taskStopIfGoingOnBatteries = 'false';
+      this.taskExecutionTimeLimit = 'PT0S';
+      this.taskRunAtLoad = registration.runAtLoad;
+      this.extraTriggerXml = '';
+    }
+    return this.registerResult;
+  }
+  async endProcessTree(label: string): Promise<{ stdout: string; exitCode: number }> {
+    this.calls.push(['/end-tree', label]);
+    return this.exitOverrides.get('/end-tree') ?? { stdout: '', exitCode: 0 };
+  }
+}
+
+function makeUnitManager(opts: WindowsManagerOptions): WindowsTaskServiceManager {
+  return new WindowsTaskServiceManager({
+    withExternalMcpContainment: async (continuation) => await continuation(),
+    ...opts,
+  });
 }
 
 describe('renderWindowsServiceScript', () => {
-  test('bakes env (minus POSIX PATH), cd, exec + log redirect; CRLF', () => {
+  test('bakes env (minus POSIX PATH), cwd, exec + log redirect; CRLF', () => {
     const spec = makeSpec();
     const out = renderWindowsServiceScript(spec);
-    expect(out.startsWith('@echo off')).toBe(true);
-    expect(out).toContain(`set "MYCO_HOME=${spec.env.MYCO_HOME}"`);
-    expect(out).toContain('set "MYCO_SERVICE_VARIANT=dev"');
+    expect(out.startsWith("$ErrorActionPreference = 'Stop'")).toBe(true);
+    expect(out).toContain(
+      `$startInfo.EnvironmentVariables['MYCO_HOME'] = '${spec.env.MYCO_HOME}'`,
+    );
+    expect(out).toContain(
+      "$startInfo.EnvironmentVariables['MYCO_SERVICE_VARIANT'] = 'dev'",
+    );
     // Restart routing keys on the installed task (resolveRestartServiceLabel),
     // so the launcher no longer needs to export a pid-substitute marker.
     expect(out).not.toContain('MYCO_SERVICE_MANAGED');
-    expect(out).not.toContain('set "PATH='); // POSIX PATH is meaningless on Windows — inherit the user's
-    expect(out).toContain(`cd /d "${spec.workingDir}"`);
-    expect(out).toContain(`"${spec.executable}" daemon >> "${spec.stdoutPath}" 2>> "${spec.stderrPath}"`);
+    expect(out).not.toContain("'PATH'"); // POSIX PATH is meaningless on Windows — inherit the user's
+    expect(out).toContain(`$workingDirectory = '${spec.workingDir}'`);
+    expect(out).toContain(`$executable = '${spec.executable}'`);
+    expect(out).toContain("$arguments = @('daemon')");
+    expect(out).toContain('$process.StandardOutput.BaseStream.CopyToAsync($stdout)');
+    expect(out).toContain('$process.StandardError.BaseStream.CopyToAsync($stderr)');
+    expect(out).toContain('private const uint KillOnJobClose = 0x00002000;');
+    expect(out).toContain('SetInformationJobObject');
+    expect(out).toContain('AssignProcessToJobObject');
+    expect(out).toContain('if ([MycoProcessJob]::ExtendedLimitInfoSize -ne 144)');
+    expect(out).toContain('$jobHandle = [MycoProcessJob]::CreateForCurrentProcess()');
+    expect(out.indexOf('$jobHandle = [MycoProcessJob]::CreateForCurrentProcess()'))
+      .toBeLessThan(out.indexOf('if (-not $process.Start())'));
+    expect(out).toContain('[MycoProcessJob]::Close($jobHandle)');
+    expect(out).not.toContain('1>>');
+    expect(out).not.toContain('2>>');
     expect(out.includes('\r\n')).toBe(true);
   });
 
   test('keepAlive renders a crash-restart supervision loop (launchd KeepAlive equivalent)', () => {
     const out = renderWindowsServiceScript(makeSpec({ keepAlive: true }));
-    expect(out).toContain(':myco_run');
-    expect(out).toContain('if %errorlevel% equ 0 goto myco_done'); // clean exit stops
-    expect(out).toContain('goto myco_run');                        // crash retries
-    expect(out).toContain('if %MYCO_RESTARTS% geq 10 goto myco_done'); // bounded — no hot loop
-    expect(out).toMatch(/ping -n \d+ 127\.0\.0\.1 > nul/);         // backoff sleep
+    expect(out).toContain('while ($true)');
+    expect(out).toContain('if ($exitCode -eq 0) { exit 0 }');
+    expect(out).toContain('$restarts += 1');
+    expect(out).toContain('if ($restarts -ge 10) { exit $exitCode }');
+    expect(out).toContain('Start-Sleep -Seconds 10');
   });
 
   test('non-keepAlive runs the daemon once, no supervision loop', () => {
     const out = renderWindowsServiceScript(makeSpec({ keepAlive: false }));
-    expect(out).not.toContain(':myco_run');
-    expect(out).toContain('daemon >>');
+    expect(out).not.toContain('while ($true)');
+    expect(out).toContain('$exitCode = Invoke-MycoProcess');
+  });
+
+  test('rejects arguments that cannot be passed without command-line quoting', () => {
+    expect(() => renderWindowsServiceScript(makeSpec({ args: ['daemon', 'spaced value'] })))
+      .toThrow(/unsupported command-line quoting/i);
   });
 });
 
@@ -92,7 +227,7 @@ describe('WindowsTaskServiceManager', () => {
     expect(mgr.platformName).toContain('Task Scheduler');
   });
 
-  test('install writes launcher .cmd + creates an onlogon task; idempotent on re-run', async () => {
+  test('install writes launcher .ps1 + creates an onlogon task; idempotent on re-run', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
@@ -101,15 +236,80 @@ describe('WindowsTaskServiceManager', () => {
     const r1 = await mgr.install(spec);
     expect(r1.changed).toBe(true);
     expect(r1.supervisorReloaded).toBe(true);
-    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(true);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(fs.readFileSync(scriptPath).subarray(0, 3)).toEqual(
+      Buffer.from([0xef, 0xbb, 0xbf]),
+    );
 
-    const create = runner.calls.find((c) => c[0] === '/create');
-    expect(create).toBeDefined();
-    expect(create).toEqual(expect.arrayContaining(['/tn', spec.label, '/sc', 'onlogon', '/rl', 'limited', '/f']));
+    expect(runner.registrations).toEqual([{
+      label: spec.label,
+      command: expectedTaskHost(),
+      arguments: expectedTaskHostArguments(scriptPath),
+      runAtLoad: true,
+    }]);
+    expect(runner.calls.some((call) => call[0] === '/create')).toBe(false);
 
     // Unchanged spec + existing task -> no rewrite.
     const r2 = await mgr.install(spec);
     expect(r2.changed).toBe(false);
+  });
+
+  test('re-registers when runAtLoad changes instead of retaining a stale logon trigger', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
+    });
+    const spec = makeSpec({ runAtLoad: true });
+    await mgr.install(spec);
+
+    const result = await mgr.install({ ...spec, runAtLoad: false });
+
+    expect(result.changed).toBe(true);
+    expect(runner.registrations).toHaveLength(2);
+    expect(runner.registrations.at(-1)?.runAtLoad).toBe(false);
+    expect(runner.taskRunAtLoad).toBe(false);
+  });
+
+  test('accepts the omitted default least-privilege run level', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
+    });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    runner.taskRunLevel = null;
+
+    await expect(mgr.install(spec)).resolves.toMatchObject({ changed: false });
+    expect(runner.registrations).toHaveLength(1);
+  });
+
+  test('re-registers same-action tasks whose principal or daemon settings drift', async () => {
+    const driftCases: Array<(runner: StubRunner) => void> = [
+      (runner) => { runner.taskUserId = 'S-1-5-21-2000'; },
+      (runner) => { runner.taskLogonType = 'Password'; },
+      (runner) => { runner.taskRunLevel = 'HighestAvailable'; },
+      (runner) => { runner.taskDisallowStartIfOnBatteries = 'true'; },
+      (runner) => { runner.taskStopIfGoingOnBatteries = 'true'; },
+      (runner) => { runner.taskExecutionTimeLimit = 'PT72H'; },
+      (runner) => { runner.extraTriggerXml = '<RegistrationTrigger />'; },
+    ];
+
+    for (const introduceDrift of driftCases) {
+      const runner = new StubRunner();
+      const mgr = new WindowsTaskServiceManager({
+        runner,
+        scriptDir: tmp('myco-wt-'),
+      });
+      const spec = makeSpec();
+      await mgr.install(spec);
+      introduceDrift(runner);
+
+      await expect(mgr.install(spec)).resolves.toMatchObject({ changed: true });
+      expect(runner.registrations).toHaveLength(2);
+    }
   });
 
   test('start throws when schtasks /run exits non-zero (no silent success)', async () => {
@@ -119,24 +319,96 @@ describe('WindowsTaskServiceManager', () => {
     await expect(mgr.start('co.goondocks.myco')).rejects.toThrow(/schtasks \/run.*failed.*exit 1/i);
   });
 
-  test('quotes the /tr action so a spaced script dir does not split at logon (P2)', async () => {
-    // A default service dir under a spaced user profile
-    // (`C:\Users\First Last\.myco\service\…cmd`) must not split the schtasks
-    // action at the space — Task Scheduler re-parses the stored action string.
+  test('registers a hostile launcher path as structured Task Scheduler fields', async () => {
+    const scriptDir = path.join(tmp('myco-wt-'), "First Last %PATH% & ! O'Brien Ω");
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    expect(scriptPath).toContain(' '); // sanity: the path really has a space
+    const registration = runner.registrations[0];
+    expect(registration.command).toBe(expectedTaskHost());
+    expect(registration.arguments).toBe(expectedTaskHostArguments(scriptPath));
+    expect(registration.arguments).not.toContain(scriptPath);
+    expect(`${registration.command} ${registration.arguments}`.length).toBeGreaterThan(262);
+    expect(runner.calls.some((call) => call.includes('/tr'))).toBe(false);
+  });
+
+  test('retires the legacy batch launcher only after task recreation succeeds', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const legacyPath = path.join(scriptDir, 'co.goondocks.myco-dev.cmd');
+    fs.writeFileSync(legacyPath, '@echo off\r\n');
+    const spec = makeSpec();
+
+    const failingRunner = new StubRunner();
+    failingRunner.registerResult = { stdout: 'provider failure', exitCode: 1 };
+    const failingManager = new WindowsTaskServiceManager({
+      runner: failingRunner,
+      scriptDir,
+    });
+    await expect(failingManager.install(spec)).rejects.toThrow(/Register-ScheduledTask.*failed/i);
+    expect(fs.existsSync(legacyPath)).toBe(true);
+
+    const runner = new StubRunner();
+    const manager = new WindowsTaskServiceManager({ runner, scriptDir });
+    await expect(manager.install(spec)).resolves.toMatchObject({ changed: true });
+    expect(fs.existsSync(legacyPath)).toBe(false);
+    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.ps1`))).toBe(true);
+  });
+
+  test('recreates a quoted task action instead of accepting a non-runnable install', async () => {
     const scriptDir = path.join(tmp('myco-wt-'), 'First Last');
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
     const spec = makeSpec();
 
     await mgr.install(spec);
-    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
-    expect(scriptPath).toContain(' '); // sanity: the path really has a space
-    const create = runner.calls.find((c) => c[0] === '/create')!;
-    const trValue = create[create.indexOf('/tr') + 1];
-    expect(trValue).toBe(`"${scriptPath}"`);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    runner.taskCommand = `"${scriptPath}"`;
+    runner.taskArguments = null;
+    runner.calls.length = 0;
+
+    const result = await mgr.install(spec);
+
+    expect(result.changed).toBe(true);
+    expect(runner.registrations.at(-1)).toEqual({
+      label: spec.label,
+      command: expectedTaskHost(),
+      arguments: expectedTaskHostArguments(scriptPath),
+      runAtLoad: true,
+    });
   });
 
-  test('isInstalled reflects schtasks /query exit code', async () => {
+  test('does not overwrite an existing task when XML inspection fails', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
+    const spec = makeSpec();
+
+    await mgr.install(spec);
+    runner.xmlQueryExitCode = 1;
+    runner.calls.length = 0;
+
+    await expect(mgr.install(spec)).rejects.toThrow(/Task Scheduler.*inspection failed/i);
+    expect(runner.registrations).toHaveLength(1);
+  });
+
+  test('keeps shell metacharacters literal in the PowerShell launcher path', async () => {
+    const scriptDir = path.join(tmp('myco-wt-'), '%PATH% & !');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+
+    await expect(mgr.install(spec)).resolves.toMatchObject({ changed: true });
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(runner.registrations[0].arguments).toBe(
+      expectedTaskHostArguments(scriptPath),
+    );
+  });
+
+  test('isInstalled reflects the locale-independent task state', async () => {
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
     expect(await mgr.isInstalled('co.goondocks.myco')).toBe(false);
@@ -146,7 +418,7 @@ describe('WindowsTaskServiceManager', () => {
 
   test('status parses Running + Last Result', async () => {
     const runner = new StubRunner();
-    runner.taskExists = true; runner.taskStatus = 'Running'; runner.lastResult = '0';
+    runner.taskExists = true; runner.taskState = 'running'; runner.lastResult = '0';
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
     const st = await mgr.status('co.goondocks.myco-dev');
     expect(st.installed).toBe(true);
@@ -156,7 +428,7 @@ describe('WindowsTaskServiceManager', () => {
 
   test('status maps the SCHED_S_TASK_RUNNING sentinel (0x41301) to null, not a fake exit code', async () => {
     const runner = new StubRunner();
-    runner.taskExists = true; runner.taskStatus = 'Running'; runner.lastResult = '267009';
+    runner.taskExists = true; runner.taskState = 'running'; runner.lastResult = '267009';
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
     const st = await mgr.status('co.goondocks.myco-dev');
     expect(st.running).toBe(true);
@@ -171,6 +443,59 @@ describe('WindowsTaskServiceManager', () => {
     expect(st.running).toBe(false);
   });
 
+  test('inspect returns the exact executable and arguments from the installed task launcher', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
+    const spec = makeSpec({
+      executable: "C:\\Users\\O'Brien\\myco.exe",
+      args: ['daemon', '--port', '28876', "owner's"],
+    });
+    await mgr.install(spec);
+
+    await expect(mgr.inspect(spec.label)).resolves.toEqual({
+      executable: spec.executable,
+      args: spec.args,
+    });
+  });
+
+  test('inspect fails closed for a malformed installed task launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const label = 'co.goondocks.myco.malformed';
+    const scriptPath = path.join(scriptDir, `${label}.ps1`);
+    fs.writeFileSync(scriptPath, '@echo off\r\nthis is not a service command\r\n');
+    runner.taskExists = true;
+    runner.taskCommand = scriptPath;
+
+    await expect(mgr.inspect(label)).resolves.toBeNull();
+  });
+
+  test('inspect returns null when a live task has no installed launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const label = 'co.goondocks.myco.orphaned';
+    runner.taskExists = true;
+    runner.taskState = 'running';
+    runner.taskCommand = path.join(scriptDir, `${label}.ps1`);
+
+    const status = await mgr.status(label);
+    expect(status).toMatchObject({ installed: true, running: true, unitPath: null });
+    await expect(mgr.inspect(label)).resolves.toBeNull();
+  });
+
+  test('inspect returns null when the task action does not match the launcher path', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    runner.taskCommand = path.join(scriptDir, 'different.ps1');
+
+    await expect(mgr.inspect(spec.label)).resolves.toBeNull();
+  });
+
   test('restartShellCommand is a literal schtasks /run', () => {
     const mgr = new WindowsTaskServiceManager({ runner: new StubRunner(), scriptDir: tmp('myco-wt-') });
     expect(mgr.restartShellCommand('co.goondocks.myco')).toBe('schtasks /run /tn "co.goondocks.myco"');
@@ -179,52 +504,267 @@ describe('WindowsTaskServiceManager', () => {
   test('uninstall ends + deletes the task and removes the launcher', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const mgr = makeUnitManager({ runner, scriptDir });
     const spec = makeSpec();
     await mgr.install(spec);
     await mgr.uninstall(spec.label);
-    expect(runner.calls.some((c) => c[0] === '/end')).toBe(true);
+    expect(runner.calls.some((c) => c[0] === '/end-tree')).toBe(true);
     expect(runner.calls.some((c) => c[0] === '/delete')).toBe(true);
-    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(false);
+    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.ps1`))).toBe(false);
   });
 
-  // Cooperative drain (#4): `schtasks /end` is an uncatchable TerminateProcess,
-  // so restart/stop must drain the daemon over HTTP FIRST or every Windows
-  // restart/update orphans in-flight runs + the team-sync outbox.
+  test('uninstall never hard-ends or deletes when external containment cannot be confirmed', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir,
+      resolveDaemonPort: () => null,
+      withExternalMcpContainment: async () => {
+        throw new Error('external containment unavailable');
+      },
+    });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+
+    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/containment/i);
+
+    expect(runner.calls.some((call) => call[0] === '/end-tree')).toBe(false);
+    expect(runner.calls.some((call) => call[0] === '/delete')).toBe(false);
+    expect(fs.existsSync(scriptPath)).toBe(true);
+  });
+
+  test('uninstall contains an orphan daemon before accepting an absent task', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const label = 'co.goondocks.myco.orphaned';
+    const scriptPath = path.join(scriptDir, `${label}.ps1`);
+    fs.writeFileSync(scriptPath, '@echo off\r\n');
+    const events: string[] = [];
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir,
+      resolveDaemonPort: () => 28876,
+      cooperativeShutdown: async (port) => {
+        events.push(`drain:${port}`);
+        return { kind: 'refused', status: 409, detail: 'containment failed' };
+      },
+      withExternalMcpContainment: async () => {
+        events.push('contain');
+        throw new Error('external containment unavailable');
+      },
+    });
+
+    await expect(mgr.uninstall(label)).rejects.toThrow(/containment/i);
+
+    expect(events).toEqual(['drain:28876', 'contain']);
+    expect(runner.calls).toEqual([]);
+    expect(fs.existsSync(scriptPath)).toBe(true);
+  });
+
+  test('uninstall rejects failed process-tree termination and preserves the launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = makeUnitManager({ runner, scriptDir });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    runner.exitOverrides.set('/end-tree', { stdout: 'ERROR: Access is denied.', exitCode: 1 });
+
+    await expect(mgr.uninstall(spec.label))
+      .rejects.toThrow(/Task Scheduler process-tree termination.*failed.*exit 1/i);
+
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(runner.calls.some((call) => call[0] === '/delete')).toBe(false);
+  });
+
+  test('uninstall polls until a delayed task exit before deleting it', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const spec = makeSpec();
+    runner.taskExists = true;
+    runner.taskStates = ['running', 'running', 'ready'];
+    const mgr = makeUnitManager({ runner, scriptDir, sleep: async () => {} });
+
+    await mgr.uninstall(spec.label);
+
+    const stateCallIndexes = runner.calls
+      .map((call, index) => call[0] === '/state' ? index : -1)
+      .filter((index) => index >= 0);
+    const deleteIndex = runner.calls.findIndex((call) => call[0] === '/delete');
+    const preDeleteStateIndexes = stateCallIndexes.filter((index) => index < deleteIndex);
+    const postDeleteStateIndexes = stateCallIndexes.filter((index) => index > deleteIndex);
+    expect(preDeleteStateIndexes.length).toBeGreaterThanOrEqual(3);
+    expect(postDeleteStateIndexes.length).toBeGreaterThanOrEqual(1);
+    expect(deleteIndex).toBeGreaterThan(preDeleteStateIndexes.at(-1)!);
+    expect(deleteIndex).toBeLessThan(postDeleteStateIndexes[0]!);
+  });
+
+  test('uninstall rejects a failed /delete and preserves the launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = makeUnitManager({ runner, scriptDir });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    runner.exitOverrides.set('/delete', { stdout: 'ERROR: Access is denied.', exitCode: 1 });
+
+    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/schtasks \/delete.*failed.*exit 1/i);
+
+    expect(fs.existsSync(scriptPath)).toBe(true);
+  });
+
+  test('uninstall confirms task absence after /delete before removing the launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = makeUnitManager({ runner, scriptDir, sleep: async () => {} });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    runner.deleteLeavesTask = true;
+
+    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/timed out.*Task Scheduler.*deletion/i);
+
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(runner.calls.filter((call) => call[0] === '/state').length).toBeGreaterThan(1);
+  });
+
+  test('uninstall is idempotent when the task and launcher are already absent', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
+      withExternalMcpContainment: async (terminate) => await terminate(),
+    });
+
+    await mgr.uninstall('co.goondocks.myco.absent');
+
+    expect(runner.calls).toEqual([
+      ['/state', 'co.goondocks.myco.absent'],
+    ]);
+  });
+
+  test('uninstall rejects an unknown Task Scheduler state', async () => {
+    const runner = new StubRunner();
+    runner.taskExists = true;
+    runner.taskState = 'unknown';
+    const mgr = makeUnitManager({ runner, scriptDir: tmp('myco-wt-') });
+
+    await expect(mgr.uninstall('co.goondocks.myco.unknown'))
+      .rejects.toThrow(/unknown Task Scheduler state/i);
+  });
+
+  test('uninstall times out while Task Scheduler still reports the task running', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = makeUnitManager({ runner, scriptDir, sleep: async () => {} });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    runner.taskState = 'running';
+
+    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/timed out.*Task Scheduler.*exit/i);
+
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(runner.calls.some((call) => call[0] === '/delete')).toBe(false);
+  });
+
+  // Windows process-tree termination is uncatchable, so restart/stop drains
+  // the daemon over HTTP before forcefully ending the task instance.
 
   /** A runner that records schtasks calls into a shared ordered event log. */
   function recordingMgr(events: string[], opts: {
     resolveDaemonPort?: (label: string) => number | null;
-    cooperativeShutdown?: (port: number) => Promise<boolean>;
+    cooperativeShutdown?: (port: number) => Promise<
+      import('../../packages/myco/src/service/cooperative-shutdown').CooperativeShutdownResult
+    >;
+    withExternalMcpContainment?: <T>(
+      continuation: () => Promise<T>,
+    ) => Promise<T>;
   }) {
     const runner: SchtasksRunner = {
       async run(args) { events.push('schtasks:' + args.join(' ')); return { stdout: '', exitCode: 0 }; },
+      async queryState() { return 'absent'; },
+      async currentUserSid() { return 'S-1-5-21-1000'; },
+      async register() { return { stdout: '', exitCode: 0 }; },
+      async endProcessTree(label) {
+        events.push('taskkill-tree:' + label);
+        return { stdout: '', exitCode: 0 };
+      },
     };
-    return new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-'), ...opts });
+    return new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
+      withExternalMcpContainment: async (terminate) => {
+        events.push('contain');
+        return await terminate();
+      },
+      ...opts,
+    });
   }
 
-  test('restart() drains via cooperative shutdown BEFORE schtasks /end, then /run', async () => {
+  test('restart() drains before process-tree termination, then runs the task', async () => {
     const events: string[] = [];
-    const mgr = recordingMgr(events, {
+    const runner: SchtasksRunner = {
+      async run(args) {
+        events.push('schtasks:' + args.join(' '));
+        return { stdout: '', exitCode: 0 };
+      },
+      async queryState() {
+        events.push('state');
+        return events.includes('taskkill-tree:co.goondocks.myco-dev')
+          ? 'ready'
+          : 'running';
+      },
+      async currentUserSid() {
+        return 'S-1-5-21-1000';
+      },
+      async register() {
+        return { stdout: '', exitCode: 0 };
+      },
+      async endProcessTree(label) {
+        events.push('taskkill-tree:' + label);
+        return { stdout: '', exitCode: 0 };
+      },
+    };
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
       resolveDaemonPort: () => 28876,
-      cooperativeShutdown: async (port) => { events.push('drain:' + port); return true; },
+      cooperativeShutdown: async (port) => {
+        events.push('drain:' + port);
+        return { kind: 'stopped' };
+      },
+      withExternalMcpContainment: async (terminate) => {
+        events.push('contain:start');
+        await terminate();
+        events.push('contain:end');
+      },
     });
     await mgr.restart('co.goondocks.myco-dev');
     expect(events).toEqual([
       'drain:28876',
-      'schtasks:/end /tn co.goondocks.myco-dev',
+      'contain:start',
+      'taskkill-tree:co.goondocks.myco-dev',
+      'state',
+      'contain:end',
       'schtasks:/run /tn co.goondocks.myco-dev',
     ]);
   });
 
-  test('stop() drains before schtasks /end', async () => {
+  test('stop() drains before process-tree termination', async () => {
     const events: string[] = [];
     const mgr = recordingMgr(events, {
       resolveDaemonPort: () => 28876,
-      cooperativeShutdown: async (port) => { events.push('drain:' + port); return true; },
+      cooperativeShutdown: async (port) => { events.push('drain:' + port); return { kind: 'stopped' }; },
     });
     await mgr.stop('co.goondocks.myco-dev');
-    expect(events).toEqual(['drain:28876', 'schtasks:/end /tn co.goondocks.myco-dev']);
+    expect(events).toEqual([
+      'drain:28876',
+      'contain',
+      'taskkill-tree:co.goondocks.myco-dev',
+    ]);
   });
 
   test('restart() skips the drain when the daemon port is unknown (still ends + runs)', async () => {
@@ -232,17 +772,18 @@ describe('WindowsTaskServiceManager', () => {
     let drained = false;
     const mgr = recordingMgr(events, {
       resolveDaemonPort: () => null,
-      cooperativeShutdown: async () => { drained = true; return true; },
+      cooperativeShutdown: async () => { drained = true; return { kind: 'stopped' }; },
     });
     await mgr.restart('co.goondocks.myco');
     expect(drained).toBe(false);
     expect(events).toEqual([
-      'schtasks:/end /tn co.goondocks.myco',
+      'contain',
+      'taskkill-tree:co.goondocks.myco',
       'schtasks:/run /tn co.goondocks.myco',
     ]);
   });
 
-  test('restart() still hard-ends when the cooperative drain throws (never strands)', async () => {
+  test('restart() hard-ends after out-of-process containment when cooperative drain throws', async () => {
     const events: string[] = [];
     const mgr = recordingMgr(events, {
       resolveDaemonPort: () => 1,
@@ -250,9 +791,28 @@ describe('WindowsTaskServiceManager', () => {
     });
     await mgr.restart('co.goondocks.myco');
     expect(events).toEqual([
-      'schtasks:/end /tn co.goondocks.myco',
+      'contain',
+      'taskkill-tree:co.goondocks.myco',
       'schtasks:/run /tn co.goondocks.myco',
     ]);
+  });
+
+  test('restart() does not hard-end after the daemon explicitly refuses shutdown', async () => {
+    const events: string[] = [];
+    const mgr = recordingMgr(events, {
+      resolveDaemonPort: () => 28876,
+      cooperativeShutdown: async (port) => {
+        events.push('drain:' + port);
+        return { kind: 'refused', status: 409 };
+      },
+      withExternalMcpContainment: async () => {
+        events.push('contain');
+        throw new Error('external containment unavailable');
+      },
+    });
+
+    await expect(mgr.restart('co.goondocks.myco')).rejects.toThrow(/containment/i);
+    expect(events).toEqual(['drain:28876', 'contain']);
   });
 });
 

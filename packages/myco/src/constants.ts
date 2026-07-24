@@ -647,29 +647,19 @@ export const HOST_SERVE_BEARER_SECRET = 'MYCO_HOST_SERVE_BEARER';
  */
 export const TEAM_AGENT_KEY_SECRET = 'MYCO_TEAM_AGENT_KEY';
 /**
- * Secrets key for the external read-only MCP's access token, stored
- * machine-scoped in `~/.myco/secrets.env` beside {@link HOST_SERVE_BEARER_SECRET}
- * (server-mode design spec §7 — a THIRD credential, distinct from the loopback
- * daemon token and the member serve-bearer). Server-minted at ≥122 bits,
- * rotatable by any team member via the `team-write` `POST
- * /api/team/mcp-token/rotate` route, and mint-if-absent at `PUT
- * /api/team/external-mcp/toggle` enable (Task 10's dedicated listener
- * authenticates against it with a constant-time compare). The raw value is
- * revealed exactly once, in the response of whichever of those two routes
- * just minted or rotated it — the ONLY reveal surface; every other route
- * (including `GET /api/team/external-mcp`) echoes only a non-secret
- * change-detection hash.
+ * Machine-scoped secret key retained for external MCP containment and status.
+ * The raw value lives in `~/.myco/secrets.env`; status surfaces expose only
+ * its non-secret change-detection hash.
  */
 export const HOST_EXTERNAL_MCP_TOKEN_SECRET = 'MYCO_HOST_EXTERNAL_MCP_TOKEN';
 /**
- * Default loopback port the external MCP listener binds when a member
- * enables exposure without picking one (`daemon.external_mcp.port`,
- * server-mode design spec §7). Distinct from the daemon's own port and the
- * overlay listener's port — `tailscale funnel <port>` fronts exactly this
- * one on the public internet, so it must be a fixed, known value a member
- * can point Funnel at deterministically across restarts.
+ * Default port recorded in external MCP containment state. It remains
+ * distinct from the daemon and overlay ports so exact-port Funnel-off can
+ * reconcile persisted state without touching unrelated Funnel targets.
  */
 export const EXTERNAL_MCP_DEFAULT_PORT = 8743;
+/** Health posture proving the daemon has no external MCP activation surface. */
+export const EXTERNAL_MCP_ACTIVATION_POSTURE = 'retired' as const;
 
 /**
  * Directory segment under a served Grove's dir (`<grove>/hosted/<projectId>`)

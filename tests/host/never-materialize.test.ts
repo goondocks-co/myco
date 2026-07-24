@@ -13,6 +13,7 @@
  * machine-global host registry, so the real `~/.myco*` is never touched. The
  * `sandbox-preload` fence backstops this.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -46,13 +47,17 @@ import {
   type GroveRecord,
 } from '@myco/grove/registry.js';
 import {
-  attachProject,
-  getHost,
+  createHostRegistryOperations,
   ProjectRegisteredLocallyError,
-  resolveAttach,
-  upsertHost,
   type HostRecord,
 } from '@myco/host/registry.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const {
+  attachProject,
+  getHost,
+  resolveAttach,
+} = createHostRegistryOperations(testPerUserLockNamespace);
 
 let home: string;
 let teamHome: string;
@@ -110,7 +115,7 @@ function makeCheckout(projectId?: string): string {
 /** Attach `projectId` to a fresh host serving `groveId`, and return the host. */
 function attach(groveId: string, projectId: string): HostRecord {
   const host = makeHost();
-  upsertHost(host);
+  writeHostRecordFixture(host);
   attachProject(host.host_id, { grove_id: groveId, project_id: projectId }, home);
   return host;
 }
@@ -153,7 +158,7 @@ describe('Team Host never-materialize invariant', () => {
       const projectRoot = makeCheckout(attachProjectId);
       attach(attachGroveId, attachProjectId);
 
-      const resolved = ensureProjectRegistered(projectRoot, home);
+      const resolved = ensureProjectRegistered(projectRoot, home, testPerUserLockNamespace);
 
       // Tenancy comes straight from the attach ref — not a locally-minted row.
       expect(resolved).not.toBeNull();
@@ -174,7 +179,11 @@ describe('Team Host never-materialize invariant', () => {
       const projectRoot = makeCheckout(attachProjectId);
       attach(attachGroveId, attachProjectId);
 
-      const location = resolveProjectBufferDirFromRoot(projectRoot, home);
+      const location = resolveProjectBufferDirFromRoot(
+        projectRoot,
+        home,
+        testPerUserLockNamespace,
+      );
 
       expect(location).not.toBeNull();
       expect(location!.groveId).toBe(attachGroveId);
@@ -212,7 +221,7 @@ describe('Team Host never-materialize invariant', () => {
         cache,
         makeLogger(),
         ({ grove }) => { visited.push(grove.id); },
-        { mycoHome: home },
+        { mycoHome: home, lockNamespace: testPerUserLockNamespace },
       );
       cache.closeAll();
 
@@ -229,7 +238,11 @@ describe('Team Host never-materialize invariant', () => {
       const projectRoot = makeCheckout(attachProjectId);
       const host = attach(attachGroveId, attachProjectId);
 
-      expect(() => activateProjectMigration({ projectRoot, mycoHome: home }))
+      expect(() => activateProjectMigration({
+        projectRoot,
+        mycoHome: home,
+        lockNamespace: testPerUserLockNamespace,
+      }))
         .toThrow(new RegExp(`served by host ${host.label}`));
 
       expect(listRegisteredProjects(defaultGrove.id, home, { includeArchived: true })).toEqual([]);
@@ -244,7 +257,7 @@ describe('Team Host never-materialize invariant', () => {
       const defaultGrove = ensureDefaultGrove(home);
       const projectRoot = makeCheckout();
 
-      const resolved = ensureProjectRegistered(projectRoot, home);
+      const resolved = ensureProjectRegistered(projectRoot, home, testPerUserLockNamespace);
 
       expect(resolved).not.toBeNull();
       expect(resolved!.grove.id).toBe(defaultGrove.id);
@@ -260,7 +273,11 @@ describe('Team Host never-materialize invariant', () => {
       const defaultGrove = ensureDefaultGrove(home);
       const projectRoot = makeCheckout();
 
-      const location = resolveProjectBufferDirFromRoot(projectRoot, home);
+      const location = resolveProjectBufferDirFromRoot(
+        projectRoot,
+        home,
+        testPerUserLockNamespace,
+      );
 
       expect(location).not.toBeNull();
       expect(location!.groveId).toBe(defaultGrove.id);
@@ -286,7 +303,7 @@ describe('Team Host never-materialize invariant', () => {
         cache,
         makeLogger(),
         ({ grove }) => { visited.push(grove.id); },
-        { mycoHome: home },
+        { mycoHome: home, lockNamespace: testPerUserLockNamespace },
       );
       cache.closeAll();
 
@@ -301,7 +318,11 @@ describe('Team Host never-materialize invariant', () => {
 
       // Not attached → the gate is transparent; activation proceeds until it
       // hits the real first-run precondition (no legacy source DB present).
-      expect(() => activateProjectMigration({ projectRoot, mycoHome: home }))
+      expect(() => activateProjectMigration({
+        projectRoot,
+        mycoHome: home,
+        lockNamespace: testPerUserLockNamespace,
+      }))
         .toThrow(/Legacy project database not found/);
 
       fs.rmSync(projectRoot, { recursive: true, force: true });
@@ -328,13 +349,13 @@ describe('Team Host never-materialize invariant', () => {
         projectRoot: fakeRoot(`sibling-${siblingProjectId}`),
       }, home);
 
-      // Seed the attach ref DIRECTLY via upsertHost. attachProject now refuses
+      // Seed the attach ref directly. attachProject refuses
       // exactly this creation (the local-row guard below), so we reproduce the
       // residual state that guard prevents to prove scope iteration also
       // refuses it — the stale row lives in the DEFAULT Grove (G_local), not
       // the attach-target Grove (G_host), so only the project-level filter
       // catches it; the grove-level skip does not.
-      upsertHost({ ...makeHost(), projects: [{ grove_id: attachGroveId, project_id: attachedProjectId }] });
+      writeHostRecordFixture({ ...makeHost(), projects: [{ grove_id: attachGroveId, project_id: attachedProjectId }] });
 
       const cache = new GroveRuntimeCache();
       const visited: string[] = [];
@@ -342,7 +363,11 @@ describe('Team Host never-materialize invariant', () => {
         cache,
         makeLogger(),
         ({ projectId }) => { visited.push(projectId); },
-        { mycoHome: home, machineId: 'machine-test' },
+        {
+          mycoHome: home,
+          machineId: 'machine-test',
+          lockNamespace: testPerUserLockNamespace,
+        },
       );
       cache.closeAll();
 
@@ -360,7 +385,7 @@ describe('Team Host never-materialize invariant', () => {
       }, home);
 
       const host = makeHost();
-      upsertHost(host);
+      writeHostRecordFixture(host);
 
       expect(() => attachProject(host.host_id, { grove_id: createGroveId(), project_id: projectId }, home))
         .toThrow(ProjectRegisteredLocallyError);

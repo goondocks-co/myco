@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { DaemonClient, type RestartDeps } from '@myco/hooks/client';
+import {
+  DaemonClient,
+  type DaemonClientOptions,
+  type RestartDeps,
+} from '@myco/hooks/client';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
 // Service-manager fake routes restart() through the legacy raw-spawn path so
@@ -74,8 +78,6 @@ describe('DaemonClient.restart — stuck-shutdown recovery', () => {
 
   it('returns true without force-killing when /health responds promptly', async () => {
     healthResponds = true;
-    // Re-publish daemon.json after killDaemon clears it during the call — we
-    // simulate the supervisor respawning a healthy daemon at the same port.
     const client = new DaemonClient(vaultDir, { serviceManager: noServiceManager() });
 
     const killCalls: Array<{ pid: number; signal: NodeJS.Signals }> = [];
@@ -88,11 +90,7 @@ describe('DaemonClient.restart — stuck-shutdown recovery', () => {
       pollIntervalMs: 10,
     };
 
-    // Simulate the supervisor writing a fresh daemon.json shortly after
-    // respawn. killDaemon itself no longer unlinks state (cleanup ownership
-    // inversion — the successor owns that), but in production launchd
-    // overwrites daemon.json with the new pid when it brings a fresh daemon
-    // up. We mimic that here so isHealthy can resolve the port.
+    // The supervisor publishes the successor state used by the health check.
     setTimeout(() => {
       fs.writeFileSync(statePath, JSON.stringify({ pid: FAKE_PID, port: healthPort }));
     }, 5);
@@ -134,6 +132,119 @@ describe('DaemonClient.restart — stuck-shutdown recovery', () => {
     expect(killCalls).toHaveLength(1);
     expect(killCalls[0]!.pid).toBe(FAKE_PID);
     expect(killCalls[0]!.signal).toBe('SIGKILL');
+  });
+
+  it('contains external MCP before every Windows termination and escalation', async () => {
+    healthResponds = false;
+    const lifecycle: string[] = [];
+    const options = {
+      serviceManager: noServiceManager(),
+      platform: 'win32',
+      cooperativeShutdown: async () => {
+        lifecycle.push('cooperative');
+        return { kind: 'unavailable' as const };
+      },
+      withExternalMcpContainment: async (terminate) => {
+        lifecycle.push('contain');
+        await terminate();
+      },
+      terminate: (_pid: number, signal: NodeJS.Signals) => {
+        lifecycle.push(`terminate:${signal}`);
+      },
+    } satisfies DaemonClientOptions;
+    const client = new DaemonClient(vaultDir, options);
+    const deps: RestartDeps = {
+      isProcessAlive: () => true,
+      isPortBound: () => true,
+      kill: (_pid, signal) => {
+        lifecycle.push(`escalate:${signal}`);
+        healthResponds = true;
+        fs.writeFileSync(
+          statePath,
+          JSON.stringify({ pid: FAKE_PID + 1, port: healthPort }),
+        );
+      },
+      stuckDetectionMs: 20,
+      deadlineMs: 1_000,
+      pollIntervalMs: 10,
+    };
+
+    await expect(client.restart({ checkStale: false }, deps)).resolves.toBe(true);
+
+    expect(lifecycle).toEqual([
+      'cooperative',
+      'contain',
+      'terminate:SIGTERM',
+      'contain',
+      'escalate:SIGKILL',
+    ]);
+  });
+
+  it('refuses a Windows restart when external MCP containment fails', async () => {
+    healthResponds = false;
+    const lifecycle: string[] = [];
+    const options = {
+      serviceManager: noServiceManager(),
+      platform: 'win32',
+      cooperativeShutdown: async () => ({ kind: 'unavailable' as const }),
+      withExternalMcpContainment: async () => {
+        lifecycle.push('contain');
+        throw new Error('containment failed');
+      },
+      terminate: (_pid: number, signal: NodeJS.Signals) => {
+        lifecycle.push(`terminate:${signal}`);
+      },
+    } satisfies DaemonClientOptions;
+    const client = new DaemonClient(vaultDir, options);
+
+    await expect(client.restart({ checkStale: false }, {
+      isProcessAlive: () => true,
+      isPortBound: () => true,
+      kill: (_pid, signal) => {
+        lifecycle.push(`escalate:${signal}`);
+      },
+      stuckDetectionMs: 10,
+      deadlineMs: 100,
+      pollIntervalMs: 5,
+    })).rejects.toThrow(/containment failed/);
+
+    expect(lifecycle).toEqual(['contain']);
+  });
+
+  it('confirms external MCP containment after an older Windows daemon stops cooperatively', async () => {
+    healthResponds = false;
+    const lifecycle: string[] = [];
+    const options = {
+      serviceManager: noServiceManager(),
+      platform: 'win32',
+      cooperativeShutdown: async () => {
+        lifecycle.push('cooperative');
+        return { kind: 'stopped' as const };
+      },
+      withExternalMcpContainment: async (terminate) => {
+        lifecycle.push('contain');
+        await terminate();
+        healthResponds = true;
+        fs.writeFileSync(
+          statePath,
+          JSON.stringify({ pid: FAKE_PID + 1, port: healthPort }),
+        );
+      },
+      terminate: (_pid: number, signal: NodeJS.Signals) => {
+        lifecycle.push(`terminate:${signal}`);
+      },
+    } satisfies DaemonClientOptions;
+    const client = new DaemonClient(vaultDir, options);
+
+    await expect(client.restart({ checkStale: false }, {
+      isProcessAlive: () => false,
+      isPortBound: () => false,
+      stuckDetectionMs: 20,
+      deadlineMs: 500,
+      pollIntervalMs: 10,
+    })).resolves.toBe(true);
+
+    expect(lifecycle).toEqual(['cooperative', 'contain']);
   });
 
   it('does not force-kill when the prev PID is already gone (waiting for supervisor)', async () => {

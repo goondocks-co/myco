@@ -8,6 +8,10 @@ import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 type ClientResult = Awaited<ReturnType<DaemonClient['capturePost']>>;
 
@@ -127,9 +131,14 @@ export async function captureCriticalEvent(opts: {
   postBody: Record<string, unknown>;
   bufferEvent: Record<string, unknown> | null;
   client?: DaemonClient;
+  lockNamespace?: PerUserLockNamespace;
 }): Promise<ClientResult> {
   const { vaultDir, sessionId, hookName, endpoint, postBody, bufferEvent } = opts;
-  const client = opts.client ?? createHookDaemonClient(vaultDir, { sessionId });
+  const client = opts.client ?? createHookDaemonClient(
+    vaultDir,
+    { sessionId },
+    opts.lockNamespace,
+  );
 
   const result = await client.capturePost(endpoint, postBody);
 
@@ -143,7 +152,11 @@ export async function captureCriticalEvent(opts: {
       // global, fall back to project-local" silently produces divergent
       // state. A daemon-unreachable hit on a pre-register project drops
       // with a visible stderr trace rather than a guessed location.
-      const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(vaultDir));
+      const location = resolveProjectBufferDirFromRoot(
+        resolveProjectRoot(vaultDir),
+        undefined,
+        opts.lockNamespace ?? nativePerUserLockNamespace,
+      );
       if (location) {
         const enriched: Record<string, unknown> = { ...bufferEvent };
         if (postBody.agent !== undefined || bufferEvent.agent !== undefined) {
@@ -181,8 +194,9 @@ export async function captureCriticalEvent(opts: {
 export async function sendEvent(
   hookName: string,
   buildEvent: (input: NormalizedHookInput) => Record<string, unknown>,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Promise<void> {
-  const VAULT_DIR = resolveProvisionedVaultDir();
+  const VAULT_DIR = resolveProvisionedVaultDir(undefined, lockNamespace);
   if (!VAULT_DIR) return;
 
   let symbiont: string | undefined;
@@ -193,7 +207,7 @@ export async function sendEvent(
     if (!sessionId) return;
 
     const event = buildEvent(input);
-    await captureHookEvent(VAULT_DIR, hookName, input, event);
+    await captureHookEvent(VAULT_DIR, hookName, input, event, lockNamespace);
   } catch (error) {
     process.stderr.write(`[myco] ${hookName} error: ${(error as Error).message}\n`);
   } finally {
@@ -212,6 +226,7 @@ export async function captureHookEvent(
   hookName: string,
   input: NormalizedHookInput,
   event: Record<string, unknown>,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Promise<void> {
   const sessionId = input.sessionId;
   if (!sessionId) return;
@@ -224,5 +239,6 @@ export async function captureHookEvent(
     endpoint: '/events',
     postBody: { ...eventWithContext, session_id: sessionId, agent: input.agent },
     bufferEvent: eventWithContext,
+    lockNamespace,
   });
 }

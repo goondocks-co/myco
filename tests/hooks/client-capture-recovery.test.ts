@@ -23,6 +23,7 @@ import {
 } from '@myco/grove/paths';
 import { listenEphemeral, closeServer } from '../helpers/net.js';
 import { FakeServiceManager } from '../helpers/fake-service-manager.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 let vaultDir: string;
 let mycoHome: string;
@@ -87,7 +88,10 @@ describe('DaemonClient capture-critical recovery', () => {
       writeLock({ pid: process.pid, port });
 
       const mgr = new FakeServiceManager({ preInstalled: true });
-      const client = new DaemonClient(vaultDir, { serviceManager: mgr });
+      const client = new DaemonClient(vaultDir, {
+        serviceManager: mgr,
+        lockNamespace: testPerUserLockNamespace,
+      });
       const result = await client.capturePost('/events', { type: 'user_prompt', session_id: 's' });
 
       // The poisoned port made the request itself fail...
@@ -106,7 +110,10 @@ describe('DaemonClient capture-critical recovery', () => {
     // No lock, nothing on the canonical port: the daemon is genuinely gone.
 
     const mgr = new FakeServiceManager({ preInstalled: true });
-    const client = new DaemonClient(vaultDir, { serviceManager: mgr });
+    const client = new DaemonClient(vaultDir, {
+      serviceManager: mgr,
+      lockNamespace: testPerUserLockNamespace,
+    });
 
     const first = await client.capturePost('/events', { type: 'user_prompt', session_id: 's' });
     expect(first.ok).toBe(false);

@@ -1,11 +1,11 @@
 /**
- * `myco join <host>` / `myco leave <host>` orchestration (Task 2.2) — the
- * MEMBER side of the Team Host overlay.
+ * `myco join <host>` / `myco leave <host>` orchestration for the member side
+ * of the Team Host overlay.
  *
  * A member machine runs standard Myco. To route an attached project to a host it
  * must (1) stand up a userspace `tailscaled` and join the host's overlay, then
- * (2) write the `HostRecord` (+ bearer) that the Phase-1 proxy (`daemon/host-
- * proxy.ts`) already consumes. This module does both, behind injectable seams so
+ * (2) write the `HostRecord` (+ bearer) consumed by `daemon/host-proxy.ts`.
+ * This module does both, behind injectable seams so
  * the whole flow unit-tests with no network, no launchctl, and no real join.
  *
  * MULTI-HOST — one tailscaled PER host. Each host runs its OWN Headscale, i.e. its
@@ -19,16 +19,15 @@
  * `overlay_address` collides (the proxy dials `CONNECT <overlay_address> via
  * localhost:<proxy_port>`, so distinct ports fully disambiguate).
  *
- * SUPERVISION SHAPE — a per-user LaunchAgent, NO root (the deliberate opposite of
- * Task 2.1's host tailscaled). Task 2.1 installs the HOST's tailscaled as a ROOT
- * system daemon because a host must survive reboot-before-login. A MEMBER only
- * needs the overlay while it is logged in and using Myco, so its userspace
- * tailscaled is exactly what `@myco/service`'s user-domain manager was built for
+ * SUPERVISION SHAPE — a per-user LaunchAgent, with no root access. The host's
+ * tailscaled runs as a root system daemon so it survives reboot-before-login.
+ * A member needs the overlay only while it is logged in and using Myco, so its
+ * userspace tailscaled uses `@myco/service`'s user-domain manager
  * (`gui/<uid>` LaunchAgent on macOS, `systemd --user` on Linux). So this reuses
  * `getServiceManager()` directly; it never shells `sudo`, one LaunchAgent per host.
  *
- * DIAL MECHANISM — HTTP CONNECT, matching the proxy. Task 1.3's `defaultDial`
- * tunnels through a local HTTP-CONNECT proxy at `127.0.0.1:<proxy_port>`
+ * DIAL MECHANISM — HTTP CONNECT, matching the proxy. `defaultDial` tunnels
+ * through a local HTTP-CONNECT proxy at `127.0.0.1:<proxy_port>`
  * (`connectViaHttpProxy`). So each host's tailscaled exposes an
  * `--outbound-http-proxy-listen=localhost:<port>` listener (NOT `--socks5-server`)
  * and that port is recorded as `HostRecord.proxy_port`.
@@ -44,22 +43,28 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { getServiceManager } from '@myco/service/manager.js';
-import type { ServiceManager, ServiceSpec } from '@myco/service/types.js';
+import type {
+  InstalledServiceCommand,
+  ServiceManager,
+  ServiceSpec,
+} from '@myco/service/types.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import { acquireTunnelBridgePort } from '@myco/daemon/host-proxy.js';
+import { isGroveEraId } from '@myco/grove/ids.js';
 
 import {
   ENROLLMENT_RETRY_BACKOFFS_MS,
   HOST_BEARER_SECRET,
   HOST_ENROLL_ROUTE,
+  HOST_MIN_COMPAT_VERSION,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
   HOST_PROXY_CONNECT_TIMEOUT_MS,
   HOST_PROXY_HEADERS_TIMEOUT_MS,
-  MEMBER_OVERLAY_PROXY_PORT_BASE,
 } from '../constants.js';
 import {
   memberHostTag,
+  resolveHostDir,
   resolveMemberBinDir,
   resolveMemberOverlayDir,
   resolveMemberTailscaledSocketPath,
@@ -73,21 +78,38 @@ import {
   type BinaryFetcher,
   type CommandRunner,
 } from './overlay-binaries.js';
+import {
+  withHostOperationLock,
+  type HostOperationLease,
+} from './operation-lock.js';
+import { withLoopbackPortReleaseProof } from './loopback-port-proof.js';
+import { assertValidSecretEntry, InvalidSecretValueError } from '@myco/config/secrets.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { codedMembershipError } from './membership-error.js';
 import {
+  abandonHostEnrollment,
+  advanceHostEnrollmentPhase,
   getHost,
+  inspectHostMembershipForLeave,
+  isValidObservedHostProtocolVersion,
+  markHostEnrollmentTeardownPending,
+  persistEnrollmentMembership,
   readHostRegistry,
-  removeHost,
-  upsertHost,
-  writeHostSecret,
+  releaseHostProxyPort,
+  reserveHostProxyPort,
+  retireHostMembership,
   type AttachRef,
-  type HostRecord,
-} from './registry.js';
+  type EnrollmentHostRecord,
+  type HostProxyPortReservation,
+} from '@myco/host/registry.js';
 
 /** The member userspace-tailscaled LaunchAgent label PREFIX. The per-host label
  *  appends a short host tag (`memberTailscaledLabel`) so each joined host gets its
- *  own agent — distinct from Task 2.1's root labels (`com.tailscale.tailscaled` /
- *  `co.goondocks.myco-tailscaled`) so a machine could be both without a collision. */
+ *  own agent — distinct from the root labels (`com.tailscale.tailscaled` /
+ *  `co.goondocks.myco-tailscaled`) so a machine can be both without a collision. */
 export const MEMBER_TAILSCALED_LABEL_PREFIX = 'co.goondocks.myco-member-tailscaled';
 
 /** This host's userspace-tailscaled LaunchAgent label. */
@@ -100,7 +122,7 @@ export function memberTailscaledLabel(hostId: string): string {
 export const MEMBER_TAILSCALED_SOCKET_TIMEOUT_MS = 5000;
 
 // ---------------------------------------------------------------------------
-// Enrollment seam (Task 2.4 provides the real host-side endpoint)
+// Enrollment seam
 // ---------------------------------------------------------------------------
 
 /** What the host tells a member at enrollment: its identity, its overlay address
@@ -113,17 +135,20 @@ export interface HostEnrollment {
   protocol_version: number;
   /** The shared host serve-bearer, stored under {@link HOST_BEARER_SECRET}. */
   bearer: string;
-  /** The host's self-reported served Grove (protocol v2). `undefined` when the
-   *  host predates served-grove designation — its enrollment response carried
-   *  no `served_grove_id` field at all (distinct from the host reporting one
-   *  explicitly as absent). Persisted onto the {@link HostRecord} at join
-   *  (step 7) and later consulted by `attachCommand` as the ONE grove source
-   *  for a new attach ref — no `--grove` flag. */
-  served_grove_id?: string;
-  /** Projects the host pre-associates at enrollment (usually empty — attach is a
-   *  separate step, done via `myco attach` in v1, a UI in Phase E). Preserved onto
-   *  the record if present. */
-  projects?: AttachRef[];
+  /** The host's self-reported served Grove. `undefined` means the response
+   *  omitted `served_grove_id`; `null` means the host explicitly has no
+   *  designation. Join persists it for `attachCommand` to use as the Grove
+   *  source for a new attach ref. */
+  served_grove_id?: string | null;
+  enrollment_receipt?: {
+    enrollment_nonce: string;
+    host_id: string;
+    protocol_version: number;
+  };
+}
+
+export interface EnrollmentResult extends HostEnrollment {
+  projects?: unknown;
 }
 
 /** Everything the enrollment step knows after the overlay join. */
@@ -148,6 +173,8 @@ export interface EnrollmentContext {
   /** THIS host's local HTTP-CONNECT proxy port — the tunnel the real enroll client
    *  dials through (the same `proxy_port` the routing proxy later uses). */
   proxyPort?: number;
+  /** Stable, durable request correlation for repeatable enrollment. */
+  enrollmentNonce?: string;
   // --- manual bridge (see stubEnrollmentClient) ---
   bearer?: string;
   protocolVersion?: number;
@@ -156,7 +183,7 @@ export interface EnrollmentContext {
 
 export interface EnrollmentClient {
   /** Obtain the host serve-bearer + overlay address over the overlay. */
-  enroll(ctx: EnrollmentContext): Promise<HostEnrollment>;
+  enroll(ctx: EnrollmentContext): Promise<EnrollmentResult>;
 }
 
 /**
@@ -169,11 +196,11 @@ export interface EnrollmentClient {
  * fabricated record — no credential is ever invented.
  *
  * The DEFAULT path is {@link realEnrollmentClient}, which fetches the bearer over the
- * overlay (spec §8), so the operator never has to hand the secret bearer out-of-band.
+ * overlay, so the operator never has to hand the secret bearer out-of-band.
  */
 export const stubEnrollmentClient: EnrollmentClient = {
   async enroll(ctx: EnrollmentContext): Promise<HostEnrollment> {
-    if (!ctx.overlayAddress || !ctx.bearer) {
+    if (!ctx.overlayAddress || ctx.bearer === undefined) {
       throw new Error(
         'The manual enrollment bridge requires BOTH --overlay-address and --bearer. '
         + 'Omit --bearer to enroll automatically over the overlay (the default), or pass both:\n'
@@ -191,20 +218,137 @@ export const stubEnrollmentClient: EnrollmentClient = {
   },
 };
 
-/** The wire response the host enrollment endpoint returns (mirrors the host-side
- *  `buildHostEnrollmentPayload`). host_id/label may be empty on a host enabled before
- *  Task 2.4 wrote them, so the client falls back to what it already knows.
- *  `served_grove_id` is `undefined` when the KEY is absent (a pre-v2 host that
- *  never sends the field), `null` when a v2 host reports it explicitly as
- *  undesignated — both collapse to "no grove source" on {@link HostEnrollment}. */
+/** The wire response the host enrollment endpoint returns. */
 interface HostEnrollmentResponse {
-  host_id?: string;
-  label?: string;
-  overlay_address?: string;
-  protocol_version?: number;
-  bearer?: string;
+  host_id: string;
+  label: string;
+  overlay_address: string;
+  protocol_version: number;
+  bearer: string;
   served_grove_id?: string | null;
-  projects?: AttachRef[];
+  enrollment_receipt?: {
+    enrollment_nonce: string;
+    host_id: string;
+    protocol_version: number;
+  };
+}
+
+function enrollmentFailure(message: string): Error {
+  return codedMembershipError('host_enroll_failed', message);
+}
+
+function requiredEnrollmentString(value: Record<string, unknown>, field: string): string {
+  const candidate = value[field];
+  if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+    throw enrollmentFailure(`Host enrollment response has an invalid ${field}.`);
+  }
+  return candidate;
+}
+
+function enrollmentIdentity(
+  value: Record<string, unknown>,
+  field: 'host_id' | 'label',
+  fallback: string,
+): string {
+  const candidate = value[field];
+  if (candidate === undefined || (typeof candidate === 'string' && candidate.trim().length === 0)) {
+    return fallback;
+  }
+  if (typeof candidate !== 'string') {
+    throw enrollmentFailure(`Host enrollment response has an invalid ${field}.`);
+  }
+  return candidate;
+}
+
+function isCanonicalOverlayAuthority(value: string): boolean {
+  const { host, port } = splitOverlayAddress(value);
+  return isOverlayRangeAddress(host)
+    && Number.isSafeInteger(port)
+    && port >= 1
+    && port <= 65535
+    && value === `${host}:${port}`;
+}
+
+/** Validate all wire values before they reach enrollment, reachability, or disk. */
+function parseEnrollmentResponse(
+  value: unknown,
+  identityFallback: { hostId: string; label: string; enrollmentNonce?: string },
+): HostEnrollmentResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw enrollmentFailure('Host enrollment returned a response Myco could not read.');
+  }
+  const response = value as Record<string, unknown>;
+  if (Object.hasOwn(response, 'projects')
+    && (!Array.isArray(response.projects) || response.projects.length !== 0)) {
+    throw enrollmentFailure('Host enrollment cannot assign project attachments.');
+  }
+
+  const bearer = requiredEnrollmentString(response, 'bearer');
+  try {
+    assertValidSecretEntry(HOST_BEARER_SECRET, bearer);
+  } catch (error) {
+    if (!(error instanceof InvalidSecretValueError)) throw error;
+    throw enrollmentFailure('Host enrollment response has an invalid bearer.');
+  }
+
+  const protocolVersion = response.protocol_version;
+  if (typeof protocolVersion !== 'number'
+    || !Number.isSafeInteger(protocolVersion)
+    || protocolVersion < HOST_MIN_COMPAT_VERSION
+    || protocolVersion > HOST_PROTOCOL_VERSION) {
+    throw enrollmentFailure('Host enrollment response has an invalid protocol_version.');
+  }
+
+  const servedGroveId = response.served_grove_id;
+  if (servedGroveId !== undefined && servedGroveId !== null
+    && (typeof servedGroveId !== 'string' || !isGroveEraId(servedGroveId, 'grove'))) {
+    throw enrollmentFailure('Host enrollment response has an invalid served_grove_id.');
+  }
+
+  const overlayAddress = requiredEnrollmentString(response, 'overlay_address');
+  if (!isCanonicalOverlayAuthority(overlayAddress)) {
+    throw enrollmentFailure('Host enrollment response has an invalid overlay_address.');
+  }
+
+  const hostId = enrollmentIdentity(response, 'host_id', identityFallback.hostId);
+  let enrollmentReceipt: HostEnrollmentResponse['enrollment_receipt'];
+  if (response.enrollment_receipt !== undefined) {
+    const receipt = response.enrollment_receipt;
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+      throw enrollmentFailure('Host enrollment response has an invalid enrollment_receipt.');
+    }
+    const fields = receipt as Record<string, unknown>;
+    if (typeof fields.enrollment_nonce !== 'string'
+      || fields.enrollment_nonce !== identityFallback.enrollmentNonce
+      || fields.host_id !== hostId
+      || fields.protocol_version !== protocolVersion) {
+      throw enrollmentFailure('Host enrollment response has a mismatched enrollment_receipt.');
+    }
+    enrollmentReceipt = {
+      enrollment_nonce: fields.enrollment_nonce,
+      host_id: fields.host_id,
+      protocol_version: fields.protocol_version,
+    };
+  }
+
+  return {
+    host_id: hostId,
+    label: enrollmentIdentity(response, 'label', identityFallback.label),
+    overlay_address: overlayAddress,
+    protocol_version: protocolVersion,
+    bearer,
+    ...(Object.hasOwn(response, 'served_grove_id')
+      ? { served_grove_id: servedGroveId as string | null }
+      : {}),
+    ...(enrollmentReceipt ? { enrollment_receipt: enrollmentReceipt } : {}),
+  };
+}
+
+function validateEnrollment(
+  enrollment: EnrollmentResult,
+  identityFallback: { hostId: string; label: string; enrollmentNonce?: string },
+): EnrollmentResult {
+  return parseEnrollmentResponse(enrollment, identityFallback);
 }
 
 /** How the real client puts an enrollment request on the wire. Injectable so tests
@@ -256,11 +400,11 @@ export const connectProxyEnrollTransport: EnrollmentTransport = ({ overlayAddres
 };
 
 /**
- * The real enrollment client (Task 2.4) — the DEFAULT `join` path. The member is
+ * The real enrollment client is the default `join` path. The member is
  * already on the overlay, so this POSTs to the host's enrollment endpoint
  * ({@link HOST_ENROLL_ROUTE}) through the local proxy and returns the parsed
  * {@link HostEnrollment}. Enrollment is the ONE bearer-exempt overlay route (a member
- * obtains the bearer HERE); overlay membership is its trust boundary (spec §8/§9).
+ * obtains the bearer here); overlay membership is its trust boundary.
  *
  * The version header rides along so the host's version gate can reject a skewed
  * member at join (409 → a loud, non-retryable error) rather than after it stores a
@@ -269,7 +413,7 @@ export const connectProxyEnrollTransport: EnrollmentTransport = ({ overlayAddres
  */
 export function createEnrollmentClient(transport: EnrollmentTransport = connectProxyEnrollTransport): EnrollmentClient {
   return {
-    async enroll(ctx: EnrollmentContext): Promise<HostEnrollment> {
+    async enroll(ctx: EnrollmentContext): Promise<EnrollmentResult> {
       if (!ctx.overlayAddress?.trim()) {
         throw new Error(
           'Automatic enrollment needs the host overlay address to dial. Pass it (a non-secret the operator '
@@ -280,7 +424,11 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
       if (ctx.proxyPort === undefined) {
         throw new Error('Internal: enrollment requires the local proxy port (proxy_port) to dial the host over the overlay.');
       }
-      const body = JSON.stringify({ member_hostname: ctx.memberHostname, member_overlay_ip: ctx.memberOverlayIp });
+      const body = JSON.stringify({
+        member_hostname: ctx.memberHostname,
+        member_overlay_ip: ctx.memberOverlayIp,
+        enrollment_nonce: ctx.enrollmentNonce,
+      });
       const { status, body: responseBody } = await transport({
         overlayAddress: ctx.overlayAddress.trim(),
         proxyPort: ctx.proxyPort,
@@ -308,21 +456,14 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
         const code = status === 401 || status === 403 ? 'host_enroll_rejected' : 'host_enroll_failed';
         throw codedMembershipError(code, `Host enrollment failed (HTTP ${status}).`);
       }
-      let parsed: HostEnrollmentResponse;
-      try { parsed = JSON.parse(responseBody) as HostEnrollmentResponse; }
+      let parsed: unknown;
+      try { parsed = JSON.parse(responseBody); }
       catch { throw codedMembershipError('host_enroll_failed', 'Host enrollment returned a response Myco could not read.'); }
-      if (!parsed.bearer || !parsed.overlay_address) {
-        throw codedMembershipError('host_enroll_failed', 'Host enrollment response is missing the bearer or overlay_address — cannot complete join.');
-      }
-      return {
-        host_id: parsed.host_id || ctx.hostId,
-        label: parsed.label || ctx.label || ctx.hostRef,
-        overlay_address: parsed.overlay_address,
-        protocol_version: parsed.protocol_version ?? ctx.protocolVersion ?? HOST_PROTOCOL_VERSION,
-        bearer: parsed.bearer,
-        served_grove_id: parsed.served_grove_id ?? undefined,
-        projects: parsed.projects,
-      };
+      return parseEnrollmentResponse(parsed, {
+        hostId: ctx.hostId,
+        label: ctx.label?.trim() || ctx.hostRef,
+        enrollmentNonce: ctx.enrollmentNonce,
+      });
     },
   };
 }
@@ -337,8 +478,8 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
 
 /**
  * Bounded retry-with-backoff around a single {@link EnrollmentClient.enroll} call
- * (design spec §4, step 5) — ONLY the transport call is retried, nothing before or
- * after it in `joinHost`. {@link ENROLLMENT_RETRY_BACKOFFS_MS} bounds it at 3
+ * — only the transport call is retried, nothing before or after it in
+ * `joinHost`. {@link ENROLLMENT_RETRY_BACKOFFS_MS} bounds it at 3
  * attempts total (2s then 4s between them, none before the first or after the
  * last); the final attempt's failure is rethrown UNCHANGED so the caller sees the
  * same error a non-retrying `enroll` would have thrown.
@@ -348,7 +489,7 @@ async function enrollWithRetry(
   ctx: EnrollmentContext,
   sleep: (ms: number) => Promise<void>,
   log: (message: string) => void,
-): Promise<HostEnrollment> {
+): Promise<EnrollmentResult> {
   const backoffs = ENROLLMENT_RETRY_BACKOFFS_MS;
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -413,6 +554,7 @@ export interface MemberOverlayDeps {
    *  fake). Default a plain `setTimeout` wrapped as a Promise. */
   sleep?: (ms: number) => Promise<void>;
   logger?: (message: string) => void;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 export interface JoinResult {
@@ -438,196 +580,310 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     throw new Error('join requires --key <one-time-key> — the single-use pre-auth key the host operator minted.');
   }
 
+  const hostId = (options.hostId ?? options.hostRef).trim();
+  return withHostOperationLock(
+    hostId,
+    'join',
+    () => joinHostLocked(options, deps, hostId),
+    deps.lockNamespace ?? nativePerUserLockNamespace,
+  );
+}
+
+async function joinHostLocked(
+  options: JoinOptions,
+  deps: MemberOverlayDeps,
+  hostId: string,
+): Promise<JoinResult> {
   const log = deps.logger ?? ((m: string) => console.log(m));
   const notes: string[] = [];
   const runner = deps.runner ?? realCommandRunner;
   const fetcher = deps.fetcher ?? realFetcher;
   const platform = deps.platform ?? process.platform;
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const target = resolveOverlayTarget(platform, deps.arch ?? process.arch);
   const serviceManager = deps.serviceManager ?? getServiceManager({ platform });
   // Default to the REAL client (fetches the bearer over the overlay). An explicit
   // --bearer means the operator already holds it and wants the manual bridge (no
   // HTTP handshake); tests inject their own client via deps.
-  const enrollmentClient = deps.enrollmentClient ?? (options.bearer?.trim() ? stubEnrollmentClient : realEnrollmentClient);
+  const enrollmentClient = deps.enrollmentClient ?? (options.bearer !== undefined ? stubEnrollmentClient : realEnrollmentClient);
   const hostname = sanitizeHostname(options.hostname ?? os.hostname());
 
   // Canonical per-host key: everything about THIS host's tailscaled instance
   // (socket, statedir, label, proxy port, record) is keyed on it.
-  const hostId = (options.hostId ?? options.hostRef).trim();
   const socketPath = deps.socketPath ?? resolveMemberTailscaledSocketPath(hostId);
   const stateDir = deps.stateDir ?? resolveMemberTailscaledStateDir(hostId);
   const binDir = deps.binDir ?? resolveMemberBinDir();
   const label = memberTailscaledLabel(hostId);
-  // Persisted proxy_port: reuse THIS host's existing record's port (stable across
-  // restarts), else allocate the lowest free port not used by another host.
-  const proxyPort = deps.proxyPort ?? allocateMemberProxyPort(hostId);
   const overlayDir = resolveMemberOverlayDir();
-
   assertSocketPathFits(socketPath, platform);
 
-  // 1. Provision the Tailscale client + daemon (shared across hosts; NO headscale).
-  log(`Provisioning Tailscale for ${target.os}/${target.arch}…`);
-  const tailscale = await provisionTailscaleBinaries({ target, fetcher, runner, binDir, brewBinDirs: deps.brewBinDirs, logger: log });
-
-  // 2. Supervise THIS host's userspace tailscaled as a per-user LaunchAgent (NO root).
-  const spec = buildMemberTailscaledSpec({
-    hostId,
-    executable: tailscale.tailscaledBin,
-    socketPath,
-    stateDir,
-    proxyPort,
-    workingDir: overlayDir,
-    logDir: path.join(overlayDir, 'logs'),
-  });
-  const install = await serviceManager.install(spec);
-  const status = await serviceManager.status(label);
-  if (!status.running) {
-    await serviceManager.start(label);
-    log(`member tailscaled ${install.changed ? 'installed' : 'present'} + started (user LaunchAgent ${label}).`);
-  } else {
-    log(`member tailscaled already running (user LaunchAgent ${label}).`);
-  }
-
-  // 3. Wait for the freshly-started tailscaled to bind its socket before we drive
-  //    the CLI against it (the start→up race). Bounded, then a clear error.
-  const waitForSocket = deps.waitForSocket ?? defaultWaitForSocket;
-  if (!(await waitForSocket(socketPath))) {
+  let proxyPortReservation = reserveHostProxyPort(hostId, deps.proxyPort, lockNamespace);
+  if (proxyPortReservation.phase === 'teardown_pending') {
     throw new Error(
-      `The userspace tailscaled socket ${socketPath} did not appear within ${MEMBER_TAILSCALED_SOCKET_TIMEOUT_MS}ms. `
-      + `The LaunchAgent ${label} may have failed to start — check its logs (${path.join(overlayDir, 'logs')}) and retry.`,
+      `Host ${hostId} has an enrollment teardown pending; run \`myco leave ${hostId}\` `
+      + 'to finish the verified cleanup before joining again.',
     );
   }
+  const proxyPort = proxyPortReservation.proxyPort;
+  let enrollmentCommitted = proxyPortReservation.recoveredCommit;
+  let servicePreexisting: boolean | null = null;
+  let expectedServiceSpec: ServiceSpec | null = null;
 
-  // 4. Join THIS host's tailnet — but only if THIS host's node isn't already on it.
-  //    Keyed on THIS host's socket (not "any overlay IP"), so a second host on a
-  //    different tailnet is not mistaken for already-joined. The one-time key is
-  //    single-use, so a converging re-join must NOT re-`up`.
-  const resolveIp = deps.resolveMemberOverlayIp ?? defaultResolveMemberOverlayIp;
-  let memberOverlayIp = await resolveIp(runner, tailscale.tailscaleBin, socketPath);
-  if (memberOverlayIp) {
-    log(`this host's node already on the overlay at ${memberOverlayIp} — skipping the one-time-key join.`);
-  } else {
-    if (!options.serverUrl?.trim()) {
-      throw new Error("join requires --server-url <headscale-url> to join this host's overlay (its tailscaled is not on the tailnet yet).");
+  try {
+    // 1. Provision the Tailscale client + daemon (shared across hosts; NO headscale).
+    log(`Provisioning Tailscale for ${target.os}/${target.arch}…`);
+    const tailscale = await provisionTailscaleBinaries({ target, fetcher, runner, binDir, brewBinDirs: deps.brewBinDirs, logger: log });
+
+    if (proxyPortReservation.recoveredCommit) {
+      const waitForSocket = deps.waitForSocket ?? defaultWaitForSocket;
+      if (!(await waitForSocket(socketPath))) {
+        throw new Error(
+          `Host ${hostId} is enrolled, but its tailscaled socket ${socketPath} is unavailable. `
+          + 'Restore the existing member tailscaled service before retrying.',
+        );
+      }
+      const resolveIp = deps.resolveMemberOverlayIp ?? defaultResolveMemberOverlayIp;
+      const memberOverlayIp = await resolveIp(runner, tailscale.tailscaleBin, socketPath);
+      if (!memberOverlayIp || !isOverlayRangeAddress(memberOverlayIp)) {
+        throw new Error(
+          `Host ${hostId} is enrolled, but its member overlay IP could not be resolved from ${socketPath}.`,
+        );
+      }
+      const record = getHost(hostId, lockNamespace);
+      if (!record
+        || record.enrollment_generation !== proxyPortReservation.generation
+        || record.proxy_port !== proxyPort) {
+        throw new Error(`Host ${hostId} committed membership changed during join recovery.`);
+      }
+      const reachProbe = deps.checkHostReachable ?? defaultCheckHostReachable;
+      const hostReachable = await reachProbe(record.overlay_address, proxyPort).catch(() => false);
+      if (!hostReachable) notes.push('host daemon not confirmed reachable over the overlay');
+      return {
+        hostId,
+        overlayAddress: record.overlay_address,
+        proxyPort,
+        memberOverlayIp,
+        hostReachable,
+        created: proxyPortReservation.baseGeneration === null,
+        notes,
+      };
     }
-    log('Joining the overlay with the one-time key…');
-    const up = await runner.run(tailscale.tailscaleBin, [
-      '--socket', socketPath,
-      'up',
-      '--login-server', options.serverUrl.trim(),
-      '--auth-key', options.key,
-      '--hostname', hostname,
-    ]);
-    if (up.exitCode !== 0) {
+
+    // 2. Supervise THIS host's userspace tailscaled as a per-user LaunchAgent (NO root).
+    const spec = buildMemberTailscaledSpec({
+      hostId,
+      executable: tailscale.tailscaledBin,
+      socketPath,
+      stateDir,
+      proxyPort,
+      workingDir: overlayDir,
+      logDir: path.join(overlayDir, 'logs'),
+    });
+    expectedServiceSpec = spec;
+    const beforeInstall = await serviceManager.status(label);
+    servicePreexisting = beforeInstall.installed || beforeInstall.running;
+    proxyPortReservation = advanceHostEnrollmentPhase(
+      proxyPortReservation,
+      'service_preparing',
+      { preexisting: servicePreexisting, label },
+      lockNamespace,
+    );
+    const install = await serviceManager.install(spec);
+    const status = await serviceManager.status(label);
+    if (!status.running) {
+      await serviceManager.start(label);
+      log(`member tailscaled ${install.changed ? 'installed' : 'present'} + started (user LaunchAgent ${label}).`);
+    } else {
+      log(`member tailscaled already running (user LaunchAgent ${label}).`);
+    }
+    proxyPortReservation = advanceHostEnrollmentPhase(
+      proxyPortReservation,
+      'service_ready',
+      undefined,
+      lockNamespace,
+    );
+    // 3. Wait for the freshly-started tailscaled to bind its socket before we drive
+    //    the CLI against it (the start→up race). Bounded, then a clear error.
+    const waitForSocket = deps.waitForSocket ?? defaultWaitForSocket;
+    if (!(await waitForSocket(socketPath))) {
       throw new Error(
-        `\`tailscale up\` failed (exit ${up.exitCode}): ${up.stdout.trim()}. `
-        + 'If the tailscaled socket was not ready the agent may still be starting — retry. '
-        + 'If it reports "authkey already used", mint a fresh one-time key on the host and retry.',
+        `The userspace tailscaled socket ${socketPath} did not appear within ${MEMBER_TAILSCALED_SOCKET_TIMEOUT_MS}ms. `
+        + `The LaunchAgent ${label} may have failed to start — check its logs (${path.join(overlayDir, 'logs')}) and retry.`,
       );
     }
-    memberOverlayIp = await resolveIp(runner, tailscale.tailscaleBin, socketPath);
-  }
 
-  if (!memberOverlayIp || !isOverlayRangeAddress(memberOverlayIp)) {
-    throw new Error(
-      `Could not resolve a 100.64.0.0/10 overlay IP for this member on host ${hostId} after join (got ${JSON.stringify(memberOverlayIp)}). `
-      + 'The overlay join may not have completed — check the tailscaled LaunchAgent logs and retry.',
+    // 4. Join THIS host's tailnet — but only if THIS host's node isn't already on it.
+    //    Keyed on THIS host's socket (not "any overlay IP"), so a second host on a
+    //    different tailnet is not mistaken for already-joined. The one-time key is
+    //    single-use, so a converging re-join must NOT re-`up`.
+    const resolveIp = deps.resolveMemberOverlayIp ?? defaultResolveMemberOverlayIp;
+    let memberOverlayIp = await resolveIp(runner, tailscale.tailscaleBin, socketPath);
+    if (memberOverlayIp) {
+      log(`this host's node already on the overlay at ${memberOverlayIp} — skipping the one-time-key join.`);
+    } else {
+      if (!options.serverUrl?.trim()) {
+        throw new Error("join requires --server-url <headscale-url> to join this host's overlay (its tailscaled is not on the tailnet yet).");
+      }
+      log('Joining the overlay with the one-time key…');
+      proxyPortReservation = advanceHostEnrollmentPhase(
+        proxyPortReservation,
+        'overlay_joining',
+        undefined,
+        lockNamespace,
+      );
+      const up = await runner.run(tailscale.tailscaleBin, [
+        '--socket', socketPath,
+        'up',
+        '--login-server', options.serverUrl.trim(),
+        '--auth-key', options.key,
+        '--hostname', hostname,
+      ]);
+      if (up.exitCode !== 0) {
+        throw new Error(
+          `\`tailscale up\` failed (exit ${up.exitCode}): ${up.stdout.trim()}. `
+          + 'If the tailscaled socket was not ready the agent may still be starting — retry. '
+          + 'If it reports "authkey already used", mint a fresh one-time key on the host and retry.',
+        );
+      }
+      memberOverlayIp = await resolveIp(runner, tailscale.tailscaleBin, socketPath);
+    }
+
+    if (!memberOverlayIp || !isOverlayRangeAddress(memberOverlayIp)) {
+      throw new Error(
+        `Could not resolve a 100.64.0.0/10 overlay IP for this member on host ${hostId} after join (got ${JSON.stringify(memberOverlayIp)}). `
+        + 'The overlay join may not have completed — check the tailscaled LaunchAgent logs and retry.',
+      );
+    }
+    proxyPortReservation = advanceHostEnrollmentPhase(
+      proxyPortReservation,
+      'overlay_joined',
+      undefined,
+      lockNamespace,
     );
+    log(`Member overlay IP on host ${hostId}: ${memberOverlayIp}`);
+
+    // Obtain the host overlay address and serve-bearer with bounded retry for
+    // transient overlay settling.
+    const sleep = deps.sleep ?? defaultSleep;
+    proxyPortReservation = advanceHostEnrollmentPhase(
+      proxyPortReservation,
+      'enrolling',
+      undefined,
+      lockNamespace,
+    );
+    const enrollment = validateEnrollment(await enrollWithRetry(enrollmentClient, {
+      hostId,
+      hostRef: options.hostRef.trim(),
+      serverUrl: options.serverUrl?.trim(),
+      oneTimeKey: options.key,
+      memberHostname: hostname,
+      memberOverlayIp,
+      overlayAddress: options.overlayAddress,
+      proxyPort,
+      enrollmentNonce: proxyPortReservation.enrollmentNonce,
+      bearer: options.bearer,
+      protocolVersion: options.protocolVersion,
+      label: options.label?.trim(),
+    }, sleep, log), {
+      hostId,
+      label: options.label?.trim() || options.hostRef.trim(),
+      enrollmentNonce: proxyPortReservation.enrollmentNonce,
+    });
+
+    // 6. Best-effort reachability probe through THIS host's proxy port (never fatal).
+    const reachProbe = deps.checkHostReachable ?? defaultCheckHostReachable;
+    const hostReachable = await reachProbe(enrollment.overlay_address, proxyPort).catch(() => false);
+    log(hostReachable
+      ? `Host daemon reachable over the overlay via the local proxy (127.0.0.1:${proxyPort}).`
+      : 'Host daemon not confirmed reachable yet — verify with `myco doctor` after the overlay settles.');
+    if (!hostReachable) notes.push('host daemon not confirmed reachable over the overlay');
+
+    // Keep the operator-selected host ID as the record and service key; report
+    // a self-reported mismatch without re-keying.
+    if (enrollment.host_id && enrollment.host_id !== hostId) {
+      const warning =
+        `Host self-reported id "${enrollment.host_id}" differs from the typed id "${hostId}" — `
+        + `keeping "${hostId}" as the host record key (Myco never re-keys a joined host silently). `
+        + 'Verify this is the host you meant to join.';
+      notes.push(warning);
+      log(`WARNING: ${warning}`);
+    }
+
+    // 8. Persist host metadata and bearer through the registry transaction.
+    const record: EnrollmentHostRecord = {
+      host_id: hostId,
+      label: enrollment.label,
+      overlay_address: enrollment.overlay_address,
+      protocol_version: enrollment.protocol_version,
+      ...(Object.hasOwn(enrollment, 'served_grove_id')
+        ? { served_grove_id: enrollment.served_grove_id }
+        : {}),
+      created_at: new Date().toISOString(),
+    };
+    const persisted = persistEnrollmentMembership(
+      record,
+      enrollment.bearer,
+      proxyPortReservation,
+      lockNamespace,
+    );
+    enrollmentCommitted = true;
+    log(`${persisted.created ? 'Wrote' : 'Updated'} host record ${hostId} (proxy_port=${proxyPort}).`);
+
+    return {
+      hostId,
+      overlayAddress: enrollment.overlay_address,
+      proxyPort,
+      memberOverlayIp,
+      hostReachable,
+      created: persisted.created,
+      notes,
+    };
+  } catch (error) {
+    const preOverlayPhase = proxyPortReservation.phase === 'reserved'
+      || proxyPortReservation.phase === 'service_preparing'
+      || proxyPortReservation.phase === 'service_ready';
+    const automaticTeardownEligible = !enrollmentCommitted
+      && proxyPortReservation.baseGeneration === null
+      && proxyPortReservation.serviceOwned
+      && preOverlayPhase;
+    if (automaticTeardownEligible) {
+      try {
+        const installed = await serviceManager.inspect(label);
+        if (!expectedServiceSpec
+          || !installed
+          || !installedCommandMatchesSpec(installed, expectedServiceSpec)) {
+          throw new Error(
+            `Installed service ${label} no longer matches this enrollment generation.`,
+          );
+        }
+        await serviceManager.uninstall(label);
+        await withLoopbackPortReleaseProof(proxyPortReservation.proxyPort, async (proof) => {
+          abandonHostEnrollment(proxyPortReservation, proof, lockNamespace);
+        });
+        try { fs.rmSync(socketPath, { force: true }); } catch { /* stale socket cleanup is best-effort */ }
+      } catch (cleanupError) {
+        try {
+          markHostEnrollmentTeardownPending(proxyPortReservation, lockNamespace);
+        } catch { /* original state stays diagnosable */ }
+        throw new AggregateError(
+          [error, cleanupError],
+          `Join failed and the uncommitted tailscaled instance for host ${hostId} could not be removed; its proxy-port claim remains reserved.`,
+        );
+      }
+    } else if (!enrollmentCommitted
+      && proxyPortReservation.phase === 'reserved'
+      && servicePreexisting === null) {
+      try {
+        releaseHostProxyPort(proxyPortReservation, lockNamespace);
+      } catch (releaseError) {
+        throw new AggregateError(
+          [error, releaseError],
+          `Join failed and the proxy-port claim for host ${hostId} could not be released.`,
+        );
+      }
+    }
+    throw error;
   }
-  log(`Member overlay IP on host ${hostId}: ${memberOverlayIp}`);
-
-  // 5. Enroll: obtain the host's overlay address + serve-bearer (Task 2.4 seam).
-  //    Bounded retry-with-backoff (design spec §4) — a transient overlay/DERP-
-  //    settling failure shouldn't burn the whole join.
-  const sleep = deps.sleep ?? defaultSleep;
-  const enrollment = await enrollWithRetry(enrollmentClient, {
-    hostId,
-    hostRef: options.hostRef.trim(),
-    serverUrl: options.serverUrl?.trim(),
-    oneTimeKey: options.key,
-    memberHostname: hostname,
-    memberOverlayIp,
-    overlayAddress: options.overlayAddress?.trim(),
-    proxyPort,
-    bearer: options.bearer?.trim(),
-    protocolVersion: options.protocolVersion,
-    label: options.label?.trim(),
-  }, sleep, log);
-
-  // 6. Best-effort reachability probe through THIS host's proxy port (never fatal).
-  const reachProbe = deps.checkHostReachable ?? defaultCheckHostReachable;
-  const hostReachable = await reachProbe(enrollment.overlay_address, proxyPort).catch(() => false);
-  log(hostReachable
-    ? `Host daemon reachable over the overlay via the local proxy (127.0.0.1:${proxyPort}).`
-    : 'Host daemon not confirmed reachable yet — verify with `myco doctor` after the overlay settles.');
-  if (!hostReachable) notes.push('host daemon not confirmed reachable over the overlay');
-
-  // 7. host_id reconciliation — WARN, never re-key (server-mode design spec §4).
-  //    The host's self-reported id can differ from the operator-typed one (a
-  //    typo, or a host renamed since an earlier affiliation hint); adopting it
-  //    would require re-keying this host's already-provisioned per-host
-  //    tailscaled instance (socket/statedir/label, all derived from the TYPED
-  //    id above) before enrollment ever ran — out of scope for v1. The typed
-  //    id stays the record key unconditionally; a mismatch only ever produces
-  //    a note, never a silent rewrite.
-  if (enrollment.host_id && enrollment.host_id !== hostId) {
-    const warning =
-      `Host self-reported id "${enrollment.host_id}" differs from the typed id "${hostId}" — `
-      + `keeping "${hostId}" as the host record key (Myco never re-keys a joined host silently). `
-      + 'Verify this is the host you meant to join.';
-    notes.push(warning);
-    log(`WARNING: ${warning}`);
-  }
-
-  // 8. Write THIS host's HostRecord (+ bearer). Merge onto any existing record so a
-  //    converging re-join preserves attached projects + created_at. served_grove_id
-  //    falls back to the existing record's value when this join's enrollment didn't
-  //    report one (e.g. the manual bridge, which has no host metadata) — a real
-  //    designation, once learned, is never clobbered by an enrollment that simply
-  //    didn't carry it.
-  const existing = getHost(hostId);
-  const record: HostRecord = {
-    host_id: hostId,
-    label: enrollment.label,
-    overlay_address: enrollment.overlay_address,
-    proxy_port: proxyPort,
-    protocol_version: enrollment.protocol_version,
-    served_grove_id: enrollment.served_grove_id ?? existing?.served_grove_id,
-    created_at: existing?.created_at ?? new Date().toISOString(),
-    projects: existing?.projects ?? enrollment.projects ?? [],
-  };
-  upsertHost(record);
-  // The bearer NEVER lands in host.json — only in the record's secrets.env.
-  writeHostSecret(hostId, HOST_BEARER_SECRET, enrollment.bearer);
-  log(`${existing ? 'Updated' : 'Wrote'} host record ${hostId} (proxy_port=${proxyPort}).`);
-
-  return {
-    hostId,
-    overlayAddress: enrollment.overlay_address,
-    proxyPort,
-    memberOverlayIp,
-    hostReachable,
-    created: !existing,
-    notes,
-  };
-}
-
-/**
- * Allocate the persisted HTTP-CONNECT listener port for a host. THIS host's
- * existing record's port is reused (stable across restarts — the proxy's dial
- * must not move); otherwise the lowest port at/above the base not already used by
- * another host record is chosen. Persisting the choice on the record is what keeps
- * every host's dial target stable while guaranteeing per-host distinctness.
- */
-export function allocateMemberProxyPort(hostId: string): number {
-  const existing = getHost(hostId);
-  if (existing?.proxy_port) return existing.proxy_port;
-  const used = new Set(
-    readHostRegistry().map((r) => r.proxy_port).filter((p): p is number => typeof p === 'number'),
-  );
-  let port = MEMBER_OVERLAY_PROXY_PORT_BASE;
-  while (used.has(port)) port += 1;
-  return port;
 }
 
 // ---------------------------------------------------------------------------
@@ -645,43 +901,107 @@ export interface LeaveResult {
  * Detach this machine from a host: tear down ONLY this host's tailscaled instance
  * (its LaunchAgent + socket), then remove its HostRecord (+ bearer + attach refs +
  * statedir). Every OTHER joined host — its own tailscaled, record, and bearer — is
- * untouched. Idempotent: an unknown host is a no-op, and an absent LaunchAgent /
- * socket tolerates the miss.
+ * untouched. An interrupted pre-enrollment join is also removed when its durable
+ * host directory remains. Idempotent: a host with no record or provisioning
+ * state is a no-op, and an absent LaunchAgent / socket tolerates the miss.
  */
 export async function leaveHost(hostRef: string, deps: MemberOverlayDeps = {}): Promise<LeaveResult> {
   if (!hostRef?.trim()) throw new Error('leave requires a <host> — the host_id to detach from.');
+  const hostId = hostRef.trim();
+  return withHostOperationLock(
+    hostId,
+    'leave',
+    (lease) => leaveHostLocked(hostId, deps, lease),
+    deps.lockNamespace ?? nativePerUserLockNamespace,
+  );
+}
+
+function installedMemberProxyPort(
+  args: readonly string[],
+  expectedStateDir: string,
+): number | null {
+  if (!args.includes(`--statedir=${expectedStateDir}`)) return null;
+  const listeners = args
+    .filter((arg) => arg.startsWith('--outbound-http-proxy-listen='))
+    .map((arg) => arg.slice('--outbound-http-proxy-listen='.length));
+  if (listeners.length !== 1) return null;
+  const match = listeners[0]!.match(/^localhost:([0-9]+)$/);
+  if (!match) return null;
+  const port = Number(match[1]);
+  return Number.isSafeInteger(port) && port >= 1 && port <= 65_535 ? port : null;
+}
+
+function installedCommandMatchesSpec(
+  installed: InstalledServiceCommand,
+  expected: ServiceSpec,
+): boolean {
+  return installed.executable === expected.executable
+    && installed.args.length === expected.args.length
+    && installed.args.every((arg, index) => arg === expected.args[index]);
+}
+
+async function leaveHostLocked(
+  hostId: string,
+  deps: MemberOverlayDeps,
+  lease: HostOperationLease,
+): Promise<LeaveResult> {
   const log = deps.logger ?? ((m: string) => console.log(m));
   const platform = deps.platform ?? process.platform;
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const serviceManager = deps.serviceManager ?? getServiceManager({ platform });
   const notes: string[] = [];
-  const hostId = hostRef.trim();
 
-  const record = getHost(hostId);
-  if (!record) {
+  const inspection = inspectHostMembershipForLeave(hostId, lease, lockNamespace);
+  const label = memberTailscaledLabel(hostId);
+  const installed = await serviceManager.inspect(label);
+  const servicePort = installed
+    ? installedMemberProxyPort(
+      installed.args,
+      deps.stateDir ?? resolveMemberTailscaledStateDir(hostId),
+    )
+    : null;
+  if (inspection.proxyPort !== null
+    && servicePort !== null
+    && inspection.proxyPort !== servicePort) {
+    throw new Error(
+      `Could not safely remove host ${hostId}: registry port ${inspection.proxyPort} conflicts with installed service port ${servicePort}.`,
+    );
+  }
+  const proxyPort = inspection.proxyPort ?? servicePort;
+  if (!inspection.statePresent && installed === null) {
     log(`Not joined to host ${hostId} — nothing to remove.`);
     return { removed: false, tailscaledRemoved: false, notes };
   }
-  if (record.projects.length > 0) {
+  if (proxyPort === null) {
+    throw new Error(
+      `Could not safely remove host ${hostId}: no trustworthy proxy-port identity remains in the registry or installed service.`,
+    );
+  }
+  const record = inspection.record;
+  if (record && record.projects.length > 0) {
     notes.push(`removing ${record.projects.length} attach ref(s) for host ${hostId}`);
   }
 
   // Stop THIS host's tailscaled FIRST (before deleting its statedir with the record).
   let tailscaledRemoved = false;
-  const label = memberTailscaledLabel(hostId);
   try {
     await serviceManager.uninstall(label);
-    tailscaledRemoved = true;
+    await withLoopbackPortReleaseProof(proxyPort, async (proof) => {
+      retireHostMembership(hostId, lease, proof, proxyPort, lockNamespace);
+    });
+    tailscaledRemoved = installed !== null;
   } catch (err) {
-    notes.push(`tailscaled uninstall (${label}): ${(err as Error).message}`);
+    throw new Error(
+      `Could not remove tailscaled ${label}; the host registry remains intact so its proxy port stays reserved.`,
+      { cause: err },
+    );
   }
   // Best-effort: drop the (now-orphaned) socket file.
   try { fs.rmSync(deps.socketPath ?? resolveMemberTailscaledSocketPath(hostId), { force: true }); } catch { /* best-effort */ }
 
-  // Remove the record + bearer + statedir (removeHost rmSyncs the whole host dir).
-  removeHost(hostId);
   log(`Removed host record + bearer for ${hostId}; tore down its tailscaled (${label}).`);
 
-  const remaining = readHostRegistry().length;
+  const remaining = readHostRegistry(lockNamespace).length;
   if (remaining > 0) log(`${remaining} other host(s) still joined — their overlays are untouched.`);
 
   return { removed: true, tailscaledRemoved, notes };
@@ -809,7 +1129,10 @@ export async function dialHostHealth(overlayAddress: string, proxyPort: number):
           const value = Array.isArray(raw) ? raw[0] : raw;
           const parsed = value !== undefined ? Number(value) : NaN;
           probeRes.resume();
-          done(true, Number.isFinite(parsed) ? parsed : null); // any response proves the tunnel + host listener are up
+          done(
+            true,
+            isValidObservedHostProtocolVersion(parsed) ? parsed : null,
+          ); // any response proves the tunnel + host listener are up
         },
       );
       probe.once('error', () => done(false, null));

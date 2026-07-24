@@ -21,6 +21,10 @@ import { REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '../constants.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 export type StreamableMcpHttpHandler = (
   req: http.IncomingMessage,
@@ -59,6 +63,7 @@ export interface StreamableMcpHttpHandlerOptions {
    * false), so the filter is inert rather than misapplied.
    */
   hostServe?: HostServeRuntime | null;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 /**
@@ -157,7 +162,11 @@ export function createStreamableMcpHttpHandler(
   options: StreamableMcpHttpHandlerOptions = {},
 ): StreamableMcpHttpHandler {
   const client = options.client ?? new DaemonClient(vaultDir);
+  const lockNamespace = options.lockNamespace ?? nativePerUserLockNamespace;
   return async (req, res) => {
+    const overlayRequest = isOverlayRequest(req);
+    let callContextConstraint: { allowedGroveId: string } | undefined;
+
     // Team Host chokepoint 2: the raw /mcp route bypasses route dispatch and
     // resolves its own context, so the attach short-circuit lives here too, as
     // per-tool-call tenancy. It runs BEFORE resolveRequestContextOrLegacy and
@@ -171,12 +180,15 @@ export function createStreamableMcpHttpHandler(
     // requests makes a circular proxy structurally impossible (mirrors the router
     // chokepoint in daemon/server.ts). handleOverlayRequest already validated the
     // host bearer and stamped the local bearer, so the resolution below succeeds.
-    if (!isOverlayRequest(req)) {
+    if (!overlayRequest) {
       try {
         const { projectId } = resolveInboundProjectId(req.headers, vaultDir, {
           expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
         });
-        const decision = classifyRoute({ method: req.method ?? 'POST', pathname: '/mcp', projectId });
+        const decision = classifyRoute(
+          { method: req.method ?? 'POST', pathname: '/mcp', projectId },
+          lockNamespace,
+        );
         if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
           res.statusCode = decision.refusal.status;
           res.setHeader('Content-Type', 'application/json');
@@ -253,7 +265,7 @@ export function createStreamableMcpHttpHandler(
       // a few lines down instead; loopback keeps the descriptive 503
       // unchanged (see `(e) loopback requests are entirely unaffected` in
       // `tests/daemon/host-serve-grove-filter.test.ts`).
-      if (isOverlayRequest(req)) {
+      if (overlayRequest) {
         res.statusCode = 404;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
@@ -275,7 +287,8 @@ export function createStreamableMcpHttpHandler(
     // independently refuse an overlay request whose resolved Grove is not
     // THE one Grove this host serves, immediately after context resolution
     // and before any tool/protocol dispatch.
-    if (isOverlayRequest(req)) {
+    if (overlayRequest) {
+      const servedGroveId = options.hostServe?.servedGroveId;
       const groveRefusal = options.hostServe
         ? servedGroveRefusal(options.hostServe, requestContext.groveId)
         // Unreachable in practice (isOverlayRequest only marks requests when
@@ -308,11 +321,19 @@ export function createStreamableMcpHttpHandler(
         res.end(JSON.stringify(groveRefusal.body));
         return;
       }
+      if (!servedGroveId) {
+        res.statusCode = 503;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'host_serve_unavailable' }));
+        return;
+      }
+      callContextConstraint = { allowedGroveId: servedGroveId };
     }
 
     const tools = createMycoTools(vaultDir, client, {
       requestContext,
       resolveDatabase: options.resolveDatabase,
+      callContextConstraint,
     });
     const server = createMcpProtocolServer(tools, {
       logger: options.logger,

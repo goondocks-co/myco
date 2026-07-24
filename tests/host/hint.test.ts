@@ -6,6 +6,7 @@
  * both `checkTeamHostHint` and `noticeTeamHostHintOnce`), and
  * `noticeTeamHostHintOnce`'s once-per-host stderr notice.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,14 +14,33 @@ import path from 'node:path';
 
 import { parseProjectManifest, type ProjectManifest } from '@myco/config/project-manifest';
 import { createHostId, createProjectId } from '@myco/grove/ids';
-import { attachProject, upsertHost, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import {
   __resetTeamHostHintNoticeForTests,
-  noticeTeamHostHintOnce,
-  resolveTeamHostHintState,
+  noticeTeamHostHintOnce as noticeTeamHostHintOnceWith,
+  resolveTeamHostHintState as resolveTeamHostHintStateWith,
   teamHostHintFromManifest,
   teamHostHintMessage,
 } from '@myco/host/hint';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { attachProject } = createHostRegistryOperations(testPerUserLockNamespace);
+const resolveTeamHostHintState = (
+  manifest: Parameters<typeof resolveTeamHostHintStateWith>[0],
+  projectId: string | null | undefined,
+) => resolveTeamHostHintStateWith(
+  manifest,
+  projectId,
+  testPerUserLockNamespace,
+);
+const noticeTeamHostHintOnce = (
+  manifest: Parameters<typeof noticeTeamHostHintOnceWith>[0],
+  projectId: string | null | undefined,
+) => noticeTeamHostHintOnceWith(
+  manifest,
+  projectId,
+  testPerUserLockNamespace,
+);
 
 function manifestWith(grove?: ProjectManifest['grove']): ProjectManifest {
   return { project: { id: 'proj_test' }, grove };
@@ -114,7 +134,7 @@ describe('resolveTeamHostHintState / teamHostHintMessage', () => {
   test('hint + host enrolled + attached → resolved, no message', () => {
     const projectId = createProjectId();
     const hostId = createHostId();
-    upsertHost(makeHost(hostId));
+    writeHostRecordFixture(makeHost(hostId));
     attachProject(hostId, { grove_id: 'grove_x', project_id: projectId });
 
     const manifest = manifestWith({ mode: 'local', remote: { provider: 'team-host', remote_id: hostId } });
@@ -125,7 +145,7 @@ describe('resolveTeamHostHintState / teamHostHintMessage', () => {
 
   test('hint + host enrolled + NOT attached → not_attached, message suggests attaching', () => {
     const hostId = createHostId();
-    upsertHost(makeHost(hostId));
+    writeHostRecordFixture(makeHost(hostId));
 
     const manifest = manifestWith({ mode: 'local', remote: { provider: 'team-host', remote_id: hostId } });
     const state = resolveTeamHostHintState(manifest, createProjectId());
@@ -201,7 +221,7 @@ describe('noticeTeamHostHintOnce', () => {
   test('resolved (attached) → never writes to stderr', () => {
     const projectId = createProjectId();
     const hostId = createHostId();
-    upsertHost(makeHost(hostId));
+    writeHostRecordFixture(makeHost(hostId));
     attachProject(hostId, { grove_id: 'grove_x', project_id: projectId });
 
     const manifest = manifestWith({ mode: 'local', remote: { provider: 'team-host', remote_id: hostId } });

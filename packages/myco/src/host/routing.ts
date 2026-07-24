@@ -49,10 +49,13 @@
  * machine with no hosts pays only one `fs.existsSync` (the registry's empty-set
  * fast path) and behaves byte-for-byte as today.
  */
-import { HOST_BEARER_SECRET } from '../constants.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { scopePolicyForPath } from '../config/scope.js';
-import { readHostSecrets, resolveAttach } from './registry.js';
+import { resolveAttachMembership } from './registry.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { ROUTED_RESIDENCY_PULL_PATH, ROUTED_RESIDENCY_ROWS_PATH } from './residency-journal.js';
 
 /** The scope-map stamp a route carries. See the module docstring. */
@@ -671,10 +674,10 @@ export function classifyRoute(input: {
   method: string;
   pathname: string;
   projectId: GroveProjectId | null;
-}): RouteDecision {
+}, lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace): RouteDecision {
   if (!input.projectId) return { kind: 'local' };
 
-  const attach = resolveAttach(input.projectId);
+  const attach = resolveAttachMembership(input.projectId, lockNamespace);
   if (!attach) return { kind: 'local' };
 
   const classification = classifyRouteStamp(input.method, input.pathname);
@@ -769,9 +772,12 @@ export function overlayHostStampRefusal(method: string, pathname: string): Refus
  *  state (`daemon/api/content-claims-materialize.ts`). */
 export function remoteTargetFor(
   projectId: GroveProjectId,
-  attach: { host: { host_id: string; label: string; overlay_address: string; protocol_version: number; proxy_port?: number }; ref: { grove_id: string; root?: string } },
+  attach: {
+    host: { host_id: string; label: string; overlay_address: string; protocol_version: number; proxy_port?: number };
+    ref: { grove_id: string; root?: string };
+    bearer: string;
+  },
 ): RemoteTarget {
-  const bearer = readHostSecrets(attach.host.host_id)[HOST_BEARER_SECRET] ?? '';
   return {
     projectId,
     groveId: attach.ref.grove_id,
@@ -783,6 +789,6 @@ export function remoteTargetFor(
       protocol_version: attach.host.protocol_version,
       proxy_port: attach.host.proxy_port,
     },
-    bearer,
+    bearer: attach.bearer,
   };
 }
