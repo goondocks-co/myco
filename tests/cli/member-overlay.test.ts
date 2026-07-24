@@ -472,6 +472,7 @@ describe('member overlay — multi-host join / leave', () => {
   });
 
   test.each([
+    ['empty', ''],
     ['leading carriage return', '\rmanual-bearer'],
     ['trailing carriage return', 'manual-bearer\r'],
     ['leading line feed', '\nmanual-bearer'],
@@ -490,6 +491,34 @@ describe('member overlay — multi-host join / leave', () => {
         serverUrl: 'https://host:8080',
         overlayAddress: '100.64.0.1:7433',
         bearer,
+      },
+      deps({
+        sleep: async () => {},
+        checkHostReachable: async () => { reachabilityCalls += 1; return true; },
+      }),
+    ).catch((error) => error);
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(reachabilityCalls).toBe(0);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id))).toBe(false);
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
+
+  test.each([
+    ['leading whitespace', ' 100.64.0.1:7433'],
+    ['trailing whitespace', '100.64.0.1:7433 '],
+  ])('a manual overlay address with %s fails before join probes or persists', async (_label, overlayAddress) => {
+    const id = hostId();
+    let reachabilityCalls = 0;
+
+    const caught = await joinHost(
+      {
+        hostRef: id,
+        key: 'onetime',
+        serverUrl: 'https://host:8080',
+        overlayAddress,
+        bearer: 'manual-bearer',
       },
       deps({
         sleep: async () => {},

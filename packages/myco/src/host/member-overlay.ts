@@ -647,7 +647,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     oneTimeKey: options.key,
     memberHostname: hostname,
     memberOverlayIp,
-    overlayAddress: options.overlayAddress?.trim(),
+    overlayAddress: options.overlayAddress,
     proxyPort,
     bearer: options.bearer,
     protocolVersion: options.protocolVersion,

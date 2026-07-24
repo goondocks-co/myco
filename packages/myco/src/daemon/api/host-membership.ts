@@ -129,6 +129,26 @@ function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+const JOIN_OPTION_STRING_FIELDS = [
+  'server_url',
+  'hostname',
+  'overlay_address',
+  'bearer',
+  'host_id',
+  'label',
+] as const;
+
+function invalidJoinOption(body: Record<string, unknown>): string | null {
+  for (const field of JOIN_OPTION_STRING_FIELDS) {
+    if (Object.hasOwn(body, field) && typeof body[field] !== 'string') return field;
+  }
+  if (Object.hasOwn(body, 'protocol_version')
+    && (typeof body.protocol_version !== 'number' || !Number.isFinite(body.protocol_version))) {
+    return 'protocol_version';
+  }
+  return null;
+}
+
 /** Render a thrown orchestration error as a uniform 400. The envelope's
  *  `code` prefers the error's stable membership code (`membership-error.ts` —
  *  `project_registered_locally`, `not_joined`, `protocol_mismatch`, …) so the
@@ -155,6 +175,10 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
     const key = str(body.key);
     if (!hostRef) return { status: 400, body: errorBody('missing_host_ref', 'host_ref is required.') };
     if (!key) return { status: 400, body: errorBody('missing_key', 'key is required.') };
+    const invalidOption = invalidJoinOption(body);
+    if (invalidOption) {
+      return { status: 400, body: errorBody('host_enroll_failed', `Invalid join field: ${invalidOption}.`) };
+    }
     const hostId = str(body.host_id) ?? hostRef;
 
     const options: JoinOptions = {
@@ -162,8 +186,8 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
       key,
       serverUrl: str(body.server_url),
       hostname: str(body.hostname),
-      overlayAddress: str(body.overlay_address),
-      bearer: str(body.bearer),
+      overlayAddress: body.overlay_address as string | undefined,
+      bearer: body.bearer as string | undefined,
       protocolVersion: num(body.protocol_version),
       hostId: str(body.host_id),
       label: str(body.label),

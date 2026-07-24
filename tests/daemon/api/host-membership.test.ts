@@ -122,6 +122,66 @@ describe('POST /api/host-membership/join', () => {
     expect(called).toBe(false);
   });
 
+  test.each([
+    ['server_url', {}],
+    ['hostname', []],
+    ['overlay_address', {}],
+    ['bearer', {}],
+    ['protocol_version', '3'],
+    ['host_id', 3],
+    ['label', false],
+  ])('rejects a present wrong-type optional %s before calling join', async (field, value) => {
+    let calls = 0;
+    const handler = createHostMembershipJoinHandler({
+      join: async () => { calls += 1; throw new Error('unreachable'); },
+    });
+
+    const res = await handler(req({ host_ref: 'host_abc', key: 'onetime', [field]: value }));
+
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { code: string } }).error.code).toBe('host_enroll_failed');
+    expect(calls).toBe(0);
+  });
+
+  test('preserves an explicit empty bearer so joinHost selects the manual enrollment path', async () => {
+    let seen: { bearer?: string } | undefined;
+    const handler = createHostMembershipJoinHandler({
+      join: async (options) => {
+        seen = options;
+        return {
+          hostId: options.hostRef,
+          overlayAddress: '100.64.0.1:7433',
+          proxyPort: 41200,
+          memberOverlayIp: '100.64.0.5',
+          hostReachable: false,
+          created: true,
+          notes: [],
+        };
+      },
+    });
+
+    const res = await handler(req({ host_ref: 'host_abc', key: 'onetime', bearer: '' }));
+
+    expect(res.status).toBe(200);
+    expect(seen?.bearer).toBe('');
+  });
+
+  test.each([
+    ['host_ref', {}],
+    ['key', []],
+  ])('preserves the missing required-field envelope for a wrong-type %s', async (field, value) => {
+    let calls = 0;
+    const handler = createHostMembershipJoinHandler({
+      join: async () => { calls += 1; throw new Error('unreachable'); },
+    });
+
+    const res = await handler(req({ host_ref: 'host_abc', key: 'onetime', [field]: value }));
+
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { code: string } }).error.code).toBe(field === 'host_ref' ? 'missing_host_ref' : 'missing_key');
+    expect(calls).toBe(0);
+  });
+
   test('an UNCODED orchestration error maps to 400 with the route fallback code + message preserved', async () => {
     const handler = createHostMembershipJoinHandler({
       join: async () => { throw new Error('tailscaled socket did not appear'); },
