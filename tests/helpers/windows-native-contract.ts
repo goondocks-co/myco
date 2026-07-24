@@ -403,8 +403,14 @@ async function proveNativeTaskScheduler(
   assertCondition(install.changed, 'Task Scheduler install did not create the unique contract task');
   assertCondition(await manager.isInstalled(taskLabel), 'Task Scheduler did not report the task installed');
 
+  const xml = await runner.run(['/query', '/tn', taskLabel, '/xml']);
+  assertCondition(xml.exitCode === 0, 'Task Scheduler XML query failed');
+
   const inspected = await manager.inspect(taskLabel);
-  assertCondition(inspected !== null, 'production Task Scheduler inspection could not prove the command');
+  assertCondition(
+    inspected !== null,
+    `production Task Scheduler inspection could not prove the command; task XML: ${xml.stdout.slice(0, 12_000)}`,
+  );
   assertCondition(
     windowsPathEqual(inspected.executable, executable),
     `installed executable mismatch: ${inspected.executable}`,
@@ -414,8 +420,6 @@ async function proveNativeTaskScheduler(
     `installed argv mismatch: ${JSON.stringify(inspected.args)}`,
   );
 
-  const xml = await runner.run(['/query', '/tn', taskLabel, '/xml']);
-  assertCondition(xml.exitCode === 0, 'Task Scheduler XML query failed');
   assertLimitedTaskRunLevel(xml.stdout);
   assertCondition(
     !/<LogonTrigger\b/i.test(xml.stdout),

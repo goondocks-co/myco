@@ -186,4 +186,17 @@ describe('Windows native CI contract', () => {
     expect(() => assertLimitedTaskRunLevel('<Principal><RunLevel>HighestAvailable</RunLevel></Principal>'))
       .toThrow(/limited-rights/);
   });
+
+  test('native inspection failure includes the Task Scheduler XML', () => {
+    const helper = fs.readFileSync(HELPER_PATH, 'utf8');
+    const xmlQuery = helper.indexOf("runner.run(['/query', '/tn', taskLabel, '/xml'])");
+    const productionInspect = helper.indexOf('manager.inspect(taskLabel)');
+    const diagnostic = helper.indexOf(
+      'production Task Scheduler inspection could not prove the command; task XML:',
+    );
+
+    expect(xmlQuery).toBeGreaterThan(-1);
+    expect(productionInspect).toBeGreaterThan(xmlQuery);
+    expect(diagnostic).toBeGreaterThan(productionInspect);
+  });
 });
