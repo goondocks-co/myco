@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -11,12 +12,14 @@ import {
   loadSecrets,
   propagateLegacySecrets,
   readSecrets,
+  reconcileSecretFile,
   tightenSecretsPermissions,
   writeSecret,
   writeSecretIfAbsent,
 } from '@myco/config/secrets';
 
 const POSIX = process.platform !== 'win32';
+const SECRETS_LOCK_HOLDER_HELPER = path.resolve('tests/helpers/secrets-lock-holder-helper.ts');
 
 describe('secrets', () => {
   let testDir: string;
@@ -53,8 +56,25 @@ describe('secrets', () => {
       expect(readSecrets(testDir)).toEqual({ TOKEN: 'abc=def' });
     });
 
+    const validRecords = [
+      '  # comment',
+      '',
+      ' ONE = first ',
+      'EMPTY=',
+      'ONE=last',
+      'TOKEN=abc=def',
+    ];
+    it.each([
+      ['LF records', validRecords.join('\n') + '\n'],
+      ['CRLF records', validRecords.join('\r\n') + '\r\n'],
+    ])('parses valid %s', (_label, content) => {
+      fs.writeFileSync(path.join(testDir, 'secrets.env'), content, 'utf-8');
+      expect(readSecrets(testDir)).toEqual({ ONE: 'last', EMPTY: '', TOKEN: 'abc=def' });
+    });
+
     it.each([
       ['a carriage-return line', 'BROKEN\rVALUE\nVALID=kept\n'],
+      ['a bare carriage return at EOF', 'VALID=kept\r'],
       ['an unparseable line', 'BROKEN VALUE\nVALID=kept\n'],
       ['a NUL-containing value', 'TOKEN=abc\0def\n'],
     ])('rejects %s instead of dropping or returning it', (_label, content) => {
@@ -181,6 +201,75 @@ describe('secrets', () => {
       expect(() => assertValidSecretEntry(key as string, value as string))
         .toThrow(InvalidSecretValueError);
     });
+  });
+
+  it.each(['.', '..', '../escape', 'nested/backup'])('rejects an unsafe secret backup filename: %p', (backupFileName) => {
+    const source = path.join(testDir, 'source');
+    const destination = path.join(testDir, 'destination');
+    writeSecret(source, 'SOURCE', 'source');
+    writeSecret(destination, 'DESTINATION', 'destination');
+    const before = fs.readFileSync(path.join(destination, 'secrets.env'));
+
+    expect(() => reconcileSecretFile(source, destination, backupFileName)).toThrow();
+    expect(fs.readFileSync(path.join(destination, 'secrets.env'))).toEqual(before);
+  });
+
+  describe.skipIf(process.platform === 'win32')('cross-process secret-store transaction', () => {
+    it('serializes unrelated writers behind the same store lock without losing either entry', async () => {
+      const holdMs = 400;
+      const child = spawn(
+        process.execPath,
+        ['run', SECRETS_LOCK_HOLDER_HELPER, testDir, String(holdMs)],
+        { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() },
+      );
+      let stderr = '';
+      child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8'); });
+      const childExit = new Promise<void>((resolve, reject) => {
+        child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`lock holder exited ${code}: ${stderr}`)));
+        child.on('error', reject);
+      });
+
+      const ready = path.join(testDir, 'secrets-lock-ready');
+      const deadline = Date.now() + 10_000;
+      while (!fs.existsSync(ready)) {
+        if (Date.now() >= deadline) throw new Error(`secret lock holder never signalled readiness: ${stderr}`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      const startedAt = Date.now();
+      writeSecret(testDir, 'PARENT_WRITER', 'parent');
+      const blockedMs = Date.now() - startedAt;
+      await childExit;
+
+      expect(readSecrets(testDir)).toEqual({ CHILD_WRITER: 'child', PARENT_WRITER: 'parent' });
+      expect(blockedMs).toBeGreaterThanOrEqual(200);
+    }, 30_000);
+
+    it('re-reads before a delete-all decision so a concurrent child entry survives', async () => {
+      writeSecret(testDir, 'OLD', 'old');
+      const child = spawn(
+        process.execPath,
+        ['run', SECRETS_LOCK_HOLDER_HELPER, testDir, '400', 'delete-race'],
+        { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() },
+      );
+      let stderr = '';
+      child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8'); });
+      const childExit = new Promise<void>((resolve, reject) => {
+        child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`lock holder exited ${code}: ${stderr}`)));
+        child.on('error', reject);
+      });
+
+      const ready = path.join(testDir, 'secrets-lock-ready');
+      const deadline = Date.now() + 10_000;
+      while (!fs.existsSync(ready)) {
+        if (Date.now() >= deadline) throw new Error(`secret lock holder never signalled readiness: ${stderr}`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      deleteSecrets(testDir, ['OLD']);
+      await childExit;
+      expect(readSecrets(testDir)).toEqual({ CHILD_WRITER: 'child' });
+    }, 30_000);
   });
 
   describe('loadSecrets', () => {

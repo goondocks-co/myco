@@ -2,7 +2,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { tightenSecretsPermissions } from '../config/secrets.js';
+import {
+  reconcileSecretFile,
+  readSecretsFile,
+  secretFilesEqual,
+  SECRETS_FILE,
+  tightenSecretSnapshotPermissions,
+  tightenSecretsPermissions,
+  withReconciledSecretFiles,
+} from '../config/secrets.js';
 import { pathsEquivalent, resolveTeamsDir, TEAMS_DIRNAME } from '../grove/paths.js';
 
 const BAK_SUFFIX = '.bak-pre-myco-team';
@@ -40,6 +48,45 @@ function filesEqual(a: string, b: string): boolean {
   try { return fs.readFileSync(a).equals(fs.readFileSync(b)); } catch { return false; }
 }
 
+function ownerOnly(pathname: string): boolean {
+  return process.platform === 'win32' || (fs.statSync(pathname).mode & 0o777) === 0o600;
+}
+
+/** Validate every secret input before a migration writes any destination team. */
+function preflightTeamSecrets(entries: fs.Dirent[], legacyTeamsDir: string, destTeamsDir: string): void {
+  const sourceDirs: string[] = [];
+  const destinationDirs: string[] = [];
+  const backupDirs: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const sourceDir = path.join(legacyTeamsDir, entry.name);
+    const destinationDir = path.join(destTeamsDir, entry.name);
+    const sourcePath = path.join(sourceDir, SECRETS_FILE);
+    const destinationPath = path.join(destinationDir, SECRETS_FILE);
+    const backupPath = destinationPath + BAK_SUFFIX;
+    if (fs.existsSync(sourcePath)) {
+      readSecretsFile(sourcePath);
+      sourceDirs.push(sourceDir);
+    }
+    if (fs.existsSync(destinationPath)) {
+      readSecretsFile(destinationPath);
+      destinationDirs.push(destinationDir);
+    }
+    if (fs.existsSync(backupPath)) {
+      readSecretsFile(backupPath);
+      backupDirs.push(destinationDir);
+    }
+  }
+
+  // The legacy tree is retained as a backup after migration. Tighten only
+  // after every source and destination passed decoding, never on malformed data.
+  for (const sourceDir of sourceDirs) tightenSecretsPermissions(sourceDir);
+  for (const destinationDir of destinationDirs) tightenSecretsPermissions(destinationDir);
+  for (const destinationDir of backupDirs) {
+    tightenSecretSnapshotPermissions(destinationDir, SECRETS_FILE + BAK_SUFFIX);
+  }
+}
+
 /**
  * Fill missing files/subdirs into dst; archive (never overwrite) a divergent file. Dest wins.
  * A team dir is NOT flat: it holds the `worker` deploy subdir (wrangler source + node_modules
@@ -51,6 +98,7 @@ function reconcileTeamDir(src: string, dst: string): Disposition {
   let filled = false, conflicted = false;
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const sf = path.join(src, entry.name), df = path.join(dst, entry.name);
+    if (entry.name === SECRETS_FILE) continue;
     if (entry.isDirectory()) {
       // Copy the whole subtree (e.g. the `worker` deploy dir) when absent at dst;
       // dest wins if present (do not deep-merge node_modules). cpSync is EXDEV-safe.
@@ -61,7 +109,9 @@ function reconcileTeamDir(src: string, dst: string): Disposition {
     if (!fs.existsSync(df)) { fs.copyFileSync(sf, df); filled = true; }
     else if (!filesEqual(sf, df)) { fs.copyFileSync(sf, df + BAK_SUFFIX); conflicted = true; }
   }
-  tightenSecretsPermissions(dst); // force 0o600 on copied secrets.env
+  const secretDisposition = reconcileSecretFile(src, dst, SECRETS_FILE + BAK_SUFFIX);
+  if (secretDisposition === 'conflicted') conflicted = true;
+  if (secretDisposition === 'copied') filled = true;
   return conflicted ? 'conflicted' : !existed ? 'copied' : filled ? 'gapFilled' : 'noop';
 }
 
@@ -76,6 +126,13 @@ function verifyCopied(src: string, dst: string): boolean {
       continue;
     }
     if (!entry.isFile()) continue;
+    if (entry.name === SECRETS_FILE) {
+      if (!fs.existsSync(df) || !ownerOnly(df)) return false;
+      if (secretFilesEqual(sf, df)) continue;
+      const backup = df + BAK_SUFFIX;
+      if (!fs.existsSync(backup) || !ownerOnly(backup) || !secretFilesEqual(sf, backup)) return false;
+      continue;
+    }
     if (!fs.existsSync(df)) return false;
     if (!filesEqual(sf, df) && !fs.existsSync(df + BAK_SUFFIX)) return false;
   }
@@ -97,6 +154,7 @@ export function migrateTeamsHomeIfNeeded(legacyHomes: string[] = defaultLegacyTe
 
     let entries: fs.Dirent[];
     try { entries = fs.readdirSync(legacyTeamsDir, { withFileTypes: true }); } catch { continue; }
+    preflightTeamSecrets(entries, legacyTeamsDir, destTeamsDir);
 
     let allVerified = true;
     for (const entry of entries) {
@@ -117,14 +175,30 @@ export function migrateTeamsHomeIfNeeded(legacyHomes: string[] = defaultLegacyTe
     }
 
     if (!allVerified) continue; // leave the source intact for a later run
-    const bak = legacyTeamsDir + BAK_SUFFIX;
-    try {
-      if (fs.existsSync(bak)) fs.rmSync(legacyTeamsDir, { recursive: true, force: true }); // already retired before
-      else fs.renameSync(legacyTeamsDir, bak); // same-home rename: same filesystem, no EXDEV
-      result.retiredHomes.push(legacyTeamsDir);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err; // ENOENT = another process retired it
-    }
+    withReconciledSecretFiles(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => ({
+          sourceVaultDir: path.join(legacyTeamsDir, entry.name),
+          destinationVaultDir: path.join(destTeamsDir, entry.name),
+          backupFileName: SECRETS_FILE + BAK_SUFFIX,
+        })),
+      () => {
+        if (!entries
+          .filter((entry) => entry.isDirectory())
+          .every((entry) => verifyCopied(path.join(legacyTeamsDir, entry.name), path.join(destTeamsDir, entry.name)))) {
+          return;
+        }
+        const bak = legacyTeamsDir + BAK_SUFFIX;
+        try {
+          if (fs.existsSync(bak)) fs.rmSync(legacyTeamsDir, { recursive: true, force: true }); // already retired before
+          else fs.renameSync(legacyTeamsDir, bak); // same-home rename: same filesystem, no EXDEV
+          result.retiredHomes.push(legacyTeamsDir);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err; // ENOENT = another process retired it
+        }
+      },
+    );
   }
 
   return result;

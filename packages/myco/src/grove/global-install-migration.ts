@@ -27,7 +27,7 @@ import { SymbiontInstaller, removeProjectLaunchers, MYCO_MCP_SERVER_NAME } from 
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { readJsonFile, writeOrDeleteJsonFile } from '../symbionts/json-helpers.js';
 import { propagateLegacyMachineId } from '@myco/machine-id.js';
-import { propagateLegacySecrets } from '../config/secrets.js';
+import { relocateLegacyProjectSecrets } from '../config/secrets.js';
 import { epochSeconds } from '@myco/constants.js';
 
 /**
@@ -260,7 +260,8 @@ export function migrateProjectToGlobalInstall(
   // project level (the documented fallback per `feedback_secrets_not_in_yaml.md`)
   // would be deleted by the migration. Global-side keys win on conflict;
   // any key absent globally is lifted from the project file.
-  const secretsPropagated = propagateLegacySecrets(vaultDir, resolveMycoHome());
+  const hadLegacySecrets = fs.existsSync(path.join(vaultDir, 'secrets.env'));
+  const secretsPropagated = relocateLegacyProjectSecrets(vaultDir, resolveMycoHome());
 
   // Step 5 — cleanup empty co-tenant files and directories the strip
   // step may have hollowed out. We never delete a non-empty file; the
@@ -274,6 +275,9 @@ export function migrateProjectToGlobalInstall(
   // dir before deletion so user data is preserved on a forensic path
   // rather than destroyed. See PURGABLE_VAULT_ARTIFACTS.
   const purgedArtifacts = purgeLegacyPerMachineArtifacts(vaultDir, archiveDirAbs);
+  if (hadLegacySecrets && !fs.existsSync(path.join(vaultDir, 'secrets.env'))) {
+    purgedArtifacts.push('secrets.env');
+  }
 
   const noLegacyArtifacts =
     archivedFiles.length === 0
@@ -517,7 +521,6 @@ const PURGABLE_VAULT_ARTIFACTS: Array<{ rel: string; mode: 'delete' | 'archive' 
   { rel: 'attachments',         mode: 'archive' }, // user content
   { rel: 'team',                mode: 'archive' }, // legacy team-sync state pre-Grove
   { rel: 'installer-audit',     mode: 'archive' }, // per-symbiont strip provenance
-  { rel: 'secrets.env',         mode: 'delete'  }, // propagated by propagateLegacySecrets; not archived (security)
 ];
 
 /**

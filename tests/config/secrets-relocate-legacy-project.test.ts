@@ -99,6 +99,14 @@ describe('relocateLegacyProjectSecrets', () => {
     expect(readSecrets(mycoHome)).toEqual({});
   });
 
+  test('refuses a same-store relocation without deleting the only secret file', () => {
+    const { vaultDir } = tmpDirs();
+    writeSecret(vaultDir, 'OPENAI_API_KEY', 'only-copy');
+
+    expect(relocateLegacyProjectSecrets(vaultDir, vaultDir)).toEqual([]);
+    expect(readSecrets(vaultDir)).toEqual({ OPENAI_API_KEY: 'only-copy' });
+  });
+
   test('idempotent — a second call after relocation is a clean no-op', () => {
     const { vaultDir, mycoHome } = tmpDirs();
     writeSecret(vaultDir, 'OPENAI_API_KEY', 'proj-openai');

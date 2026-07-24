@@ -86,6 +86,115 @@ describe('migrateTeamsHomeIfNeeded', () => {
     expect((fs.statSync(df).mode & 0o777) === 0o600).toBe(true);
   });
 
+  it('preserves validated CRLF secret bytes without creating a spurious conflict backup', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] }, 'KEY=legacy\r\n');
+
+    migrateTeamsHomeIfNeeded([legacy]);
+    const destinationSecret = path.join(dest, 'teams', TEAM_ID, 'secrets.env');
+    expect(fs.readFileSync(destinationSecret, 'utf-8')).toBe('KEY=legacy\r\n');
+    expect(fs.existsSync(destinationSecret + '.bak-pre-myco-team')).toBe(false);
+  });
+
+  it('rejects a malformed legacy secret before creating the destination team tree', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] }, 'GOOD=secret\nBROKEN\rVALUE\n');
+
+    expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow();
+    expect(fs.existsSync(path.join(dest, 'teams', TEAM_ID))).toBe(false);
+    expect(fs.existsSync(path.join(legacy, 'teams', TEAM_ID, 'secrets.env'))).toBe(true);
+  });
+
+  it('preflights every legacy team before copying a valid earlier team', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    const validTeam = 'team_' + 'a'.repeat(32);
+    const malformedTeam = 'team_' + 'b'.repeat(32);
+    writeTeam(legacy, validTeam, { team_id: validTeam, name: 'valid', projects: [] });
+    writeTeam(legacy, malformedTeam, { team_id: malformedTeam, name: 'bad', projects: [] }, 'BROKEN\rVALUE\n');
+
+    expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow();
+    expect(fs.existsSync(path.join(dest, 'teams', validTeam))).toBe(false);
+    expect(fs.existsSync(path.join(dest, 'teams', malformedTeam))).toBe(false);
+  });
+
+  it('tightens validated legacy secrets before retiring the source tree', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+    const sourceSecret = path.join(legacy, 'teams', TEAM_ID, 'secrets.env');
+    fs.chmodSync(sourceSecret, 0o644);
+
+    migrateTeamsHomeIfNeeded([legacy]);
+    const retiredSecret = path.join(legacy, 'teams.bak-pre-myco-team', TEAM_ID, 'secrets.env');
+    expect(fs.statSync(retiredSecret).mode & 0o777).toBe(0o600);
+  });
+
+  it('writes migrated and conflicting secret files atomically with owner-only permissions', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] }, 'KEY=legacy\r\n');
+
+    const destTeamDir = path.join(dest, 'teams', TEAM_ID);
+    fs.mkdirSync(destTeamDir, { recursive: true });
+    fs.writeFileSync(path.join(destTeamDir, 'team.json'), JSON.stringify({ team_id: TEAM_ID, name: 'L', projects: [] }));
+    fs.writeFileSync(path.join(destTeamDir, 'secrets.env'), 'KEY=destination\n', { mode: 0o644 });
+
+    const result = migrateTeamsHomeIfNeeded([legacy]);
+    const destinationSecret = path.join(destTeamDir, 'secrets.env');
+    const backupSecret = destinationSecret + '.bak-pre-myco-team';
+
+    expect(result.conflicted).toContain(TEAM_ID);
+    expect(fs.readFileSync(destinationSecret, 'utf-8')).toBe('KEY=destination\n');
+    expect(fs.readFileSync(backupSecret, 'utf-8')).toBe('KEY=legacy\r\n');
+    expect(fs.statSync(destinationSecret).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(backupSecret).mode & 0o777).toBe(0o600);
+  });
+
+  it('tightens a pre-existing valid secret backup after all inputs pass preflight', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+    const destTeam = path.join(dest, 'teams', TEAM_ID);
+    fs.mkdirSync(destTeam, { recursive: true });
+    fs.writeFileSync(path.join(destTeam, 'team.json'), JSON.stringify({ team_id: TEAM_ID, name: 'L', projects: [] }));
+    fs.writeFileSync(path.join(destTeam, 'secrets.env'), 'MYCO_TEAM_API_KEY=abc\n', { mode: 0o600 });
+    const backup = path.join(destTeam, 'secrets.env.bak-pre-myco-team');
+    fs.writeFileSync(backup, 'MYCO_TEAM_API_KEY=older\n', { mode: 0o644 });
+
+    migrateTeamsHomeIfNeeded([legacy]);
+    expect(fs.statSync(backup).mode & 0o777).toBe(0o600);
+  });
+
+  it.each(['destination', 'backup'])('leaves every team file unchanged when a malformed %s secret is preflighted', (target) => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+    const destTeam = path.join(dest, 'teams', TEAM_ID);
+    fs.mkdirSync(destTeam, { recursive: true });
+    fs.writeFileSync(path.join(destTeam, 'team.json'), JSON.stringify({ team_id: TEAM_ID, name: 'L', projects: [] }));
+    const targetPath = target === 'destination'
+      ? path.join(destTeam, 'secrets.env')
+      : path.join(destTeam, 'secrets.env.bak-pre-myco-team');
+    fs.writeFileSync(targetPath, 'BROKEN\rVALUE\n', { mode: 0o644 });
+    const before = fs.readFileSync(targetPath);
+    const beforeMode = fs.statSync(targetPath).mode & 0o777;
+
+    expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow();
+    expect(fs.readFileSync(targetPath)).toEqual(before);
+    expect(fs.statSync(targetPath).mode & 0o777).toBe(beforeMode);
+    expect(fs.existsSync(path.join(legacy, 'teams', TEAM_ID))).toBe(true);
+  });
+
   it('divergence-archive: archives legacy file when dest content differs; dest unchanged; source retired', () => {
     legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
     dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
