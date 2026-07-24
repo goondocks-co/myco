@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   handleDeleteProviderSecret,
   handleGetProviderSecrets,
@@ -14,6 +14,13 @@ describe('provider secret handlers', () => {
   let projectVaultDir: string;
   let mycoHome: string;
   const originalMycoHome = process.env.MYCO_HOME;
+  let originalOpenAiApiKey: string | undefined;
+  let originalOpenAiApiKeyAlias: string | undefined;
+
+  beforeEach(() => {
+    originalOpenAiApiKey = process.env[OPENAI_API_KEY_ENV];
+    originalOpenAiApiKeyAlias = process.env.OPENAI_API_KEY;
+  });
 
   afterEach(() => {
     if (projectVaultDir && fs.existsSync(projectVaultDir)) {
@@ -27,8 +34,10 @@ describe('provider secret handlers', () => {
     } else {
       process.env.MYCO_HOME = originalMycoHome;
     }
-    delete process.env[OPENAI_API_KEY_ENV];
-    delete process.env.OPENAI_API_KEY;
+    if (originalOpenAiApiKey === undefined) delete process.env[OPENAI_API_KEY_ENV];
+    else process.env[OPENAI_API_KEY_ENV] = originalOpenAiApiKey;
+    if (originalOpenAiApiKeyAlias === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiApiKeyAlias;
     delete process.env[GITHUB_TOKEN_ENV];
   });
 
