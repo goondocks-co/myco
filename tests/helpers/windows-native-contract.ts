@@ -359,7 +359,10 @@ async function proveNativeTaskScheduler(
   const runLevel = xml.stdout.match(/<RunLevel\b[^>]*>([^<]+)<\/RunLevel>/i)?.[1]?.trim();
   assertCondition(
     runLevel === 'LeastPrivilege',
-    `Task Scheduler task is not limited-rights: ${JSON.stringify(runLevel ?? null)}`,
+    [
+      `Task Scheduler task is not limited-rights: ${JSON.stringify(runLevel ?? null)}`,
+      `Task XML: ${JSON.stringify(xml.stdout.slice(0, 4_000))}`,
+    ].join('\n'),
   );
   assertCondition(
     !/<LogonTrigger\b/i.test(xml.stdout),
