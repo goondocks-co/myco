@@ -658,8 +658,6 @@ export interface HostEnrollmentPayload {
    * `HostEnrollmentResponse.served_grove_id`).
    */
   served_grove_id: string | null;
-  /** Pre-associated projects — always empty in v1 (attach is a separate UI step). */
-  projects: never[];
 }
 
 /**
@@ -676,7 +674,6 @@ export function buildHostEnrollmentPayload(runtime: HostServeRuntime, overlayPor
     protocol_version: HOST_PROTOCOL_VERSION,
     bearer: runtime.bearer,
     served_grove_id: runtime.servedGroveId ?? null,
-    projects: [],
   };
 }
 

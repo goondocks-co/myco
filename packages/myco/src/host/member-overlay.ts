@@ -120,10 +120,10 @@ export interface HostEnrollment {
    *  (step 7) and later consulted by `attachCommand` as the ONE grove source
    *  for a new attach ref — no `--grove` flag. */
   served_grove_id?: string;
-  /** Projects the host pre-associates at enrollment (usually empty — attach is a
-   *  separate step, done via `myco attach` in v1, a UI in Phase E). Preserved onto
-   *  the record if present. */
-  projects?: AttachRef[];
+}
+
+export interface EnrollmentResult extends HostEnrollment {
+  projects?: unknown;
 }
 
 /** Everything the enrollment step knows after the overlay join. */
@@ -156,7 +156,7 @@ export interface EnrollmentContext {
 
 export interface EnrollmentClient {
   /** Obtain the host serve-bearer + overlay address over the overlay. */
-  enroll(ctx: EnrollmentContext): Promise<HostEnrollment>;
+  enroll(ctx: EnrollmentContext): Promise<EnrollmentResult>;
 }
 
 /**
@@ -204,7 +204,7 @@ interface HostEnrollmentResponse {
   protocol_version?: number;
   bearer?: string;
   served_grove_id?: string | null;
-  projects?: AttachRef[];
+  projects?: unknown;
 }
 
 /** How the real client puts an enrollment request on the wire. Injectable so tests
@@ -269,7 +269,7 @@ export const connectProxyEnrollTransport: EnrollmentTransport = ({ overlayAddres
  */
 export function createEnrollmentClient(transport: EnrollmentTransport = connectProxyEnrollTransport): EnrollmentClient {
   return {
-    async enroll(ctx: EnrollmentContext): Promise<HostEnrollment> {
+    async enroll(ctx: EnrollmentContext): Promise<EnrollmentResult> {
       if (!ctx.overlayAddress?.trim()) {
         throw new Error(
           'Automatic enrollment needs the host overlay address to dial. Pass it (a non-secret the operator '
@@ -348,7 +348,7 @@ async function enrollWithRetry(
   ctx: EnrollmentContext,
   sleep: (ms: number) => Promise<void>,
   log: (message: string) => void,
-): Promise<HostEnrollment> {
+): Promise<EnrollmentResult> {
   const backoffs = ENROLLMENT_RETRY_BACKOFFS_MS;
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -554,6 +554,13 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     label: options.label?.trim(),
   }, sleep, log);
 
+  if (enrollment.projects !== undefined) {
+    throw codedMembershipError(
+      'host_enroll_failed',
+      'Host enrollment cannot assign project attachments.',
+    );
+  }
+
   // 6. Best-effort reachability probe through THIS host's proxy port (never fatal).
   const reachProbe = deps.checkHostReachable ?? defaultCheckHostReachable;
   const hostReachable = await reachProbe(enrollment.overlay_address, proxyPort).catch(() => false);
@@ -594,7 +601,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     protocol_version: enrollment.protocol_version,
     served_grove_id: enrollment.served_grove_id ?? existing?.served_grove_id,
     created_at: existing?.created_at ?? new Date().toISOString(),
-    projects: existing?.projects ?? enrollment.projects ?? [],
+    projects: existing?.projects ?? [],
   };
   upsertHost(record);
   // The bearer NEVER lands in host.json — only in the record's secrets.env.

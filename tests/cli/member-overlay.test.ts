@@ -17,7 +17,7 @@ import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION, MEMBER_OVERLAY_PROXY_PORT_BA
 import { createHostId, createProjectId, createGroveId } from '@myco/grove/ids';
 import { resolveMemberTailscaledSocketPath } from '@myco/grove/paths';
 import { classifyRoute } from '@myco/host/routing';
-import { getHost, readHostRegistry, readHostSecrets } from '@myco/host/registry';
+import { attachProject, getHost, readHostRegistry, readHostSecrets } from '@myco/host/registry';
 import {
   memberTailscaledLabel,
   joinHost,
@@ -89,10 +89,10 @@ function fakeDarwinRunner(state: { joinedSockets: Set<string>; ups: string[]; ca
   };
 }
 
-function fakeEnrollment(hostId: string, bearer: string, overlayAddress = '100.64.0.1:7433', projects: HostEnrollment['projects'] = []): EnrollmentClient {
+function fakeEnrollment(hostId: string, bearer: string, overlayAddress = '100.64.0.1:7433'): EnrollmentClient {
   return {
     async enroll(_ctx: EnrollmentContext): Promise<HostEnrollment> {
-      return { host_id: hostId, label: `host ${hostId.slice(0, 9)}`, overlay_address: overlayAddress, protocol_version: HOST_PROTOCOL_VERSION, bearer, projects };
+      return { host_id: hostId, label: `host ${hostId.slice(0, 9)}`, overlay_address: overlayAddress, protocol_version: HOST_PROTOCOL_VERSION, bearer };
     },
   };
 }
@@ -214,8 +214,9 @@ describe('member overlay — multi-host join / leave', () => {
     const project = createProjectId();
     await joinHost(
       { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
-      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-xyz', '100.64.0.1:7433', [{ grove_id: createGroveId(), project_id: project }]) }),
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-xyz') }),
     );
+    attachProject(id, { grove_id: createGroveId(), project_id: project });
 
     const decision = classifyRoute({ method: 'GET', pathname: '/api/spores', projectId: project as never });
     expect(decision.kind).toBe('remote');
@@ -236,12 +237,14 @@ describe('member overlay — multi-host join / leave', () => {
 
     await joinHost(
       { hostRef: idA, key: 'keyA', serverUrl: 'https://a:8080' },
-      deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', '100.64.0.1:7433', [{ grove_id: grove, project_id: projA }]) }),
+      deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', '100.64.0.1:7433') }),
     );
+    attachProject(idA, { grove_id: grove, project_id: projA });
     await joinHost(
       { hostRef: idB, key: 'keyB', serverUrl: 'https://b:8080' },
-      deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', '100.64.0.2:7433', [{ grove_id: grove, project_id: projB }]) }),
+      deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', '100.64.0.2:7433') }),
     );
+    attachProject(idB, { grove_id: grove, project_id: projB });
 
     // Two records, DISTINCT persisted proxy_ports (allocated base, base+1).
     expect(readHostRegistry()).toHaveLength(2);
@@ -321,12 +324,14 @@ describe('member overlay — multi-host join / leave', () => {
 
     await joinHost(
       { hostRef: idA, key: 'keyA', serverUrl: 'https://a:8080' },
-      deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', sameAddress, [{ grove_id: createGroveId(), project_id: projA }]) }),
+      deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', sameAddress) }),
     );
+    attachProject(idA, { grove_id: createGroveId(), project_id: projA });
     await joinHost(
       { hostRef: idB, key: 'keyB', serverUrl: 'https://b:8080' },
-      deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', sameAddress, [{ grove_id: createGroveId(), project_id: projB }]) }),
+      deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', sameAddress) }),
     );
+    attachProject(idB, { grove_id: createGroveId(), project_id: projB });
 
     // Identical overlay_address, DISTINCT persisted proxy_ports.
     expect(getHost(idA)!.overlay_address).toBe(sameAddress);
@@ -363,15 +368,16 @@ describe('member overlay — multi-host join / leave', () => {
 
     await joinHost(
       { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
-      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-1', '100.64.0.1:7433', [{ grove_id: grove, project_id: project }]) }),
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-1') }),
     );
+    attachProject(id, { grove_id: grove, project_id: project });
     const createdAt = getHost(id)!.created_at;
     const port = getHost(id)!.proxy_port;
     expect(runnerState.ups).toHaveLength(1);
 
     await joinHost(
       { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
-      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-2', '100.64.0.1:7433', []) }),
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-2') }),
     );
 
     expect(readHostRegistry()).toHaveLength(1);
@@ -470,7 +476,6 @@ describe('member overlay — multi-host join / leave', () => {
           overlay_address: '100.64.0.1:7433',
           protocol_version: HOST_PROTOCOL_VERSION,
           bearer,
-          projects: [],
         };
       },
     };

@@ -29,7 +29,7 @@ import {
   type HostEnrollment,
   type MemberOverlayDeps,
 } from '@myco/host/member-overlay.js';
-import { getHost, resolveAttach } from '@myco/host/registry.js';
+import { getHost, readHostSecrets, resolveAttach } from '@myco/host/registry.js';
 import { attachCommand } from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { TAILSCALE_VERSION, type CommandRunner } from '@myco/host/overlay-binaries.js';
@@ -52,6 +52,7 @@ describe('buildHostEnrollmentPayload — served_grove_id self-report', () => {
     );
     expect(payload.served_grove_id).toBe(groveId);
     expect(payload.protocol_version).toBe(HOST_PROTOCOL_VERSION);
+    expect('projects' in payload).toBe(false);
   });
 
   test('an enabled-but-undesignated host reports served_grove_id as null — present, not absent', () => {
@@ -98,7 +99,6 @@ function fakeEnrollment(fields: {
         protocol_version: HOST_PROTOCOL_VERSION,
         bearer: fields.bearer,
         served_grove_id: fields.served_grove_id,
-        projects: [],
       };
     },
   };
@@ -140,6 +140,39 @@ describe('joinHost — served_grove_id persistence + host_id reconciliation (ser
       ...overrides,
     };
   }
+
+  test.each([
+    ['empty', []],
+    ['non-empty', [{ grove_id: createGroveId(), project_id: createProjectId() }]],
+  ])('rejects a %s host-supplied projects field before persisting the host', async (_label, projects) => {
+    const id = createHostId();
+    const maliciousClient: EnrollmentClient = {
+      async enroll() {
+        return {
+          host_id: id,
+          label: 'host',
+          overlay_address: '100.64.0.1:7433',
+          protocol_version: HOST_PROTOCOL_VERSION,
+          bearer: 'bearer-xyz',
+          projects,
+        };
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await joinHost(
+        { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+        deps({ enrollmentClient: maliciousClient }),
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
 
   test('(a) enrollment self-reports served_grove_id and joinHost persists it on the HostRecord', async () => {
     const hostId = createHostId();
