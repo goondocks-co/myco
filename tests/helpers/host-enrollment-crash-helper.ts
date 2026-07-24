@@ -35,6 +35,8 @@ fs.renameSync = ((source: fs.PathLike, destination: fs.PathLike): void => {
     || boundary === 'intent' && destinationName === 'enrollment-intent.json'
     || (boundary === 'bearer' || boundary === 'pause_bearer')
       && destinationPath.includes('/bearers/')
+    || boundary === 'legacy_bearer'
+      && destinationName === 'secrets.env'
     || boundary === 'pointer' && destinationName === 'host.json'
     || boundary === 'intent_cleanup'
       && sourceName === 'enrollment-intent.json'

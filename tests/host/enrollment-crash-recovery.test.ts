@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
 import { createHostId } from '@myco/grove/ids.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
+import { readSecrets } from '@myco/config/secrets.js';
 import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import {
   createHostRegistryOperations,
@@ -31,6 +32,7 @@ import {
   testPerUserLockNamespace,
   testPerUserLocksRoot,
 } from '../helpers/per-user-lock-namespace.js';
+import { vi } from '../helpers/vi-shim.js';
 
 const {
   advanceHostEnrollmentPhase,
@@ -39,7 +41,9 @@ const {
   persistEnrollmentMembership,
   readHostRegistry,
   readHostSecrets,
+  reconcileHostRollbackBearers,
   reserveHostProxyPort,
+  writeHostSecret,
 } = createHostRegistryOperations(testPerUserLockNamespace);
 
 const HELPER = path.resolve('tests/helpers/host-enrollment-crash-helper.ts');
@@ -128,7 +132,7 @@ describe.skipIf(process.platform === 'win32')('host enrollment crash recovery', 
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  for (const boundary of ['ledger', 'claim', 'intent', 'bearer'] as const) {
+  for (const boundary of ['ledger', 'claim', 'intent', 'bearer', 'legacy_bearer'] as const) {
     test(`retry converges after process exit immediately after ${boundary} publication`, async () => {
       const hostId = createHostId();
       const crashed = await crashAt(tmp, hostId, boundary, 'Crashed', 'crashed-bearer');
@@ -158,6 +162,9 @@ describe.skipIf(process.platform === 'win32')('host enrollment crash recovery', 
         },
         bearer: 'recovered-bearer',
       });
+      expect(readSecrets(path.join(tmp, 'hosts', hostId))).toMatchObject({
+        [HOST_BEARER_SECRET]: 'recovered-bearer',
+      });
     });
   }
 
@@ -176,10 +183,213 @@ describe.skipIf(process.platform === 'win32')('host enrollment crash recovery', 
         },
         bearer: 'committed-bearer',
       });
+      expect(readSecrets(path.join(tmp, 'hosts', hostId))).toMatchObject({
+        [HOST_BEARER_SECRET]: 'committed-bearer',
+      });
       expect(fs.existsSync(path.join(tmp, 'hosts', hostId, 'enrollment-intent.json')))
         .toBe(boundary === 'pointer');
       expect(fs.existsSync(path.join(tmp, 'hosts', hostId, 'proxy-port-claim.json')))
         .toBe(boundary !== 'claim_cleanup');
+    });
+  }
+
+  test('publishing a generated enrollment bearer preserves legacy non-bearer secrets', () => {
+    const hostId = createHostId();
+    writeHostSecret(hostId, 'EXISTING_HOST_SECRET', 'preserved');
+    const reservation = reserveHostProxyPort(hostId);
+    advanceHostEnrollmentPhase(reservation, 'enrolling');
+
+    persistEnrollmentMembership(
+      {
+        host_id: hostId,
+        label: 'Preserved',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: HOST_PROTOCOL_VERSION,
+        created_at: '2026-07-24T00:00:00.000Z',
+      },
+      'generated-bearer',
+      reservation,
+    );
+
+    expect(readSecrets(path.join(tmp, 'hosts', hostId))).toEqual({
+      EXISTING_HOST_SECRET: 'preserved',
+      [HOST_BEARER_SECRET]: 'generated-bearer',
+    });
+  });
+
+  test('direct secret writes cannot split a committed generated bearer', () => {
+    const hostId = createHostId();
+    const reservation = reserveHostProxyPort(hostId);
+    advanceHostEnrollmentPhase(reservation, 'enrolling');
+    persistEnrollmentMembership(
+      {
+        host_id: hostId,
+        label: 'Updated',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: HOST_PROTOCOL_VERSION,
+        created_at: '2026-07-24T00:00:00.000Z',
+      },
+      'initial-bearer',
+      reservation,
+    );
+
+    expect(() => writeHostSecret(hostId, HOST_BEARER_SECRET, 'updated-bearer'))
+      .toThrow(/committed enrollment bearer/i);
+
+    expect(readHostSecrets(hostId)[HOST_BEARER_SECRET]).toBe('initial-bearer');
+    expect(readSecrets(path.join(tmp, 'hosts', hostId))).toMatchObject({
+      [HOST_BEARER_SECRET]: 'initial-bearer',
+    });
+  });
+
+  test('committed-intent recovery repairs the rollback bearer before clearing residue', async () => {
+    const hostId = createHostId();
+    const crashed = await crashAt(tmp, hostId, 'pointer', 'Committed', 'committed-bearer');
+    expect(crashed.code).toBe(86);
+    const hostDir = path.join(tmp, 'hosts', hostId);
+    fs.unlinkSync(path.join(hostDir, 'secrets.env'));
+
+    const retry = reserveHostProxyPort(hostId);
+
+    expect(retry.recoveredCommit).toBe(true);
+    expect(readSecrets(hostDir)).toMatchObject({
+      [HOST_BEARER_SECRET]: 'committed-bearer',
+    });
+    expect(fs.existsSync(path.join(hostDir, 'enrollment-intent.json'))).toBe(false);
+    expect(fs.existsSync(path.join(hostDir, 'proxy-port-claim.json'))).toBe(false);
+  });
+
+  for (const legacyState of ['missing', 'stale'] as const) {
+    test(`startup reconciliation repairs a ${legacyState} rollback bearer without enrollment residue`, () => {
+      const hostId = createHostId();
+      const reservation = reserveHostProxyPort(hostId);
+      advanceHostEnrollmentPhase(reservation, 'enrolling');
+      persistEnrollmentMembership(
+        {
+          host_id: hostId,
+          label: 'Upgrade',
+          overlay_address: '100.64.0.1:7433',
+          protocol_version: HOST_PROTOCOL_VERSION,
+          created_at: '2026-07-24T00:00:00.000Z',
+        },
+        'generation-bearer',
+        reservation,
+      );
+      const hostDir = path.join(tmp, 'hosts', hostId);
+      expect(fs.existsSync(path.join(hostDir, 'enrollment-intent.json'))).toBe(false);
+      expect(fs.existsSync(path.join(hostDir, 'proxy-port-claim.json'))).toBe(false);
+      if (legacyState === 'missing') {
+        fs.unlinkSync(path.join(hostDir, 'secrets.env'));
+      } else {
+        fs.writeFileSync(
+          path.join(hostDir, 'secrets.env'),
+          `EXISTING_HOST_SECRET=preserved\n${HOST_BEARER_SECRET}=stale-bearer\n`,
+          { mode: 0o600 },
+        );
+      }
+
+      expect(reconcileHostRollbackBearers()).toBe(1);
+      expect(readSecrets(hostDir)).toEqual({
+        ...(legacyState === 'stale' ? { EXISTING_HOST_SECRET: 'preserved' } : {}),
+        [HOST_BEARER_SECRET]: 'generation-bearer',
+      });
+      expect(reconcileHostRollbackBearers()).toBe(0);
+    });
+  }
+
+  test('startup reconciliation refuses a malformed rollback store without replacing it', () => {
+    const hostId = createHostId();
+    const reservation = reserveHostProxyPort(hostId);
+    advanceHostEnrollmentPhase(reservation, 'enrolling');
+    persistEnrollmentMembership(
+      {
+        host_id: hostId,
+        label: 'Malformed',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: HOST_PROTOCOL_VERSION,
+        created_at: '2026-07-24T00:00:00.000Z',
+      },
+      'generation-bearer',
+      reservation,
+    );
+    const secretsPath = path.join(tmp, 'hosts', hostId, 'secrets.env');
+    const malformed = Buffer.from(`KEEP=malformed\0value\n`);
+    fs.writeFileSync(secretsPath, malformed);
+
+    expect(() => reconcileHostRollbackBearers()).toThrow(/malformed/i);
+    expect(fs.readFileSync(secretsPath)).toEqual(malformed);
+  });
+
+  test('startup reconciliation refuses a symlinked rollback store without replacing it', () => {
+    const hostId = createHostId();
+    const reservation = reserveHostProxyPort(hostId);
+    advanceHostEnrollmentPhase(reservation, 'enrolling');
+    persistEnrollmentMembership(
+      {
+        host_id: hostId,
+        label: 'Symlink',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: HOST_PROTOCOL_VERSION,
+        created_at: '2026-07-24T00:00:00.000Z',
+      },
+      'generation-bearer',
+      reservation,
+    );
+    const secretsPath = path.join(tmp, 'hosts', hostId, 'secrets.env');
+    const target = path.join(tmp, 'outside-secrets.env');
+    fs.writeFileSync(target, `${HOST_BEARER_SECRET}=stale-bearer\n`, { mode: 0o600 });
+    fs.unlinkSync(secretsPath);
+    fs.symlinkSync(target, secretsPath);
+
+    expect(() => reconcileHostRollbackBearers()).toThrow(/unsafe|malformed/i);
+    expect(fs.lstatSync(secretsPath).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(target, 'utf-8'))
+      .toBe(`${HOST_BEARER_SECRET}=stale-bearer\n`);
+  });
+
+  for (const errorCode of ['EACCES', 'EIO'] as const) {
+    test(`startup reconciliation fails closed when host enumeration returns ${errorCode}`, () => {
+      const hostId = createHostId();
+      const reservation = reserveHostProxyPort(hostId);
+      advanceHostEnrollmentPhase(reservation, 'enrolling');
+      persistEnrollmentMembership(
+        {
+          host_id: hostId,
+          label: 'Unreadable registry',
+          overlay_address: '100.64.0.1:7433',
+          protocol_version: HOST_PROTOCOL_VERSION,
+          created_at: '2026-07-24T00:00:00.000Z',
+        },
+        'generation-bearer',
+        reservation,
+      );
+      const hostsDir = path.join(tmp, 'hosts');
+      const secretsPath = path.join(hostsDir, hostId, 'secrets.env');
+      const staleSecrets = `${HOST_BEARER_SECRET}=stale-bearer\n`;
+      fs.writeFileSync(secretsPath, staleSecrets, { mode: 0o600 });
+
+      const readdirSync = fs.readdirSync.bind(fs);
+      let hostsDirectoryReads = 0;
+      const readdir = vi.spyOn(fs, 'readdirSync').mockImplementation(
+        ((target, options) => {
+          if (path.resolve(String(target)) === path.resolve(hostsDir)
+            && ++hostsDirectoryReads === 2) {
+            throw Object.assign(
+              new Error(`injected ${errorCode} host enumeration failure`),
+              { code: errorCode },
+            );
+          }
+          return readdirSync(target, options);
+        }) as typeof fs.readdirSync,
+      );
+
+      try {
+        expect(() => reconcileHostRollbackBearers()).toThrow(errorCode);
+      } finally {
+        readdir.mockRestore();
+      }
+
+      expect(fs.readFileSync(secretsPath, 'utf-8')).toBe(staleSecrets);
     });
   }
 

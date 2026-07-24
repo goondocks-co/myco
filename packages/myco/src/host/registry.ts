@@ -28,6 +28,7 @@ import {
   assertValidSecretEntry,
   readSecretsFile as readExactSecretsFile,
   readSecrets as readSecretsFile,
+  tightenSecretsPermissions,
   writeSecret as writeSecretFile,
 } from '@myco/config/secrets.js';
 import {
@@ -401,6 +402,46 @@ function readGenerationBearerUnlocked(hostId: string, generation: number): strin
   }
 }
 
+function readLegacyHostBearerUnlocked(hostId: string): string {
+  try {
+    const bearer = readSecretsFile(resolveHostDir(hostId))[HOST_BEARER_SECRET];
+    assertValidSecretEntry(HOST_BEARER_SECRET, bearer);
+    if (!bearer) throw new Error('missing bearer');
+    return bearer;
+  } catch {
+    throw new HostJoinStateCorruptError(
+      hostId,
+      'legacy secrets.env bearer is missing or malformed',
+    );
+  }
+}
+
+function publishLegacyHostBearerUnlocked(
+  hostId: string,
+  bearer: string,
+  lockNamespace: PerUserLockNamespace,
+): void {
+  writeSecretFile(resolveHostDir(hostId), HOST_BEARER_SECRET, bearer, lockNamespace);
+  if (readLegacyHostBearerUnlocked(hostId) !== bearer) {
+    throw new HostJoinStateCorruptError(hostId, 'legacy secrets.env bearer did not verify');
+  }
+}
+
+function repairLegacyHostBearerFromRecordUnlocked(
+  record: HostRecord,
+  lockNamespace: PerUserLockNamespace,
+): void {
+  const generation = record.bearer_generation;
+  if (generation === undefined) {
+    throw new HostJoinStateCorruptError(
+      record.host_id,
+      'committed enrollment has no bearer generation',
+    );
+  }
+  const bearer = readGenerationBearerUnlocked(record.host_id, generation);
+  publishLegacyHostBearerUnlocked(record.host_id, bearer, lockNamespace);
+}
+
 function readHostMembershipSnapshotUnlocked(hostId: string): HostMembershipSnapshot | null {
   const record = readHostRecordUnlocked(hostId);
   if (!record) return null;
@@ -443,18 +484,42 @@ function readHostRegistryUnlocked(): HostRecord[] {
   return readHostMembershipSnapshotsUnlocked().map((snapshot) => snapshot.record);
 }
 
-function readHostMembershipSnapshotsUnlocked(): HostMembershipSnapshot[] {
+function readHostDirectoryEntriesUnlocked(
+  errorMode: 'empty' | 'strict',
+): fs.Dirent[] {
   const hostsDir = resolveHostsDir();
-  if (!fs.existsSync(hostsDir)) return [];
+  try {
+    return fs.readdirSync(hostsDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || errorMode === 'empty') {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function readHostMembershipSnapshotsFromEntriesUnlocked(
+  entries: fs.Dirent[],
+): HostMembershipSnapshot[] {
   const results: HostMembershipSnapshot[] = [];
-  let entries: fs.Dirent[];
-  try { entries = fs.readdirSync(hostsDir, { withFileTypes: true }); } catch { return []; }
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith('.myco-remove-')) continue;
     const snapshot = readHostMembershipSnapshotUnlocked(entry.name);
     if (snapshot) results.push(snapshot);
   }
   return results;
+}
+
+function readHostMembershipSnapshotsUnlocked(): HostMembershipSnapshot[] {
+  return readHostMembershipSnapshotsFromEntriesUnlocked(
+    readHostDirectoryEntriesUnlocked('empty'),
+  );
+}
+
+function readHostMembershipSnapshotsStrictUnlocked(): HostMembershipSnapshot[] {
+  return readHostMembershipSnapshotsFromEntriesUnlocked(
+    readHostDirectoryEntriesUnlocked('strict'),
+  );
 }
 
 /** Read every committed, non-retired host record through one registry snapshot. */
@@ -468,6 +533,45 @@ export function readHostMembershipSnapshots(
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): HostMembershipSnapshot[] {
   return withHostRegistryTransaction(lockNamespace, readHostMembershipSnapshotsUnlocked);
+}
+
+/** Reconcile every committed generation bearer into the rollback-readable store. */
+export function reconcileHostRollbackBearers(
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): number {
+  return withHostRegistryTransaction(lockNamespace, () => {
+    reconcileDurableRemovalTombstonesSync(resolveHostsDir());
+    let repaired = 0;
+    for (const snapshot of readHostMembershipSnapshotsStrictUnlocked()) {
+      if (snapshot.record.bearer_generation === undefined) continue;
+      const hostDir = resolveHostDir(snapshot.record.host_id);
+      try {
+        tightenSecretsPermissions(hostDir, lockNamespace);
+      } catch {
+        throw new HostJoinStateCorruptError(
+          snapshot.record.host_id,
+          'legacy secrets.env is unsafe or malformed',
+        );
+      }
+      let legacyBearer: string | undefined;
+      try {
+        legacyBearer = readSecretsFile(hostDir)[HOST_BEARER_SECRET];
+      } catch {
+        throw new HostJoinStateCorruptError(
+          snapshot.record.host_id,
+          'legacy secrets.env is malformed',
+        );
+      }
+      if (legacyBearer === snapshot.bearer) continue;
+      publishLegacyHostBearerUnlocked(
+        snapshot.record.host_id,
+        snapshot.bearer,
+        lockNamespace,
+      );
+      repaired += 1;
+    }
+    return repaired;
+  });
 }
 
 /** Read a single committed, non-retired host record by id. */
@@ -718,6 +822,7 @@ export function reserveHostProxyPort(
             `Host ${hostId} is already assigned proxy port ${currentIntent.proxy_port}, not ${preferredPort}.`,
           );
         }
+        repairLegacyHostBearerFromRecordUnlocked(existing, lockNamespace);
         const recovery = reservationFromIntent(currentIntent, true);
         durableRemovePathSync(hostEnrollmentIntentPath(hostId));
         durableRemovePathSync(hostProxyPortClaimPath(hostId));
@@ -754,6 +859,7 @@ export function reserveHostProxyPort(
             `Host ${hostId} is already assigned proxy port ${currentClaim.proxy_port}, not ${preferredPort}.`,
           );
         }
+        repairLegacyHostBearerFromRecordUnlocked(existing, lockNamespace);
         const recovery: HostProxyPortReservation = {
           hostId,
           proxyPort: currentClaim.proxy_port,
@@ -987,6 +1093,7 @@ function persistEnrollmentMembershipUnlocked(
   enrollment: EnrollmentHostRecord,
   bearer: string,
   reservation: HostProxyPortReservation,
+  lockNamespace: PerUserLockNamespace,
 ): EnrollmentMembershipResult {
   if (reservation.hostId !== enrollment.host_id) {
     throw new Error(
@@ -1038,6 +1145,7 @@ function persistEnrollmentMembershipUnlocked(
     updated_at: new Date().toISOString(),
   };
   writeHostEnrollmentIntentUnlocked(stagedIntent);
+  publishLegacyHostBearerUnlocked(enrollment.host_id, bearer, lockNamespace);
 
   const servedGroveId = Object.hasOwn(enrollment, 'served_grove_id')
     ? enrollment.served_grove_id
@@ -1056,7 +1164,8 @@ function persistEnrollmentMembershipUnlocked(
   const committed = readHostMembershipSnapshotUnlocked(record.host_id);
   if (!committed
     || committed.record.enrollment_generation !== intent.generation
-    || committed.bearer !== bearer) {
+    || committed.bearer !== bearer
+    || readLegacyHostBearerUnlocked(record.host_id) !== bearer) {
     throw new HostJoinStateCorruptError(record.host_id, 'published enrollment did not verify');
   }
   durableRemovePathSync(hostEnrollmentIntentPath(record.host_id));
@@ -1076,7 +1185,7 @@ export function persistEnrollmentMembership(
 ): EnrollmentMembershipResult {
   return withHostRegistryTransaction(
     lockNamespace,
-    () => persistEnrollmentMembershipUnlocked(enrollment, bearer, reservation),
+    () => persistEnrollmentMembershipUnlocked(enrollment, bearer, reservation, lockNamespace),
   );
 }
 
@@ -1481,7 +1590,7 @@ export function readHostSecrets(
   );
 }
 
-/** Write a host-scoped secret (e.g. the host bearer, `HOST_BEARER_SECRET`) to secrets.env. Never written to host.json. */
+/** Write a host-scoped secret. Committed generation bearers are enrollment-owned. */
 export function writeHostSecret(
   hostId: string,
   key: string,
@@ -1491,14 +1600,9 @@ export function writeHostSecret(
   withHostRegistryTransaction(lockNamespace, () => {
     const record = readHostRecordUnlocked(hostId);
     if (key === HOST_BEARER_SECRET && record?.bearer_generation !== undefined) {
-      assertValidSecretEntry(key, value);
-      ensurePrivateDirectoryDurable(hostBearerDir(hostId));
-      atomicWriteFileSync(
-        hostBearerPath(hostId, record.bearer_generation),
-        `${HOST_BEARER_SECRET}=${value}\n`,
-        { mode: HOST_ENROLLMENT_STATE_MODE, durable: true },
+      throw new Error(
+        `Committed enrollment bearer for host ${hostId} can only be changed through enrollment.`,
       );
-      return;
     }
     writeSecretFile(resolveHostDir(hostId), key, value, lockNamespace);
   });
@@ -1508,6 +1612,7 @@ export function createHostRegistryOperations(lockNamespace: PerUserLockNamespace
   return Object.freeze({
     readHostRegistry: () => readHostRegistry(lockNamespace),
     readHostMembershipSnapshots: () => readHostMembershipSnapshots(lockNamespace),
+    reconcileHostRollbackBearers: () => reconcileHostRollbackBearers(lockNamespace),
     getHost: (hostId: string) => getHost(hostId, lockNamespace),
     getHostMembershipSnapshot: (hostId: string) =>
       getHostMembershipSnapshot(hostId, lockNamespace),
@@ -1570,6 +1675,7 @@ export function createHostRegistryOperations(lockNamespace: PerUserLockNamespace
 export const hostRegistry = {
   readHostRegistry,
   readHostMembershipSnapshots,
+  reconcileHostRollbackBearers,
   getHost,
   getHostMembershipSnapshot,
   reserveHostProxyPort,

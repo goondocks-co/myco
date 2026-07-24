@@ -108,6 +108,7 @@ import { registerContentClaimFileStatusRoute } from './api/content-claims-file-s
 import { registerDrainHealthRoute } from './api/drain-health.js';
 import { registerHostMembershipRoutes } from './api/host-membership.js';
 import { registerHostServeStatusRoute } from './api/host-serve-status.js';
+import { reconcileHostRollbackBearers } from '../host/registry.js';
 import { registerTeamConfigRoutes } from './api/team-config.js';
 import { registerTeamAgentTaskRoutes } from './api/team-agent-tasks.js';
 import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
@@ -732,6 +733,7 @@ export async function main(): Promise<void> {
     runFunnelOff: defaultFunnelOffRunner,
   });
   return await externalMcpContainment.containWhile('retire', async () => {
+  const reconciledHostBearers = reconcileHostRollbackBearers();
 
   // `bootstrapVaultDir` is a *transitional* concept.
   //
@@ -949,6 +951,11 @@ export async function main(): Promise<void> {
     daemon_state: daemonService.statePath,
     embedding_provider: config.embedding.provider,
   });
+  if (reconciledHostBearers > 0) {
+    logger.info(LOG_KINDS.DAEMON_START, 'Reconciled rollback-readable host bearers', {
+      count: reconciledHostBearers,
+    });
+  }
   logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
   if (symbiontPlanTags.length > 0) {
     logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan transcript tags', { tags: symbiontPlanTags });
