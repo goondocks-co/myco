@@ -382,6 +382,19 @@ async function proveNativeTaskScheduler(
   assertCondition(!(await manager.isInstalled(taskLabel)), 'Task Scheduler task remained after uninstall');
 }
 
+async function runContractStage(
+  name: string,
+  stage: () => void | Promise<void>,
+): Promise<void> {
+  process.stderr.write(`WINDOWS_NATIVE_STAGE ${name} start\n`);
+  try {
+    await stage();
+  } catch (error) {
+    throw new Error(`Windows native contract stage ${name} failed`, { cause: error });
+  }
+  process.stderr.write(`WINDOWS_NATIVE_STAGE ${name} complete\n`);
+}
+
 async function runParentContract(): Promise<void> {
   assertCondition(process.platform === 'win32', 'Windows native contract must run on Windows');
   assertCondition(
@@ -408,10 +421,13 @@ async function runParentContract(): Promise<void> {
   let primaryError: unknown;
   const cleanupErrors: unknown[] = [];
   try {
-    proveLongUnicodeReplacement(scratch);
-    await proveNativeLockRoot(scratch);
-    await proveNativeLifecycleLock(scratch);
-    await proveNativeTaskScheduler(scratch, executable, taskLabel);
+    await runContractStage('long-unicode-replacement', () => proveLongUnicodeReplacement(scratch));
+    await runContractStage('native-lock-root', async () => await proveNativeLockRoot(scratch));
+    await runContractStage('native-lifecycle-lock', async () => await proveNativeLifecycleLock(scratch));
+    await runContractStage(
+      'native-task-scheduler',
+      async () => await proveNativeTaskScheduler(scratch, executable, taskLabel),
+    );
   } catch (error) {
     primaryError = error;
   } finally {
