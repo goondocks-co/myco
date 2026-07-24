@@ -541,6 +541,42 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     expect(res.status).toBe(404);
   });
 
+  test('a body grove_id outside the served Grove is refused without revealing the target', async () => {
+    const other = createGrove('Other', mycoHome);
+    listener = newListener();
+    const bound = await listener.bind(0);
+    if (!bound.ok) throw new Error('bind failed');
+    const url = new URL(`http://127.0.0.1:${bound.port}/mcp`);
+    const client = new Client({ name: 'external-test', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: { headers: { authorization: `Bearer ${TOKEN}`, ...scopedHeaders() } },
+    });
+    await client.connect(transport);
+
+    let message = 'DID NOT THROW';
+    try {
+      await client.callTool({
+        name: 'myco_plans',
+        arguments: { op: 'list', grove_id: other.id },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).not.toBe('DID NOT THROW');
+    expect(message).toContain(
+      "Requested Grove is outside this tool surface's authorized scope",
+    );
+    expect(message).not.toContain(other.id);
+
+    const plans = await client.callTool({
+      name: 'myco_plans',
+      arguments: { op: 'list', grove_id: grove.id },
+    });
+    expect(plans.isError).not.toBe(true);
+
+    await client.close();
+  });
+
   test('no headers at all -> 200: tenancy defaults to the served Grove (server-mode spec §1, Fix Round 1)', async () => {
     // Groves are never external-facing: a caller with no
     // x-myco-grove-id/x-myco-project-id headers at all still dispatches

@@ -363,6 +363,7 @@ export class ExternalMcpListener {
     const tools = createExternalTools(createMycoTools(this.deps.vaultDir, client, {
       requestContext,
       resolveDatabase: this.deps.resolveDatabase,
+      callContextConstraint: { allowedGroveId: servedGroveId },
     }));
     const server = createMcpProtocolServer(tools, {
       logger: this.deps.logger,

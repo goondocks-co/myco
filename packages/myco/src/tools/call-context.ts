@@ -53,6 +53,15 @@ export interface CallContextPivot {
   project_id?: unknown;
 }
 
+export interface CallContextConstraint {
+  allowedGroveId: string;
+}
+
+interface ResolveCallContextOptions {
+  mycoHome?: string;
+  constraint?: CallContextConstraint;
+}
+
 /**
  * Read scope-pivot fields off raw tool input. Returns trimmed strings
  * or undefined; rejects non-string values with a typed error so the
@@ -84,9 +93,19 @@ function readPivotField(value: unknown, name: string): string | undefined {
 export function resolveCallContext(
   baseContext: MycoRequestContext,
   pivot: { groveId?: string; projectId?: string },
-  options: { mycoHome?: string } = {},
+  options: ResolveCallContextOptions = {},
 ): MycoRequestContext {
   const { groveId, projectId } = pivot;
+  const requestedGroveId = groveId ?? baseContext.groveId;
+  if (
+    options.constraint
+    && requestedGroveId !== options.constraint.allowedGroveId
+  ) {
+    throw new ToolError(
+      'invalid_input',
+      "Requested Grove is outside this tool surface's authorized scope",
+    );
+  }
   if (!groveId && !projectId) return baseContext;
 
   // Same-Grove project pivot: swap projectId only. The DB and Grove
