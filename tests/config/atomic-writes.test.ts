@@ -85,7 +85,7 @@ describe('atomicWriteFileSync mode option', () => {
         updateTierConfigRaw(
           { kind: 'machine' },
           (raw) => {
-            raw.daemon = { external_mcp: { enabled: false, port: 8743 } };
+            raw.daemon = { log_level: 'debug' };
           },
           { mycoHome, durable: true },
         );
@@ -125,7 +125,7 @@ describe('atomicWriteFileSync mode option', () => {
         updateTierConfigRaw(
           { kind: 'machine' },
           (raw) => {
-            raw.daemon = { external_mcp: { enabled: false, port: 8743 } };
+            raw.daemon = { log_level: 'debug' };
           },
           { mycoHome },
         );

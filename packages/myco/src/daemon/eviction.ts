@@ -31,6 +31,7 @@ import {
   DAEMON_EVICT_POLL_MS,
   DAEMON_EVICT_TIMEOUT_MS,
   DAEMON_HEALTH_CHECK_TIMEOUT_MS,
+  EXTERNAL_MCP_ACTIVATION_POSTURE,
 } from '../constants.js';
 import {
   cleanStaleDaemonJson,
@@ -89,6 +90,26 @@ export interface EvictionScope {
   vaultDir?: string;
 }
 
+export interface MycoDaemonHeartbeat {
+  myco?: boolean;
+  version?: string;
+  pid?: number;
+  external_mcp_activation?: string;
+}
+
+/** True only when the responding daemon proves the retired activation posture. */
+export function isRetiredExternalMcpDaemon(
+  heartbeat: MycoDaemonHeartbeat,
+  expectedPid?: number,
+): boolean {
+  const pidMatches = expectedPid === undefined
+    ? typeof heartbeat.pid === 'number'
+    : heartbeat.pid === expectedPid;
+  return heartbeat.myco === true
+    && pidMatches
+    && heartbeat.external_mcp_activation === EXTERNAL_MCP_ACTIVATION_POSTURE;
+}
+
 /**
  * Probe `/health` on a local port. Returns the parsed heartbeat for a myco
  * daemon, null for anything else (non-myco listener, timeout, no listener).
@@ -96,14 +117,19 @@ export interface EvictionScope {
 export async function probeMycoDaemon(
   port: number,
   timeoutMs = DAEMON_HEALTH_CHECK_TIMEOUT_MS,
-): Promise<{ myco: boolean; version?: string; pid?: number } | null> {
+): Promise<MycoDaemonHeartbeat | null> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return null;
-    const data = await res.json() as { myco?: boolean; version?: string; pid?: number };
-    return data.myco === true ? { myco: true, version: data.version, pid: data.pid } : null;
+    const data = await res.json() as MycoDaemonHeartbeat;
+    return data.myco === true ? {
+      myco: true,
+      version: data.version,
+      pid: data.pid,
+      external_mcp_activation: data.external_mcp_activation,
+    } : null;
   } catch {
     return null;
   }

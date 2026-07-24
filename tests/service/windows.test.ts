@@ -260,6 +260,56 @@ describe('WindowsTaskServiceManager', () => {
     expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(false);
   });
 
+  test('uninstall never hard-ends or deletes when external containment cannot be confirmed', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir,
+      resolveDaemonPort: () => null,
+      withExternalMcpContainment: async () => {
+        throw new Error('external containment unavailable');
+      },
+    });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+
+    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/containment/i);
+
+    expect(runner.calls.some((call) => call[0] === '/end')).toBe(false);
+    expect(runner.calls.some((call) => call[0] === '/delete')).toBe(false);
+    expect(fs.existsSync(scriptPath)).toBe(true);
+  });
+
+  test('uninstall contains an orphan daemon before accepting an absent task', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const label = 'co.goondocks.myco.orphaned';
+    const scriptPath = path.join(scriptDir, `${label}.cmd`);
+    fs.writeFileSync(scriptPath, '@echo off\r\n');
+    const events: string[] = [];
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir,
+      resolveDaemonPort: () => 28876,
+      cooperativeShutdown: async (port) => {
+        events.push(`drain:${port}`);
+        return { kind: 'refused', status: 409, detail: 'containment failed' };
+      },
+      withExternalMcpContainment: async () => {
+        events.push('contain');
+        throw new Error('external containment unavailable');
+      },
+    });
+
+    await expect(mgr.uninstall(label)).rejects.toThrow(/containment/i);
+
+    expect(events).toEqual(['drain:28876', 'contain']);
+    expect(runner.calls).toEqual([]);
+    expect(fs.existsSync(scriptPath)).toBe(true);
+  });
+
   test('uninstall rejects a failed /end and preserves the launcher', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
@@ -288,10 +338,13 @@ describe('WindowsTaskServiceManager', () => {
     const stateCallIndexes = runner.calls
       .map((call, index) => call[0] === '/state' ? index : -1)
       .filter((index) => index >= 0);
-    expect(stateCallIndexes).toHaveLength(4);
     const deleteIndex = runner.calls.findIndex((call) => call[0] === '/delete');
-    expect(deleteIndex).toBeGreaterThan(stateCallIndexes[2]);
-    expect(deleteIndex).toBeLessThan(stateCallIndexes[3]);
+    const preDeleteStateIndexes = stateCallIndexes.filter((index) => index < deleteIndex);
+    const postDeleteStateIndexes = stateCallIndexes.filter((index) => index > deleteIndex);
+    expect(preDeleteStateIndexes.length).toBeGreaterThanOrEqual(3);
+    expect(postDeleteStateIndexes.length).toBeGreaterThanOrEqual(1);
+    expect(deleteIndex).toBeGreaterThan(preDeleteStateIndexes.at(-1)!);
+    expect(deleteIndex).toBeLessThan(postDeleteStateIndexes[0]!);
   });
 
   test('uninstall rejects a failed /delete and preserves the launcher', async () => {
@@ -325,7 +378,11 @@ describe('WindowsTaskServiceManager', () => {
 
   test('uninstall is idempotent when the task and launcher are already absent', async () => {
     const runner = new StubRunner();
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
+      withExternalMcpContainment: async (terminate) => await terminate(),
+    });
 
     await mgr.uninstall('co.goondocks.myco.absent');
 
@@ -366,25 +423,63 @@ describe('WindowsTaskServiceManager', () => {
   /** A runner that records schtasks calls into a shared ordered event log. */
   function recordingMgr(events: string[], opts: {
     resolveDaemonPort?: (label: string) => number | null;
-    cooperativeShutdown?: (port: number) => Promise<boolean>;
+    cooperativeShutdown?: (port: number) => Promise<
+      import('../../packages/myco/src/service/cooperative-shutdown').CooperativeShutdownResult
+    >;
+    withExternalMcpContainment?: <T>(
+      continuation: () => Promise<T>,
+    ) => Promise<T>;
   }) {
     const runner: SchtasksRunner = {
       async run(args) { events.push('schtasks:' + args.join(' ')); return { stdout: '', exitCode: 0 }; },
       async queryState() { return 'absent'; },
     };
-    return new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-'), ...opts });
+    return new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
+      withExternalMcpContainment: async (terminate) => {
+        events.push('contain');
+        return await terminate();
+      },
+      ...opts,
+    });
   }
 
   test('restart() drains via cooperative shutdown BEFORE schtasks /end, then /run', async () => {
     const events: string[] = [];
-    const mgr = recordingMgr(events, {
+    const runner: SchtasksRunner = {
+      async run(args) {
+        events.push('schtasks:' + args.join(' '));
+        return { stdout: '', exitCode: 0 };
+      },
+      async queryState() {
+        events.push('state');
+        return events.includes('schtasks:/end /tn co.goondocks.myco-dev')
+          ? 'ready'
+          : 'running';
+      },
+    };
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
       resolveDaemonPort: () => 28876,
-      cooperativeShutdown: async (port) => { events.push('drain:' + port); return true; },
+      cooperativeShutdown: async (port) => {
+        events.push('drain:' + port);
+        return { kind: 'stopped' };
+      },
+      withExternalMcpContainment: async (terminate) => {
+        events.push('contain:start');
+        await terminate();
+        events.push('contain:end');
+      },
     });
     await mgr.restart('co.goondocks.myco-dev');
     expect(events).toEqual([
       'drain:28876',
+      'contain:start',
       'schtasks:/end /tn co.goondocks.myco-dev',
+      'state',
+      'contain:end',
       'schtasks:/run /tn co.goondocks.myco-dev',
     ]);
   });
@@ -393,10 +488,14 @@ describe('WindowsTaskServiceManager', () => {
     const events: string[] = [];
     const mgr = recordingMgr(events, {
       resolveDaemonPort: () => 28876,
-      cooperativeShutdown: async (port) => { events.push('drain:' + port); return true; },
+      cooperativeShutdown: async (port) => { events.push('drain:' + port); return { kind: 'stopped' }; },
     });
     await mgr.stop('co.goondocks.myco-dev');
-    expect(events).toEqual(['drain:28876', 'schtasks:/end /tn co.goondocks.myco-dev']);
+    expect(events).toEqual([
+      'drain:28876',
+      'contain',
+      'schtasks:/end /tn co.goondocks.myco-dev',
+    ]);
   });
 
   test('restart() skips the drain when the daemon port is unknown (still ends + runs)', async () => {
@@ -404,17 +503,18 @@ describe('WindowsTaskServiceManager', () => {
     let drained = false;
     const mgr = recordingMgr(events, {
       resolveDaemonPort: () => null,
-      cooperativeShutdown: async () => { drained = true; return true; },
+      cooperativeShutdown: async () => { drained = true; return { kind: 'stopped' }; },
     });
     await mgr.restart('co.goondocks.myco');
     expect(drained).toBe(false);
     expect(events).toEqual([
+      'contain',
       'schtasks:/end /tn co.goondocks.myco',
       'schtasks:/run /tn co.goondocks.myco',
     ]);
   });
 
-  test('restart() still hard-ends when the cooperative drain throws (never strands)', async () => {
+  test('restart() hard-ends after out-of-process containment when cooperative drain throws', async () => {
     const events: string[] = [];
     const mgr = recordingMgr(events, {
       resolveDaemonPort: () => 1,
@@ -422,9 +522,28 @@ describe('WindowsTaskServiceManager', () => {
     });
     await mgr.restart('co.goondocks.myco');
     expect(events).toEqual([
+      'contain',
       'schtasks:/end /tn co.goondocks.myco',
       'schtasks:/run /tn co.goondocks.myco',
     ]);
+  });
+
+  test('restart() does not hard-end after the daemon explicitly refuses shutdown', async () => {
+    const events: string[] = [];
+    const mgr = recordingMgr(events, {
+      resolveDaemonPort: () => 28876,
+      cooperativeShutdown: async (port) => {
+        events.push('drain:' + port);
+        return { kind: 'refused', status: 409 };
+      },
+      withExternalMcpContainment: async () => {
+        events.push('contain');
+        throw new Error('external containment unavailable');
+      },
+    });
+
+    await expect(mgr.restart('co.goondocks.myco')).rejects.toThrow(/containment/i);
+    expect(events).toEqual(['drain:28876', 'contain']);
   });
 });
 

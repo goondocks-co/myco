@@ -29,6 +29,7 @@ import {
   UnsafeDotPathError,
 } from '../../utils/dot-path.js';
 import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
+import { isExternalMcpConfigPath } from '../external-mcp-containment.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import { projectTreeAvailable } from '../../vault/resolve.js';
 
@@ -462,6 +463,8 @@ interface TierPutOptions<TConfig> {
   loadView: () => TConfig;
   /** Optional patch sanitizer — strip fields the user can't write to this tier. */
   sanitizePatch?: (patch: Record<string, unknown>) => Record<string, unknown>;
+  /** Reject the complete request when any operation touches an authority-owned path. */
+  rejectProtectedPath?: (path: string) => boolean;
   /**
    * Optional predicate marking a path as not user-writable via this surface.
    * List-delta ops targeting such a path are dropped, mirroring how
@@ -514,6 +517,29 @@ async function handlePutTierConfig<TConfig>(
     removeOpsRaw,
   );
   if (unsafePathResponse) return { response: unsafePathResponse, touchedPaths: [] };
+
+  const incomingPatchLeaves = enumerateLeafPaths(incoming);
+  const rejectedPaths = options.rejectProtectedPath
+    ? [...new Set([
+        ...incomingPatchLeaves,
+        ...clearListOrError,
+        ...addOpsRaw.map((op) => op.path),
+        ...removeOpsRaw.map((op) => op.path),
+      ].filter((candidate) => options.rejectProtectedPath!(candidate)))]
+    : [];
+  if (rejectedPaths.length > 0) {
+    return {
+      response: {
+        status: 409,
+        body: {
+          error: 'protected_config_path',
+          message: 'daemon.external_mcp is managed by the external MCP containment authority',
+          paths: rejectedPaths,
+        },
+      },
+      touchedPaths: [],
+    };
+  }
 
   const patch = options.sanitizePatch
     ? options.sanitizePatch(incoming as Record<string, unknown>)
@@ -656,6 +682,7 @@ export async function handlePutMachineConfig(
       const { grove: _grove, ...rest } = patch;
       return rest;
     },
+    rejectProtectedPath: isExternalMcpConfigPath,
     // List-delta ops targeting grove.* are dropped, same as the patch strip.
     isProtectedPath: (path) => path === 'grove' || path.startsWith('grove.'),
   });

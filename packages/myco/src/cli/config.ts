@@ -10,6 +10,7 @@ import { loadProjectManifest } from '../config/project-manifest.js';
 import { withValue } from '../config/updates.js';
 import { getAtPath, setAtPath } from '../utils/dot-path.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
+import { isExternalMcpConfigPath } from '../daemon/external-mcp-containment.js';
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const [subcommand, key, ...rest] = args;
@@ -47,6 +48,12 @@ function configGet(dotPath: string, vaultDir: string): void {
 
 function configSet(dotPath: string, rawValue: string, vaultDir: string): void {
   const value = parseValue(rawValue);
+
+  if (isExternalMcpConfigPath(dotPath)) {
+    console.error('daemon.external_mcp is managed by the external MCP containment authority');
+    process.exit(1);
+    return;
+  }
 
   // Scope-aware dispatch: write the value into the tier file that owns the
   // path so it actually takes effect (a wrong-tier write is pruned at merge

@@ -6,11 +6,15 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderWindowsServiceScript } from './windows-task.js';
 import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from './paths.js';
-import { requestCooperativeShutdown } from './cooperative-shutdown.js';
+import {
+  requestCooperativeShutdownResult,
+  type CooperativeShutdownResult,
+} from './cooperative-shutdown.js';
 import {
   resolveServiceDir,
   DAEMON_STATE_FILENAME,
 } from '../grove/paths.js';
+import { withExternalMcpContainment } from './daemon-termination.js';
 import type {
   InstallOptions,
   InstallResult,
@@ -105,13 +109,22 @@ export interface WindowsManagerOptions {
   /** Resolve the running daemon's loopback port for a label (reads daemon.json). */
   resolveDaemonPort?: (label: string) => number | null;
   /** Drain the daemon over HTTP before a hard `schtasks /end`. */
-  cooperativeShutdown?: (port: number) => Promise<boolean>;
+  cooperativeShutdown?: (port: number) => Promise<CooperativeShutdownResult>;
+  /** Hold external MCP containment across every `/end` and exit confirmation. */
+  withExternalMcpContainment?: <T>(continuation: () => Promise<T>) => Promise<T>;
   /** Wait between Task Scheduler teardown observations. */
   sleep?: (delayMs: number) => Promise<void>;
 }
 
 const WINDOWS_TEARDOWN_TIMEOUT_MS = 10_000;
 const WINDOWS_TEARDOWN_POLL_INTERVAL_MS = 100;
+
+export class ExternalMcpHardKillBlockedError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('External MCP containment was not confirmed; refusing hard process termination', options);
+    this.name = 'ExternalMcpHardKillBlockedError';
+  }
+}
 
 /**
  * Windows daemon service via Task Scheduler — the peer of the launchd /
@@ -138,14 +151,19 @@ export class WindowsTaskServiceManager implements ServiceManager {
   private readonly runner: SchtasksRunner;
   readonly scriptDir: string;
   private readonly resolveDaemonPort: (label: string) => number | null;
-  private readonly cooperativeShutdown: (port: number) => Promise<boolean>;
+  private readonly cooperativeShutdown: (port: number) => Promise<CooperativeShutdownResult>;
+  private readonly withExternalMcpContainment: <T>(
+    continuation: () => Promise<T>,
+  ) => Promise<T>;
   private readonly sleep: (delayMs: number) => Promise<void>;
 
   constructor(opts: WindowsManagerOptions = {}) {
     this.runner = opts.runner ?? new RealSchtasksRunner();
     this.scriptDir = opts.scriptDir ?? path.join(os.homedir(), '.myco', 'service');
     this.resolveDaemonPort = opts.resolveDaemonPort ?? readDaemonPortForLabel;
-    this.cooperativeShutdown = opts.cooperativeShutdown ?? requestCooperativeShutdown;
+    this.cooperativeShutdown = opts.cooperativeShutdown ?? requestCooperativeShutdownResult;
+    this.withExternalMcpContainment = opts.withExternalMcpContainment
+      ?? withExternalMcpContainment;
     this.sleep = opts.sleep ?? sleep;
   }
 
@@ -154,18 +172,43 @@ export class WindowsTaskServiceManager implements ServiceManager {
   }
 
   /**
-   * Drain the daemon gracefully over HTTP before `schtasks /end` hard-kills it.
-   * `/end` is an uncatchable TerminateProcess, so without this the daemon's
-   * shutdown (in-flight runs, team-sync outbox, DB close) never runs and every
-   * Windows stop/restart/update defers that work to the next boot. Best-effort:
-   * a missing port or a wedged drain falls through to the `/end` that follows.
+   * Ask the daemon to drain before the independent containment gate decides
+   * whether an uncatchable Task Scheduler termination is safe.
    */
   private async drainBeforeEnd(label: string): Promise<void> {
     const port = this.resolveDaemonPort(label);
     if (port === null) return;
     try {
       await this.cooperativeShutdown(port);
-    } catch { /* fall through to schtasks /end */ }
+    } catch {
+      // The out-of-process containment gate determines hard-kill safety.
+    }
+  }
+
+  private async hardEnd(
+    label: string,
+    options: { allowAbsent?: boolean } = {},
+  ): Promise<boolean> {
+    await this.drainBeforeEnd(label);
+    let terminationStarted = false;
+    try {
+      return await this.withExternalMcpContainment(async () => {
+        terminationStarted = true;
+        if (options.allowAbsent
+          && await this.requireTaskState(label) === 'absent') {
+          return false;
+        }
+        assertRunSucceeded(
+          await this.runner.run(['/end', '/tn', label]),
+          `schtasks /end /tn ${label}`,
+        );
+        await this.waitUntilNotRunning(label);
+        return true;
+      });
+    } catch (error) {
+      if (terminationStarted) throw error;
+      throw new ExternalMcpHardKillBlockedError({ cause: error });
+    }
   }
 
   async isInstalled(label: string): Promise<boolean> {
@@ -223,17 +266,12 @@ export class WindowsTaskServiceManager implements ServiceManager {
 
   async uninstall(label: string): Promise<void> {
     const scriptPath = this.scriptPath(label);
-    const initial = await this.requireTaskState(label);
-    if (initial === 'absent') {
+    if (!await this.hardEnd(label, { allowAbsent: true })) {
       if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath);
       return;
     }
 
-    assertRunSucceeded(
-      await this.runner.run(['/end', '/tn', label]),
-      `schtasks /end /tn ${label}`,
-    );
-    await this.waitUntilNotRunning(label);
+    await this.hardEnd(label);
     assertRunSucceeded(
       await this.runner.run(['/delete', '/tn', label, '/f']),
       `schtasks /delete /tn ${label}`,
@@ -247,13 +285,11 @@ export class WindowsTaskServiceManager implements ServiceManager {
   }
 
   async stop(label: string): Promise<void> {
-    await this.drainBeforeEnd(label);
-    await this.runner.run(['/end', '/tn', label]);
+    await this.hardEnd(label);
   }
 
   async restart(label: string): Promise<void> {
-    await this.drainBeforeEnd(label);
-    await this.runner.run(['/end', '/tn', label]);
+    await this.hardEnd(label);
     assertRunSucceeded(await this.runner.run(['/run', '/tn', label]), `schtasks /run /tn ${label}`);
   }
 

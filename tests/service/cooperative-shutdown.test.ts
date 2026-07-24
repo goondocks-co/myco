@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { requestCooperativeShutdown } from '../../packages/myco/src/service/cooperative-shutdown';
+import {
+  requestCooperativeShutdown,
+  requestCooperativeShutdownResult,
+} from '../../packages/myco/src/service/cooperative-shutdown';
 
 const noSleep = async () => {};
 
@@ -39,5 +42,12 @@ describe('requestCooperativeShutdown', () => {
   test('returns false when the POST itself throws', async () => {
     const fetchFn = (async () => { throw new Error('connection refused'); }) as unknown as typeof fetch;
     expect(await requestCooperativeShutdown(28876, { fetchFn })).toBe(false);
+  });
+
+  test('distinguishes an explicit shutdown refusal from an unavailable daemon', async () => {
+    const fetchFn = (async () => ({ status: 409, ok: false }) as Response) as unknown as typeof fetch;
+
+    expect(await requestCooperativeShutdownResult(28876, { fetchFn, sleep: noSleep }))
+      .toEqual({ kind: 'refused', status: 409 });
   });
 });

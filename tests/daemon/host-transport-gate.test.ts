@@ -112,7 +112,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, from: 'mcp' }));
     });
-    server.onShutdownRequest(() => { shutdownCalls += 1; });
+    server.onShutdownRequest(async () => () => { shutdownCalls += 1; });
 
     await server.start(0);
     loopback = `http://127.0.0.1:${server.port}`;
@@ -527,7 +527,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
       embeddingStatusCalls += 1;
       return { body: { ok: true, from: 'embedding-status' } };
     });
-    server.onShutdownRequest(() => { shutdownCalls += 1; });
+    server.onShutdownRequest(async () => () => { shutdownCalls += 1; });
 
     await server.start(0);
     overlay = `http://127.0.0.1:${server.overlayPort}`;

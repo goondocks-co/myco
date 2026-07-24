@@ -47,7 +47,11 @@ import {
   type HostServeRuntime,
 } from './host-serve.js';
 import { appendHostAction } from '../host/action-log.js';
-import { HOST_ENROLL_ROUTE, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '../constants.js';
+import {
+  EXTERNAL_MCP_ACTIVATION_POSTURE,
+  HOST_ENROLL_ROUTE,
+  REFUSAL_LOG_THROTTLE_INTERVAL_MS,
+} from '../constants.js';
 import { shouldLogOncePerInterval } from './log-throttle.js';
 import { type DaemonState } from './service-state.js';
 import {
@@ -130,6 +134,8 @@ export type RawRouteHandler = (
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ) => Promise<void>;
+type ShutdownRequestContinuation = () => void | Promise<void>;
+type ShutdownRequestHandler = () => Promise<ShutdownRequestContinuation>;
 
 export class DaemonServer {
   port = 0;
@@ -169,7 +175,7 @@ export class DaemonServer {
    * drains THIS daemon on Windows, where a cross-process SIGTERM maps to an
    * uncatchable `TerminateProcess` and the signal-based shutdown never runs.
    */
-  private shutdownRequestHandler: (() => void) | null = null;
+  private shutdownRequestHandler: ShutdownRequestHandler | null = null;
   private runtimeCache: GroveRuntimeCache;
   private ownsRuntimeCache: boolean;
   /**
@@ -258,7 +264,7 @@ export class DaemonServer {
    * Called from main.ts once the graceful-shutdown closure exists. Until then
    * the route reports 503 so a caller falls back to signals.
    */
-  onShutdownRequest(handler: () => void): void {
+  onShutdownRequest(handler: ShutdownRequestHandler): void {
     this.shutdownRequestHandler = handler;
   }
 
@@ -532,6 +538,7 @@ export class DaemonServer {
       res.end(JSON.stringify({
         myco: true,
         version: this.version,
+        external_mcp_activation: EXTERNAL_MCP_ACTIVATION_POSTURE,
         pid: process.pid,
         uptime: process.uptime(),
       }));
@@ -563,11 +570,21 @@ export class DaemonServer {
         res.end(JSON.stringify({ error: 'shutdown_not_ready' }));
         return;
       }
-      // Respond BEFORE tearing down so the caller observes the 202, then start
-      // the graceful drain only once the body has flushed to the socket.
+      let continueShutdown: ShutdownRequestContinuation;
+      try {
+        continueShutdown = await handler();
+      } catch {
+        res.writeHead(409, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'shutdown_blocked' }));
+        return;
+      }
       res.writeHead(202, { 'Content-Type': 'application/json', ...versionHeader });
       res.end(JSON.stringify({ myco: true, shutting_down: true }), () => {
-        handler();
+        void Promise.resolve(continueShutdown()).catch((error) => {
+          this.logger.error(LOG_KINDS.DAEMON_START, 'Prepared shutdown continuation failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       });
     });
 

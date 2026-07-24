@@ -39,11 +39,9 @@
  * refusal. A hostile header can never redirect resolution to another Grove:
  * `servedGroveRefusal` still runs as defense in depth after resolution.
  *
- * Binding is opt-in and persisted (`daemon.external_mcp` config): the
- * `PUT /api/team/external-mcp/toggle` route (`api/team-config.ts`) calls
- * `bind`/`unbind` live, and `daemon/main.ts` calls `bind` again at boot when
- * the toggle is already on, so a restart re-binds before Funnel traffic can
- * hit a dead port.
+ * Runtime ownership is controlled by `ExternalMcpContainmentAuthority`.
+ * Public activation is unavailable; persisted or interrupted activation
+ * state is driven to confirmed Funnel-off before this listener is released.
  */
 import crypto from 'node:crypto';
 import http from 'node:http';
@@ -70,6 +68,7 @@ import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../constants.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { applyDaemonHttpServerLimits, DAEMON_HTTP_LISTEN_BACKLOG, gracefullyCloseHttpServer } from './server.js';
 import type { Logger } from './logger.js';
+import type { FunnelOffRunner } from './external-mcp-containment.js';
 
 const EXTERNAL_MCP_PATH = '/mcp';
 /** Same fast-shutdown grace window the loopback/overlay listeners use. */
@@ -140,8 +139,7 @@ function writeJson(res: http.ServerResponse, status: number, body: unknown): voi
 
 /**
  * The dedicated external MCP listener. One instance lives for the daemon
- * process's lifetime; `bind`/`unbind` are called live by the toggle route
- * and at boot (when persisted config says the toggle is on).
+ * process lifetime so containment can retain or release its port safely.
  */
 export class ExternalMcpListener {
   private readonly deps: ExternalMcpListenerDeps;
@@ -382,50 +380,181 @@ export class ExternalMcpListener {
 }
 
 // ---------------------------------------------------------------------------
-// Tailscale Funnel — injectable runner seam (live Funnel is rig-validated in
-// Task 12; the runner itself is not unit-testable, so tests inject a stub).
+// Tailscale Funnel containment runner.
 // ---------------------------------------------------------------------------
 
-export type FunnelRunner = (port: number, on: boolean) => Promise<{ ok: boolean; detail: string; url?: string }>;
+export interface TailscaleCommandResult {
+  stdout: string;
+}
 
-/** `Available on the internet: https://…` — the line the modern Funnel CLI
- *  prints to stdout on a successful `--bg` enable. */
-const FUNNEL_URL_PATTERN = /https:\/\/\S+/;
+export type TailscaleCommandRunner = (
+  args: string[],
+) => Promise<TailscaleCommandResult>;
+
+interface FunnelWebSelector {
+  hostPort: string;
+  publicPort: number;
+  mount: string;
+  proxy: string;
+}
+
+interface FunnelStatusSnapshot {
+  selectors: FunnelWebSelector[];
+  allowedHostPorts: Set<string>;
+}
+
+function mapping(value: unknown, field: string): Record<string, unknown> {
+  if (value === undefined) return {};
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${field} must be a mapping`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function publicPortFromHostPort(hostPort: string): number {
+  const match = hostPort.match(/:(\d+)$/);
+  const port = match ? Number(match[1]) : Number.NaN;
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`invalid Funnel host-port selector: ${hostPort}`);
+  }
+  return port;
+}
+
+function proxyTargetsLocalPort(proxy: string, targetPort: number): boolean {
+  try {
+    const parsed = new URL(proxy);
+    return (
+      parsed.protocol === 'http:'
+      && ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname)
+      && Number(parsed.port) === targetPort
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readFunnelStatus(
+  rawStatus: string,
+  targetPort: number,
+): FunnelStatusSnapshot {
+  const parsed = JSON.parse(rawStatus) as unknown;
+  const config = mapping(parsed, 'Funnel status');
+  const allowFunnel = mapping(config.AllowFunnel, 'Funnel status AllowFunnel');
+  const web = mapping(config.Web, 'Funnel status Web');
+  const tcp = mapping(config.TCP, 'Funnel status TCP');
+  const selectors: FunnelWebSelector[] = [];
+  const allowedHostPorts = new Set<string>();
+
+  for (const [hostPort, allowed] of Object.entries(allowFunnel)) {
+    if (typeof allowed !== 'boolean') {
+      throw new Error(`Funnel status AllowFunnel.${hostPort} must be boolean`);
+    }
+    if (!allowed) continue;
+    allowedHostPorts.add(hostPort);
+    const webConfig = web[hostPort];
+    if (webConfig === undefined) continue;
+    const handlers = mapping(
+      mapping(webConfig, `Funnel status Web.${hostPort}`).Handlers,
+      `Funnel status Web.${hostPort}.Handlers`,
+    );
+    const publicPort = publicPortFromHostPort(hostPort);
+    const tcpHandler = mapping(
+      tcp[String(publicPort)],
+      `Funnel status TCP.${publicPort}`,
+    );
+    if (tcpHandler.HTTPS !== true) {
+      throw new Error(`Funnel status TCP.${publicPort} is not an HTTPS handler`);
+    }
+    for (const [mount, rawHandler] of Object.entries(handlers)) {
+      const handler = mapping(
+        rawHandler,
+        `Funnel status Web.${hostPort}.Handlers.${mount}`,
+      );
+      if (handler.Proxy === undefined) continue;
+      if (typeof handler.Proxy !== 'string') {
+        throw new Error(`Funnel handler proxy at ${hostPort}${mount} must be a string`);
+      }
+      if (proxyTargetsLocalPort(handler.Proxy, targetPort)) {
+        selectors.push({
+          hostPort,
+          publicPort,
+          mount,
+          proxy: handler.Proxy,
+        });
+      }
+    }
+  }
+
+  return { selectors, allowedHostPorts };
+}
 
 /**
- * Shells out to the MODERN Tailscale Funnel CLI. The pre-1.40 `tailscale
- * funnel <port> on|off` form this replaces no longer exists in current
- * Tailscale releases (verified against
- * https://tailscale.com/docs/reference/tailscale-cli/funnel, fetched
- * 2026-07-14): the synopsis is `tailscale funnel [flags] <target>`, `--bg`
- * backgrounds the process and prints the public HTTPS URL to stdout on
- * success, and disabling a config requires repeating every flag the enable
- * call used with `off` appended — so the disable call below intentionally
- * mirrors the enable call's exact flags (`--bg <port>`), not the bare
- * `--https=443 off` form, which would only match an enable that had
- * explicitly set `--https`.
- *
- * The public URL is captured from stdout and threaded into the toggle
- * response as `funnel.url` (server-mode design spec §7) — `undefined` when
- * the CLI's output doesn't contain one (e.g. the `off` call, or an
- * unexpected output shape), never a thrown error over a missing URL.
- *
- * The real runner used in production; every test injects a stub instead.
+ * Converts each affected host-port to tailnet-only Serve before removing the
+ * handler that targets the known local port, then verifies both facts.
  */
-export const defaultFunnelRunner: FunnelRunner = async (port, on) => {
+export function createFunnelOffRunner(
+  runCommand: TailscaleCommandRunner,
+): FunnelOffRunner {
+  return async (port) => {
+    try {
+      const before = await runCommand(['funnel', 'status', '--json']);
+      const beforeStatus = readFunnelStatus(before.stdout, port);
+      const selectors = beforeStatus.selectors;
+      for (const selector of selectors) {
+        await runCommand([
+          'serve',
+          '--bg',
+          '--yes',
+          `--https=${selector.publicPort}`,
+          `--set-path=${selector.mount}`,
+          selector.proxy,
+        ]);
+        await runCommand([
+          'serve',
+          '--bg',
+          '--yes',
+          `--https=${selector.publicPort}`,
+          `--set-path=${selector.mount}`,
+          'off',
+        ]);
+      }
+      const after = selectors.length > 0
+        ? await runCommand(['funnel', 'status', '--json'])
+        : before;
+      const afterStatus = readFunnelStatus(after.stdout, port);
+      const remainingAllowedHostPorts = new Set(
+        selectors
+          .map((selector) => selector.hostPort)
+          .filter((hostPort) => afterStatus.allowedHostPorts.has(hostPort)),
+      );
+      if (afterStatus.selectors.length > 0 || remainingAllowedHostPorts.size > 0) {
+        return {
+          ok: false,
+          detail: remainingAllowedHostPorts.size > 0
+            ? `public Funnel remains enabled for ${[...remainingAllowedHostPorts].join(', ')}`
+            : `public Funnel still targets local port ${port}`,
+        };
+      }
+      return {
+        ok: true,
+        detail: `confirmed no public Funnel handler targets local port ${port}`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+}
+
+export const defaultFunnelOffRunner: FunnelOffRunner = createFunnelOffRunner(async (args) => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const execFileAsync = promisify(execFile);
-  const args = on ? ['funnel', '--bg', String(port)] : ['funnel', '--bg', String(port), 'off'];
-  try {
-    const { stdout } = await execFileAsync('tailscale', args);
-    const match = stdout.match(FUNNEL_URL_PATTERN);
-    return {
-      ok: true,
-      detail: `tailscale ${args.join(' ')}`,
-      ...(match ? { url: match[0] } : {}),
-    };
-  } catch (err) {
-    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
-  }
-};
+  const { stdout } = await execFileAsync('tailscale', args, {
+    timeout: 10_000,
+    encoding: 'utf-8',
+  });
+  return { stdout };
+});

@@ -29,6 +29,7 @@ import { createSecretsOperations } from '@myco/config/secrets.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '@myco/constants.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+import { seedExternalMcpConfig } from '../../helpers/external-mcp-config-fixture.js';
 
 const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
 const createHostServeStatusHandler = (deps: HostServeStatusRouteDeps) =>
@@ -224,9 +225,12 @@ describe('GET /api/host-serve/status', () => {
       daemon: {
         ...machine.daemon,
         host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id },
-        external_mcp: { enabled: true, port: machine.daemon.external_mcp.port },
       },
     }, home);
+    seedExternalMcpConfig(home, {
+      enabled: true,
+      port: machine.daemon.external_mcp.port,
+    });
     const BEARER_SENTINEL = 'sk-sentinel-host-serve-bearer-ABCDEF1234567890';
     const TOKEN_SENTINEL = 'sk-sentinel-external-mcp-token-ZYXWVUTSRQ9876';
     writeSecret(home, HOST_EXTERNAL_MCP_TOKEN_SECRET, TOKEN_SENTINEL);

@@ -543,15 +543,10 @@ const HostServeSchema = z.object({
 }).strict();
 
 /**
- * External read-only MCP opt-in (machine tier, under `daemon.external_mcp`,
- * server-mode design spec §7). `enabled` gates the dedicated Funnel-fronted
- * listener; `port` is the fixed loopback port it binds (and the port a
- * member points `tailscale funnel` at). Off by default — exposure is opt-in
- * even on `--serve`. The listener re-binds from this persisted state at
- * daemon boot when `enabled` is true, so a restart never leaves the toggle
- * on with a dead port. The access token itself is NOT here — it lives in
- * machine `secrets.env` under `HOST_EXTERNAL_MCP_TOKEN_SECRET` (secrets
- * never in YAML).
+ * External read-only MCP containment state. `enabled:true` remains parseable;
+ * daemon boot changes it to false only after exact-port Funnel-off succeeds.
+ * `port` identifies the port containment must reconcile. The access token
+ * remains outside YAML in the machine secret store.
  */
 export const ExternalMcpSchema = z.object({
   enabled: z.boolean().default(false),
@@ -608,10 +603,7 @@ const MachineDaemonSchema = z.object({
    */
   host_serve: HostServeSchema.default(() => HostServeSchema.parse({})),
   /**
-   * External read-only MCP (Task 10, server-mode design spec §7) — this
-   * machine's opt-in to fronting its served Grove's read-only tool surface
-   * on the public internet via Tailscale Funnel. Machine tier for the same
-   * reason as `host_serve`: a per-machine daemon mechanic, never git-shared.
+   * Machine-owned external MCP containment state, never git-shared.
    */
   external_mcp: ExternalMcpSchema.default(() => ExternalMcpSchema.parse({})),
 });
@@ -752,6 +744,7 @@ export const ProjectConfigSchema = z.object({
 export const PersonalConfigSchema = z.record(z.string(), z.unknown());
 
 export type MachineConfig = z.output<typeof MachineConfigSchema>;
+export type ExternalMcpConfig = z.output<typeof ExternalMcpSchema>;
 export type GroveConfig = z.output<typeof GroveConfigSchema>;
 export type ProjectConfig = z.output<typeof ProjectConfigSchema>;
 export type PersonalConfig = z.input<typeof PersonalConfigSchema>;
