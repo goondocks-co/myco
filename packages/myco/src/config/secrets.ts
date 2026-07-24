@@ -15,17 +15,18 @@
  * `tightenSecretsPermissions` (called from `loadSecrets`).
  */
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
-import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { withFileLockSync } from '../utils/lifecycle-lock.js';
+import { TextDecoder } from 'node:util';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
+import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 
 export const SECRETS_FILE = 'secrets.env';
 const SECRETS_FILE_MODE = 0o600;
 const SECRETS_DIR_MODE = 0o700;
 
-function canonicalPath(target: string): string {
+function canonicalDirectory(target: string): string {
   let current = path.resolve(target);
   const unresolved: string[] = [];
   while (!fs.existsSync(current)) {
@@ -45,38 +46,40 @@ function canonicalPath(target: string): string {
 }
 
 /**
- * Stable external lock identity for one secrets store. The lock deliberately
- * lives outside the vault so a vault rename or delete cannot replace its inode
- * while a transaction is in flight. flock/LockFileEx releases it on process
- * exit, including crashes; normal callers block only for the synchronous
- * read-modify-write critical section.
+ * Stable external lock identity for one secrets store. The lock root is tied
+ * to the operating-system account rather than TMPDIR, HOME, or MYCO_HOME, so
+ * sibling Myco installs and processes with different temporary directories
+ * still coordinate. The key is the canonical vault directory plus the literal
+ * secrets filename; replacing an exact-file symlink cannot change it.
  */
-export function secretStoreLockPath(vaultDir: string): string {
-  const uid = typeof process.getuid === 'function' ? String(process.getuid()) : 'user';
-  const lockDir = path.join(os.tmpdir(), `myco-secrets-locks-${uid}`);
+function secretStoreLockPath(vaultDir: string): string {
+  const lockDir = path.join(resolvePerUserLocksDir(), 'secrets');
   fs.mkdirSync(lockDir, { recursive: true, mode: SECRETS_DIR_MODE });
   try { fs.chmodSync(lockDir, SECRETS_DIR_MODE); } catch { /* platform ACLs apply */ }
-  const storePath = canonicalPath(path.join(vaultDir, SECRETS_FILE));
+  const storePath = path.join(canonicalDirectory(vaultDir), SECRETS_FILE);
   const key = createHash('sha256').update(storePath).digest('hex');
   return path.join(lockDir, `${key}.lock`);
 }
 
 function withSecretsTransaction<T>(vaultDir: string, fn: () => T): T {
-  return withFileLockSync(secretStoreLockPath(vaultDir), fn);
+  return withSecretsTransactions([vaultDir], fn);
 }
 
 function withSecretsTransactions<T>(vaultDirs: readonly string[], fn: () => T): T {
-  const locks = [...new Set(vaultDirs.map(secretStoreLockPath))].sort();
-  const run = (index: number): T => index === locks.length
-    ? fn()
-    : withFileLockSync(locks[index]!, () => run(index + 1));
-  return run(0);
-}
-
-function assertSecretSnapshotFilename(fileName: string): void {
-  if (!fileName || fileName === '.' || fileName === '..' || fileName.includes('/') || fileName.includes('\\')) {
-    throw new Error('Secret snapshot filename must be a single path segment');
+  const RETRY = Symbol('retry-secret-locks');
+  const MAX_LOCK_RETRIES = 8;
+  for (let attempt = 0; attempt < MAX_LOCK_RETRIES; attempt += 1) {
+    const locks = [...new Set(vaultDirs.map(secretStoreLockPath))].sort();
+    const run = (index: number): T | typeof RETRY => {
+      if (index < locks.length) return withFileLockSync(locks[index]!, () => run(index + 1));
+      const freshLocks = [...new Set(vaultDirs.map(secretStoreLockPath))].sort();
+      if (freshLocks.length !== locks.length || freshLocks.some((lock, i) => lock !== locks[i])) return RETRY;
+      return fn();
+    };
+    const result = run(0);
+    if (result !== RETRY) return result;
   }
+  throw new Error('Secret store identity did not stabilize while acquiring locks');
 }
 
 export class InvalidSecretValueError extends Error {
@@ -106,7 +109,7 @@ export function readSecrets(vaultDir: string): Record<string, string> {
 
 /** Decode one exact secret file path. Callers that mutate the file must hold its store transaction. */
 export function readSecretsFile(secretsPath: string): Record<string, string> {
-  return decodeSecrets(fs.readFileSync(secretsPath, 'utf-8'));
+  return decodeSecrets(decodeSecretBuffer(fs.readFileSync(secretsPath)));
 }
 
 /**
@@ -119,6 +122,7 @@ export function readSecretsFile(secretsPath: string): Record<string, string> {
 export function writeSecret(vaultDir: string, key: string, value: string): void {
   assertValidSecretEntry(key, value);
   withSecretsTransaction(vaultDir, () => {
+    assertMutableSecretsPath(vaultDir);
     const existing = readSecrets(vaultDir);
     existing[key] = value;
     persistSecretsUnlocked(vaultDir, existing);
@@ -182,6 +186,7 @@ export function writeSecretIfAbsent(
 ): MintIfAbsentResult {
   assertValidSecretEntry(key, '');
   return withSecretsTransaction(vaultDir, () => {
+    assertMutableSecretsPath(vaultDir);
     // Fast path: a completed prior mint already sits in secrets.env.
     const existing = readSecrets(vaultDir)[key];
     if (existing && existing.trim()) {
@@ -294,7 +299,10 @@ function propagateLegacySecretsUnlocked(vaultDir: string, mycoHome: string): str
     merged[key] = value;
     propagated.push(key);
   }
-  if (propagated.length > 0) persistSecretsUnlocked(mycoHome, merged);
+  if (propagated.length > 0) {
+    assertMutableSecretsPath(mycoHome);
+    persistSecretsUnlocked(mycoHome, merged);
+  }
   return propagated;
 }
 
@@ -327,6 +335,7 @@ export function relocateLegacyProjectSecrets(vaultDir: string, mycoHome: string)
   if (secretStoreLockPath(vaultDir) === secretStoreLockPath(mycoHome)) return [];
   return withSecretsTransactions([vaultDir, mycoHome], () => {
     if (!fs.existsSync(secretsPath)) return [];
+    assertMutableSecretsPath(vaultDir);
     const propagated = propagateLegacySecretsUnlocked(vaultDir, mycoHome);
     // Purge the project file regardless of how many keys were lifted: keys
     // already at machine scope are intentionally discarded (machine wins),
@@ -347,6 +356,7 @@ export function deleteSecrets(vaultDir: string, keys: string[]): void {
   withSecretsTransaction(vaultDir, () => {
     const secretsPath = path.join(vaultDir, SECRETS_FILE);
     if (!fs.existsSync(secretsPath)) return;
+    assertMutableSecretsPath(vaultDir);
 
     const existing = readSecrets(vaultDir);
     for (const key of keys) delete existing[key];
@@ -461,34 +471,27 @@ export function tightenSecretsPermissions(vaultDir: string): void {
   withSecretsTransaction(vaultDir, () => tightenSecretsPermissionsUnlocked(vaultDir));
 }
 
-/** Validate and restrict a named secret snapshot stored beside secrets.env. */
-export function tightenSecretSnapshotPermissions(vaultDir: string, fileName: string): void {
-  assertSecretSnapshotFilename(fileName);
-  withSecretsTransaction(vaultDir, () => {
-    const snapshotPath = path.join(vaultDir, fileName);
-    readSecretsFile(snapshotPath);
-    try { fs.chmodSync(snapshotPath, SECRETS_FILE_MODE); } catch { /* platform ACLs apply */ }
-    ensureSecretsDirSecure(vaultDir);
-  });
-}
-
 function tightenSecretsPermissionsUnlocked(vaultDir: string): void {
   readSecrets(vaultDir);
   const secretsPath = path.join(vaultDir, SECRETS_FILE);
+  let stat: fs.Stats | undefined;
   try {
-    const stat = fs.statSync(secretsPath);
-    const currentMode = stat.mode & 0o777;
-    if (currentMode !== SECRETS_FILE_MODE) {
-      fs.chmodSync(secretsPath, SECRETS_FILE_MODE);
+    stat = fs.lstatSync(secretsPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  if (stat !== undefined && (stat.isSymbolicLink() || !stat.isFile())) {
+    throw new Error(`Refusing to harden non-regular secret store: ${secretsPath}`);
+  }
+  try {
+    if (stat !== undefined) {
+      const currentMode = stat.mode & 0o777;
+      if (currentMode !== SECRETS_FILE_MODE) {
+        fs.chmodSync(secretsPath, SECRETS_FILE_MODE);
+      }
     }
-  } catch (err) {
-    // Missing file is the common no-op case; permission errors get
-    // swallowed silently because the secrets file is per-user and the
-    // daemon can't recover from an unreadable parent directory anyway.
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      // Best-effort only — we don't want a chmod failure to crash the
-      // daemon; the secret will simply remain at its existing perms.
-    }
+  } catch {
+    // Boot-time permission repair is best-effort on unsupported filesystems.
   }
   try {
     fs.chmodSync(vaultDir, SECRETS_DIR_MODE);
@@ -505,6 +508,26 @@ function ensureSecretsDirSecure(vaultDir: string): void {
     fs.chmodSync(vaultDir, SECRETS_DIR_MODE);
   } catch {
     // Non-POSIX or read-only filesystem; ignore.
+  }
+}
+
+function assertMutableSecretsPath(vaultDir: string): void {
+  const secretsPath = path.join(vaultDir, SECRETS_FILE);
+  try {
+    const stat = fs.lstatSync(secretsPath);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error(`Refusing to mutate non-regular secret store: ${secretsPath}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+function decodeSecretBuffer(content: Buffer): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(content);
+  } catch {
+    throw new InvalidSecretValueError('entry');
   }
 }
 
@@ -544,86 +567,175 @@ function persistSecretsUnlocked(vaultDir: string, secrets: Readonly<Record<strin
   writeSecretsFile(path.join(vaultDir, SECRETS_FILE), content);
 }
 
-function recordsEqual(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>): boolean {
-  const leftEntries = Object.entries(left);
-  const rightEntries = Object.entries(right);
-  return leftEntries.length === rightEntries.length
-    && leftEntries.every(([key, value]) => Object.hasOwn(right, key) && right[key] === value);
-}
+const LEGACY_TEAM_SECRET_BACKUP_FILE = `${SECRETS_FILE}.bak-pre-myco-team`;
 
-/** Reconcile one complete secrets.env into another store without ever raw-copying secret bytes. */
-export function reconcileSecretFile(
-  sourceVaultDir: string,
-  destinationVaultDir: string,
-  backupFileName: string,
-): 'copied' | 'conflicted' | 'noop' {
-  if (backupFileName === SECRETS_FILE) {
-    throw new Error('Secret backup filename must be a single path segment');
-  }
-  assertSecretSnapshotFilename(backupFileName);
-  return withSecretsTransactions([sourceVaultDir, destinationVaultDir], () => {
-    return reconcileSecretFileUnlocked(sourceVaultDir, destinationVaultDir, backupFileName);
-  });
-}
-
-function reconcileSecretFileUnlocked(
-  sourceVaultDir: string,
-  destinationVaultDir: string,
-  backupFileName: string,
-): 'copied' | 'conflicted' | 'noop' {
-  const sourcePath = path.join(sourceVaultDir, SECRETS_FILE);
-  if (!fs.existsSync(sourcePath)) return 'noop';
-  const sourceRaw = fs.readFileSync(sourcePath);
-  readSecrets(sourceVaultDir);
-  const destinationPath = path.join(destinationVaultDir, SECRETS_FILE);
-  if (!fs.existsSync(destinationPath)) {
-    ensureSecretsDirSecure(destinationVaultDir);
-    writeSecretsFile(destinationPath, sourceRaw.toString('utf-8'));
-    return 'copied';
-  }
-
-  const destinationRaw = fs.readFileSync(destinationPath);
-  readSecrets(destinationVaultDir);
-  if (sourceRaw.equals(destinationRaw)) {
-    tightenSecretsPermissionsUnlocked(destinationVaultDir);
-    return 'noop';
-  }
-
-  ensureSecretsDirSecure(destinationVaultDir);
-  writeSecretsFile(path.join(destinationVaultDir, backupFileName), sourceRaw.toString('utf-8'));
-  tightenSecretsPermissionsUnlocked(destinationVaultDir);
-  return 'conflicted';
-}
-
-export interface SecretReconcilePair {
+export interface LegacyTeamSecretReconcilePair {
   sourceVaultDir: string;
   destinationVaultDir: string;
-  backupFileName: string;
 }
 
-/** Reconcile secret pairs then run a synchronous finalizer while every store lock remains held. */
-export function withReconciledSecretFiles<T>(pairs: readonly SecretReconcilePair[], finalizer: () => T): T {
-  for (const pair of pairs) {
-    if (pair.backupFileName === SECRETS_FILE) throw new Error('Secret backup filename must not replace secrets.env');
-    assertSecretSnapshotFilename(pair.backupFileName);
+export type LegacyTeamSecretDisposition = 'copied' | 'conflicted' | 'noop';
+export type LegacyTeamSecretFinalizerOutcome = 'complete' | 'deferred';
+
+export interface LegacyTeamSecretReconcileResult {
+  dispositions: LegacyTeamSecretDisposition[];
+  outcome: LegacyTeamSecretFinalizerOutcome;
+}
+
+interface SecretSnapshot {
+  path: string;
+  vaultDir: string;
+  raw: Buffer | null;
+}
+
+interface LegacyTeamSecretPlan {
+  source: SecretSnapshot;
+  destination: SecretSnapshot;
+  backup: SecretSnapshot;
+  disposition: LegacyTeamSecretDisposition;
+}
+
+/**
+ * Reconcile the fixed secret snapshots used by legacy Team-home retirement,
+ * then run a synchronous topology finalizer while every affected store lock
+ * remains held.
+ */
+export function withLegacyTeamSecretSnapshotsReconciledSync(
+  pairs: readonly LegacyTeamSecretReconcilePair[],
+  finalizer: () => LegacyTeamSecretFinalizerOutcome,
+): LegacyTeamSecretReconcileResult {
+  assertLegacyTeamSecretPairs(pairs);
+  if (finalizer.constructor.name === 'AsyncFunction') {
+    throw new TypeError('Legacy Team secret finalizer must be synchronous');
   }
   return withSecretsTransactions(
     pairs.flatMap((pair) => [pair.sourceVaultDir, pair.destinationVaultDir]),
     () => {
-      for (const pair of pairs) {
-        reconcileSecretFileUnlocked(pair.sourceVaultDir, pair.destinationVaultDir, pair.backupFileName);
+      const plans = planLegacyTeamSecretReconciliation(pairs);
+      for (const plan of plans) {
+        for (const snapshot of [plan.source, plan.destination, plan.backup]) {
+          if (snapshot.raw !== null) persistStrictSecretSnapshot(snapshot);
+        }
       }
-      return finalizer();
+      for (const plan of plans) {
+        if (plan.source.raw === null) continue;
+        if (plan.disposition === 'copied') {
+          persistStrictSecretSnapshot({ ...plan.destination, raw: plan.source.raw });
+        } else if (plan.disposition === 'conflicted' && plan.backup.raw === null) {
+          persistStrictSecretSnapshot({ ...plan.backup, raw: plan.source.raw });
+        }
+      }
+      const outcome = finalizer();
+      if (typeof (outcome as { then?: unknown } | null)?.then === 'function') {
+        throw new TypeError('Legacy Team secret finalizer must be synchronous');
+      }
+      if (outcome !== 'complete' && outcome !== 'deferred') {
+        throw new TypeError('Legacy Team secret finalizer returned an invalid outcome');
+      }
+      return { dispositions: plans.map((plan) => plan.disposition), outcome };
     },
   );
 }
 
-/** Semantic equality for validated secret files, including canonicalized CRLF input. */
-export function secretFilesEqual(leftPath: string, rightPath: string): boolean {
-  return recordsEqual(readSecretsFile(leftPath), readSecretsFile(rightPath));
+function assertLegacyTeamSecretPairs(pairs: readonly LegacyTeamSecretReconcilePair[]): void {
+  const stores = new Set<string>();
+  for (const value of pairs as readonly unknown[]) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError('Legacy Team secret pair must be an object');
+    }
+    const pair = value as Record<string, unknown>;
+    const keys = Object.keys(pair).sort();
+    if (keys.length !== 2 || keys[0] !== 'destinationVaultDir' || keys[1] !== 'sourceVaultDir'
+      || typeof pair.sourceVaultDir !== 'string' || typeof pair.destinationVaultDir !== 'string') {
+      throw new TypeError('Legacy Team secret pair has unsupported fields');
+    }
+    const sourceIdentity = secretStoreLockPath(pair.sourceVaultDir);
+    const destinationIdentity = secretStoreLockPath(pair.destinationVaultDir);
+    if (sourceIdentity === destinationIdentity) {
+      throw new Error('Legacy Team secret source and destination must be different stores');
+    }
+    if (stores.has(sourceIdentity) || stores.has(destinationIdentity)) {
+      throw new Error('Legacy Team secret pairs must use distinct stores');
+    }
+    stores.add(sourceIdentity);
+    stores.add(destinationIdentity);
+  }
 }
 
-function writeSecretsFile(secretsPath: string, content: string): void {
+function planLegacyTeamSecretReconciliation(
+  pairs: readonly LegacyTeamSecretReconcilePair[],
+): LegacyTeamSecretPlan[] {
+  return pairs.map((pair) => {
+    const source = readRegularSecretSnapshot(pair.sourceVaultDir, SECRETS_FILE);
+    const destination = readRegularSecretSnapshot(pair.destinationVaultDir, SECRETS_FILE);
+    const backup = readRegularSecretSnapshot(pair.destinationVaultDir, LEGACY_TEAM_SECRET_BACKUP_FILE);
+
+    let disposition: LegacyTeamSecretDisposition = 'noop';
+    if (source.raw !== null && destination.raw === null) {
+      disposition = 'copied';
+    } else if (source.raw !== null && destination.raw !== null && !source.raw.equals(destination.raw)) {
+      disposition = 'conflicted';
+      if (backup.raw !== null && !backup.raw.equals(source.raw)) {
+        throw new Error(`Refusing to overwrite divergent legacy Team secret backup: ${backup.path}`);
+      }
+    }
+    return { source, destination, backup, disposition };
+  });
+}
+
+function readRegularSecretSnapshot(vaultDir: string, fileName: string): SecretSnapshot {
+  const snapshotPath = path.join(vaultDir, fileName);
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(snapshotPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { path: snapshotPath, vaultDir, raw: null };
+    }
+    throw error;
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`Refusing non-regular legacy Team secret snapshot: ${snapshotPath}`);
+  }
+  const raw = fs.readFileSync(snapshotPath);
+  decodeSecrets(decodeSecretBuffer(raw));
+  return { path: snapshotPath, vaultDir, raw };
+}
+
+function persistStrictSecretSnapshot(snapshot: SecretSnapshot): void {
+  if (snapshot.raw === null) throw new Error('Cannot persist an absent secret snapshot');
+  decodeSecrets(decodeSecretBuffer(snapshot.raw));
+  ensureStrictSecretsDir(snapshot.vaultDir);
+  writeSecretsFile(snapshot.path, snapshot.raw);
+  if (process.platform !== 'win32') {
+    fs.chmodSync(snapshot.path, SECRETS_FILE_MODE);
+    fs.chmodSync(snapshot.vaultDir, SECRETS_DIR_MODE);
+  }
+  const fileStat = fs.lstatSync(snapshot.path);
+  const dirStat = fs.lstatSync(snapshot.vaultDir);
+  if (!fileStat.isFile() || fileStat.isSymbolicLink()
+    || (process.platform !== 'win32' && (fileStat.mode & 0o777) !== SECRETS_FILE_MODE)) {
+    throw new Error(`Legacy Team secret snapshot is not a private regular file: ${snapshot.path}`);
+  }
+  if (!dirStat.isDirectory() || dirStat.isSymbolicLink()
+    || (process.platform !== 'win32' && (dirStat.mode & 0o777) !== SECRETS_DIR_MODE)) {
+    throw new Error(`Legacy Team secret directory is not private: ${snapshot.vaultDir}`);
+  }
+}
+
+function ensureStrictSecretsDir(vaultDir: string): void {
+  try {
+    const stat = fs.lstatSync(vaultDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`Refusing non-regular legacy Team secret directory: ${vaultDir}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    fs.mkdirSync(vaultDir, { recursive: true, mode: SECRETS_DIR_MODE });
+  }
+}
+
+function writeSecretsFile(secretsPath: string, content: string | Buffer): void {
   // Atomic write protects against torn writes; the mode-aware helper
   // applies 0o600 to the tempfile before rename so the final path is
   // never briefly readable at the default umask.

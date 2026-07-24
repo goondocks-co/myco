@@ -12,11 +12,12 @@ import {
   loadSecrets,
   propagateLegacySecrets,
   readSecrets,
-  reconcileSecretFile,
   tightenSecretsPermissions,
   writeSecret,
   writeSecretIfAbsent,
+  withLegacyTeamSecretSnapshotsReconciledSync,
 } from '@myco/config/secrets';
+import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 
 const POSIX = process.platform !== 'win32';
 const SECRETS_LOCK_HOLDER_HELPER = path.resolve('tests/helpers/secrets-lock-holder-helper.ts');
@@ -203,24 +204,89 @@ describe('secrets', () => {
     });
   });
 
-  it.each(['.', '..', '../escape', 'nested/backup'])('rejects an unsafe secret backup filename: %p', (backupFileName) => {
+  it.each([
+    '.', '..', '../escape', 'nested/backup',
+    'team.json', 'host.json', 'secrets.env.API_KEY.mint-claim', 'arbitrary.env',
+  ])('rejects an arbitrary legacy Team snapshot target: %p', (backupFileName) => {
     const source = path.join(testDir, 'source');
     const destination = path.join(testDir, 'destination');
     writeSecret(source, 'SOURCE', 'source');
     writeSecret(destination, 'DESTINATION', 'destination');
     const before = fs.readFileSync(path.join(destination, 'secrets.env'));
 
-    expect(() => reconcileSecretFile(source, destination, backupFileName)).toThrow();
+    expect(() => withLegacyTeamSecretSnapshotsReconciledSync(
+      [{ sourceVaultDir: source, destinationVaultDir: destination, backupFileName } as never],
+      () => 'complete',
+    )).toThrow();
     expect(fs.readFileSync(path.join(destination, 'secrets.env'))).toEqual(before);
   });
 
+  it('rejects an asynchronous finalizer while secret-store locks are held', () => {
+    const source = path.join(testDir, 'async-source');
+    const destination = path.join(testDir, 'async-destination');
+    writeSecret(source, 'SOURCE', 'source');
+    expect(() => withLegacyTeamSecretSnapshotsReconciledSync(
+      [{ sourceVaultDir: source, destinationVaultDir: destination }],
+      (async () => 'complete') as never,
+    )).toThrow();
+    expect(fs.existsSync(path.join(destination, 'secrets.env'))).toBe(false);
+  });
+
+  it('rejects same-store aliases and duplicate stores before changing any snapshot', () => {
+    const source = path.join(testDir, 'alias-source');
+    const destination = path.join(testDir, 'alias-destination');
+    const other = path.join(testDir, 'alias-other');
+    writeSecret(source, 'SOURCE', 'source');
+    const before = fs.readFileSync(path.join(source, 'secrets.env'));
+
+    expect(() => withLegacyTeamSecretSnapshotsReconciledSync(
+      [{ sourceVaultDir: source, destinationVaultDir: source }],
+      () => 'complete',
+    )).toThrow();
+    expect(() => withLegacyTeamSecretSnapshotsReconciledSync(
+      [
+        { sourceVaultDir: source, destinationVaultDir: destination },
+        { sourceVaultDir: other, destinationVaultDir: destination },
+      ],
+      () => 'complete',
+    )).toThrow();
+    expect(fs.readFileSync(path.join(source, 'secrets.env'))).toEqual(before);
+    expect(fs.existsSync(path.join(destination, 'secrets.env'))).toBe(false);
+  });
+
   describe.skipIf(process.platform === 'win32')('cross-process secret-store transaction', () => {
+    it('uses a private, real, uid-owned lock root outside HOME and TMPDIR', () => {
+      const lockRoot = resolvePerUserLocksDir();
+      const stat = fs.lstatSync(lockRoot);
+
+      expect(lockRoot).toBe(`/var/tmp/myco-locks-${process.getuid!()}`);
+      expect(stat.isDirectory()).toBe(true);
+      expect(stat.isSymbolicLink()).toBe(false);
+      expect(stat.uid).toBe(process.getuid!());
+      expect(stat.mode & 0o777).toBe(0o700);
+    });
+
     it('serializes unrelated writers behind the same store lock without losing either entry', async () => {
       const holdMs = 400;
+      const childTmp = path.join(testDir, 'child-tmp');
+      fs.mkdirSync(childTmp);
+      const childHome = path.join(testDir, 'child-home');
+      fs.mkdirSync(childHome);
       const child = spawn(
         process.execPath,
         ['run', SECRETS_LOCK_HOLDER_HELPER, testDir, String(holdMs)],
-        { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() },
+        {
+          stdio: ['ignore', 'ignore', 'pipe'],
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            HOME: childHome,
+            USERPROFILE: childHome,
+            TMPDIR: childTmp,
+            TMP: childTmp,
+            TEMP: childTmp,
+          },
+        },
       );
       let stderr = '';
       child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8'); });
@@ -245,12 +311,55 @@ describe('secrets', () => {
       expect(blockedMs).toBeGreaterThanOrEqual(200);
     }, 30_000);
 
+    it('keeps one lock identity when an exact-file symlink is atomically replaced', async () => {
+      const vaultDir = path.join(testDir, 'symlink-vault');
+      fs.mkdirSync(vaultDir);
+      const target = path.join(testDir, 'symlink-target.env');
+      fs.writeFileSync(target, 'TARGET=original\n', { mode: 0o600 });
+      fs.symlinkSync(target, path.join(vaultDir, 'secrets.env'));
+
+      const child = spawn(
+        process.execPath,
+        ['run', SECRETS_LOCK_HOLDER_HELPER, vaultDir, '0', 'symlink-replace', '400'],
+        {
+          stdio: ['ignore', 'ignore', 'pipe'],
+          cwd: process.cwd(),
+        },
+      );
+      let stderr = '';
+      child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8'); });
+      const childExit = new Promise<void>((resolve, reject) => {
+        child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`lock holder exited ${code}: ${stderr}`)));
+        child.on('error', reject);
+      });
+
+      const replaced = path.join(vaultDir, 'secrets-replaced');
+      const deadline = Date.now() + 10_000;
+      while (!fs.existsSync(replaced)) {
+        if (Date.now() >= deadline) throw new Error(`secret symlink replacement never completed: ${stderr}`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      const startedAt = Date.now();
+      writeSecret(vaultDir, 'PARENT_WRITER', 'parent');
+      const blockedMs = Date.now() - startedAt;
+      await childExit;
+
+      expect(fs.lstatSync(path.join(vaultDir, 'secrets.env')).isSymbolicLink()).toBe(false);
+      expect(readSecrets(vaultDir)).toEqual({ CHILD_WRITER: 'child', PARENT_WRITER: 'parent' });
+      expect(fs.readFileSync(target, 'utf-8')).toBe('TARGET=original\n');
+      expect(blockedMs).toBeGreaterThanOrEqual(200);
+    }, 30_000);
+
     it('re-reads before a delete-all decision so a concurrent child entry survives', async () => {
       writeSecret(testDir, 'OLD', 'old');
       const child = spawn(
         process.execPath,
         ['run', SECRETS_LOCK_HOLDER_HELPER, testDir, '400', 'delete-race'],
-        { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() },
+        {
+          stdio: ['ignore', 'ignore', 'pipe'],
+          cwd: process.cwd(),
+        },
       );
       let stderr = '';
       child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8'); });
@@ -270,6 +379,37 @@ describe('secrets', () => {
       await childExit;
       expect(readSecrets(testDir)).toEqual({ CHILD_WRITER: 'child' });
     }, 30_000);
+  });
+
+  it('fails closed when asked to mutate an exact secrets.env symlink', () => {
+    const vaultDir = path.join(testDir, 'symlink-mutation');
+    fs.mkdirSync(vaultDir);
+    const target = path.join(testDir, 'symlink-mutation-target.env');
+    fs.writeFileSync(target, 'TARGET=preserved\n', { mode: 0o600 });
+    fs.symlinkSync(target, path.join(vaultDir, 'secrets.env'));
+
+    expect(readSecrets(vaultDir)).toEqual({ TARGET: 'preserved' });
+    expect(() => writeSecret(vaultDir, 'NEW', 'blocked')).toThrow();
+    expect(fs.readFileSync(target, 'utf-8')).toBe('TARGET=preserved\n');
+    expect(fs.lstatSync(path.join(vaultDir, 'secrets.env')).isSymbolicLink()).toBe(true);
+  });
+
+  it('fails closed when asked to harden an exact secrets.env symlink', () => {
+    const vaultDir = path.join(testDir, 'symlink-hardening');
+    fs.mkdirSync(vaultDir);
+    const target = path.join(testDir, 'symlink-hardening-target.env');
+    fs.writeFileSync(target, 'TARGET=preserved\n', { mode: 0o644 });
+    fs.symlinkSync(target, path.join(vaultDir, 'secrets.env'));
+    const beforeMode = fs.statSync(target).mode & 0o777;
+
+    expect(() => tightenSecretsPermissions(vaultDir)).toThrow(/non-regular secret store/);
+    expect(fs.statSync(target).mode & 0o777).toBe(beforeMode);
+    expect(fs.lstatSync(path.join(vaultDir, 'secrets.env')).isSymbolicLink()).toBe(true);
+  });
+
+  it('rejects invalid UTF-8 bytes instead of decoding replacement characters', () => {
+    fs.writeFileSync(path.join(testDir, 'secrets.env'), Buffer.from([0x4b, 0x45, 0x59, 0x3d, 0xff, 0x0a]));
+    expect(() => readSecrets(testDir)).toThrow(InvalidSecretValueError);
   });
 
   describe('loadSecrets', () => {

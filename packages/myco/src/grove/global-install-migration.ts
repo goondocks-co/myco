@@ -27,7 +27,7 @@ import { SymbiontInstaller, removeProjectLaunchers, MYCO_MCP_SERVER_NAME } from 
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { readJsonFile, writeOrDeleteJsonFile } from '../symbionts/json-helpers.js';
 import { propagateLegacyMachineId } from '@myco/machine-id.js';
-import { relocateLegacyProjectSecrets } from '../config/secrets.js';
+import { relocateLegacyProjectSecrets, SECRETS_FILE } from '@myco/config/secrets.js';
 import { epochSeconds } from '@myco/constants.js';
 
 /**
@@ -260,7 +260,7 @@ export function migrateProjectToGlobalInstall(
   // project level (the documented fallback per `feedback_secrets_not_in_yaml.md`)
   // would be deleted by the migration. Global-side keys win on conflict;
   // any key absent globally is lifted from the project file.
-  const hadLegacySecrets = fs.existsSync(path.join(vaultDir, 'secrets.env'));
+  const hadLegacySecrets = fs.existsSync(path.join(vaultDir, SECRETS_FILE));
   const secretsPropagated = relocateLegacyProjectSecrets(vaultDir, resolveMycoHome());
 
   // Step 5 — cleanup empty co-tenant files and directories the strip
@@ -275,8 +275,8 @@ export function migrateProjectToGlobalInstall(
   // dir before deletion so user data is preserved on a forensic path
   // rather than destroyed. See PURGABLE_VAULT_ARTIFACTS.
   const purgedArtifacts = purgeLegacyPerMachineArtifacts(vaultDir, archiveDirAbs);
-  if (hadLegacySecrets && !fs.existsSync(path.join(vaultDir, 'secrets.env'))) {
-    purgedArtifacts.push('secrets.env');
+  if (hadLegacySecrets && !fs.existsSync(path.join(vaultDir, SECRETS_FILE))) {
+    purgedArtifacts.push(SECRETS_FILE);
   }
 
   const noLegacyArtifacts =
