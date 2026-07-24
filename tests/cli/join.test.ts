@@ -17,14 +17,17 @@ const { fakeDaemon } = vi.hoisted(() => {
   const fakeDaemon: {
     postResult: { ok: boolean; data?: unknown };
     postCalls: { endpoint: string; body: unknown; timeoutMs?: number }[];
-  } = { postResult: { ok: true, data: {} }, postCalls: [] };
+    healthy: boolean;
+    ensureRunningCalls: number;
+  } = { postResult: { ok: true, data: {} }, postCalls: [], healthy: true, ensureRunningCalls: 0 };
   return { fakeDaemon };
 });
 
 mock.module('@myco/hooks/client.js', () => ({
   DaemonClient: class {
     constructor(_vaultDir: string, _options?: unknown) {}
-    async ensureRunning() { return true; }
+    async ensureRunning() { fakeDaemon.ensureRunningCalls += 1; return true; }
+    async isHealthy() { return fakeDaemon.healthy; }
     async post(endpoint: string, body: unknown, options?: { timeoutMs?: number }) {
       fakeDaemon.postCalls.push({ endpoint, body, timeoutMs: options?.timeoutMs });
       return fakeDaemon.postResult;
@@ -41,6 +44,8 @@ describe('myco join / myco leave (daemon API fallback)', () => {
   beforeEach(() => {
     fakeDaemon.postResult = { ok: true, data: {} };
     fakeDaemon.postCalls = [];
+    fakeDaemon.healthy = true;
+    fakeDaemon.ensureRunningCalls = 0;
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -140,6 +145,39 @@ describe('myco join / myco leave (daemon API fallback)', () => {
 
     await expect(runJoin(['h', '--key', 'k'], '/tmp/vault')).rejects.toThrow('__exit__');
     expect(errSpy.mock.calls.some((c) => String(c[0]).includes('tailscaled socket did not appear'))).toBe(true);
+
+    exitSpy.mockRestore();
+  });
+
+  it('join with no running daemon refuses BEFORE the POST and never spawns one (the key-burn preflight)', async () => {
+    // The daemon-side join burns the single-use overlay key at `tailscale up`;
+    // an ensureRunning()-spawned daemon can die mid-join after the burn (E-5
+    // Linux validation). The preflight must refuse with nothing spent: no
+    // POST, no spawn attempt, and copy that says the key is still good.
+    fakeDaemon.healthy = false;
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
+      throw new Error('__exit__');
+    }) as never);
+
+    await expect(runJoin(['h', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault')).rejects.toThrow('__exit__');
+    expect(fakeDaemon.postCalls).toHaveLength(0);
+    expect(fakeDaemon.ensureRunningCalls).toBe(0);
+    expect(errSpy.mock.calls.some((c) => String(c[0]).includes('The key has NOT been used'))).toBe(true);
+
+    exitSpy.mockRestore();
+  });
+
+  it('join timeout with no response body steers to a converging re-run, not a blind fresh key', async () => {
+    fakeDaemon.postResult = { ok: false, data: undefined };
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
+      throw new Error('__exit__');
+    }) as never);
+
+    await expect(runJoin(['h', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault')).rejects.toThrow('__exit__');
+    const errText = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errText).toContain('did not respond within the join window');
+    expect(errText).toContain('Re-run the SAME join command');
+    expect(errText).toContain('authkey already used');
 
     exitSpy.mockRestore();
   });

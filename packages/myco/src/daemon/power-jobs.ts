@@ -69,6 +69,7 @@ import { reconcileManagedProjectFiles } from '@myco/symbionts/reconcile.js';
 import {
   checkAndStage,
   buildAdoptJobFn,
+  isDevBuildVersion,
   type AutoAdoptDeps,
 } from '@myco/upgrade/auto-check.js';
 import { resolveMycoBinary, readUpdateConfig } from './update-checker.js';
@@ -991,6 +992,15 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
   // existing test suites stable while cleanly extending the production path.
   if (deps.upgrade) {
     const upg = deps.upgrade;
+
+    // Both upgrade jobs no-op on a dev build (isDevBuildVersion inside
+    // checkAndStage/buildAdoptJobFn) — say so once at registration, or a dev
+    // box that never auto-updates looks like a broken checker.
+    if (isDevBuildVersion(upg.currentVersion)) {
+      logger.info(LOG_KINDS.DAEMON_START, 'Dev build — upgrade auto-check/auto-adopt disabled (update by explicit operator action only)', {
+        current_version: upg.currentVersion,
+      });
+    }
 
     // upgrade-auto-check: hit GitHub at most once per configured interval;
     // stage the binary if a newer version is available.

@@ -4,8 +4,10 @@
  * checkAndStage   — resolves the channel target via release-resolver;
  *                   if the target is strictly newer than `currentVersion` AND
  *                   not already staged, stages the binary via `stageBinary`.
- *                   No-ops on manual-channel machines, when already staged,
- *                   or when the resolved version is not strictly newer.
+ *                   No-ops on manual-channel machines, on dev builds
+ *                   (isDevBuildVersion — a published release over 0.0.0-dev is
+ *                   a downgrade), when already staged, or when the resolved
+ *                   version is not strictly newer.
  *
  * buildAdoptJobFn — returns the `RunnerJob` fn body for `upgrade-adopt`.
  *                   Registered as `runIn: ['idle', 'sleep']` so it only fires
@@ -72,8 +74,23 @@ export interface CheckAndStageDeps {
 
 export type CheckAndStageResult =
   | { status: 'staged'; version: string }
-  | { status: 'noop'; reason: 'manual-channel' | 'up-to-date' | 'already-staged' }
+  | { status: 'noop'; reason: 'manual-channel' | 'dev-build' | 'up-to-date' | 'already-staged' }
   | { status: 'error'; error: string };
+
+/**
+ * True when `version` is a dev build: the `0.0.0-dev` placeholder base
+ * (optionally `+<git-describe>` build metadata) stamped by
+ * `scripts/build-single-target.mjs`, or the bare `0.0.0` fallback from
+ * `version.ts`. Every published release compares strictly newer than the
+ * 0.0.0 base, so the background stage/adopt jobs would silently DOWNGRADE a
+ * dev box to the published binary (E-5 rig: 0.0.0-dev self-updated to 1.2.13
+ * mid-validation; its API then 404'd newer routes). Dev builds update only by
+ * explicit operator action — both background jobs gate on this.
+ */
+export function isDevBuildVersion(version: string): boolean {
+  const parsed = semver.parse(version);
+  return parsed !== null && parsed.major === 0 && parsed.minor === 0 && parsed.patch === 0;
+}
 
 // ---------------------------------------------------------------------------
 // adoptJobFn opts (injected by the registration site in power-jobs.ts)
@@ -153,6 +170,12 @@ export async function checkAndStage(
   const manualChannelCheck = deps.isManualChannel ?? releaseChannelIsManual;
   if (manualChannelCheck()) {
     return { status: 'noop', reason: 'manual-channel' };
+  }
+
+  // Dev builds must never auto-stage: semver ranks every published release
+  // above the 0.0.0-dev base, so staging would queue a silent downgrade.
+  if (isDevBuildVersion(currentVersion)) {
+    return { status: 'noop', reason: 'dev-build' };
   }
 
   const { home, platform, localAppData, logger, channel } = opts;
@@ -323,6 +346,10 @@ export function buildAdoptJobFn(
       // Manual-channel no-op (belt-and-suspenders — checkAndStage also guards).
       const manualChannelCheck = adoptDeps.isManualChannel ?? releaseChannelIsManual;
       if (manualChannelCheck()) return;
+
+      // Dev-build no-op (belt-and-suspenders — checkAndStage also guards): a
+      // staged release adopted over 0.0.0-dev is a downgrade, never an upgrade.
+      if (isDevBuildVersion(adoptDeps.currentVersion)) return;
 
       const {
         currentVersion,

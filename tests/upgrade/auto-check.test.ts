@@ -336,6 +336,81 @@ describe('buildAdoptJobFn: manual-channel no-op', () => {
 });
 
 // ---------------------------------------------------------------------------
+// dev-build guard — a published release over 0.0.0-dev is a DOWNGRADE
+// ---------------------------------------------------------------------------
+
+describe('isDevBuildVersion', () => {
+  it('recognizes the dev placeholder family and nothing else', async () => {
+    const { isDevBuildVersion } = await import('@myco/upgrade/auto-check.js');
+    expect(isDevBuildVersion('0.0.0-dev')).toBe(true);
+    expect(isDevBuildVersion('0.0.0-dev+1.2.0-1-g430a7e7b')).toBe(true); // stamped git describe
+    expect(isDevBuildVersion('0.0.0')).toBe(true); // version.ts fallback
+    expect(isDevBuildVersion('1.2.13')).toBe(false);
+    expect(isDevBuildVersion('0.9.0')).toBe(false);
+    expect(isDevBuildVersion('1.3.0-beta.1')).toBe(false);
+    expect(isDevBuildVersion('not-a-version')).toBe(false);
+  });
+});
+
+describe('checkAndStage: dev-build no-op', () => {
+  it('returns noop/dev-build when the current version is a dev build, even with a newer release resolved', async () => {
+    const result = await checkAndStage(
+      '0.0.0-dev',
+      makeOpts(),
+      {
+        resolveRefs: async () => ({
+          assetUrl: 'http://x',
+          sha256sumsUrl: 'http://y',
+          assetName: 'myco-linux-x64',
+          targetVersion: '1.2.13', // semver calls this "newer" than 0.0.0-dev — it is a downgrade
+        }),
+        stageBinary: mock(async () => ({ error: 'should-not-reach' })) as typeof import('@myco/upgrade/apply-binary.js').stageBinary,
+        existsSync: () => false,
+        isManualChannel: () => false,
+      },
+    );
+    expect(result.status).toBe('noop');
+    expect((result as { reason: string }).reason).toBe('dev-build');
+  });
+});
+
+describe('buildAdoptJobFn: dev-build no-op', () => {
+  it('never initiates adopt over a dev build, even with a staged newer version on disk', async () => {
+    const { buildAdoptJobFn } = await import('@myco/upgrade/auto-check.js');
+    const initiateAdoptMock = mock(async () => {});
+
+    // Stage a fake published binary — the E-5 rig scenario (0.0.0-dev box,
+    // 1.2.13 staged by an earlier unguarded check).
+    const { versionsDir: getVersionsDir, versionBinaryPath: getVersionBinaryPath } = await import('@myco/install/managed-binary.js');
+    const vDir = getVersionsDir(tmpHome, PLATFORM);
+    const binPath = getVersionBinaryPath(tmpHome, PLATFORM, '1.2.13');
+    fs.mkdirSync(path.dirname(binPath), { recursive: true });
+    fs.writeFileSync(binPath, '#!/bin/sh\necho myco', { mode: 0o755 });
+
+    const jobFn = buildAdoptJobFn({
+      currentVersion: '0.0.0-dev',
+      home: tmpHome,
+      platform: PLATFORM,
+      stateDir: tmpHome,
+      daemonPort: 20915,
+      projectRoot: '/project',
+      logger: silentLogger(),
+      isManualChannel: () => false,
+      isDefaultHome: () => true,
+      initiateAdopt: initiateAdoptMock as typeof import('@myco/upgrade/adopt.js').initiateAdopt,
+      resolveServiceLabel: async () => null,
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await jobFn({} as any);
+
+    expect(initiateAdoptMock).not.toHaveBeenCalled();
+
+    fs.rmSync(vDir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // resolveNewestStagedVersion
 // ---------------------------------------------------------------------------
 

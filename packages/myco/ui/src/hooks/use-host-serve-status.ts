@@ -34,6 +34,9 @@ export interface HostServeStatusServing {
   overlay_address: string;
   host_id: string | null;
   label: string | null;
+  /** Projects members have attached to the served Grove (registration-on-ingest
+   *  rows; honest immediately after a detach deregisters — Phase F T3). */
+  hosted_project_count: number;
   external_mcp: HostServeExternalMcpStatus;
   bearer_present: boolean;
   health: HostServeHealthStatus;

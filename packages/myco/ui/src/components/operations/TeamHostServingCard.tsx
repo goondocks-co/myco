@@ -53,6 +53,7 @@ export function TeamHostServingCard() {
     overlay_address: overlayAddress,
     host_id: hostId,
     label,
+    hosted_project_count: hostedProjectCount,
     external_mcp: externalMcp,
     bearer_present: bearerPresent,
     health,
@@ -106,6 +107,7 @@ export function TeamHostServingCard() {
             </>
           }
         />
+        <Stat label="Hosted projects" value={hostedProjectCount} />
         <Stat label="Bearer token" value={bearerPresent ? 'Set' : 'Missing'} />
         <Stat
           label="External access"

@@ -54,6 +54,7 @@ import { createMycoTools } from '../tools/index.js';
 import {
   ForeignGroveError,
   isCallerTenancy,
+  readHeader,
   REQUEST_CONTEXT_HEADERS,
   requestContextFromHttpHeaders,
   UnauthorizedRequestContextError,
@@ -129,17 +130,6 @@ function parseBearer(header: string | string[] | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const match = raw.match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : null;
-}
-
-/** First value of a possibly-repeated header, trimmed; `undefined` when absent
- *  or blank. Used to read `x-myco-grove-id` BEFORE the shared request-context
- *  resolver runs, so this listener can decide "caller supplied a Grove" vs.
- *  "default to the served Grove" without duplicating header-array handling. */
-function firstHeaderValue(header: string | string[] | undefined): string | undefined {
-  const raw = Array.isArray(header) ? header[0] : header;
-  if (typeof raw !== 'string') return undefined;
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function writeJson(res: http.ServerResponse, status: number, body: unknown): void {
@@ -305,7 +295,7 @@ export class ExternalMcpListener {
     // rather than trusted — never resolved against the registry first,
     // so a foreign/unknown grove_id can never distinguish "exists
     // elsewhere" from "doesn't exist" before this listener even looks.
-    const presentedGroveId = firstHeaderValue(req.headers[REQUEST_CONTEXT_HEADERS.groveId]);
+    const presentedGroveId = readHeader(req.headers, REQUEST_CONTEXT_HEADERS.groveId);
     if (presentedGroveId !== undefined && presentedGroveId !== servedGroveId) {
       const refusal = servedGroveOnlyRefusal();
       writeJson(res, refusal.status, refusal.body);
