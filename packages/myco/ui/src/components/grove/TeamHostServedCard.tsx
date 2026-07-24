@@ -27,7 +27,7 @@ export function TeamHostServedCard({ groveId, groveSlug }: Props) {
   const { data } = useHostServeStatus();
   if (!data || data.serving !== true || data.served_grove_id !== groveId) return null;
 
-  const { health, external_mcp: externalMcp } = data;
+  const { health, external_mcp: externalMcp, hosted_project_count: hostedProjectCount } = data;
 
   return (
     <Link to={`/g/${groveSlug}/team`} className="block transition-opacity hover:opacity-90">
@@ -37,6 +37,7 @@ export function TeamHostServedCard({ groveId, groveSlug }: Props) {
         title="Served to your team by this machine"
       >
         <dl className="flex flex-col gap-1">
+          <DefRow term="Hosted projects">{hostedProjectCount}</DefRow>
           <DefRow term="Backups">
             <Badge variant={healthBadgeVariant(health.backup)}>{humanizeHealthKind(health.backup)}</Badge>
           </DefRow>

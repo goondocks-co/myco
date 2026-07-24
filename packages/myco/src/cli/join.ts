@@ -17,7 +17,7 @@
  * Flag parser is shared via `cli/shared.ts#parseFlags` — `cli/attach.ts` (the
  * sibling member command) uses the same one so the two parse identically.
  */
-import { connectToGlobalDaemon, daemonErrorMessage, parseFlags } from './shared.js';
+import { connectToGlobalDaemon, connectToRunningDaemon, daemonErrorMessage, parseFlags } from './shared.js';
 
 const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> --server-url <headscale-url> --overlay-address <100.64.x.y:port>
 
@@ -92,6 +92,19 @@ export async function runJoin(args: string[], vaultDir: string): Promise<void> {
     process.exit(2);
   }
 
+  // Daemon preflight BEFORE anything key-consuming. The join burns the
+  // single-use overlay key at the `tailscale up` step, daemon-side; a daemon
+  // spawned as a side effect of this command can die mid-join after the key
+  // is consumed (E-5 Linux validation burned two keys this way). Refusing
+  // up front when no daemon is already running costs nothing.
+  const client = await connectToRunningDaemon(
+    vaultDir,
+    'join needs the local daemon running BEFORE it spends the single-use key — the overlay\n'
+    + 'join consumes the key even when a later step fails. Start the daemon first\n'
+    + '(`myco service install`, or `myco daemon` under a supervisor for a headless box)\n'
+    + 'and re-run join. The key has NOT been used.',
+  );
+
   // The daemon runs the whole join (binary provisioning, overlay join,
   // enrollment) before answering — up to JOIN_TIMEOUT_MS of silence from the
   // operator's seat. Say so up front; the per-step log is replayed from the
@@ -99,7 +112,6 @@ export async function runJoin(args: string[], vaultDir: string): Promise<void> {
   console.log(`Joining Team Host ${hostRef} — provisioning the overlay and enrolling; this can take up to a minute…`);
 
   const protocolVersionRaw = flags.get('protocol-version');
-  const client = await connectToGlobalDaemon(vaultDir);
   const result = await client.post('/api/host-membership/join', {
     host_ref: hostRef,
     key,
@@ -113,7 +125,19 @@ export async function runJoin(args: string[], vaultDir: string): Promise<void> {
   }, { timeoutMs: JOIN_TIMEOUT_MS });
 
   if (!result.ok) {
-    console.error(`join failed: ${daemonErrorMessage(result.data) ?? 'the daemon did not respond'}`);
+    const message = daemonErrorMessage(result.data);
+    if (message) {
+      console.error(`join failed: ${message}`);
+    } else {
+      // No response body — usually the JOIN_TIMEOUT_MS window elapsing while a
+      // first-time join is still provisioning binaries daemon-side. The join
+      // may yet complete (and the key may already be consumed), so steer the
+      // operator to converge with a re-run, not to mint a fresh key blind.
+      console.error('join failed: the daemon did not respond within the join window.');
+      console.error('  A first-time join downloads and provisions overlay binaries and can outlast this timeout —');
+      console.error('  the daemon may still be completing it. Re-run the SAME join command: a node already on the');
+      console.error('  overlay is skipped, not re-keyed. Mint a fresh key only if the re-run reports "authkey already used".');
+    }
     process.exit(1);
   }
 

@@ -96,6 +96,26 @@ export async function connectToGlobalDaemon(vaultDir: string): Promise<DaemonCli
 }
 
 /**
+ * Like {@link connectToGlobalDaemon}, but REFUSES instead of spawning when no
+ * daemon is already running. For commands whose daemon-side work consumes
+ * something irreplaceable mid-flight: `join` burns the single-use overlay key
+ * at the `tailscale up` step, so it must never ride on an `ensureRunning()`-
+ * spawned daemon — one spawned as a side effect of the command (e.g. under a
+ * closing ssh session) can die mid-join AFTER the key is consumed, leaving the
+ * node logged out and the key unrecoverable. `isHealthy()` only probes
+ * (daemon.json → lock → /health); it never spawns, so the daemon-less case is
+ * an up-front refusal with nothing spent.
+ */
+export async function connectToRunningDaemon(vaultDir: string, refusal: string): Promise<DaemonClient> {
+  const client = new DaemonClient(vaultDir);
+  if (!(await client.isHealthy())) {
+    console.error(refusal);
+    process.exit(1);
+  }
+  return client;
+}
+
+/**
  * Extract a human-readable message from a daemon API error body. Recognizes
  * the structured `{ error: { code, message } }` envelope (`error-envelope.ts`
  * `errorBody`, used by newer routes including `host-membership.ts`) alongside
