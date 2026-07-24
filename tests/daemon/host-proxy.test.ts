@@ -124,6 +124,18 @@ function capturingLogger(): { logger: ProxyLogger; warns: Array<[string, unknown
   };
 }
 
+async function waitFor<T>(condition: () => T | undefined, description: string, timeoutMs = 1_000): Promise<T> {
+  const started = Date.now();
+  while (true) {
+    const result = condition();
+    if (result !== undefined) return result;
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`Timed out waiting for ${description} after ${timeoutMs}ms`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('host-proxy forwarder', () => {
   let tmpHome: string;
   let tmpTeamHome: string;
@@ -527,12 +539,14 @@ describe('host-proxy forwarder', () => {
       logger: cap.logger,
       bufferAppend: () => { throw new Error('disk unavailable'); },
     };
+    const failingHostId = 'host_fedcba9876543210fedcba9876543210';
+    const target = makeTarget(fixturePort);
+    config.target = { ...target, host: { ...target.host, host_id: failingHostId } };
     __resetLogThrottleForTests();
 
     process.on('unhandledRejection', onRejection);
     try {
       await close(fixture.server);
-      config.target = makeTarget(fixturePort);
 
       const started = Date.now();
       const res = await fetch(memberUrl('/events'), {
@@ -541,11 +555,11 @@ describe('host-proxy forwarder', () => {
         body: JSON.stringify({ type: 'tool', session_id: 'sess-append-failed' }),
       });
 
+      const ack = await res.json();
+      expect(ack).toEqual({ ok: true, persisted: false, buffered: false });
       expect(Date.now() - started).toBeLessThan(2000);
-      expect(await res.json()).toEqual({ ok: true, persisted: false, buffered: false });
-      expect(shouldBufferFallback({ ok: true, data: { ok: true, persisted: false, buffered: false } }, 'tool')).toBe(true);
+      expect(shouldBufferFallback({ ok: true, data: ack }, 'tool')).toBe(true);
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
       expect(cap.errors).toContainEqual([
         'collector buffer append failed',
         {
@@ -554,7 +568,16 @@ describe('host-proxy forwarder', () => {
           error: 'disk unavailable',
         },
       ]);
-      expect(cap.warns.some(([message]) => message === 'collect forward failed — hook fallback required')).toBe(true);
+      const fallbackWarning = await waitFor(
+        () => cap.warns.find(([message, metadata]) => {
+          const meta = metadata as Record<string, unknown>;
+          return message === 'collect forward failed — hook fallback required'
+            && meta.host_id === failingHostId
+            && meta.path === '/events';
+        }),
+        `collect forward failure for ${failingHostId}`,
+      );
+      expect(fallbackWarning[1]).toMatchObject({ host_id: failingHostId, path: '/events' });
       expect(rejections).toEqual([]);
     } finally {
       process.removeListener('unhandledRejection', onRejection);
@@ -573,8 +596,9 @@ describe('host-proxy forwarder', () => {
       body: JSON.stringify({ type: 'tool' }),
     });
 
-    expect(await res.json()).toEqual({ ok: true, persisted: false, buffered: false });
-    expect(shouldBufferFallback({ ok: true, data: { ok: true, persisted: false, buffered: false } }, 'tool')).toBe(true);
+    const ack = await res.json();
+    expect(ack).toEqual({ ok: true, persisted: false, buffered: false });
+    expect(shouldBufferFallback({ ok: true, data: ack }, 'tool')).toBe(true);
     expect(cap.errors).toContainEqual([
       'collect route missing resolvable session_id',
       { host_id: config.target.host.host_id, path: '/events' },
