@@ -375,7 +375,32 @@ async function proveNativeTaskScheduler(
 
   await manager.start(taskLabel);
   const markerPath = path.win32.join(scratch, TASK_MARKER_NAME);
-  await waitForFile(markerPath);
+  try {
+    await waitForFile(markerPath);
+  } catch (error) {
+    const status = await manager.status(taskLabel).catch((statusError: unknown) => ({
+      error: statusError instanceof Error ? statusError.message : String(statusError),
+    }));
+    const verbose = await runner.run(['/query', '/tn', taskLabel, '/fo', 'LIST', '/v'])
+      .catch((queryError: unknown) => ({
+        stdout: queryError instanceof Error ? queryError.message : String(queryError),
+        exitCode: -1,
+      }));
+    const readLog = (logPath: string): string => {
+      try {
+        return fs.readFileSync(logPath, 'utf8').slice(0, 4_000);
+      } catch (readError) {
+        return readError instanceof Error ? readError.message : String(readError);
+      }
+    };
+    throw new Error([
+      `Task Scheduler child did not publish ${markerPath}`,
+      `status=${JSON.stringify(status)}`,
+      `query=${JSON.stringify(verbose)}`,
+      `stdout=${JSON.stringify(readLog(spec.stdoutPath))}`,
+      `stderr=${JSON.stringify(readLog(spec.stderrPath))}`,
+    ].join('\n'), { cause: error });
+  }
   const proof = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as ChildProof;
   assertCondition(
     windowsPathEqual(proof.executable, executable),
