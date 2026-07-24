@@ -18,19 +18,28 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
-import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import { HOST_BEARER_SECRET } from '@myco/constants.js';
 import {
   readSecrets as readSecretsFile,
   writeSecret as writeSecretFile,
-} from '../config/secrets.js';
+} from '@myco/config/secrets.js';
 import {
   resolveHostsDir,
   resolveHostDir,
   resolveHostConfigPath,
   resolveMycoHome,
-} from '../grove/paths.js';
-import { findRegisteredProjectById } from '../grove/registry-resolve.js';
+} from '@myco/grove/paths.js';
+import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
+import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
+import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+
+const HOST_REGISTRY_LOCK_DIR_MODE = 0o700;
+const HOST_REGISTRY_LOCK_RETRIES = 8;
+const HOST_REGISTRY_LOCK_NAMESPACE = 'hosts-registry';
 
 export interface AttachRef {
   grove_id: string;
@@ -87,10 +96,49 @@ export interface HostRecord {
   projects: AttachRef[];
 }
 
-/** An exact on-disk host-record snapshot for rollback inside a larger membership write. */
-export interface HostRecordSnapshot {
+export type EnrollmentHostRecord = Omit<HostRecord, 'projects'>;
+
+export interface EnrollmentMembershipResult {
+  record: HostRecord;
+  created: boolean;
+}
+
+interface HostRecordSnapshot {
   hostId: string;
   bytes: Buffer | null;
+}
+
+function hostRegistryLockPath(identity: string): string {
+  const key = createHash('sha256')
+    .update(`${HOST_REGISTRY_LOCK_NAMESPACE}\0${identity}`)
+    .digest('hex');
+  return path.join(resolvePerUserLocksDir(), 'host-membership', `${key}.lock`);
+}
+
+function hostRegistryLockPaths(): string[] {
+  const lockDir = path.join(resolvePerUserLocksDir(), 'host-membership');
+  fs.mkdirSync(lockDir, { recursive: true, mode: HOST_REGISTRY_LOCK_DIR_MODE });
+  try { fs.chmodSync(lockDir, HOST_REGISTRY_LOCK_DIR_MODE); } catch { /* platform ACLs apply */ }
+  return physicalPathLockIdentities(resolveHostsDir()).map(hostRegistryLockPath).sort();
+}
+
+function withHostRegistryTransaction<T>(fn: () => T): T {
+  const RETRY = Symbol('retry-host-registry-locks');
+  for (let attempt = 0; attempt < HOST_REGISTRY_LOCK_RETRIES; attempt += 1) {
+    const locks = hostRegistryLockPaths();
+    const run = (index: number): T | typeof RETRY => {
+      if (index < locks.length) {
+        return withFileLockSync(locks[index]!, () => run(index + 1));
+      }
+      const freshLocks = hostRegistryLockPaths();
+      if (freshLocks.length !== locks.length
+        || freshLocks.some((lock, index) => lock !== locks[index])) return RETRY;
+      return fn();
+    };
+    const result = run(0);
+    if (result !== RETRY) return result;
+  }
+  throw new Error('Host registry identity did not stabilize while acquiring locks');
 }
 
 /**
@@ -134,8 +182,7 @@ export function getHost(hostId: string): HostRecord | null {
   catch { return null; }
 }
 
-/** Create or overwrite a host record. Atomic temp+rename write, same as `team/registry.ts` `save`. */
-export function upsertHost(record: HostRecord): void {
+function writeHostRecordUnlocked(record: HostRecord): void {
   const hostDir = resolveHostDir(record.host_id);
   fs.mkdirSync(hostDir, { recursive: true });
   const configPath = resolveHostConfigPath(record.host_id);
@@ -144,8 +191,12 @@ export function upsertHost(record: HostRecord): void {
   fs.renameSync(tmpPath, configPath);
 }
 
-/** Capture the exact current host record bytes, including the absence of a record. */
-export function snapshotHostRecord(hostId: string): HostRecordSnapshot {
+/** Create or overwrite a host record. Atomic temp+rename write, same as `team/registry.ts` `save`. */
+export function upsertHost(record: HostRecord): void {
+  withHostRegistryTransaction(() => writeHostRecordUnlocked(record));
+}
+
+function snapshotHostRecordUnlocked(hostId: string): HostRecordSnapshot {
   try {
     return { hostId, bytes: fs.readFileSync(resolveHostConfigPath(hostId)) };
   } catch (error) {
@@ -154,8 +205,7 @@ export function snapshotHostRecord(hostId: string): HostRecordSnapshot {
   }
 }
 
-/** Restore an exact host-record snapshot through the registry's atomic writer. */
-export function restoreHostRecord(snapshot: HostRecordSnapshot): void {
+function restoreHostRecordUnlocked(snapshot: HostRecordSnapshot): void {
   const configPath = resolveHostConfigPath(snapshot.hostId);
   if (snapshot.bytes === null) {
     fs.rmSync(configPath, { force: true });
@@ -165,9 +215,53 @@ export function restoreHostRecord(snapshot: HostRecordSnapshot): void {
   atomicWriteFileSync(configPath, snapshot.bytes);
 }
 
+function persistEnrollmentMembershipUnlocked(
+  enrollment: EnrollmentHostRecord,
+  bearer: string,
+): EnrollmentMembershipResult {
+  const previousRecord = snapshotHostRecordUnlocked(enrollment.host_id);
+  const existing = getHost(enrollment.host_id);
+  const record: HostRecord = {
+    ...enrollment,
+    served_grove_id: enrollment.served_grove_id ?? existing?.served_grove_id,
+    created_at: existing?.created_at ?? enrollment.created_at,
+    projects: existing?.projects ?? [],
+  };
+  try {
+    writeHostRecordUnlocked(record);
+    writeSecretFile(resolveHostDir(record.host_id), HOST_BEARER_SECRET, bearer);
+  } catch (writeError) {
+    try {
+      restoreHostRecordUnlocked(previousRecord);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [writeError, rollbackError],
+        `Could not restore host record ${record.host_id} after bearer persistence failed.`,
+      );
+    }
+    throw writeError;
+  }
+  return { record, created: existing === null };
+}
+
+/**
+ * Persist enrollment metadata and bearer as one registry transaction.
+ * Existing attachments and creation time are merged from a fresh in-lock read.
+ */
+export function persistEnrollmentMembership(
+  enrollment: EnrollmentHostRecord,
+  bearer: string,
+): EnrollmentMembershipResult {
+  return withHostRegistryTransaction(
+    () => persistEnrollmentMembershipUnlocked(enrollment, bearer),
+  );
+}
+
 /** Remove a host record, its attach refs, and its secrets.env (bearer). */
 export function removeHost(hostId: string): void {
-  fs.rmSync(resolveHostDir(hostId), { recursive: true, force: true });
+  withHostRegistryTransaction(
+    () => fs.rmSync(resolveHostDir(hostId), { recursive: true, force: true }),
+  );
 }
 
 /**
@@ -229,6 +323,14 @@ export function attachProject(
   ref: AttachRef,
   mycoHome = resolveMycoHome(),
 ): void {
+  withHostRegistryTransaction(() => attachProjectUnlocked(hostId, ref, mycoHome));
+}
+
+function attachProjectUnlocked(
+  hostId: string,
+  ref: AttachRef,
+  mycoHome: string,
+): void {
   const record = getHost(hostId);
   if (!record) throw new Error(`Unknown host: ${hostId}`);
 
@@ -267,7 +369,7 @@ export function attachProject(
     if (Object.keys(patch).length > 0) {
       const projects = [...record.projects];
       projects[existingIdx] = { ...existingRef, ...patch };
-      upsertHost({ ...record, projects });
+      writeHostRecordUnlocked({ ...record, projects });
     }
     return;
   }
@@ -277,12 +379,12 @@ export function attachProject(
   const local = findRegisteredProjectById(ref.project_id, mycoHome);
   if (local) throw new ProjectRegisteredLocallyError(ref.project_id, local.grove.id);
 
-  const existing = resolveAttach(ref.project_id);
+  const existing = resolveAttachUnlocked(ref.project_id);
   if (existing && existing.host.host_id !== hostId) {
     throw new ProjectAttachedToOtherHostError(ref.project_id, hostId, existing.host.host_id);
   }
 
-  upsertHost({ ...record, projects: [...record.projects, ref] });
+  writeHostRecordUnlocked({ ...record, projects: [...record.projects, ref] });
 }
 
 /**
@@ -297,20 +399,33 @@ export function attachProject(
  * silent write. Returns the effective (post-write) recorded version.
  */
 export function recordHostProtocolVersion(hostId: string, observedVersion: number): number {
+  return withHostRegistryTransaction(
+    () => recordHostProtocolVersionUnlocked(hostId, observedVersion),
+  );
+}
+
+function recordHostProtocolVersionUnlocked(hostId: string, observedVersion: number): number {
   const record = getHost(hostId);
   if (!record) return observedVersion;
   if (!Number.isFinite(observedVersion) || observedVersion <= record.protocol_version) {
     return record.protocol_version;
   }
-  upsertHost({ ...record, protocol_version: observedVersion });
+  writeHostRecordUnlocked({ ...record, protocol_version: observedVersion });
   return observedVersion;
 }
 
 /** Detach a project from a host. No-op if the host, or the attach ref, doesn't exist. */
 export function detachProject(hostId: string, projectId: string): void {
+  withHostRegistryTransaction(() => detachProjectUnlocked(hostId, projectId));
+}
+
+function detachProjectUnlocked(hostId: string, projectId: string): void {
   const record = getHost(hostId);
   if (!record) return;
-  upsertHost({ ...record, projects: record.projects.filter((p) => p.project_id !== projectId) });
+  writeHostRecordUnlocked({
+    ...record,
+    projects: record.projects.filter((p) => p.project_id !== projectId),
+  });
 }
 
 /**
@@ -320,6 +435,10 @@ export function detachProject(hostId: string, projectId: string): void {
  * a pure disk read across every host record, no daemon, no DB.
  */
 export function resolveAttach(projectId: string): { host: HostRecord; ref: AttachRef } | null {
+  return resolveAttachUnlocked(projectId);
+}
+
+function resolveAttachUnlocked(projectId: string): { host: HostRecord; ref: AttachRef } | null {
   for (const record of readHostRegistry()) {
     const ref = record.projects.find((p) => p.project_id === projectId);
     if (ref) return { host: record, ref };
@@ -366,13 +485,16 @@ export function readHostSecrets(hostId: string): Record<string, string> {
 
 /** Write a host-scoped secret (e.g. the host bearer, `HOST_BEARER_SECRET`) to secrets.env. Never written to host.json. */
 export function writeHostSecret(hostId: string, key: string, value: string): void {
-  writeSecretFile(resolveHostDir(hostId), key, value);
+  withHostRegistryTransaction(
+    () => writeSecretFile(resolveHostDir(hostId), key, value),
+  );
 }
 
 export const hostRegistry = {
   readHostRegistry,
   getHost,
   upsertHost,
+  persistEnrollmentMembership,
   removeHost,
   attachProject,
   detachProject,
@@ -381,6 +503,4 @@ export const hostRegistry = {
   attachTargetProjectIds,
   readHostSecrets,
   writeHostSecret,
-  snapshotHostRecord,
-  restoreHostRecord,
 };

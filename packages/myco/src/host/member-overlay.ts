@@ -79,15 +79,12 @@ import { assertValidSecretEntry, InvalidSecretValueError } from '@myco/config/se
 import { codedMembershipError } from './membership-error.js';
 import {
   getHost,
+  persistEnrollmentMembership,
   readHostRegistry,
   removeHost,
-  restoreHostRecord,
-  snapshotHostRecord,
-  upsertHost,
-  writeHostSecret,
   type AttachRef,
-  type HostRecord,
-} from './registry.js';
+  type EnrollmentHostRecord,
+} from '@myco/host/registry.js';
 
 /** The member userspace-tailscaled LaunchAgent label PREFIX. The per-host label
  *  appends a short host tag (`memberTailscaledLabel`) so each joined host gets its
@@ -251,7 +248,8 @@ function parseEnrollmentResponse(
     throw enrollmentFailure('Host enrollment returned a response Myco could not read.');
   }
   const response = value as Record<string, unknown>;
-  if (Object.hasOwn(response, 'projects')) {
+  if (Object.hasOwn(response, 'projects')
+    && (!Array.isArray(response.projects) || response.projects.length !== 0)) {
     throw enrollmentFailure('Host enrollment cannot assign project attachments.');
   }
 
@@ -297,22 +295,6 @@ function validateEnrollment(
   identityFallback: { hostId: string; label: string },
 ): EnrollmentResult {
   return parseEnrollmentResponse(enrollment, identityFallback);
-}
-
-/** Persist the record and bearer together, rolling the record back if the bearer fails. */
-function persistEnrollmentMembership(record: HostRecord, bearer: string): void {
-  const previousRecord = snapshotHostRecord(record.host_id);
-  try {
-    upsertHost(record);
-    writeHostSecret(record.host_id, HOST_BEARER_SECRET, bearer);
-  } catch (writeError) {
-    try {
-      restoreHostRecord(previousRecord);
-    } catch (rollbackError) {
-      throw new AggregateError([writeError, rollbackError], `Could not restore host record ${record.host_id} after bearer persistence failed.`);
-    }
-    throw writeError;
-  }
 }
 
 /** How the real client puts an enrollment request on the wire. Injectable so tests
@@ -657,13 +639,6 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     label: options.label?.trim() || options.hostRef.trim(),
   });
 
-  if (enrollment.projects !== undefined) {
-    throw codedMembershipError(
-      'host_enroll_failed',
-      'Host enrollment cannot assign project attachments.',
-    );
-  }
-
   // 6. Best-effort reachability probe through THIS host's proxy port (never fatal).
   const reachProbe = deps.checkHostReachable ?? defaultCheckHostReachable;
   const hostReachable = await reachProbe(enrollment.overlay_address, proxyPort).catch(() => false);
@@ -689,25 +664,18 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     log(`WARNING: ${warning}`);
   }
 
-  // 8. Write THIS host's HostRecord (+ bearer). Merge onto any existing record so a
-  //    converging re-join preserves attached projects + created_at. served_grove_id
-  //    falls back to the existing record's value when this join's enrollment didn't
-  //    report one (e.g. the manual bridge, which has no host metadata) — a real
-  //    designation, once learned, is never clobbered by an enrollment that simply
-  //    didn't carry it.
-  const existing = getHost(hostId);
-  const record: HostRecord = {
+  // 8. Persist host metadata and bearer through the registry transaction.
+  const record: EnrollmentHostRecord = {
     host_id: hostId,
     label: enrollment.label,
     overlay_address: enrollment.overlay_address,
     proxy_port: proxyPort,
     protocol_version: enrollment.protocol_version,
-    served_grove_id: enrollment.served_grove_id ?? existing?.served_grove_id,
-    created_at: existing?.created_at ?? new Date().toISOString(),
-    projects: existing?.projects ?? [],
+    served_grove_id: enrollment.served_grove_id,
+    created_at: new Date().toISOString(),
   };
-  persistEnrollmentMembership(record, enrollment.bearer);
-  log(`${existing ? 'Updated' : 'Wrote'} host record ${hostId} (proxy_port=${proxyPort}).`);
+  const persisted = persistEnrollmentMembership(record, enrollment.bearer);
+  log(`${persisted.created ? 'Wrote' : 'Updated'} host record ${hostId} (proxy_port=${proxyPort}).`);
 
   return {
     hostId,
@@ -715,7 +683,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     proxyPort,
     memberOverlayIp,
     hostReachable,
-    created: !existing,
+    created: persisted.created,
     notes,
   };
 }

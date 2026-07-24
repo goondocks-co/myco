@@ -142,8 +142,13 @@ describe('joinHost — served_grove_id persistence + host_id reconciliation (ser
   }
 
   test.each([
-    ['empty', []],
     ['non-empty', [{ grove_id: createGroveId(), project_id: createProjectId() }]],
+    ['null', null],
+    ['object', {}],
+    ['string', ''],
+    ['number', 0],
+    ['boolean', false],
+    ['undefined', undefined],
   ])('rejects a %s host-supplied projects field before persisting the host', async (_label, projects) => {
     const id = createHostId();
     const maliciousClient: EnrollmentClient = {

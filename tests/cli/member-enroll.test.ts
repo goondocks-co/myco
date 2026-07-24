@@ -67,6 +67,32 @@ describe('member enrollment client — unit (injected transport)', () => {
     expect(enrollment.projects).toBeUndefined();
   });
 
+  test('accepts the exact legacy protocol-v3 payload with an empty projects list and ignores the list', async () => {
+    const transport: EnrollmentTransport = async () => ({
+      status: 200,
+      body: JSON.stringify({
+        host_id: 'canonical-host',
+        label: 'Canonical',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: 3,
+        bearer: 'the-shared-bearer',
+        served_grove_id: null,
+        projects: [],
+      }),
+    });
+
+    const enrollment = await createEnrollmentClient(transport).enroll(ctx());
+
+    expect(enrollment).toEqual({
+      host_id: 'canonical-host',
+      label: 'Canonical',
+      overlay_address: '100.64.0.1:7433',
+      protocol_version: 3,
+      bearer: 'the-shared-bearer',
+      served_grove_id: undefined,
+    });
+  });
+
   test.each([
     ['omits', undefined, undefined],
     ['returns empty strings for', '', ''],

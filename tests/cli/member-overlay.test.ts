@@ -394,7 +394,7 @@ describe('member overlay — multi-host join / leave', () => {
   test.each([
     ['an object bearer', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: {} }],
     ['a control-character bearer', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: 'bad\0bearer' }],
-    ['a remote projects field', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: 'bearer-valid', projects: [] }],
+    ['a non-empty remote projects field', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: 'bearer-valid', projects: [{}] }],
   ])('a real enrollment response with %s fails before join mutates the host registry', async (_label, response) => {
     const id = hostId();
     let reachabilityCalls = 0;
