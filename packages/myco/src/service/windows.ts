@@ -104,7 +104,7 @@ export class RealSchtasksRunner implements SchtasksRunner {
 
 export interface WindowsManagerOptions {
   runner?: SchtasksRunner;
-  /** Directory holding the launcher `.cmd` scripts. */
+  /** Directory holding the launcher `.ps1` scripts. */
   scriptDir?: string;
   /** Resolve the running daemon's loopback port for a label (reads daemon.json). */
   resolveDaemonPort?: (label: string) => number | null;
@@ -118,39 +118,14 @@ export interface WindowsManagerOptions {
 
 const WINDOWS_TEARDOWN_TIMEOUT_MS = 10_000;
 const WINDOWS_TEARDOWN_POLL_INTERVAL_MS = 100;
-const WINDOWS_TASK_SHELL = 'cmd.exe';
+const WINDOWS_TASK_HOST = 'powershell.exe';
 
-function windowsTaskShellArguments(scriptPath: string): string {
-  return `/d /v:off /s /c ""${scriptPath}""`;
+function windowsTaskHostArguments(scriptPath: string): string {
+  return `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`;
 }
 
 function windowsTaskRunCommand(scriptPath: string): string {
-  return `${WINDOWS_TASK_SHELL} ${windowsTaskShellArguments(scriptPath)}`;
-}
-
-const WINDOWS_COMMAND_SHELL_META = /[%!&|<>^()\r\n]/;
-
-function assertWindowsCommandShellSafe(
-  spec: ServiceSpec,
-  scriptPath: string,
-): void {
-  const inputs: Array<[label: string, value: string]> = [
-    ['task script path', scriptPath],
-    ['executable path', spec.executable],
-    ['working directory', spec.workingDir],
-    ['stdout path', spec.stdoutPath],
-    ['stderr path', spec.stderrPath],
-    ...spec.args.map((value, index): [string, string] => [`argument ${index}`, value]),
-    ...Object.entries(spec.env).map(
-      ([key, value]): [string, string] => [`environment value ${key}`, value],
-    ),
-  ];
-  const unsafe = inputs.find(([, value]) => WINDOWS_COMMAND_SHELL_META.test(value));
-  if (unsafe) {
-    throw new Error(
-      `Windows service ${unsafe[0]} contains unsupported command-shell syntax`,
-    );
-  }
+  return `${WINDOWS_TASK_HOST} ${windowsTaskHostArguments(scriptPath)}`;
 }
 
 export class ExternalMcpHardKillBlockedError extends Error {
@@ -164,7 +139,7 @@ export class ExternalMcpHardKillBlockedError extends Error {
  * Windows daemon service via Task Scheduler — the peer of the launchd /
  * systemd managers. There is no Windows equivalent of a launchd plist or a
  * systemd unit that both holds the env and supervises the process, so this
- * splits the two: a launcher `.cmd` carries the env + exec + log redirection
+ * splits the two: a launcher `.ps1` carries the env + exec + log redirection
  * (`windows-task.ts`), and a Task Scheduler task triggers it at logon.
  *
  * Why Task Scheduler and not a real Windows service (`sc.exe`): a
@@ -202,7 +177,20 @@ export class WindowsTaskServiceManager implements ServiceManager {
   }
 
   private scriptPath(label: string): string {
+    return path.join(this.scriptDir, `${label}.ps1`);
+  }
+
+  private legacyScriptPath(label: string): string {
     return path.join(this.scriptDir, `${label}.cmd`);
+  }
+
+  private removeLauncherFiles(label: string): void {
+    for (const launcherPath of [
+      this.scriptPath(label),
+      this.legacyScriptPath(label),
+    ]) {
+      if (fs.existsSync(launcherPath)) fs.unlinkSync(launcherPath);
+    }
   }
 
   /**
@@ -267,8 +255,8 @@ export class WindowsTaskServiceManager implements ServiceManager {
       );
     }
     const taskAction = parseTaskAction(task.stdout);
-    if (taskAction?.command.toLowerCase() !== WINDOWS_TASK_SHELL
-      || taskAction.arguments !== windowsTaskShellArguments(scriptPath)) {
+    if (taskAction?.command.toLowerCase() !== WINDOWS_TASK_HOST
+      || taskAction.arguments !== windowsTaskHostArguments(scriptPath)) {
       return null;
     }
     return parseWindowsLauncherCommand(script);
@@ -276,7 +264,6 @@ export class WindowsTaskServiceManager implements ServiceManager {
 
   async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
     const scriptPath = this.scriptPath(spec.label);
-    assertWindowsCommandShellSafe(spec, scriptPath);
     const rendered = renderWindowsServiceScript(spec);
     let existing: string | null = null;
     try { existing = fs.readFileSync(scriptPath, 'utf-8'); } catch { /* ENOENT */ }
@@ -286,7 +273,10 @@ export class WindowsTaskServiceManager implements ServiceManager {
     if (installed?.executable === spec.executable
       && installed.args.length === spec.args.length
       && installed.args.every((arg, index) => arg === spec.args[index])) {
-      return { changed: false, supervisorReloaded: false };
+      const legacyScriptPath = this.legacyScriptPath(spec.label);
+      const retiredLegacyLauncher = fs.existsSync(legacyScriptPath);
+      if (retiredLegacyLauncher) fs.unlinkSync(legacyScriptPath);
+      return { changed: retiredLegacyLauncher, supervisorReloaded: false };
     }
 
     fs.mkdirSync(this.scriptDir, { recursive: true });
@@ -313,13 +303,14 @@ export class WindowsTaskServiceManager implements ServiceManager {
       ]),
       `schtasks /create /tn ${spec.label}`,
     );
+    const legacyScriptPath = this.legacyScriptPath(spec.label);
+    if (fs.existsSync(legacyScriptPath)) fs.unlinkSync(legacyScriptPath);
     return { changed: true, supervisorReloaded: true };
   }
 
   async uninstall(label: string): Promise<void> {
-    const scriptPath = this.scriptPath(label);
     if (!await this.hardEnd(label, { allowAbsent: true })) {
-      if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath);
+      this.removeLauncherFiles(label);
       return;
     }
 
@@ -329,7 +320,7 @@ export class WindowsTaskServiceManager implements ServiceManager {
       `schtasks /delete /tn ${label}`,
     );
     await this.waitUntilDeleted(label);
-    if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath);
+    this.removeLauncherFiles(label);
   }
 
   async start(label: string): Promise<void> {
@@ -415,15 +406,31 @@ function parseTaskAction(
 }
 
 function parseWindowsLauncherCommand(script: string): InstalledServiceCommand | null {
-  const commands = script
+  const executableAssignments = script
     .split(/\r?\n/)
-    .map((line) => line.match(/^"([^"\r\n]+)" ([^"\r\n]*?) >> "[^"\r\n]+" 2>> "[^"\r\n]+"$/))
+    .map((line) => line.match(/^\$executable = ('.*')$/))
     .filter((match): match is RegExpMatchArray => match !== null);
-  if (commands.length !== 1) return null;
-  const argumentText = commands[0][2].trim();
-  const args = argumentText === '' ? [] : argumentText.split(' ');
-  if (args.some((arg) => arg === '')) return null;
-  return { executable: commands[0][1], args };
+  const argumentAssignments = script
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\$arguments = @\((.*)\)$/))
+    .filter((match): match is RegExpMatchArray => match !== null);
+  if (executableAssignments.length !== 1 || argumentAssignments.length !== 1) {
+    return null;
+  }
+  const executable = decodePowerShellLiteral(executableAssignments[0][1]);
+  const argumentText = argumentAssignments[0][1];
+  const argumentLiterals = argumentText === ''
+    ? []
+    : argumentText.split(', ');
+  const args = argumentLiterals.map(decodePowerShellLiteral);
+  if (executable === null || args.some((arg) => arg === null)) return null;
+  if (argumentLiterals.join(', ') !== argumentText) return null;
+  return { executable, args: args as string[] };
+}
+
+function decodePowerShellLiteral(value: string): string | null {
+  if (!/^'(?:[^']|'')*'$/.test(value)) return null;
+  return value.slice(1, -1).replace(/''/g, "'");
 }
 
 function decodeXmlText(value: string): string | null {

@@ -98,34 +98,48 @@ function makeUnitManager(opts: WindowsManagerOptions): WindowsTaskServiceManager
 }
 
 describe('renderWindowsServiceScript', () => {
-  test('bakes env (minus POSIX PATH), cd, exec + log redirect; CRLF', () => {
+  test('bakes env (minus POSIX PATH), cwd, exec + log redirect; CRLF', () => {
     const spec = makeSpec();
     const out = renderWindowsServiceScript(spec);
-    expect(out.startsWith('@echo off')).toBe(true);
-    expect(out).toContain(`set "MYCO_HOME=${spec.env.MYCO_HOME}"`);
-    expect(out).toContain('set "MYCO_SERVICE_VARIANT=dev"');
+    expect(out.startsWith("$ErrorActionPreference = 'Stop'")).toBe(true);
+    expect(out).toContain(
+      `$startInfo.EnvironmentVariables['MYCO_HOME'] = '${spec.env.MYCO_HOME}'`,
+    );
+    expect(out).toContain(
+      "$startInfo.EnvironmentVariables['MYCO_SERVICE_VARIANT'] = 'dev'",
+    );
     // Restart routing keys on the installed task (resolveRestartServiceLabel),
     // so the launcher no longer needs to export a pid-substitute marker.
     expect(out).not.toContain('MYCO_SERVICE_MANAGED');
-    expect(out).not.toContain('set "PATH='); // POSIX PATH is meaningless on Windows — inherit the user's
-    expect(out).toContain(`cd /d "${spec.workingDir}"`);
-    expect(out).toContain(`"${spec.executable}" daemon >> "${spec.stdoutPath}" 2>> "${spec.stderrPath}"`);
+    expect(out).not.toContain("'PATH'"); // POSIX PATH is meaningless on Windows — inherit the user's
+    expect(out).toContain(`$workingDirectory = '${spec.workingDir}'`);
+    expect(out).toContain(`$executable = '${spec.executable}'`);
+    expect(out).toContain("$arguments = @('daemon')");
+    expect(out).toContain('$process.StandardOutput.BaseStream.CopyToAsync($stdout)');
+    expect(out).toContain('$process.StandardError.BaseStream.CopyToAsync($stderr)');
+    expect(out).not.toContain('1>>');
+    expect(out).not.toContain('2>>');
     expect(out.includes('\r\n')).toBe(true);
   });
 
   test('keepAlive renders a crash-restart supervision loop (launchd KeepAlive equivalent)', () => {
     const out = renderWindowsServiceScript(makeSpec({ keepAlive: true }));
-    expect(out).toContain(':myco_run');
-    expect(out).toContain('if %errorlevel% equ 0 goto myco_done'); // clean exit stops
-    expect(out).toContain('goto myco_run');                        // crash retries
-    expect(out).toContain('if %MYCO_RESTARTS% geq 10 goto myco_done'); // bounded — no hot loop
-    expect(out).toMatch(/ping -n \d+ 127\.0\.0\.1 > nul/);         // backoff sleep
+    expect(out).toContain('while ($true)');
+    expect(out).toContain('if ($exitCode -eq 0) { exit 0 }');
+    expect(out).toContain('$restarts += 1');
+    expect(out).toContain('if ($restarts -ge 10) { exit $exitCode }');
+    expect(out).toContain('Start-Sleep -Seconds 10');
   });
 
   test('non-keepAlive runs the daemon once, no supervision loop', () => {
     const out = renderWindowsServiceScript(makeSpec({ keepAlive: false }));
-    expect(out).not.toContain(':myco_run');
-    expect(out).toContain('daemon >>');
+    expect(out).not.toContain('while ($true)');
+    expect(out).toContain('$exitCode = Invoke-MycoProcess');
+  });
+
+  test('rejects arguments that cannot be passed without command-line quoting', () => {
+    expect(() => renderWindowsServiceScript(makeSpec({ args: ['daemon', 'spaced value'] })))
+      .toThrow(/unsupported command-line quoting/i);
   });
 });
 
@@ -136,7 +150,7 @@ describe('WindowsTaskServiceManager', () => {
     expect(mgr.platformName).toContain('Task Scheduler');
   });
 
-  test('install writes launcher .cmd + creates an onlogon task; idempotent on re-run', async () => {
+  test('install writes launcher .ps1 + creates an onlogon task; idempotent on re-run', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
@@ -145,7 +159,7 @@ describe('WindowsTaskServiceManager', () => {
     const r1 = await mgr.install(spec);
     expect(r1.changed).toBe(true);
     expect(r1.supervisorReloaded).toBe(true);
-    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(true);
+    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.ps1`))).toBe(true);
 
     const create = runner.calls.find((c) => c[0] === '/create');
     expect(create).toBeDefined();
@@ -163,18 +177,42 @@ describe('WindowsTaskServiceManager', () => {
     await expect(mgr.start('co.goondocks.myco')).rejects.toThrow(/schtasks \/run.*failed.*exit 1/i);
   });
 
-  test('wraps a spaced /tr action in a non-interactive command shell', async () => {
+  test('passes a spaced /tr action to non-interactive PowerShell', async () => {
     const scriptDir = path.join(tmp('myco-wt-'), 'First Last');
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
     const spec = makeSpec();
 
     await mgr.install(spec);
-    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
     expect(scriptPath).toContain(' '); // sanity: the path really has a space
     const create = runner.calls.find((c) => c[0] === '/create')!;
     const trValue = create[create.indexOf('/tr') + 1];
-    expect(trValue).toBe(`cmd.exe /d /v:off /s /c ""${scriptPath}""`);
+    expect(trValue).toBe(
+      `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`,
+    );
+  });
+
+  test('retires the legacy batch launcher only after task recreation succeeds', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const legacyPath = path.join(scriptDir, 'co.goondocks.myco-dev.cmd');
+    fs.writeFileSync(legacyPath, '@echo off\r\n');
+    const spec = makeSpec();
+
+    const failingRunner = new StubRunner();
+    failingRunner.exitOverrides.set('/create', { stdout: 'provider failure', exitCode: 1 });
+    const failingManager = new WindowsTaskServiceManager({
+      runner: failingRunner,
+      scriptDir,
+    });
+    await expect(failingManager.install(spec)).rejects.toThrow(/schtasks.*create/i);
+    expect(fs.existsSync(legacyPath)).toBe(true);
+
+    const runner = new StubRunner();
+    const manager = new WindowsTaskServiceManager({ runner, scriptDir });
+    await expect(manager.install(spec)).resolves.toMatchObject({ changed: true });
+    expect(fs.existsSync(legacyPath)).toBe(false);
+    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.ps1`))).toBe(true);
   });
 
   test('recreates a quoted task action instead of accepting a non-runnable install', async () => {
@@ -184,7 +222,7 @@ describe('WindowsTaskServiceManager', () => {
     const spec = makeSpec();
 
     await mgr.install(spec);
-    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
     runner.taskCommand = `"${scriptPath}"`;
     runner.taskArguments = null;
     runner.calls.length = 0;
@@ -194,7 +232,9 @@ describe('WindowsTaskServiceManager', () => {
     expect(result.changed).toBe(true);
     const create = runner.calls.find((call) => call[0] === '/create');
     expect(create?.[create.indexOf('/tr') + 1])
-      .toBe(`cmd.exe /d /v:off /s /c ""${scriptPath}""`);
+      .toBe(
+        `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`,
+      );
   });
 
   test('does not overwrite an existing task when XML inspection fails', async () => {
@@ -210,17 +250,16 @@ describe('WindowsTaskServiceManager', () => {
     expect(runner.calls.some((call) => call[0] === '/create')).toBe(false);
   });
 
-  test('rejects command-shell metacharacters before writing or registration', async () => {
-    for (const unsafeSegment of ['%PATH%', 'Ampersand &', 'Bang !']) {
-      const scriptDir = path.join(tmp('myco-wt-'), unsafeSegment);
-      const runner = new StubRunner();
-      const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
-      const spec = makeSpec();
+  test('keeps shell metacharacters literal in the PowerShell launcher path', async () => {
+    const scriptDir = path.join(tmp('myco-wt-'), '%PATH% & !');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
 
-      await expect(mgr.install(spec)).rejects.toThrow(/command-shell syntax/i);
-      expect(runner.calls).toEqual([]);
-      expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(false);
-    }
+    await expect(mgr.install(spec)).resolves.toMatchObject({ changed: true });
+    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.ps1`))).toBe(true);
+    const create = runner.calls.find((call) => call[0] === '/create');
+    expect(create?.[create.indexOf('/tr') + 1]).toContain(`-File "${scriptDir}`);
   });
 
   test('isInstalled reflects the locale-independent task state', async () => {
@@ -261,7 +300,10 @@ describe('WindowsTaskServiceManager', () => {
   test('inspect returns the exact executable and arguments from the installed task launcher', async () => {
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
-    const spec = makeSpec({ args: ['daemon', '--port', '28876', '--foreground'] });
+    const spec = makeSpec({
+      executable: "C:\\Users\\O'Brien\\myco.exe",
+      args: ['daemon', '--port', '28876', "owner's"],
+    });
     await mgr.install(spec);
 
     await expect(mgr.inspect(spec.label)).resolves.toEqual({
@@ -275,7 +317,7 @@ describe('WindowsTaskServiceManager', () => {
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
     const label = 'co.goondocks.myco.malformed';
-    const scriptPath = path.join(scriptDir, `${label}.cmd`);
+    const scriptPath = path.join(scriptDir, `${label}.ps1`);
     fs.writeFileSync(scriptPath, '@echo off\r\nthis is not a service command\r\n');
     runner.taskExists = true;
     runner.taskCommand = scriptPath;
@@ -290,7 +332,7 @@ describe('WindowsTaskServiceManager', () => {
     const label = 'co.goondocks.myco.orphaned';
     runner.taskExists = true;
     runner.taskState = 'running';
-    runner.taskCommand = path.join(scriptDir, `${label}.cmd`);
+    runner.taskCommand = path.join(scriptDir, `${label}.ps1`);
 
     const status = await mgr.status(label);
     expect(status).toMatchObject({ installed: true, running: true, unitPath: null });
@@ -303,7 +345,7 @@ describe('WindowsTaskServiceManager', () => {
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
     const spec = makeSpec();
     await mgr.install(spec);
-    runner.taskCommand = path.join(scriptDir, 'different.cmd');
+    runner.taskCommand = path.join(scriptDir, 'different.ps1');
 
     await expect(mgr.inspect(spec.label)).resolves.toBeNull();
   });
@@ -322,7 +364,7 @@ describe('WindowsTaskServiceManager', () => {
     await mgr.uninstall(spec.label);
     expect(runner.calls.some((c) => c[0] === '/end')).toBe(true);
     expect(runner.calls.some((c) => c[0] === '/delete')).toBe(true);
-    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(false);
+    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.ps1`))).toBe(false);
   });
 
   test('uninstall never hard-ends or deletes when external containment cannot be confirmed', async () => {
@@ -338,7 +380,7 @@ describe('WindowsTaskServiceManager', () => {
     });
     const spec = makeSpec();
     await mgr.install(spec);
-    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
 
     await expect(mgr.uninstall(spec.label)).rejects.toThrow(/containment/i);
 
@@ -351,7 +393,7 @@ describe('WindowsTaskServiceManager', () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
     const label = 'co.goondocks.myco.orphaned';
-    const scriptPath = path.join(scriptDir, `${label}.cmd`);
+    const scriptPath = path.join(scriptDir, `${label}.ps1`);
     fs.writeFileSync(scriptPath, '@echo off\r\n');
     const events: string[] = [];
     const mgr = new WindowsTaskServiceManager({
@@ -381,7 +423,7 @@ describe('WindowsTaskServiceManager', () => {
     const mgr = makeUnitManager({ runner, scriptDir });
     const spec = makeSpec();
     await mgr.install(spec);
-    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
     runner.exitOverrides.set('/end', { stdout: 'ERROR: Access is denied.', exitCode: 1 });
 
     await expect(mgr.uninstall(spec.label)).rejects.toThrow(/schtasks \/end.*failed.*exit 1/i);
@@ -418,7 +460,7 @@ describe('WindowsTaskServiceManager', () => {
     const mgr = makeUnitManager({ runner, scriptDir });
     const spec = makeSpec();
     await mgr.install(spec);
-    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
     runner.exitOverrides.set('/delete', { stdout: 'ERROR: Access is denied.', exitCode: 1 });
 
     await expect(mgr.uninstall(spec.label)).rejects.toThrow(/schtasks \/delete.*failed.*exit 1/i);
@@ -432,7 +474,7 @@ describe('WindowsTaskServiceManager', () => {
     const mgr = makeUnitManager({ runner, scriptDir, sleep: async () => {} });
     const spec = makeSpec();
     await mgr.install(spec);
-    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
     runner.deleteLeavesTask = true;
 
     await expect(mgr.uninstall(spec.label)).rejects.toThrow(/timed out.*Task Scheduler.*deletion/i);
@@ -472,7 +514,7 @@ describe('WindowsTaskServiceManager', () => {
     const mgr = makeUnitManager({ runner, scriptDir, sleep: async () => {} });
     const spec = makeSpec();
     await mgr.install(spec);
-    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
     runner.taskState = 'running';
 
     await expect(mgr.uninstall(spec.label)).rejects.toThrow(/timed out.*Task Scheduler.*exit/i);

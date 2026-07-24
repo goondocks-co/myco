@@ -1,7 +1,7 @@
 import type { ServiceSpec } from './types.js';
 
 /**
- * Render the Windows launcher batch script that the Task Scheduler task runs.
+ * Render the Windows PowerShell launcher that the Task Scheduler task runs.
  * Mirrors `renderSystemdUnit` / the launchd plist: bake the env, working dir,
  * exec, and log redirection into one artifact so the task definition only has
  * to point at this file. Task Scheduler cannot set environment variables on a
@@ -14,46 +14,80 @@ import type { ServiceSpec } from './types.js';
  * to repair the stripped PATH a GUI launch agent gets; that problem doesn't
  * apply to a Task Scheduler logon task.
  *
- * CRLF line endings: `cmd.exe` is whitespace/line-ending sensitive.
+ * CRLF line endings keep the installed script native to Windows tooling.
  */
 export function renderWindowsServiceScript(spec: ServiceSpec): string {
-  const setLines = Object.entries(spec.env)
+  const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
+  const unsupportedArgument = spec.args.find(
+    (argument) => argument === '' || /[\s"]/.test(argument),
+  );
+  if (unsupportedArgument !== undefined) {
+    throw new Error(
+      `Windows service argument requires unsupported command-line quoting: ${JSON.stringify(unsupportedArgument)}`,
+    );
+  }
+  const environmentLines = Object.entries(spec.env)
     .filter(([key]) => key !== 'PATH')
-    // `set "K=V"` quoting keeps spaces/special chars literal and is the
-    // canonical cmd.exe form for values that may contain `&`, `(`, etc.
-    .map(([key, value]) => `set "${key}=${value}"`);
+    .map(([key, value]) => (
+      `  $startInfo.EnvironmentVariables[${literal(key)}] = ${literal(value)}`
+    ));
 
-  const exec = `"${spec.executable}" ${spec.args.join(' ')}`;
-  const run = `${exec} >> "${spec.stdoutPath}" 2>> "${spec.stderrPath}"`;
+  const preamble = [
+    "$ErrorActionPreference = 'Stop'",
+    `$executable = ${literal(spec.executable)}`,
+    `$arguments = @(${spec.args.map(literal).join(', ')})`,
+    `$workingDirectory = ${literal(spec.workingDir)}`,
+    `$stdoutPath = ${literal(spec.stdoutPath)}`,
+    `$stderrPath = ${literal(spec.stderrPath)}`,
+    'function Invoke-MycoProcess {',
+    '  $startInfo = New-Object System.Diagnostics.ProcessStartInfo',
+    '  $startInfo.FileName = $executable',
+    "  $startInfo.Arguments = $arguments -join ' '",
+    '  $startInfo.WorkingDirectory = $workingDirectory',
+    '  $startInfo.UseShellExecute = $false',
+    '  $startInfo.CreateNoWindow = $true',
+    '  $startInfo.RedirectStandardOutput = $true',
+    '  $startInfo.RedirectStandardError = $true',
+    ...environmentLines,
+    '  $process = New-Object System.Diagnostics.Process',
+    '  $process.StartInfo = $startInfo',
+    '  $stdout = [IO.File]::Open($stdoutPath, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)',
+    '  $stderr = [IO.File]::Open($stderrPath, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)',
+    '  try {',
+    "    if (-not $process.Start()) { throw 'Myco process did not start' }",
+    '    $stdoutCopy = $process.StandardOutput.BaseStream.CopyToAsync($stdout)',
+    '    $stderrCopy = $process.StandardError.BaseStream.CopyToAsync($stderr)',
+    '    $process.WaitForExit()',
+    '    [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]] @($stdoutCopy, $stderrCopy))',
+    '    return $process.ExitCode',
+    '  } finally {',
+    '    $stdout.Dispose()',
+    '    $stderr.Dispose()',
+    '    $process.Dispose()',
+    '  }',
+    '}',
+  ];
 
-  // Non-keepAlive: run once, no supervision.
   if (!spec.keepAlive) {
-    return ['@echo off', ...setLines, `cd /d "${spec.workingDir}"`, run, ''].join('\r\n');
+    return [...preamble, '$exitCode = Invoke-MycoProcess', 'exit $exitCode', ''].join('\r\n');
   }
 
-  // KeepAlive: supervise the daemon the way launchd KeepAlive / systemd
-  // Restart=on-failure do. Restart on a CRASH (any non-zero exit — including the
-  // 0xC0000005 access violation bun:sqlite can intermittently throw under
-  // x64-on-ARM emulation during a heavy startup replay), but stop on a clean
-  // shutdown (exit 0, e.g. `myco daemon kill` or a step-aside). Bounded so a
-  // permanently-failing binary can't hot-loop; the intermittent fault clears
-  // within a couple of tries. `ping` is the sleep — `timeout` needs a console a
-  // logon task doesn't have. `%errorlevel% equ 0` (not `if errorlevel 1`) so a
-  // negative crash code still counts as failure.
-  const backoffPings = Math.max(2, (spec.throttleSeconds || 2) + 1);
+  const backoffSeconds = Math.max(1, spec.throttleSeconds || 2);
   return [
-    '@echo off',
-    ...setLines,
-    `cd /d "${spec.workingDir}"`,
-    'set MYCO_RESTARTS=0',
-    ':myco_run',
-    run,
-    'if %errorlevel% equ 0 goto myco_done',
-    'set /a MYCO_RESTARTS+=1',
-    'if %MYCO_RESTARTS% geq 10 goto myco_done',
-    `ping -n ${backoffPings} 127.0.0.1 > nul`,
-    'goto myco_run',
-    ':myco_done',
+    ...preamble,
+    '$restarts = 0',
+    'while ($true) {',
+    '  try {',
+    '    $exitCode = Invoke-MycoProcess',
+    '  } catch {',
+    '    [Console]::Error.WriteLine($_.Exception.ToString())',
+    '    $exitCode = 1',
+    '  }',
+    '  if ($exitCode -eq 0) { exit 0 }',
+    '  $restarts += 1',
+    '  if ($restarts -ge 10) { exit $exitCode }',
+    `  Start-Sleep -Seconds ${backoffSeconds}`,
+    '}',
     '',
   ].join('\r\n');
 }
