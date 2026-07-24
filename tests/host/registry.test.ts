@@ -188,11 +188,7 @@ describe('host registry', () => {
     expect(getHost(host.host_id)?.projects).toHaveLength(1);
   });
 
-  test('re-attach to the same host backfills a pre-WS1 ref missing `root`', () => {
-    // Simulates a record created before `AttachRef.root` existed (or a
-    // record that otherwise never got one): seeded directly via
-    // The direct fixture writer, not `attachProject`, since a real attach always sets
-    // `root` today.
+  test('re-attach to the same host backfills an absent `root`', () => {
     const host = makeHost({ projects: [{ grove_id: 'grove-7', project_id: 'proj-7' }] });
     writeHostRecordFixture(host);
     expect(resolveAttach('proj-7')?.ref.root).toBeUndefined();

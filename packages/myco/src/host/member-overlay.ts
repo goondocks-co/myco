@@ -1,11 +1,11 @@
 /**
- * `myco join <host>` / `myco leave <host>` orchestration (Task 2.2) — the
- * MEMBER side of the Team Host overlay.
+ * `myco join <host>` / `myco leave <host>` orchestration for the member side
+ * of the Team Host overlay.
  *
  * A member machine runs standard Myco. To route an attached project to a host it
  * must (1) stand up a userspace `tailscaled` and join the host's overlay, then
- * (2) write the `HostRecord` (+ bearer) that the Phase-1 proxy (`daemon/host-
- * proxy.ts`) already consumes. This module does both, behind injectable seams so
+ * (2) write the `HostRecord` (+ bearer) consumed by `daemon/host-proxy.ts`.
+ * This module does both, behind injectable seams so
  * the whole flow unit-tests with no network, no launchctl, and no real join.
  *
  * MULTI-HOST — one tailscaled PER host. Each host runs its OWN Headscale, i.e. its
@@ -19,16 +19,15 @@
  * `overlay_address` collides (the proxy dials `CONNECT <overlay_address> via
  * localhost:<proxy_port>`, so distinct ports fully disambiguate).
  *
- * SUPERVISION SHAPE — a per-user LaunchAgent, NO root (the deliberate opposite of
- * Task 2.1's host tailscaled). Task 2.1 installs the HOST's tailscaled as a ROOT
- * system daemon because a host must survive reboot-before-login. A MEMBER only
- * needs the overlay while it is logged in and using Myco, so its userspace
- * tailscaled is exactly what `@myco/service`'s user-domain manager was built for
+ * SUPERVISION SHAPE — a per-user LaunchAgent, with no root access. The host's
+ * tailscaled runs as a root system daemon so it survives reboot-before-login.
+ * A member needs the overlay only while it is logged in and using Myco, so its
+ * userspace tailscaled uses `@myco/service`'s user-domain manager
  * (`gui/<uid>` LaunchAgent on macOS, `systemd --user` on Linux). So this reuses
  * `getServiceManager()` directly; it never shells `sudo`, one LaunchAgent per host.
  *
- * DIAL MECHANISM — HTTP CONNECT, matching the proxy. Task 1.3's `defaultDial`
- * tunnels through a local HTTP-CONNECT proxy at `127.0.0.1:<proxy_port>`
+ * DIAL MECHANISM — HTTP CONNECT, matching the proxy. `defaultDial` tunnels
+ * through a local HTTP-CONNECT proxy at `127.0.0.1:<proxy_port>`
  * (`connectViaHttpProxy`). So each host's tailscaled exposes an
  * `--outbound-http-proxy-listen=localhost:<port>` listener (NOT `--socks5-server`)
  * and that port is recorded as `HostRecord.proxy_port`.
@@ -109,8 +108,8 @@ import {
 
 /** The member userspace-tailscaled LaunchAgent label PREFIX. The per-host label
  *  appends a short host tag (`memberTailscaledLabel`) so each joined host gets its
- *  own agent — distinct from Task 2.1's root labels (`com.tailscale.tailscaled` /
- *  `co.goondocks.myco-tailscaled`) so a machine could be both without a collision. */
+ *  own agent — distinct from the root labels (`com.tailscale.tailscaled` /
+ *  `co.goondocks.myco-tailscaled`) so a machine can be both without a collision. */
 export const MEMBER_TAILSCALED_LABEL_PREFIX = 'co.goondocks.myco-member-tailscaled';
 
 /** This host's userspace-tailscaled LaunchAgent label. */
@@ -123,7 +122,7 @@ export function memberTailscaledLabel(hostId: string): string {
 export const MEMBER_TAILSCALED_SOCKET_TIMEOUT_MS = 5000;
 
 // ---------------------------------------------------------------------------
-// Enrollment seam (Task 2.4 provides the real host-side endpoint)
+// Enrollment seam
 // ---------------------------------------------------------------------------
 
 /** What the host tells a member at enrollment: its identity, its overlay address
@@ -136,12 +135,10 @@ export interface HostEnrollment {
   protocol_version: number;
   /** The shared host serve-bearer, stored under {@link HOST_BEARER_SECRET}. */
   bearer: string;
-  /** The host's self-reported served Grove (protocol v2). `undefined` when the
-   *  host predates served-grove designation — its enrollment response carried
-   *  no `served_grove_id` field at all (distinct from the host reporting one
-   *  explicitly as absent). Persisted onto the {@link HostRecord} at join
-   *  (step 7) and later consulted by `attachCommand` as the ONE grove source
-   *  for a new attach ref — no `--grove` flag. */
+  /** The host's self-reported served Grove. `undefined` means the response
+   *  omitted `served_grove_id`; `null` means the host explicitly has no
+   *  designation. Join persists it for `attachCommand` to use as the Grove
+   *  source for a new attach ref. */
   served_grove_id?: string | null;
   enrollment_receipt?: {
     enrollment_nonce: string;
@@ -199,7 +196,7 @@ export interface EnrollmentClient {
  * fabricated record — no credential is ever invented.
  *
  * The DEFAULT path is {@link realEnrollmentClient}, which fetches the bearer over the
- * overlay (spec §8), so the operator never has to hand the secret bearer out-of-band.
+ * overlay, so the operator never has to hand the secret bearer out-of-band.
  */
 export const stubEnrollmentClient: EnrollmentClient = {
   async enroll(ctx: EnrollmentContext): Promise<HostEnrollment> {
@@ -403,11 +400,11 @@ export const connectProxyEnrollTransport: EnrollmentTransport = ({ overlayAddres
 };
 
 /**
- * The real enrollment client (Task 2.4) — the DEFAULT `join` path. The member is
+ * The real enrollment client is the default `join` path. The member is
  * already on the overlay, so this POSTs to the host's enrollment endpoint
  * ({@link HOST_ENROLL_ROUTE}) through the local proxy and returns the parsed
  * {@link HostEnrollment}. Enrollment is the ONE bearer-exempt overlay route (a member
- * obtains the bearer HERE); overlay membership is its trust boundary (spec §8/§9).
+ * obtains the bearer here); overlay membership is its trust boundary.
  *
  * The version header rides along so the host's version gate can reject a skewed
  * member at join (409 → a loud, non-retryable error) rather than after it stores a
@@ -481,8 +478,8 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
 
 /**
  * Bounded retry-with-backoff around a single {@link EnrollmentClient.enroll} call
- * (design spec §4, step 5) — ONLY the transport call is retried, nothing before or
- * after it in `joinHost`. {@link ENROLLMENT_RETRY_BACKOFFS_MS} bounds it at 3
+ * — only the transport call is retried, nothing before or after it in
+ * `joinHost`. {@link ENROLLMENT_RETRY_BACKOFFS_MS} bounds it at 3
  * attempts total (2s then 4s between them, none before the first or after the
  * last); the final attempt's failure is rethrown UNCHANGED so the caller sees the
  * same error a non-retrying `enroll` would have thrown.
@@ -765,9 +762,8 @@ async function joinHostLocked(
     );
     log(`Member overlay IP on host ${hostId}: ${memberOverlayIp}`);
 
-    // 5. Enroll: obtain the host's overlay address + serve-bearer (Task 2.4 seam).
-    //    Bounded retry-with-backoff (design spec §4) — a transient overlay/DERP-
-    //    settling failure shouldn't burn the whole join.
+    // Obtain the host overlay address and serve-bearer with bounded retry for
+    // transient overlay settling.
     const sleep = deps.sleep ?? defaultSleep;
     proxyPortReservation = advanceHostEnrollmentPhase(
       proxyPortReservation,
@@ -802,14 +798,8 @@ async function joinHostLocked(
       : 'Host daemon not confirmed reachable yet — verify with `myco doctor` after the overlay settles.');
     if (!hostReachable) notes.push('host daemon not confirmed reachable over the overlay');
 
-    // 7. host_id reconciliation — WARN, never re-key (server-mode design spec §4).
-    //    The host's self-reported id can differ from the operator-typed one (a
-    //    typo, or a host renamed since an earlier affiliation hint); adopting it
-    //    would require re-keying this host's already-provisioned per-host
-    //    tailscaled instance (socket/statedir/label, all derived from the TYPED
-    //    id above) before enrollment ever ran — out of scope for v1. The typed
-    //    id stays the record key unconditionally; a mismatch only ever produces
-    //    a note, never a silent rewrite.
+    // Keep the operator-selected host ID as the record and service key; report
+    // a self-reported mismatch without re-keying.
     if (enrollment.host_id && enrollment.host_id !== hostId) {
       const warning =
         `Host self-reported id "${enrollment.host_id}" differs from the typed id "${hostId}" — `
