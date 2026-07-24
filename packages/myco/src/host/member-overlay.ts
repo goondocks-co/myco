@@ -91,6 +91,7 @@ import {
   advanceHostEnrollmentPhase,
   getHost,
   inspectHostMembershipForLeave,
+  isValidObservedHostProtocolVersion,
   markHostEnrollmentTeardownPending,
   persistEnrollmentMembership,
   readHostRegistry,
@@ -137,7 +138,7 @@ export interface HostEnrollment {
    *  explicitly as absent). Persisted onto the {@link HostRecord} at join
    *  (step 7) and later consulted by `attachCommand` as the ONE grove source
    *  for a new attach ref — no `--grove` flag. */
-  served_grove_id?: string;
+  served_grove_id?: string | null;
   enrollment_receipt?: {
     enrollment_nonce: string;
     host_id: string;
@@ -223,7 +224,7 @@ interface HostEnrollmentResponse {
   overlay_address: string;
   protocol_version: number;
   bearer: string;
-  served_grove_id?: string;
+  served_grove_id?: string | null;
   enrollment_receipt?: {
     enrollment_nonce: string;
     host_id: string;
@@ -335,8 +336,10 @@ function parseEnrollmentResponse(
     overlay_address: overlayAddress,
     protocol_version: protocolVersion,
     bearer,
-    served_grove_id: servedGroveId ?? undefined,
-    enrollment_receipt: enrollmentReceipt,
+    ...(Object.hasOwn(response, 'served_grove_id')
+      ? { served_grove_id: servedGroveId as string | null }
+      : {}),
+    ...(enrollmentReceipt ? { enrollment_receipt: enrollmentReceipt } : {}),
   };
 }
 
@@ -797,7 +800,9 @@ async function joinHostLocked(
       label: enrollment.label,
       overlay_address: enrollment.overlay_address,
       protocol_version: enrollment.protocol_version,
-      served_grove_id: enrollment.served_grove_id,
+      ...(Object.hasOwn(enrollment, 'served_grove_id')
+        ? { served_grove_id: enrollment.served_grove_id }
+        : {}),
       created_at: new Date().toISOString(),
     };
     const persisted = persistEnrollmentMembership(record, enrollment.bearer, proxyPortReservation);
@@ -1100,7 +1105,10 @@ export async function dialHostHealth(overlayAddress: string, proxyPort: number):
           const value = Array.isArray(raw) ? raw[0] : raw;
           const parsed = value !== undefined ? Number(value) : NaN;
           probeRes.resume();
-          done(true, Number.isFinite(parsed) ? parsed : null); // any response proves the tunnel + host listener are up
+          done(
+            true,
+            isValidObservedHostProtocolVersion(parsed) ? parsed : null,
+          ); // any response proves the tunnel + host listener are up
         },
       );
       probe.once('error', () => done(false, null));

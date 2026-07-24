@@ -27,6 +27,7 @@ import {
   connectProxyEnrollTransport,
   createEnrollmentClient,
   defaultCheckHostReachable,
+  dialHostHealth,
   type EnrollmentContext,
   type EnrollmentTransport,
 } from '@myco/host/member-overlay';
@@ -67,6 +68,7 @@ describe('member enrollment client — unit (injected transport)', () => {
     expect(enrollment.label).toBe('Canonical');
     expect(enrollment.overlay_address).toBe('100.64.0.1:7433');
     expect(enrollment.projects).toBeUndefined();
+    expect('served_grove_id' in enrollment).toBe(false);
   });
 
   test('accepts a matching enrollment receipt and rejects a mismatched nonce', async () => {
@@ -146,7 +148,7 @@ describe('member enrollment client — unit (injected transport)', () => {
       overlay_address: '100.64.0.1:7433',
       protocol_version: 3,
       bearer: 'the-shared-bearer',
-      served_grove_id: undefined,
+      served_grove_id: null,
     });
   });
 
@@ -289,6 +291,36 @@ describe('member enrollment client — end-to-end through the CONNECT proxy', ()
     });
     const reachable = await defaultCheckHostReachable(`127.0.0.1:${deadPort}`, proxyPort);
     expect(reachable).toBe(false);
+  });
+
+  test('the health probe ignores non-positive, fractional, and unsafe protocol headers', async () => {
+    let protocolHeader = '0';
+    const healthServer = http.createServer((_req, res) => {
+      res.setHeader(HOST_PROTOCOL_HEADER, protocolHeader);
+      res.end('ok');
+    });
+    await new Promise<void>((resolve) => healthServer.listen(0, '127.0.0.1', resolve));
+    const address = healthServer.address() as net.AddressInfo;
+
+    try {
+      for (const invalid of ['0', '-1', '3.5', String(Number.MAX_SAFE_INTEGER + 1)]) {
+        protocolHeader = invalid;
+        expect(await dialHostHealth(`127.0.0.1:${address.port}`, proxyPort)).toEqual({
+          reachable: true,
+          protocolVersion: null,
+        });
+      }
+
+      protocolHeader = String(HOST_PROTOCOL_VERSION + 1);
+      expect(await dialHostHealth(`127.0.0.1:${address.port}`, proxyPort)).toEqual({
+        reachable: true,
+        protocolVersion: HOST_PROTOCOL_VERSION + 1,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        healthServer.close((error) => error ? reject(error) : resolve());
+      });
+    }
   });
 
   test('an outer-timeout (host accepts the connection but never answers) destroys the probe socket, not just resolves false', async () => {

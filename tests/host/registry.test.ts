@@ -25,6 +25,7 @@ import {
   persistEnrollmentMembership,
   readHostRegistry,
   readHostSecrets,
+  recordHostProtocolVersion,
   reserveHostProxyPort,
   retireHostMembership,
   resolveAttach,
@@ -87,6 +88,29 @@ describe('host registry', () => {
     expect(all[0].projects).toEqual([ref]);
 
     expect(getHost(host.host_id)?.overlay_address).toBe('100.64.0.1:7433');
+  });
+
+  test('protocol refresh rejects invalid values without corrupting the record and remains monotonic', () => {
+    const host = makeHost({ protocol_version: 3 });
+    writeHostRecordFixture(host);
+
+    for (const invalid of [
+      0,
+      -1,
+      3.5,
+      Number.POSITIVE_INFINITY,
+      Number.NaN,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      expect(() => recordHostProtocolVersion(host.host_id, invalid))
+        .toThrow(/positive safe integer/);
+      expect(getHost(host.host_id)?.protocol_version).toBe(3);
+    }
+
+    expect(recordHostProtocolVersion(host.host_id, 4)).toBe(4);
+    expect(getHost(host.host_id)?.protocol_version).toBe(4);
+    expect(recordHostProtocolVersion(host.host_id, 3)).toBe(4);
+    expect(getHost(host.host_id)?.protocol_version).toBe(4);
   });
 
   test('resolveAttach hits the host + ref for an attached project', () => {

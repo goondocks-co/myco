@@ -88,7 +88,7 @@ function fakeEnrollment(fields: {
   host_id: string;
   overlay_address: string;
   bearer: string;
-  served_grove_id?: string;
+  served_grove_id?: string | null;
 }): EnrollmentClient {
   return {
     async enroll(_ctx: EnrollmentContext): Promise<HostEnrollment> {
@@ -98,7 +98,9 @@ function fakeEnrollment(fields: {
         overlay_address: fields.overlay_address,
         protocol_version: HOST_PROTOCOL_VERSION,
         bearer: fields.bearer,
-        served_grove_id: fields.served_grove_id,
+        ...(Object.prototype.hasOwnProperty.call(fields, 'served_grove_id')
+          ? { served_grove_id: fields.served_grove_id }
+          : {}),
       };
     },
   };
@@ -285,5 +287,49 @@ describe('joinHost — served_grove_id persistence + host_id reconciliation (ser
     );
 
     expect(getHost(hostId)?.served_grove_id).toBe(groveId);
+  });
+
+  test('a re-join that explicitly reports no served Grove clears the previous authority and refuses attach', async () => {
+    const hostId = createHostId();
+    const groveId = createGroveId();
+    await joinHost(
+      { hostRef: hostId, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({
+        enrollmentClient: fakeEnrollment({
+          host_id: hostId,
+          overlay_address: '100.64.0.1:7433',
+          bearer: 'bearer-1',
+          served_grove_id: groveId,
+        }),
+      }),
+    );
+
+    await joinHost(
+      { hostRef: hostId, key: 'onetime2', serverUrl: 'https://host:8080' },
+      deps({
+        enrollmentClient: fakeEnrollment({
+          host_id: hostId,
+          overlay_address: '100.64.0.1:7433',
+          bearer: 'bearer-2',
+          served_grove_id: null,
+        }),
+      }),
+    );
+
+    const record = getHost(hostId);
+    expect(record?.served_grove_id).toBeNull();
+    expect(record && 'served_grove_id' in record).toBe(true);
+
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-enrollment-undesignated-'));
+    try {
+      expect(() => attachCommand({
+        projectPath: projectRoot,
+        hostId,
+        projectId: createProjectId(),
+        mycoHome: tmp,
+      })).toThrow(/served-grove designation/);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });

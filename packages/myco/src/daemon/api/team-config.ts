@@ -31,6 +31,7 @@
  * guaranteed to be a key a real scheduled run can actually find.
  */
 import crypto from 'node:crypto';
+import path from 'node:path';
 
 import { loadMachineConfig, saveMachineConfig } from '../../config/loader.js';
 import {
@@ -50,9 +51,116 @@ import type { FunnelRunner } from '../external-listener.js';
 import { handleGetGroveConfig, handlePutGroveConfig } from './config.js';
 import { errorBody } from './error-envelope.js';
 import type { RouteRegistrar, RouteRequest, RouteResponse } from '../router.js';
+import {
+  LifecycleLock,
+  type LockHandle,
+} from '@myco/utils/lifecycle-lock.js';
+import {
+  physicalPathIdentity,
+  physicalPathLockIdentities,
+} from '@myco/utils/physical-path-identity.js';
+import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 
 const SECRET_PREVIEW_PREFIX_CHARS = 8;
 const SECRET_PREVIEW_SUFFIX_CHARS = 4;
+const EXTERNAL_MCP_ACTIVATION_LOCK_RETRIES = 8;
+const externalMcpActivationQueues = new Map<string, Promise<void>>();
+
+class ExternalMcpActivationBusyError extends Error {
+  constructor() {
+    super('Another external MCP activation is already in progress.');
+    this.name = 'ExternalMcpActivationBusyError';
+  }
+}
+
+class ExternalMcpBindError extends Error {
+  constructor(readonly detail: string) {
+    super(detail);
+    this.name = 'ExternalMcpBindError';
+  }
+}
+
+function requireFunnelSuccess(
+  result: Awaited<ReturnType<FunnelRunner>>,
+  operation: string,
+): void {
+  if (!result.ok) throw new Error(`${operation}: ${result.detail}`);
+}
+
+function externalMcpActivationLockPaths(mycoHome: string): string[] {
+  const lockDir = path.join(resolvePerUserLocksDir(), 'external-mcp-activation');
+  return physicalPathLockIdentities(mycoHome)
+    .map((identity) => {
+      const key = crypto.createHash('sha256')
+        .update(`external-mcp-activation\0${identity}`)
+        .digest('hex');
+      return path.join(lockDir, `${key}.lock`);
+    })
+    .sort();
+}
+
+function releaseExternalMcpActivationLocks(locks: LockHandle[]): void {
+  for (const lock of locks.reverse()) lock.release();
+}
+
+async function withExternalMcpActivationFileLocks<T>(
+  mycoHome: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  for (let attempt = 0; attempt < EXTERNAL_MCP_ACTIVATION_LOCK_RETRIES; attempt += 1) {
+    const paths = externalMcpActivationLockPaths(mycoHome);
+    const locks: LockHandle[] = [];
+    try {
+      for (const lockPath of paths) {
+        const result = LifecycleLock.acquire(lockPath, {
+          command: 'myco external-mcp activation',
+        });
+        if (!result.acquired) throw new ExternalMcpActivationBusyError();
+        locks.push(result.lock);
+      }
+    } catch (error) {
+      releaseExternalMcpActivationLocks(locks);
+      throw error;
+    }
+
+    const freshPaths = externalMcpActivationLockPaths(mycoHome);
+    if (freshPaths.length !== paths.length
+      || freshPaths.some((lockPath, index) => lockPath !== paths[index])) {
+      releaseExternalMcpActivationLocks(locks);
+      continue;
+    }
+
+    try {
+      return await fn();
+    } finally {
+      releaseExternalMcpActivationLocks(locks);
+    }
+  }
+  throw new Error('External MCP activation lock identity did not stabilize.');
+}
+
+async function withExternalMcpActivation<T>(
+  mycoHome: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const queueKey = physicalPathIdentity(mycoHome);
+  const previous = externalMcpActivationQueues.get(queueKey) ?? Promise.resolve();
+  let releaseQueue!: () => void;
+  const current = new Promise<void>((resolve) => {
+    releaseQueue = resolve;
+  });
+  const tail = previous.then(() => current, () => current);
+  externalMcpActivationQueues.set(queueKey, tail);
+  await previous.catch(() => {});
+  try {
+    return await withExternalMcpActivationFileLocks(mycoHome, fn);
+  } finally {
+    releaseQueue();
+    if (externalMcpActivationQueues.get(queueKey) === tail) {
+      externalMcpActivationQueues.delete(queueKey);
+    }
+  }
+}
 
 /** First-8+last-4 masking — the ONE shape every team-write secret response
  *  echoes (server-mode design spec §5/§6: masked echo only, never the raw
@@ -291,10 +399,21 @@ export async function handleRotateExternalMcpToken(deps: TeamConfigRouteDeps): P
   if (isRefusal(groveIdOrRefusal)) return groveIdOrRefusal;
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
-  const token = crypto.randomBytes(32).toString('hex');
-  writeSecret(mycoHome, HOST_EXTERNAL_MCP_TOKEN_SECRET, token);
-
-  return { body: { token, tokenHash: nonSecretTokenHash(token) } };
+  try {
+    return await withExternalMcpActivation(mycoHome, async () => {
+      const token = crypto.randomBytes(32).toString('hex');
+      writeSecret(mycoHome, HOST_EXTERNAL_MCP_TOKEN_SECRET, token);
+      return { body: { token, tokenHash: nonSecretTokenHash(token) } };
+    });
+  } catch (error) {
+    if (error instanceof ExternalMcpActivationBusyError) {
+      return {
+        status: 409,
+        body: errorBody('external_mcp_busy', error.message),
+      };
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -343,11 +462,11 @@ interface ExternalMcpTogglePutBody {
  * PUT /api/team/external-mcp/toggle — enable or disable the external MCP
  * listener (server-mode design spec §7).
  *
- * Enable: mint-if-absent (never rotates an existing token — only
- * `POST /api/team/mcp-token/rotate` does that) → bind the listener → turn
- * Funnel on. The bind is attempted FIRST; a bind failure (port already in
- * use) refuses without touching persisted config or Funnel, so `enabled:
- * true` in config is never written unless the listener actually came up.
+ * Enable: bind the listener → turn Funnel on → persist the live port →
+ * mint-if-absent (never rotates an existing token — only
+ * `POST /api/team/mcp-token/rotate` does that). The token write is the final
+ * fallible state transition, so a failed activation has no durable token
+ * whose one-time reveal could be consumed.
  * The raw token is returned ONLY when THIS call freshly minted it (first
  * enable, or enable after a secrets wipe) — a re-enable of an already-token'd
  * listener returns `tokenHash` only, never the raw value (Task 10 Fix Round
@@ -378,14 +497,13 @@ export async function handlePutExternalMcpToggle(
   }
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
-  const machine = loadMachineConfig(mycoHome);
 
   // Range-validate BEFORE any side effect (mint, bind, persist, Funnel) —
   // the SAME bounds `ExternalMcpSchema` enforces on load, so a bad port can
   // never be persisted via this route and then silently coerced/rejected on
   // the next daemon boot. `port: 0` (below the schema's 1024 floor) is
   // rejected here, never reaches `bind`.
-  let requestedPort: number;
+  let requestedPortOverride: number | undefined;
   if (payload.port !== undefined) {
     const parsedPort = ExternalMcpSchema.shape.port.safeParse(payload.port);
     if (!parsedPort.success) {
@@ -394,60 +512,209 @@ export async function handlePutExternalMcpToggle(
         body: errorBody('invalid_port', 'port must be an integer between 1024 and 65535'),
       };
     }
-    requestedPort = parsedPort.data;
-  } else {
-    requestedPort = machine.daemon.external_mcp.port || EXTERNAL_MCP_DEFAULT_PORT;
+    requestedPortOverride = parsedPort.data;
   }
 
-  function persist(enabled: boolean, port: number): void {
-    saveMachineConfig({
-      ...machine,
-      daemon: { ...machine.daemon, external_mcp: { enabled, port } },
-    }, mycoHome);
-  }
+  try {
+    return await withExternalMcpActivation(mycoHome, async () => {
+      const machine = loadMachineConfig(mycoHome);
+      const requestedPort = requestedPortOverride
+        ?? machine.daemon.external_mcp.port
+        ?? EXTERNAL_MCP_DEFAULT_PORT;
 
-  if (!payload.enabled) {
-    const port = machine.daemon.external_mcp.port;
-    const funnel = deps.externalMcp ? await deps.externalMcp.runFunnel(port, false) : undefined;
-    if (deps.externalMcp) await deps.externalMcp.listener.unbind();
-    persist(false, port);
-    return { body: { enabled: false, port, funnel } };
-  }
+      function persist(enabled: boolean, port: number): void {
+        saveMachineConfig({
+          ...machine,
+          daemon: { ...machine.daemon, external_mcp: { enabled, port } },
+        }, mycoHome);
+      }
 
-  // Mint-if-absent — never overwrite an existing token (that is rotate's job).
-  // The atomic secrets-layer primitive makes this cross-process-safe: two
-  // daemons racing the first enable converge on ONE stored token, and only the
-  // call that genuinely minted it (`minted`) reveals the raw value below — a
-  // loser adopts the winner's stored token and reveals nothing.
-  const { value: token, minted: freshlyMinted } = writeSecretIfAbsent(
-    mycoHome,
-    HOST_EXTERNAL_MCP_TOKEN_SECRET,
-    () => crypto.randomBytes(32).toString('hex'),
-  );
+      const listenerWasBound = deps.externalMcp?.listener.isBound ?? false;
+      const previousListenerPort = deps.externalMcp?.listener.port ?? 0;
 
-  let boundPort = requestedPort;
-  if (deps.externalMcp) {
-    const bindResult = await deps.externalMcp.listener.bind(requestedPort);
-    if (!bindResult.ok) {
-      return { status: 500, body: errorBody('bind_failed', `Could not bind the external MCP listener: ${bindResult.error}`) };
+      const failWithCompensation = async (
+        error: unknown,
+        funnelRestorations: Array<{ port: number; on: boolean }>,
+      ): Promise<never> => {
+        const compensationErrors: unknown[] = [];
+        if (deps.externalMcp) {
+          try {
+            if (listenerWasBound) {
+              const rebound = await deps.externalMcp.listener.bind(previousListenerPort);
+              if (!rebound.ok) throw new Error(rebound.error);
+            } else {
+              await deps.externalMcp.listener.unbind();
+            }
+          } catch (compensationError) {
+            compensationErrors.push(compensationError);
+          }
+          for (const restoration of funnelRestorations) {
+            try {
+              const result = await deps.externalMcp.runFunnel(
+                restoration.port,
+                restoration.on,
+              );
+              requireFunnelSuccess(result, 'Could not restore Tailscale Funnel');
+            } catch (compensationError) {
+              compensationErrors.push(compensationError);
+            }
+          }
+        }
+        try {
+          saveMachineConfig(machine, mycoHome);
+        } catch (compensationError) {
+          compensationErrors.push(compensationError);
+        }
+        if (compensationErrors.length > 0) {
+          const message = error instanceof Error ? error.message : String(error);
+          const primaryErrors = error instanceof AggregateError
+            ? [...error.errors]
+            : [error];
+          throw new AggregateError(
+            [...primaryErrors, ...compensationErrors],
+            `${message}; external MCP activation compensation also failed`,
+          );
+        }
+        throw error;
+      };
+
+      if (!payload.enabled) {
+        const port = machine.daemon.external_mcp.port;
+        let funnel: Awaited<ReturnType<FunnelRunner>> | undefined;
+        let funnelDisabled = false;
+        try {
+          funnel = deps.externalMcp
+            ? await deps.externalMcp.runFunnel(port, false)
+            : undefined;
+          if (funnel) {
+            requireFunnelSuccess(funnel, 'Could not disable Tailscale Funnel');
+            funnelDisabled = true;
+          }
+          if (deps.externalMcp) await deps.externalMcp.listener.unbind();
+          persist(false, port);
+          return { body: { enabled: false, port, funnel } };
+        } catch (error) {
+          if (!funnelDisabled) throw error;
+          return await failWithCompensation(error, [
+            { port, on: machine.daemon.external_mcp.enabled },
+          ]);
+        }
+      }
+
+      let boundPort = requestedPort;
+      let funnel: Awaited<ReturnType<FunnelRunner>> | undefined;
+      let funnelAttempted = false;
+
+      const enableFunnelRestorations = (): Array<{ port: number; on: boolean }> => {
+        if (!funnelAttempted) return [];
+        if (!listenerWasBound) return [{ port: boundPort, on: false }];
+        if (boundPort === previousListenerPort) {
+          return [{
+            port: previousListenerPort,
+            on: machine.daemon.external_mcp.enabled,
+          }];
+        }
+        return [
+          { port: boundPort, on: false },
+          {
+            port: previousListenerPort,
+            on: machine.daemon.external_mcp.enabled,
+          },
+        ];
+      };
+
+      try {
+        if (deps.externalMcp) {
+          const bindResult = await deps.externalMcp.listener.bind(requestedPort);
+          if (!bindResult.ok) {
+            throw new ExternalMcpBindError(bindResult.error);
+          }
+          boundPort = bindResult.port;
+          funnelAttempted = true;
+          funnel = await deps.externalMcp.runFunnel(boundPort, true);
+          requireFunnelSuccess(funnel, 'Could not enable Tailscale Funnel');
+        }
+        persist(true, boundPort);
+      } catch (error) {
+        try {
+          return await failWithCompensation(error, enableFunnelRestorations());
+        } catch (compensatedError) {
+          if (error instanceof ExternalMcpBindError && compensatedError === error) {
+            return {
+              status: 500,
+              body: errorBody(
+                'bind_failed',
+                `Could not bind the external MCP listener: ${error.detail}`,
+              ),
+            };
+          }
+          throw compensatedError;
+        }
+      }
+
+      let candidate: string | undefined;
+      let token: string;
+      let freshlyMinted: boolean;
+      try {
+        const result = writeSecretIfAbsent(
+          mycoHome,
+          HOST_EXTERNAL_MCP_TOKEN_SECRET,
+          () => {
+            candidate = crypto.randomBytes(32).toString('hex');
+            return candidate;
+          },
+        );
+        token = result.value;
+        freshlyMinted = result.minted;
+      } catch (error) {
+        let committed: string | undefined;
+        try {
+          committed = readSecrets(mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET]?.trim();
+        } catch (inspectionError) {
+          const message = error instanceof Error ? error.message : String(error);
+          return await failWithCompensation(
+            new AggregateError(
+              [error, inspectionError],
+              `${message}; external MCP token commit state could not be inspected`,
+            ),
+            enableFunnelRestorations(),
+          );
+        }
+        if (candidate !== undefined && committed === candidate) {
+          token = committed;
+          freshlyMinted = true;
+        } else if (!committed) {
+          return await failWithCompensation(error, enableFunnelRestorations());
+        } else {
+          throw error;
+        }
+      }
+
+      const responseBody: {
+        enabled: true;
+        port: number;
+        tokenHash: string;
+        funnel: unknown;
+        token?: string;
+      } = {
+        enabled: true,
+        port: boundPort,
+        tokenHash: nonSecretTokenHash(token),
+        funnel,
+      };
+      if (freshlyMinted) responseBody.token = token;
+
+      return { body: responseBody };
+    });
+  } catch (error) {
+    if (error instanceof ExternalMcpActivationBusyError) {
+      return {
+        status: 409,
+        body: errorBody('external_mcp_busy', error.message),
+      };
     }
-    boundPort = bindResult.port;
+    throw error;
   }
-  persist(true, boundPort);
-  const funnel = deps.externalMcp ? await deps.externalMcp.runFunnel(boundPort, true) : undefined;
-
-  const responseBody: { enabled: true; port: number; tokenHash: string; funnel: unknown; token?: string } = {
-    enabled: true,
-    port: boundPort,
-    tokenHash: nonSecretTokenHash(token),
-    funnel,
-  };
-  // The ONE reveal condition on this route: only a call that itself minted
-  // the token gets the raw value back. A re-enable of an already-token'd
-  // listener never echoes it — see `tests/daemon/api/key-leak-guard.test.ts`.
-  if (freshlyMinted) responseBody.token = token;
-
-  return { body: responseBody };
 }
 
 // ---------------------------------------------------------------------------

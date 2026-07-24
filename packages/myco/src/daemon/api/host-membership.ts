@@ -339,37 +339,36 @@ export function createHostMembershipDetachHandler(deps: HostMembershipRouteDeps)
 export function createHostMembershipStatusHandler(deps: HostMembershipRouteDeps = {}): RouteHandler {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   return async (req) => {
-    const hosts = readHostRegistry().map((record) => ({
-      host_id: record.host_id,
-      label: record.label,
-      overlay_address: record.overlay_address,
-      proxy_port: record.proxy_port ?? null,
-      protocol_version: record.protocol_version,
-      served_grove_id: record.served_grove_id ?? null,
-      created_at: record.created_at,
-      projects: record.projects.map((ref) => ({
-        grove_id: ref.grove_id,
-        project_id: ref.project_id,
-        root: ref.root ?? null,
-        // The LOCAL Grove this ref displays under (E-4 local-view
-        // requirement) — RESOLVED, not the raw stored value: `ref.local_grove_id`
-        // when it still names an existing local Grove, else the machine's
-        // current default Grove (`resolveAttachRefHomeGroveId`,
-        // `grove/registry.ts`). `null` only in the bootstrap-only case where
-        // this machine has no default Grove yet.
-        local_grove_id: resolveAttachRefHomeGroveId(ref, mycoHome),
-        // Existing-refs mitigation (server-mode design spec §2(c)): once the
-        // host's served_grove_id is known, a ref recorded against a
-        // DIFFERENT Grove (e.g. attached under the pre-designation
-        // operator-typed `--grove` flow) is flagged here rather than left to
-        // fail opaquely the next time a drain or request routes through it.
-        // `null` while the host's designation is unknown — there is nothing
-        // to compare against yet, not a clean bill of health.
-        mismatch: record.served_grove_id && ref.grove_id !== record.served_grove_id
-          ? ('attach_grove_mismatch' as const)
-          : null,
-      })),
-    }));
+    const hosts = readHostRegistry().map((record) => {
+      const servedGroveKnown = Object.hasOwn(record, 'served_grove_id');
+      return {
+        host_id: record.host_id,
+        label: record.label,
+        overlay_address: record.overlay_address,
+        proxy_port: record.proxy_port ?? null,
+        protocol_version: record.protocol_version,
+        served_grove_id: record.served_grove_id ?? null,
+        created_at: record.created_at,
+        projects: record.projects.map((ref) => ({
+          grove_id: ref.grove_id,
+          project_id: ref.project_id,
+          root: ref.root ?? null,
+          // The LOCAL Grove this ref displays under (E-4 local-view
+          // requirement) — RESOLVED, not the raw stored value: `ref.local_grove_id`
+          // when it still names an existing local Grove, else the machine's
+          // current default Grove (`resolveAttachRefHomeGroveId`,
+          // `grove/registry.ts`). `null` only in the bootstrap-only case where
+          // this machine has no default Grove yet.
+          local_grove_id: resolveAttachRefHomeGroveId(ref, mycoHome),
+          // A known designation must match every existing ref. Explicit
+          // undesignation is known and therefore flags every retained ref;
+          // an omitted legacy field remains unknown and cannot be compared.
+          mismatch: servedGroveKnown && ref.grove_id !== record.served_grove_id
+            ? ('attach_grove_mismatch' as const)
+            : null,
+        })),
+      };
+    });
 
     const projectRoot = str(req.query.project_root);
     let hint: { host_id: string; state: string; message: string } | null = null;

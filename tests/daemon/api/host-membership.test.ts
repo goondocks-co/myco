@@ -540,6 +540,22 @@ describe('GET /api/host-membership/status', () => {
     expect(body.hosts[0]!.projects[0]!.mismatch).toBeNull();
   });
 
+  test('served_grove_id explicitly cleared flags existing refs as attach_grove_mismatch', async () => {
+    const host = makeHost({
+      served_grove_id: null,
+      projects: [{ grove_id: createGroveId(), project_id: createProjectId(), root: '/checkout' }],
+    });
+    writeHostRecordFixture(host);
+
+    const handler = createHostMembershipStatusHandler({ mycoHome: home });
+    const res = await handler(req({}, {}));
+    const body = res.body as {
+      hosts: { served_grove_id: string | null; projects: { mismatch: string | null }[] }[];
+    };
+    expect(body.hosts[0]!.served_grove_id).toBeNull();
+    expect(body.hosts[0]!.projects[0]!.mismatch).toBe('attach_grove_mismatch');
+  });
+
   test('project_root with an unresolved hint (host not joined) surfaces the hint', async () => {
     const hintedHostId = createHostId();
     const projectId = createProjectId();

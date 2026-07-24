@@ -119,7 +119,7 @@ export interface HostRecord {
    * `served_grove_id` field at all) or when a join has not yet happened
    * over the current protocol.
    */
-  served_grove_id?: string;
+  served_grove_id?: string | null;
   created_at: string;
   projects: AttachRef[];
   /** Atomic membership commit pointer. Both generation fields are present together. */
@@ -1007,10 +1007,13 @@ function persistEnrollmentMembershipUnlocked(
   };
   writeHostEnrollmentIntentUnlocked(stagedIntent);
 
+  const servedGroveId = Object.hasOwn(enrollment, 'served_grove_id')
+    ? enrollment.served_grove_id
+    : existing?.served_grove_id;
   const record: HostRecord = {
     ...enrollment,
     proxy_port: reservation.proxyPort,
-    served_grove_id: enrollment.served_grove_id ?? existing?.served_grove_id,
+    ...(servedGroveId !== undefined ? { served_grove_id: servedGroveId } : {}),
     created_at: existing?.created_at ?? enrollment.created_at,
     projects: existing?.projects ?? [],
     enrollment_generation: intent.generation,
@@ -1303,10 +1306,17 @@ export function recordHostProtocolVersion(hostId: string, observedVersion: numbe
   );
 }
 
+export function isValidObservedHostProtocolVersion(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
 function recordHostProtocolVersionUnlocked(hostId: string, observedVersion: number): number {
+  if (!isValidObservedHostProtocolVersion(observedVersion)) {
+    throw new RangeError('Observed host protocol version must be a positive safe integer.');
+  }
   const record = readHostMembershipSnapshotUnlocked(hostId)?.record ?? null;
   if (!record) return observedVersion;
-  if (!Number.isFinite(observedVersion) || observedVersion <= record.protocol_version) {
+  if (observedVersion <= record.protocol_version) {
     return record.protocol_version;
   }
   writeHostRecordUnlocked({ ...record, protocol_version: observedVersion });
