@@ -49,6 +49,10 @@ export interface SchtasksRunner {
     stdout: string;
     exitCode: number;
   }>;
+  endProcessTree(label: string): Promise<{
+    stdout: string;
+    exitCode: number;
+  }>;
 }
 
 export interface TaskSchedulerRegistration {
@@ -154,6 +158,46 @@ export class RealSchtasksRunner implements SchtasksRunner {
           ]
         : []),
       '  Register-ScheduledTask @parameters | Out-Null',
+      '} catch {',
+      '  Write-Error $_',
+      '  exit 1',
+      '}',
+    ].join('\n');
+    return this.runPowerShell([
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      encodePowerShellCommand(command),
+    ]);
+  }
+
+  async endProcessTree(
+    label: string,
+  ): Promise<{ stdout: string; exitCode: number }> {
+    if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
+      return {
+        stdout: `[sandbox] skipped Task Scheduler process-tree termination ${label}`,
+        exitCode: 0,
+      };
+    }
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      'try {',
+      "  $service = New-Object -ComObject 'Schedule.Service'",
+      '  $service.Connect()',
+      `  $task = $service.GetFolder('\\').GetTask(${powerShellLiteral(label)})`,
+      '  $instances = @($task.GetInstances(0))',
+      '  foreach ($instance in $instances) {',
+      '    $engineProcessId = [int]$instance.EnginePID',
+      "    $taskkill = Join-Path $env:SystemRoot 'System32\\taskkill.exe'",
+      '    $output = & $taskkill /PID $engineProcessId /T /F 2>&1',
+      '    if ($LASTEXITCODE -ne 0) {',
+      "      throw \"taskkill failed for engine PID ${engineProcessId}: $output\"",
+      '    }',
+      '  }',
       '} catch {',
       '  Write-Error $_',
       '  exit 1',
@@ -306,8 +350,8 @@ export class WindowsTaskServiceManager implements ServiceManager {
           return false;
         }
         assertRunSucceeded(
-          await this.runner.run(['/end', '/tn', label]),
-          `schtasks /end /tn ${label}`,
+          await this.runner.endProcessTree(label),
+          `Task Scheduler process-tree termination ${label}`,
         );
         await this.waitUntilNotRunning(label);
         return true;

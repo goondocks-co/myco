@@ -153,6 +153,10 @@ class StubRunner implements SchtasksRunner {
     }
     return this.registerResult;
   }
+  async endProcessTree(label: string): Promise<{ stdout: string; exitCode: number }> {
+    this.calls.push(['/end-tree', label]);
+    return this.exitOverrides.get('/end-tree') ?? { stdout: '', exitCode: 0 };
+  }
 }
 
 function makeUnitManager(opts: WindowsManagerOptions): WindowsTaskServiceManager {
@@ -182,6 +186,14 @@ describe('renderWindowsServiceScript', () => {
     expect(out).toContain("$arguments = @('daemon')");
     expect(out).toContain('$process.StandardOutput.BaseStream.CopyToAsync($stdout)');
     expect(out).toContain('$process.StandardError.BaseStream.CopyToAsync($stderr)');
+    expect(out).toContain('private const uint KillOnJobClose = 0x00002000;');
+    expect(out).toContain('SetInformationJobObject');
+    expect(out).toContain('AssignProcessToJobObject');
+    expect(out).toContain('if ([MycoProcessJob]::ExtendedLimitInfoSize -ne 144)');
+    expect(out).toContain('$jobHandle = [MycoProcessJob]::CreateForCurrentProcess()');
+    expect(out.indexOf('$jobHandle = [MycoProcessJob]::CreateForCurrentProcess()'))
+      .toBeLessThan(out.indexOf('if (-not $process.Start())'));
+    expect(out).toContain('[MycoProcessJob]::Close($jobHandle)');
     expect(out).not.toContain('1>>');
     expect(out).not.toContain('2>>');
     expect(out.includes('\r\n')).toBe(true);
@@ -496,7 +508,7 @@ describe('WindowsTaskServiceManager', () => {
     const spec = makeSpec();
     await mgr.install(spec);
     await mgr.uninstall(spec.label);
-    expect(runner.calls.some((c) => c[0] === '/end')).toBe(true);
+    expect(runner.calls.some((c) => c[0] === '/end-tree')).toBe(true);
     expect(runner.calls.some((c) => c[0] === '/delete')).toBe(true);
     expect(fs.existsSync(path.join(scriptDir, `${spec.label}.ps1`))).toBe(false);
   });
@@ -518,7 +530,7 @@ describe('WindowsTaskServiceManager', () => {
 
     await expect(mgr.uninstall(spec.label)).rejects.toThrow(/containment/i);
 
-    expect(runner.calls.some((call) => call[0] === '/end')).toBe(false);
+    expect(runner.calls.some((call) => call[0] === '/end-tree')).toBe(false);
     expect(runner.calls.some((call) => call[0] === '/delete')).toBe(false);
     expect(fs.existsSync(scriptPath)).toBe(true);
   });
@@ -551,16 +563,17 @@ describe('WindowsTaskServiceManager', () => {
     expect(fs.existsSync(scriptPath)).toBe(true);
   });
 
-  test('uninstall rejects a failed /end and preserves the launcher', async () => {
+  test('uninstall rejects failed process-tree termination and preserves the launcher', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
     const mgr = makeUnitManager({ runner, scriptDir });
     const spec = makeSpec();
     await mgr.install(spec);
     const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
-    runner.exitOverrides.set('/end', { stdout: 'ERROR: Access is denied.', exitCode: 1 });
+    runner.exitOverrides.set('/end-tree', { stdout: 'ERROR: Access is denied.', exitCode: 1 });
 
-    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/schtasks \/end.*failed.*exit 1/i);
+    await expect(mgr.uninstall(spec.label))
+      .rejects.toThrow(/Task Scheduler process-tree termination.*failed.*exit 1/i);
 
     expect(fs.existsSync(scriptPath)).toBe(true);
     expect(runner.calls.some((call) => call[0] === '/delete')).toBe(false);
@@ -657,9 +670,8 @@ describe('WindowsTaskServiceManager', () => {
     expect(runner.calls.some((call) => call[0] === '/delete')).toBe(false);
   });
 
-  // Cooperative drain (#4): `schtasks /end` is an uncatchable TerminateProcess,
-  // so restart/stop must drain the daemon over HTTP FIRST or every Windows
-  // restart/update orphans in-flight runs + the team-sync outbox.
+  // Windows process-tree termination is uncatchable, so restart/stop drains
+  // the daemon over HTTP before forcefully ending the task instance.
 
   /** A runner that records schtasks calls into a shared ordered event log. */
   function recordingMgr(events: string[], opts: {
@@ -676,6 +688,10 @@ describe('WindowsTaskServiceManager', () => {
       async queryState() { return 'absent'; },
       async currentUserSid() { return 'S-1-5-21-1000'; },
       async register() { return { stdout: '', exitCode: 0 }; },
+      async endProcessTree(label) {
+        events.push('taskkill-tree:' + label);
+        return { stdout: '', exitCode: 0 };
+      },
     };
     return new WindowsTaskServiceManager({
       runner,
@@ -688,7 +704,7 @@ describe('WindowsTaskServiceManager', () => {
     });
   }
 
-  test('restart() drains via cooperative shutdown BEFORE schtasks /end, then /run', async () => {
+  test('restart() drains before process-tree termination, then runs the task', async () => {
     const events: string[] = [];
     const runner: SchtasksRunner = {
       async run(args) {
@@ -697,7 +713,7 @@ describe('WindowsTaskServiceManager', () => {
       },
       async queryState() {
         events.push('state');
-        return events.includes('schtasks:/end /tn co.goondocks.myco-dev')
+        return events.includes('taskkill-tree:co.goondocks.myco-dev')
           ? 'ready'
           : 'running';
       },
@@ -705,6 +721,10 @@ describe('WindowsTaskServiceManager', () => {
         return 'S-1-5-21-1000';
       },
       async register() {
+        return { stdout: '', exitCode: 0 };
+      },
+      async endProcessTree(label) {
+        events.push('taskkill-tree:' + label);
         return { stdout: '', exitCode: 0 };
       },
     };
@@ -726,14 +746,14 @@ describe('WindowsTaskServiceManager', () => {
     expect(events).toEqual([
       'drain:28876',
       'contain:start',
-      'schtasks:/end /tn co.goondocks.myco-dev',
+      'taskkill-tree:co.goondocks.myco-dev',
       'state',
       'contain:end',
       'schtasks:/run /tn co.goondocks.myco-dev',
     ]);
   });
 
-  test('stop() drains before schtasks /end', async () => {
+  test('stop() drains before process-tree termination', async () => {
     const events: string[] = [];
     const mgr = recordingMgr(events, {
       resolveDaemonPort: () => 28876,
@@ -743,7 +763,7 @@ describe('WindowsTaskServiceManager', () => {
     expect(events).toEqual([
       'drain:28876',
       'contain',
-      'schtasks:/end /tn co.goondocks.myco-dev',
+      'taskkill-tree:co.goondocks.myco-dev',
     ]);
   });
 
@@ -758,7 +778,7 @@ describe('WindowsTaskServiceManager', () => {
     expect(drained).toBe(false);
     expect(events).toEqual([
       'contain',
-      'schtasks:/end /tn co.goondocks.myco',
+      'taskkill-tree:co.goondocks.myco',
       'schtasks:/run /tn co.goondocks.myco',
     ]);
   });
@@ -772,7 +792,7 @@ describe('WindowsTaskServiceManager', () => {
     await mgr.restart('co.goondocks.myco');
     expect(events).toEqual([
       'contain',
-      'schtasks:/end /tn co.goondocks.myco',
+      'taskkill-tree:co.goondocks.myco',
       'schtasks:/run /tn co.goondocks.myco',
     ]);
   });

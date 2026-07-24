@@ -25,6 +25,7 @@ import type { ServiceSpec } from '@myco/service/types.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 import { moveFileReplaceWriteThrough } from '@myco/utils/windows-atomic-replace.js';
+import { isProcessAlive, waitForProcessExit } from '@goondocks/myco-shared';
 
 const LOCK_ROOT_CHILD_MODE = 'lock-root-child';
 const LOCK_HOLDER_CHILD_MODE = 'lock-holder-child';
@@ -52,6 +53,7 @@ interface TaskSpecInput {
 interface ChildProof {
   executable: string;
   argv: string[];
+  pid: number;
 }
 
 interface TaskCleanupManager {
@@ -405,6 +407,58 @@ async function removeScratchDirectory(scratch: string): Promise<void> {
   }
 }
 
+async function killTaskEngineOnly(
+  taskHost: string,
+  taskLabel: string,
+  cwd: string,
+): Promise<void> {
+  const literalLabel = `'${taskLabel.replace(/'/g, "''")}'`;
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    "$service = New-Object -ComObject 'Schedule.Service'",
+    '$service.Connect()',
+    `$task = $service.GetFolder('\\').GetTask(${literalLabel})`,
+    '$instances = @($task.GetInstances(0))',
+    "if ($instances.Count -ne 1) { throw \"Expected one running task instance, found $($instances.Count)\" }",
+    '$engineProcessId = [int]$instances[0].EnginePID',
+    "$taskkill = Join-Path $env:SystemRoot 'System32\\taskkill.exe'",
+    '$output = & $taskkill /PID $engineProcessId /F 2>&1',
+    'if ($LASTEXITCODE -ne 0) {',
+    "  throw \"taskkill failed for engine PID ${engineProcessId}: $output\"",
+    '}',
+  ].join('\n');
+  const probe = spawnCapturedProcess(
+    taskHost,
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      Buffer.from(command, 'utf16le').toString('base64'),
+    ],
+    cwd,
+  );
+  await waitForExit(probe.child);
+  assertCondition(
+    probe.child.exitCode === 0,
+    `single-engine taskkill failed: ${JSON.stringify(probe.output())}`,
+  );
+}
+
+async function waitForTaskToStop(
+  runner: RealSchtasksRunner,
+  taskLabel: string,
+): Promise<void> {
+  const deadline = Date.now() + CHILD_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await runner.queryState(taskLabel) !== 'running') return;
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error(`Task Scheduler task ${taskLabel} remained running`);
+}
+
 async function proveNativeTaskScheduler(
   scratch: string,
   executable: string,
@@ -513,9 +567,29 @@ async function proveNativeTaskScheduler(
     JSON.stringify(proof.argv) === JSON.stringify(spec.args),
     `scheduled process argv mismatch: ${JSON.stringify(proof.argv)}`,
   );
+  assertCondition(isProcessAlive(proof.pid), `scheduled process ${proof.pid} was not alive before uninstall`);
 
+  await killTaskEngineOnly(taskHost, taskLabel, scratch);
+  assertCondition(
+    await waitForProcessExit(proof.pid, CHILD_TIMEOUT_MS, POLL_INTERVAL_MS),
+    `Job Object did not terminate scheduled process ${proof.pid} with its engine`,
+  );
+  await waitForTaskToStop(runner, taskLabel);
+  fs.unlinkSync(markerPath);
+
+  await manager.start(taskLabel);
+  await waitForFile(markerPath);
+  const uninstallProof = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as ChildProof;
+  assertCondition(
+    isProcessAlive(uninstallProof.pid),
+    `scheduled process ${uninstallProof.pid} was not alive before uninstall`,
+  );
   await manager.uninstall(taskLabel);
   assertCondition(!(await manager.isInstalled(taskLabel)), 'Task Scheduler task remained after uninstall');
+  assertCondition(
+    await waitForProcessExit(uninstallProof.pid, CHILD_TIMEOUT_MS, POLL_INTERVAL_MS),
+    `scheduled process ${uninstallProof.pid} remained alive after uninstall`,
+  );
 }
 
 async function runContractStage(
@@ -608,6 +682,7 @@ function runTaskChild(markerName: string | undefined): void {
     JSON.stringify({
       executable: process.execPath,
       argv: process.argv.slice(2),
+      pid: process.pid,
     } satisfies ChildProof),
     'utf8',
   );

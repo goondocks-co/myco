@@ -158,6 +158,32 @@ describe('Real runners refuse to shell out when sandbox env var is set', () => {
       process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir';
     }
   });
+
+  test('RealSchtasksRunner terminates exact scheduled-task process trees', async () => {
+    class TestRunner extends RealSchtasksRunner {
+      command: string | undefined;
+      protected override async runPowerShell(
+        args: string[],
+      ): Promise<{ stdout: string; exitCode: number }> {
+        this.command = Buffer.from(args.at(-1)!, 'base64').toString('utf16le');
+        return { stdout: '', exitCode: 0 };
+      }
+    }
+    delete process.env[SERVICE_UNIT_DIR_ENV];
+    try {
+      const runner = new TestRunner();
+      await runner.endProcessTree("co.goondocks.myco O'Brien");
+
+      expect(runner.command).toContain(
+        "$service.GetFolder('\\').GetTask('co.goondocks.myco O''Brien')",
+      );
+      expect(runner.command).toContain('$task.GetInstances(0)');
+      expect(runner.command).toContain('& $taskkill /PID $engineProcessId /T /F');
+      expect(runner.command).not.toContain('/IM');
+    } finally {
+      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir';
+    }
+  });
 });
 
 describe('Real runners DO shell out when not in sandbox mode', () => {
