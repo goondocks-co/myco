@@ -17,7 +17,7 @@
  * `sanitizeSyncPayload`-consistent with the ingest path.
  */
 import type { Database } from '@myco/db/client.js';
-import { RESIDENCY_TABLE_ORDER } from '@myco/db/queries/residency-apply.js';
+import { PROJECT_ARTIFACT_IDS_SQL, RESIDENCY_TABLE_ORDER } from '@myco/db/queries/residency-apply.js';
 import { sanitizeSyncPayload } from '@myco/db/queries/team-outbox.js';
 
 /** Default rows per page and byte budget — both comfortably under the 8MB
@@ -61,13 +61,6 @@ function machineScoped(name: string, orderCols: string[]): PullTable {
     }),
   };
 }
-
-/** Artifact ids that belong to a project across the two publishable artifact tables
- *  — `content_publications` carries no `project_id`, so scope comes from the owner. */
-const PROJECT_ARTIFACT_IDS_SQL = `
-  SELECT id FROM skill_records WHERE project_id = ?
-  UNION
-  SELECT id FROM okf_pages WHERE project_id = ?`;
 
 /** The two tables whose scope/key differs from the machine-scoped `id` default:
  *  `entity_mentions` (machine-scoped, but keyed by its four-column UNIQUE) and

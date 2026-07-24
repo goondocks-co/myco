@@ -20,6 +20,7 @@
  */
 import { epochSeconds } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
+import { PROJECT_ARTIFACT_IDS_SQL } from '@myco/db/queries/residency-apply.js';
 import {
   REBUILD_TABLES,
   insertOutboxRowsForUpsert,
@@ -120,14 +121,6 @@ export function listEntityMentionPages(
       ]);
   return { rows: rows.map((r) => sanitizeSyncPayload('entity_mentions', r)), nextCursor };
 }
-
-/** SQL selecting the artifact ids that belong to a project across the two
- *  publishable artifact tables — `content_publications` carries no `project_id`,
- *  so project scope comes from the owning artifact row. */
-const PROJECT_ARTIFACT_IDS_SQL = `
-  SELECT id FROM skill_records WHERE project_id = ?
-  UNION
-  SELECT id FROM okf_pages WHERE project_id = ?`;
 
 /**
  * Page `content_publications` for a project by its PK `(artifact_kind,

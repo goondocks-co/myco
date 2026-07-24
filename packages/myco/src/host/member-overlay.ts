@@ -295,7 +295,8 @@ export function createEnrollmentClient(transport: EnrollmentTransport = connectP
         throw codedMembershipError(
           'protocol_mismatch',
           `The host rejected enrollment with a protocol-version mismatch (409). This member speaks Team-Host `
-          + `protocol v${HOST_PROTOCOL_VERSION}; run \`myco update\` so both sides match, then retry.`,
+          + `protocol v${HOST_PROTOCOL_VERSION}. Update the team host first (hosts update before members, `
+          + 'D-F-5), then update this member with `myco update` if it is still behind, and retry.',
         );
       }
       if (status !== 200) {

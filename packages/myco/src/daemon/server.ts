@@ -17,6 +17,7 @@ import {
   UnauthorizedRequestContextError,
   UnknownRequestContextError,
   enforceUrlTenancyAuth,
+  readHeader,
   requestContextFromHttpHeaders,
   requestContextFromTenancyIds,
   resolveInboundProjectId,
@@ -882,8 +883,8 @@ export class DaemonServer {
           // daemon tick; an unthrottled warn here would be a log storm, not
           // observability (Task 2, E-4 W2).
           if (isOverlayRequest(req)) {
-            const groveHeaderValue = firstHeaderValue(req.headers[REQUEST_CONTEXT_HEADERS.groveId]);
-            const projectHeaderValue = firstHeaderValue(req.headers[REQUEST_CONTEXT_HEADERS.projectId]);
+            const groveHeaderValue = readHeader(req.headers, REQUEST_CONTEXT_HEADERS.groveId);
+            const projectHeaderValue = readHeader(req.headers, REQUEST_CONTEXT_HEADERS.projectId);
             const throttleKey = `unknown_tenancy:${groveHeaderValue ?? ''}:${projectHeaderValue ?? ''}:${pathname}`;
             if (shouldLogOncePerInterval(throttleKey, REFUSAL_LOG_THROTTLE_INTERVAL_MS)) {
               this.logger.warn(LOG_KINDS.HOST_SERVE_REFUSAL, 'Refused overlay request for unknown tenancy', {
@@ -1494,18 +1495,6 @@ function isLoopbackOrigin(origin: string, port: number): boolean {
 // member's proxy sends `<overlay_ip>:<port>`). A bare-IP Host is also accepted.
 function isOverlayHost(host: string, overlayAddress: string, port: number): boolean {
   return host === `${overlayAddress}:${String(port)}` || host === overlayAddress;
-}
-
-/** First value of a possibly-repeated header, trimmed; `undefined` when
- *  absent or blank. Used by the refusal-observability log sites (Task 2,
- *  E-4 W2) to read the raw `x-myco-grove-id`/`x-myco-project-id` headers a
- *  caller sent — resolution already failed by the time these log, so there
- *  is no resolved `MycoRequestContext` to read the values from instead. */
-function firstHeaderValue(header: string | string[] | undefined): string | undefined {
-  const raw = Array.isArray(header) ? header[0] : header;
-  if (typeof raw !== 'string') return undefined;
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /**

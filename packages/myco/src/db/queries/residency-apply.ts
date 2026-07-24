@@ -64,6 +64,20 @@ export const RESIDENCY_TABLE_ORDER: readonly string[] = [
   ...RESIDENCY_SIDECAR_TABLES,
 ];
 
+/**
+ * SQL selecting the artifact ids that belong to a project across the
+ * publishable artifact tables — `content_publications` carries no
+ * `project_id`, so project scope comes from the owning artifact row. The
+ * SINGLE copy both directions embed (`residency-backfill.ts` paging +
+ * delete-after-ack, `residency-pull.ts` detach enumeration); a third
+ * publishable artifact kind is one UNION arm here, not a two-file hunt.
+ * Binds the project id TWICE — once per arm.
+ */
+export const PROJECT_ARTIFACT_IDS_SQL = `
+  SELECT id FROM skill_records WHERE project_id = ?
+  UNION
+  SELECT id FROM okf_pages WHERE project_id = ?`;
+
 // ---------------------------------------------------------------------------
 // Apply-rule matrix (NORMATIVE) — one rule per allow-listed table.
 // ---------------------------------------------------------------------------

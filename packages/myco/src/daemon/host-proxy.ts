@@ -435,6 +435,26 @@ function logRelayFailureOnce(
   });
 }
 
+/**
+ * Throttled warn for a collect-forward failure (host rejection, dial error,
+ * or unexpected throw). Never data loss — the member acked `buffered:true`
+ * and the buffered copy drains on retry — but capture forwards fire per hook
+ * event, so an unthrottled warn per event is a log storm the moment a host
+ * goes unreachable. Same key discipline and interval as
+ * {@link logRelayFailureOnce}; body content is never logged.
+ */
+function logCollectForwardFailureOnce(
+  logger: ProxyLogger,
+  target: RemoteTarget,
+  failureClass: string,
+  message: string,
+  meta: Record<string, unknown>,
+): void {
+  const key = `collect-forward:${target.host.host_id}:${failureClass}`;
+  if (!shouldLogOncePerInterval(key, REFUSAL_LOG_THROTTLE_INTERVAL_MS)) return;
+  logger.warn(message, { host_id: target.host.host_id, ...meta });
+}
+
 function safePathname(url: string | undefined): string {
   try { return new URL(url ?? '/', 'http://127.0.0.1').pathname; }
   catch { return '/'; }
@@ -741,7 +761,15 @@ export async function handleAttachedRequest(
     return;
   }
 
-  await forwardAndRelay(req, res, target, pathname, isMcp, mcpId, bufferedBody, d, classification.stamp);
+  await forwardAndRelay(req, res, {
+    target,
+    pathname,
+    isMcp,
+    mcpId,
+    bufferedBody,
+    deps: d,
+    routeClass: classification.stamp,
+  });
 }
 
 /**
@@ -904,9 +932,9 @@ async function forwardCollectInBackground(
           // The member already acked buffered:true; a host rejection (bad bearer,
           // etc.) is not lost — the buffered copy drains on retry — but a
           // persistent one must be visible.
-          d.logger.warn('host rejected collect forward — buffered copy retained for drain', {
-            host_id: target.host.host_id, path: pathname, status,
-          });
+          logCollectForwardFailureOnce(d.logger, target, `rejected:${Math.floor(status / 100)}xx`,
+            'host rejected collect forward — buffered copy retained for drain',
+            { path: pathname, status });
         }
         proxyRes.resume(); // drain + discard; the member synthesized its own ack
         proxyRes.on('end', done);
@@ -914,22 +942,32 @@ async function forwardCollectInBackground(
       });
       proxyReq.on('error', (err) => {
         clearTimeout(timer);
-        d.logger.warn('collect forward failed — buffered copy retained for drain', {
-          host_id: target.host.host_id,
-          path: pathname,
-          error: err.message,
-        });
+        logCollectForwardFailureOnce(d.logger, target, 'dial-error',
+          'collect forward failed — buffered copy retained for drain',
+          { path: pathname, error: err.message });
         done();
       });
       proxyReq.end(body);
     });
   } catch (err) {
-    d.logger.warn('collect forward threw — buffered copy retained for drain', {
-      host_id: target.host.host_id,
-      path: pathname,
-      error: (err as Error).message,
-    });
+    logCollectForwardFailureOnce(d.logger, target, 'threw',
+      'collect forward threw — buffered copy retained for drain',
+      { path: pathname, error: (err as Error).message });
   }
+}
+
+/** Everything {@link forwardAndRelay} needs beyond the live req/res pair. */
+interface ForwardAndRelayOpts {
+  target: RemoteTarget;
+  pathname: string;
+  isMcp: boolean;
+  mcpId: JsonRpcId;
+  /** Pre-read body (the `/mcp` peek), or null to stream the live request. */
+  bufferedBody: Buffer | null;
+  deps: HostProxyDeps;
+  /** The matched route's stamp (`classification.stamp`), used ONLY to key the
+   *  throttled relay-failure log (Task 2, E-4 W2) — never a dispatch input. */
+  routeClass: RouteStamp;
 }
 
 /**
@@ -938,22 +976,13 @@ async function forwardCollectInBackground(
  * the upstream response through unbuffered — status, headers, and body,
  * preserving `text/event-stream` framing. Client disconnect tears down the
  * upstream leg.
- *
- * @param routeClass the matched route's stamp (`classification.stamp`), used
- *   ONLY to key the throttled relay-failure log (Task 2, E-4 W2) — never a
- *   dispatch input.
  */
 async function forwardAndRelay(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  target: RemoteTarget,
-  pathname: string,
-  isMcp: boolean,
-  mcpId: JsonRpcId,
-  bufferedBody: Buffer | null,
-  d: HostProxyDeps,
-  routeClass: RouteStamp,
+  opts: ForwardAndRelayOpts,
 ): Promise<void> {
+  const { target, pathname, isMcp, mcpId, bufferedBody, deps: d, routeClass } = opts;
   const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const headers = buildForwardHeaders(req, target, `${overlayHost}:${port}`, bufferedBody ? bufferedBody.length : null);
   const proxyReq = await d.dial(target, { method: req.method ?? 'GET', path: req.url ?? pathname, headers });
