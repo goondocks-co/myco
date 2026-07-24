@@ -64,6 +64,7 @@ describe('member enrollment client — unit (injected transport)', () => {
     expect(enrollment.host_id).toBe('canonical-host');
     expect(enrollment.label).toBe('Canonical');
     expect(enrollment.overlay_address).toBe('100.64.0.1:7433');
+    expect(enrollment.projects).toEqual([]);
   });
 
   test('falls back to the member-known host_id/label when the host does not self-report them', async () => {

@@ -85,7 +85,7 @@ describe('Team Host enrollment endpoint (/api/host/enroll)', () => {
     // This fixture's hostServe carries no servedGroveId — undesignated
     // reports as `null`, present but empty (protocol v2), never absent.
     expect(body.served_grove_id).toBeNull();
-    expect(body.projects).toEqual([]);
+    expect('projects' in body).toBe(false);
   });
 
   test('SURGICAL exemption: a DIFFERENT overlay route STILL 401s without the bearer', async () => {
