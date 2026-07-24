@@ -13,6 +13,7 @@
  * machine-global host registry, so the real `~/.myco*` is never touched. The
  * `sandbox-preload` fence backstops this.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -50,7 +51,6 @@ import {
   getHost,
   ProjectRegisteredLocallyError,
   resolveAttach,
-  upsertHost,
   type HostRecord,
 } from '@myco/host/registry.js';
 
@@ -110,7 +110,7 @@ function makeCheckout(projectId?: string): string {
 /** Attach `projectId` to a fresh host serving `groveId`, and return the host. */
 function attach(groveId: string, projectId: string): HostRecord {
   const host = makeHost();
-  upsertHost(host);
+  writeHostRecordFixture(host);
   attachProject(host.host_id, { grove_id: groveId, project_id: projectId }, home);
   return host;
 }
@@ -328,13 +328,13 @@ describe('Team Host never-materialize invariant', () => {
         projectRoot: fakeRoot(`sibling-${siblingProjectId}`),
       }, home);
 
-      // Seed the attach ref DIRECTLY via upsertHost. attachProject now refuses
+      // Seed the attach ref directly. attachProject refuses
       // exactly this creation (the local-row guard below), so we reproduce the
       // residual state that guard prevents to prove scope iteration also
       // refuses it — the stale row lives in the DEFAULT Grove (G_local), not
       // the attach-target Grove (G_host), so only the project-level filter
       // catches it; the grove-level skip does not.
-      upsertHost({ ...makeHost(), projects: [{ grove_id: attachGroveId, project_id: attachedProjectId }] });
+      writeHostRecordFixture({ ...makeHost(), projects: [{ grove_id: attachGroveId, project_id: attachedProjectId }] });
 
       const cache = new GroveRuntimeCache();
       const visited: string[] = [];
@@ -360,7 +360,7 @@ describe('Team Host never-materialize invariant', () => {
       }, home);
 
       const host = makeHost();
-      upsertHost(host);
+      writeHostRecordFixture(host);
 
       expect(() => attachProject(host.host_id, { grove_id: createGroveId(), project_id: projectId }, home))
         .toThrow(ProjectRegisteredLocallyError);

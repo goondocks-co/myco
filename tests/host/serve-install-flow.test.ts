@@ -138,6 +138,7 @@ describe('hostEnableAndEmitJoin', () => {
     return {
       supported: true, platformName: 'launchd',
       isInstalled: async () => true,
+      inspect: async () => null,
       install: async (): Promise<InstallResult> => ({ changed: false, supervisorReloaded: false }),
       uninstall: async () => {}, start: async () => {}, stop: async () => {},
       restart: async () => {},

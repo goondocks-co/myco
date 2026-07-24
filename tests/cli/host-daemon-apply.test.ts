@@ -22,6 +22,7 @@ function fakeManager(over: Partial<ServiceManager> & { installed?: boolean; supp
     supported: over.supported ?? true,
     platformName: 'launchd',
     isInstalled: async () => over.installed ?? true,
+    inspect: async () => null,
     install: async (): Promise<InstallResult> => ({ changed: false, supervisorReloaded: false }),
     uninstall: async () => {},
     start: async () => {},

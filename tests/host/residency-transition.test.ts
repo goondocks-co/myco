@@ -6,6 +6,7 @@
  * Hermetic: per-test MYCO_HOME (Grove registry) + MYCO_TEAM_HOME (journal) +
  * an in-memory source-Grove DB (the `withGroveDb` seam resolves to it).
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,7 +20,7 @@ import { createGroveId, createHostId, createProjectId, projectScope, type GroveP
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
-import { getHost, resolveAttach, upsertHost, type HostRecord } from '@myco/host/registry.js';
+import { getHost, resolveAttach, type HostRecord } from '@myco/host/registry.js';
 import { attachCommand, detachCommand } from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { beginAttachResidency, completeAttachParking, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
@@ -112,7 +113,7 @@ describe('beginAttachResidency', () => {
     registerProjectInGrove(source.id, { projectId, projectName: 'demo', projectRoot: root }, home);
     seedProjectRows(projectId);
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const result = beginAttachResidency(
       { hostId: host.host_id, host, projectId, sourceGroveId: source.id, root, mycoHome: home },
@@ -147,7 +148,7 @@ describe('beginAttachResidency', () => {
     registerProjectInGrove(source.id, { projectId, projectName: 'demo', projectRoot: root }, home);
     seedProjectRows(projectId);
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     let kicked = 0;
     beginAttachResidency(
@@ -165,7 +166,7 @@ describe('beginAttachResidency', () => {
     registerProjectInGrove(source.id, { projectId, projectName: 'demo', projectRoot: root }, home);
     seedProjectRows(projectId);
     const host = makeHost({ protocol_version: 2 }); // predates the residency protocol
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     let code: string | null = null;
     try {
@@ -188,7 +189,7 @@ describe('beginAttachResidency', () => {
     registerProjectInGrove(source.id, { projectId, projectName: 'demo', projectRoot: root }, home);
     seedProjectRows(projectId);
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     beginAttachResidency({ hostId: host.host_id, host, projectId, sourceGroveId: source.id, root, mycoHome: home }, deps());
     const pendingAfterFirst = listPendingForProject(projectId).length;
@@ -209,7 +210,7 @@ describe('opposite-transition block', () => {
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     startResidencyJournal({
       direction: 'attach', phase: 'pushing', host_id: host.host_id, project_id: projectId,
       divert_grove_id: host.served_grove_id!, source_grove_id: createGroveId(), project_name: 'demo',

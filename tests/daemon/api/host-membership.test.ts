@@ -13,6 +13,7 @@
  * against the real `readHostRegistry()`/manifest-hint read (no orchestration
  * to fake).
  */
+import { writeHostRecordFixture } from '../../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,7 +26,7 @@ import { createGrove } from '@myco/grove/registry.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import { codedMembershipError } from '@myco/host/membership-error.js';
 import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
-import { getHost, upsertHost, type HostRecord } from '@myco/host/registry.js';
+import { getHost, type HostRecord } from '@myco/host/registry.js';
 import { RESIDENCY_MIN_HOST_PROTOCOL } from '@myco/host/residency-journal.js';
 import {
   classifyHostProtocolSkew,
@@ -450,7 +451,7 @@ describe('GET /api/host-membership/status', () => {
     // No explicit local_grove_id on this ref — a legacy shape — so it
     // resolves to the machine's current default Grove.
     const host = makeHost({ projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout' }] });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
@@ -477,7 +478,7 @@ describe('GET /api/host-membership/status', () => {
     const host = makeHost({
       projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout', local_grove_id: chosen.id }],
     });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
@@ -493,7 +494,7 @@ describe('GET /api/host-membership/status', () => {
     const host = makeHost({
       projects: [{ grove_id: groveId, project_id: projectId, root: '/checkout', local_grove_id: danglingGroveId }],
     });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
@@ -513,7 +514,7 @@ describe('GET /api/host-membership/status', () => {
         { grove_id: staleGroveId, project_id: staleProjectId, root: '/checkout-b' },
       ],
     });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
@@ -530,7 +531,7 @@ describe('GET /api/host-membership/status', () => {
       served_grove_id: undefined,
       projects: [{ grove_id: createGroveId(), project_id: createProjectId(), root: '/checkout' }],
     });
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
@@ -555,7 +556,7 @@ describe('GET /api/host-membership/status', () => {
 
   test('project_root for a project already attached (hint resolved) omits the hint', async () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId, host.host_id);
     // Attach it — resolveTeamHostHintState reads resolveAttach, not the raw hint.
@@ -753,7 +754,7 @@ describe('health probe — records a host upgrade so residency gates stop dead-e
 
   test('a probe that observes a HIGHER protocol version persists it (monotonic) — the residency gate then passes', async () => {
     const host = makeHost({ protocol_version: 2, proxy_port: 1 }); // recorded at join = 2
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
       checkReachable: async () => ({ reachable: true, protocolVersion: 3 }), // host has upgraded to 3
@@ -771,7 +772,7 @@ describe('health probe — records a host upgrade so residency gates stop dead-e
 
   test('a probe that observes a LOWER version never downgrades the record', async () => {
     const host = makeHost({ protocol_version: 3, proxy_port: 1 });
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
       checkReachable: async () => ({ reachable: true, protocolVersion: 1 }),

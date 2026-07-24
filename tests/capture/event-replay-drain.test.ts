@@ -10,6 +10,7 @@
  *    Grove DB and enumerates from the ATTACH REGISTRY, not `listGroves`) plus the
  *    real default transport's wire shape against a localhost fake host.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -38,7 +39,7 @@ import {
 import { EventBuffer } from '@myco/capture/buffer';
 import { resolveProjectBufferDir } from '@myco/grove/paths';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
-import { upsertHost, writeHostSecret } from '@myco/host/registry';
+import { writeHostSecret } from '@myco/host/registry';
 import { listGroves } from '@myco/grove/registry';
 import type { RemoteTarget } from '@myco/host/routing';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
@@ -820,7 +821,7 @@ describe('never-materialize + attach-registry enumeration (real fs)', () => {
     new EventBuffer(dir, 'sess-1').append(stampCollectRoute({ session_id: 'sess-1', last_assistant_message: 'done' }, '/events/stop'));
   }
   function registerAttached(): void {
-    upsertHost({
+    writeHostRecordFixture({
       host_id: HOST_A, label: 'H', overlay_address: '127.0.0.1:9', protocol_version: 1,
       created_at: new Date().toISOString(), projects: [{ grove_id: GROVE_A, project_id: PROJ_A, root: '/member/checkout' }],
     });

@@ -1,10 +1,17 @@
 import fs from 'node:fs';
 import { constants as fsConstants } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import path from 'node:path';
 import { moveFileReplaceWriteThrough } from '@myco/utils/windows-atomic-replace.js';
 
 export interface AtomicWriteOptions {
   encoding?: BufferEncoding;
+  /**
+   * Make the publication survive a power loss, not only a process crash.
+   * POSIX requires the renamed file and its containing directory to be
+   * flushed. Windows publication already uses MOVEFILE_WRITE_THROUGH.
+   */
+  durable?: boolean;
   /**
    * POSIX file mode (e.g. 0o600) to apply to the tempfile at create time.
    * The tempfile is opened with `O_CREAT | O_EXCL | O_WRONLY` so the mode
@@ -114,4 +121,82 @@ function atomicWriteFileSyncWithPublisher(
     }
     throw err;
   }
+
+  if (options.durable && process.platform !== 'win32') {
+    syncFileForDurability(filePath);
+    syncDirectoryForDurability(path.dirname(filePath));
+  }
+}
+
+const DURABLE_REMOVAL_TOMBSTONE_PREFIX = '.myco-remove-';
+
+function syncFileForDurability(filePath: string): void {
+  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+  const fd = fs.openSync(filePath, fsConstants.O_RDONLY | noFollow);
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Flush a directory entry update on POSIX. Windows has no portable directory handle. */
+export function syncDirectoryForDurability(directory: string): void {
+  if (process.platform === 'win32') return;
+  const fd = fs.openSync(directory, fsConstants.O_RDONLY);
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Durably publish absence for one exact path.
+ *
+ * Renaming to a private sibling tombstone makes disappearance atomic and, on
+ * Windows, uses the same write-through primitive as file publication. The
+ * tombstone is then removed and the parent is flushed on POSIX. A crash between
+ * those steps leaves only a namespaced tombstone that the owning capability can
+ * reconcile without making the original path visible again.
+ */
+export function durableRemovePathSync(targetPath: string): void {
+  const parent = path.dirname(targetPath);
+  const tombstone = path.join(
+    parent,
+    `${DURABLE_REMOVAL_TOMBSTONE_PREFIX}${path.basename(targetPath)}-${process.pid}-${randomBytes(12).toString('hex')}`,
+  );
+  try {
+    if (process.platform === 'win32') {
+      moveFileReplaceWriteThrough(targetPath, tombstone);
+    } else {
+      fs.renameSync(targetPath, tombstone);
+      syncDirectoryForDurability(parent);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+
+  fs.rmSync(tombstone, { recursive: true, force: true });
+  syncDirectoryForDurability(parent);
+}
+
+/**
+ * Remove only tombstones created by {@link durableRemovePathSync}.
+ * Callers choose the exact directory whose state they own.
+ */
+export function reconcileDurableRemovalTombstonesSync(directory: string): void {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(DURABLE_REMOVAL_TOMBSTONE_PREFIX)) continue;
+    fs.rmSync(path.join(directory, entry), { recursive: true, force: true });
+  }
+  syncDirectoryForDurability(directory);
 }

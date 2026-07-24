@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { writeHostRecordFixture } from '../../helpers/host-registry-fixture.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import type { GroveProjectSummary } from '@myco/daemon/api/groves.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { createGrove, deleteGrove, registerProjectInGrove, setDefaultGrove } from '@myco/grove/registry.js';
 import { createGroveId, createProjectId, createTeamId, projectUrlSlug } from '@myco/grove/ids.js';
-import { upsertHost, type HostRecord } from '@myco/host/registry.js';
+import { type HostRecord } from '@myco/host/registry.js';
 import { teamRegistry } from '@myco/team/registry.js';
 
 describe('Grove discovery API', () => {
@@ -327,7 +328,7 @@ describe('Grove discovery API — attached-project merge (E-4 local-view)', () =
       created_at: new Date().toISOString(),
       projects,
     };
-    upsertHost(record);
+    writeHostRecordFixture(record);
     return record;
   }
 

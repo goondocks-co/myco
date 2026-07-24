@@ -18,6 +18,8 @@ import path from 'node:path';
 
 const MOVEFILE_REPLACE_EXISTING = 0x1;
 const MOVEFILE_WRITE_THROUGH = 0x8;
+const ERROR_FILE_NOT_FOUND = 2;
+const ERROR_PATH_NOT_FOUND = 3;
 
 export const WINDOWS_ATOMIC_REPLACE_FLAGS =
   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
@@ -29,6 +31,26 @@ export interface WindowsMoveFileApi {
     flags: number,
   ): number;
   getLastError(): number;
+}
+
+export class WindowsMoveFileError extends Error {
+  readonly code: 'ENOENT' | undefined;
+
+  constructor(
+    sourcePath: string,
+    destinationPath: string,
+    readonly win32ErrorCode: number,
+  ) {
+    super(
+      `MoveFileExW failed replacing ${destinationPath} from ${sourcePath} `
+      + `(GetLastError ${win32ErrorCode})`,
+    );
+    this.name = 'WindowsMoveFileError';
+    this.code = win32ErrorCode === ERROR_FILE_NOT_FOUND
+      || win32ErrorCode === ERROR_PATH_NOT_FOUND
+      ? 'ENOENT'
+      : undefined;
+  }
 }
 
 export function toWindowsNamespacedPath(filePath: string): string {
@@ -56,9 +78,7 @@ export function moveFileReplaceWriteThroughWith(
   );
   if (result === 0) {
     const lastError = api.getLastError();
-    throw new Error(
-      `MoveFileExW failed replacing ${destinationPath} from ${sourcePath} (GetLastError ${lastError})`,
-    );
+    throw new WindowsMoveFileError(sourcePath, destinationPath, lastError);
   }
 }
 

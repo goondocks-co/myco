@@ -9,6 +9,7 @@
  * the member re-slices the next send from the HOST'S returned size and the
  * transcript tail is NOT dropped.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -40,7 +41,7 @@ import {
   createHostId,
   createProjectId,
 } from '@myco/grove/ids';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { writeHostSecret, type HostRecord } from '@myco/host/registry';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { HOST_BEARER_SECRET } from '@myco/constants';
 
@@ -651,7 +652,7 @@ describe('chokepoint 1 (router dispatch) threads the capture deps', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'host-bearer');
 
     const res = await fetch(`${base}/events/stop`, {
@@ -682,7 +683,7 @@ describe('chokepoint 1 (router dispatch) threads the capture deps', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'host-bearer');
 
     const res = await fetch(`${base}/sessions/unregister`, {
@@ -782,7 +783,7 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'host-bearer');
 
     const res = await fetch(`http://127.0.0.1:${memberPort}/mcp`, {

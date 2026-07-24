@@ -2,7 +2,10 @@ import { describe, test, expect, spyOn } from 'bun:test';
 import fs, { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { atomicWriteFileSync } from '../../packages/myco/src/utils/atomic-write.js';
+import {
+  atomicWriteFileSync,
+  durableRemovePathSync,
+} from '../../packages/myco/src/utils/atomic-write.js';
 import { saveConfig } from '../../packages/myco/src/config/loader.js';
 import { MycoConfigSchema } from '../../packages/myco/src/config/schema.js';
 
@@ -48,6 +51,88 @@ describe('config atomic writes', () => {
 });
 
 describe('atomicWriteFileSync mode option', () => {
+  test.skipIf(process.platform === 'win32')(
+    'durable publication flushes the containing directory after rename',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-durable-'));
+      const finalPath = join(dir, 'membership.json');
+      const events: string[] = [];
+      const fdPaths = new Map<number, string>();
+      const originalOpen = fs.openSync.bind(fs);
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const originalRename = fs.renameSync.bind(fs);
+      const openSpy = spyOn(fs, 'openSync').mockImplementation(
+        ((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+          const fd = originalOpen(target, flags, mode);
+          fdPaths.set(fd, String(target));
+          return fd;
+        }) as typeof fs.openSync,
+      );
+      const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        events.push(`fsync:${fdPaths.get(fd) ?? 'unknown'}`);
+        originalFsync(fd);
+      });
+      const renameSpy = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        events.push('publish');
+        originalRename(source, destination);
+      });
+
+      try {
+        atomicWriteFileSync(finalPath, '{}\n', { mode: 0o600, durable: true });
+      } finally {
+        renameSpy.mockRestore();
+        fsyncSpy.mockRestore();
+        openSpy.mockRestore();
+      }
+
+      expect(events.indexOf('publish')).toBeGreaterThanOrEqual(0);
+      expect(events.indexOf(`fsync:${dir}`)).toBeGreaterThan(events.indexOf('publish'));
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'durable removal publishes absence and flushes the parent directory',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-remove-'));
+      const target = join(dir, 'enrollment-intent.json');
+      writeFileSync(target, '{}\n');
+      const events: string[] = [];
+      const fdPaths = new Map<number, string>();
+      const originalOpen = fs.openSync.bind(fs);
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const originalRename = fs.renameSync.bind(fs);
+      const openSpy = spyOn(fs, 'openSync').mockImplementation(
+        ((openedPath: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+          const fd = originalOpen(openedPath, flags, mode);
+          fdPaths.set(fd, String(openedPath));
+          return fd;
+        }) as typeof fs.openSync,
+      );
+      const renameSpy = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        events.push(`rename:${String(source)}:${String(destination)}`);
+        originalRename(source, destination);
+      });
+      const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        events.push(`fsync:${fdPaths.get(fd) ?? 'unknown'}`);
+        originalFsync(fd);
+      });
+
+      try {
+        durableRemovePathSync(target);
+      } finally {
+        fsyncSpy.mockRestore();
+        renameSpy.mockRestore();
+        openSpy.mockRestore();
+      }
+
+      expect(existsSync(target)).toBe(false);
+      const renameIndex = events.findIndex((event) => event.startsWith(`rename:${target}:`));
+      expect(renameIndex).toBeGreaterThanOrEqual(0);
+      expect(events.findIndex((event, index) => index > renameIndex && event === `fsync:${dir}`))
+        .toBeGreaterThan(renameIndex);
+    },
+  );
+
   test.skipIf(process.platform === 'win32')(
     'flushes and closes the tempfile before invoking the publication primitive',
     () => {

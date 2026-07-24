@@ -30,7 +30,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  HOST_BEARER_SECRET,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
   HOST_PROXY_BODY_TIMEOUT_MS,
@@ -39,7 +38,7 @@ import {
 import { assertSafeCaptureSegment, resolveMemberPlanDrainDir } from '../grove/paths.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
-import { getHost, readHostSecrets } from '../host/registry.js';
+import { getHostMembershipSnapshot } from '../host/registry.js';
 import type { RemoteTarget } from '../host/routing.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import { isPlanWriteEvent, type PlanWatchConfig } from '../daemon/plan-capture.js';
@@ -293,9 +292,9 @@ export const defaultPlanTransport: PlanPostTransport = async (target, body) => {
  *  {@link RemoteTarget} is on hand. Reads the host record + bearer from the
  *  machine-global registry. */
 function defaultResolveHostTarget(hostId: string, sample: PlanDrainEntry): RemoteTarget | null {
-  const host = getHost(hostId);
-  if (!host) return null;
-  const bearer = readHostSecrets(hostId)[HOST_BEARER_SECRET] ?? '';
+  const membership = getHostMembershipSnapshot(hostId);
+  if (!membership) return null;
+  const { record: host, bearer } = membership;
   return {
     projectId: sample.project_id as GroveProjectId,
     groveId: sample.grove_id,

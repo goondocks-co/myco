@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import {
   attachProject,
   persistEnrollmentMembership,
+  reserveHostProxyPort,
   type AttachRef,
   type EnrollmentHostRecord,
 } from '@myco/host/registry.js';
@@ -48,7 +49,8 @@ fs.writeFileSync(startedPath, 'started\n');
 
 try {
   if (operation.mode === 'enroll') {
-    persistEnrollmentMembership(operation.record, operation.bearer);
+    const reservation = reserveHostProxyPort(operation.record.host_id);
+    persistEnrollmentMembership(operation.record, operation.bearer, reservation);
   } else {
     attachProject(operation.hostId, operation.ref);
   }

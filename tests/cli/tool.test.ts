@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'bun:test';
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -16,7 +17,7 @@ import { upsertPlan } from '@myco/db/queries/plans.js';
 import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveGroveDbPath, resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
-import { upsertHost, writeHostSecret } from '@myco/host/registry.js';
+import { writeHostSecret } from '@myco/host/registry.js';
 import { HOST_BEARER_SECRET } from '@myco/constants.js';
 import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';
@@ -452,7 +453,7 @@ describe('myco tool CLI — attached (Team Host) project', () => {
       hostFixture.listen(0, '127.0.0.1', () => resolve((hostFixture.address() as { port: number }).port));
     });
 
-    upsertHost({
+    writeHostRecordFixture({
       host_id: HOST_ID,
       label: 'Fixture Host',
       overlay_address: `127.0.0.1:${hostPort}`,

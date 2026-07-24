@@ -88,6 +88,26 @@ describe('Team Host enrollment endpoint (/api/host/enroll)', () => {
     expect('projects' in body).toBe(false);
   });
 
+  test('echoes a deterministic additive receipt for a supplied enrollment nonce', async () => {
+    const enrollmentNonce = '0123456789abcdef0123456789abcdef';
+    const res = await fetch(`${overlay}/api/host/enroll`, {
+      method: 'POST',
+      headers: enrollHeaders,
+      body: JSON.stringify({
+        member_hostname: 'a-member',
+        member_overlay_ip: '100.64.0.9',
+        enrollment_nonce: enrollmentNonce,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.enrollment_receipt).toEqual({
+      enrollment_nonce: enrollmentNonce,
+      host_id: HOST_ID,
+      protocol_version: HOST_PROTOCOL_VERSION,
+    });
+  });
+
   test('SURGICAL exemption: a DIFFERENT overlay route STILL 401s without the bearer', async () => {
     // Same missing-bearer request that enrollment tolerates must be refused elsewhere.
     const res = await fetch(`${overlay}/api/sessions`, { headers: { ...v1 } });

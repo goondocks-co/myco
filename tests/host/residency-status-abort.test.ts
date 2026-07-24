@@ -2,6 +2,7 @@
  * Residency status + abort (Phase F T6). Pins the frozen `residency-status`
  * body shape and the abort matrix per phase/direction.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +16,7 @@ import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
-import { attachProject, resolveAttach, upsertHost, type HostRecord } from '@myco/host/registry.js';
+import { attachProject, resolveAttach, type HostRecord } from '@myco/host/registry.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { abortResidency, residencyStatus, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import {
@@ -136,7 +137,7 @@ describe('abortResidency — the abort matrix', () => {
   test('attach (pushing): restores the parked local registration, drops the ref, clears the journal + pending rows', () => {
     const source = createGrove('Source', home);
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     // Pushing state: ref recorded, local row parked (absent), rows queued.
@@ -154,7 +155,7 @@ describe('abortResidency — the abort matrix', () => {
 
   test('detach (pulling): clears the journal + staging, ref stays (still attached)', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachProject(host.host_id, { grove_id: host.served_grove_id!, project_id: projectId, root }, home);
@@ -200,7 +201,7 @@ describe('abortResidency — the abort matrix', () => {
   test('a successful abort kicks a drain pass (so any other in-flight transition resumes promptly)', () => {
     const source = createGrove('Source', home);
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachProject(host.host_id, { grove_id: host.served_grove_id!, project_id: projectId, root }, home);

@@ -8,6 +8,7 @@
  * registry never touches the developer's real `~/.myco-team`, mirroring
  * `host/registry.test.ts`.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,7 +20,6 @@ import {
   attachProject,
   readHostRegistry,
   resolveAttach,
-  upsertHost,
   type HostRecord,
 } from '@myco/host/registry';
 import { checkTeamHostHint } from '@myco/cli/doctor';
@@ -71,7 +71,7 @@ describe('checkTeamHostHint', () => {
     const projectId = createProjectId();
     const hostId = createHostId();
     writeManifest(projectId, hostId);
-    upsertHost(makeHost(hostId));
+    writeHostRecordFixture(makeHost(hostId));
     attachProject(hostId, { grove_id: 'grove_1', project_id: projectId });
 
     expect(resolveAttach(projectId)).not.toBeNull();
@@ -82,7 +82,7 @@ describe('checkTeamHostHint', () => {
     const projectId = createProjectId();
     const hostId = createHostId();
     writeManifest(projectId, hostId);
-    upsertHost(makeHost(hostId));
+    writeHostRecordFixture(makeHost(hostId));
 
     const notice = checkTeamHostHint(vaultDir);
     expect(notice).not.toBeNull();

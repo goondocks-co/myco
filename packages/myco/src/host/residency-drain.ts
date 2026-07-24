@@ -22,7 +22,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  HOST_BEARER_SECRET,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
   HOST_PROXY_BODY_TIMEOUT_MS,
@@ -54,7 +53,7 @@ import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { resolveProjectBufferDir } from '../grove/paths.js';
-import { detachProject, getHost, readHostSecrets } from './registry.js';
+import { detachProject, getHostMembershipSnapshot } from './registry.js';
 import { registerProjectInGrove } from '../grove/registry.js';
 import type { RemoteTarget } from './routing.js';
 import { completeAttachParking, type ResidencyDaemonDeps } from './residency-transition.js';
@@ -194,9 +193,9 @@ export const defaultResidencyTransport: ResidencyPostTransport = async (target, 
 /** Default host-target builder: read the host record + bearer from the machine-
  *  global registry, tenancy scoped to the residency push (host's served Grove). */
 const defaultResolveResidencyTarget: ResolveResidencyTarget = (hostId, groveId, projectId) => {
-  const host = getHost(hostId);
-  if (!host) return null;
-  const bearer = readHostSecrets(hostId)[HOST_BEARER_SECRET] ?? '';
+  const membership = getHostMembershipSnapshot(hostId);
+  if (!membership) return null;
+  const { record: host, bearer } = membership;
   return {
     projectId: projectId as GroveProjectId,
     groveId,

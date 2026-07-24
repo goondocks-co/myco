@@ -8,7 +8,7 @@ import path from 'node:path';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { writeSecretIfAbsent } from '@myco/config/secrets.js';
 
-const [vaultDir, holdMsText, mode = 'write-race', readyPath] = process.argv.slice(2);
+const [vaultDir, holdMsText, mode = 'write-race', readyPath, releasePath] = process.argv.slice(2);
 const holdMs = Number(holdMsText);
 
 if (!vaultDir || !Number.isFinite(holdMs)) {
@@ -29,7 +29,11 @@ try {
       if (mode === 'materialize') fs.mkdirSync(vaultDir, { recursive: true });
       fs.writeFileSync(readyPath ?? path.join(vaultDir, 'secrets-lock-ready'), 'held\n');
     }
-    Bun.sleepSync(holdMs);
+    if (releasePath) {
+      while (!fs.existsSync(releasePath)) Bun.sleepSync(10);
+    } else {
+      Bun.sleepSync(holdMs);
+    }
     if (mode === 'hold-only') throw holdOnly;
     return 'child';
   });

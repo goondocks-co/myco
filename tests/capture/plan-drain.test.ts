@@ -10,6 +10,7 @@
  * pending plan content — the seam the host proxy calls BEFORE forwarding
  * `/events/stop`, so plan content is present when the host's Stop backstop mines.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -41,7 +42,7 @@ import {
   createHostId,
   createProjectId,
 } from '@myco/grove/ids';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { writeHostSecret, type HostRecord } from '@myco/host/registry';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { HOST_BEARER_SECRET } from '@myco/constants';
 
@@ -706,7 +707,7 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
-    upsertHost(rec);
+    writeHostRecordFixture(rec);
     writeHostSecret(rec.host_id, HOST_BEARER_SECRET, 'host-bearer');
 
     // 1) A plan-dir write forwarded via /events → the drain enqueues (no flush yet).
@@ -741,7 +742,7 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
-    upsertHost(rec);
+    writeHostRecordFixture(rec);
     writeHostSecret(rec.host_id, HOST_BEARER_SECRET, 'host-bearer');
 
     await fetch(`${base}/events`, {

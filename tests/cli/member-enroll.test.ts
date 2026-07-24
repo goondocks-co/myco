@@ -39,6 +39,7 @@ function ctx(overrides: Partial<EnrollmentContext> = {}): EnrollmentContext {
     hostId: 'host_local_ref', hostRef: 'host_local_ref', oneTimeKey: 'k',
     memberHostname: 'my-laptop', memberOverlayIp: '100.64.0.9',
     overlayAddress: '100.64.0.1:7433', proxyPort: 41080,
+    enrollmentNonce: '0123456789abcdef0123456789abcdef',
     ...overrides,
   };
 }
@@ -59,12 +60,68 @@ describe('member enrollment client — unit (injected transport)', () => {
     expect(captured?.proxyPort).toBe(41080);
     // Body carries member identity for the host's action log.
     expect(JSON.parse(captured!.body)).toMatchObject({ member_hostname: 'my-laptop', member_overlay_ip: '100.64.0.9' });
+    expect(JSON.parse(captured!.body).enrollment_nonce).toBe('0123456789abcdef0123456789abcdef');
     // Host's authoritative values win when present.
     expect(enrollment.bearer).toBe('the-shared-bearer');
     expect(enrollment.host_id).toBe('canonical-host');
     expect(enrollment.label).toBe('Canonical');
     expect(enrollment.overlay_address).toBe('100.64.0.1:7433');
     expect(enrollment.projects).toBeUndefined();
+  });
+
+  test('accepts a matching enrollment receipt and rejects a mismatched nonce', async () => {
+    const response = (nonce: string): EnrollmentTransport => async () => ({
+      status: 200,
+      body: JSON.stringify({
+        host_id: 'canonical-host',
+        label: 'Canonical',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: HOST_PROTOCOL_VERSION,
+        bearer: 'the-shared-bearer',
+        enrollment_receipt: {
+          enrollment_nonce: nonce,
+          host_id: 'canonical-host',
+          protocol_version: HOST_PROTOCOL_VERSION,
+        },
+      }),
+    });
+    const nonce = '0123456789abcdef0123456789abcdef';
+    const enrollment = await createEnrollmentClient(response(nonce)).enroll(
+      ctx({ enrollmentNonce: nonce }),
+    );
+    expect(enrollment.enrollment_receipt?.enrollment_nonce).toBe(nonce);
+
+    await expect(
+      createEnrollmentClient(response('ffffffffffffffffffffffffffffffff'))
+        .enroll(ctx({ enrollmentNonce: nonce })),
+    ).rejects.toThrow(/mismatched enrollment_receipt/);
+  });
+
+  test('replays a lost response with the same durable nonce and accepts an old host with no receipt', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const transport: EnrollmentTransport = async (input) => {
+      bodies.push(JSON.parse(input.body) as Record<string, unknown>);
+      if (bodies.length === 1) throw new Error('response was lost');
+      return {
+        status: 200,
+        body: JSON.stringify({
+          host_id: 'canonical-host',
+          label: 'Canonical',
+          overlay_address: '100.64.0.1:7433',
+          protocol_version: HOST_PROTOCOL_VERSION,
+          bearer: 'current-bearer',
+        }),
+      };
+    };
+    const client = createEnrollmentClient(transport);
+    const context = ctx();
+    await expect(client.enroll(context)).rejects.toThrow(/response was lost/);
+    const enrollment = await client.enroll(context);
+
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]!.enrollment_nonce).toBe(bodies[1]!.enrollment_nonce);
+    expect(enrollment.bearer).toBe('current-bearer');
+    expect(enrollment.enrollment_receipt).toBeUndefined();
   });
 
   test('accepts the exact legacy protocol-v3 payload with an empty projects list and ignores the list', async () => {

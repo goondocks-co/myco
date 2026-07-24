@@ -20,6 +20,7 @@
  * member's attach registry), and `HOME` (deterministic agent-symlink
  * detection) are fresh tmpdirs.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -44,7 +45,7 @@ import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove/ids.js';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry.js';
+import { writeHostSecret, type HostRecord } from '@myco/host/registry.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
@@ -187,7 +188,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: grove.id, project_id: projectId, root: memberProjectRoot }],
     };
-    upsertHost(hostBearerRecord);
+    writeHostRecordFixture(hostBearerRecord);
     writeHostSecret(hostBearerRecord.host_id, HOST_BEARER_SECRET, HOST_BEARER);
     saveProjectManifest(resolveProjectVaultDir(memberProjectRoot), { project: { id: projectId } });
 

@@ -8,6 +8,7 @@
  * registration for a project root) rather than the pure classification
  * helpers, which are covered in `host/hint.test.ts`.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -16,7 +17,7 @@ import path from 'node:path';
 
 import { clearProjectManifestCache } from '@myco/config/project-manifest';
 import { __resetTeamHostHintNoticeForTests } from '@myco/host/hint';
-import { upsertHost, type HostRecord } from '@myco/host/registry';
+import { type HostRecord } from '@myco/host/registry';
 import { createHostId } from '@myco/grove/ids';
 import { MYCO_HOME_ENV } from '@myco/grove/paths';
 import { ensureDefaultGrove, ensureProjectRegistered, findProjectByRoot } from '@myco/grove/registry';
@@ -114,7 +115,7 @@ describe('ensureProjectRegistered — Team Host hint notice', () => {
   test('hint + host enrolled but NOT attached → notice suggests attaching, project still registers locally', () => {
     const hostId = createHostId();
     writeManifest(hostId);
-    upsertHost(makeHost(hostId));
+    writeHostRecordFixture(makeHost(hostId));
 
     ensureProjectRegistered(projectRoot, mycoHome);
 

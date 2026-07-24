@@ -8,6 +8,7 @@
  * fixture is needed — a non-attached project short-circuits before any registry
  * read.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,7 +22,7 @@ import {
   createProjectId,
   type GroveProjectId,
 } from '@myco/grove/ids';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { writeHostSecret, type HostRecord } from '@myco/host/registry';
 import {
   classifyRoute,
   classifyRouteStamp,
@@ -46,7 +47,7 @@ function seedAttached(overrides: Partial<HostRecord> = {}): { projectId: GrovePr
   };
   // Seed the record directly (bypassing attachProject's local-registry guard,
   // which is exercised in registry.test.ts) so the routing table is the subject.
-  upsertHost(host);
+  writeHostRecordFixture(host);
   return { projectId, groveId, host };
 }
 

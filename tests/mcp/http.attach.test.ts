@@ -16,6 +16,7 @@
  * is a tmpdir with no manifest (so the local path resolves the daemon anchor),
  * and `MYCO_DAEMON_AUTH` is cleared so the bearer gate is disabled for the test.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -30,7 +31,7 @@ import {
   createProjectId,
 } from '@myco/grove/ids';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { writeHostSecret, type HostRecord } from '@myco/host/registry';
 import { HOST_BEARER_SECRET } from '@myco/constants';
 import { createStreamableMcpHttpHandler } from '@myco/mcp/http';
 
@@ -109,7 +110,7 @@ describe('/mcp attach short-circuit + proxy (chokepoint 2)', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'host-bearer');
     return projectId;
   }

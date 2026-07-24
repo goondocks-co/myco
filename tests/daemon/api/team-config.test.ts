@@ -15,6 +15,7 @@
  *
  * Hermetic: MYCO_HOME / MYCO_TEAM_HOME are fresh tmpdirs per test.
  */
+import { writeHostRecordFixture } from '../../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -51,7 +52,7 @@ import {
   createHostId,
   createProjectId,
 } from '@myco/grove/ids';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { writeHostSecret, type HostRecord } from '@myco/host/registry';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
 import { resolveGroveConfigPath, resolveGroveDir, resolveMycoHome } from '@myco/grove/paths';
 import { readSecrets, writeSecret } from '@myco/config/secrets';
@@ -108,7 +109,7 @@ describe('(a) classifyRoute: team-write routes to the host for an attached proje
       created_at: new Date().toISOString(),
       projects: [{ grove_id: groveId, project_id: projectId }],
     };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'host-bearer');
     return { projectId };
   }

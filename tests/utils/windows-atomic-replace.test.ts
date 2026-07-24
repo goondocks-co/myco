@@ -68,6 +68,30 @@ describe('Windows atomic replacement contract', () => {
     expect(events).toEqual(['move', 'error']);
   });
 
+  test.each([2, 3])(
+    'normalizes Windows path-not-found error %d to idempotent ENOENT',
+    (lastError) => {
+      const api: WindowsMoveFileApi = {
+        moveFileEx: () => 0,
+        getLastError: () => lastError,
+      };
+
+      const error = (() => {
+        try {
+          moveFileReplaceWriteThroughWith(api, 'C:\\missing', 'C:\\tombstone');
+          return null;
+        } catch (caught) {
+          return caught;
+        }
+      })();
+
+      expect(error).toMatchObject({
+        code: 'ENOENT',
+        win32ErrorCode: lastError,
+      });
+    },
+  );
+
   test('rejects embedded NULs before calling the native API', () => {
     let called = false;
     const api: WindowsMoveFileApi = {

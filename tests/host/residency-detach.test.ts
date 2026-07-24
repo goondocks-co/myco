@@ -8,6 +8,7 @@
  * The pull server, host-target resolver, and apply engine are injected seams, so
  * the member discipline is exercised without a real host or the shared engine.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,7 +27,7 @@ import {
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
-import { attachProject, resolveAttach, upsertHost, type AttachRef, type HostRecord } from '@myco/host/registry.js';
+import { attachProject, resolveAttach, type AttachRef, type HostRecord } from '@myco/host/registry.js';
 import { detachCommand, type BeginDetachResidency } from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { abortResidency, beginDetachResidency, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
@@ -154,7 +155,7 @@ describe('detachCommand — pull path validation', () => {
   test('with the daemon capability + a ready host, writes a pulling journal and returns "pull started" (ref not yet flipped)', () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachRef(host, projectId, root, local.id);
@@ -175,7 +176,7 @@ describe('detachCommand — pull path validation', () => {
     const host = makeHost(3);
     const projectId = createProjectId();
     // Seed a ref with NO root (a pre-root legacy record).
-    upsertHost({ ...host, projects: [{ grove_id: host.served_grove_id!, project_id: projectId, local_grove_id: local.id }] });
+    writeHostRecordFixture({ ...host, projects: [{ grove_id: host.served_grove_id!, project_id: projectId, local_grove_id: local.id }] });
     const root = makeCheckout(projectId);
 
     try {
@@ -190,7 +191,7 @@ describe('detachCommand — pull path validation', () => {
   test('a host below the residency protocol refuses with residency_pull_unavailable (ref untouched)', () => {
     const local = createGrove('Local', home);
     const host = makeHost(2); // predates the pull
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachRef(host, projectId, root, local.id);
@@ -208,7 +209,7 @@ describe('detachCommand — pull path validation', () => {
   test('allow_no_pull against an old host runs a plain detach: ref removed, no journal, no pull', () => {
     createGrove('Local', home);
     const host = makeHost(2);
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachRef(host, projectId, root, createGroveId());
@@ -225,7 +226,7 @@ describe('detach drain — round trip', () => {
   test('pulls pages to staging, flips, re-materializes, applies, re-homes buffered events, purges, and finishes', async () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachRef(host, projectId, root, local.id);
@@ -268,7 +269,7 @@ describe('detach drain — round trip', () => {
   test('an abort mid-pull stops before the flip: the project stays attached, no local row, staging cleared', async () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachRef(host, projectId, root, local.id);
@@ -293,7 +294,7 @@ describe('detach drain — round trip', () => {
   test('a failed pull does not advance: the journal stays pulling and the ref survives', async () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachRef(host, projectId, root, local.id);
@@ -315,7 +316,7 @@ describe('detach drain — crash-resume + freshness', () => {
     const root = makeCheckout(projectId);
     // Simulate a crash AFTER the pull completed but before apply: journal in
     // `pulling` with the pull already done, ref still attached, staging present.
-    upsertHost(host);
+    writeHostRecordFixture(host);
     attachRef(host, projectId, root, local.id);
     startResidencyJournal({
       direction: 'detach', phase: 'pulling', host_id: host.host_id, project_id: projectId,
@@ -369,7 +370,7 @@ describe('detach drain — crash-resume + freshness', () => {
   test('integration: the real shared apply engine lands pulled rows into the local Grove (production seam)', async () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachRef(host, projectId, root, local.id);
@@ -392,7 +393,7 @@ describe('detach drain — crash-resume + freshness', () => {
   test('apply orders staged tables FK-topologically through the real engine (parents before children, one transaction)', async () => {
     const local = createGrove('Local', home);
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachRef(host, projectId, root, local.id);
@@ -423,7 +424,7 @@ describe('detach drain — crash-resume + freshness', () => {
   test('post-flip freshness: a newer local row survives the apply of an older host snapshot', async () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachRef(host, projectId, root, local.id);

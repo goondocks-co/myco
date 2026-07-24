@@ -11,6 +11,7 @@
  * Hermetic: `MYCO_HOME` (the host's Grove registry) and `MYCO_TEAM_HOME`
  * (the member's attach registry) are fresh tmpdirs.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,7 +28,7 @@ import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove/ids.js';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry.js';
+import { writeHostSecret, type HostRecord } from '@myco/host/registry.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
@@ -106,7 +107,7 @@ describe('content claims over the Team Host overlay', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: grove.id, project_id: projectId }],
     };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, HOST_BEARER);
 
     // --- member daemon: loopback only, no local Grove DB for this project ---

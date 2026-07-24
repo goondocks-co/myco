@@ -18,10 +18,15 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
-import { HOST_BEARER_SECRET } from '@myco/constants.js';
 import {
+  HOST_BEARER_SECRET,
+  MEMBER_OVERLAY_PROXY_PORT_BASE,
+} from '@myco/constants.js';
+import {
+  assertValidSecretEntry,
+  readSecretsFile as readExactSecretsFile,
   readSecrets as readSecretsFile,
   writeSecret as writeSecretFile,
 } from '@myco/config/secrets.js';
@@ -30,16 +35,39 @@ import {
   resolveHostDir,
   resolveHostConfigPath,
   resolveMycoHome,
+  resolveTeamsHome,
 } from '@myco/grove/paths.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
-import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import {
+  atomicWriteFileSync,
+  durableRemovePathSync,
+  reconcileDurableRemovalTombstonesSync,
+  syncDirectoryForDurability,
+} from '@myco/utils/atomic-write.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
 import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import {
+  assertHostOperationLease,
+  type HostOperationLease,
+} from './operation-lock.js';
+import {
+  assertLoopbackPortReleaseProof,
+  type LoopbackPortReleaseProof,
+} from './loopback-port-proof.js';
 
 const HOST_REGISTRY_LOCK_DIR_MODE = 0o700;
 const HOST_REGISTRY_LOCK_RETRIES = 8;
 const HOST_REGISTRY_LOCK_NAMESPACE = 'hosts-registry';
+const HOST_PROXY_PORT_CLAIM_FILENAME = 'proxy-port-claim.json';
+const HOST_ENROLLMENT_INTENT_FILENAME = 'enrollment-intent.json';
+const HOST_BEARERS_DIRNAME = 'bearers';
+const HOST_GENERATIONS_DIRNAME = 'host-generations';
+const HOST_PROXY_PORT_CLAIM_MODE = 0o600;
+const HOST_PRIVATE_DIR_MODE = 0o700;
+const HOST_ENROLLMENT_STATE_MODE = 0o600;
+const HOST_ENROLLMENT_SCHEMA_VERSION = 1;
+const MAX_TCP_PORT = 65_535;
 
 export interface AttachRef {
   grove_id: string;
@@ -94,18 +122,88 @@ export interface HostRecord {
   served_grove_id?: string;
   created_at: string;
   projects: AttachRef[];
+  /** Atomic membership commit pointer. Both generation fields are present together. */
+  enrollment_generation?: number;
+  /** Generation of the bearer file this record must be paired with. */
+  bearer_generation?: number;
 }
 
-export type EnrollmentHostRecord = Omit<HostRecord, 'projects'>;
+export type EnrollmentHostRecord = Omit<HostRecord, 'projects' | 'proxy_port'>;
+
+export interface HostProxyPortReservation {
+  hostId: string;
+  proxyPort: number;
+  claimId: string;
+  generation: number;
+  baseGeneration: number | null;
+  enrollmentNonce: string;
+  phase: HostEnrollmentPhase;
+  serviceOwned: boolean;
+  /** True when reservation recovery found this generation already committed. */
+  recoveredCommit: boolean;
+}
+
+interface HostProxyPortClaim {
+  host_id: string;
+  proxy_port: number;
+  claim_id: string;
+  generation: number;
+  base_generation: number | null;
+  enrollment_nonce: string;
+}
+
+export type HostEnrollmentPhase =
+  | 'reserved'
+  | 'service_preparing'
+  | 'service_ready'
+  | 'overlay_joining'
+  | 'overlay_joined'
+  | 'enrolling'
+  | 'credential_staged'
+  | 'teardown_pending';
+
+interface HostGenerationLedger {
+  schema_version: 1;
+  host_id: string;
+  last_allocated_generation: number;
+  retired_through_generation: number;
+}
+
+interface HostEnrollmentIntent {
+  schema_version: 1;
+  host_id: string;
+  generation: number;
+  /** null=new membership, 0=legacy committed membership, positive=generation base. */
+  base_generation: number | null;
+  enrollment_nonce: string;
+  proxy_port: number;
+  claim_id: string;
+  phase: HostEnrollmentPhase;
+  service_preexisting: boolean | null;
+  service_owned_generation: number | null;
+  service_label: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HostMembershipSnapshot {
+  record: HostRecord;
+  bearer: string;
+  secrets: Record<string, string>;
+}
+
+export class HostJoinStateCorruptError extends Error {
+  readonly code = 'host_join_state_corrupt';
+
+  constructor(readonly hostId: string, detail: string) {
+    super(`host_join_state_corrupt: host ${hostId}: ${detail}`);
+    this.name = 'HostJoinStateCorruptError';
+  }
+}
 
 export interface EnrollmentMembershipResult {
   record: HostRecord;
   created: boolean;
-}
-
-interface HostRecordSnapshot {
-  hostId: string;
-  bytes: Buffer | null;
 }
 
 function hostRegistryLockPath(identity: string): string {
@@ -141,106 +239,793 @@ function withHostRegistryTransaction<T>(fn: () => T): T {
   throw new Error('Host registry identity did not stabilize while acquiring locks');
 }
 
-/**
- * True when `value` has the minimum shape every reader below relies on
- * (`host_id` as a string, `projects` as an array) — the two fields
- * `resolveAttach`'s reverse lookup and every route-classification consumer
- * dereference unconditionally. A record that parses as valid JSON but fails
- * this check (hand-edited, truncated, or written by an incompatible future
- * version) is treated the same as unparseable JSON: skipped, not thrown,
- * since a single corrupt host.json must never 500 every consumer (groves
- * merge, status, health, hint) that reads across every host record.
- */
 function isHostRecordShape(value: unknown): value is HostRecord {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return typeof record.host_id === 'string' && Array.isArray(record.projects);
+  const enrollmentGeneration = record.enrollment_generation;
+  const bearerGeneration = record.bearer_generation;
+  const generationsValid = enrollmentGeneration === undefined && bearerGeneration === undefined
+    || Number.isSafeInteger(enrollmentGeneration)
+      && Number(enrollmentGeneration) > 0
+      && enrollmentGeneration === bearerGeneration;
+  return typeof record.host_id === 'string'
+    && record.host_id.length > 0
+    && typeof record.label === 'string'
+    && typeof record.overlay_address === 'string'
+    && Number.isSafeInteger(record.protocol_version)
+    && typeof record.created_at === 'string'
+    && Array.isArray(record.projects)
+    && generationsValid;
 }
 
-/** Read every host record from the machine-global registry. Missing/unparseable files, and records that parse but fail the minimum HostRecord shape, are skipped, not thrown. */
-export function readHostRegistry(): HostRecord[] {
+function generationLedgerDir(): string {
+  return path.join(resolveTeamsHome(), HOST_GENERATIONS_DIRNAME);
+}
+
+function generationLedgerPath(hostId: string): string {
+  return path.join(generationLedgerDir(), `${hostId}.json`);
+}
+
+function hostEnrollmentIntentPath(hostId: string): string {
+  return path.join(resolveHostDir(hostId), HOST_ENROLLMENT_INTENT_FILENAME);
+}
+
+function hostBearerDir(hostId: string): string {
+  return path.join(resolveHostDir(hostId), HOST_BEARERS_DIRNAME);
+}
+
+function hostBearerPath(hostId: string, generation: number): string {
+  return path.join(hostBearerDir(hostId), `${generation}.env`);
+}
+
+function ensurePrivateDirectoryDurable(directory: string): void {
+  let created = false;
+  try {
+    const stat = fs.lstatSync(directory);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`Refusing non-directory enrollment state path: ${directory}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    fs.mkdirSync(directory, { recursive: true, mode: HOST_PRIVATE_DIR_MODE });
+    created = true;
+  }
+  try { fs.chmodSync(directory, HOST_PRIVATE_DIR_MODE); } catch { /* platform ACLs apply */ }
+  if (created) syncDirectoryForDurability(path.dirname(directory));
+}
+
+function assertPrivateRegularFile(filePath: string, hostId: string): void {
+  const stat = fs.lstatSync(filePath);
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new HostJoinStateCorruptError(hostId, `${filePath} is not a regular file`);
+  }
+  if (process.platform !== 'win32' && (stat.mode & 0o777) !== HOST_ENROLLMENT_STATE_MODE) {
+    throw new HostJoinStateCorruptError(hostId, `${filePath} is not owner-only`);
+  }
+}
+
+function readPrivateJsonFileUnlocked(
+  filePath: string,
+  hostId: string,
+): unknown | null {
+  try {
+    assertPrivateRegularFile(filePath, hostId);
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (error instanceof HostJoinStateCorruptError) throw error;
+    throw new HostJoinStateCorruptError(hostId, `cannot read ${path.basename(filePath)}`);
+  }
+}
+
+function parseGenerationLedger(
+  value: unknown,
+  hostId: string,
+): HostGenerationLedger {
+  if (!value || typeof value !== 'object') {
+    throw new HostJoinStateCorruptError(hostId, 'generation ledger is not an object');
+  }
+  const ledger = value as Record<string, unknown>;
+  if (ledger.schema_version !== HOST_ENROLLMENT_SCHEMA_VERSION
+    || ledger.host_id !== hostId
+    || !Number.isSafeInteger(ledger.last_allocated_generation)
+    || Number(ledger.last_allocated_generation) < 0
+    || !Number.isSafeInteger(ledger.retired_through_generation)
+    || Number(ledger.retired_through_generation) < 0
+    || Number(ledger.retired_through_generation) > Number(ledger.last_allocated_generation)) {
+    throw new HostJoinStateCorruptError(hostId, 'generation ledger has an invalid shape');
+  }
+  return ledger as unknown as HostGenerationLedger;
+}
+
+function readGenerationLedgerUnlocked(hostId: string): HostGenerationLedger | null {
+  const parsed = readPrivateJsonFileUnlocked(generationLedgerPath(hostId), hostId);
+  return parsed === null ? null : parseGenerationLedger(parsed, hostId);
+}
+
+function writeGenerationLedgerUnlocked(ledger: HostGenerationLedger): void {
+  ensurePrivateDirectoryDurable(generationLedgerDir());
+  atomicWriteFileSync(
+    generationLedgerPath(ledger.host_id),
+    JSON.stringify(ledger, null, 2),
+    { mode: HOST_ENROLLMENT_STATE_MODE, durable: true },
+  );
+}
+
+function readHostRecordUnlocked(hostId: string): HostRecord | null {
+  let parsed: unknown;
+  try {
+    const configPath = resolveHostConfigPath(hostId);
+    const stat = fs.lstatSync(configPath);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new HostJoinStateCorruptError(hostId, 'host.json is not a regular file');
+    }
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as unknown;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (error instanceof HostJoinStateCorruptError) throw error;
+    throw new HostJoinStateCorruptError(hostId, 'host.json is missing or malformed');
+  }
+  if (!isHostRecordShape(parsed) || parsed.host_id !== hostId) {
+    throw new HostJoinStateCorruptError(hostId, 'host.json has an invalid shape');
+  }
+  return parsed;
+}
+
+function readGenerationBearerUnlocked(hostId: string, generation: number): string {
+  const bearerPath = hostBearerPath(hostId, generation);
+  try {
+    assertPrivateRegularFile(bearerPath, hostId);
+    const secrets = readExactSecretsFile(bearerPath);
+    const bearer = secrets[HOST_BEARER_SECRET];
+    assertValidSecretEntry(HOST_BEARER_SECRET, bearer);
+    if (!bearer) throw new Error('missing bearer');
+    return bearer;
+  } catch (error) {
+    if (error instanceof HostJoinStateCorruptError) throw error;
+    throw new HostJoinStateCorruptError(
+      hostId,
+      `bearer generation ${generation} is missing or malformed`,
+    );
+  }
+}
+
+function readHostMembershipSnapshotUnlocked(hostId: string): HostMembershipSnapshot | null {
+  const record = readHostRecordUnlocked(hostId);
+  if (!record) return null;
+  const enrollmentGeneration = record.enrollment_generation;
+  const bearerGeneration = record.bearer_generation;
+  let legacySecrets: Record<string, string>;
+  try {
+    legacySecrets = readSecretsFile(resolveHostDir(hostId));
+  } catch {
+    throw new HostJoinStateCorruptError(hostId, 'legacy secrets.env is malformed');
+  }
+  if (enrollmentGeneration === undefined && bearerGeneration === undefined) {
+    const legacyLedger = readGenerationLedgerUnlocked(hostId);
+    if (legacyLedger && legacyLedger.retired_through_generation > 0) return null;
+    return {
+      record,
+      bearer: legacySecrets[HOST_BEARER_SECRET] ?? '',
+      secrets: legacySecrets,
+    };
+  }
+  if (enrollmentGeneration === undefined
+    || bearerGeneration === undefined
+    || enrollmentGeneration !== bearerGeneration) {
+    throw new HostJoinStateCorruptError(hostId, 'host pointer generations do not match');
+  }
+  const ledger = readGenerationLedgerUnlocked(hostId);
+  if (!ledger || enrollmentGeneration > ledger.last_allocated_generation) {
+    throw new HostJoinStateCorruptError(hostId, 'host pointer is outside its generation ledger');
+  }
+  if (enrollmentGeneration <= ledger.retired_through_generation) return null;
+  const bearer = readGenerationBearerUnlocked(hostId, bearerGeneration);
+  return {
+    record,
+    bearer,
+    secrets: { ...legacySecrets, [HOST_BEARER_SECRET]: bearer },
+  };
+}
+
+function readHostRegistryUnlocked(): HostRecord[] {
+  return readHostMembershipSnapshotsUnlocked().map((snapshot) => snapshot.record);
+}
+
+function readHostMembershipSnapshotsUnlocked(): HostMembershipSnapshot[] {
   const hostsDir = resolveHostsDir();
   if (!fs.existsSync(hostsDir)) return [];
-  const results: HostRecord[] = [];
+  const results: HostMembershipSnapshot[] = [];
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(hostsDir, { withFileTypes: true }); } catch { return []; }
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const configPath = path.join(hostsDir, entry.name, 'host.json');
-    let parsed: unknown;
-    try { parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')); }
-    catch { continue; /* missing/unparseable — skip */ }
-    if (!isHostRecordShape(parsed)) continue; // valid JSON, wrong shape — skip
-    results.push(parsed);
+    if (!entry.isDirectory() || entry.name.startsWith('.myco-remove-')) continue;
+    const snapshot = readHostMembershipSnapshotUnlocked(entry.name);
+    if (snapshot) results.push(snapshot);
   }
   return results;
 }
 
-/** Read a single host record by id, or null if it doesn't exist / fails to parse. */
+/** Read every committed, non-retired host record through one registry snapshot. */
+export function readHostRegistry(): HostRecord[] {
+  return withHostRegistryTransaction(readHostRegistryUnlocked);
+}
+
+export function readHostMembershipSnapshots(): HostMembershipSnapshot[] {
+  return withHostRegistryTransaction(readHostMembershipSnapshotsUnlocked);
+}
+
+/** Read a single committed, non-retired host record by id. */
 export function getHost(hostId: string): HostRecord | null {
-  try { return JSON.parse(fs.readFileSync(resolveHostConfigPath(hostId), 'utf-8')) as HostRecord; }
-  catch { return null; }
+  return withHostRegistryTransaction(
+    () => readHostMembershipSnapshotUnlocked(hostId)?.record ?? null,
+  );
+}
+
+/** Read a record and the bearer selected by its atomic generation pointer. */
+export function getHostMembershipSnapshot(hostId: string): HostMembershipSnapshot | null {
+  return withHostRegistryTransaction(() => readHostMembershipSnapshotUnlocked(hostId));
 }
 
 function writeHostRecordUnlocked(record: HostRecord): void {
   const hostDir = resolveHostDir(record.host_id);
-  fs.mkdirSync(hostDir, { recursive: true });
-  const configPath = resolveHostConfigPath(record.host_id);
-  const tmpPath = configPath + '.tmp';
-  fs.writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
-  fs.renameSync(tmpPath, configPath);
+  ensurePrivateDirectoryDurable(resolveHostsDir());
+  ensurePrivateDirectoryDurable(hostDir);
+  atomicWriteFileSync(
+    resolveHostConfigPath(record.host_id),
+    JSON.stringify(record, null, 2),
+    { durable: true },
+  );
 }
 
-/** Create or overwrite a host record. Atomic temp+rename write, same as `team/registry.ts` `save`. */
-export function upsertHost(record: HostRecord): void {
-  withHostRegistryTransaction(() => writeHostRecordUnlocked(record));
+function hostProxyPortClaimPath(hostId: string): string {
+  return path.join(resolveHostDir(hostId), HOST_PROXY_PORT_CLAIM_FILENAME);
 }
 
-function snapshotHostRecordUnlocked(hostId: string): HostRecordSnapshot {
+function isValidProxyPort(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) > 0 && Number(value) <= MAX_TCP_PORT;
+}
+
+function parseHostProxyPortClaim(value: unknown, hostId: string): HostProxyPortClaim {
+  if (!value || typeof value !== 'object') {
+    throw new Error(`Invalid proxy-port claim for host ${hostId}: expected an object.`);
+  }
+  const claim = value as Record<string, unknown>;
+  const baseGeneration = claim.base_generation;
+  if (claim.host_id !== hostId
+    || !isValidProxyPort(claim.proxy_port)
+    || typeof claim.claim_id !== 'string'
+    || claim.claim_id.length === 0
+    || !Number.isSafeInteger(claim.generation)
+    || Number(claim.generation) <= 0
+    || !(baseGeneration === null
+      || Number.isSafeInteger(baseGeneration) && Number(baseGeneration) >= 0)
+    || typeof claim.enrollment_nonce !== 'string'
+    || !/^[a-f0-9]{32,}$/.test(claim.enrollment_nonce)) {
+    throw new HostJoinStateCorruptError(hostId, 'invalid proxy-port claim');
+  }
+  return claim as unknown as HostProxyPortClaim;
+}
+
+function readHostProxyPortClaimUnlocked(hostId: string): HostProxyPortClaim | null {
+  const parsed = readPrivateJsonFileUnlocked(hostProxyPortClaimPath(hostId), hostId);
+  return parsed === null ? null : parseHostProxyPortClaim(parsed, hostId);
+}
+
+function readHostProxyPortClaimsUnlocked(): HostProxyPortClaim[] {
+  const hostsDir = resolveHostsDir();
+  if (!fs.existsSync(hostsDir)) return [];
+  const claims: HostProxyPortClaim[] = [];
+  for (const entry of fs.readdirSync(hostsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const claim = readHostProxyPortClaimUnlocked(entry.name);
+    if (claim) claims.push(claim);
+  }
+  return claims;
+}
+
+function writeHostProxyPortClaimUnlocked(claim: HostProxyPortClaim): void {
+  ensurePrivateDirectoryDurable(resolveHostsDir());
+  ensurePrivateDirectoryDurable(resolveHostDir(claim.host_id));
+  atomicWriteFileSync(
+    hostProxyPortClaimPath(claim.host_id),
+    JSON.stringify(claim, null, 2),
+    { mode: HOST_PROXY_PORT_CLAIM_MODE, durable: true },
+  );
+}
+
+function removeHostDirIfEmptyUnlocked(hostId: string): void {
+  const hostDir = resolveHostDir(hostId);
   try {
-    return { hostId, bytes: fs.readFileSync(resolveHostConfigPath(hostId)) };
+    if (fs.readdirSync(hostDir).length === 0) fs.rmdirSync(hostDir);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { hostId, bytes: null };
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 }
 
-function restoreHostRecordUnlocked(snapshot: HostRecordSnapshot): void {
-  const configPath = resolveHostConfigPath(snapshot.hostId);
-  if (snapshot.bytes === null) {
-    fs.rmSync(configPath, { force: true });
-    return;
+const ENROLLMENT_PHASE_ORDER: Readonly<Record<Exclude<HostEnrollmentPhase, 'teardown_pending'>, number>> = {
+  reserved: 0,
+  service_preparing: 1,
+  service_ready: 2,
+  overlay_joining: 3,
+  overlay_joined: 4,
+  enrolling: 5,
+  credential_staged: 6,
+};
+
+function parseHostEnrollmentIntent(value: unknown, hostId: string): HostEnrollmentIntent {
+  if (!value || typeof value !== 'object') {
+    throw new HostJoinStateCorruptError(hostId, 'enrollment intent is not an object');
   }
-  fs.mkdirSync(resolveHostDir(snapshot.hostId), { recursive: true });
-  atomicWriteFileSync(configPath, snapshot.bytes);
+  const intent = value as Record<string, unknown>;
+  const phase = intent.phase;
+  const baseGeneration = intent.base_generation;
+  if (intent.schema_version !== HOST_ENROLLMENT_SCHEMA_VERSION
+    || intent.host_id !== hostId
+    || !Number.isSafeInteger(intent.generation)
+    || Number(intent.generation) <= 0
+    || !(baseGeneration === null
+      || Number.isSafeInteger(baseGeneration) && Number(baseGeneration) >= 0)
+    || typeof intent.enrollment_nonce !== 'string'
+    || !/^[a-f0-9]{32,}$/.test(intent.enrollment_nonce)
+    || !isValidProxyPort(intent.proxy_port)
+    || typeof intent.claim_id !== 'string'
+    || intent.claim_id.length === 0
+    || typeof phase !== 'string'
+    || !(phase === 'teardown_pending' || Object.hasOwn(ENROLLMENT_PHASE_ORDER, phase))
+    || !(intent.service_preexisting === null || typeof intent.service_preexisting === 'boolean')
+    || !(intent.service_owned_generation === null
+      || Number.isSafeInteger(intent.service_owned_generation)
+        && Number(intent.service_owned_generation) === Number(intent.generation))
+    || !(intent.service_label === null || typeof intent.service_label === 'string')
+    || typeof intent.created_at !== 'string'
+    || typeof intent.updated_at !== 'string') {
+    throw new HostJoinStateCorruptError(hostId, 'enrollment intent has an invalid shape');
+  }
+  return intent as unknown as HostEnrollmentIntent;
+}
+
+function readHostEnrollmentIntentUnlocked(hostId: string): HostEnrollmentIntent | null {
+  const parsed = readPrivateJsonFileUnlocked(hostEnrollmentIntentPath(hostId), hostId);
+  return parsed === null ? null : parseHostEnrollmentIntent(parsed, hostId);
+}
+
+function writeHostEnrollmentIntentUnlocked(intent: HostEnrollmentIntent): void {
+  ensurePrivateDirectoryDurable(resolveHostsDir());
+  ensurePrivateDirectoryDurable(resolveHostDir(intent.host_id));
+  atomicWriteFileSync(
+    hostEnrollmentIntentPath(intent.host_id),
+    JSON.stringify(intent, null, 2),
+    { mode: HOST_ENROLLMENT_STATE_MODE, durable: true },
+  );
+}
+
+function reservationFromIntent(
+  intent: HostEnrollmentIntent,
+  recoveredCommit = false,
+): HostProxyPortReservation {
+  return {
+    hostId: intent.host_id,
+    proxyPort: intent.proxy_port,
+    claimId: intent.claim_id,
+    generation: intent.generation,
+    baseGeneration: intent.base_generation,
+    enrollmentNonce: intent.enrollment_nonce,
+    phase: intent.phase,
+    serviceOwned: intent.service_owned_generation === intent.generation,
+    recoveredCommit,
+  };
+}
+
+function assertReservationMatchesIntent(
+  reservation: HostProxyPortReservation,
+  intent: HostEnrollmentIntent | null,
+): asserts intent is HostEnrollmentIntent {
+  if (!intent
+    || intent.host_id !== reservation.hostId
+    || intent.generation !== reservation.generation
+    || intent.claim_id !== reservation.claimId
+    || intent.proxy_port !== reservation.proxyPort
+    || intent.enrollment_nonce !== reservation.enrollmentNonce
+    || intent.base_generation !== reservation.baseGeneration) {
+    throw new HostJoinStateCorruptError(
+      reservation.hostId,
+      'enrollment reservation no longer matches its durable intent',
+    );
+  }
+}
+
+function assertClaimMatchesIntent(
+  claim: HostProxyPortClaim | null,
+  intent: HostEnrollmentIntent,
+): asserts claim is HostProxyPortClaim {
+  if (!claim
+    || claim.host_id !== intent.host_id
+    || claim.generation !== intent.generation
+    || claim.claim_id !== intent.claim_id
+    || claim.proxy_port !== intent.proxy_port
+    || claim.base_generation !== intent.base_generation
+    || claim.enrollment_nonce !== intent.enrollment_nonce) {
+    throw new HostJoinStateCorruptError(
+      intent.host_id,
+      'enrollment intent no longer matches its durable proxy-port claim',
+    );
+  }
+}
+
+/**
+ * Reserve a stable member proxy port before provisioning starts.
+ * A retry adopts the exact durable generation and claim token until the
+ * enrollment is committed or retired.
+ */
+export function reserveHostProxyPort(
+  hostId: string,
+  preferredPort?: number,
+): HostProxyPortReservation {
+  return withHostRegistryTransaction(() => {
+    if (preferredPort !== undefined && !isValidProxyPort(preferredPort)) {
+      throw new Error(`Invalid proxy port ${preferredPort}; expected an integer from 1 through ${MAX_TCP_PORT}.`);
+    }
+
+    reconcileDurableRemovalTombstonesSync(resolveHostsDir());
+    reconcileDurableRemovalTombstonesSync(generationLedgerDir());
+    const existingSnapshot = readHostMembershipSnapshotUnlocked(hostId);
+    const existing = existingSnapshot?.record ?? null;
+    let ledger = readGenerationLedgerUnlocked(hostId);
+    const currentIntent = readHostEnrollmentIntentUnlocked(hostId);
+    const currentClaim = readHostProxyPortClaimUnlocked(hostId);
+    const committedGeneration = existing?.enrollment_generation ?? (existing ? 0 : null);
+
+    if (currentIntent) {
+      if (!ledger
+        || currentIntent.generation > ledger.last_allocated_generation
+        || currentIntent.generation <= ledger.retired_through_generation) {
+        throw new HostJoinStateCorruptError(hostId, 'enrollment intent is outside its generation fence');
+      }
+      if (currentIntent.generation === existing?.enrollment_generation) {
+        assertClaimMatchesIntent(currentClaim, currentIntent);
+        if (currentIntent.proxy_port !== existing.proxy_port) {
+          throw new HostJoinStateCorruptError(hostId, 'committed residue has a conflicting proxy port');
+        }
+        if (preferredPort !== undefined && preferredPort !== currentIntent.proxy_port) {
+          throw new Error(
+            `Host ${hostId} is already assigned proxy port ${currentIntent.proxy_port}, not ${preferredPort}.`,
+          );
+        }
+        const recovery = reservationFromIntent(currentIntent, true);
+        durableRemovePathSync(hostEnrollmentIntentPath(hostId));
+        durableRemovePathSync(hostProxyPortClaimPath(hostId));
+        return recovery;
+      } else {
+        assertClaimMatchesIntent(currentClaim, currentIntent);
+        if (currentIntent.base_generation !== committedGeneration) {
+          throw new HostJoinStateCorruptError(hostId, 'enrollment intent base is not the committed generation');
+        }
+        if (preferredPort !== undefined && preferredPort !== currentIntent.proxy_port) {
+          throw new Error(
+            `Host ${hostId} already claims proxy port ${currentIntent.proxy_port}, not ${preferredPort}.`,
+          );
+        }
+        return reservationFromIntent(currentIntent);
+      }
+    }
+
+    if (currentClaim) {
+      if (!ledger
+        || currentClaim.generation > ledger.last_allocated_generation
+        || currentClaim.generation <= ledger.retired_through_generation) {
+        throw new HostJoinStateCorruptError(hostId, 'orphan proxy-port claim is outside its generation fence');
+      }
+      if (currentClaim.generation === existing?.enrollment_generation) {
+        if (!existingSnapshot?.bearer) {
+          throw new HostJoinStateCorruptError(hostId, 'committed claim has no matching bearer');
+        }
+        if (currentClaim.proxy_port !== existing.proxy_port) {
+          throw new HostJoinStateCorruptError(hostId, 'committed claim has a conflicting proxy port');
+        }
+        if (preferredPort !== undefined && preferredPort !== currentClaim.proxy_port) {
+          throw new Error(
+            `Host ${hostId} is already assigned proxy port ${currentClaim.proxy_port}, not ${preferredPort}.`,
+          );
+        }
+        const recovery: HostProxyPortReservation = {
+          hostId,
+          proxyPort: currentClaim.proxy_port,
+          claimId: currentClaim.claim_id,
+          generation: currentClaim.generation,
+          baseGeneration: currentClaim.base_generation,
+          enrollmentNonce: currentClaim.enrollment_nonce,
+          phase: 'credential_staged',
+          serviceOwned: false,
+          recoveredCommit: true,
+        };
+        durableRemovePathSync(hostProxyPortClaimPath(hostId));
+        return recovery;
+      }
+      durableRemovePathSync(hostProxyPortClaimPath(hostId));
+    }
+
+    const portOwners = new Map<number, string>();
+    const notePortOwner = (proxyPort: number, ownerHostId: string): void => {
+      const priorOwner = portOwners.get(proxyPort);
+      if (priorOwner && priorOwner !== ownerHostId) {
+        throw new Error(
+          `Proxy port ${proxyPort} is assigned to both host ${priorOwner} and host ${ownerHostId}.`,
+        );
+      }
+      portOwners.set(proxyPort, ownerHostId);
+    };
+    for (const record of readHostRegistryUnlocked()) {
+      if (record.host_id === hostId || record.proxy_port === undefined) continue;
+      if (!isValidProxyPort(record.proxy_port)) {
+        throw new Error(`Host ${record.host_id} has invalid persisted proxy port ${record.proxy_port}.`);
+      }
+      notePortOwner(record.proxy_port, record.host_id);
+    }
+    for (const claim of readHostProxyPortClaimsUnlocked()) {
+      if (claim.host_id !== hostId) notePortOwner(claim.proxy_port, claim.host_id);
+    }
+    const usedByOtherHosts = new Set(portOwners.keys());
+
+    let proxyPort: number;
+    if (existing?.proxy_port !== undefined) {
+      if (!isValidProxyPort(existing.proxy_port)) {
+        throw new Error(`Host ${hostId} has invalid persisted proxy port ${existing.proxy_port}.`);
+      }
+      if (usedByOtherHosts.has(existing.proxy_port)) {
+        throw new Error(
+          `Proxy port ${existing.proxy_port} is assigned to host ${hostId} and another host.`,
+        );
+      }
+      if (preferredPort !== undefined && preferredPort !== existing.proxy_port) {
+        throw new Error(
+          `Host ${hostId} is already assigned proxy port ${existing.proxy_port}, not ${preferredPort}.`,
+        );
+      }
+      proxyPort = existing.proxy_port;
+    } else if (preferredPort !== undefined) {
+      if (usedByOtherHosts.has(preferredPort)) {
+        throw new Error(`Proxy port ${preferredPort} is already reserved by another host.`);
+      }
+      proxyPort = preferredPort;
+    } else {
+      proxyPort = MEMBER_OVERLAY_PROXY_PORT_BASE;
+      while (usedByOtherHosts.has(proxyPort)) proxyPort += 1;
+      if (!isValidProxyPort(proxyPort)) {
+        throw new Error('No member proxy port is available.');
+      }
+    }
+
+    const generation = (ledger?.last_allocated_generation ?? 0) + 1;
+    ledger = {
+      schema_version: HOST_ENROLLMENT_SCHEMA_VERSION,
+      host_id: hostId,
+      last_allocated_generation: generation,
+      retired_through_generation: ledger?.retired_through_generation ?? 0,
+    };
+    writeGenerationLedgerUnlocked(ledger);
+
+    const enrollmentNonce = randomBytes(16).toString('hex');
+    const claim: HostProxyPortClaim = {
+      host_id: hostId,
+      proxy_port: proxyPort,
+      claim_id: randomUUID(),
+      generation,
+      base_generation: committedGeneration,
+      enrollment_nonce: enrollmentNonce,
+    };
+    writeHostProxyPortClaimUnlocked(claim);
+    const now = new Date().toISOString();
+    const intent: HostEnrollmentIntent = {
+      schema_version: HOST_ENROLLMENT_SCHEMA_VERSION,
+      host_id: hostId,
+      generation,
+      base_generation: committedGeneration,
+      enrollment_nonce: enrollmentNonce,
+      proxy_port: proxyPort,
+      claim_id: claim.claim_id,
+      phase: 'reserved',
+      service_preexisting: null,
+      service_owned_generation: null,
+      service_label: null,
+      created_at: now,
+      updated_at: now,
+    };
+    writeHostEnrollmentIntentUnlocked(intent);
+    return reservationFromIntent(intent);
+  });
+}
+
+/**
+ * Release only the exact active claim represented by `reservation`.
+ * Committed reservations and stale attempt tokens are no-ops.
+ */
+export function releaseHostProxyPort(reservation: HostProxyPortReservation): void {
+  withHostRegistryTransaction(() => {
+    const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
+    if (!intent
+      || intent.generation !== reservation.generation
+      || intent.claim_id !== reservation.claimId
+      || intent.proxy_port !== reservation.proxyPort
+      || intent.enrollment_nonce !== reservation.enrollmentNonce
+      || intent.base_generation !== reservation.baseGeneration) return;
+    if (intent.phase !== 'reserved') {
+      throw new HostJoinStateCorruptError(
+        reservation.hostId,
+        `cannot release an enrollment in phase ${intent.phase} without verified teardown`,
+      );
+    }
+    const claim = readHostProxyPortClaimUnlocked(reservation.hostId);
+    if (!claim
+      || claim.generation !== reservation.generation
+      || claim.claim_id !== reservation.claimId
+      || claim.proxy_port !== reservation.proxyPort
+      || claim.base_generation !== reservation.baseGeneration
+      || claim.enrollment_nonce !== reservation.enrollmentNonce) return;
+    durableRemovePathSync(hostEnrollmentIntentPath(reservation.hostId));
+    durableRemovePathSync(hostProxyPortClaimPath(reservation.hostId));
+    removeHostDirIfEmptyUnlocked(reservation.hostId);
+  });
+}
+
+export function advanceHostEnrollmentPhase(
+  reservation: HostProxyPortReservation,
+  phase: Exclude<HostEnrollmentPhase, 'teardown_pending'>,
+  service?: { preexisting: boolean; label: string },
+): HostProxyPortReservation {
+  return withHostRegistryTransaction(() => {
+    const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
+    assertReservationMatchesIntent(reservation, intent);
+    const claim = readHostProxyPortClaimUnlocked(reservation.hostId);
+    assertClaimMatchesIntent(claim, intent);
+    const ledger = readGenerationLedgerUnlocked(reservation.hostId);
+    if (!ledger
+      || intent.generation > ledger.last_allocated_generation
+      || intent.generation <= ledger.retired_through_generation) {
+      throw new HostJoinStateCorruptError(reservation.hostId, 'intent is outside its generation fence');
+    }
+    if (phase === 'service_preparing' && !service) {
+      throw new Error('service_preparing requires the preexisting-service observation and label');
+    }
+    const currentOrder = intent.phase === 'teardown_pending'
+      ? Number.POSITIVE_INFINITY
+      : ENROLLMENT_PHASE_ORDER[intent.phase];
+    const requestedOrder = ENROLLMENT_PHASE_ORDER[phase];
+    if (requestedOrder < currentOrder) return reservationFromIntent(intent);
+    const updated: HostEnrollmentIntent = {
+      ...intent,
+      phase,
+      service_preexisting: intent.service_preexisting ?? service?.preexisting ?? null,
+      service_owned_generation: service
+        ? (intent.service_preexisting === null
+          ? (service.preexisting ? null : intent.generation)
+          : intent.service_owned_generation)
+        : intent.service_owned_generation,
+      service_label: intent.service_label ?? service?.label ?? null,
+      updated_at: new Date().toISOString(),
+    };
+    writeHostEnrollmentIntentUnlocked(updated);
+    return reservationFromIntent(updated);
+  });
+}
+
+export function markHostEnrollmentTeardownPending(
+  reservation: HostProxyPortReservation,
+): void {
+  withHostRegistryTransaction(() => {
+    const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
+    assertReservationMatchesIntent(reservation, intent);
+    writeHostEnrollmentIntentUnlocked({
+      ...intent,
+      phase: 'teardown_pending',
+      updated_at: new Date().toISOString(),
+    });
+  });
+}
+
+export function abandonHostEnrollment(
+  reservation: HostProxyPortReservation,
+  proof: LoopbackPortReleaseProof,
+): void {
+  assertLoopbackPortReleaseProof(proof, reservation.proxyPort);
+  withHostRegistryTransaction(() => {
+    const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
+    assertReservationMatchesIntent(reservation, intent);
+    const claim = readHostProxyPortClaimUnlocked(reservation.hostId);
+    assertClaimMatchesIntent(claim, intent);
+    const phaseOrder = intent.phase === 'teardown_pending'
+      ? ENROLLMENT_PHASE_ORDER.service_ready
+      : ENROLLMENT_PHASE_ORDER[intent.phase];
+    if (phaseOrder >= ENROLLMENT_PHASE_ORDER.overlay_joining
+      || intent.base_generation !== null
+      || intent.service_preexisting !== false
+      || intent.service_owned_generation !== intent.generation) {
+      throw new HostJoinStateCorruptError(
+        reservation.hostId,
+        'enrollment state is not eligible for automatic teardown cleanup',
+      );
+    }
+    durableRemovePathSync(hostEnrollmentIntentPath(reservation.hostId));
+    durableRemovePathSync(hostProxyPortClaimPath(reservation.hostId));
+    removeHostDirIfEmptyUnlocked(reservation.hostId);
+  });
 }
 
 function persistEnrollmentMembershipUnlocked(
   enrollment: EnrollmentHostRecord,
   bearer: string,
+  reservation: HostProxyPortReservation,
 ): EnrollmentMembershipResult {
-  const previousRecord = snapshotHostRecordUnlocked(enrollment.host_id);
-  const existing = getHost(enrollment.host_id);
+  if (reservation.hostId !== enrollment.host_id) {
+    throw new Error(
+      `Proxy-port reservation for host ${reservation.hostId} cannot enroll host ${enrollment.host_id}.`,
+    );
+  }
+  assertValidSecretEntry(HOST_BEARER_SECRET, bearer);
+  if (!bearer) {
+    throw new HostJoinStateCorruptError(enrollment.host_id, 'enrollment bearer is empty');
+  }
+  const intent = readHostEnrollmentIntentUnlocked(enrollment.host_id);
+  assertReservationMatchesIntent(reservation, intent);
+  const claim = readHostProxyPortClaimUnlocked(enrollment.host_id);
+  assertClaimMatchesIntent(claim, intent);
+  const ledger = readGenerationLedgerUnlocked(enrollment.host_id);
+  if (!ledger
+    || intent.generation > ledger.last_allocated_generation
+    || intent.generation <= ledger.retired_through_generation) {
+    throw new HostJoinStateCorruptError(enrollment.host_id, 'enrollment generation is fenced');
+  }
+  const existingSnapshot = readHostMembershipSnapshotUnlocked(enrollment.host_id);
+  const existing = existingSnapshot?.record ?? null;
+  const committedGeneration = existing?.enrollment_generation ?? (existing ? 0 : null);
+  if (intent.base_generation !== committedGeneration) {
+    throw new HostJoinStateCorruptError(
+      enrollment.host_id,
+      'enrollment base no longer matches the committed generation',
+    );
+  }
+  const phaseOrder = intent.phase === 'teardown_pending'
+    ? -1
+    : ENROLLMENT_PHASE_ORDER[intent.phase];
+  if (phaseOrder < ENROLLMENT_PHASE_ORDER.enrolling) {
+    throw new HostJoinStateCorruptError(
+      enrollment.host_id,
+      `cannot stage credentials from enrollment phase ${intent.phase}`,
+    );
+  }
+
+  ensurePrivateDirectoryDurable(hostBearerDir(enrollment.host_id));
+  atomicWriteFileSync(
+    hostBearerPath(enrollment.host_id, intent.generation),
+    `${HOST_BEARER_SECRET}=${bearer}\n`,
+    { mode: HOST_ENROLLMENT_STATE_MODE, durable: true },
+  );
+  const stagedIntent: HostEnrollmentIntent = {
+    ...intent,
+    phase: 'credential_staged',
+    updated_at: new Date().toISOString(),
+  };
+  writeHostEnrollmentIntentUnlocked(stagedIntent);
+
   const record: HostRecord = {
     ...enrollment,
+    proxy_port: reservation.proxyPort,
     served_grove_id: enrollment.served_grove_id ?? existing?.served_grove_id,
     created_at: existing?.created_at ?? enrollment.created_at,
     projects: existing?.projects ?? [],
+    enrollment_generation: intent.generation,
+    bearer_generation: intent.generation,
   };
-  try {
-    writeHostRecordUnlocked(record);
-    writeSecretFile(resolveHostDir(record.host_id), HOST_BEARER_SECRET, bearer);
-  } catch (writeError) {
-    try {
-      restoreHostRecordUnlocked(previousRecord);
-    } catch (rollbackError) {
-      throw new AggregateError(
-        [writeError, rollbackError],
-        `Could not restore host record ${record.host_id} after bearer persistence failed.`,
-      );
-    }
-    throw writeError;
+  writeHostRecordUnlocked(record);
+
+  const committed = readHostMembershipSnapshotUnlocked(record.host_id);
+  if (!committed
+    || committed.record.enrollment_generation !== intent.generation
+    || committed.bearer !== bearer) {
+    throw new HostJoinStateCorruptError(record.host_id, 'published enrollment did not verify');
   }
+  durableRemovePathSync(hostEnrollmentIntentPath(record.host_id));
+  durableRemovePathSync(hostProxyPortClaimPath(record.host_id));
   return { record, created: existing === null };
 }
 
@@ -251,17 +1036,131 @@ function persistEnrollmentMembershipUnlocked(
 export function persistEnrollmentMembership(
   enrollment: EnrollmentHostRecord,
   bearer: string,
+  reservation: HostProxyPortReservation,
 ): EnrollmentMembershipResult {
   return withHostRegistryTransaction(
-    () => persistEnrollmentMembershipUnlocked(enrollment, bearer),
+    () => persistEnrollmentMembershipUnlocked(enrollment, bearer, reservation),
   );
 }
 
-/** Remove a host record, its attach refs, and its secrets.env (bearer). */
-export function removeHost(hostId: string): void {
-  withHostRegistryTransaction(
-    () => fs.rmSync(resolveHostDir(hostId), { recursive: true, force: true }),
-  );
+export interface HostLeaveInspection {
+  record: HostRecord | null;
+  proxyPort: number | null;
+  statePresent: boolean;
+  corrupt: boolean;
+}
+
+export function inspectHostMembershipForLeave(
+  hostId: string,
+  lease: HostOperationLease,
+): HostLeaveInspection {
+  assertHostOperationLease(lease, hostId, 'leave');
+  return withHostRegistryTransaction(() => {
+    reconcileDurableRemovalTombstonesSync(resolveHostsDir());
+    let record: HostRecord | null = null;
+    let corrupt = false;
+    try {
+      record = readHostMembershipSnapshotUnlocked(hostId)?.record ?? null;
+      if (!record && fs.existsSync(resolveHostConfigPath(hostId))) {
+        record = readHostRecordUnlocked(hostId);
+      }
+    } catch (error) {
+      if (!(error instanceof HostJoinStateCorruptError)) throw error;
+      corrupt = true;
+      try {
+        record = readHostRecordUnlocked(hostId);
+      } catch {
+        record = null;
+      }
+    }
+    let claim: HostProxyPortClaim | null = null;
+    try {
+      claim = readHostProxyPortClaimUnlocked(hostId);
+    } catch (error) {
+      if (!(error instanceof HostJoinStateCorruptError)) throw error;
+      corrupt = true;
+    }
+    const recordPort = isValidProxyPort(record?.proxy_port) ? record.proxy_port : null;
+    const claimPort = claim?.proxy_port ?? null;
+    if (recordPort !== null && claimPort !== null && recordPort !== claimPort) {
+      throw new HostJoinStateCorruptError(hostId, 'leave found conflicting proxy-port identities');
+    }
+    const ledgerPath = generationLedgerPath(hostId);
+    let ledger: HostGenerationLedger | null = null;
+    try {
+      ledger = readGenerationLedgerUnlocked(hostId);
+    } catch (error) {
+      if (!(error instanceof HostJoinStateCorruptError)) throw error;
+      corrupt = true;
+    }
+    const hostDir = resolveHostDir(hostId);
+    return {
+      record,
+      proxyPort: recordPort ?? claimPort,
+      statePresent: fs.existsSync(hostDir)
+        || fs.existsSync(ledgerPath) && ledger === null
+        || ledger !== null
+          && ledger.retired_through_generation < ledger.last_allocated_generation,
+      corrupt,
+    };
+  });
+}
+
+export function retireHostMembership(
+  hostId: string,
+  lease: HostOperationLease,
+  proof: LoopbackPortReleaseProof,
+  trustedProxyPort?: number,
+): void {
+  assertHostOperationLease(lease, hostId, 'leave');
+  withHostRegistryTransaction(() => {
+    let record: HostRecord | null = null;
+    try { record = readHostRecordUnlocked(hostId); } catch (error) {
+      if (!(error instanceof HostJoinStateCorruptError)) throw error;
+    }
+    const recordPort = record?.proxy_port;
+    let claim: HostProxyPortClaim | null = null;
+    try { claim = readHostProxyPortClaimUnlocked(hostId); } catch (error) {
+      if (!(error instanceof HostJoinStateCorruptError)) throw error;
+    }
+    const proxyPort = isValidProxyPort(recordPort)
+      ? recordPort
+      : claim?.proxy_port ?? trustedProxyPort;
+    if (!proxyPort) {
+      throw new HostJoinStateCorruptError(hostId, 'leave has no trustworthy proxy-port identity');
+    }
+    if (isValidProxyPort(recordPort)
+      && claim
+      && claim.proxy_port !== recordPort) {
+      throw new HostJoinStateCorruptError(hostId, 'leave found conflicting proxy-port identities');
+    }
+    assertLoopbackPortReleaseProof(proof, proxyPort);
+    let ledger: HostGenerationLedger | null = null;
+    try {
+      ledger = readGenerationLedgerUnlocked(hostId);
+    } catch (error) {
+      if (!(error instanceof HostJoinStateCorruptError)) throw error;
+    }
+    const durableLedger = ledger
+      ?? {
+        schema_version: HOST_ENROLLMENT_SCHEMA_VERSION,
+        host_id: hostId,
+        last_allocated_generation: record?.enrollment_generation ?? 0,
+        retired_through_generation: 0,
+      };
+    const lastAllocated = Math.max(
+      1,
+      durableLedger.last_allocated_generation,
+      record?.enrollment_generation ?? (record ? 1 : 0),
+      claim?.generation ?? 0,
+    );
+    writeGenerationLedgerUnlocked({
+      ...durableLedger,
+      last_allocated_generation: lastAllocated,
+      retired_through_generation: lastAllocated,
+    });
+    durableRemovePathSync(resolveHostDir(hostId));
+  });
 }
 
 /**
@@ -331,7 +1230,7 @@ function attachProjectUnlocked(
   ref: AttachRef,
   mycoHome: string,
 ): void {
-  const record = getHost(hostId);
+  const record = readHostMembershipSnapshotUnlocked(hostId)?.record ?? null;
   if (!record) throw new Error(`Unknown host: ${hostId}`);
 
   const existingIdx = record.projects.findIndex((p) => p.project_id === ref.project_id);
@@ -405,7 +1304,7 @@ export function recordHostProtocolVersion(hostId: string, observedVersion: numbe
 }
 
 function recordHostProtocolVersionUnlocked(hostId: string, observedVersion: number): number {
-  const record = getHost(hostId);
+  const record = readHostMembershipSnapshotUnlocked(hostId)?.record ?? null;
   if (!record) return observedVersion;
   if (!Number.isFinite(observedVersion) || observedVersion <= record.protocol_version) {
     return record.protocol_version;
@@ -420,7 +1319,7 @@ export function detachProject(hostId: string, projectId: string): void {
 }
 
 function detachProjectUnlocked(hostId: string, projectId: string): void {
-  const record = getHost(hostId);
+  const record = readHostMembershipSnapshotUnlocked(hostId)?.record ?? null;
   if (!record) return;
   writeHostRecordUnlocked({
     ...record,
@@ -435,11 +1334,30 @@ function detachProjectUnlocked(hostId: string, projectId: string): void {
  * a pure disk read across every host record, no daemon, no DB.
  */
 export function resolveAttach(projectId: string): { host: HostRecord; ref: AttachRef } | null {
-  return resolveAttachUnlocked(projectId);
+  return withHostRegistryTransaction(() => resolveAttachUnlocked(projectId));
+}
+
+export function resolveAttachMembership(
+  projectId: string,
+): { host: HostRecord; ref: AttachRef; bearer: string; secrets: Record<string, string> } | null {
+  return withHostRegistryTransaction(() => {
+    for (const snapshot of readHostMembershipSnapshotsUnlocked()) {
+      const ref = snapshot.record.projects.find((project) => project.project_id === projectId);
+      if (ref) {
+        return {
+          host: snapshot.record,
+          ref,
+          bearer: snapshot.bearer,
+          secrets: snapshot.secrets,
+        };
+      }
+    }
+    return null;
+  });
 }
 
 function resolveAttachUnlocked(projectId: string): { host: HostRecord; ref: AttachRef } | null {
-  for (const record of readHostRegistry()) {
+  for (const record of readHostRegistryUnlocked()) {
     const ref = record.projects.find((p) => p.project_id === projectId);
     if (ref) return { host: record, ref };
   }
@@ -455,11 +1373,13 @@ function resolveAttachUnlocked(projectId: string): { host: HostRecord; ref: Atta
  * the housekeeping/scheduler fan-out structurally skips it.
  */
 export function attachTargetGroveIds(): Set<string> {
-  const ids = new Set<string>();
-  for (const record of readHostRegistry()) {
-    for (const ref of record.projects) ids.add(ref.grove_id);
-  }
-  return ids;
+  return withHostRegistryTransaction(() => {
+    const ids = new Set<string>();
+    for (const record of readHostRegistryUnlocked()) {
+      for (const ref of record.projects) ids.add(ref.grove_id);
+    }
+    return ids;
+  });
 }
 
 /**
@@ -471,34 +1391,57 @@ export function attachTargetGroveIds(): Set<string> {
  * lingers in the local default Grove.
  */
 export function attachTargetProjectIds(): Set<string> {
-  const ids = new Set<string>();
-  for (const record of readHostRegistry()) {
-    for (const ref of record.projects) ids.add(ref.project_id);
-  }
-  return ids;
+  return withHostRegistryTransaction(() => {
+    const ids = new Set<string>();
+    for (const record of readHostRegistryUnlocked()) {
+      for (const ref of record.projects) ids.add(ref.project_id);
+    }
+    return ids;
+  });
 }
 
-/** Read all secrets (including the host bearer) for a host from its secrets.env. */
+/** Read all secrets with the bearer selected by the committed generation pointer. */
 export function readHostSecrets(hostId: string): Record<string, string> {
-  return readSecretsFile(resolveHostDir(hostId));
+  return withHostRegistryTransaction(
+    () => readHostMembershipSnapshotUnlocked(hostId)?.secrets ?? {},
+  );
 }
 
 /** Write a host-scoped secret (e.g. the host bearer, `HOST_BEARER_SECRET`) to secrets.env. Never written to host.json. */
 export function writeHostSecret(hostId: string, key: string, value: string): void {
-  withHostRegistryTransaction(
-    () => writeSecretFile(resolveHostDir(hostId), key, value),
-  );
+  withHostRegistryTransaction(() => {
+    const record = readHostRecordUnlocked(hostId);
+    if (key === HOST_BEARER_SECRET && record?.bearer_generation !== undefined) {
+      assertValidSecretEntry(key, value);
+      ensurePrivateDirectoryDurable(hostBearerDir(hostId));
+      atomicWriteFileSync(
+        hostBearerPath(hostId, record.bearer_generation),
+        `${HOST_BEARER_SECRET}=${value}\n`,
+        { mode: HOST_ENROLLMENT_STATE_MODE, durable: true },
+      );
+      return;
+    }
+    writeSecretFile(resolveHostDir(hostId), key, value);
+  });
 }
 
 export const hostRegistry = {
   readHostRegistry,
+  readHostMembershipSnapshots,
   getHost,
-  upsertHost,
+  getHostMembershipSnapshot,
+  reserveHostProxyPort,
+  releaseHostProxyPort,
+  advanceHostEnrollmentPhase,
+  markHostEnrollmentTeardownPending,
+  abandonHostEnrollment,
   persistEnrollmentMembership,
-  removeHost,
+  inspectHostMembershipForLeave,
+  retireHostMembership,
   attachProject,
   detachProject,
   resolveAttach,
+  resolveAttachMembership,
   attachTargetGroveIds,
   attachTargetProjectIds,
   readHostSecrets,

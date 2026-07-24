@@ -601,8 +601,20 @@ export class DaemonServer {
       try { memberInfo = (await readBody(req)) as Record<string, unknown>; } catch { /* log without it */ }
 
       const payload = buildHostEnrollmentPayload(hostServe, this.overlayPort);
+      const enrollmentNonce = memberInfo.enrollment_nonce;
+      const responsePayload = typeof enrollmentNonce === 'string'
+        && /^[a-f0-9]{32,}$/.test(enrollmentNonce)
+        ? {
+          ...payload,
+          enrollment_receipt: {
+            enrollment_nonce: enrollmentNonce,
+            host_id: payload.host_id,
+            protocol_version: payload.protocol_version,
+          },
+        }
+        : payload;
       res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
-      res.end(JSON.stringify(payload));
+      res.end(JSON.stringify(responsePayload));
 
       // Record the join for the operator's diagnosable safety net (spec §9). The
       // subject is the member's overlay IP off the CONNECTION (unspoofable), with the

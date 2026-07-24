@@ -42,7 +42,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  HOST_BEARER_SECRET,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
   HOST_PROXY_BODY_TIMEOUT_MS,
@@ -61,7 +60,7 @@ import {
   resolveProjectBufferDir,
 } from '../grove/paths.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
-import { readHostRegistry, readHostSecrets } from '../host/registry.js';
+import { readHostMembershipSnapshots } from '../host/registry.js';
 import type { RemoteTarget } from '../host/routing.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
@@ -149,8 +148,7 @@ export interface ReplayStore {
  */
 export function listAttachedReplayTargets(): AttachedReplayTarget[] {
   const out: AttachedReplayTarget[] = [];
-  for (const record of readHostRegistry()) {
-    const bearer = readHostSecrets(record.host_id)[HOST_BEARER_SECRET] ?? '';
+  for (const { record, bearer } of readHostMembershipSnapshots()) {
     for (const ref of record.projects) {
       out.push({
         hostId: record.host_id,

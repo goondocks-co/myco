@@ -11,6 +11,7 @@
  * personal tiers) is a fresh tmpdir addressed through the `x-myco-project-root`
  * header exactly as a real member client sends it.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -25,7 +26,7 @@ import {
   type AttachedConfigDeps,
 } from '@myco/daemon/attached-config';
 import { defaultDial, __resetVersionMismatchLogForTests } from '@myco/daemon/host-proxy';
-import { upsertHost, type HostRecord } from '@myco/host/registry';
+import { type HostRecord } from '@myco/host/registry';
 import { HOST_PROTOCOL_HEADER } from '@myco/constants';
 import type { RemoteTarget } from '@myco/host/routing';
 
@@ -203,7 +204,7 @@ describe('handleAttachedConfigRequest — reads', () => {
     // attach record at attach time, so the carve works end to end.
     writeProjectConfig({ cortex: { enabled: false } });
     const t = target();
-    upsertHost({
+    writeHostRecordFixture({
       host_id: t.host.host_id,
       label: t.host.label,
       overlay_address: t.host.overlay_address,
