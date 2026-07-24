@@ -23,6 +23,24 @@ const SECRETS_FILE = 'secrets.env';
 const SECRETS_FILE_MODE = 0o600;
 const SECRETS_DIR_MODE = 0o700;
 
+export class InvalidSecretValueError extends Error {
+  readonly code = 'invalid_secret_value';
+
+  constructor(readonly field: 'key' | 'value') {
+    super(`Secret ${field} contains unsupported characters`);
+    this.name = 'InvalidSecretValueError';
+  }
+}
+
+export function assertValidSecretEntry(key: string, value: string): void {
+  if (key.length === 0 || /[\0\r\n=]/.test(key)) {
+    throw new InvalidSecretValueError('key');
+  }
+  if (/[\0\r\n]/.test(value)) {
+    throw new InvalidSecretValueError('value');
+  }
+}
+
 /** Read all secrets from <vault>/secrets.env as key-value pairs. */
 export function readSecrets(vaultDir: string): Record<string, string> {
   const secretsPath = path.join(vaultDir, SECRETS_FILE);
@@ -46,16 +64,9 @@ export function readSecrets(vaultDir: string): Record<string, string> {
  * leak secrets into the user-readable namespace.
  */
 export function writeSecret(vaultDir: string, key: string, value: string): void {
-  ensureSecretsDirSecure(vaultDir);
-  const secretsPath = path.join(vaultDir, SECRETS_FILE);
   const existing = readSecrets(vaultDir);
   existing[key] = value;
-
-  const content = Object.entries(existing)
-    .map(([k, v]) => `${k}=${v}`)
-    .join('\n') + '\n';
-
-  writeSecretsFile(secretsPath, content);
+  persistSecrets(vaultDir, existing);
 }
 
 /** Outcome of {@link writeSecretIfAbsent}. */
@@ -113,14 +124,19 @@ export function writeSecretIfAbsent(
   key: string,
   mint: () => string,
 ): MintIfAbsentResult {
-  ensureSecretsDirSecure(vaultDir);
+  assertValidSecretEntry(key, '');
 
   // Fast path: a completed prior mint already sits in secrets.env.
   const existing = readSecrets(vaultDir)[key];
-  if (existing && existing.trim()) return { value: existing.trim(), minted: false };
+  if (existing && existing.trim()) {
+    ensureSecretsDirSecure(vaultDir);
+    return { value: existing.trim(), minted: false };
+  }
 
   const claimPath = mintClaimPath(vaultDir, key);
   const candidate = mint();
+  assertValidSecretEntry(key, candidate);
+  ensureSecretsDirSecure(vaultDir);
   const tmp = `${claimPath}.tmp-${process.pid}-${randomBytes(12).toString('hex')}`;
   fs.writeFileSync(tmp, candidate, { encoding: 'utf-8', mode: SECRETS_FILE_MODE });
 
@@ -258,18 +274,11 @@ export function deleteSecrets(vaultDir: string, keys: string[]): void {
   const existing = readSecrets(vaultDir);
   for (const key of keys) delete existing[key];
 
-  const entries = Object.entries(existing);
-  if (entries.length === 0) {
+  if (Object.keys(existing).length === 0) {
     fs.rmSync(secretsPath, { force: true });
     return;
   }
-
-  const content = entries
-    .map(([k, v]) => `${k}=${v}`)
-    .join('\n') + '\n';
-
-  ensureSecretsDirSecure(vaultDir);
-  writeSecretsFile(secretsPath, content);
+  persistSecrets(vaultDir, existing);
 }
 
 /**
@@ -401,6 +410,20 @@ function ensureSecretsDirSecure(vaultDir: string): void {
   } catch {
     // Non-POSIX or read-only filesystem; ignore.
   }
+}
+
+function encodeSecrets(secrets: Readonly<Record<string, string>>): string {
+  const entries = Object.entries(secrets);
+  for (const [key, value] of entries) {
+    assertValidSecretEntry(key, value);
+  }
+  return entries.map(([key, value]) => `${key}=${value}`).join('\n') + '\n';
+}
+
+function persistSecrets(vaultDir: string, secrets: Readonly<Record<string, string>>): void {
+  const content = encodeSecrets(secrets);
+  ensureSecretsDirSecure(vaultDir);
+  writeSecretsFile(path.join(vaultDir, SECRETS_FILE), content);
 }
 
 function writeSecretsFile(secretsPath: string, content: string): void {

@@ -1,4 +1,10 @@
-import { deleteSecrets, readSecrets, writeSecret } from '@myco/config/secrets.js';
+import {
+  assertValidSecretEntry,
+  deleteSecrets,
+  InvalidSecretValueError,
+  readSecrets,
+  writeSecret,
+} from '@myco/config/secrets.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -116,8 +122,8 @@ export async function handlePutProviderSecret(req: RouteRequest): Promise<RouteR
   if (!provider || !isSecretProvider(provider)) {
     return { status: 400, body: { error: 'provider must be one of: openai, openrouter, github' } };
   }
-  const value = body?.secret ?? body?.api_key;
-  if (!value?.trim()) {
+  const raw = body?.secret ?? body?.api_key;
+  if (typeof raw !== 'string') {
     return { status: 400, body: { error: 'secret is required' } };
   }
 
@@ -126,7 +132,21 @@ export async function handlePutProviderSecret(req: RouteRequest): Promise<RouteR
   if (isRouteResponse(store)) return store;
 
   const envKey = SECRET_DEFINITIONS[provider].envKey;
-  const secret = value.trim();
+  try {
+    assertValidSecretEntry(envKey, raw);
+  } catch (error) {
+    if (error instanceof InvalidSecretValueError) {
+      return {
+        status: 400,
+        body: { error: error.code, message: error.message },
+      };
+    }
+    throw error;
+  }
+  if (!raw.trim()) {
+    return { status: 400, body: { error: 'secret is required' } };
+  }
+  const secret = raw.trim();
   writeSecret(store.dir, envKey, secret);
   setProcessSecret(provider, secret);
 

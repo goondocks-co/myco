@@ -33,7 +33,14 @@
 import crypto from 'node:crypto';
 
 import { loadMachineConfig, saveMachineConfig } from '../../config/loader.js';
-import { deleteSecrets, readSecrets, writeSecret, writeSecretIfAbsent } from '../../config/secrets.js';
+import {
+  assertValidSecretEntry,
+  deleteSecrets,
+  InvalidSecretValueError,
+  readSecrets,
+  writeSecret,
+  writeSecretIfAbsent,
+} from '../../config/secrets.js';
 import { ExternalMcpSchema } from '../../config/schema.js';
 import { resolveGroveDir, resolveMycoHome } from '../../grove/paths.js';
 import { KEYED_CLOUD_PROVIDER_ENV } from '../../agent/harness/provider-health.js';
@@ -222,14 +229,29 @@ export async function handlePutTeamSecret(
     : typeof payload.api_key === 'string'
       ? payload.api_key
       : undefined;
-  if (!raw || !raw.trim()) {
+  if (typeof raw !== 'string') {
+    return { status: 400, body: errorBody('missing_secret', 'secret is required') };
+  }
+  const envKey = providerWriteEnvKey(provider);
+  try {
+    assertValidSecretEntry(envKey, raw);
+  } catch (error) {
+    if (error instanceof InvalidSecretValueError) {
+      return {
+        status: 400,
+        body: { error: error.code, message: error.message },
+      };
+    }
+    throw error;
+  }
+  if (!raw.trim()) {
     return { status: 400, body: errorBody('missing_secret', 'secret is required') };
   }
   const secret = raw.trim();
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const groveDir = resolveGroveDir(groveIdOrRefusal, mycoHome);
-  writeSecret(groveDir, providerWriteEnvKey(provider), secret);
+  writeSecret(groveDir, envKey, secret);
 
   const responseBody: TeamSecretResponseBody = { provider, maskedValue: maskSecret(secret) };
   return { body: responseBody };

@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   deleteSecrets,
+  InvalidSecretValueError,
   loadLayeredSecrets,
   loadSecrets,
   propagateLegacySecrets,
@@ -70,6 +71,41 @@ describe('secrets', () => {
       writeSecret(testDir, 'KEY', 'old');
       writeSecret(testDir, 'KEY', 'new');
       expect(readSecrets(testDir)).toEqual({ KEY: 'new' });
+    });
+
+    it.each([
+      ['line feed', 'safe\nINJECTED=owned'],
+      ['carriage return', 'safe\rINJECTED=owned'],
+      ['NUL', 'safe\0INJECTED=owned'],
+    ])('rejects a value containing %s before changing secrets.env', (_label, value) => {
+      writeSecret(testDir, 'EXISTING', 'preserved');
+      const secretsPath = path.join(testDir, 'secrets.env');
+      const before = fs.readFileSync(secretsPath);
+
+      expect(() => writeSecret(testDir, 'API_KEY', value)).toThrow(InvalidSecretValueError);
+      expect(fs.readFileSync(secretsPath)).toEqual(before);
+      expect(readSecrets(testDir)).toEqual({ EXISTING: 'preserved' });
+    });
+
+    it.each(['BAD\nKEY', 'BAD\rKEY', 'BAD\0KEY', 'BAD=KEY', ''])(
+      'rejects an unsafe key before creating the secret directory: %p',
+      (key) => {
+        const target = path.join(testDir, 'not-created');
+        expect(() => writeSecret(target, key, 'value')).toThrow(InvalidSecretValueError);
+        expect(fs.existsSync(target)).toBe(false);
+      },
+    );
+
+    it('refuses to rewrite a retained malformed entry during add or delete', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, 'KEEP=malformed\0value\nREMOVE=old\n');
+      const before = fs.readFileSync(secretsPath);
+
+      expect(() => writeSecret(testDir, 'NEW', 'safe')).toThrow(InvalidSecretValueError);
+      expect(fs.readFileSync(secretsPath)).toEqual(before);
+
+      expect(() => deleteSecrets(testDir, ['REMOVE'])).toThrow(InvalidSecretValueError);
+      expect(fs.readFileSync(secretsPath)).toEqual(before);
     });
   });
 
@@ -335,6 +371,13 @@ describe('secrets', () => {
       if (POSIX) {
         expect(fs.statSync(path.join(testDir, 'secrets.env')).mode & 0o777).toBe(0o600);
       }
+    });
+
+    it('rejects an unsafe minted candidate without leaving a secret or claim file', () => {
+      expect(() => writeSecretIfAbsent(testDir, KEY, () => 'unsafe\ncandidate'))
+        .toThrow(InvalidSecretValueError);
+      expect(fs.existsSync(path.join(testDir, 'secrets.env'))).toBe(false);
+      expect(fs.existsSync(claimPathFor(testDir))).toBe(false);
     });
   });
 });

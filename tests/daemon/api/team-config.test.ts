@@ -594,6 +594,40 @@ describe('(d) PUT/DELETE /api/team/secrets/:provider — masked-echo-only', () =
     expect(res.status).toBe(400);
   });
 
+  test.each([
+    '\nvalid-secret',
+    'valid\nINJECTED=owned',
+    'valid-secret\n',
+    '\rvalid-secret',
+    'valid\rINJECTED=owned',
+    'valid-secret\r',
+    '\0valid-secret',
+    'valid\0INJECTED=owned',
+    'valid-secret\0',
+  ])('PUT rejects an unsafe raw secret before mutating the served-grove store: %p', async (value) => {
+    const groveDir = resolveGroveDir(grove.id, home());
+    const secretsPath = path.join(groveDir, 'secrets.env');
+    fs.writeFileSync(secretsPath, 'ANTHROPIC_API_KEY=stored-valid\n');
+    const before = fs.readFileSync(secretsPath);
+    const previous = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+
+    try {
+      const result = await handlePutTeamSecret(deps(), 'anthropic', { secret: value });
+
+      expect(result.status).toBe(400);
+      expect(result.body).toEqual({
+        error: 'invalid_secret_value',
+        message: 'Secret value contains unsupported characters',
+      });
+      expect(fs.readFileSync(secretsPath)).toEqual(before);
+      expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previous;
+    }
+  });
+
   test('PUT with no served-grove designation -> not_serving, nothing written', async () => {
     const res = await handlePutTeamSecret({ hostServe: null, mycoHome: home() }, 'anthropic', { secret: 'x' });
     expect(res.status).toBe(404);

@@ -161,6 +161,43 @@ describe('provider secret handlers', () => {
     expect(github.availableScopes).toEqual(['machine']);
   });
 
+  it.each([
+    '\nvalid-secret',
+    'valid\nINJECTED=owned',
+    'valid-secret\n',
+    '\rvalid-secret',
+    'valid\rINJECTED=owned',
+    'valid-secret\r',
+    '\0valid-secret',
+    'valid\0INJECTED=owned',
+    'valid-secret\0',
+  ])('rejects an unsafe raw OpenAI secret before mutating the store or process environment: %p', async (value) => {
+    setup();
+    const secretsPath = path.join(mycoHome, 'secrets.env');
+    fs.writeFileSync(secretsPath, `${OPENAI_API_KEY_ENV}=stored-valid\n`);
+    const before = fs.readFileSync(secretsPath);
+    const sentinel = 'external-openai-sentinel';
+    const aliasSentinel = 'external-openai-alias-sentinel';
+    process.env[OPENAI_API_KEY_ENV] = sentinel;
+    process.env.OPENAI_API_KEY = aliasSentinel;
+
+    const result = await handlePutProviderSecret({
+      body: { api_key: value },
+      params: { provider: 'openai' },
+      query: {},
+      pathname: '/api/providers/secrets/openai',
+    });
+
+    expect(result.status).toBe(400);
+    expect(result.body).toEqual({
+      error: 'invalid_secret_value',
+      message: 'Secret value contains unsupported characters',
+    });
+    expect(fs.readFileSync(secretsPath)).toEqual(before);
+    expect(process.env[OPENAI_API_KEY_ENV]).toBe(sentinel);
+    expect(process.env.OPENAI_API_KEY).toBe(aliasSentinel);
+  });
+
   it('reports machine as the only scope across every provider', async () => {
     setup();
 
