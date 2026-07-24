@@ -118,6 +118,38 @@ export interface WindowsManagerOptions {
 
 const WINDOWS_TEARDOWN_TIMEOUT_MS = 10_000;
 const WINDOWS_TEARDOWN_POLL_INTERVAL_MS = 100;
+const WINDOWS_TASK_SHELL = 'cmd.exe';
+
+function windowsTaskShellArguments(scriptPath: string): string {
+  return `/d /v:off /s /c ""${scriptPath}""`;
+}
+
+function windowsTaskRunCommand(scriptPath: string): string {
+  return `${WINDOWS_TASK_SHELL} ${windowsTaskShellArguments(scriptPath)}`;
+}
+
+function assertNoWindowsPercentExpansion(
+  spec: ServiceSpec,
+  scriptPath: string,
+): void {
+  const inputs: Array<[label: string, value: string]> = [
+    ['task script path', scriptPath],
+    ['executable path', spec.executable],
+    ['working directory', spec.workingDir],
+    ['stdout path', spec.stdoutPath],
+    ['stderr path', spec.stderrPath],
+    ...spec.args.map((value, index): [string, string] => [`argument ${index}`, value]),
+    ...Object.entries(spec.env).map(
+      ([key, value]): [string, string] => [`environment value ${key}`, value],
+    ),
+  ];
+  const unsafe = inputs.find(([, value]) => value.includes('%'));
+  if (unsafe) {
+    throw new Error(
+      `Windows service ${unsafe[0]} contains unsupported percent expansion syntax`,
+    );
+  }
+}
 
 export class ExternalMcpHardKillBlockedError extends Error {
   constructor(options?: ErrorOptions) {
@@ -232,13 +264,17 @@ export class WindowsTaskServiceManager implements ServiceManager {
         + `schtasks /query exited ${task.exitCode}: ${task.stdout}`,
       );
     }
-    const taskCommand = parseTaskCommand(task.stdout);
-    if (taskCommand !== scriptPath) return null;
+    const taskAction = parseTaskAction(task.stdout);
+    if (taskAction?.command.toLowerCase() !== WINDOWS_TASK_SHELL
+      || taskAction.arguments !== windowsTaskShellArguments(scriptPath)) {
+      return null;
+    }
     return parseWindowsLauncherCommand(script);
   }
 
   async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
     const scriptPath = this.scriptPath(spec.label);
+    assertNoWindowsPercentExpansion(spec, scriptPath);
     const rendered = renderWindowsServiceScript(spec);
     let existing: string | null = null;
     try { existing = fs.readFileSync(scriptPath, 'utf-8'); } catch { /* ENOENT */ }
@@ -262,7 +298,17 @@ export class WindowsTaskServiceManager implements ServiceManager {
     // no automatic trigger.
     const trigger = spec.runAtLoad ? ['/sc', 'onlogon'] : ['/sc', 'once', '/st', '00:00', '/sd', '01/01/2099'];
     assertRunSucceeded(
-      await this.runner.run(['/create', '/tn', spec.label, '/tr', scriptPath, ...trigger, '/rl', 'limited', '/f']),
+      await this.runner.run([
+        '/create',
+        '/tn',
+        spec.label,
+        '/tr',
+        windowsTaskRunCommand(scriptPath),
+        ...trigger,
+        '/rl',
+        'limited',
+        '/f',
+      ]),
       `schtasks /create /tn ${spec.label}`,
     );
     return { changed: true, supervisorReloaded: true };
@@ -353,12 +399,17 @@ export class WindowsTaskServiceManager implements ServiceManager {
   }
 }
 
-function parseTaskCommand(xml: string): string | null {
+function parseTaskAction(
+  xml: string,
+): { command: string; arguments: string } | null {
   const commands = [...xml.matchAll(/<Command>([\s\S]*?)<\/Command>/gi)];
-  if (commands.length !== 1) return null;
-  const decoded = decodeXmlText(commands[0][1]);
-  if (decoded === null) return null;
-  return decoded;
+  const argumentsElements = [...xml.matchAll(/<Arguments>([\s\S]*?)<\/Arguments>/gi)];
+  if (commands.length !== 1 || argumentsElements.length !== 1) return null;
+  const command = decodeXmlText(commands[0][1]);
+  const argumentsValue = decodeXmlText(argumentsElements[0][1]);
+  return command === null || argumentsValue === null
+    ? null
+    : { command, arguments: argumentsValue };
 }
 
 function parseWindowsLauncherCommand(script: string): InstalledServiceCommand | null {

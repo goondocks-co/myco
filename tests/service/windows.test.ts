@@ -44,6 +44,7 @@ class StubRunner implements SchtasksRunner {
   xmlQueryExitCode = 0;
   deleteLeavesTask = false;
   taskCommand: string | null = null;
+  taskArguments: string | null = null;
   exitOverrides: Map<string, { stdout: string; exitCode: number }> = new Map();
   async queryState(label: string): Promise<TaskSchedulerState> {
     this.calls.push(['/state', label]);
@@ -59,7 +60,13 @@ class StubRunner implements SchtasksRunner {
           return { stdout: 'Task Scheduler provider unavailable', exitCode: this.xmlQueryExitCode };
         }
         const command = this.taskCommand ?? '';
-        return { stdout: `<Task><Actions><Exec><Command>${command}</Command></Exec></Actions></Task>`, exitCode: 0 };
+        const argumentsXml = this.taskArguments === null
+          ? ''
+          : `<Arguments>${this.taskArguments}</Arguments>`;
+        return {
+          stdout: `<Task><Actions><Exec><Command>${command}</Command>${argumentsXml}</Exec></Actions></Task>`,
+          exitCode: 0,
+        };
       }
       if (args.includes('/v')) {
         return { stdout: `TaskName: ${args[2]}\r\nLast Result: ${this.lastResult}\r\n`, exitCode: 0 };
@@ -70,7 +77,10 @@ class StubRunner implements SchtasksRunner {
     if (override) return override;
     if (args[0] === '/create') {
       this.taskExists = true;
-      this.taskCommand = args[args.indexOf('/tr') + 1] ?? null;
+      const taskRun = args[args.indexOf('/tr') + 1] ?? '';
+      const separator = taskRun.indexOf(' ');
+      this.taskCommand = separator === -1 ? taskRun : taskRun.slice(0, separator);
+      this.taskArguments = separator === -1 ? null : taskRun.slice(separator + 1);
     }
     if (args[0] === '/delete' && !this.deleteLeavesTask) this.taskExists = false;
     if (args[0] === '/run' && this.runExitCode !== 0) {
@@ -153,8 +163,8 @@ describe('WindowsTaskServiceManager', () => {
     await expect(mgr.start('co.goondocks.myco')).rejects.toThrow(/schtasks \/run.*failed.*exit 1/i);
   });
 
-  test('passes a spaced /tr action as one unquoted argv value', async () => {
-    const scriptDir = path.join(tmp('myco-wt-'), 'First Last');
+  test('wraps a spaced /tr action in a non-interactive command shell', async () => {
+    const scriptDir = path.join(tmp('myco-wt-'), 'First & ! Last');
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
     const spec = makeSpec();
@@ -164,7 +174,7 @@ describe('WindowsTaskServiceManager', () => {
     expect(scriptPath).toContain(' '); // sanity: the path really has a space
     const create = runner.calls.find((c) => c[0] === '/create')!;
     const trValue = create[create.indexOf('/tr') + 1];
-    expect(trValue).toBe(scriptPath);
+    expect(trValue).toBe(`cmd.exe /d /v:off /s /c ""${scriptPath}""`);
   });
 
   test('recreates a quoted task action instead of accepting a non-runnable install', async () => {
@@ -176,13 +186,15 @@ describe('WindowsTaskServiceManager', () => {
     await mgr.install(spec);
     const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
     runner.taskCommand = `"${scriptPath}"`;
+    runner.taskArguments = null;
     runner.calls.length = 0;
 
     const result = await mgr.install(spec);
 
     expect(result.changed).toBe(true);
     const create = runner.calls.find((call) => call[0] === '/create');
-    expect(create?.[create.indexOf('/tr') + 1]).toBe(scriptPath);
+    expect(create?.[create.indexOf('/tr') + 1])
+      .toBe(`cmd.exe /d /v:off /s /c ""${scriptPath}""`);
   });
 
   test('does not overwrite an existing task when XML inspection fails', async () => {
@@ -196,6 +208,17 @@ describe('WindowsTaskServiceManager', () => {
 
     await expect(mgr.install(spec)).rejects.toThrow(/Task Scheduler.*inspection failed/i);
     expect(runner.calls.some((call) => call[0] === '/create')).toBe(false);
+  });
+
+  test('rejects percent expansion in launcher inputs before writing or registration', async () => {
+    const scriptDir = path.join(tmp('myco-wt-'), '%PATH%');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+
+    await expect(mgr.install(spec)).rejects.toThrow(/percent.*expansion/i);
+    expect(runner.calls).toEqual([]);
+    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(false);
   });
 
   test('isInstalled reflects the locale-independent task state', async () => {
