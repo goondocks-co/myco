@@ -10,6 +10,7 @@ import {
 } from '@myco/config/secrets.js';
 import { pathsEquivalent, resolveTeamsDir, TEAMS_DIRNAME } from '@myco/grove/paths.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
+import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
 import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 
 const BAK_SUFFIX = '.bak-pre-myco-team';
@@ -83,6 +84,21 @@ function ensureRealDirectory(target: string, label: string): void {
   }
 }
 
+function assertSupportedTeamTree(root: string, label: string): void {
+  assertExistingRealDirectory(root, label);
+  const visit = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      const stat = fs.lstatSync(entryPath);
+      if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) {
+        throw new Error(`Legacy migration found an unsupported Team entry: ${entryPath}`);
+      }
+      if (stat.isDirectory()) visit(entryPath);
+    }
+  };
+  visit(root);
+}
+
 function copyFileExclusive(sourcePath: string, destinationPath: string): boolean {
   try {
     fs.copyFileSync(sourcePath, destinationPath, fs.constants.COPYFILE_EXCL);
@@ -115,7 +131,10 @@ function reconcileRegularFile(
  * divergent legacy files are retained beside it under the fixed backup suffix.
  */
 function reconcileTeamDir(src: string, dst: string): { filled: boolean; conflicted: boolean } {
-  assertExistingRealDirectory(src, 'Legacy Team source');
+  assertSupportedTeamTree(src, 'Legacy Team source');
+  if (assertOptionalRealDirectory(dst, 'Canonical Team destination')) {
+    assertSupportedTeamTree(dst, 'Canonical Team destination');
+  }
   ensureRealDirectory(dst, 'Canonical Team destination');
   let filled = false;
   let conflicted = false;
@@ -149,8 +168,8 @@ function reconcileTeamDir(src: string, dst: string): { filled: boolean; conflict
  */
 function verifyCopied(src: string, dst: string): boolean {
   try {
-    assertExistingRealDirectory(src, 'Legacy Team source');
-    assertExistingRealDirectory(dst, 'Canonical Team destination');
+    assertSupportedTeamTree(src, 'Legacy Team source');
+    assertSupportedTeamTree(dst, 'Canonical Team destination');
   } catch {
     return false;
   }
@@ -175,14 +194,59 @@ function verifyCopied(src: string, dst: string): boolean {
   return true;
 }
 
-function topologyLockPath(legacyTeamsDir: string): string {
+function canonicalLexicalPath(target: string): string {
+  let current = path.resolve(target);
+  const missing: string[] = [];
+  while (true) {
+    try {
+      return path.join(fs.realpathSync(current), ...missing);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+      const parent = path.dirname(current);
+      if (parent === current) throw error;
+      missing.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function topologyLockPaths(legacyTeamsDir: string): string[] {
   const lockDir = path.join(resolvePerUserLocksDir(), 'legacy-team-home');
   fs.mkdirSync(lockDir, { recursive: true, mode: OWNER_ONLY_DIR_MODE });
   try { fs.chmodSync(lockDir, OWNER_ONLY_DIR_MODE); } catch { /* platform ACLs apply */ }
-  const identity = process.platform === 'win32'
-    ? path.resolve(legacyTeamsDir).toLowerCase()
-    : path.resolve(legacyTeamsDir);
-  return path.join(lockDir, `${createHash('sha256').update(identity).digest('hex')}.lock`);
+  const physicalLocks = physicalPathLockIdentities(legacyTeamsDir)
+    .map((identity) => path.join(
+      lockDir,
+      `${createHash('sha256').update(identity).digest('hex')}.lock`,
+    ));
+  const legacyLocks = [path.resolve(legacyTeamsDir), canonicalLexicalPath(legacyTeamsDir)]
+    .map((identity) => process.platform === 'win32' ? identity.toLowerCase() : identity)
+    .map((identity) => path.join(
+      lockDir,
+      `${createHash('sha256').update(identity).digest('hex')}.lock`,
+    ));
+  return [...new Set([...physicalLocks, ...legacyLocks])].sort();
+}
+
+function withTopologyLock<T>(legacyTeamsDir: string, fn: () => T): T {
+  const retry = Symbol('retry-team-topology-locks');
+  const maxRetries = 8;
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    const locks = topologyLockPaths(legacyTeamsDir);
+    const run = (index: number): T | typeof retry => {
+      if (index < locks.length) return withFileLockSync(locks[index]!, () => run(index + 1));
+      const freshLocks = topologyLockPaths(legacyTeamsDir);
+      if (freshLocks.length !== locks.length
+        || freshLocks.some((lock, lockIndex) => lock !== locks[lockIndex])) {
+        return retry;
+      }
+      return fn();
+    };
+    const result = run(0);
+    if (result !== retry) return result;
+  }
+  throw new Error(`Legacy Team topology identity did not stabilize: ${legacyTeamsDir}`);
 }
 
 function lstatOrUndefined(target: string): fs.Stats | undefined {
@@ -194,18 +258,27 @@ function lstatOrUndefined(target: string): fs.Stats | undefined {
   }
 }
 
-function createVerifiedRedirect(tempPath: string, destination: string): void {
+function createRedirectEntry(target: string, destination: string): void {
   const absoluteDestination = path.resolve(destination);
   try {
-    fs.symlinkSync(absoluteDestination, tempPath, 'dir');
+    fs.symlinkSync(absoluteDestination, target, 'dir');
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== 'EPERM' && code !== 'EACCES') throw error;
-    fs.symlinkSync(absoluteDestination, tempPath, 'junction');
+    fs.symlinkSync(absoluteDestination, target, 'junction');
   }
-  if (!fs.lstatSync(tempPath).isSymbolicLink() || !pathsEquivalent(tempPath, absoluteDestination)) {
-    throw new Error(`Legacy Team redirect did not resolve to canonical teams directory: ${tempPath}`);
+}
+
+function assertVerifiedRedirect(target: string, destination: string): void {
+  const absoluteDestination = path.resolve(destination);
+  if (!fs.lstatSync(target).isSymbolicLink() || !pathsEquivalent(target, absoluteDestination)) {
+    throw new Error(`Legacy Team redirect did not resolve to canonical teams directory: ${target}`);
   }
+}
+
+function createVerifiedRedirect(target: string, destination: string): void {
+  createRedirectEntry(target, destination);
+  assertVerifiedRedirect(target, destination);
 }
 
 function removeOwnedTemporaryRedirect(tempPath: string): void {
@@ -252,7 +325,7 @@ function claimLegacyTeamsRedirect(
   const tempRedirect = reusableRedirects[0]
     ?? temporaryRedirectPath(legacyTeamsDir);
   const recoveryRedirects = reusableRedirects.slice(1);
-  let published = false;
+  let readyToPublish = false;
   try {
     if (recoveryRedirects.length === 0) {
       const recoveryRedirect = temporaryRedirectPath(legacyTeamsDir);
@@ -260,15 +333,15 @@ function claimLegacyTeamsRedirect(
       createVerifiedRedirect(recoveryRedirect, destTeamsDir);
     }
     if (reusableRedirects.length === 0) createVerifiedRedirect(tempRedirect, destTeamsDir);
-    fs.renameSync(tempRedirect, legacyTeamsDir);
-    published = true;
-    if (!fs.lstatSync(legacyTeamsDir).isSymbolicLink() || !pathsEquivalent(legacyTeamsDir, destTeamsDir)) {
-      throw new Error(`Legacy Team redirect publication failed: ${legacyTeamsDir}`);
-    }
-    return recoveryRedirects;
+    readyToPublish = true;
+    createRedirectEntry(legacyTeamsDir, destTeamsDir);
+    assertVerifiedRedirect(legacyTeamsDir, destTeamsDir);
+    return [tempRedirect, ...recoveryRedirects];
   } catch (error) {
-    removeOwnedTemporaryRedirect(tempRedirect);
-    if (!published) recoveryRedirects.forEach(removeOwnedTemporaryRedirect);
+    if (!readyToPublish) {
+      removeOwnedTemporaryRedirect(tempRedirect);
+      recoveryRedirects.forEach(removeOwnedTemporaryRedirect);
+    }
     throw error;
   }
 }
@@ -313,14 +386,12 @@ function retireLegacyTeamsDir(
       }
     }
 
-    fs.renameSync(tempRedirect, legacyTeamsDir);
-    if (!fs.lstatSync(legacyTeamsDir).isSymbolicLink() || !pathsEquivalent(legacyTeamsDir, destTeamsDir)) {
-      throw new Error(`Legacy Team redirect publication failed: ${legacyTeamsDir}`);
-    }
-  } catch (error) {
+    createRedirectEntry(legacyTeamsDir, destTeamsDir);
+    assertVerifiedRedirect(legacyTeamsDir, destTeamsDir);
     removeOwnedTemporaryRedirect(tempRedirect);
-    if (archived && lstatOrUndefined(legacyTeamsDir) === undefined) {
-      fs.renameSync(archivePath, legacyTeamsDir);
+  } catch (error) {
+    if (!archived) {
+      removeOwnedTemporaryRedirect(tempRedirect);
     }
     throw error;
   }
@@ -335,12 +406,16 @@ function planTeamMigrations(sourceTeamsDir: string, destTeamsDir: string): TeamM
   return entries.map((entry) => {
     const sourceDir = path.join(sourceTeamsDir, entry.name);
     const destinationDir = path.join(destTeamsDir, entry.name);
-    assertExistingRealDirectory(sourceDir, 'Legacy Team source');
+    assertSupportedTeamTree(sourceDir, 'Legacy Team source');
+    const destinationExisted = assertOptionalRealDirectory(destinationDir, 'Canonical Team destination');
+    if (destinationExisted) {
+      assertSupportedTeamTree(destinationDir, 'Canonical Team destination');
+    }
     return {
       name: entry.name,
       sourceDir,
       destinationDir,
-      destinationExisted: assertOptionalRealDirectory(destinationDir, 'Canonical Team destination'),
+      destinationExisted,
     };
   });
 }
@@ -476,7 +551,7 @@ export function migrateTeamsHomeIfNeeded(legacyHomes: string[] = defaultLegacyTe
       : path.resolve(legacyTeamsDir);
     if (seen.has(key)) continue;
     seen.add(key);
-    withFileLockSync(topologyLockPath(legacyTeamsDir), () => {
+    withTopologyLock(legacyTeamsDir, () => {
       migrateLegacyTeamsDir(legacyTeamsDir, destTeamsDir, result);
     });
   }

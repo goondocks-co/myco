@@ -1,10 +1,11 @@
 import { describe, test, expect, spyOn } from 'bun:test';
 import fs, { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import {
   atomicWriteFileSync,
   durableRemovePathSync,
+  reconcileDurableRemovalTombstonesSync,
 } from '../../packages/myco/src/utils/atomic-write.js';
 import { saveConfig } from '../../packages/myco/src/config/loader.js';
 import { MycoConfigSchema } from '../../packages/myco/src/config/schema.js';
@@ -134,6 +135,178 @@ describe('atomicWriteFileSync mode option', () => {
   );
 
   test.skipIf(process.platform === 'win32')(
+    'propagates a post-publication parent move and retains the relocated tombstone',
+    () => {
+      const container = mkdtempSync(join(tmpdir(), 'myco-atomic-remove-parent-move-'));
+      const dir = join(container, 'store');
+      const relocated = join(container, 'relocated-store');
+      fs.mkdirSync(dir);
+      const target = join(dir, 'secrets.env');
+      writeFileSync(target, 'TOKEN=retired\n');
+      const originalRename = fs.renameSync.bind(fs);
+      let publishedTombstone: string | undefined;
+      const renameSpy = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        originalRename(source, destination);
+        if (String(source) === target) {
+          publishedTombstone = String(destination);
+          originalRename(dir, relocated);
+        }
+      });
+
+      try {
+        expect(() => durableRemovePathSync(target)).toThrow();
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(publishedTombstone).toBeDefined();
+      expect(existsSync(target)).toBe(false);
+      const relocatedTombstone = join(relocated, basename(publishedTombstone!));
+      expect(readFileSync(relocatedTombstone, 'utf-8')).toBe('TOKEN=retired\n');
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'does not accept a replacement parent after durable removal publication',
+    () => {
+      const container = mkdtempSync(join(tmpdir(), 'myco-atomic-remove-parent-replace-'));
+      const dir = join(container, 'store');
+      const relocated = join(container, 'relocated-store');
+      fs.mkdirSync(dir);
+      const target = join(dir, 'secrets.env');
+      writeFileSync(target, 'TOKEN=retired\n');
+      const originalRename = fs.renameSync.bind(fs);
+      const originalRemove = fs.rmSync.bind(fs);
+      let publishedTombstone: string | undefined;
+      let replacementActive = false;
+      const replacementRemovals: string[] = [];
+      const renameSpy = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        originalRename(source, destination);
+        if (String(source) === target) {
+          publishedTombstone = String(destination);
+          originalRename(dir, relocated);
+          fs.mkdirSync(dir);
+          replacementActive = true;
+        }
+      });
+      const removeSpy = spyOn(fs, 'rmSync').mockImplementation(((removedPath, options) => {
+        if (replacementActive && String(removedPath).startsWith(`${dir}${sep}`)) {
+          replacementRemovals.push(String(removedPath));
+        }
+        return originalRemove(removedPath, options);
+      }) as typeof fs.rmSync);
+
+      try {
+        expect(() => durableRemovePathSync(target)).toThrow();
+      } finally {
+        removeSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+
+      expect(publishedTombstone).toBeDefined();
+      expect(replacementRemovals).toEqual([]);
+      expect(readdirSync(dir)).toEqual([]);
+      expect(readFileSync(
+        join(relocated, basename(publishedTombstone!)),
+        'utf-8',
+      )).toBe('TOKEN=retired\n');
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'does not suppress a missing-target error after the pinned parent is replaced',
+    () => {
+      const container = mkdtempSync(join(tmpdir(), 'myco-atomic-remove-parent-prepublish-'));
+      const dir = join(container, 'store');
+      const relocated = join(container, 'relocated-store');
+      fs.mkdirSync(dir);
+      const target = join(dir, 'secrets.env');
+      writeFileSync(target, 'TOKEN=retained\n');
+      const originalRename = fs.renameSync.bind(fs);
+      let moved = false;
+      const renameSpy = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        if (!moved && String(source) === target) {
+          moved = true;
+          originalRename(dir, relocated);
+          fs.mkdirSync(dir);
+        }
+        originalRename(source, destination);
+      });
+
+      try {
+        expect(() => durableRemovePathSync(target)).toThrow();
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(readdirSync(dir)).toEqual([]);
+      expect(readFileSync(join(relocated, 'secrets.env'), 'utf-8')).toBe('TOKEN=retained\n');
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'does not accept or durability-sync a replacement parent after atomic publication',
+    () => {
+      const container = mkdtempSync(join(tmpdir(), 'myco-atomic-write-parent-replace-'));
+      const dir = join(container, 'store');
+      const relocated = join(container, 'relocated-store');
+      fs.mkdirSync(dir);
+      const target = join(dir, 'secrets.env');
+      const originalOpen = fs.openSync.bind(fs);
+      const originalRename = fs.renameSync.bind(fs);
+      let replacementActive = false;
+      const replacementOpens: string[] = [];
+      const openSpy = spyOn(fs, 'openSync').mockImplementation(
+        ((openedPath: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+          if (replacementActive
+            && (String(openedPath) === dir || String(openedPath).startsWith(`${dir}${sep}`))) {
+            replacementOpens.push(String(openedPath));
+          }
+          return originalOpen(openedPath, flags, mode);
+        }) as typeof fs.openSync,
+      );
+      const renameSpy = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        originalRename(source, destination);
+        if (String(destination) === target) {
+          originalRename(dir, relocated);
+          fs.mkdirSync(dir);
+          writeFileSync(target, 'TOKEN=replacement\n');
+          replacementActive = true;
+        }
+      });
+
+      try {
+        expect(() => atomicWriteFileSync(
+          target,
+          'TOKEN=published\n',
+          { mode: 0o600, durable: true },
+        )).toThrow();
+      } finally {
+        renameSpy.mockRestore();
+        openSpy.mockRestore();
+      }
+
+      expect(replacementOpens).toEqual([]);
+      expect(readFileSync(target, 'utf-8')).toBe('TOKEN=replacement\n');
+      expect(readFileSync(join(relocated, 'secrets.env'), 'utf-8'))
+        .toBe('TOKEN=published\n');
+    },
+  );
+
+  test('targeted tombstone reconciliation does not remove another capability’s tombstone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-targeted-reconcile-'));
+    const secretTombstone = join(dir, '.myco-remove-secrets.env-123-token');
+    const unrelatedTombstone = join(dir, '.myco-remove-membership.json-123-token');
+    writeFileSync(secretTombstone, 'TOKEN=retired\n');
+    writeFileSync(unrelatedTombstone, '{}\n');
+
+    reconcileDurableRemovalTombstonesSync(dir, 'secrets.env');
+
+    expect(existsSync(secretTombstone)).toBe(false);
+    expect(existsSync(unrelatedTombstone)).toBe(true);
+  });
+
+  test.skipIf(process.platform === 'win32')(
     'flushes and closes the tempfile before invoking the publication primitive',
     () => {
       const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-order-'));
@@ -165,6 +338,69 @@ describe('atomicWriteFileSync mode option', () => {
 
       expect(events).toEqual(['fsync', 'close', 'publish']);
       expect(readFileSync(finalPath, 'utf-8')).toBe('TOKEN=abc\n');
+    },
+  );
+
+  test('retries partial writes until the complete buffer is published', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-partial-write-'));
+    const finalPath = join(dir, 'secrets.env');
+    const content = 'TOKEN=complete-secret\n';
+    const originalWrite = fs.writeSync.bind(fs);
+    const writeSpy = spyOn(fs, 'writeSync').mockImplementation(
+      ((fd: number, buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset) => (
+        originalWrite(fd, buffer, offset, Math.min(length, 3), null)
+      )) as typeof fs.writeSync,
+    );
+    let writeCalls = 0;
+
+    try {
+      atomicWriteFileSync(finalPath, content, { mode: 0o600 });
+      writeCalls = writeSpy.mock.calls.length;
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(writeCalls).toBeGreaterThan(1);
+    expect(readFileSync(finalPath, 'utf-8')).toBe(content);
+  });
+
+  test('rejects zero-progress writes without changing the target or retaining a tempfile', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-zero-write-'));
+    const finalPath = join(dir, 'secrets.env');
+    writeFileSync(finalPath, 'TOKEN=old\n');
+    const writeSpy = spyOn(fs, 'writeSync').mockReturnValue(0);
+
+    try {
+      expect(() => atomicWriteFileSync(finalPath, 'TOKEN=new\n', { mode: 0o600 }))
+        .toThrow(/zero bytes/);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(readFileSync(finalPath, 'utf-8')).toBe('TOKEN=old\n');
+    expect(readdirSync(dir).filter((name) => name.startsWith('secrets.env.tmp-'))).toEqual([]);
+  });
+
+  test.each(['write', 'fsync'] as const)(
+    'removes the tempfile when %s fails before publication',
+    (failure) => {
+      const dir = mkdtempSync(join(tmpdir(), `myco-atomic-${failure}-fail-`));
+      const finalPath = join(dir, 'secrets.env');
+      writeFileSync(finalPath, 'TOKEN=old\n');
+      const fakeError = new Error(`injected ${failure} failure`);
+      const spy = failure === 'write'
+        ? spyOn(fs, 'writeSync').mockImplementation(() => { throw fakeError; })
+        : spyOn(fs, 'fsyncSync').mockImplementation(() => { throw fakeError; });
+
+      try {
+        expect(() => atomicWriteFileSync(finalPath, 'TOKEN=new\n', { mode: 0o600 }))
+          .toThrow(fakeError);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(readFileSync(finalPath, 'utf-8')).toBe('TOKEN=old\n');
+      expect(readdirSync(dir).filter((name) => name.startsWith('secrets.env.tmp-'))).toEqual([]);
     },
   );
 

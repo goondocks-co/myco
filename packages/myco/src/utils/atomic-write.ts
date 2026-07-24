@@ -88,56 +88,93 @@ function atomicWriteFileSyncWithPublisher(
     fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
     mode ?? 0o666,
   );
+
+  let published = false;
+  let durableParent: PinnedDirectory | undefined;
   try {
-    if (mode !== undefined) {
+    try {
+      if (mode !== undefined) {
+        try {
+          // Defeat umask: open()'s mode is masked the same way writeFileSync's
+          // is. An explicit chmod on the freshly-created fd (before any bytes
+          // land) guarantees the mode is exactly what was requested before
+          // rename exposes the final path.
+          fs.fchmodSync(fd, mode);
+        } catch {
+          // Best-effort; non-POSIX filesystems (Windows) ignore POSIX modes.
+        }
+      }
+      const buf = typeof contents === 'string' ? Buffer.from(contents, encoding) : contents;
+      writeBufferFullySync(fd, buf);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    if (options.durable && process.platform !== 'win32') {
+      durableParent = pinDirectory(path.dirname(filePath));
+    }
+    publish(tmp, filePath);
+    published = true;
+
+    if (durableParent !== undefined) {
+      syncPinnedDirectoryForDurability(durableParent, path.dirname(filePath));
+    }
+  } catch (error) {
+    if (!published) {
       try {
-        // Defeat umask: open()'s mode is masked the same way writeFileSync's
-        // is. An explicit chmod on the freshly-created fd (before any bytes
-        // land) guarantees the mode is exactly what was requested before
-        // rename exposes the final path.
-        fs.fchmodSync(fd, mode);
+        fs.unlinkSync(tmp);
       } catch {
-        // Best-effort; non-POSIX filesystems (Windows) ignore POSIX modes.
+        // Best-effort; a Windows EBUSY on publication may also block unlink.
       }
     }
-    const buf = typeof contents === 'string' ? Buffer.from(contents, encoding) : contents;
-    fs.writeSync(fd, buf);
-    fs.fsyncSync(fd);
+    throw error;
   } finally {
-    fs.closeSync(fd);
+    if (durableParent !== undefined) fs.closeSync(durableParent.fd);
   }
+}
 
-  try {
-    publish(tmp, filePath);
-  } catch (err) {
-    // Publication failed (cross-device, EBUSY, ENOSPC, etc.).
-    // Clean up the tempfile rather than leaving stale — possibly
-    // secret-bearing — data at a `.tmp-<pid>-<rand>` path for a future
-    // read by the same user to harvest.
-    try {
-      fs.unlinkSync(tmp);
-    } catch {
-      // Best-effort; a Windows EBUSY on rename may also block unlink.
+function writeBufferFullySync(fd: number, buffer: Uint8Array): void {
+  let offset = 0;
+  while (offset < buffer.byteLength) {
+    const written = fs.writeSync(fd, buffer, offset, buffer.byteLength - offset);
+    if (written <= 0) {
+      throw new Error('Atomic write made zero bytes of progress');
     }
-    throw err;
-  }
-
-  if (options.durable && process.platform !== 'win32') {
-    syncFileForDurability(filePath);
-    syncDirectoryForDurability(path.dirname(filePath));
+    offset += written;
   }
 }
 
 const DURABLE_REMOVAL_TOMBSTONE_PREFIX = '.myco-remove-';
 
-function syncFileForDurability(filePath: string): void {
-  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
-  const fd = fs.openSync(filePath, fsConstants.O_RDONLY | noFollow);
+interface PinnedDirectory {
+  fd: number;
+  dev: bigint;
+  ino: bigint;
+}
+
+function pinDirectory(directory: string): PinnedDirectory {
+  const fd = fs.openSync(directory, fsConstants.O_RDONLY);
   try {
-    fs.fsyncSync(fd);
-  } finally {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    if (!stat.isDirectory()) throw new Error(`Durability parent is not a directory: ${directory}`);
+    return { fd, dev: stat.dev, ino: stat.ino };
+  } catch (error) {
     fs.closeSync(fd);
+    throw error;
   }
+}
+
+function assertPinnedDirectoryIdentity(directory: string, pinned: PinnedDirectory): void {
+  const current = fs.statSync(directory, { bigint: true });
+  if (!current.isDirectory() || current.dev !== pinned.dev || current.ino !== pinned.ino) {
+    throw new Error(`Durability parent changed during publication: ${directory}`);
+  }
+}
+
+function syncPinnedDirectoryForDurability(pinned: PinnedDirectory, directory: string): void {
+  fs.fsyncSync(pinned.fd);
+  assertPinnedDirectoryIdentity(directory, pinned);
 }
 
 /** Flush a directory entry update on POSIX. Windows has no portable directory handle. */
@@ -166,27 +203,56 @@ export function durableRemovePathSync(targetPath: string): void {
     parent,
     `${DURABLE_REMOVAL_TOMBSTONE_PREFIX}${path.basename(targetPath)}-${process.pid}-${randomBytes(12).toString('hex')}`,
   );
+  let durableParent: PinnedDirectory | undefined;
+  if (process.platform !== 'win32') {
+    try {
+      durableParent = pinDirectory(parent);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+  }
+  let published = false;
   try {
-    if (process.platform === 'win32') {
-      moveFileReplaceWriteThrough(targetPath, tombstone);
+    try {
+      if (process.platform === 'win32') {
+        moveFileReplaceWriteThrough(targetPath, tombstone);
+        published = true;
+      } else {
+        fs.renameSync(targetPath, tombstone);
+        published = true;
+        syncPinnedDirectoryForDurability(durableParent!, parent);
+      }
+    } catch (error) {
+      if (!published && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        if (durableParent !== undefined) {
+          assertPinnedDirectoryIdentity(parent, durableParent);
+        }
+        return;
+      }
+      throw error;
+    }
+
+    if (durableParent !== undefined) assertPinnedDirectoryIdentity(parent, durableParent);
+    fs.rmSync(tombstone, { recursive: true, force: true });
+    if (durableParent !== undefined) {
+      syncPinnedDirectoryForDurability(durableParent, parent);
     } else {
-      fs.renameSync(targetPath, tombstone);
       syncDirectoryForDurability(parent);
     }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw error;
+  } finally {
+    if (durableParent !== undefined) fs.closeSync(durableParent.fd);
   }
-
-  fs.rmSync(tombstone, { recursive: true, force: true });
-  syncDirectoryForDurability(parent);
 }
 
 /**
  * Remove only tombstones created by {@link durableRemovePathSync}.
  * Callers choose the exact directory whose state they own.
  */
-export function reconcileDurableRemovalTombstonesSync(directory: string): void {
+export function reconcileDurableRemovalTombstonesSync(
+  directory: string,
+  targetBasename?: string,
+): void {
   let entries: string[];
   try {
     entries = fs.readdirSync(directory);
@@ -194,8 +260,11 @@ export function reconcileDurableRemovalTombstonesSync(directory: string): void {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
+  const ownedPrefix = targetBasename === undefined
+    ? DURABLE_REMOVAL_TOMBSTONE_PREFIX
+    : `${DURABLE_REMOVAL_TOMBSTONE_PREFIX}${targetBasename}-`;
   for (const entry of entries) {
-    if (!entry.startsWith(DURABLE_REMOVAL_TOMBSTONE_PREFIX)) continue;
+    if (!entry.startsWith(ownedPrefix)) continue;
     fs.rmSync(path.join(directory, entry), { recursive: true, force: true });
   }
   syncDirectoryForDurability(directory);

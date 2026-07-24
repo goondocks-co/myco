@@ -133,7 +133,7 @@ describe('secrets', () => {
     const validRecords = [
       '  # comment',
       '',
-      ' ONE = first ',
+      'ONE=first',
       'EMPTY=',
       'ONE=last',
       'TOKEN=abc=def',
@@ -175,6 +175,94 @@ describe('secrets', () => {
       writeSecret(testDir, 'KEY', 'old');
       writeSecret(testDir, 'KEY', 'new');
       expect(readSecrets(testDir)).toEqual({ KEY: 'new' });
+    });
+
+    it.skipIf(!POSIX)('durably publishes a regular secret write before returning', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      const events: string[] = [];
+      const fdPaths = new Map<number, string>();
+      const originalOpen = fs.openSync.bind(fs);
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const originalRename = fs.renameSync.bind(fs);
+      const open = vi.spyOn(fs, 'openSync').mockImplementation(
+        ((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+          const fd = originalOpen(target, flags, mode);
+          fdPaths.set(fd, String(target));
+          return fd;
+        }) as typeof fs.openSync,
+      );
+      const fsync = vi.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        events.push(`fsync:${fdPaths.get(fd) ?? 'unknown'}`);
+        originalFsync(fd);
+      });
+      const rename = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        events.push(`rename:${String(source)}:${String(destination)}`);
+        originalRename(source, destination);
+      });
+
+      try {
+        writeSecret(testDir, 'API_KEY', 'secret');
+      } finally {
+        rename.mockRestore();
+        fsync.mockRestore();
+        open.mockRestore();
+      }
+
+      const publish = events.findIndex((event) => event.endsWith(`:${secretsPath}`));
+      expect(publish).toBeGreaterThanOrEqual(0);
+      expect(events.findIndex((event, index) => index > publish && event === `fsync:${testDir}`))
+        .toBeGreaterThan(publish);
+    });
+
+    it.skipIf(!POSIX)('durably publishes removal of the last secret before returning', () => {
+      writeSecret(testDir, 'ONLY_KEY', 'secret');
+      const secretsPath = path.join(testDir, 'secrets.env');
+      const events: string[] = [];
+      const fdPaths = new Map<number, string>();
+      const originalOpen = fs.openSync.bind(fs);
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const originalRename = fs.renameSync.bind(fs);
+      const open = vi.spyOn(fs, 'openSync').mockImplementation(
+        ((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+          const fd = originalOpen(target, flags, mode);
+          fdPaths.set(fd, String(target));
+          return fd;
+        }) as typeof fs.openSync,
+      );
+      const fsync = vi.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        events.push(`fsync:${fdPaths.get(fd) ?? 'unknown'}`);
+        originalFsync(fd);
+      });
+      const rename = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        events.push(`rename:${String(source)}:${String(destination)}`);
+        originalRename(source, destination);
+      });
+
+      try {
+        deleteSecrets(testDir, ['ONLY_KEY']);
+      } finally {
+        rename.mockRestore();
+        fsync.mockRestore();
+        open.mockRestore();
+      }
+
+      const removal = events.findIndex((event) => event.startsWith(`rename:${secretsPath}:`));
+      expect(removal).toBeGreaterThanOrEqual(0);
+      expect(events.findIndex((event, index) => index > removal && event === `fsync:${testDir}`))
+        .toBeGreaterThan(removal);
+      expect(fs.existsSync(secretsPath)).toBe(false);
+    });
+
+    it('reconciles an interrupted secret-removal tombstone while preserving unrelated state', () => {
+      const secretTombstone = path.join(testDir, '.myco-remove-secrets.env-123-token');
+      const unrelatedTombstone = path.join(testDir, '.myco-remove-membership.json-123-token');
+      fs.writeFileSync(secretTombstone, 'ONLY_KEY=retired\n', { mode: 0o600 });
+      fs.writeFileSync(unrelatedTombstone, '{}\n');
+
+      deleteSecrets(testDir, ['ONLY_KEY']);
+
+      expect(fs.existsSync(secretTombstone)).toBe(false);
+      expect(fs.existsSync(unrelatedTombstone)).toBe(true);
     });
 
     it.each([
@@ -232,24 +320,18 @@ describe('secrets', () => {
     });
 
     it.each(['add', 'delete'])(
-      'preserves a __proto__ entry when a later %s rewrites the file',
+      'refuses to rewrite a prototype-like retained key during %s',
       (operation) => {
         const secretsPath = path.join(testDir, 'secrets.env');
         fs.writeFileSync(secretsPath, '__proto__=preserved\nREMOVE=old\n');
+        const before = fs.readFileSync(secretsPath);
 
-        const before = readSecrets(testDir);
-        expect(Object.hasOwn(before, '__proto__')).toBe(true);
-        expect(before.__proto__).toBe('preserved');
+        const mutate = operation === 'add'
+          ? () => writeSecret(testDir, 'NEW', 'safe')
+          : () => deleteSecrets(testDir, ['REMOVE']);
 
-        if (operation === 'add') {
-          writeSecret(testDir, 'NEW', 'safe');
-        } else {
-          deleteSecrets(testDir, ['REMOVE']);
-        }
-
-        const after = readSecrets(testDir);
-        expect(Object.hasOwn(after, '__proto__')).toBe(true);
-        expect(after.__proto__).toBe('preserved');
+        expect(mutate).toThrow(InvalidSecretValueError);
+        expect(fs.readFileSync(secretsPath)).toEqual(before);
       },
     );
 
@@ -274,6 +356,75 @@ describe('secrets', () => {
     ])('rejects a non-string runtime %s without coercion', (_field, key, value) => {
       expect(() => assertValidSecretEntry(key as string, value as string))
         .toThrow(InvalidSecretValueError);
+    });
+
+    it.each([
+      '__proto__',
+      'prototype',
+      'constructor',
+      '9STARTS_WITH_DIGIT',
+      'HAS-DASH',
+      'HAS.DOT',
+      'HAS SPACE',
+      '#COMMENT',
+      ' LEADING',
+      'TRAILING ',
+      'UNICODE_🔐',
+    ])('rejects unsupported environment key %p before creating the store', (key) => {
+      const target = path.join(testDir, 'invalid-key-store');
+      expect(() => writeSecret(target, key, 'value')).toThrow(InvalidSecretValueError);
+      expect(fs.existsSync(target)).toBe(false);
+    });
+
+    it.each([' leading', 'trailing ', '\tleading', 'trailing\t'])(
+      'rejects a value whose serialization would trim or mutate it: %p',
+      (value) => {
+        const target = path.join(testDir, 'invalid-value-store');
+        expect(() => writeSecret(target, 'API_KEY', value)).toThrow(InvalidSecretValueError);
+        expect(fs.existsSync(target)).toBe(false);
+      },
+    );
+
+    it.each([
+      'API_KEY= leading\n',
+      'API_KEY=trailing \n',
+      'API_KEY=\tleading\n',
+      'API_KEY=trailing\t\n',
+    ])('rejects surrounding value whitespace from the exact file bytes: %p', (content) => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, content, { mode: 0o600 });
+
+      expect(() => readSecrets(testDir)).toThrow(InvalidSecretValueError);
+      expect(() => loadSecrets(testDir, Object.create(null) as NodeJS.ProcessEnv))
+        .toThrow(InvalidSecretValueError);
+      expect(fs.readFileSync(secretsPath, 'utf-8')).toBe(content);
+    });
+
+    it('round-trips representative provider keys exactly through file and ProcessEnv loading', () => {
+      const entries = {
+        OPENAI_API_KEY: 'sk-openai',
+        ANTHROPIC_API_KEY: 'sk-anthropic',
+        AWS_ACCESS_KEY_ID: 'aws-id',
+        MYCO_TEAM_API_KEY: 'team-token',
+        _PROVIDER_TOKEN_2: 'provider-token',
+      };
+      const env = Object.create(null) as NodeJS.ProcessEnv;
+
+      for (const [key, value] of Object.entries(entries)) writeSecret(testDir, key, value);
+      expect(readSecrets(testDir)).toEqual(entries);
+
+      loadLayeredSecrets([testDir], env);
+      expect(env).toEqual(entries);
+      for (const key of Object.keys(entries)) expect(Object.hasOwn(env, key)).toBe(true);
+    });
+
+    it('rejects a prototype-like file key before loading any value into ProcessEnv', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, 'SAFE=value\n__proto__=blocked\n', { mode: 0o600 });
+      const env = Object.create(null) as NodeJS.ProcessEnv;
+
+      expect(() => loadLayeredSecrets([testDir], env)).toThrow(InvalidSecretValueError);
+      expect(env).toEqual({});
     });
   });
 
@@ -612,6 +763,13 @@ describe('secrets', () => {
       // Should not throw
       loadSecrets(testDir);
     });
+
+    it('is a non-materializing no-op when the secret directory does not exist', () => {
+      const missingDir = path.join(testDir, 'missing-secret-scope');
+
+      expect(() => loadSecrets(missingDir)).not.toThrow();
+      expect(fs.existsSync(missingDir)).toBe(false);
+    });
   });
 
   describe('loadLayeredSecrets', () => {
@@ -651,6 +809,18 @@ describe('secrets', () => {
       } finally {
         fs.rmSync(machineDir, { recursive: true, force: true });
       }
+    });
+
+    it('preserves values from an existing store when a later scope directory is missing', () => {
+      const existingDir = path.join(testDir, 'existing-secret-scope');
+      const missingDir = path.join(testDir, 'missing-secret-scope');
+      const env = Object.create(null) as NodeJS.ProcessEnv;
+      writeSecret(existingDir, 'EXISTING_API_KEY', 'preserved');
+
+      loadLayeredSecrets([existingDir, missingDir], env);
+
+      expect(env.EXISTING_API_KEY).toBe('preserved');
+      expect(fs.existsSync(missingDir)).toBe(false);
     });
   });
 
@@ -707,6 +877,85 @@ describe('secrets', () => {
         expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o600);
       }
     });
+
+    it.skipIf(!POSIX)('repairs an owner-owned mode-000 secret file before decoding it', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, 'REPAIRED=value\n', { mode: 0o600 });
+      fs.chmodSync(secretsPath, 0o000);
+
+      tightenSecretsPermissions(testDir);
+
+      expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o600);
+      expect(readSecrets(testDir)).toEqual({ REPAIRED: 'value' });
+    });
+
+    it.skipIf(!POSIX)('repairs an owner-owned mode-000 secret directory before decoding its file', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, 'REPAIRED=value\n', { mode: 0o600 });
+      fs.chmodSync(testDir, 0o000);
+
+      try {
+        tightenSecretsPermissions(testDir);
+        expect(fs.statSync(testDir).mode & 0o777).toBe(0o700);
+        expect(readSecrets(testDir)).toEqual({ REPAIRED: 'value' });
+      } finally {
+        fs.chmodSync(testDir, 0o700);
+      }
+    });
+
+    it.skipIf(!POSIX)('propagates a failed permission repair without changing secret bytes', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      const content = 'UNCHANGED=value\n';
+      fs.writeFileSync(secretsPath, content, { mode: 0o644 });
+      const originalChmod = fs.chmodSync.bind(fs);
+      const chmod = vi.spyOn(fs, 'chmodSync').mockImplementation((target, mode) => {
+        if (path.resolve(String(target)) === path.resolve(secretsPath)) {
+          throw Object.assign(new Error('injected chmod failure'), { code: 'EACCES' });
+        }
+        return originalChmod(target, mode);
+      });
+
+      try {
+        expect(() => tightenSecretsPermissions(testDir)).toThrow('injected chmod failure');
+      } finally {
+        chmod.mockRestore();
+      }
+
+      expect(fs.readFileSync(secretsPath, 'utf-8')).toBe(content);
+      expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o644);
+    });
+
+    it.skipIf(!POSIX || process.getuid === undefined)(
+      'rejects an untrusted secret-file owner before chmod',
+      () => {
+        const secretsPath = path.join(testDir, 'secrets.env');
+        fs.writeFileSync(secretsPath, 'UNTRUSTED=value\n', { mode: 0o644 });
+        const originalLstat = fs.lstatSync.bind(fs);
+        const lstat = vi.spyOn(fs, 'lstatSync').mockImplementation(((target, options) => {
+          const stat = originalLstat(target, options);
+          if (path.resolve(String(target)) !== path.resolve(secretsPath)) return stat;
+          return new Proxy(stat, {
+            get(actual, property, receiver) {
+              if (property === 'uid') return process.getuid!() + 1;
+              return Reflect.get(actual, property, receiver);
+            },
+          });
+        }) as typeof fs.lstatSync);
+        const chmod = vi.spyOn(fs, 'chmodSync');
+
+        try {
+          expect(() => tightenSecretsPermissions(testDir)).toThrow(/not owned/);
+          expect(chmod.mock.calls.some(([target]) => (
+            path.resolve(String(target)) === path.resolve(secretsPath)
+          ))).toBe(false);
+        } finally {
+          chmod.mockRestore();
+          lstat.mockRestore();
+        }
+
+        expect(fs.readFileSync(secretsPath, 'utf-8')).toBe('UNTRUSTED=value\n');
+      },
+    );
 
     it('tightenSecretsPermissions is a no-op when secrets.env does not exist', () => {
       // Must not throw, must still tighten the dir perms.

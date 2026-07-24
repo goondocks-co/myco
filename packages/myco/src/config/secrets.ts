@@ -18,7 +18,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { TextDecoder } from 'node:util';
-import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import {
+  atomicWriteFileSync,
+  durableRemovePathSync,
+  reconcileDurableRemovalTombstonesSync,
+} from '@myco/utils/atomic-write.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 import {
@@ -29,6 +33,8 @@ import {
 export const SECRETS_FILE = 'secrets.env';
 const SECRETS_FILE_MODE = 0o600;
 const SECRETS_DIR_MODE = 0o700;
+const PORTABLE_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const PROTOTYPE_LIKE_ENV_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 /**
  * Stable external lock identity for one secrets store. The lock root is tied
@@ -57,6 +63,9 @@ function withSecretsTransactions<T>(vaultDirs: readonly string[], fn: () => T): 
       if (index < locks.length) return withFileLockSync(locks[index]!, () => run(index + 1));
       const freshLocks = [...new Set(vaultDirs.flatMap(secretStoreLockPaths))].sort();
       if (freshLocks.length !== locks.length || freshLocks.some((lock, i) => lock !== locks[i])) return RETRY;
+      for (const vaultDir of new Set(vaultDirs)) {
+        reconcileDurableRemovalTombstonesSync(vaultDir, SECRETS_FILE);
+      }
       return fn();
     };
     const result = run(0);
@@ -75,10 +84,12 @@ export class InvalidSecretValueError extends Error {
 }
 
 export function assertValidSecretEntry(key: unknown, value: unknown): void {
-  if (typeof key !== 'string' || key.length === 0 || /[\0\r\n=]/.test(key)) {
+  if (typeof key !== 'string'
+    || !PORTABLE_ENV_KEY_PATTERN.test(key)
+    || PROTOTYPE_LIKE_ENV_KEYS.has(key.toLowerCase())) {
     throw new InvalidSecretValueError('key');
   }
-  if (typeof value !== 'string' || /[\0\r\n]/.test(value)) {
+  if (typeof value !== 'string' || /[\0\r\n]/.test(value) || value.trim() !== value) {
     throw new InvalidSecretValueError('value');
   }
 }
@@ -362,7 +373,7 @@ export function deleteSecrets(vaultDir: string, keys: string[]): void {
     for (const key of keys) delete existing[key];
 
     if (Object.keys(existing).length === 0) {
-      fs.rmSync(secretsPath, { force: true });
+      durableRemovePathSync(secretsPath);
       return;
     }
     persistSecretsUnlocked(vaultDir, existing);
@@ -376,8 +387,7 @@ export function deleteSecrets(vaultDir: string, keys: string[]): void {
  * see `tightenSecretsPermissions` for the no-op-on-missing semantics.
  */
 export function loadSecrets(vaultDir: string): void {
-  const secrets = readSecrets(vaultDir);
-  tightenSecretsPermissions(vaultDir);
+  const secrets = readSecretsWithSecurePermissions(vaultDir);
   for (const [key, value] of Object.entries(secrets)) {
     if (!process.env[key]) {
       process.env[key] = value;
@@ -421,8 +431,10 @@ export function loadLayeredSecrets(
   secretsDirs: string[],
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  const stores = secretsDirs.map((dir) => ({ dir, secrets: readSecrets(dir) }));
-  for (const { dir } of stores) tightenSecretsPermissions(dir);
+  const stores = secretsDirs.map((dir) => ({
+    dir,
+    secrets: readSecretsWithSecurePermissions(dir),
+  }));
 
   const owned = layeredSecretOwnership.get(env) ?? new Map<string, string>();
   layeredSecretOwnership.set(env, owned);
@@ -468,35 +480,103 @@ export function loadLayeredSecrets(
  * we care about; we rely on NTFS ACLs there and skip without erroring.
  */
 export function tightenSecretsPermissions(vaultDir: string): void {
-  withSecretsTransaction(vaultDir, () => tightenSecretsPermissionsUnlocked(vaultDir));
+  readSecretsWithSecurePermissions(vaultDir);
 }
 
-function tightenSecretsPermissionsUnlocked(vaultDir: string): void {
-  readSecrets(vaultDir);
+function readSecretsWithSecurePermissions(vaultDir: string): Record<string, string> {
+  prepareSecretsDirectoryForLock(vaultDir);
+  return withSecretsTransaction(vaultDir, () => tightenSecretsPermissionsUnlocked(vaultDir));
+}
+
+function tightenSecretsPermissionsUnlocked(vaultDir: string): Record<string, string> {
   const secretsPath = path.join(vaultDir, SECRETS_FILE);
-  let stat: fs.Stats | undefined;
-  try {
-    stat = fs.lstatSync(secretsPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-  if (stat !== undefined && (stat.isSymbolicLink() || !stat.isFile())) {
-    throw new Error(`Refusing to harden non-regular secret store: ${secretsPath}`);
-  }
-  try {
-    if (stat !== undefined) {
-      const currentMode = stat.mode & 0o777;
-      if (currentMode !== SECRETS_FILE_MODE) {
-        fs.chmodSync(secretsPath, SECRETS_FILE_MODE);
-      }
+  if (process.platform === 'win32') {
+    const secrets = readSecrets(vaultDir);
+    const stat = lstatOptional(secretsPath);
+    if (stat !== undefined && (stat.isSymbolicLink() || !stat.isFile())) {
+      throw new Error(`Refusing to harden non-regular secret store: ${secretsPath}`);
     }
-  } catch {
-    // Boot-time permission repair is best-effort on unsupported filesystems.
+    try {
+      if (stat !== undefined) fs.chmodSync(secretsPath, SECRETS_FILE_MODE);
+      fs.chmodSync(vaultDir, SECRETS_DIR_MODE);
+    } catch {
+      // Windows access control is enforced by ACLs rather than POSIX mode bits.
+    }
+    return secrets;
   }
+
+  if (lstatOptional(vaultDir) === undefined) {
+    return Object.create(null) as Record<string, string>;
+  }
+  hardenOwnedRealPath(vaultDir, 'directory', SECRETS_DIR_MODE);
+  const fileStat = lstatOptional(secretsPath);
+  if (fileStat === undefined) return Object.create(null) as Record<string, string>;
+  const securedFile = hardenOwnedRealPath(secretsPath, 'file', SECRETS_FILE_MODE);
+  return readSecuredSecretsFile(secretsPath, securedFile);
+}
+
+function prepareSecretsDirectoryForLock(vaultDir: string): void {
+  if (process.platform === 'win32') return;
+  if (lstatOptional(vaultDir) === undefined) return;
+  hardenOwnedRealPath(vaultDir, 'directory', SECRETS_DIR_MODE);
+}
+
+function lstatOptional(target: string): fs.Stats | undefined {
   try {
-    fs.chmodSync(vaultDir, SECRETS_DIR_MODE);
-  } catch {
-    // Same rationale as above.
+    return fs.lstatSync(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+function hardenOwnedRealPath(
+  target: string,
+  kind: 'directory' | 'file',
+  mode: number,
+): fs.Stats {
+  const before = fs.lstatSync(target);
+  const hasExpectedType = kind === 'directory' ? before.isDirectory() : before.isFile();
+  if (before.isSymbolicLink() || !hasExpectedType) {
+    const label = kind === 'directory' ? 'secret directory' : 'secret store';
+    throw new Error(`Refusing to harden non-regular ${label}: ${target}`);
+  }
+  const uid = process.getuid?.();
+  if (uid !== undefined && before.uid !== uid) {
+    throw new Error(`Secret ${kind} is not owned by the current user: ${target}`);
+  }
+
+  if ((before.mode & 0o777) !== mode) fs.chmodSync(target, mode);
+
+  const after = fs.lstatSync(target);
+  const stillExpectedType = kind === 'directory' ? after.isDirectory() : after.isFile();
+  if (after.isSymbolicLink()
+    || !stillExpectedType
+    || after.dev !== before.dev
+    || after.ino !== before.ino
+    || (uid !== undefined && after.uid !== uid)
+    || (after.mode & 0o777) !== mode) {
+    throw new Error(`Secret ${kind} changed or remained insecure during permission repair: ${target}`);
+  }
+  return after;
+}
+
+function readSecuredSecretsFile(secretsPath: string, expected: fs.Stats): Record<string, string> {
+  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+  const fd = fs.openSync(secretsPath, fs.constants.O_RDONLY | noFollow);
+  try {
+    const actual = fs.fstatSync(fd);
+    const uid = process.getuid?.();
+    if (!actual.isFile()
+      || actual.dev !== expected.dev
+      || actual.ino !== expected.ino
+      || (uid !== undefined && actual.uid !== uid)
+      || (actual.mode & 0o777) !== SECRETS_FILE_MODE) {
+      throw new Error(`Secret store changed or remained insecure before read: ${secretsPath}`);
+    }
+    return decodeSecrets(decodeSecretBuffer(fs.readFileSync(fd)));
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -572,9 +652,10 @@ function decodeSecrets(content: unknown): Record<string, string> {
   const secrets = Object.create(null) as Record<string, string>;
   for (const line of normalized.split('\n')) {
     if (line.trim().length === 0 || /^\s*#/.test(line)) continue;
-    const match = line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);
-    if (!match) throw new InvalidSecretValueError('entry');
-    const [, key, value] = match;
+    const separator = line.indexOf('=');
+    if (separator < 1) throw new InvalidSecretValueError('entry');
+    const key = line.slice(0, separator);
+    const value = line.slice(separator + 1);
     assertValidSecretEntry(key, value);
     secrets[key] = value;
   }
@@ -767,5 +848,9 @@ function writeSecretsFile(secretsPath: string, content: string | Buffer): void {
   // Atomic write protects against torn writes; the mode-aware helper
   // applies 0o600 to the tempfile before rename so the final path is
   // never briefly readable at the default umask.
-  atomicWriteFileSync(secretsPath, content, { encoding: 'utf-8', mode: SECRETS_FILE_MODE });
+  atomicWriteFileSync(secretsPath, content, {
+    encoding: 'utf-8',
+    mode: SECRETS_FILE_MODE,
+    durable: true,
+  });
 }

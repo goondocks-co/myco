@@ -2,10 +2,14 @@ import { describe, expect, it, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import { vi } from '../helpers/vi-shim.js';
 import { migrateTeamsHomeIfNeeded, defaultLegacyTeamHomes } from '@myco/team/migrate-home.js';
 import { secretStoreLockKeys } from '@myco/config/secret-store-lock.js';
+import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
+import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 
 const TEAM_ID = 'team_' + 'c'.repeat(32);
 const SECRETS_WRITER_HELPER = path.resolve('tests/helpers/secrets-writer-helper.ts');
@@ -15,6 +19,30 @@ const MIGRATION_CRASH_HELPER = path.resolve('tests/team/migrate-home-crash-helpe
 
 function secretStoreKeys(vaultDir: string): string[] {
   return secretStoreLockKeys(vaultDir);
+}
+
+function topologyLockPaths(teamsDir: string): string[] {
+  const lockDir = path.join(resolvePerUserLocksDir(), 'legacy-team-home');
+  const physicalLocks = physicalPathLockIdentities(teamsDir)
+    .map((identity) => path.join(
+      lockDir,
+      `${createHash('sha256').update(identity).digest('hex')}.lock`,
+    ));
+  const legacyIdentity = process.platform === 'win32'
+    ? path.resolve(teamsDir).toLowerCase()
+    : path.resolve(teamsDir);
+  const legacyLock = path.join(
+    lockDir,
+    `${createHash('sha256').update(legacyIdentity).digest('hex')}.lock`,
+  );
+  const canonicalIdentity = process.platform === 'win32'
+    ? fs.realpathSync(teamsDir).toLowerCase()
+    : fs.realpathSync(teamsDir);
+  const canonicalLegacyLock = path.join(
+    lockDir,
+    `${createHash('sha256').update(canonicalIdentity).digest('hex')}.lock`,
+  );
+  return [...new Set([...physicalLocks, legacyLock, canonicalLegacyLock])].sort();
 }
 
 async function waitForPath(target: string): Promise<void> {
@@ -68,6 +96,125 @@ describe('migrateTeamsHomeIfNeeded', () => {
     expect(migrateTeamsHomeIfNeeded([legacy]).copied.length).toBe(0);
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'acquires every physical topology identity in deterministic order through a home alias',
+    () => {
+      legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-real-'));
+      dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+      process.env.MYCO_TEAM_HOME = dest;
+      writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+      const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-alias-parent-'));
+      const alias = path.join(aliasRoot, 'alias');
+      fs.symlinkSync(legacy, alias, 'dir');
+      const expectedLocks = topologyLockPaths(path.join(alias, 'teams'));
+      const openedTopologyLocks: string[] = [];
+      const originalOpen = fs.openSync.bind(fs);
+      const open = vi.spyOn(fs, 'openSync').mockImplementation(
+        ((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+          const resolved = path.resolve(String(target));
+          if (resolved.startsWith(path.resolve(path.join(resolvePerUserLocksDir(), 'legacy-team-home')) + path.sep)) {
+            openedTopologyLocks.push(resolved);
+          }
+          return originalOpen(target, flags, mode);
+        }) as typeof fs.openSync,
+      );
+
+      try {
+        migrateTeamsHomeIfNeeded([alias]);
+      } finally {
+        open.mockRestore();
+        fs.rmSync(aliasRoot, { recursive: true, force: true });
+      }
+
+      expect(openedTopologyLocks.slice(0, expectedLocks.length)).toEqual(expectedLocks);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'excludes a new alias migration while an old canonical-spelling lock is held',
+    async () => {
+      legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-real-'));
+      dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+      process.env.MYCO_TEAM_HOME = dest;
+      writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+      const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-alias-parent-'));
+      const alias = path.join(aliasRoot, 'alias');
+      fs.symlinkSync(legacy, alias, 'dir');
+      const canonicalTeamsDir = fs.realpathSync(path.join(legacy, 'teams'));
+      const lockDir = path.join(resolvePerUserLocksDir(), 'legacy-team-home');
+      const oldCanonicalLock = path.join(
+        lockDir,
+        `${createHash('sha256').update(canonicalTeamsDir).digest('hex')}.lock`,
+      );
+      const ready = path.join(aliasRoot, 'old-lock-ready');
+      const holderScript = `
+        import fs from 'node:fs';
+        import { LifecycleLock } from './packages/myco/src/utils/lifecycle-lock.ts';
+        const result = LifecycleLock.acquire(${JSON.stringify(oldCanonicalLock)});
+        if (!result.acquired) process.exit(2);
+        fs.writeFileSync(${JSON.stringify(ready)}, 'ready\\n');
+        Bun.sleepSync(500);
+        result.lock.release();
+      `;
+      const holder = spawn(
+        process.execPath,
+        ['-e', holderScript],
+        { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() },
+      );
+      const holderExit = successfulExit(holder, 'old canonical topology lock holder');
+
+      try {
+        await waitForPath(ready);
+        const startedAt = Date.now();
+        migrateTeamsHomeIfNeeded([alias]);
+        expect(Date.now() - startedAt).toBeGreaterThanOrEqual(300);
+        await holderExit;
+      } finally {
+        fs.rmSync(aliasRoot, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'retries with fresh physical topology identities when a missing Team home materializes during acquisition',
+    () => {
+      legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-transition-'));
+      dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+      process.env.MYCO_TEAM_HOME = dest;
+      const openedTopologyLocks: string[] = [];
+      const lockDir = path.resolve(path.join(resolvePerUserLocksDir(), 'legacy-team-home'));
+      const originalOpen = fs.openSync.bind(fs);
+      let materialized = false;
+      let freshLocks: string[] = [];
+      const open = vi.spyOn(fs, 'openSync').mockImplementation(
+        ((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+          const fd = originalOpen(target, flags, mode);
+          const resolved = path.resolve(String(target));
+          if (resolved.startsWith(lockDir + path.sep)) {
+            openedTopologyLocks.push(resolved);
+            if (!materialized) {
+              materialized = true;
+              writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'materialized', projects: [] });
+              freshLocks = topologyLockPaths(path.join(legacy, 'teams'));
+            }
+          }
+          return fd;
+        }) as typeof fs.openSync,
+      );
+
+      try {
+        migrateTeamsHomeIfNeeded([legacy]);
+      } finally {
+        open.mockRestore();
+      }
+
+      expect(materialized).toBe(true);
+      expect(openedTopologyLocks.slice(-freshLocks.length)).toEqual(freshLocks);
+      expect(fs.existsSync(path.join(dest, 'teams', TEAM_ID, 'team.json'))).toBe(true);
+    },
+  );
+
   it('copies a non-flat team dir: the worker/ deploy subtree is migrated, not dropped', () => {
     legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
     dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
@@ -93,6 +240,90 @@ describe('migrateTeamsHomeIfNeeded', () => {
     expect(fs.lstatSync(path.join(legacy, 'teams')).isSymbolicLink()).toBe(true);
     expect(fs.existsSync(path.join(legacy, 'teams.bak-pre-myco-team', TEAM_ID, 'worker', 'src', 'index.ts'))).toBe(true);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a Team symlink before changing source or canonical trees',
+    () => {
+      legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-special-link-'));
+      dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+      process.env.MYCO_TEAM_HOME = dest;
+      writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+      const sourceTeam = path.join(legacy, 'teams', TEAM_ID);
+      const target = path.join(legacy, 'outside-target.txt');
+      const special = path.join(sourceTeam, 'unsupported-link');
+      fs.writeFileSync(target, 'outside\n');
+      fs.symlinkSync(target, special);
+      const sourceJson = fs.readFileSync(path.join(sourceTeam, 'team.json'));
+      const sourceSecret = fs.readFileSync(path.join(sourceTeam, 'secrets.env'));
+
+      expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow(/unsupported Team entry/);
+
+      expect(fs.lstatSync(path.join(legacy, 'teams')).isDirectory()).toBe(true);
+      expect(fs.lstatSync(special).isSymbolicLink()).toBe(true);
+      expect(fs.readlinkSync(special)).toBe(target);
+      expect(fs.readFileSync(path.join(sourceTeam, 'team.json'))).toEqual(sourceJson);
+      expect(fs.readFileSync(path.join(sourceTeam, 'secrets.env'))).toEqual(sourceSecret);
+      expect(fs.existsSync(path.join(dest, 'teams', TEAM_ID))).toBe(false);
+      expect(fs.existsSync(path.join(legacy, 'teams.bak-pre-myco-team'))).toBe(false);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a Team FIFO before changing source or canonical trees',
+    () => {
+      legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-special-fifo-'));
+      dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+      process.env.MYCO_TEAM_HOME = dest;
+      writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+      const sourceTeam = path.join(legacy, 'teams', TEAM_ID);
+      const special = path.join(sourceTeam, 'unsupported-fifo');
+      const mkfifo = spawnSync('mkfifo', [special], { encoding: 'utf-8' });
+      expect(mkfifo.status).toBe(0);
+      const sourceJson = fs.readFileSync(path.join(sourceTeam, 'team.json'));
+      const sourceSecret = fs.readFileSync(path.join(sourceTeam, 'secrets.env'));
+
+      expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow(/unsupported Team entry/);
+
+      expect(fs.lstatSync(path.join(legacy, 'teams')).isDirectory()).toBe(true);
+      expect(fs.lstatSync(special).isFIFO()).toBe(true);
+      expect(fs.readFileSync(path.join(sourceTeam, 'team.json'))).toEqual(sourceJson);
+      expect(fs.readFileSync(path.join(sourceTeam, 'secrets.env'))).toEqual(sourceSecret);
+      expect(fs.existsSync(path.join(dest, 'teams', TEAM_ID))).toBe(false);
+      expect(fs.existsSync(path.join(legacy, 'teams.bak-pre-myco-team'))).toBe(false);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a Team socket before changing source or canonical trees',
+    async () => {
+      legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-special-socket-'));
+      dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+      process.env.MYCO_TEAM_HOME = dest;
+      writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+      const sourceTeam = path.join(legacy, 'teams', TEAM_ID);
+      const special = path.join(sourceTeam, 'unsupported.sock');
+      const server = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(special, resolve);
+      });
+      const sourceJson = fs.readFileSync(path.join(sourceTeam, 'team.json'));
+      const sourceSecret = fs.readFileSync(path.join(sourceTeam, 'secrets.env'));
+
+      try {
+        expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow(/unsupported Team entry/);
+        expect(fs.lstatSync(special).isSocket()).toBe(true);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      expect(fs.lstatSync(path.join(legacy, 'teams')).isDirectory()).toBe(true);
+      expect(fs.readFileSync(path.join(sourceTeam, 'team.json'))).toEqual(sourceJson);
+      expect(fs.readFileSync(path.join(sourceTeam, 'secrets.env'))).toEqual(sourceSecret);
+      expect(fs.existsSync(path.join(dest, 'teams', TEAM_ID))).toBe(false);
+      expect(fs.existsSync(path.join(legacy, 'teams.bak-pre-myco-team'))).toBe(false);
+    },
+  );
 
   it('keeps an existing worker subtree destination-owned while retaining the complete legacy subtree', () => {
     legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
@@ -335,6 +566,104 @@ describe('migrateTeamsHomeIfNeeded', () => {
     expect(fs.existsSync(path.join(legacy, 'teams.bak-pre-myco-team', TEAM_ID, 'secrets.env'))).toBe(true);
     expect(migrateTeamsHomeIfNeeded([legacy]).retiredHomes).toEqual([]);
   }, 30_000);
+
+  it.each(['file', 'symlink'] as const)(
+    'does not overwrite a concurrently recreated legacy %s when publishing the redirect',
+    (kind) => {
+      legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+      dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+      process.env.MYCO_TEAM_HOME = dest;
+      writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'archived', projects: [] });
+      const legacyTeams = path.join(legacy, 'teams');
+      const archive = `${legacyTeams}.bak-pre-myco-team`;
+      const concurrentTarget = path.join(dest, 'concurrent-team-home');
+      fs.mkdirSync(concurrentTarget);
+      const originalRename = fs.renameSync.bind(fs);
+      let recreated = false;
+      const rename = vi.spyOn(fs, 'renameSync').mockImplementation(((source, destination) => {
+        originalRename(source, destination);
+        if (!recreated
+          && path.resolve(String(source)) === path.resolve(legacyTeams)
+          && path.resolve(String(destination)) === path.resolve(archive)) {
+          recreated = true;
+          if (kind === 'file') {
+            fs.writeFileSync(legacyTeams, 'concurrent writer\n');
+          } else {
+            fs.symlinkSync(concurrentTarget, legacyTeams, 'dir');
+          }
+        }
+      }) as typeof fs.renameSync);
+
+      expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow();
+      rename.mockRestore();
+
+      expect(recreated).toBe(true);
+      if (kind === 'file') {
+        expect(fs.lstatSync(legacyTeams).isFile()).toBe(true);
+        expect(fs.readFileSync(legacyTeams, 'utf-8')).toBe('concurrent writer\n');
+      } else {
+        expect(fs.lstatSync(legacyTeams).isSymbolicLink()).toBe(true);
+        expect(fs.readlinkSync(legacyTeams)).toBe(concurrentTarget);
+      }
+      expect(JSON.parse(fs.readFileSync(
+        path.join(dest, 'teams', TEAM_ID, 'team.json'),
+        'utf-8',
+      )).name).toBe('archived');
+      expect(JSON.parse(fs.readFileSync(
+        path.join(archive, TEAM_ID, 'team.json'),
+        'utf-8',
+      )).name).toBe('archived');
+      expect(fs.readdirSync(legacy).some((name) => name.startsWith('teams.redirect-'))).toBe(true);
+    },
+  );
+
+  it('never rolls an archive back over an empty directory recreated at the rollback boundary', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'archived', projects: [] });
+    const legacyTeams = path.join(legacy, 'teams');
+    const archive = `${legacyTeams}.bak-pre-myco-team`;
+    const originalRename = fs.renameSync.bind(fs);
+    const originalSymlink = fs.symlinkSync.bind(fs);
+    let rollbackAttempted = false;
+    let recreatedInode: bigint | undefined;
+    vi.spyOn(fs, 'renameSync').mockImplementation(((source, destination) => {
+      if (path.resolve(String(source)) === path.resolve(archive)
+        && path.resolve(String(destination)) === path.resolve(legacyTeams)) {
+        rollbackAttempted = true;
+        fs.mkdirSync(legacyTeams);
+        recreatedInode = fs.lstatSync(legacyTeams, { bigint: true }).ino;
+      }
+      originalRename(source, destination);
+    }) as typeof fs.renameSync);
+    vi.spyOn(fs, 'symlinkSync').mockImplementation(((target, destination, type) => {
+      if (path.resolve(String(destination)) === path.resolve(legacyTeams)) {
+        throw Object.assign(new Error('injected redirect publication failure'), { code: 'EIO' });
+      }
+      originalSymlink(target, destination, type);
+    }) as typeof fs.symlinkSync);
+
+    expect(() => migrateTeamsHomeIfNeeded([legacy]))
+      .toThrow('injected redirect publication failure');
+
+    if (!rollbackAttempted) {
+      fs.mkdirSync(legacyTeams);
+      recreatedInode = fs.lstatSync(legacyTeams, { bigint: true }).ino;
+    }
+    expect(fs.lstatSync(legacyTeams, { bigint: true }).ino).toBe(recreatedInode);
+    expect(rollbackAttempted).toBe(false);
+    expect(fs.readdirSync(legacyTeams)).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(
+      path.join(dest, 'teams', TEAM_ID, 'team.json'),
+      'utf-8',
+    )).name).toBe('archived');
+    expect(JSON.parse(fs.readFileSync(
+      path.join(archive, TEAM_ID, 'team.json'),
+      'utf-8',
+    )).name).toBe('archived');
+    expect(fs.readdirSync(legacy).some((name) => name.startsWith('teams.redirect-'))).toBe(true);
+  });
 
   it('upgrades an archive-only legacy topology by recovering the durable redirect', () => {
     legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
