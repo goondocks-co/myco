@@ -10,6 +10,8 @@ import { DaemonLogger } from '@myco/daemon/logger';
 import { getPluginVersion } from '@myco/version';
 import type { DaemonServiceState } from '@myco/daemon/service-state';
 
+const RETIRED_EXTERNAL_MCP_POSTURE = 'retired';
+
 // Prevents the concurrent-spawn cascade we observed in production, where
 // every newly-spawned daemon unconditionally SIGTERM'd whatever pid was in
 // daemon.json — including siblings that had just become ready 300ms earlier.
@@ -103,6 +105,34 @@ describe('reconcileExistingDaemon', () => {
 
   it('steps aside when recorded daemon is recent, healthy, same version, and on canonical port', async () => {
     await withHealthServer(
+      {
+        status: 200,
+        body: {
+          myco: true,
+          version: getPluginVersion(),
+          external_mcp_activation: RETIRED_EXTERNAL_MCP_POSTURE,
+          pid: siblingPid,
+        },
+      },
+      async (port) => {
+        const svc = daemonService(vaultDir, { canonicalPort: port });
+        fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+        fs.writeFileSync(
+          svc.statePath,
+          JSON.stringify({ pid: siblingPid, port }),
+        );
+        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+          requireRetiredExternalMcp: true,
+        });
+        expect(result).toBe('step-aside');
+        // daemon.json must survive — the sibling we stepped aside for owns it.
+        expect(fs.existsSync(svc.statePath)).toBe(true);
+      },
+    );
+  });
+
+  it('takes over a same-version sibling that cannot prove external MCP activation is retired', async () => {
+    await withHealthServer(
       { status: 200, body: { myco: true, version: getPluginVersion() } },
       async (port) => {
         const svc = daemonService(vaultDir, { canonicalPort: port });
@@ -111,10 +141,12 @@ describe('reconcileExistingDaemon', () => {
           svc.statePath,
           JSON.stringify({ pid: siblingPid, port }),
         );
-        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
-        expect(result).toBe('step-aside');
-        // daemon.json must survive — the sibling we stepped aside for owns it.
-        expect(fs.existsSync(svc.statePath)).toBe(true);
+
+        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+          requireRetiredExternalMcp: true,
+        });
+
+        expect(result).toBe('ok');
       },
     );
   });
@@ -160,7 +192,15 @@ describe('reconcileExistingDaemon', () => {
 
   it('steps aside when daemon is healthy but command differs (runtime mismatch)', async () => {
     await withHealthServer(
-      { status: 200, body: { myco: true, version: '0.0.0-different' } },
+      {
+        status: 200,
+        body: {
+          myco: true,
+          version: '0.0.0-different',
+          external_mcp_activation: RETIRED_EXTERNAL_MCP_POSTURE,
+          pid: siblingPid,
+        },
+      },
       async (port) => {
         const svc = daemonService(vaultDir, { canonicalPort: port });
         fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
@@ -168,7 +208,9 @@ describe('reconcileExistingDaemon', () => {
           svc.statePath,
           JSON.stringify({ pid: siblingPid, port, command: '/tmp/bun-myco' }),
         );
-        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+          requireRetiredExternalMcp: true,
+        });
         expect(result).toBe('step-aside');
         expect(fs.existsSync(svc.statePath)).toBe(true);
       },
@@ -361,7 +403,10 @@ describe('reconcileExistingDaemon', () => {
       kill: (_pid, signal) => { killCalls.push(signal); },
       // Alive until cooperative shutdown is requested, then it "drains and exits".
       isProcessAlive: () => !cooperativeRequested,
-      requestShutdown: async () => { cooperativeRequested = true; return true; },
+      requestShutdown: async () => {
+        cooperativeRequested = true;
+        return { kind: 'accepted' };
+      },
       sigtermGraceMs: 200,
       sigkillGraceMs: 200,
       pollMs: 10,
@@ -373,9 +418,9 @@ describe('reconcileExistingDaemon', () => {
     expect(killCalls).toEqual([]);
   });
 
-  it('falls back to the SIGTERM→SIGKILL escalation when cooperative shutdown is refused', async () => {
-    // requestShutdown resolves false (e.g. /api/shutdown unreachable, or the
-    // predecessor predates this endpoint). The signal escalation must run.
+  it('falls back to the SIGTERM→SIGKILL escalation when cooperative shutdown is unavailable', async () => {
+    // An unreachable shutdown route or a predecessor that predates the
+    // endpoint requires the signal escalation path.
     const svc = daemonService(vaultDir);
     fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
     fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port: 1 }));
@@ -388,7 +433,7 @@ describe('reconcileExistingDaemon', () => {
         if (signal === 'SIGTERM') sigtermSent = true;
       },
       isProcessAlive: () => !sigtermSent, // exits on SIGTERM
-      requestShutdown: async () => false,
+      requestShutdown: async () => ({ kind: 'unavailable' }),
       sigtermGraceMs: 200,
       sigkillGraceMs: 200,
       pollMs: 10,
@@ -445,6 +490,151 @@ describe('reconcileExistingDaemon', () => {
     }
   });
 
+  it('does not signal a predecessor whose shutdown route explicitly refuses containment', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/shutdown') {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'shutdown_blocked' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ myco: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const svc = daemonService(vaultDir, { canonicalPort: adjacentPort(port) });
+      fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+      fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port }));
+
+      const killCalls: Array<NodeJS.Signals | 0> = [];
+      const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+        kill: (_pid, signal) => { killCalls.push(signal); },
+        isProcessAlive: () => true,
+        readProcessCommandLine: () => '/usr/local/bin/myco daemon',
+        sigtermGraceMs: 20,
+        sigkillGraceMs: 20,
+        pollMs: 5,
+      });
+
+      expect(result).toBe('step-aside');
+      expect(killCalls).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(resolve));
+    }
+  });
+
+  it('blocks instead of stepping aside when an activation-capable predecessor refuses shutdown and survives signals', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/shutdown') {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'shutdown_blocked' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ myco: true, version: getPluginVersion() }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const svc = daemonService(vaultDir, { canonicalPort: port });
+      fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+      fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port }));
+
+      const killCalls: Array<NodeJS.Signals | 0> = [];
+      const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+        kill: (_pid, signal) => { killCalls.push(signal); },
+        isProcessAlive: () => true,
+        readProcessCommandLine: () => '/usr/local/bin/myco daemon',
+        requireRetiredExternalMcp: true,
+        sigtermGraceMs: 20,
+        sigkillGraceMs: 20,
+        pollMs: 5,
+      });
+
+      expect(result).toBe('blocked');
+      expect(killCalls).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      await new Promise<void>((resolve) => server.close(resolve));
+    }
+  });
+
+  it('does not accept a retirement marker from a different pid', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/shutdown') {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'shutdown_blocked' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        myco: true,
+        version: getPluginVersion(),
+        external_mcp_activation: RETIRED_EXTERNAL_MCP_POSTURE,
+        pid: siblingPid + 1,
+      }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const svc = daemonService(vaultDir, { canonicalPort: port });
+      fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+      fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port }));
+
+      const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+        kill: () => {},
+        isProcessAlive: () => true,
+        readProcessCommandLine: () => '/usr/local/bin/myco daemon',
+        requireRetiredExternalMcp: true,
+        sigtermGraceMs: 20,
+        sigkillGraceMs: 20,
+        pollMs: 5,
+      });
+
+      expect(result).toBe('blocked');
+    } finally {
+      await new Promise<void>((resolve) => server.close(resolve));
+    }
+  });
+
+  it('does not accept a retirement marker from a non-Myco health response', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/shutdown') {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'shutdown_blocked' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        myco: false,
+        version: getPluginVersion(),
+        external_mcp_activation: RETIRED_EXTERNAL_MCP_POSTURE,
+        pid: siblingPid,
+      }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const svc = daemonService(vaultDir, { canonicalPort: port });
+      fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+      fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port }));
+
+      const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+        kill: () => {},
+        isProcessAlive: () => true,
+        readProcessCommandLine: () => '/usr/local/bin/myco daemon',
+        requireRetiredExternalMcp: true,
+        sigtermGraceMs: 20,
+        sigkillGraceMs: 20,
+        pollMs: 5,
+      });
+
+      expect(result).toBe('blocked');
+    } finally {
+      await new Promise<void>((resolve) => server.close(resolve));
+    }
+  });
+
   // --- SIGKILL-survivor loop bound (#6): break the strand on staleness ---
 
   it('takes over when an unkillable pid has an unreadable cmdline AND a stale daemon.json (loop bound)', async () => {
@@ -464,7 +654,7 @@ describe('reconcileExistingDaemon', () => {
       kill: () => {},
       isProcessAlive: () => true,
       readProcessCommandLine: () => null,
-      requestShutdown: async () => false,
+      requestShutdown: async () => ({ kind: 'unavailable' }),
       sigtermGraceMs: 50,
       sigkillGraceMs: 50,
       pollMs: 10,

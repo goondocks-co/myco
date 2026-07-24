@@ -5,12 +5,23 @@ import os from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { createStreamableMcpHttpHandler } from '@myco/mcp/http.js';
+import {
+  createStreamableMcpHttpHandler as createStreamableMcpHttpHandlerWithDefaults,
+} from '@myco/mcp/http.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { vi } from '../helpers/vi-shim.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const createStreamableMcpHttpHandler = (
+  vaultDir: string,
+  options: Parameters<typeof createStreamableMcpHttpHandlerWithDefaults>[1],
+) => createStreamableMcpHttpHandlerWithDefaults(vaultDir, {
+  ...options,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 const servers: http.Server[] = [];
 const tmpDirs: string[] = [];

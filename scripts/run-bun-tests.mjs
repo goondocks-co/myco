@@ -57,6 +57,20 @@ if (!process.env.MYCO_TEAM_HOME) {
 }
 
 // ---------------------------------------------------------------------------
+// Hermetic per-user lock namespace
+// ---------------------------------------------------------------------------
+// Production locks live in a fixed operating-system-account root so sibling
+// processes coordinate even when HOME and TMPDIR differ. Tests receive a
+// runner-owned root through a test-only handoff and pass an explicit lock
+// namespace dependency into the operations they exercise.
+const TEST_PER_USER_LOCKS_ROOT_ENV = 'MYCO_TEST_PER_USER_LOCKS_ROOT';
+const sandboxPerUserLocksRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-locks-'));
+process.env[TEST_PER_USER_LOCKS_ROOT_ENV] = sandboxPerUserLocksRoot;
+process.on('exit', () => {
+  try { fs.rmSync(sandboxPerUserLocksRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
+});
+
+// ---------------------------------------------------------------------------
 // Watchdog diagnostics
 // ---------------------------------------------------------------------------
 // Hangs in CI used to be opaque: the runner emitted a single
@@ -245,6 +259,9 @@ const SOLO_NODE_FILES = [
   'tests/daemon/api/providers-ssrf.test.ts',
   'tests/daemon/api/restart.test.ts',
   'tests/daemon/api/stats.test.ts',
+  // This file spies on fs.fsyncSync to force publication races. The spy is
+  // process-global and cannot overlap unrelated durable-write tests.
+  'tests/config/secrets-relocate-legacy-project.test.ts',
   // These dispatcher fixtures share the ambient test DB and dispatcher
   // lifecycle heavily enough that they stay cheaper and less flaky as
   // explicit single-file processes than as hidden source-pattern matches.
@@ -589,6 +606,7 @@ function fileHasModuleMock(file) {
 }
 
 function soloNodeProcessReason(file) {
+  if (SOLO_NODE_FILES.includes(file)) return SOLO_NODE_REASON_LISTED_FILE;
   if (fileHasModuleMock(file)) return SOLO_NODE_REASON_MODULE_MOCK;
   return null;
 }

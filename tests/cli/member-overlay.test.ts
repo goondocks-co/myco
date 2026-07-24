@@ -10,15 +10,24 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION, MEMBER_OVERLAY_PROXY_PORT_BASE } from '@myco/constants';
 import { createHostId, createProjectId, createGroveId } from '@myco/grove/ids';
-import { resolveMemberTailscaledSocketPath } from '@myco/grove/paths';
-import { classifyRoute } from '@myco/host/routing';
-import { getHost, readHostRegistry, readHostSecrets } from '@myco/host/registry';
 import {
+  resolveMemberOverlayDir,
+  resolveMemberTailscaledSocketPath,
+  resolveMemberTailscaledStateDir,
+} from '@myco/grove/paths';
+import { classifyRoute as classifyRouteWith } from '@myco/host/routing';
+import {
+  createHostRegistryOperations,
+} from '@myco/host/registry';
+import {
+  buildMemberTailscaledSpec,
+  createEnrollmentClient,
   memberTailscaledLabel,
   joinHost,
   leaveHost,
@@ -28,9 +37,41 @@ import {
   type HostEnrollment,
   type MemberOverlayDeps,
 } from '@myco/host/member-overlay';
+import { membershipErrorCode } from '@myco/host/membership-error';
 import { TAILSCALE_VERSION, type CommandRunner } from '@myco/host/overlay-binaries';
 import { getServiceManager } from '@myco/service/manager';
-import type { InstallResult, ServiceManager, ServiceSpec, ServiceStatus } from '@myco/service/types';
+import type {
+  InstalledServiceCommand,
+  InstallResult,
+  ServiceManager,
+  ServiceSpec,
+  ServiceStatus,
+} from '@myco/service/types';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const {
+  advanceHostEnrollmentPhase,
+  attachProject,
+  getHost,
+  markHostEnrollmentTeardownPending,
+  readHostRegistry,
+  readHostSecrets,
+  reserveHostProxyPort,
+} = createHostRegistryOperations(testPerUserLockNamespace);
+const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
+  classifyRouteWith(input, testPerUserLockNamespace);
+
+async function findFreeLoopbackPort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '127.0.0.1', port: 0 }, resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('could not allocate a test port');
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
 
 // --- fakes -----------------------------------------------------------------
 
@@ -46,6 +87,10 @@ class FakeServiceManager implements ServiceManager {
   isRunning(label: string): boolean { return this.running.has(label); }
   specFor(label: string): ServiceSpec | undefined { return this.installed.find((s) => s.label === label); }
   async isInstalled(label: string): Promise<boolean> { return this.installed.some((s) => s.label === label); }
+  async inspect(label: string): Promise<InstalledServiceCommand | null> {
+    const spec = this.specFor(label);
+    return spec ? { executable: spec.executable, args: [...spec.args] } : null;
+  }
   async install(spec: ServiceSpec): Promise<InstallResult> {
     const changed = !this.installed.some((s) => s.label === spec.label);
     if (changed) this.installed.push(spec);
@@ -89,10 +134,10 @@ function fakeDarwinRunner(state: { joinedSockets: Set<string>; ups: string[]; ca
   };
 }
 
-function fakeEnrollment(hostId: string, bearer: string, overlayAddress = '100.64.0.1:7433', projects: HostEnrollment['projects'] = []): EnrollmentClient {
+function fakeEnrollment(hostId: string, bearer: string, overlayAddress = '100.64.0.1:7433'): EnrollmentClient {
   return {
     async enroll(_ctx: EnrollmentContext): Promise<HostEnrollment> {
-      return { host_id: hostId, label: `host ${hostId.slice(0, 9)}`, overlay_address: overlayAddress, protocol_version: HOST_PROTOCOL_VERSION, bearer, projects };
+      return { host_id: hostId, label: `host ${hostId.slice(0, 9)}`, overlay_address: overlayAddress, protocol_version: HOST_PROTOCOL_VERSION, bearer };
     },
   };
 }
@@ -136,11 +181,80 @@ describe('member overlay — multi-host join / leave', () => {
       waitForSocket: async () => true,
       checkHostReachable: async () => true,
       logger: () => {},
+      lockNamespace: testPerUserLockNamespace,
       ...overrides,
     };
   }
 
   const hostId = () => createHostId();
+
+  function writeCommittedEnrollmentResidue(
+    id: string,
+    baseGeneration: number | null,
+  ): string {
+    const record = getHost(id)!;
+    const hostDir = path.join(tmp, 'hosts', id);
+    const claimId = `committed-claim-${record.enrollment_generation}`;
+    const now = new Date().toISOString();
+    fs.writeFileSync(
+      path.join(hostDir, 'proxy-port-claim.json'),
+      JSON.stringify({
+        host_id: id,
+        proxy_port: record.proxy_port,
+        claim_id: claimId,
+        generation: record.enrollment_generation,
+        base_generation: baseGeneration,
+        enrollment_nonce: 'a'.repeat(32),
+      }),
+      { mode: 0o600 },
+    );
+    fs.writeFileSync(
+      path.join(hostDir, 'enrollment-intent.json'),
+      JSON.stringify({
+        schema_version: 1,
+        host_id: id,
+        generation: record.enrollment_generation,
+        base_generation: baseGeneration,
+        enrollment_nonce: 'a'.repeat(32),
+        proxy_port: record.proxy_port,
+        claim_id: claimId,
+        phase: 'credential_staged',
+        service_preexisting: false,
+        service_owned_generation: record.enrollment_generation,
+        service_label: memberTailscaledLabel(id),
+        created_at: now,
+        updated_at: now,
+      }),
+      { mode: 0o600 },
+    );
+    return hostDir;
+  }
+
+  async function stageInterruptedServiceInstall(
+    id: string,
+    proxyPort: number,
+  ): Promise<ServiceSpec> {
+    const label = memberTailscaledLabel(id);
+    const reservation = reserveHostProxyPort(id, proxyPort);
+    advanceHostEnrollmentPhase(
+      reservation,
+      'service_preparing',
+      { preexisting: false, label },
+    );
+    const overlayDir = resolveMemberOverlayDir();
+    const spec = buildMemberTailscaledSpec({
+      hostId: id,
+      executable: path.join(brewDir, 'tailscaled'),
+      socketPath: resolveMemberTailscaledSocketPath(id),
+      stateDir: resolveMemberTailscaledStateDir(id),
+      proxyPort,
+      workingDir: overlayDir,
+      logDir: path.join(overlayDir, 'logs'),
+    });
+    await svc.install(spec);
+    await svc.start(label);
+    return spec;
+  }
 
   // --- short socket (macOS 104-byte sun_path limit) ------------------------
 
@@ -214,8 +328,9 @@ describe('member overlay — multi-host join / leave', () => {
     const project = createProjectId();
     await joinHost(
       { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
-      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-xyz', '100.64.0.1:7433', [{ grove_id: createGroveId(), project_id: project }]) }),
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-xyz') }),
     );
+    attachProject(id, { grove_id: createGroveId(), project_id: project });
 
     const decision = classifyRoute({ method: 'GET', pathname: '/api/spores', projectId: project as never });
     expect(decision.kind).toBe('remote');
@@ -236,12 +351,14 @@ describe('member overlay — multi-host join / leave', () => {
 
     await joinHost(
       { hostRef: idA, key: 'keyA', serverUrl: 'https://a:8080' },
-      deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', '100.64.0.1:7433', [{ grove_id: grove, project_id: projA }]) }),
+      deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', '100.64.0.1:7433') }),
     );
+    attachProject(idA, { grove_id: grove, project_id: projA });
     await joinHost(
       { hostRef: idB, key: 'keyB', serverUrl: 'https://b:8080' },
-      deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', '100.64.0.2:7433', [{ grove_id: grove, project_id: projB }]) }),
+      deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', '100.64.0.2:7433') }),
     );
+    attachProject(idB, { grove_id: grove, project_id: projB });
 
     // Two records, DISTINCT persisted proxy_ports (allocated base, base+1).
     expect(readHostRegistry()).toHaveLength(2);
@@ -284,8 +401,11 @@ describe('member overlay — multi-host join / leave', () => {
   test('leave X tears down ONLY X — Y\'s instance, record, and bearer are untouched', async () => {
     const idA = hostId();
     const idB = hostId();
-    await joinHost({ hostRef: idA, key: 'keyA', serverUrl: 'https://a:8080' }, deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', '100.64.0.1:7433') }));
-    await joinHost({ hostRef: idB, key: 'keyB', serverUrl: 'https://b:8080' }, deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', '100.64.0.2:7433') }));
+    const portA = await findFreeLoopbackPort();
+    let portB = await findFreeLoopbackPort();
+    while (portB === portA) portB = await findFreeLoopbackPort();
+    await joinHost({ hostRef: idA, key: 'keyA', serverUrl: 'https://a:8080' }, deps({ proxyPort: portA, enrollmentClient: fakeEnrollment(idA, 'bearer-A', '100.64.0.1:7433') }));
+    await joinHost({ hostRef: idB, key: 'keyB', serverUrl: 'https://b:8080' }, deps({ proxyPort: portB, enrollmentClient: fakeEnrollment(idB, 'bearer-B', '100.64.0.2:7433') }));
 
     const labelA = memberTailscaledLabel(idA);
     const labelB = memberTailscaledLabel(idB);
@@ -321,12 +441,14 @@ describe('member overlay — multi-host join / leave', () => {
 
     await joinHost(
       { hostRef: idA, key: 'keyA', serverUrl: 'https://a:8080' },
-      deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', sameAddress, [{ grove_id: createGroveId(), project_id: projA }]) }),
+      deps({ enrollmentClient: fakeEnrollment(idA, 'bearer-A', sameAddress) }),
     );
+    attachProject(idA, { grove_id: createGroveId(), project_id: projA });
     await joinHost(
       { hostRef: idB, key: 'keyB', serverUrl: 'https://b:8080' },
-      deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', sameAddress, [{ grove_id: createGroveId(), project_id: projB }]) }),
+      deps({ enrollmentClient: fakeEnrollment(idB, 'bearer-B', sameAddress) }),
     );
+    attachProject(idB, { grove_id: createGroveId(), project_id: projB });
 
     // Identical overlay_address, DISTINCT persisted proxy_ports.
     expect(getHost(idA)!.overlay_address).toBe(sameAddress);
@@ -363,15 +485,16 @@ describe('member overlay — multi-host join / leave', () => {
 
     await joinHost(
       { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
-      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-1', '100.64.0.1:7433', [{ grove_id: grove, project_id: project }]) }),
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-1') }),
     );
+    attachProject(id, { grove_id: grove, project_id: project });
     const createdAt = getHost(id)!.created_at;
     const port = getHost(id)!.proxy_port;
     expect(runnerState.ups).toHaveLength(1);
 
     await joinHost(
       { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
-      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-2', '100.64.0.1:7433', []) }),
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-2') }),
     );
 
     expect(readHostRegistry()).toHaveLength(1);
@@ -383,11 +506,287 @@ describe('member overlay — multi-host join / leave', () => {
     expect(readHostSecrets(id)[HOST_BEARER_SECRET]).toBe('bearer-2'); // bearer refreshed
   });
 
+  test('a committed enrollment retry cleans residue without reinstalling or re-enrolling', async () => {
+    const id = hostId();
+    const project = createProjectId();
+    await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-1') }),
+    );
+    attachProject(id, { grove_id: createGroveId(), project_id: project });
+    const hostDir = writeCommittedEnrollmentResidue(id, null);
+    let enrollCalls = 0;
+    const installsBeforeRetry = svc.installed.length;
+
+    expect(getHost(id)?.enrollment_generation).toBe(1);
+    expect(readHostRegistry()).toHaveLength(1);
+    expect(readHostSecrets(id)[HOST_BEARER_SECRET]).toBe('bearer-1');
+    expect(classifyRoute({
+      method: 'GET',
+      pathname: '/api/spores',
+      projectId: project as never,
+    }).kind).toBe('remote');
+    expect(fs.existsSync(path.join(hostDir, 'enrollment-intent.json'))).toBe(true);
+    expect(fs.existsSync(path.join(hostDir, 'proxy-port-claim.json'))).toBe(true);
+
+    const result = await joinHost(
+      { hostRef: id, key: 'already-consumed', serverUrl: 'https://host:8080' },
+      deps({
+        enrollmentClient: {
+          enroll: async () => {
+            enrollCalls += 1;
+            throw new Error('committed recovery must not enroll');
+          },
+        },
+      }),
+    );
+
+    expect(result.created).toBe(true);
+    expect(enrollCalls).toBe(0);
+    expect(svc.installed).toHaveLength(installsBeforeRetry);
+    expect(getHost(id)?.enrollment_generation).toBe(1);
+    expect(readHostSecrets(id)[HOST_BEARER_SECRET]).toBe('bearer-1');
+    expect(fs.existsSync(path.join(hostDir, 'enrollment-intent.json'))).toBe(false);
+    expect(fs.existsSync(path.join(hostDir, 'proxy-port-claim.json'))).toBe(false);
+  });
+
+  test('committed rejoin recovery remains a rejoin after arbitrary paired reads', async () => {
+    const id = hostId();
+    await joinHost(
+      { hostRef: id, key: 'initial', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-1') }),
+    );
+    await joinHost(
+      { hostRef: id, key: 'rejoin', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-2') }),
+    );
+    const hostDir = writeCommittedEnrollmentResidue(id, 1);
+    let enrollCalls = 0;
+    const installsBeforeRetry = svc.installed.length;
+
+    expect(getHost(id)?.enrollment_generation).toBe(2);
+    expect(readHostRegistry()).toHaveLength(1);
+    expect(readHostSecrets(id)[HOST_BEARER_SECRET]).toBe('bearer-2');
+    expect(fs.existsSync(path.join(hostDir, 'enrollment-intent.json'))).toBe(true);
+    expect(fs.existsSync(path.join(hostDir, 'proxy-port-claim.json'))).toBe(true);
+
+    const result = await joinHost(
+      { hostRef: id, key: 'already-consumed', serverUrl: 'https://host:8080' },
+      deps({
+        enrollmentClient: {
+          enroll: async () => {
+            enrollCalls += 1;
+            throw new Error('committed recovery must not enroll');
+          },
+        },
+      }),
+    );
+
+    expect(result.created).toBe(false);
+    expect(enrollCalls).toBe(0);
+    expect(svc.installed).toHaveLength(installsBeforeRetry);
+    expect(getHost(id)?.enrollment_generation).toBe(2);
+    expect(readHostSecrets(id)[HOST_BEARER_SECRET]).toBe('bearer-2');
+    expect(fs.existsSync(path.join(hostDir, 'enrollment-intent.json'))).toBe(false);
+    expect(fs.existsSync(path.join(hostDir, 'proxy-port-claim.json'))).toBe(false);
+  });
+
+  test.each([
+    ['an object bearer', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: {} }],
+    ['a control-character bearer', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: 'bad\0bearer' }],
+    ['a non-empty remote projects field', { host_id: 'ignored', label: 'host', overlay_address: '100.64.0.1:7433', protocol_version: HOST_PROTOCOL_VERSION, bearer: 'bearer-valid', projects: [{}] }],
+  ])('a real enrollment response with %s fails before join mutates the host registry', async (_label, response) => {
+    const id = hostId();
+    let reachabilityCalls = 0;
+    const client = createEnrollmentClient(async () => ({
+      status: 200,
+      body: JSON.stringify({ ...response, host_id: id }),
+    }));
+    const hostDir = path.join(tmp, 'hosts', id);
+
+    const caught = await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080', overlayAddress: '100.64.0.1:7433' },
+      deps({
+        enrollmentClient: client,
+        sleep: async () => {},
+        checkHostReachable: async () => { reachabilityCalls += 1; return true; },
+      }),
+    ).catch((error) => error);
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(reachabilityCalls).toBe(0);
+    expect(fs.existsSync(path.join(hostDir, 'host.json'))).toBe(false);
+    expect(fs.existsSync(path.join(hostDir, 'enrollment-intent.json'))).toBe(true);
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
+
+  test.each([
+    ['a scheme-bearing overlay address', { overlay_address: 'http://100.64.0.1:7433' }],
+    ['a loopback overlay address', { overlay_address: '127.0.0.1:7433' }],
+    ['a LAN overlay address', { overlay_address: '192.168.1.2:7433' }],
+    ['a public overlay address', { overlay_address: '8.8.8.8:7433' }],
+    ['an out-of-range overlay address', { overlay_address: '100.128.0.1:7433' }],
+    ['an overlay address without an explicit port', { overlay_address: '100.64.0.1' }],
+    ['a zero overlay port', { overlay_address: '100.64.0.1:0' }],
+    ['an oversized overlay port', { overlay_address: '100.64.0.1:65536' }],
+    ['a non-numeric overlay port', { overlay_address: '100.64.0.1:port' }],
+    ['an overlay address with a normalized port', { overlay_address: '100.64.0.1:07433' }],
+    ['an overlay address with a path', { overlay_address: '100.64.0.1:7433/enroll' }],
+    ['an invalid served grove id', { served_grove_id: 'grove_not_an_id' }],
+    ['an empty served grove id', { served_grove_id: '' }],
+    ['a protocol below the compatibility window', { protocol_version: 0 }],
+    ['a protocol above the compatibility window', { protocol_version: HOST_PROTOCOL_VERSION + 1 }],
+    ['a non-integer protocol', { protocol_version: 1.5 }],
+    ['a non-number protocol', { protocol_version: '3' }],
+    ['a non-string host id', { host_id: {} }],
+    ['a non-string label', { label: [] }],
+  ])('a real enrollment response with %s fails before join probes or persists', async (_label, response) => {
+    const id = hostId();
+    let reachabilityCalls = 0;
+    const client = createEnrollmentClient(async () => ({
+      status: 200,
+      body: JSON.stringify({
+        host_id: id,
+        label: 'host',
+        overlay_address: '100.64.0.1:7433',
+        protocol_version: HOST_PROTOCOL_VERSION,
+        bearer: 'bearer-valid',
+        ...response,
+      }),
+    }));
+
+    const caught = await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080', overlayAddress: '100.64.0.1:7433' },
+      deps({
+        enrollmentClient: client,
+        sleep: async () => {},
+        checkHostReachable: async () => { reachabilityCalls += 1; return true; },
+      }),
+    ).catch((error) => error);
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(reachabilityCalls).toBe(0);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id, 'host.json'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id, 'enrollment-intent.json'))).toBe(true);
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
+
+  test.each([
+    ['empty', ''],
+    ['leading carriage return', '\rmanual-bearer'],
+    ['trailing carriage return', 'manual-bearer\r'],
+    ['leading line feed', '\nmanual-bearer'],
+    ['trailing line feed', 'manual-bearer\n'],
+    ['internal carriage return', 'manual\rbearer'],
+    ['internal line feed', 'manual\nbearer'],
+    ['internal NUL', 'manual\0bearer'],
+  ])('a manual bearer with %s fails before join probes or persists', async (_label, bearer) => {
+    const id = hostId();
+    let reachabilityCalls = 0;
+
+    const caught = await joinHost(
+      {
+        hostRef: id,
+        key: 'onetime',
+        serverUrl: 'https://host:8080',
+        overlayAddress: '100.64.0.1:7433',
+        bearer,
+      },
+      deps({
+        sleep: async () => {},
+        checkHostReachable: async () => { reachabilityCalls += 1; return true; },
+      }),
+    ).catch((error) => error);
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(reachabilityCalls).toBe(0);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id, 'host.json'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id, 'enrollment-intent.json'))).toBe(true);
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
+
+  test.each([
+    ['leading whitespace', ' 100.64.0.1:7433'],
+    ['trailing whitespace', '100.64.0.1:7433 '],
+  ])('a manual overlay address with %s fails before join probes or persists', async (_label, overlayAddress) => {
+    const id = hostId();
+    let reachabilityCalls = 0;
+
+    const caught = await joinHost(
+      {
+        hostRef: id,
+        key: 'onetime',
+        serverUrl: 'https://host:8080',
+        overlayAddress,
+        bearer: 'manual-bearer',
+      },
+      deps({
+        sleep: async () => {},
+        checkHostReachable: async () => { reachabilityCalls += 1; return true; },
+      }),
+    ).catch((error) => error);
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(reachabilityCalls).toBe(0);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id, 'host.json'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id, 'enrollment-intent.json'))).toBe(true);
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
+
+  test('a staged-bearer filesystem failure leaves the resumable intent without a host pointer', async () => {
+    const id = hostId();
+    const hostDir = path.join(tmp, 'hosts', id);
+    fs.mkdirSync(hostDir, { recursive: true });
+    fs.writeFileSync(path.join(hostDir, 'bearers'), 'not-a-directory');
+
+    await expect(joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-new') }),
+    )).rejects.toThrow();
+
+    expect(fs.existsSync(path.join(hostDir, 'host.json'))).toBe(false);
+    expect(getHost(id)).toBeNull();
+    expect(fs.existsSync(path.join(hostDir, 'enrollment-intent.json'))).toBe(true);
+    expect(fs.statSync(path.join(hostDir, 'bearers')).isFile()).toBe(true);
+  });
+
+  test('a staged-bearer failure leaves the exact prior generation visible on rejoin', async () => {
+    const id = hostId();
+    const project = createProjectId();
+    await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-original') }),
+    );
+    attachProject(id, { grove_id: createGroveId(), project_id: project });
+
+    const hostJsonPath = path.join(tmp, 'hosts', id, 'host.json');
+    const before = fs.readFileSync(hostJsonPath, 'utf-8');
+    const nextBearerPath = path.join(tmp, 'hosts', id, 'bearers', '2.env');
+    fs.mkdirSync(nextBearerPath);
+    const uninstallsBefore = [...svc.uninstalled];
+
+    await expect(joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ enrollmentClient: fakeEnrollment(id, 'bearer-updated', '100.64.0.9:7433') }),
+    )).rejects.toThrow();
+
+    expect(fs.readFileSync(hostJsonPath, 'utf-8')).toBe(before);
+    expect(getHost(id)?.projects).toEqual([{ grove_id: expect.any(String), project_id: project }]);
+    expect(readHostSecrets(id)[HOST_BEARER_SECRET]).toBe('bearer-original');
+    expect(fs.statSync(nextBearerPath).isDirectory()).toBe(true);
+    expect(svc.uninstalled).toEqual(uninstallsBefore);
+  });
+
   // --- leave (single) ------------------------------------------------------
 
   test('leave clears the record + bearer and tears down this host\'s LaunchAgent', async () => {
     const id = hostId();
-    await joinHost({ hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' }, deps({ enrollmentClient: fakeEnrollment(id, 'bearer-xyz') }));
+    const proxyPort = await findFreeLoopbackPort();
+    await joinHost({ hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' }, deps({ proxyPort, enrollmentClient: fakeEnrollment(id, 'bearer-xyz') }));
 
     const result = await leaveHost(id, deps());
     expect(result.removed).toBe(true);
@@ -404,14 +803,193 @@ describe('member overlay — multi-host join / leave', () => {
     expect(result.tailscaledRemoved).toBe(false);
   });
 
+  test('leave keeps the record and reserved port when tailscaled cannot be removed', async () => {
+    const id = hostId();
+    const proxyPort = await findFreeLoopbackPort();
+    await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ proxyPort, enrollmentClient: fakeEnrollment(id, 'bearer-xyz') }),
+    );
+    svc.uninstall = async () => { throw new Error('uninstall refused'); };
+
+    await expect(leaveHost(id, deps())).rejects.toThrow(/registry remains intact/);
+    expect(getHost(id)?.proxy_port).toBe(proxyPort);
+    expect(() => reserveHostProxyPort(hostId(), proxyPort)).toThrow(/already reserved/);
+  });
+
+  test('leave removes an interrupted pre-enrollment join and its durable port claim', async () => {
+    const id = hostId();
+    const proxyPort = await findFreeLoopbackPort();
+    reserveHostProxyPort(id, proxyPort);
+    const hostDir = path.join(tmp, 'hosts', id);
+    expect(fs.existsSync(path.join(hostDir, 'proxy-port-claim.json'))).toBe(true);
+
+    const result = await leaveHost(id, deps());
+
+    expect(result.removed).toBe(true);
+    expect(result.tailscaledRemoved).toBe(false);
+    expect(svc.uninstalled).toContain(memberTailscaledLabel(id));
+    expect(fs.existsSync(hostDir)).toBe(false);
+  });
+
+  test('leave repairs a corrupt host pointer when the installed service proves the exact proxy port', async () => {
+    const id = hostId();
+    const proxyPort = await findFreeLoopbackPort();
+    await joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ proxyPort, enrollmentClient: fakeEnrollment(id, 'bearer-xyz') }),
+    );
+    const hostDir = path.join(tmp, 'hosts', id);
+    fs.writeFileSync(path.join(hostDir, 'host.json'), '{corrupt');
+
+    const result = await leaveHost(id, deps());
+
+    expect(result.removed).toBe(true);
+    expect(result.tailscaledRemoved).toBe(true);
+    expect(fs.existsSync(hostDir)).toBe(false);
+  });
+
+  test('corrupt leave refuses without a trustworthy record, claim, or installed service command', async () => {
+    const id = hostId();
+    const hostDir = path.join(tmp, 'hosts', id);
+    fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(hostDir, 'host.json'), '{corrupt');
+    const ledgerDir = path.join(tmp, 'host-generations');
+    fs.mkdirSync(ledgerDir, { mode: 0o700 });
+    fs.writeFileSync(
+      path.join(ledgerDir, `${id}.json`),
+      JSON.stringify({
+        schema_version: 1,
+        host_id: id,
+        last_allocated_generation: 1,
+        retired_through_generation: 0,
+      }),
+      { mode: 0o600 },
+    );
+
+    await expect(leaveHost(id, deps())).rejects.toThrow(/no trustworthy proxy-port identity/);
+    expect(fs.existsSync(path.join(hostDir, 'host.json'))).toBe(true);
+    expect(svc.uninstalled).toEqual([]);
+  });
+
   // --- readiness poll (start→up race) --------------------------------------
+
+  test('retry preserves durable service ownership and cleans the exact installed command', async () => {
+    const id = hostId();
+    const proxyPort = await findFreeLoopbackPort();
+    await stageInterruptedServiceInstall(id, proxyPort);
+
+    await expect(joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({
+        proxyPort,
+        enrollmentClient: fakeEnrollment(id, 'b'),
+        waitForSocket: async () => false,
+      }),
+    )).rejects.toThrow(/socket .* did not appear/);
+
+    expect(svc.uninstalled).toContain(memberTailscaledLabel(id));
+    expect(fs.existsSync(path.join(tmp, 'hosts', id))).toBe(false);
+  });
+
+  test('retry retains its claim when the installed command no longer matches its ownership record', async () => {
+    const id = hostId();
+    const proxyPort = await findFreeLoopbackPort();
+    const spec = await stageInterruptedServiceInstall(id, proxyPort);
+    svc.installed = [{
+      ...spec,
+      args: [...spec.args, '--unexpected'],
+    }];
+
+    await expect(joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({
+        proxyPort,
+        enrollmentClient: fakeEnrollment(id, 'b'),
+        waitForSocket: async () => false,
+      }),
+    )).rejects.toThrow(/claim remains reserved/);
+
+    expect(svc.uninstalled).toEqual([]);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id, 'proxy-port-claim.json'))).toBe(true);
+  });
 
   test('join fails with a socket-not-ready error when the tailscaled socket never appears', async () => {
     const id = hostId();
+    const proxyPort = await findFreeLoopbackPort();
+    await expect(joinHost(
+      { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({ proxyPort, enrollmentClient: fakeEnrollment(id, 'b'), waitForSocket: async () => false }),
+    )).rejects.toThrow(/socket .* did not appear/);
+    expect(svc.uninstalled).toContain(memberTailscaledLabel(id));
+    expect(fs.existsSync(path.join(tmp, 'hosts', id))).toBe(false);
+  });
+
+  test('a pre-overlay cleanup retains its claim when the proxy listener is still bound', async () => {
+    const id = hostId();
+    const proxyPort = await findFreeLoopbackPort();
+    const listener = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      listener.once('error', reject);
+      listener.listen({ host: '127.0.0.1', port: proxyPort }, resolve);
+    });
+    try {
+      await expect(joinHost(
+        { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+        deps({
+          proxyPort,
+          enrollmentClient: fakeEnrollment(id, 'b'),
+          waitForSocket: async () => false,
+        }),
+      )).rejects.toThrow(/claim remains reserved/);
+      expect(fs.existsSync(path.join(tmp, 'hosts', id, 'proxy-port-claim.json')))
+        .toBe(true);
+      expect(JSON.parse(fs.readFileSync(
+        path.join(tmp, 'hosts', id, 'enrollment-intent.json'),
+        'utf-8',
+      )).phase).toBe('teardown_pending');
+    } finally {
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+    }
+  });
+
+  test('a failed new join keeps its claim when tailscaled cleanup fails', async () => {
+    const id = hostId();
+    svc.uninstall = async () => { throw new Error('uninstall refused'); };
+
     await expect(joinHost(
       { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
       deps({ enrollmentClient: fakeEnrollment(id, 'b'), waitForSocket: async () => false }),
-    )).rejects.toThrow(/socket .* did not appear/);
+    )).rejects.toThrow(/claim remains reserved/);
+
+    expect(fs.existsSync(path.join(tmp, 'hosts', id, 'proxy-port-claim.json'))).toBe(true);
+    expect(reserveHostProxyPort(hostId()).proxyPort).toBe(MEMBER_OVERLAY_PROXY_PORT_BASE + 1);
+  });
+
+  test('a teardown-pending retry fails before provisioning, service, overlay, or enrollment', async () => {
+    const id = hostId();
+    const reservation = reserveHostProxyPort(id);
+    markHostEnrollmentTeardownPending(reservation);
+    const runnerCalls = runnerState.calls.length;
+    let enrollCalls = 0;
+
+    await expect(joinHost(
+      { hostRef: id, key: 'must-not-be-consumed', serverUrl: 'https://host:8080' },
+      deps({
+        enrollmentClient: {
+          enroll: async () => {
+            enrollCalls += 1;
+            throw new Error('teardown-pending retry must not enroll');
+          },
+        },
+      }),
+    )).rejects.toThrow(/teardown.*leave/i);
+
+    expect(runnerState.calls).toHaveLength(runnerCalls);
+    expect(svc.installed).toEqual([]);
+    expect(svc.started).toEqual([]);
+    expect(enrollCalls).toBe(0);
+    expect(fs.existsSync(path.join(tmp, 'hosts', id, 'proxy-port-claim.json'))).toBe(true);
   });
 
   // --- the Task 2.4 enrollment seam (manual bridge) ------------------------
@@ -470,7 +1048,6 @@ describe('member overlay — multi-host join / leave', () => {
           overlay_address: '100.64.0.1:7433',
           protocol_version: HOST_PROTOCOL_VERSION,
           bearer,
-          projects: [],
         };
       },
     };

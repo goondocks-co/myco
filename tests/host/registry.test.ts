@@ -7,26 +7,54 @@
  * `~/.myco-team`, mirroring the env-override + tmpdir pattern used by
  * `symbionts/installer/project-files.test.ts` and `config/secrets.test.ts`.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 
 import { HOST_BEARER_SECRET } from '@myco/constants';
 import { createHostId } from '@myco/grove/ids';
 import {
+  createHostRegistryOperations,
+  ProjectAttachedToOtherHostError,
+  type HostRecord,
+} from '@myco/host/registry';
+import { createHostOperationLock } from '@myco/host/operation-lock';
+import { withLoopbackPortReleaseProof } from '@myco/host/loopback-port-proof';
+import {
+  testPerUserLockNamespace,
+  testPerUserLocksRoot,
+} from '../helpers/per-user-lock-namespace.js';
+
+const {
+  advanceHostEnrollmentPhase,
   attachProject,
   detachProject,
   getHost,
-  ProjectAttachedToOtherHostError,
+  persistEnrollmentMembership,
   readHostRegistry,
   readHostSecrets,
-  removeHost,
+  recordHostProtocolVersion,
+  reserveHostProxyPort,
+  retireHostMembership,
   resolveAttach,
-  upsertHost,
   writeHostSecret,
-  type HostRecord,
-} from '@myco/host/registry';
+} = createHostRegistryOperations(testPerUserLockNamespace);
+const withHostOperationLock = createHostOperationLock(testPerUserLockNamespace);
+
+async function findFreeLoopbackPort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '127.0.0.1', port: 0 }, resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('could not allocate a test port');
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
 
 function makeHost(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
@@ -56,10 +84,24 @@ describe('host registry', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  test('round-trip: upsert then read back, with an attached project', () => {
+  test('uses explicit namespaces for registry and host-operation locks', async () => {
+    expect(readHostRegistry()).toEqual([]);
+    const operationLockDir = path.join(testPerUserLocksRoot, 'host-operations');
+    await withHostOperationLock(
+      createHostId(),
+      'join',
+      async () => {},
+    );
+
+    expect(fs.readdirSync(path.join(testPerUserLocksRoot, 'host-membership')).length)
+      .toBeGreaterThan(0);
+    expect(fs.readdirSync(operationLockDir).length).toBeGreaterThan(0);
+  });
+
+  test('round-trip: fixture seed then read back, with an attached project', () => {
     const host = makeHost();
     const ref = { grove_id: 'grove-1', project_id: 'proj-1' };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     attachProject(host.host_id, ref);
 
     const all = readHostRegistry();
@@ -71,10 +113,33 @@ describe('host registry', () => {
     expect(getHost(host.host_id)?.overlay_address).toBe('100.64.0.1:7433');
   });
 
+  test('protocol refresh rejects invalid values without corrupting the record and remains monotonic', () => {
+    const host = makeHost({ protocol_version: 3 });
+    writeHostRecordFixture(host);
+
+    for (const invalid of [
+      0,
+      -1,
+      3.5,
+      Number.POSITIVE_INFINITY,
+      Number.NaN,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      expect(() => recordHostProtocolVersion(host.host_id, invalid))
+        .toThrow(/positive safe integer/);
+      expect(getHost(host.host_id)?.protocol_version).toBe(3);
+    }
+
+    expect(recordHostProtocolVersion(host.host_id, 4)).toBe(4);
+    expect(getHost(host.host_id)?.protocol_version).toBe(4);
+    expect(recordHostProtocolVersion(host.host_id, 3)).toBe(4);
+    expect(getHost(host.host_id)?.protocol_version).toBe(4);
+  });
+
   test('resolveAttach hits the host + ref for an attached project', () => {
     const host = makeHost();
     const ref = { grove_id: 'grove-2', project_id: 'proj-2' };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     attachProject(host.host_id, ref);
 
     const resolved = resolveAttach(ref.project_id);
@@ -84,7 +149,7 @@ describe('host registry', () => {
   });
 
   test('resolveAttach misses for a project attached to no host', () => {
-    upsertHost(makeHost());
+    writeHostRecordFixture(makeHost());
     expect(resolveAttach('proj-unattached')).toBeNull();
   });
 
@@ -95,7 +160,7 @@ describe('host registry', () => {
   test('detachProject removes the ref; resolveAttach then misses', () => {
     const host = makeHost();
     const ref = { grove_id: 'grove-3', project_id: 'proj-3' };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     attachProject(host.host_id, ref);
     expect(resolveAttach(ref.project_id)).not.toBeNull();
 
@@ -117,19 +182,15 @@ describe('host registry', () => {
   test('attachProject is idempotent for an already-attached project (same host)', () => {
     const host = makeHost();
     const ref = { grove_id: 'grove-5', project_id: 'proj-5' };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     attachProject(host.host_id, ref);
     expect(() => attachProject(host.host_id, ref)).not.toThrow();
     expect(getHost(host.host_id)?.projects).toHaveLength(1);
   });
 
-  test('re-attach to the same host backfills a pre-WS1 ref missing `root`', () => {
-    // Simulates a record created before `AttachRef.root` existed (or a
-    // record that otherwise never got one): seeded directly via
-    // `upsertHost`, not `attachProject`, since a real attach always sets
-    // `root` today.
+  test('re-attach to the same host backfills an absent `root`', () => {
     const host = makeHost({ projects: [{ grove_id: 'grove-7', project_id: 'proj-7' }] });
-    upsertHost(host);
+    writeHostRecordFixture(host);
     expect(resolveAttach('proj-7')?.ref.root).toBeUndefined();
 
     attachProject(host.host_id, { grove_id: 'grove-7', project_id: 'proj-7', root: '/checkouts/proj-7' });
@@ -143,7 +204,7 @@ describe('host registry', () => {
 
   test('re-attach to the same host refreshes `root` when the checkout has moved', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     attachProject(host.host_id, { grove_id: 'grove-8', project_id: 'proj-8', root: '/old/checkout' });
     expect(resolveAttach('proj-8')?.ref.root).toBe('/old/checkout');
 
@@ -159,7 +220,7 @@ describe('host registry', () => {
     // `root` a prior attach already recorded — the backfill/refresh branch
     // is for BACKFILLING root from undefined, never for erasing it.
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     attachProject(host.host_id, { grove_id: 'grove-10', project_id: 'proj-10', root: '/checkouts/proj-10' });
     expect(resolveAttach('proj-10')?.ref.root).toBe('/checkouts/proj-10');
 
@@ -171,7 +232,7 @@ describe('host registry', () => {
 
   test('re-attach to the same host never refreshes `grove_id` — a Grove change requires an explicit detach first', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     attachProject(host.host_id, { grove_id: 'grove-original', project_id: 'proj-9', root: '/checkouts/proj-9' });
 
     attachProject(host.host_id, { grove_id: 'grove-different', project_id: 'proj-9', root: '/checkouts/proj-9' });
@@ -183,8 +244,8 @@ describe('host registry', () => {
     const hostA = makeHost({ label: 'Host A' });
     const hostB = makeHost({ label: 'Host B' });
     const ref = { grove_id: 'grove-6', project_id: 'proj-6' };
-    upsertHost(hostA);
-    upsertHost(hostB);
+    writeHostRecordFixture(hostA);
+    writeHostRecordFixture(hostB);
     attachProject(hostA.host_id, ref);
 
     let caught: unknown;
@@ -209,7 +270,7 @@ describe('host registry', () => {
 
   test('round-trip: a ref with `local_grove_id` persists/reads; a ref without it stays absent (not null)', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const withHome = { grove_id: 'grove-11', project_id: 'proj-11', local_grove_id: 'grove-local-1' };
     const withoutHome = { grove_id: 'grove-12', project_id: 'proj-12' };
     attachProject(host.host_id, withHome);
@@ -223,7 +284,7 @@ describe('host registry', () => {
 
   test('re-attach backfills `local_grove_id` for a legacy ref (recorded before the field existed) but never clobbers an already-recorded value', () => {
     const host = makeHost({ projects: [{ grove_id: 'grove-13', project_id: 'proj-13' }] });
-    upsertHost(host);
+    writeHostRecordFixture(host);
     expect(resolveAttach('proj-13')?.ref.local_grove_id).toBeUndefined();
 
     // First re-attach: backfills the absent value.
@@ -237,20 +298,70 @@ describe('host registry', () => {
     expect(resolveAttach('proj-13')?.ref.local_grove_id).toBe('grove-local-a');
   });
 
-  test('removeHost deletes the record and its secrets', () => {
-    const host = makeHost();
-    upsertHost(host);
+  test('leave retirement fences a restored legacy record after deleting its secrets', async () => {
+    const proxyPort = await findFreeLoopbackPort();
+    const host = makeHost({ proxy_port: proxyPort });
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'a-bearer-token');
+    const restoredRecord = fs.readFileSync(path.join(tmp, 'hosts', host.host_id, 'host.json'));
 
-    removeHost(host.host_id);
+    await withHostOperationLock(host.host_id, 'leave', async (lease) => {
+      await withLoopbackPortReleaseProof(proxyPort, async (proof) => {
+        retireHostMembership(host.host_id, lease, proof, proxyPort);
+      });
+    });
 
+    expect(getHost(host.host_id)).toBeNull();
+    expect(readHostSecrets(host.host_id)).toEqual({});
+
+    const restoredDir = path.join(tmp, 'hosts', host.host_id);
+    fs.mkdirSync(restoredDir, { recursive: true });
+    fs.writeFileSync(path.join(restoredDir, 'host.json'), restoredRecord);
+    fs.writeFileSync(
+      path.join(restoredDir, 'secrets.env'),
+      `${HOST_BEARER_SECRET}=restored-bearer\n`,
+      { mode: 0o600 },
+    );
     expect(getHost(host.host_id)).toBeNull();
     expect(readHostSecrets(host.host_id)).toEqual({});
   });
 
-  test('readHostRegistry skips a host.json that parses as valid JSON but is missing `host_id`; a sibling valid record still loads', () => {
+  test('leave repairs a malformed generation ledger before retiring the membership', async () => {
+    const proxyPort = await findFreeLoopbackPort();
+    const host = makeHost({ proxy_port: proxyPort });
+    const reservation = reserveHostProxyPort(host.host_id, proxyPort);
+    advanceHostEnrollmentPhase(reservation, 'enrolling');
+    persistEnrollmentMembership(
+      {
+        host_id: host.host_id,
+        label: host.label,
+        overlay_address: host.overlay_address,
+        protocol_version: host.protocol_version,
+        created_at: host.created_at,
+      },
+      'a-bearer-token',
+      reservation,
+    );
+    const ledgerPath = path.join(tmp, 'host-generations', `${host.host_id}.json`);
+    fs.writeFileSync(ledgerPath, '{malformed', { mode: 0o600 });
+
+    await withHostOperationLock(host.host_id, 'leave', async (lease) => {
+      await withLoopbackPortReleaseProof(proxyPort, async (proof) => {
+        retireHostMembership(host.host_id, lease, proof, proxyPort);
+      });
+    });
+
+    expect(getHost(host.host_id)).toBeNull();
+    expect(JSON.parse(fs.readFileSync(ledgerPath, 'utf-8'))).toMatchObject({
+      host_id: host.host_id,
+      last_allocated_generation: 1,
+      retired_through_generation: 1,
+    });
+  });
+
+  test('readHostRegistry fails closed when a host.json is missing host_id', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const corruptDir = path.join(tmp, 'hosts', 'corrupt-missing-host-id');
     fs.mkdirSync(corruptDir, { recursive: true });
@@ -259,14 +370,12 @@ describe('host registry', () => {
       JSON.stringify({ label: 'no host_id here', projects: [] }),
     );
 
-    const all = readHostRegistry();
-    expect(all).toHaveLength(1);
-    expect(all[0].host_id).toBe(host.host_id);
+    expect(() => readHostRegistry()).toThrow(/host_join_state_corrupt/);
   });
 
-  test('readHostRegistry skips a host.json whose `projects` is not an array; a sibling valid record still loads', () => {
+  test('readHostRegistry fails closed when projects is not an array', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
 
     const corruptDir = path.join(tmp, 'hosts', 'corrupt-projects-shape');
     fs.mkdirSync(corruptDir, { recursive: true });
@@ -275,14 +384,12 @@ describe('host registry', () => {
       JSON.stringify({ host_id: 'host_corrupt', label: 'bad shape', projects: 'not-an-array' }),
     );
 
-    const all = readHostRegistry();
-    expect(all).toHaveLength(1);
-    expect(all[0].host_id).toBe(host.host_id);
+    expect(() => readHostRegistry()).toThrow(/host_join_state_corrupt/);
   });
 
   test('bearer round-trips via secrets and never appears in host.json on disk', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const bearer = 'super-secret-host-bearer-value';
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, bearer);
 

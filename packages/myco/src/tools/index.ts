@@ -8,6 +8,7 @@ import {
   readPivot,
   resolveCallContext,
   stripPivotFields,
+  type CallContextConstraint,
 } from './call-context.js';
 import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
 import {
@@ -38,6 +39,7 @@ export interface MycoToolsOptions {
    * a private handle, preserving existing behavior outside the daemon.
    */
   resolveDatabase?: (databasePath: string) => Database;
+  callContextConstraint?: CallContextConstraint;
 }
 
 interface JsonSchemaProperty {
@@ -405,8 +407,10 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
    * the call-context resolver. Otherwise return the closed-over base
    * context unchanged.
    */
-  function effectiveContextFor(base: MycoRequestContext, name: string, input: ToolInput): MycoRequestContext {
-    return resolveCallContext(base, readPivot(input));
+  function effectiveContextFor(base: MycoRequestContext, _name: string, input: ToolInput): MycoRequestContext {
+    return resolveCallContext(base, readPivot(input), {
+      constraint: options.callContextConstraint,
+    });
   }
 
   return {

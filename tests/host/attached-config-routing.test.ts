@@ -9,6 +9,7 @@
  * Hermetic: `MYCO_TEAM_HOME` points at a fresh tmpdir so the attach registry is
  * empty unless a test seeds it (the same override the registry/routing tests use).
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,8 +23,13 @@ import {
   createProjectId,
   type GroveProjectId,
 } from '@myco/grove/ids';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
-import { classifyRoute, classifyRouteStamp, groveTierWriteRefusal } from '@myco/host/routing';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
+import { classifyRoute as classifyRouteWith, classifyRouteStamp, groveTierWriteRefusal } from '@myco/host/routing';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
+const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
+  classifyRouteWith(input, testPerUserLockNamespace);
 
 function seedAttached(): { projectId: GroveProjectId; groveId: string; host: HostRecord } {
   const groveId = createGroveId();
@@ -36,7 +42,7 @@ function seedAttached(): { projectId: GroveProjectId; groveId: string; host: Hos
     created_at: new Date().toISOString(),
     projects: [{ grove_id: groveId, project_id: projectId }],
   };
-  upsertHost(host);
+  writeHostRecordFixture(host);
   return { projectId, groveId, host };
 }
 

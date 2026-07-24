@@ -20,6 +20,7 @@
  * member's attach registry), and `HOME` (deterministic agent-symlink
  * detection) are fresh tmpdirs.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -44,12 +45,14 @@ import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove/ids.js';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const HOST_BEARER = 'test-content-claims-materialize-host-bearer';
 const CONTENT = '# skill-1\n\nMaterialized body.\n';
 const noopProxyLogger = { warn(): void {}, error(): void {} };
@@ -141,6 +144,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: hostLogger,
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
       // servedGroveId designates `grove` as the ONE Grove this host serves —
       // required since Task 2's servedGroveRefusal fail-closed filter now
       // refuses every overlay request when the designation is absent, even
@@ -153,7 +157,11 @@ describe('content claim materialize over the Team Host overlay', () => {
     // this `localhost-only`-stamped path must be refused BEFORE the handler below
     // ever resolves a member's disk (see the transport-boundary test at the bottom
     // of this file).
-    registerContentClaimFileStatusRoute(hostServer, { logger: noopProxyLogger, mycoHome });
+    registerContentClaimFileStatusRoute(hostServer, {
+      logger: noopProxyLogger,
+      mycoHome,
+      lockNamespace: testPerUserLockNamespace,
+    });
     hostServer.registerRoute(
       'GET',
       '/api/skill-records/:id',
@@ -166,6 +174,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       logger: noopProxyLogger,
       machineId: 'host-machine',
       mycoHome,
+      lockNamespace: testPerUserLockNamespace,
     });
     await hostServer.start(0);
 
@@ -187,7 +196,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: grove.id, project_id: projectId, root: memberProjectRoot }],
     };
-    upsertHost(hostBearerRecord);
+    writeHostRecordFixture(hostBearerRecord);
     writeHostSecret(hostBearerRecord.host_id, HOST_BEARER_SECRET, HOST_BEARER);
     saveProjectManifest(resolveProjectVaultDir(memberProjectRoot), { project: { id: projectId } });
 
@@ -197,6 +206,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       vaultDir: path.join(tmp, 'member-anchor', '.myco'),
       logger: memberLogger,
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
     });
     memberCache = new GroveRuntimeCache();
     // Registered locally (mirroring production `daemon/main.ts`, which wires every
@@ -217,8 +227,13 @@ describe('content claim materialize over the Team Host overlay', () => {
       // `claim.claimed_by`.
       machineId: 'attached-member-machine',
       mycoHome,
+      lockNamespace: testPerUserLockNamespace,
     });
-    registerContentClaimFileStatusRoute(memberServer, { logger: noopProxyLogger, mycoHome });
+    registerContentClaimFileStatusRoute(memberServer, {
+      logger: noopProxyLogger,
+      mycoHome,
+      lockNamespace: testPerUserLockNamespace,
+    });
     await memberServer.start(0);
     memberBase = `http://127.0.0.1:${memberServer.port}`;
   });
@@ -405,6 +420,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       vaultDir: path.join(tmp, 'non-holder-anchor', '.myco'),
       logger: nonHolderLogger,
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
     });
     const nonHolderCache = new GroveRuntimeCache();
     registerContentClaimMaterializeRoute(nonHolderServer, {
@@ -413,6 +429,7 @@ describe('content claim materialize over the Team Host overlay', () => {
       logger: spyLogger,
       machineId: 'not-the-claim-holder', // != claimed_by -> the host's holder gate 403s the mark dial
       mycoHome,
+      lockNamespace: testPerUserLockNamespace,
     });
     await nonHolderServer.start(0);
 

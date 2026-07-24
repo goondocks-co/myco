@@ -19,9 +19,21 @@ import path from 'node:path';
 
 import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
-import { registerScheduledTasks } from '@myco/daemon/task-scheduling.js';
+import {
+  registerScheduledTasks as registerScheduledTasksWith,
+  type TaskSchedulingDeps,
+} from '@myco/daemon/task-scheduling.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
 import { ProjectPowerStateTracker } from '@myco/daemon/project-power-state.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const registerScheduledTasks = (
+  runner: Parameters<typeof registerScheduledTasksWith>[0],
+  deps: TaskSchedulingDeps,
+) => registerScheduledTasksWith(runner, {
+  ...deps,
+  lockNamespace: testPerUserLockNamespace,
+});
 import {
   createGrove,
   registerProjectInGrove,

@@ -25,6 +25,7 @@ import {
 } from '../api/provider-secrets.js';
 import type { DaemonLogger } from '../logger.js';
 import type { RouteRegistrar } from '../router.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 export type ProviderRouteScope = 'machine';
 
@@ -38,6 +39,7 @@ export const PROVIDER_ROUTE_SCOPES = {
 
 export interface ProviderRouteDeps {
   logger?: DaemonLogger;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 export function registerProviderRoutes(
@@ -51,6 +53,14 @@ export function registerProviderRoutes(
   // (machine-level keys), not any tenant's vault, so they are deliberately
   // classified as machine routes instead of tenantRoute-wrapped handlers.
   server.registerRoute('GET', '/api/providers/secrets', async (req) => handleGetProviderSecrets(req));
-  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(req));
-  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(req));
+  server.registerRoute(
+    'PUT',
+    '/api/providers/secrets/:provider',
+    async (req) => handlePutProviderSecret(req, deps.lockNamespace),
+  );
+  server.registerRoute(
+    'DELETE',
+    '/api/providers/secrets/:provider',
+    async (req) => handleDeleteProviderSecret(req, deps.lockNamespace),
+  );
 }

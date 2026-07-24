@@ -10,6 +10,10 @@ import {
   resolveTeamDir,
   resolveTeamConfigPath,
 } from '../grove/paths.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 export interface TeamProjectRef {
   grove_id: string;
@@ -113,8 +117,13 @@ function projectsForTeam(teamId: string): TeamProjectRef[] { return get(teamId)?
 
 function readSecrets(teamId: string): Record<string, string> { return readSecretsFile(resolveTeamDir(teamId)); }
 
-function writeSecret(teamId: string, key: string, value: string): void {
-  writeSecretFile(resolveTeamDir(teamId), key, value);
+function writeSecret(
+  teamId: string,
+  key: string,
+  value: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): void {
+  writeSecretFile(resolveTeamDir(teamId), key, value, lockNamespace);
 }
 
 function readDeployment(teamId: string): TeamDeploymentRecord | null {
@@ -152,3 +161,11 @@ export const teamRegistry = {
   list, listResolved, get, save, remove, membershipByProject, projectsForTeam,
   readSecrets, writeSecret, readDeployment, saveDeployment, removeDeployment,
 };
+
+export function createTeamRegistryOperations(lockNamespace: PerUserLockNamespace) {
+  return Object.freeze({
+    ...teamRegistry,
+    writeSecret: (teamId: string, key: string, value: string) =>
+      writeSecret(teamId, key, value, lockNamespace),
+  });
+}

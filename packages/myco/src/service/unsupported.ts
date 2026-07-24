@@ -1,6 +1,7 @@
 import type {
   InstallOptions,
   InstallResult,
+  InstalledServiceCommand,
   ServiceManager,
   ServiceSpec,
   ServiceStatus,
@@ -19,6 +20,7 @@ export class UnsupportedServiceManager implements ServiceManager {
   }
 
   async isInstalled(_label: string): Promise<boolean> { return false; }
+  async inspect(_label: string): Promise<InstalledServiceCommand | null> { return null; }
   async install(_spec: ServiceSpec, _opts?: InstallOptions): Promise<InstallResult> { this.fail(); }
   async uninstall(_label: string): Promise<void> { this.fail(); }
   async start(_label: string): Promise<void> { this.fail(); }

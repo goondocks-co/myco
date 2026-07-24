@@ -18,6 +18,7 @@ import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 import { withDatabase } from '@myco/db/client.js';
 import { upsertReleaseState } from '@myco/db/queries/release-provenance.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 
 function makeLogger(workDir: string): DaemonLogger {
   return new DaemonLogger(path.join(workDir, 'logs'), { level: 'error' });
@@ -100,6 +101,7 @@ describe('maintenance API', () => {
       embeddingRuntimeFactory: noopEmbeddingFactory,
       mycoHome,
       daemonStateDir: path.join(mycoHome, 'service'),
+      lockNamespace: testPerUserLockNamespace,
     });
     return { cache, handlers, liveConfig };
   }

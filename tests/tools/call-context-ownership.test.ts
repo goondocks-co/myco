@@ -150,6 +150,34 @@ describe('grove_id pivot home-ownership gate', () => {
       fixture.cleanup();
     }
   });
+
+  it('applies an optional exact-Grove constraint before resolving a body pivot', async () => {
+    const fixture = createFixture();
+    try {
+      const served = createGrove('Served', sandbox.mycoHome);
+      const other = createGrove('Other', sandbox.mycoHome);
+      const tools = createMycoTools(fixture.vaultDir, mockClient(), {
+        requestContext: { ...fixture.requestContext, groveId: served.id },
+        callContextConstraint: { allowedGroveId: served.id },
+      });
+
+      const caught = await callToolError(tools, 'myco_plans', { grove_id: other.id });
+
+      expect(isToolError(caught)).toBe(true);
+      expect((caught as { code: string }).code).toBe('invalid_input');
+      expect((caught as Error).message).toBe(
+        "Requested Grove is outside this tool surface's authorized scope",
+      );
+      expect((caught as Error).message).not.toContain(other.id);
+
+      const unconstrained = createMycoTools(fixture.vaultDir, mockClient(), {
+        requestContext: { ...fixture.requestContext, groveId: served.id },
+      });
+      expect(Array.isArray(await unconstrained.callTool('myco_plans', { grove_id: other.id }))).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  });
 });
 
 describe('groveOwnedByThisDaemon — home predicate is not a no-op', () => {

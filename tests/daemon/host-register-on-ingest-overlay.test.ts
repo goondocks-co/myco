@@ -22,6 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { DaemonServer } from '@myco/daemon/server.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority.js';
 import type { HostServeRuntime } from '@myco/daemon/host-serve.js';
@@ -96,7 +97,13 @@ describe('host registration-on-ingest (overlay integration)', () => {
     };
     const hostVaultDir = path.join(tmp, 'host-anchor', '.myco');
     const logger = new DaemonLogger(path.join(tmp, 'host-logs'));
-    const server = new DaemonServer({ vaultDir: hostVaultDir, logger, daemonStateAuthority: stubAuthority, hostServe });
+    const server = new DaemonServer({
+      vaultDir: hostVaultDir,
+      logger,
+      daemonStateAuthority: stubAuthority,
+      hostServe,
+      lockNamespace: testPerUserLockNamespace,
+    });
 
     // Two collect-stamped handlers (real ROUTE_RULES stamps) that write a
     // session row in the resolved context and echo the resolved tenancy.

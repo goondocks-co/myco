@@ -4,6 +4,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+const originalPollutedDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'polluted');
+
+function restorePrototypePollutedProperty(): void {
+  if (originalPollutedDescriptor) {
+    Object.defineProperty(Object.prototype, 'polluted', originalPollutedDescriptor);
+  } else {
+    delete (Object.prototype as Record<string, unknown>).polluted;
+  }
+}
+
+afterEach(restorePrototypePollutedProperty);
+
 /**
  * P4 — Race-free list-config mutation primitive.
  *
@@ -142,4 +154,99 @@ describe('machine config addToList / removeFromList', () => {
     const cfg = await handleGetMachineConfig();
     expect((cfg.body as any).config.grove?.default_grove_id).toBeUndefined();
   });
+
+  const protectedExternalMcpCases: Array<{
+    name: string;
+    body: Record<string, unknown>;
+    path: string;
+  }> = [
+    {
+      name: 'patch descendant',
+      body: {
+        patch: {
+          daemon: { external_mcp: { enabled: false } },
+          capture: { buffer_max_events: 700 },
+        },
+      },
+      path: 'daemon.external_mcp.enabled',
+    },
+    {
+      name: 'patch destructive ancestor',
+      body: {
+        patch: {
+          daemon: null,
+          capture: { buffer_max_events: 700 },
+        },
+      },
+      path: 'daemon',
+    },
+    ...(['clear', 'addToList', 'removeFromList'] as const).flatMap((operation) => (
+      ['daemon.external_mcp', 'daemon.external_mcp.enabled', 'daemon'].map((protectedPath) => ({
+        name: `${operation} ${protectedPath}`,
+        body: operation === 'clear'
+          ? {
+              clear: [protectedPath],
+              patch: { capture: { buffer_max_events: 700 } },
+            }
+          : {
+              [operation]: [{ path: protectedPath, values: ['blocked'] }],
+              patch: { capture: { buffer_max_events: 700 } },
+            },
+        path: protectedPath,
+      }))
+    )),
+  ];
+
+  for (const testCase of protectedExternalMcpCases) {
+    it(`rejects ${testCase.name} for the authority-owned external MCP subtree atomically`, async () => {
+      const configPath = path.join(mycoHome, 'config.yaml');
+      fs.writeFileSync(configPath, [
+        'daemon:',
+        '  log_level: info',
+        '  external_mcp:',
+        '    enabled: true',
+        '    port: 8743',
+        'capture:',
+        '  buffer_max_events: 500',
+        '',
+      ].join('\n'));
+      const before = fs.readFileSync(configPath, 'utf-8');
+
+      const result = await handlePutMachineConfig(testCase.body);
+
+      expect(result.response).toEqual({
+        status: 409,
+        body: {
+          error: 'protected_config_path',
+          message: 'daemon.external_mcp is managed by the external MCP containment authority',
+          paths: [testCase.path],
+        },
+      });
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    });
+  }
+
+  for (const operation of ['clear', 'addToList', 'removeFromList'] as const) {
+    it(`rejects unsafe ${operation} paths before mutating the machine config`, async () => {
+      const configPath = path.join(mycoHome, 'config.yaml');
+      fs.writeFileSync(configPath, 'daemon:\n  log_level: info\n');
+      const before = fs.readFileSync(configPath, 'utf-8');
+      const unsafePath = 'safe.__proto__.polluted';
+      const body = operation === 'clear'
+        ? { clear: [unsafePath] }
+        : { [operation]: [{ path: unsafePath, values: ['unsafe'] }] };
+
+      const result = await handlePutMachineConfig(body);
+
+      expect(result.response).toEqual({
+        status: 400,
+        body: {
+          error: 'unsafe_config_path',
+          message: 'Config path contains an unsafe segment',
+        },
+      });
+      expect(Object.prototype).not.toHaveProperty('polluted');
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    });
+  }
 });

@@ -14,8 +14,18 @@ import { createProjectId, createGroveId, createHostId } from '@myco/grove/ids.js
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { clearProjectManifestCache } from '@myco/config/project-manifest.js';
 import { clearGroveRegistryCaches } from '@myco/grove/registry.js';
-import { activateProjectMigration } from '@myco/grove/activation.js';
+import {
+  activateProjectMigration as activateProjectMigrationWithDefaults,
+} from '@myco/grove/activation.js';
 import { startResidencyJournal } from '@myco/host/residency-journal.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const activateProjectMigration = (
+  input: Parameters<typeof activateProjectMigrationWithDefaults>[0],
+) => activateProjectMigrationWithDefaults({
+  ...input,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 let home: string;
 let teamHome: string;

@@ -29,6 +29,7 @@ import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { makeTestRequestContext } from '../../helpers/request-context.js';
 import { sandboxMycoHome } from '../../helpers/myco-home-sandbox.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
@@ -287,7 +288,11 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
 
     initTeamContext(LOCAL_MACHINE);
 
-    server = new DaemonServer({ vaultDir, logger });
+    server = new DaemonServer({
+      vaultDir,
+      logger,
+      lockNamespace: testPerUserLockNamespace,
+    });
 
     const embeddingManager = {
       onRemoved: vi.fn(),
@@ -312,7 +317,9 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
       JSON.stringify({ pid: process.pid, port: server.port }),
     );
 
-    client = new DaemonClient(vaultDir);
+    client = new DaemonClient(vaultDir, {
+      lockNamespace: testPerUserLockNamespace,
+    });
   });
 
   afterAll(async () => {

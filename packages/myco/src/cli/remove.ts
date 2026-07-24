@@ -8,6 +8,7 @@ import { GLOBAL_HOOK_LAUNCHER_FILENAME, GLOBAL_MCP_LAUNCHER_FILENAME } from '../
 import { resolveMycoHome } from '../grove/paths.js';
 import { updateConfig, TierConfigUnreadableError } from '../config/loader.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
+import { terminateDaemonProcess } from '../service/daemon-termination.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -119,6 +120,8 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
       console.log('  ✓ Unregistered OS service');
     }
   } catch (err) {
+    const { ExternalMcpHardKillBlockedError } = await import('../service/windows.js');
+    if (err instanceof ExternalMcpHardKillBlockedError) throw err;
     console.log(`  ⚠ Service uninstall skipped: ${(err as Error).message}`);
   }
 
@@ -349,14 +352,19 @@ async function runProjectRemove(parsed: ParsedFlags): Promise<void> {
   console.log(`Removing Myco project-local install from ${projectRoot}\n`);
 
   const daemonPath = path.join(vaultDir, 'daemon.json');
+  let daemon: { pid?: unknown } | null = null;
   try {
-    const daemon = JSON.parse(fs.readFileSync(daemonPath, 'utf-8'));
-    if (isProcessAlive(daemon.pid)) {
-      process.kill(daemon.pid, 'SIGTERM');
-      console.log(`  ✓ Stopped daemon (pid ${daemon.pid})`);
-    }
+    daemon = JSON.parse(fs.readFileSync(daemonPath, 'utf-8')) as { pid?: unknown };
+  } catch { /* no readable daemon state */ }
+  if (typeof daemon?.pid === 'number' && isProcessAlive(daemon.pid)) {
+    await terminateDaemonProcess(daemon.pid, 'SIGTERM');
+    console.log(`  ✓ Stopped daemon (pid ${daemon.pid})`);
+  }
+  try {
     fs.unlinkSync(daemonPath);
-  } catch { /* no daemon running */ }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
 
   const configured = allManifests.filter((m) =>
     fs.existsSync(path.join(projectRoot, m.configDir)),

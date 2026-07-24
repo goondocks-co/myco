@@ -29,17 +29,27 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadLayeredSecrets, writeSecret, deleteSecrets } from '@myco/config/secrets.js';
+import { createSecretsOperations } from '@myco/config/secrets.js';
 import { __resetProviderHealthCache } from '@myco/agent/harness/provider-health.js';
 import { gateScheduledDispatch } from '@myco/daemon/task-scheduling.js';
-import { resolveServedGroveKeyHealth } from '@myco/daemon/host-serve.js';
+import { resolveServedGroveKeyHealth as resolveServedGroveKeyHealthWith } from '@myco/daemon/host-serve.js';
 import { loadMachineConfig, saveMachineConfig, loadGroveConfig, saveGroveConfig } from '@myco/config/loader.js';
 import { createGrove } from '@myco/grove/registry.js';
 import { resolveGroveDir } from '@myco/grove/paths.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
 import type { DaemonLogger } from '@myco/daemon/logger.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const TEST_PROJECT_ID = assertGroveProjectId(`proj_${'c'.repeat(32)}`);
+const {
+  loadLayeredSecrets,
+  writeSecret,
+  deleteSecrets,
+} = createSecretsOperations(testPerUserLockNamespace);
+const resolveServedGroveKeyHealth = (
+  config: Parameters<typeof resolveServedGroveKeyHealthWith>[0],
+  mycoHome?: string,
+) => resolveServedGroveKeyHealthWith(config, mycoHome, testPerUserLockNamespace);
 
 interface LogCall { level: string; kind: string; message: string; data?: Record<string, unknown> }
 

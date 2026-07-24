@@ -1,8 +1,17 @@
-import { deleteSecrets, readSecrets, writeSecret } from '@myco/config/secrets.js';
+import {
+  deleteSecrets,
+  readSecrets,
+  writeSecret,
+} from '@myco/config/secrets.js';
+import { normalizeRawSecretInput } from '@myco/daemon/api/secret-input.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import { GITHUB_TOKEN_ENV } from '../../release-provenance/github.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 const SECRET_PREVIEW_PREFIX_CHARS = 8;
 const SECRET_PREVIEW_SUFFIX_CHARS = 4;
@@ -109,25 +118,31 @@ export async function handleGetProviderSecrets(_req?: RouteRequest): Promise<Rou
   };
 }
 
-export async function handlePutProviderSecret(req: RouteRequest): Promise<RouteResponse> {
+export async function handlePutProviderSecret(
+  req: RouteRequest,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Promise<RouteResponse> {
   const provider = req.params.provider;
-  const body = req.body as { api_key?: string; secret?: string; scope?: SecretScope } | undefined;
+  const body = req.body as { api_key?: unknown; secret?: unknown; scope?: SecretScope } | undefined;
 
   if (!provider || !isSecretProvider(provider)) {
     return { status: 400, body: { error: 'provider must be one of: openai, openrouter, github' } };
   }
-  const value = body?.secret ?? body?.api_key;
-  if (!value?.trim()) {
-    return { status: 400, body: { error: 'secret is required' } };
-  }
+  const raw = body?.secret ?? body?.api_key;
+  const envKey = SECRET_DEFINITIONS[provider].envKey;
+  const normalized = normalizeRawSecretInput(
+    envKey,
+    raw,
+    { status: 400, body: { error: 'secret is required' } },
+  );
+  if (!normalized.ok) return normalized.response;
 
   const scope = body?.scope ?? SECRET_DEFINITIONS[provider].defaultScope;
   const store = resolveWritableSecretStore(provider, scope);
   if (isRouteResponse(store)) return store;
 
-  const envKey = SECRET_DEFINITIONS[provider].envKey;
-  const secret = value.trim();
-  writeSecret(store.dir, envKey, secret);
+  const secret = normalized.value;
+  writeSecret(store.dir, envKey, secret, lockNamespace);
   setProcessSecret(provider, secret);
 
   return {
@@ -138,7 +153,10 @@ export async function handlePutProviderSecret(req: RouteRequest): Promise<RouteR
   };
 }
 
-export async function handleDeleteProviderSecret(req: RouteRequest): Promise<RouteResponse> {
+export async function handleDeleteProviderSecret(
+  req: RouteRequest,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Promise<RouteResponse> {
   const provider = req.params.provider;
   if (!provider || !isSecretProvider(provider)) {
     return { status: 400, body: { error: 'provider must be one of: openai, openrouter, github' } };
@@ -157,7 +175,7 @@ export async function handleDeleteProviderSecret(req: RouteRequest): Promise<Rou
   const envKey = SECRET_DEFINITIONS[provider].envKey;
   for (const targetScope of scopes) {
     const store = resolveSecretStore(targetScope);
-    deleteSecrets(store.dir, [envKey]);
+    deleteSecrets(store.dir, [envKey], lockNamespace);
   }
   refreshProcessSecret(provider);
 

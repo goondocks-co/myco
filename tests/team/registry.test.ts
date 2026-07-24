@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { teamRegistry, type TeamRecord } from '../../packages/myco/src/team/registry.js';
+import { createTeamRegistryOperations, type TeamRecord } from '../../packages/myco/src/team/registry.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 let home: string;
 let teamHome: string;
+const teamRegistry = createTeamRegistryOperations(testPerUserLockNamespace);
 const rec: TeamRecord = {
   team_id: `team_${'a'.repeat(32)}`,
   name: 'Myco Projects',

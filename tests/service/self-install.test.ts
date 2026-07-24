@@ -55,6 +55,24 @@ afterEach(() => {
 });
 
 describe('ensureSelfInstalledAsService', () => {
+  test('shared fake inspection reflects only specs installed through the manager', async () => {
+    const mgr = new FakeManager();
+    expect(await mgr.inspect('co.goondocks.myco')).toBeNull();
+
+    await ensureSelfInstalledAsService(
+      new CapturingLogger(),
+      { manager: mgr, mycoHome: DEFAULT_HOME, executable: fakeBinary() },
+    );
+
+    const installed = mgr.installCalls[0];
+    expect(await mgr.inspect(installed.label)).toEqual({
+      executable: installed.executable,
+      args: installed.args,
+    });
+    await mgr.uninstall(installed.label);
+    expect(await mgr.inspect(installed.label)).toBeNull();
+  });
+
   test('installs the default-home daemon when the platform supports it and no unit exists', async () => {
     const mgr = new FakeManager();
     const logger = new CapturingLogger();

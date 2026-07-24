@@ -7,14 +7,27 @@ import type { ServiceSpec } from '../../packages/myco/src/service/types';
 
 class FakeRunner implements SystemctlRunner {
   calls: string[][] = [];
-  showResponse = '';
+  showResponse = 'MainPID=4321\nActiveState=active\n';
+  showExitCode = 0;
+  showResponses: Array<{ stdout: string; exitCode: number }> = [];
+  inspectResponse: { stdout: string; exitCode: number } | null = null;
+  exitAfterStop = true;
   /** Map from systemctl subcommand (e.g. "restart") to forced exit code+stdout. */
   exitOverrides: Map<string, { stdout: string; exitCode: number }> = new Map();
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     this.calls.push(args);
-    if (args.includes('show')) return { stdout: this.showResponse, exitCode: 0 };
+    if (args.includes('show')) {
+      if (args.includes('--property=FragmentPath')) {
+        return this.inspectResponse ?? { stdout: '', exitCode: 0 };
+      }
+      return this.showResponses.shift()
+        ?? { stdout: this.showResponse, exitCode: this.showExitCode };
+    }
     for (const [key, override] of this.exitOverrides) {
       if (args.includes(key)) return override;
+    }
+    if (args.includes('stop') && this.exitAfterStop && this.showResponses.length === 0) {
+      this.showResponse = 'MainPID=0\nExecMainStatus=0\nActiveState=inactive\n';
     }
     return { stdout: '', exitCode: 0 };
   }
@@ -78,11 +91,120 @@ describe('SystemdUserServiceManager', () => {
     runner.calls.length = 0;
     await mgr.uninstall(s.label);
     expect(runner.calls).toEqual([
+      [
+        '--user', 'show', `${s.label}.service`,
+        '--property=MainPID',
+        '--property=ActiveState',
+      ],
       ['--user', 'stop', `${s.label}.service`],
+      [
+        '--user', 'show', `${s.label}.service`,
+        '--property=MainPID',
+        '--property=ActiveState',
+      ],
       ['--user', 'disable', `${s.label}.service`],
       ['--user', 'daemon-reload'],
     ]);
     expect(fs.existsSync(path.join(unitDir, `${s.label}.service`))).toBe(false);
+  });
+
+  test('uninstall rejects a failed stop and preserves the unit file', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    const unitPath = path.join(unitDir, `${s.label}.service`);
+    runner.calls.length = 0;
+    runner.exitOverrides.set('stop', { stdout: 'Failed to connect to bus', exitCode: 1 });
+
+    await expect(mgr.uninstall(s.label)).rejects.toThrow(/systemctl --user stop.*failed.*exit 1/i);
+
+    expect(fs.existsSync(unitPath)).toBe(true);
+    expect(runner.calls.some((call) => call.includes('disable'))).toBe(false);
+  });
+
+  test('uninstall polls systemd until MainPID=0 and ActiveState=inactive', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    runner.calls.length = 0;
+    runner.exitAfterStop = false;
+    runner.showResponses = [
+      { stdout: 'MainPID=4321\nActiveState=active\n', exitCode: 0 },
+      { stdout: 'MainPID=4321\nActiveState=deactivating\n', exitCode: 0 },
+      { stdout: 'MainPID=0\nActiveState=inactive\n', exitCode: 0 },
+    ];
+    mgr = new SystemdUserServiceManager({ runner, unitDir, sleep: async () => {} });
+
+    await mgr.uninstall(s.label);
+
+    expect(runner.calls.filter((call) => call.includes('show'))).toHaveLength(3);
+    expect(fs.existsSync(path.join(unitDir, `${s.label}.service`))).toBe(false);
+  });
+
+  test('uninstall stops a loaded systemd service even when its unit file is absent', async () => {
+    const label = 'co.goondocks.myco.orphaned';
+    runner.showResponses = [
+      { stdout: 'MainPID=4321\nActiveState=active\n', exitCode: 0 },
+      { stdout: 'MainPID=0\nActiveState=inactive\n', exitCode: 0 },
+    ];
+
+    await mgr.uninstall(label);
+
+    expect(runner.calls.some((call) => call.includes('stop'))).toBe(true);
+    expect(runner.calls.some((call) => call.includes('disable'))).toBe(true);
+    expect(runner.calls.at(-1)).toEqual(['--user', 'daemon-reload']);
+  });
+
+  test('uninstall is idempotent when the unit file and systemd service are already absent', async () => {
+    const label = 'co.goondocks.myco.absent';
+    runner.showExitCode = 4;
+    runner.showResponse = 'Unit not found';
+
+    await mgr.uninstall(label);
+
+    expect(runner.calls).toEqual([[
+      '--user', 'show', `${label}.service`,
+      '--property=MainPID',
+      '--property=ActiveState',
+    ]]);
+  });
+
+  test('uninstall rejects an inconclusive systemd query failure', async () => {
+    const label = 'co.goondocks.myco.unknown';
+    runner.showExitCode = 1;
+    runner.showResponse = 'Failed to connect to bus';
+
+    await expect(mgr.uninstall(label)).rejects.toThrow(/systemctl --user show.*failed.*exit 1/i);
+  });
+
+  test('uninstall rejects an inactive response with no MainPID proof', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    runner.calls.length = 0;
+    runner.exitAfterStop = false;
+    runner.showResponses = [
+      { stdout: 'MainPID=4321\nActiveState=active\n', exitCode: 0 },
+      { stdout: 'ActiveState=inactive\n', exitCode: 0 },
+    ];
+    mgr = new SystemdUserServiceManager({ runner, unitDir, sleep: async () => {} });
+
+    await expect(mgr.uninstall(s.label)).rejects.toThrow(/missing or invalid MainPID/i);
+
+    expect(fs.existsSync(path.join(unitDir, `${s.label}.service`))).toBe(true);
+  });
+
+  test('uninstall times out while systemd still reports a live process and preserves the unit', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    const unitPath = path.join(unitDir, `${s.label}.service`);
+    runner.calls.length = 0;
+    runner.exitAfterStop = false;
+    runner.showResponse = 'MainPID=4321\nActiveState=deactivating\n';
+    mgr = new SystemdUserServiceManager({ runner, unitDir, sleep: async () => {} });
+
+    await expect(mgr.uninstall(s.label)).rejects.toThrow(/timed out.*systemd.*stop/i);
+
+    expect(runner.calls.filter((call) => call.includes('show')).length).toBeGreaterThan(1);
+    expect(fs.existsSync(unitPath)).toBe(true);
+    expect(runner.calls.some((call) => call.includes('disable'))).toBe(false);
   });
 
   test('status parses MainPID and ExecMainStatus from systemctl show', async () => {
@@ -104,6 +226,59 @@ describe('SystemdUserServiceManager', () => {
     expect(st.running).toBe(false);
     expect(st.pid).toBe(null);
     expect(st.lastExitCode).toBe(78);
+  });
+
+  test('inspect returns the exact executable and arguments from the installed unit', async () => {
+    const s = spec(home);
+    s.args = ['daemon', '--port', '28876', '--home', 'path with spaces'];
+    await mgr.install(s);
+    runner.inspectResponse = {
+      stdout: `FragmentPath=${path.join(unitDir, `${s.label}.service`)}\nDropInPaths=\n`,
+      exitCode: 0,
+    };
+
+    await expect(mgr.inspect(s.label)).resolves.toEqual({
+      executable: s.executable,
+      args: s.args,
+    });
+  });
+
+  test('inspect fails closed for a malformed installed unit', async () => {
+    const label = 'co.goondocks.myco.malformed';
+    fs.writeFileSync(
+      path.join(unitDir, `${label}.service`),
+      '[Unit]\nExecStart="/plausible" "daemon" "--port" "28876"\n[Service]\nType=simple\n',
+    );
+    runner.inspectResponse = {
+      stdout: `FragmentPath=${path.join(unitDir, `${label}.service`)}\nDropInPaths=\n`,
+      exitCode: 0,
+    };
+
+    await expect(mgr.inspect(label)).resolves.toBeNull();
+  });
+
+  test('inspect fails closed when systemd reports an effective external drop-in', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    runner.inspectResponse = {
+      stdout: [
+        `FragmentPath=${path.join(unitDir, `${s.label}.service`)}`,
+        'DropInPaths=/etc/systemd/user/service.d/override.conf',
+        '',
+      ].join('\n'),
+      exitCode: 0,
+    };
+
+    await expect(mgr.inspect(s.label)).resolves.toBeNull();
+  });
+
+  test('inspect returns null when a live systemd service has no installed unit file', async () => {
+    const label = 'co.goondocks.myco.orphaned';
+    runner.showResponse = 'MainPID=4321\nExecMainStatus=0\nActiveState=active\n';
+
+    const status = await mgr.status(label);
+    expect(status).toMatchObject({ installed: false, running: true, pid: 4321 });
+    await expect(mgr.inspect(label)).resolves.toBeNull();
   });
 
   test('platformName is "systemd --user"', () => {

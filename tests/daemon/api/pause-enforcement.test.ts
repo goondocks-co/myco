@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 import { DaemonLogger } from '@myco/daemon/logger';
 import {
   REQUEST_CONTEXT_AUTH_HEADER,
@@ -59,7 +60,11 @@ describe('pause enforcement at write paths', () => {
       bindingId: 'gbind-a',
     }, home);
 
-    server = new DaemonServer({ vaultDir: bootstrapVault, logger });
+    server = new DaemonServer({
+      vaultDir: bootstrapVault,
+      logger,
+      lockNamespace: testPerUserLockNamespace,
+    });
     server.registerRoute('POST', '/api/test-write', async () => ({ body: { ok: true } }));
     server.registerRoute('GET', '/api/test-read', async () => ({ body: { ok: true } }));
     // Stand-ins for the move route and its archive sibling, matching the

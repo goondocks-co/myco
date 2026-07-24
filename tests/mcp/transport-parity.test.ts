@@ -6,7 +6,9 @@ import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { createStreamableMcpHttpHandler } from '@myco/mcp/http.js';
+import {
+  createStreamableMcpHttpHandler as createStreamableMcpHttpHandlerWithDefaults,
+} from '@myco/mcp/http.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { REQUEST_CONTEXT_ENV, requestContextHeaders, resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
@@ -14,6 +16,15 @@ import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveDaemonServiceState } from '@myco/daemon/service-state.js';
 import { createDaemonStateAuthority } from '@myco/daemon/daemon-state-authority.js';
 import { vi } from '../helpers/vi-shim.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const createStreamableMcpHttpHandler = (
+  vaultDir: string,
+  options: Parameters<typeof createStreamableMcpHttpHandlerWithDefaults>[1],
+) => createStreamableMcpHttpHandlerWithDefaults(vaultDir, {
+  ...options,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 const servers: http.Server[] = [];
 const tmpDirs: string[] = [];

@@ -8,6 +8,7 @@
  * registry never touches the developer's real `~/.myco-team`, mirroring
  * `host/registry.test.ts`.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,13 +17,19 @@ import path from 'node:path';
 import { clearProjectManifestCache } from '@myco/config/project-manifest';
 import { createHostId, createProjectId } from '@myco/grove/ids';
 import {
+  createHostRegistryOperations,
+  type HostRecord,
+} from '@myco/host/registry';
+import { checkTeamHostHint as checkTeamHostHintWith } from '@myco/cli/doctor';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const {
   attachProject,
   readHostRegistry,
   resolveAttach,
-  upsertHost,
-  type HostRecord,
-} from '@myco/host/registry';
-import { checkTeamHostHint } from '@myco/cli/doctor';
+} = createHostRegistryOperations(testPerUserLockNamespace);
+const checkTeamHostHint = (vaultDir: string) =>
+  checkTeamHostHintWith(vaultDir, testPerUserLockNamespace);
 
 function makeHost(hostId: string): HostRecord {
   return {
@@ -71,7 +78,7 @@ describe('checkTeamHostHint', () => {
     const projectId = createProjectId();
     const hostId = createHostId();
     writeManifest(projectId, hostId);
-    upsertHost(makeHost(hostId));
+    writeHostRecordFixture(makeHost(hostId));
     attachProject(hostId, { grove_id: 'grove_1', project_id: projectId });
 
     expect(resolveAttach(projectId)).not.toBeNull();
@@ -82,7 +89,7 @@ describe('checkTeamHostHint', () => {
     const projectId = createProjectId();
     const hostId = createHostId();
     writeManifest(projectId, hostId);
-    upsertHost(makeHost(hostId));
+    writeHostRecordFixture(makeHost(hostId));
 
     const notice = checkTeamHostHint(vaultDir);
     expect(notice).not.toBeNull();

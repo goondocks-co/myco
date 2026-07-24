@@ -12,12 +12,22 @@ import os from 'node:os';
 import path from 'node:path';
 import { stringify } from 'smol-toml';
 import {
-  resolveProjectGroveBinding,
+  resolveProjectGroveBinding as resolveProjectGroveBindingWith,
+  type ResolveProjectGroveBindingOptions,
   vaultDirForProjectRoot,
 } from '@myco/grove/binding.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { activationMarkerPath } from '@myco/grove/activation.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const resolveProjectGroveBinding = (
+  targetVaultDir: string,
+  options: ResolveProjectGroveBindingOptions = {},
+) => resolveProjectGroveBindingWith(targetVaultDir, {
+  ...options,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 let tmpHome: string;
 let projectRoot: string;

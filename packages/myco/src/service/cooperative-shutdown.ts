@@ -22,32 +22,57 @@ export interface CooperativeShutdownDeps {
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+export type CooperativeShutdownResult =
+  | { kind: 'stopped' }
+  | { kind: 'refused'; status: number }
+  | { kind: 'unavailable'; status?: number }
+  | { kind: 'timed_out' };
+
+export type CooperativeShutdownAcceptance =
+  | { kind: 'accepted' }
+  | { kind: 'refused'; status: number }
+  | { kind: 'unavailable'; status?: number };
+
+export interface CooperativeShutdownAcceptanceDeps {
+  fetchFn?: typeof fetch;
+  timeoutMs?: number;
+}
+
+export async function requestCooperativeShutdownAcceptance(
+  port: number,
+  deps: CooperativeShutdownAcceptanceDeps = {},
+): Promise<CooperativeShutdownAcceptance> {
+  const fetchFn = deps.fetchFn ?? fetch;
+  const timeoutMs = deps.timeoutMs ?? DAEMON_HEALTH_CHECK_TIMEOUT_MS;
+  try {
+    const res = await fetchFn(`http://127.0.0.1:${port}/api/shutdown`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.status === 202) return { kind: 'accepted' };
+    if (res.status === 409) return { kind: 'refused', status: res.status };
+    return { kind: 'unavailable', status: res.status };
+  } catch {
+    return { kind: 'unavailable' };
+  }
+}
+
 /**
  * POST `/api/shutdown` (accepted ONLY on the daemon's 202 ack) and poll
- * `/health` until the port stops answering. Returns true when the daemon
- * accepted AND exited within the budget; false otherwise (the caller then
- * falls back to a hard `schtasks /end`). Never throws.
+ * `/health` until the port stops answering. An explicit refusal remains
+ * distinct from an unavailable or wedged daemon.
  */
-export async function requestCooperativeShutdown(
+export async function requestCooperativeShutdownResult(
   port: number,
   deps: CooperativeShutdownDeps = {},
-): Promise<boolean> {
+): Promise<CooperativeShutdownResult> {
   const fetchFn = deps.fetchFn ?? fetch;
   const sleep = deps.sleep ?? defaultSleep;
   const graceMs = deps.graceMs ?? RECONCILE_COOPERATIVE_GRACE_MS;
   const pollMs = deps.pollMs ?? 100;
 
-  try {
-    const res = await fetchFn(`http://127.0.0.1:${port}/api/shutdown`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
-    });
-    // A non-202 (foreign loopback service, or a daemon too old for the route)
-    // is not a real cooperative-shutdown ack — fall back to the hard kill.
-    if (res.status !== 202) return false;
-  } catch {
-    return false;
-  }
+  const acceptance = await requestCooperativeShutdownAcceptance(port, { fetchFn });
+  if (acceptance.kind !== 'accepted') return acceptance;
 
   const deadline = Date.now() + graceMs;
   while (Date.now() < deadline) {
@@ -56,11 +81,18 @@ export async function requestCooperativeShutdown(
       const health = await fetchFn(`http://127.0.0.1:${port}/health`, {
         signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
       });
-      if (!health.ok) return true;
+      if (!health.ok) return { kind: 'stopped' };
     } catch {
       // Connection refused / aborted → the daemon has exited.
-      return true;
+      return { kind: 'stopped' };
     }
   }
-  return false;
+  return { kind: 'timed_out' };
+}
+
+export async function requestCooperativeShutdown(
+  port: number,
+  deps: CooperativeShutdownDeps = {},
+): Promise<boolean> {
+  return (await requestCooperativeShutdownResult(port, deps)).kind === 'stopped';
 }

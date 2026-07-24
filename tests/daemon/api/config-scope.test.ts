@@ -6,8 +6,21 @@ import {
   handleGetMergedConfig,
   handleGetLocalConfig,
   handlePutGroveConfig,
+  handlePutMachineConfig,
   handlePutScopedConfig,
 } from '@myco/daemon/api/config';
+
+const originalPollutedDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'polluted');
+
+function restorePrototypePollutedProperty(): void {
+  if (originalPollutedDescriptor) {
+    Object.defineProperty(Object.prototype, 'polluted', originalPollutedDescriptor);
+  } else {
+    delete (Object.prototype as Record<string, unknown>).polluted;
+  }
+}
+
+afterEach(restorePrototypePollutedProperty);
 
 function seedProject(dir: string) {
   fs.writeFileSync(path.join(dir, 'myco.yaml'),
@@ -348,4 +361,47 @@ describe('scoped config HTTP handlers', () => {
     const rawYaml = fs.readFileSync(localPath, 'utf-8');
     expect(rawYaml).not.toContain('config_version');
   });
+
+  for (const segment of ['__proto__', 'constructor', 'prototype']) {
+    it(`rejects an empty unsafe ${segment} container before a machine write`, async () => {
+      const configPath = path.join(mycoHome, 'config.yaml');
+      fs.writeFileSync(configPath, 'daemon:\n  log_level: info\n');
+      const before = fs.readFileSync(configPath, 'utf-8');
+      const patch = JSON.parse(
+        `{"${segment}":{},"daemon":{"log_level":"debug"}}`,
+      );
+
+      const result = await handlePutMachineConfig({ patch });
+
+      expect(result.response).toEqual({
+        status: 400,
+        body: {
+          error: 'unsafe_config_path',
+          message: 'Config path contains an unsafe segment',
+        },
+      });
+      expect(Object.prototype).not.toHaveProperty('polluted');
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    });
+
+    it(`rejects an empty unsafe ${segment} container before a project write`, async () => {
+      const configPath = path.join(tmpDir, 'myco.yaml');
+      const before = fs.readFileSync(configPath, 'utf-8');
+      const patch = JSON.parse(
+        `{"${segment}":{},"release_provenance":{"enabled":false}}`,
+      );
+
+      const result = await handlePutScopedConfig(tmpDir, { scope: 'project', patch });
+
+      expect(result).toEqual({
+        status: 400,
+        body: {
+          error: 'unsafe_config_path',
+          message: 'Config path contains an unsafe segment',
+        },
+      });
+      expect(Object.prototype).not.toHaveProperty('polluted');
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    });
+  }
 });

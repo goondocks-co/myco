@@ -8,6 +8,7 @@
  * fixture is needed — a non-attached project short-circuits before any registry
  * read.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,9 +22,9 @@ import {
   createProjectId,
   type GroveProjectId,
 } from '@myco/grove/ids';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import {
-  classifyRoute,
+  classifyRoute as classifyRouteWith,
   classifyRouteStamp,
   configHostAuthoritative,
   hostedCapabilityUnavailable,
@@ -31,6 +32,11 @@ import {
   refusalJson,
   refusalMcpBody,
 } from '@myco/host/routing';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
+const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
+  classifyRouteWith(input, testPerUserLockNamespace);
 
 function seedAttached(overrides: Partial<HostRecord> = {}): { projectId: GroveProjectId; groveId: string; host: HostRecord } {
   const groveId = createGroveId();
@@ -46,7 +52,7 @@ function seedAttached(overrides: Partial<HostRecord> = {}): { projectId: GrovePr
   };
   // Seed the record directly (bypassing attachProject's local-registry guard,
   // which is exercised in registry.test.ts) so the routing table is the subject.
-  upsertHost(host);
+  writeHostRecordFixture(host);
   return { projectId, groveId, host };
 }
 

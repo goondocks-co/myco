@@ -38,6 +38,7 @@ import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
 import { resolveRoutedTranscriptsDir } from '@myco/grove/paths.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const NOW = 1_000_000;
 const HOST_MACHINE = 'host-machine';
@@ -398,6 +399,7 @@ describe('host-serve status cache invalidation', () => {
         now: () => 1_000,
         ttlMs: 100_000,
         mycoHome: cacheHome,
+        lockNamespace: testPerUserLockNamespace,
       });
       const call = () => handler({ body: undefined, query: {}, params: {}, pathname: '/api/host-serve/status' } as never);
       await call();

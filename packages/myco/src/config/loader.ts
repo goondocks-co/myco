@@ -1,16 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import YAML from 'yaml';
 import { z } from 'zod';
 import {
   MycoConfigSchema,
   MachineConfigSchema,
+  ExternalMcpSchema,
   GroveConfigSchema,
   ProjectConfigSchema,
   PROJECT_TIER_LEGACY_FIELDS,
   GROVE_TIER_FIELDS,
   type MycoConfig,
   type MachineConfig,
+  type ExternalMcpConfig,
   type GroveConfig,
   type BackupConfig,
 } from './schema.js';
@@ -22,6 +25,7 @@ import { stripDefaultSections } from './sparse.js';
 import { deepMerge } from '../utils/deep-merge.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { withFileLockSync } from '../utils/lifecycle-lock.js';
 import {
   resolveGlobalConfigPath,
   resolveGroveConfigPath,
@@ -32,6 +36,8 @@ import { loadProjectManifest } from './project-manifest.js';
 
 export const CONFIG_FILENAME = 'myco.yaml';
 export const LOCAL_CONFIG_FILENAME = 'local.yaml';
+const MACHINE_CONFIG_LOCK_FILENAME = 'machine-config.lock';
+const EXTERNAL_MCP_PATH = ['daemon', 'external_mcp'] as const;
 
 function localConfigPath(vaultDir: string): string {
   // vaultDir already points at `.myco/` (see resolveVaultDir), so local.yaml
@@ -244,13 +250,93 @@ export function loadMachineConfig(mycoHome = resolveMycoHome()): MachineConfig {
   );
 }
 
+/** Fresh strict machine-tier read for recoverable state transitions. */
+export function loadMachineConfigStrict(mycoHome = resolveMycoHome()): MachineConfig {
+  const filePath = resolveGlobalConfigPath(mycoHome);
+  const rawDoc = readRawYamlDocStrict(filePath);
+  return parseTierDocTolerant((doc) => MachineConfigSchema.parse(doc), rawDoc);
+}
+
+/** Whether the raw machine tier explicitly carries external MCP state. */
+export function hasExplicitExternalMcpConfig(mycoHome = resolveMycoHome()): boolean {
+  const filePath = resolveGlobalConfigPath(mycoHome);
+  return getAtPath(readRawYamlDocStrict(filePath), EXTERNAL_MCP_PATH) !== undefined;
+}
+
+/** Fresh strict read of only the raw external MCP machine subtree. */
+export function readExplicitExternalMcpConfigStrict(
+  mycoHome = resolveMycoHome(),
+): ExternalMcpConfig | undefined {
+  const filePath = resolveGlobalConfigPath(mycoHome);
+  const raw = getAtPath(readRawYamlDocStrict(filePath), EXTERNAL_MCP_PATH);
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return ExternalMcpSchema.parse(raw);
+  }
+  return parseTierDocTolerant(
+    (doc) => ExternalMcpSchema.parse(doc),
+    raw as Record<string, unknown>,
+  );
+}
+
+/** Recover a valid raw external MCP port even when a sibling field is invalid. */
+export function readRecoverableExternalMcpPortStrict(
+  mycoHome = resolveMycoHome(),
+): number | undefined {
+  const filePath = resolveGlobalConfigPath(mycoHome);
+  const raw = getAtPath(readRawYamlDocStrict(filePath), EXTERNAL_MCP_PATH);
+  if (!raw
+    || typeof raw !== 'object'
+    || Array.isArray(raw)
+    || !Object.hasOwn(raw, 'port')) return undefined;
+  const parsed = ExternalMcpSchema.shape.port.safeParse(
+    (raw as Record<string, unknown>).port,
+  );
+  return parsed.success ? parsed.data : undefined;
+}
+
+export class ProtectedMachineConfigPathError extends Error {
+  constructor() {
+    super('daemon.external_mcp is managed by the external MCP containment authority');
+    this.name = 'ProtectedMachineConfigPathError';
+  }
+}
+
+function withMachineConfigLock<T>(mycoHome: string, fn: () => T): T {
+  return withFileLockSync(
+    path.join(mycoHome, '.locks', MACHINE_CONFIG_LOCK_FILENAME),
+    fn,
+  );
+}
+
 export function saveMachineConfig(config: MachineConfig, mycoHome = resolveMycoHome()): void {
   const validated = MachineConfigSchema.parse(config);
-  const filePath = resolveGlobalConfigPath(mycoHome);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  atomicWriteFileSync(filePath, YAML.stringify(validated), 'utf-8');
-  machineConfigCache.delete(filePath);
-  invalidateMergedConfigCache();
+  withMachineConfigLock(mycoHome, () => {
+    const filePath = resolveGlobalConfigPath(mycoHome);
+    const currentRaw = readRawYamlDocStrict(filePath);
+    const currentView = parseTierDocTolerant(
+      (doc) => MachineConfigSchema.parse(doc),
+      currentRaw,
+    );
+    if (!isDeepStrictEqual(
+      validated.daemon.external_mcp,
+      currentView.daemon.external_mcp,
+    )) {
+      throw new ProtectedMachineConfigPathError();
+    }
+
+    const nextRaw = structuredClone(validated) as unknown as Record<string, unknown>;
+    const currentExternalMcp = getAtPath(currentRaw, EXTERNAL_MCP_PATH);
+    if (currentExternalMcp === undefined) {
+      unsetAtPath(nextRaw, EXTERNAL_MCP_PATH, { pruneEmptyParents: true });
+    } else {
+      setAtPath(nextRaw, EXTERNAL_MCP_PATH, structuredClone(currentExternalMcp));
+    }
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    atomicWriteFileSync(filePath, YAML.stringify(nextRaw), 'utf-8');
+    machineConfigCache.delete(filePath);
+    invalidateMergedConfigCache();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -377,21 +463,25 @@ function parseTierDocTolerant<T>(parse: (doc: unknown) => T, rawDoc: Record<stri
 }
 
 export type TierWriteTarget = { kind: 'machine' } | { kind: 'grove'; groveId: string };
+export interface TierWriteOptions {
+  mycoHome?: string;
+  durable?: boolean;
+}
 
 export function updateTierConfigRaw(
   target: { kind: 'machine' },
   mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
-  opts?: { mycoHome?: string },
+  opts?: TierWriteOptions,
 ): MachineConfig;
 export function updateTierConfigRaw(
   target: { kind: 'grove'; groveId: string },
   mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
-  opts?: { mycoHome?: string },
+  opts?: TierWriteOptions,
 ): GroveConfig;
 export function updateTierConfigRaw(
   target: TierWriteTarget,
   mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
-  opts?: { mycoHome?: string },
+  opts?: TierWriteOptions,
 ): MachineConfig | GroveConfig;
 /**
  * Canonical write path for machine/grove tier files. Reads the RAW on-disk
@@ -404,25 +494,85 @@ export function updateTierConfigRaw(
 export function updateTierConfigRaw(
   target: TierWriteTarget,
   mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
-  opts?: { mycoHome?: string },
+  opts?: TierWriteOptions,
 ): MachineConfig | GroveConfig {
   const mycoHome = opts?.mycoHome ?? resolveMycoHome();
-  const filePath = target.kind === 'machine'
-    ? resolveGlobalConfigPath(mycoHome)
-    : resolveGroveConfigPath(target.groveId, mycoHome);
+  const update = (): MachineConfig | GroveConfig => {
+    const filePath = target.kind === 'machine'
+      ? resolveGlobalConfigPath(mycoHome)
+      : resolveGroveConfigPath(target.groveId, mycoHome);
 
-  const rawDoc = readRawYamlDocStrict(filePath);
-  const nextRaw = mutate(rawDoc) ?? rawDoc;
-  const parsedView = target.kind === 'machine'
-    ? parseTierDocTolerant((doc) => MachineConfigSchema.parse(doc), nextRaw)
-    : parseTierDocTolerant((doc) => GroveConfigSchema.parse(doc), nextRaw);
+    const rawDoc = readRawYamlDocStrict(filePath);
+    const previousExternalMcp = target.kind === 'machine'
+      ? structuredClone(getAtPath(rawDoc, EXTERNAL_MCP_PATH))
+      : undefined;
+    const nextRaw = mutate(rawDoc) ?? rawDoc;
+    if (target.kind === 'machine' && !isDeepStrictEqual(
+      previousExternalMcp,
+      getAtPath(nextRaw, EXTERNAL_MCP_PATH),
+    )) {
+      throw new ProtectedMachineConfigPathError();
+    }
+    const parsedView = target.kind === 'machine'
+      ? parseTierDocTolerant((doc) => MachineConfigSchema.parse(doc), nextRaw)
+      : parseTierDocTolerant((doc) => GroveConfigSchema.parse(doc), nextRaw);
 
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  atomicWriteFileSync(filePath, YAML.stringify(nextRaw), 'utf-8');
-  if (target.kind === 'machine') machineConfigCache.delete(filePath);
-  else groveConfigCache.delete(filePath);
-  invalidateMergedConfigCache();
-  return parsedView;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    atomicWriteFileSync(filePath, YAML.stringify(nextRaw), {
+      encoding: 'utf-8',
+      durable: opts?.durable,
+    });
+    if (target.kind === 'machine') machineConfigCache.delete(filePath);
+    else groveConfigCache.delete(filePath);
+    invalidateMergedConfigCache();
+    return parsedView;
+  };
+
+  return target.kind === 'machine'
+    ? withMachineConfigLock(mycoHome, update)
+    : update();
+}
+
+export function disableExternalMcpConfig(
+  mycoHome = resolveMycoHome(),
+  options: { durable?: boolean } = {},
+): MachineConfig {
+  return withMachineConfigLock(mycoHome, () => {
+    const filePath = resolveGlobalConfigPath(mycoHome);
+    const rawDoc = readRawYamlDocStrict(filePath);
+    const daemon = getAtPath(rawDoc, ['daemon']);
+    if (daemon !== undefined && (daemon === null || typeof daemon !== 'object' || Array.isArray(daemon))) {
+      throw new TierConfigUnreadableError(filePath, 'daemon must be a YAML mapping');
+    }
+    const daemonMapping = (daemon ?? {}) as Record<string, unknown>;
+    const externalMcp = daemonMapping.external_mcp;
+    if (externalMcp !== undefined
+      && (externalMcp === null || typeof externalMcp !== 'object' || Array.isArray(externalMcp))) {
+      throw new TierConfigUnreadableError(
+        filePath,
+        'daemon.external_mcp must be a YAML mapping',
+      );
+    }
+    rawDoc.daemon = {
+      ...daemonMapping,
+      external_mcp: {
+        ...(externalMcp as Record<string, unknown> | undefined),
+        enabled: false,
+      },
+    };
+    const parsedView = parseTierDocTolerant(
+      (doc) => MachineConfigSchema.parse(doc),
+      rawDoc,
+    );
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    atomicWriteFileSync(filePath, YAML.stringify(rawDoc), {
+      encoding: 'utf-8',
+      durable: options.durable,
+    });
+    machineConfigCache.delete(filePath);
+    invalidateMergedConfigCache();
+    return parsedView;
+  });
 }
 
 /**
@@ -475,59 +625,61 @@ function relocateMachineFieldsFromProject(
   defaults: Record<string, unknown>,
   mycoHome: string,
 ): boolean {
-  const machinePath = resolveGlobalConfigPath(mycoHome);
-  const machineRaw = readRawYamlDoc(machinePath);
-  let machineDirty = false;
+  return withMachineConfigLock(mycoHome, () => {
+    const machinePath = resolveGlobalConfigPath(mycoHome);
+    const machineRaw = readRawYamlDocStrict(machinePath);
+    let machineDirty = false;
 
-  for (const [sourcePath, targetPath] of SAVE_PATH_MACHINE_RELOCATE_FIELDS) {
-    const value = getAtPath(validated, sourcePath);
-    if (value === undefined) continue;
+    for (const [sourcePath, targetPath] of SAVE_PATH_MACHINE_RELOCATE_FIELDS) {
+      const value = getAtPath(validated, sourcePath);
+      if (value === undefined) continue;
 
-    // Enumerate leaves of section values; scalar/array sources are a single leaf.
-    const leafSuffixes = (value !== null && typeof value === 'object' && !Array.isArray(value))
-      ? enumerateLeafPaths(value).map((leaf) => leaf.split('.'))
-      : [[]];
+      // Enumerate leaves of section values; scalar/array sources are a single leaf.
+      const leafSuffixes = (value !== null && typeof value === 'object' && !Array.isArray(value))
+        ? enumerateLeafPaths(value).map((leaf) => leaf.split('.'))
+        : [[]];
 
-    for (const suffix of leafSuffixes) {
-      const fullSource = [...sourcePath, ...suffix];
-      const fullTarget = [...targetPath, ...suffix];
-      const leafValue = getAtPath(validated, fullSource);
-      if (leafValue === undefined) continue;
-      const defaultValue = getAtPath(defaults, fullSource);
-      const differsFromDefault = YAML.stringify(leafValue) !== YAML.stringify(defaultValue);
-      const onDiskValue = getAtPath(onDiskRaw, fullSource);
-      const onDisk = onDiskValue !== undefined;
-      if (!onDisk && !differsFromDefault) continue; // defaults aren't meaningful
-      if (getAtPath(machineRaw, fullTarget) !== undefined) {
-        // A leaf may overwrite an explicit machine value only when the caller
-        // changed it in THIS save (differs from the project file's pre-save
-        // state). Unchanged on-disk residue never clobbers a machine value —
-        // the machine value is the newer intent; the residue is simply
-        // dropped from the project file by the schema strip.
-        const callerChanged = YAML.stringify(leafValue) !== YAML.stringify(onDiskValue);
-        if (!callerChanged) continue;
+      for (const suffix of leafSuffixes) {
+        const fullSource = [...sourcePath, ...suffix];
+        const fullTarget = [...targetPath, ...suffix];
+        const leafValue = getAtPath(validated, fullSource);
+        if (leafValue === undefined) continue;
+        const defaultValue = getAtPath(defaults, fullSource);
+        const differsFromDefault = YAML.stringify(leafValue) !== YAML.stringify(defaultValue);
+        const onDiskValue = getAtPath(onDiskRaw, fullSource);
+        const onDisk = onDiskValue !== undefined;
+        if (!onDisk && !differsFromDefault) continue; // defaults aren't meaningful
+        if (getAtPath(machineRaw, fullTarget) !== undefined) {
+          // A leaf may overwrite an explicit machine value only when the caller
+          // changed it in THIS save (differs from the project file's pre-save
+          // state). Unchanged on-disk residue never clobbers a machine value —
+          // the machine value is the newer intent; the residue is simply
+          // dropped from the project file by the schema strip.
+          const callerChanged = YAML.stringify(leafValue) !== YAML.stringify(onDiskValue);
+          if (!callerChanged) continue;
+        }
+        setAtPath(machineRaw, fullTarget, leafValue);
+        machineDirty = true;
       }
-      setAtPath(machineRaw, fullTarget, leafValue);
-      machineDirty = true;
     }
-  }
 
-  if (machineDirty) {
-    try {
-      // Tolerant validation, then persist the RAW doc — unknown keys in the
-      // machine file survive the relocation instead of being wiped.
-      parseTierDocTolerant((doc) => MachineConfigSchema.parse(doc), machineRaw);
-    } catch {
-      // Defensive: never corrupt machine storage from a project save.
-      return false;
+    if (machineDirty) {
+      try {
+        // Tolerant validation, then persist the RAW doc — unknown keys in the
+        // machine file survive the relocation instead of being wiped.
+        parseTierDocTolerant((doc) => MachineConfigSchema.parse(doc), machineRaw);
+      } catch {
+        // Defensive: never corrupt machine storage from a project save.
+        return false;
+      }
+      fs.mkdirSync(path.dirname(machinePath), { recursive: true });
+      atomicWriteFileSync(machinePath, YAML.stringify(machineRaw), 'utf-8');
+      machineConfigCache.delete(machinePath);
+      invalidateMergedConfigCache();
+      return true;
     }
-    fs.mkdirSync(path.dirname(machinePath), { recursive: true });
-    atomicWriteFileSync(machinePath, YAML.stringify(machineRaw), 'utf-8');
-    machineConfigCache.delete(machinePath);
-    invalidateMergedConfigCache();
-    return true;
-  }
-  return false;
+    return false;
+  });
 }
 
 /**

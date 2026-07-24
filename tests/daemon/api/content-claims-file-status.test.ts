@@ -15,6 +15,7 @@ import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 
 interface FileStatusEntry {
   artifact_kind: string | null;
@@ -101,6 +102,7 @@ describe('content claim file-status — local project', () => {
     const h = createContentClaimFileStatusHandler({
       logger: { warn: warnObj.warn.bind(warnObj), error: () => {} },
       mycoHome,
+      lockNamespace: testPerUserLockNamespace,
     });
     return { h, warnSpy };
   }

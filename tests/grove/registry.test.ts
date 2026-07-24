@@ -28,6 +28,7 @@ import {
 } from '@myco/grove/registry.js';
 import { createGroveId } from '@myco/grove/ids.js';
 import type { AttachRef } from '@myco/host/registry.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 let home: string;
 
@@ -244,7 +245,11 @@ describe('Grove registry', () => {
       }, home);
       archiveProjectInGrove(grove.id, 'proj_demo', home);
 
-      const registered = ensureProjectRegistered(projectRoot, home);
+      const registered = ensureProjectRegistered(
+        projectRoot,
+        home,
+        testPerUserLockNamespace,
+      );
 
       expect(registered).toBeNull();
       expect(listRegisteredProjects(grove.id, home)).toEqual([]);

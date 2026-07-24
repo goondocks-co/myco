@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
+import { testPerUserLocksRoot } from '../helpers/per-user-lock-namespace.js';
 
 const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
@@ -40,7 +41,13 @@ describe('post-tool-use hook buffer fallback', () => {
 
       const result = spawnSync(
         process.execPath,
-        [path.resolve('packages/myco/src/cli.ts'), 'hook', 'post-tool-use', '--symbiont', 'codex'],
+        [
+          path.resolve('tests/helpers/capture-hook-helper.ts'),
+          testPerUserLocksRoot,
+          'post-tool-use',
+          '--symbiont',
+          'codex',
+        ],
         {
           cwd: projectRoot,
           // Isolate MYCO_HOME so daemon discovery cannot reach a real
@@ -110,7 +117,13 @@ describe('post-tool-use hook buffer fallback', () => {
 
       const result = spawnSync(
         process.execPath,
-        [path.resolve('packages/myco/src/cli.ts'), 'hook', 'post-tool-use', '--symbiont', 'antigravity'],
+        [
+          path.resolve('tests/helpers/capture-hook-helper.ts'),
+          testPerUserLocksRoot,
+          'post-tool-use',
+          '--symbiont',
+          'antigravity',
+        ],
         {
           cwd: projectRoot,
           env: {

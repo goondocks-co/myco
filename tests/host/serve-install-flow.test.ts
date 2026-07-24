@@ -32,7 +32,7 @@ import {
 import type { ServiceManager, ServiceStatus, InstallResult } from '@myco/service/types.js';
 
 import { loadMachineConfig, saveMachineConfig, loadGroveConfig, saveGroveConfig } from '@myco/config/loader.js';
-import { readSecrets, writeSecret } from '@myco/config/secrets.js';
+import { createSecretsOperations, readSecrets } from '@myco/config/secrets.js';
 import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
 import { resolveGroveDir, resolveGroveConfigPath, resolveGroveDbPath } from '@myco/grove/paths.js';
 import { createGrove } from '@myco/grove/registry.js';
@@ -41,8 +41,20 @@ import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { createGroveBackup, seedGroveBackupDefaults } from '@myco/backup/service.js';
 import { getMachineId } from '@myco/machine-id.js';
-import { resolveServedGroveBackupHealth, resolveServedGroveKeyHealth } from '@myco/daemon/host-serve.js';
-import { checkServedGroveBackupStaleness, checkServedGroveKeyHealth } from '@myco/cli/doctor.js';
+import { resolveServedGroveBackupHealth, resolveServedGroveKeyHealth as resolveServedGroveKeyHealthWith } from '@myco/daemon/host-serve.js';
+import {
+  checkServedGroveBackupStaleness,
+  checkServedGroveKeyHealth as checkServedGroveKeyHealthWith,
+} from '@myco/cli/doctor.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
+const resolveServedGroveKeyHealth = (
+  config: Parameters<typeof resolveServedGroveKeyHealthWith>[0],
+  mycoHome?: string,
+) => resolveServedGroveKeyHealthWith(config, mycoHome, testPerUserLockNamespace);
+const checkServedGroveKeyHealth = (mycoHome?: string) =>
+  checkServedGroveKeyHealthWith(mycoHome, testPerUserLockNamespace);
 
 // ---------------------------------------------------------------------------
 // Shared hermetic MYCO_HOME / MYCO_TEAM_HOME fixture (mirrors
@@ -138,6 +150,7 @@ describe('hostEnableAndEmitJoin', () => {
     return {
       supported: true, platformName: 'launchd',
       isInstalled: async () => true,
+      inspect: async () => null,
       install: async (): Promise<InstallResult> => ({ changed: false, supervisorReloaded: false }),
       uninstall: async () => {}, start: async () => {}, stop: async () => {},
       restart: async () => {},
@@ -182,6 +195,7 @@ describe('hostEnableAndEmitJoin', () => {
         resolveNodeId: async () => 'node-9',
         verifyOverlayListener: async () => true,
         logger: () => {},
+        lockNamespace: testPerUserLockNamespace,
         ...overrides,
       },
     };

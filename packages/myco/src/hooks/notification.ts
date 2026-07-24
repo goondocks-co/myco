@@ -1,4 +1,5 @@
 import { sendEvent } from './send-event.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 /**
  * Copilot's `notification` hook — fires when the agent emits a
@@ -13,9 +14,9 @@ import { sendEvent } from './send-event.js';
  * pattern surfaces (e.g., "agent paused waiting for input → inject a
  * Myco-suggested next step"), this is the right place to add it.
  */
-export async function main() {
+export async function main(lockNamespace?: PerUserLockNamespace) {
   await sendEvent('notification', (input) => ({
     type: 'notification',
     payload: input.raw,
-  }));
+  }), lockNamespace);
 }

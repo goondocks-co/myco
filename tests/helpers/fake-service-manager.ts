@@ -20,6 +20,7 @@
 import type {
   InstallOptions,
   InstallResult,
+  InstalledServiceCommand,
   ServiceManager,
   ServiceSpec,
   ServiceStatus,
@@ -64,6 +65,7 @@ export class FakeServiceManager implements ServiceManager {
   startCalls: string[] = [];
   stopCalls: string[] = [];
   restartCalls: string[] = [];
+  inspectCalls: string[] = [];
   statusCalls = 0;
 
   constructor(opts: FakeServiceManagerOptions = {}) {
@@ -85,6 +87,14 @@ export class FakeServiceManager implements ServiceManager {
   async isInstalled(label: string): Promise<boolean> {
     if (this._preInstalledAll) return true;
     return this.installed.has(label);
+  }
+
+  async inspect(label: string): Promise<InstalledServiceCommand | null> {
+    this.inspectCalls.push(label);
+    const serialized = this.installedSpecs.get(label);
+    if (serialized === undefined) return null;
+    const spec = JSON.parse(serialized) as ServiceSpec;
+    return { executable: spec.executable, args: [...spec.args] };
   }
 
   async install(spec: ServiceSpec, opts?: InstallOptions): Promise<InstallResult> {
@@ -111,6 +121,7 @@ export class FakeServiceManager implements ServiceManager {
   async uninstall(label: string): Promise<void> {
     this.uninstallCalls.push(label);
     this.installed.delete(label);
+    this.installedSpecs.delete(label);
     if (this._preInstalledAll) this._preInstalledAll = false;
   }
 

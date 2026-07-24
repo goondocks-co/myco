@@ -16,15 +16,27 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createHostServeStatusHandler } from '@myco/daemon/api/host-serve-status.js';
+import {
+  createHostServeStatusHandler as createHostServeStatusHandlerWith,
+  type HostServeStatusRouteDeps,
+} from '@myco/daemon/api/host-serve-status.js';
 import type { HostServeRuntime } from '@myco/daemon/host-serve.js';
 import { createGroveId, createProjectId } from '@myco/grove/ids.js';
 import { createGrove, clearGroveRegistryCaches } from '@myco/grove/registry.js';
 import { resolveGroveDir } from '@myco/grove/paths.js';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader.js';
-import { writeSecret } from '@myco/config/secrets.js';
+import { createSecretsOperations } from '@myco/config/secrets.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '@myco/constants.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+import { seedExternalMcpConfig } from '../../helpers/external-mcp-config-fixture.js';
+
+const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
+const createHostServeStatusHandler = (deps: HostServeStatusRouteDeps) =>
+  createHostServeStatusHandlerWith({
+    ...deps,
+    lockNamespace: testPerUserLockNamespace,
+  });
 
 function req(): RouteRequest {
   return { body: undefined, query: {}, params: {}, pathname: '/api/host-serve/status' };
@@ -213,9 +225,12 @@ describe('GET /api/host-serve/status', () => {
       daemon: {
         ...machine.daemon,
         host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id },
-        external_mcp: { enabled: true, port: machine.daemon.external_mcp.port },
       },
     }, home);
+    seedExternalMcpConfig(home, {
+      enabled: true,
+      port: machine.daemon.external_mcp.port,
+    });
     const BEARER_SENTINEL = 'sk-sentinel-host-serve-bearer-ABCDEF1234567890';
     const TOKEN_SENTINEL = 'sk-sentinel-external-mcp-token-ZYXWVUTSRQ9876';
     writeSecret(home, HOST_EXTERNAL_MCP_TOKEN_SECRET, TOKEN_SENTINEL);

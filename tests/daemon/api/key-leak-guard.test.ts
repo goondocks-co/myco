@@ -39,8 +39,11 @@ import { registerTeamAgentTaskRoutes } from '@myco/daemon/api/team-agent-tasks.j
 import type { HostServeRuntime } from '@myco/daemon/host-serve.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
-import { readSecrets } from '@myco/config/secrets.js';
+import { createSecretsOperations, readSecrets } from '@myco/config/secrets.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
 
 const SENTINELS = {
   openai: 'sk-sentinel-openai-ABCDEF1234567890',
@@ -132,10 +135,14 @@ describe('cross-route API key leak guard', () => {
     logger = new DaemonLogger(path.join(tmpVault, 'logs'));
     setupTestDb();
 
-    server = new DaemonServer({ vaultDir: tmpVault, logger });
+    server = new DaemonServer({
+      vaultDir: tmpVault,
+      logger,
+      lockNamespace: testPerUserLockNamespace,
+    });
 
     // Wire up a representative surface of routes.
-    registerProviderRoutes(server);
+    registerProviderRoutes(server, { lockNamespace: testPerUserLockNamespace });
     server.registerRoute('GET', '/api/models', handleGetModels);
 
     const embeddingManager = {
@@ -286,6 +293,7 @@ describe('cross-route API key leak guard', () => {
 describe('team-write routes over the overlay: no raw key ever leaves the host (merge gate)', () => {
   const TEAM_SENTINEL_EXISTING = 'sk-ant-sentinel-existing-team-key-ABCDEFGH1234';
   const TEAM_SENTINEL_NEW = 'sk-ant-sentinel-new-team-key-ZYXWVUTSRQ9876';
+  const EXTERNAL_MCP_SENTINEL = 'myco-external-mcp-sentinel-13579BDF';
   const HOST_BEARER = 'test-key-leak-guard-team-host-bearer';
 
   let tmp: string;
@@ -321,8 +329,13 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: new DaemonLogger(path.join(tmp, 'host-logs')),
       hostServe,
+      lockNamespace: testPerUserLockNamespace,
     });
-    registerTeamConfigRoutes(overlayServer, { hostServe, mycoHome: home });
+    registerTeamConfigRoutes(overlayServer, {
+      hostServe,
+      mycoHome: home,
+      lockNamespace: testPerUserLockNamespace,
+    });
     // Per-task table (spec §6.3) — carries no secrets, so it needs no leak
     // assertions of its own, but is registered + swept here for uniformity
     // with the rest of the team-write route class.
@@ -352,54 +365,30 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
 
   it('MERGE GATE: no team-write response over the overlay ever contains a raw team key', async () => {
     // Seed an already-configured key directly, as if an earlier PUT had run.
-    const { writeSecret } = await import('@myco/config/secrets.js');
     const { resolveGroveDir } = await import('@myco/grove/paths.js');
     writeSecret(resolveGroveDir(grove.id, process.env.MYCO_HOME!), 'ANTHROPIC_API_KEY', TEAM_SENTINEL_EXISTING);
+    writeSecret(process.env.MYCO_HOME!, HOST_EXTERNAL_MCP_TOKEN_SECRET, EXTERNAL_MCP_SENTINEL);
 
     const base = `http://127.0.0.1:${overlayServer.overlayPort}`;
 
-    // ---------------------------------------------------------------------
-    // The external MCP token's TWO deliberate reveal surfaces (Task 10 Fix
-    // Round 1, strict property): a FRESH mint — first enable, or rotate —
-    // reveals the raw token. A RE-ENABLE of an already-token'd listener
-    // does NOT re-reveal it (idempotent bind, unchanged hash) — a member
-    // who lost the token must use rotate. This merge gate pins that exact
-    // asymmetry, not just "some reveal surface exists somewhere".
-    // ---------------------------------------------------------------------
-    const firstEnableRes = await fetch(`${base}/api/team/external-mcp/toggle`, {
+    const enableRes = await fetch(`${base}/api/team/external-mcp/toggle`, {
       method: 'PUT',
       headers: { ...overlayHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify({ enabled: true }),
     });
-    const firstEnableBody = await firstEnableRes.json() as { token: string; enabled: boolean };
-    expect(firstEnableBody.enabled).toBe(true);
-    expect(typeof firstEnableBody.token, 'the first enable (fresh mint) did not reveal the raw token').toBe('string');
-    expect(firstEnableBody.token.length).toBeGreaterThan(0);
-    const mintedToken = firstEnableBody.token;
-    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(mintedToken);
-
-    const reEnableRes = await fetch(`${base}/api/team/external-mcp/toggle`, {
-      method: 'PUT',
-      headers: { ...overlayHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ enabled: true }),
-    });
-    const reEnableBody = await reEnableRes.json() as { token?: string; tokenHash: string; enabled: boolean };
-    expect(reEnableBody.enabled).toBe(true);
-    expect(reEnableBody.token, 're-enable of an already-token\'d listener must NOT re-reveal the raw token').toBeUndefined();
-    // mint-if-absent (via the re-enable) must NOT have rotated it either.
-    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(mintedToken);
+    const enableText = await enableRes.text();
+    expect(enableRes.status).toBe(409);
+    expect(enableText).not.toContain(EXTERNAL_MCP_SENTINEL);
+    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(EXTERNAL_MCP_SENTINEL);
 
     const rotateRes = await fetch(`${base}/api/team/mcp-token/rotate`, {
       method: 'POST',
       headers: overlayHeaders(),
     });
-    const rotateBody = await rotateRes.json() as { token: string; tokenHash: string };
-    const currentToken = rotateBody.token;
-    expect(typeof currentToken, 'POST /api/team/mcp-token/rotate did not reveal the raw token').toBe('string');
-    expect(currentToken.length).toBeGreaterThan(0);
-    expect(currentToken, 'rotate must always mint a FRESH token, never echo the prior one').not.toBe(mintedToken);
-    const storedAfterRotate = readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
-    expect(currentToken).toBe(storedAfterRotate);
+    const rotateText = await rotateRes.text();
+    expect(rotateRes.status).toBe(409);
+    expect(rotateText).not.toContain(EXTERNAL_MCP_SENTINEL);
+    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(EXTERNAL_MCP_SENTINEL);
 
     const requests: Array<{ method: string; path: string; body?: unknown }> = [
       { method: 'GET', path: '/api/team/config' },
@@ -410,13 +399,11 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       // via an unrelated field must not cause it to be echoed either.
       { method: 'PUT', path: '/api/team/secrets/openai', body: { secret: TEAM_SENTINEL_NEW, leak: TEAM_SENTINEL_EXISTING } },
       { method: 'DELETE', path: '/api/team/secrets/anthropic' },
-      // Status/re-enable/disable — NONE of these are reveal surfaces: GET
-      // never echoes the raw token (only its hash); a re-enable AFTER
-      // rotate (an already-token'd listener again) must not re-reveal the
-      // freshly-rotated token either; disable mints/reveals nothing.
+      // Status and toggle responses never contain the raw external token.
       { method: 'GET', path: '/api/team/external-mcp' },
       { method: 'PUT', path: '/api/team/external-mcp/toggle', body: { enabled: true } },
       { method: 'PUT', path: '/api/team/external-mcp/toggle', body: { enabled: false } },
+      { method: 'POST', path: '/api/team/mcp-token/rotate' },
       // Unknown-provider and missing-secret error paths must not echo anything either.
       { method: 'PUT', path: '/api/team/secrets/not-a-provider', body: { secret: TEAM_SENTINEL_NEW } },
       { method: 'PUT', path: '/api/team/secrets/anthropic', body: {} },
@@ -435,8 +422,7 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       const text = await res.text();
       expect(text, `${r.method} ${r.path} leaked the existing team key`).not.toContain(TEAM_SENTINEL_EXISTING);
       expect(text, `${r.method} ${r.path} leaked the new team key`).not.toContain(TEAM_SENTINEL_NEW);
-      expect(text, `${r.method} ${r.path} leaked the current external MCP token outside its two fresh-mint reveal surfaces`).not.toContain(currentToken);
-      expect(text, `${r.method} ${r.path} leaked the rotated-out external MCP token`).not.toContain(mintedToken);
+      expect(text, `${r.method} ${r.path} leaked the external MCP token`).not.toContain(EXTERNAL_MCP_SENTINEL);
     }
   });
 

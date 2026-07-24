@@ -11,6 +11,7 @@
  * `.myco/project.toml` whose `project.id` is the routing key the attach mapping
  * records.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,10 +27,20 @@ import {
   listGroves,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
-import { getHost, resolveAttach, upsertHost, type HostRecord } from '@myco/host/registry.js';
-import { attachCommand, detachCommand } from '@myco/host/attach-command.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
+import {
+  attachCommand as attachCommandWith,
+  detachCommand as detachCommandWith,
+} from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { createFsDrainStore } from '@myco/capture/transcript-drain.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { getHost, resolveAttach } = createHostRegistryOperations(testPerUserLockNamespace);
+const attachCommand = (options: Parameters<typeof attachCommandWith>[0]) =>
+  attachCommandWith(options, testPerUserLockNamespace);
+const detachCommand = (options: Parameters<typeof detachCommandWith>[0]) =>
+  detachCommandWith(options, testPerUserLockNamespace);
 
 let home: string;
 let teamHome: string;
@@ -86,7 +97,7 @@ function makeCheckout(projectId: string, hintHostId?: string): string {
 describe('attach/detach command', () => {
   test('attach records the ref (project id from the manifest, grove sourced from the host record — no flag)', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
 
@@ -104,7 +115,7 @@ describe('attach/detach command', () => {
 
   test('attach accepts an explicit --project-id override', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     // Checkout manifest carries a DIFFERENT id; the override wins.
     const root = makeCheckout(createProjectId());
@@ -116,7 +127,7 @@ describe('attach/detach command', () => {
 
   test('attach falls back to the host named by the project.toml Team Host hint', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId, host.host_id);
 
@@ -129,7 +140,7 @@ describe('attach/detach command', () => {
 
   test('detach clears the ref; resolveAttach then misses', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
@@ -144,7 +155,7 @@ describe('attach/detach command', () => {
 
   test('detach purges the project transcript-drain queue entries for that host (capture-push §5.2)', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home });
@@ -171,7 +182,7 @@ describe('attach/detach command', () => {
 
   test('re-attach to the same host converges (idempotent, single ref)', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
 
@@ -189,7 +200,7 @@ describe('attach/detach command', () => {
     // reproduce the stuck shape.
     const host = makeHost();
     const projectId = createProjectId();
-    upsertHost({ ...host, projects: [{ grove_id: host.served_grove_id!, project_id: projectId }] });
+    writeHostRecordFixture({ ...host, projects: [{ grove_id: host.served_grove_id!, project_id: projectId }] });
     expect(resolveAttach(projectId)?.ref.root).toBeUndefined();
 
     const root = makeCheckout(projectId);
@@ -213,7 +224,7 @@ describe('attach/detach command', () => {
     }, home);
 
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const root = makeCheckout(projectId);
 
     // No `beginResidency` injected (a CLI/in-process caller with no daemon DB):
@@ -232,8 +243,8 @@ describe('attach/detach command', () => {
   test('attach maps ProjectAttachedToOtherHostError to an already-attached message', () => {
     const hostA = makeHost({ label: 'Host A' });
     const hostB = makeHost({ label: 'Host B' });
-    upsertHost(hostA);
-    upsertHost(hostB);
+    writeHostRecordFixture(hostA);
+    writeHostRecordFixture(hostB);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     attachCommand({ projectPath: root, hostId: hostA.host_id, mycoHome: home });
@@ -257,7 +268,7 @@ describe('attach/detach command', () => {
 
   test('attach to a host that predates served-grove designation refuses with host_predates_served_grove ("update the host")', () => {
     const host = makeHost({ served_grove_id: undefined });
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const root = makeCheckout(createProjectId());
 
     expect(() => attachCommand({ projectPath: root, hostId: host.host_id, mycoHome: home }))
@@ -280,7 +291,7 @@ describe('attach/detach command', () => {
 
   test('attach with no resolvable project id fails with an actionable error', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     // A checkout with no committed manifest and no --project-id override.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-attach-noid-'));
 
@@ -292,7 +303,7 @@ describe('attach/detach command', () => {
 describe('attach — local_grove_id (E-4 local-view requirement)', () => {
   test('an explicit local_grove_id naming an existing local Grove is recorded as-is', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const localGrove = createGrove('Personal', home);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
@@ -305,7 +316,7 @@ describe('attach — local_grove_id (E-4 local-view requirement)', () => {
 
   test('omitted local_grove_id defaults to the machine\'s current default Grove via a pure read (also covers CLI-originated attach, which never passes this option)', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const defaultGrove = createGrove('Default', home); // createGrove auto-sets the first Grove as default.
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
@@ -320,7 +331,7 @@ describe('attach — local_grove_id (E-4 local-view requirement)', () => {
 
   test('an unknown local_grove_id refuses with the coded unknown_local_grove membership error, writing nothing', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
 
@@ -336,7 +347,7 @@ describe('attach — local_grove_id (E-4 local-view requirement)', () => {
 
   test('attach with no default Grove yet and no explicit local_grove_id still succeeds — local_grove_id is left unset, like a legacy ref (bootstrap-only edge case, never a hard attach failure)', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     // `home` has no Groves at all — no createGrove/ensureDefaultGrove call in this test.
@@ -349,7 +360,7 @@ describe('attach — local_grove_id (E-4 local-view requirement)', () => {
 
   test('re-attach with a different explicit local_grove_id keeps the originally recorded choice (captured once, at attach time)', () => {
     const host = makeHost();
-    upsertHost(host);
+    writeHostRecordFixture(host);
     const groveA = createGrove('Alpha', home);
     const groveB = createGrove('Bravo', home);
     const projectId = createProjectId();

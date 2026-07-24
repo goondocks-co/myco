@@ -12,6 +12,7 @@ import { createGrove, registerProjectInGrove, type GroveRecord } from '@myco/gro
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const noopLogger = { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} } as unknown as Logger;
 
@@ -45,7 +46,7 @@ describe('forEachGrove home-as-filter', () => {
       cache,
       noopLogger,
       ({ grove }) => { visited.push(grove.slug); },
-      { mycoHome },
+      { mycoHome, lockNamespace: testPerUserLockNamespace },
     );
     expect(visited.sort()).toEqual(['default', 'dogfood']);
   });
@@ -109,7 +110,11 @@ describe('DaemonServer home ownership gate on inbound requests', () => {
     const anchorVault = path.join(tmp, 'anchor', '.myco');
     mkdirSync(path.join(anchorVault, 'logs'), { recursive: true });
     logger = new DaemonLogger(path.join(anchorVault, 'logs'));
-    server = new DaemonServer({ vaultDir: anchorVault, logger });
+    server = new DaemonServer({
+      vaultDir: anchorVault,
+      logger,
+      lockNamespace: testPerUserLockNamespace,
+    });
     server.registerRoute('GET', '/test/ctx', async (req) => ({
       body: { grove_id: req.requestContext?.groveId ?? null },
     }));

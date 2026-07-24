@@ -3,9 +3,22 @@ import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { registerScheduledTasks, buildPreConditions } from '@myco/daemon/task-scheduling.js';
+import {
+  registerScheduledTasks as registerScheduledTasksWith,
+  buildPreConditions,
+  type TaskSchedulingDeps,
+} from '@myco/daemon/task-scheduling.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const registerScheduledTasks = (
+  runner: Parameters<typeof registerScheduledTasksWith>[0],
+  deps: TaskSchedulingDeps,
+) => registerScheduledTasksWith(runner, {
+  ...deps,
+  lockNamespace: testPerUserLockNamespace,
+});
 import { ProjectPowerStateTracker } from '@myco/daemon/project-power-state.js';
 import { PreConditionSchema } from '@myco/agent/schemas.js';
 import type { AgentTask } from '@myco/agent/types.js';

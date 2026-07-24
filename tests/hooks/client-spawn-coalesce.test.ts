@@ -17,6 +17,7 @@ import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
 import { serviceLabel } from '@myco/service/labels';
 import * as childProcessActual__ns from 'node:child_process';
 import { FakeServiceManager, noServiceManager } from '../helpers/fake-service-manager';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 // The label for the test home — a hash-suffixed label since TEST_MYCO_HOME is
 // not the canonical default home (~/.myco).
@@ -140,7 +141,10 @@ describe('DaemonClient — auto-spawn on request failure', () => {
       (c: InstanceType<typeof DaemonClient>) => c.delete('/x'),
     ]) {
       spawnMock.mockClear();
-      const client = new DaemonClient(vaultDir, { serviceManager: noServiceManager() });
+      const client = new DaemonClient(vaultDir, {
+        serviceManager: noServiceManager(),
+        lockNamespace: testPerUserLockNamespace,
+      });
       const result = await call(client);
       expect(result.ok).toBe(false);
       // spawnDaemon is fire-and-forget from the request method; flush
@@ -156,7 +160,10 @@ describe('DaemonClient — auto-spawn on request failure', () => {
       statePath,
       JSON.stringify({ pid: 0x7fffffff, port: 1 }),
     );
-    const client = new DaemonClient(vaultDir, { serviceManager: noServiceManager() });
+    const client = new DaemonClient(vaultDir, {
+      serviceManager: noServiceManager(),
+      lockNamespace: testPerUserLockNamespace,
+    });
     const result = await client.post('/x', {});
     expect(result.ok).toBe(false);
     await new Promise((r) => setImmediate(r));

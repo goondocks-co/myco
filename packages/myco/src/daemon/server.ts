@@ -25,6 +25,10 @@ import {
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
 import { classifyRoute, overlayHostStampRefusal, refusalJson, type RefusalPayload } from '../host/routing.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { maybeRegisterHostedProjectOnIngest } from '../host/hosted-projects.js';
 import { defaultDial, handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from './host-proxy.js';
 import { handleAttachedConfigRequest } from './attached-config.js';
@@ -43,7 +47,11 @@ import {
   type HostServeRuntime,
 } from './host-serve.js';
 import { appendHostAction } from '../host/action-log.js';
-import { HOST_ENROLL_ROUTE, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '../constants.js';
+import {
+  EXTERNAL_MCP_ACTIVATION_POSTURE,
+  HOST_ENROLL_ROUTE,
+  REFUSAL_LOG_THROTTLE_INTERVAL_MS,
+} from '../constants.js';
 import { shouldLogOncePerInterval } from './log-throttle.js';
 import { type DaemonState } from './service-state.js';
 import {
@@ -119,12 +127,15 @@ export interface DaemonServerConfig {
    * tests that don't exercise routed capture; the proxy's no-op defaults apply.
    */
   hostProxyDeps?: Partial<HostProxyDeps>;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 export type RawRouteHandler = (
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ) => Promise<void>;
+type ShutdownRequestContinuation = () => void | Promise<void>;
+type ShutdownRequestHandler = () => Promise<ShutdownRequestContinuation>;
 
 export class DaemonServer {
   port = 0;
@@ -143,6 +154,7 @@ export class DaemonServer {
   /** Capture-side proxy deps (transcript-drain flush + collect enqueue) threaded
    *  into `handleAttachedRequest` for attached projects. See {@link DaemonServerConfig}. */
   private hostProxyDeps: Partial<HostProxyDeps>;
+  private lockNamespace: PerUserLockNamespace;
   /** The overlay listener's bound port (0 until it binds). Public so tests /
    *  enrollment can read the port the overlay surface is reachable on. */
   overlayPort = 0;
@@ -163,7 +175,7 @@ export class DaemonServer {
    * drains THIS daemon on Windows, where a cross-process SIGTERM maps to an
    * uncatchable `TerminateProcess` and the signal-based shutdown never runs.
    */
-  private shutdownRequestHandler: (() => void) | null = null;
+  private shutdownRequestHandler: ShutdownRequestHandler | null = null;
   private runtimeCache: GroveRuntimeCache;
   private ownsRuntimeCache: boolean;
   /**
@@ -204,6 +216,7 @@ export class DaemonServer {
     this.ownsRuntimeCache = config.runtimeCache === undefined;
     this.hostServe = config.hostServe ?? null;
     this.hostProxyDeps = config.hostProxyDeps ?? {};
+    this.lockNamespace = config.lockNamespace ?? nativePerUserLockNamespace;
     this.version = getPluginVersion();
     this.authToken = mintDaemonAuthToken();
     // Export to env so direct children inherit the bearer without
@@ -251,7 +264,7 @@ export class DaemonServer {
    * Called from main.ts once the graceful-shutdown closure exists. Until then
    * the route reports 503 so a caller falls back to signals.
    */
-  onShutdownRequest(handler: () => void): void {
+  onShutdownRequest(handler: ShutdownRequestHandler): void {
     this.shutdownRequestHandler = handler;
   }
 
@@ -525,6 +538,7 @@ export class DaemonServer {
       res.end(JSON.stringify({
         myco: true,
         version: this.version,
+        external_mcp_activation: EXTERNAL_MCP_ACTIVATION_POSTURE,
         pid: process.pid,
         uptime: process.uptime(),
       }));
@@ -556,11 +570,21 @@ export class DaemonServer {
         res.end(JSON.stringify({ error: 'shutdown_not_ready' }));
         return;
       }
-      // Respond BEFORE tearing down so the caller observes the 202, then start
-      // the graceful drain only once the body has flushed to the socket.
+      let continueShutdown: ShutdownRequestContinuation;
+      try {
+        continueShutdown = await handler();
+      } catch {
+        res.writeHead(409, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'shutdown_blocked' }));
+        return;
+      }
       res.writeHead(202, { 'Content-Type': 'application/json', ...versionHeader });
       res.end(JSON.stringify({ myco: true, shutting_down: true }), () => {
-        handler();
+        void Promise.resolve(continueShutdown()).catch((error) => {
+          this.logger.error(LOG_KINDS.DAEMON_START, 'Prepared shutdown continuation failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       });
     });
 
@@ -601,8 +625,20 @@ export class DaemonServer {
       try { memberInfo = (await readBody(req)) as Record<string, unknown>; } catch { /* log without it */ }
 
       const payload = buildHostEnrollmentPayload(hostServe, this.overlayPort);
+      const enrollmentNonce = memberInfo.enrollment_nonce;
+      const responsePayload = typeof enrollmentNonce === 'string'
+        && /^[a-f0-9]{32,}$/.test(enrollmentNonce)
+        ? {
+          ...payload,
+          enrollment_receipt: {
+            enrollment_nonce: enrollmentNonce,
+            host_id: payload.host_id,
+            protocol_version: payload.protocol_version,
+          },
+        }
+        : payload;
       res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
-      res.end(JSON.stringify(payload));
+      res.end(JSON.stringify(responsePayload));
 
       // Record the join for the operator's diagnosable safety net (spec §9). The
       // subject is the member's overlay IP off the CONNECTION (unspoofable), with the
@@ -733,7 +769,7 @@ export class DaemonServer {
             method: req.method!,
             pathname: match.pathname,
             projectId: inboundProjectId,
-          });
+          }, this.lockNamespace);
           if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
             this.writeRefusal(res, decision.refusal, versionHeader);
             return;
@@ -764,6 +800,7 @@ export class DaemonServer {
             await handleAttachedConfigRequest(req, res, match.pathname, decision.target, carveBody, {
               dial: defaultDial,
               logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
+              lockNamespace: this.lockNamespace,
             });
             return;
           }
@@ -1103,6 +1140,7 @@ export class DaemonServer {
       // serve instead of 404ing. Only this member-dispatch seam sets it; the
       // `/mcp` transport, external listener, and URL tenancy leave it off.
       tolerateAttachedProject: true,
+      lockNamespace: this.lockNamespace,
     });
   }
 

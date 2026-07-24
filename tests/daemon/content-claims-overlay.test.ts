@@ -11,6 +11,7 @@
  * Hermetic: `MYCO_HOME` (the host's Grove registry) and `MYCO_TEAM_HOME`
  * (the member's attach registry) are fresh tmpdirs.
  */
+import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,11 +28,13 @@ import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove/ids.js';
-import { upsertHost, writeHostSecret, type HostRecord } from '@myco/host/registry.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const HOST_BEARER = 'test-content-claims-host-bearer';
 const CLAIMING_MACHINE = 'attached-member-machine';
 
@@ -88,6 +91,7 @@ describe('content claims over the Team Host overlay', () => {
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: hostLogger,
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
       // servedGroveId designates `grove` as the ONE Grove this host serves —
       // required since Task 2's servedGroveRefusal fail-closed filter now
       // refuses every overlay request when the designation is absent, even
@@ -106,7 +110,7 @@ describe('content claims over the Team Host overlay', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: grove.id, project_id: projectId }],
     };
-    upsertHost(host);
+    writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, HOST_BEARER);
 
     // --- member daemon: loopback only, no local Grove DB for this project ---
@@ -115,6 +119,7 @@ describe('content claims over the Team Host overlay', () => {
       vaultDir: path.join(tmp, 'member-anchor', '.myco'),
       logger: memberLogger,
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
     });
     registerContentClaimRoutes(memberServer, { machineId: 'member-machine', logger: memberLogger });
     await memberServer.start(0);

@@ -57,7 +57,12 @@ const fsMocks = {
   // an undefined method).
   openSync: mock(() => 7 as unknown as number),
   fchmodSync: mock(() => undefined),
-  writeSync: mock(() => 0),
+  writeSync: mock((
+    _fd: number,
+    _buffer: Uint8Array,
+    _offset: number,
+    length: number,
+  ) => length),
   fsyncSync: mock(() => undefined),
   closeSync: mock(() => undefined),
   constants: {
@@ -675,4 +680,3 @@ describe('getInstalledVersion()', () => {
     expect(result).toBeNull();
   });
 });
-

@@ -149,6 +149,23 @@ describe('myco config', () => {
       expect(exitCode).toBe(1);
     });
 
+    it('rejects writes overlapping the authority-owned external MCP subtree', async () => {
+      const machinePath = path.join(sandbox.mycoHome, 'config.yaml');
+      const original = 'daemon:\n  external_mcp:\n    enabled: false\n    port: 34444\n';
+      fs.writeFileSync(machinePath, original, 'utf-8');
+
+      for (const [dotPath, value] of [
+        ['daemon.external_mcp.enabled', 'true'],
+        ['daemon.external_mcp', '{"enabled":true,"port":35555}'],
+        ['daemon', '{"external_mcp":{"enabled":true,"port":35555}}'],
+      ]) {
+        await expect(run(['set', dotPath, value], tmpDir)).rejects.toThrow('process.exit(1)');
+        expect(exitCode).toBe(1);
+        expect(fs.readFileSync(machinePath, 'utf-8')).toBe(original);
+      }
+      expect(errors.every((error) => error.includes('containment authority'))).toBe(true);
+    });
+
     it('prints daemon restart notice when daemon.json exists', async () => {
       writeConfig(tmpDir);
       const statePath = resolveServiceDaemonStatePath();

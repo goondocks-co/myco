@@ -29,11 +29,20 @@ import {
   type HostEnrollment,
   type MemberOverlayDeps,
 } from '@myco/host/member-overlay.js';
-import { getHost, resolveAttach } from '@myco/host/registry.js';
-import { attachCommand } from '@myco/host/attach-command.js';
+import { createHostRegistryOperations } from '@myco/host/registry.js';
+import { attachCommand as attachCommandWith } from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { TAILSCALE_VERSION, type CommandRunner } from '@myco/host/overlay-binaries.js';
 import { FakeServiceManager } from '../helpers/fake-service-manager.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const {
+  getHost,
+  readHostSecrets,
+  resolveAttach,
+} = createHostRegistryOperations(testPerUserLockNamespace);
+const attachCommand = (options: Parameters<typeof attachCommandWith>[0]) =>
+  attachCommandWith(options, testPerUserLockNamespace);
 
 // ---------------------------------------------------------------------------
 // (a, part 1) Host side: buildHostEnrollmentPayload self-reports served_grove_id.
@@ -52,6 +61,7 @@ describe('buildHostEnrollmentPayload — served_grove_id self-report', () => {
     );
     expect(payload.served_grove_id).toBe(groveId);
     expect(payload.protocol_version).toBe(HOST_PROTOCOL_VERSION);
+    expect('projects' in payload).toBe(false);
   });
 
   test('an enabled-but-undesignated host reports served_grove_id as null — present, not absent', () => {
@@ -87,7 +97,7 @@ function fakeEnrollment(fields: {
   host_id: string;
   overlay_address: string;
   bearer: string;
-  served_grove_id?: string;
+  served_grove_id?: string | null;
 }): EnrollmentClient {
   return {
     async enroll(_ctx: EnrollmentContext): Promise<HostEnrollment> {
@@ -97,8 +107,9 @@ function fakeEnrollment(fields: {
         overlay_address: fields.overlay_address,
         protocol_version: HOST_PROTOCOL_VERSION,
         bearer: fields.bearer,
-        served_grove_id: fields.served_grove_id,
-        projects: [],
+        ...(Object.prototype.hasOwnProperty.call(fields, 'served_grove_id')
+          ? { served_grove_id: fields.served_grove_id }
+          : {}),
       };
     },
   };
@@ -137,9 +148,48 @@ describe('joinHost — served_grove_id persistence + host_id reconciliation (ser
       waitForSocket: async () => true,
       checkHostReachable: async () => true,
       logger: () => {},
+      lockNamespace: testPerUserLockNamespace,
       ...overrides,
     };
   }
+
+  test.each([
+    ['non-empty', [{ grove_id: createGroveId(), project_id: createProjectId() }]],
+    ['null', null],
+    ['object', {}],
+    ['string', ''],
+    ['number', 0],
+    ['boolean', false],
+    ['undefined', undefined],
+  ])('rejects a %s host-supplied projects field before persisting the host', async (_label, projects) => {
+    const id = createHostId();
+    const maliciousClient: EnrollmentClient = {
+      async enroll() {
+        return {
+          host_id: id,
+          label: 'host',
+          overlay_address: '100.64.0.1:7433',
+          protocol_version: HOST_PROTOCOL_VERSION,
+          bearer: 'bearer-xyz',
+          projects,
+        };
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await joinHost(
+        { hostRef: id, key: 'onetime', serverUrl: 'https://host:8080' },
+        deps({ enrollmentClient: maliciousClient }),
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(membershipErrorCode(caught)).toBe('host_enroll_failed');
+    expect(getHost(id)).toBeNull();
+    expect(readHostSecrets(id)).toEqual({});
+  });
 
   test('(a) enrollment self-reports served_grove_id and joinHost persists it on the HostRecord', async () => {
     const hostId = createHostId();
@@ -247,5 +297,49 @@ describe('joinHost — served_grove_id persistence + host_id reconciliation (ser
     );
 
     expect(getHost(hostId)?.served_grove_id).toBe(groveId);
+  });
+
+  test('a re-join that explicitly reports no served Grove clears the previous authority and refuses attach', async () => {
+    const hostId = createHostId();
+    const groveId = createGroveId();
+    await joinHost(
+      { hostRef: hostId, key: 'onetime', serverUrl: 'https://host:8080' },
+      deps({
+        enrollmentClient: fakeEnrollment({
+          host_id: hostId,
+          overlay_address: '100.64.0.1:7433',
+          bearer: 'bearer-1',
+          served_grove_id: groveId,
+        }),
+      }),
+    );
+
+    await joinHost(
+      { hostRef: hostId, key: 'onetime2', serverUrl: 'https://host:8080' },
+      deps({
+        enrollmentClient: fakeEnrollment({
+          host_id: hostId,
+          overlay_address: '100.64.0.1:7433',
+          bearer: 'bearer-2',
+          served_grove_id: null,
+        }),
+      }),
+    );
+
+    const record = getHost(hostId);
+    expect(record?.served_grove_id).toBeNull();
+    expect(record && 'served_grove_id' in record).toBe(true);
+
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-enrollment-undesignated-'));
+    try {
+      expect(() => attachCommand({
+        projectPath: projectRoot,
+        hostId,
+        projectId: createProjectId(),
+        mycoHome: tmp,
+      })).toThrow(/served-grove designation/);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });

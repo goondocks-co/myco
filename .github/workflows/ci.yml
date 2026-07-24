@@ -41,3 +41,121 @@ jobs:
       # `npm test` runs both the Node-env and jsdom passes via the
       # run-bun-tests.mjs driver, handling tsx UI tests in their own pass.
       - run: npm test
+
+  windows-native:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      MYCO_WINDOWS_NATIVE_TASK_LABEL: 'Myco-CI-Native-${{ github.run_id }}-${{ github.run_attempt }}'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Configure Windows native contract paths
+        shell: pwsh
+        run: |
+          $scratch = Join-Path $env:RUNNER_TEMP "Myco Native Ω $env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $executable = Join-Path $env:RUNNER_TEMP 'Myco Native Contract.exe'
+          "MYCO_WINDOWS_NATIVE_SCRATCH=$scratch" >> $env:GITHUB_ENV
+          "MYCO_WINDOWS_NATIVE_EXE=$executable" >> $env:GITHUB_ENV
+      - run: npm ci
+      - name: Focused Windows unit contracts
+        run: >-
+          bun test
+          tests/service/windows-native-ci-contract.test.ts
+          tests/service/windows.test.ts
+          tests/service/sandbox-runner-gate.test.ts
+          tests/utils/windows-atomic-replace.test.ts
+          tests/utils/user-lock-root.test.ts
+      - name: Compile Windows native contract executable
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath $env:MYCO_WINDOWS_NATIVE_EXE -Force -ErrorAction SilentlyContinue
+          bun build --compile --target=bun-windows-x64 tests/helpers/windows-native-contract.ts --outfile "$env:MYCO_WINDOWS_NATIVE_EXE"
+      - name: Execute Windows native contract
+        shell: pwsh
+        run: |
+          & $env:MYCO_WINDOWS_NATIVE_EXE
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows native contract exited $LASTEXITCODE"
+          }
+      - name: Clean exact Windows native contract artifacts
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $cleanupFailures = [System.Collections.Generic.List[string]]::new()
+          & schtasks.exe /End /TN "$env:MYCO_WINDOWS_NATIVE_TASK_LABEL" 2>$null | Out-Null
+          & schtasks.exe /Delete /TN "$env:MYCO_WINDOWS_NATIVE_TASK_LABEL" /F 2>$null | Out-Null
+          $global:LASTEXITCODE = 0
+          Start-Sleep -Milliseconds 500
+          try {
+            $remainingTasks = @(
+              Get-ScheduledTask -TaskPath '\' -ErrorAction Stop |
+                Where-Object { $_.TaskName -ceq $env:MYCO_WINDOWS_NATIVE_TASK_LABEL }
+            )
+            if ($remainingTasks.Count -gt 0) {
+              $cleanupFailures.Add("Task Scheduler task remained installed: $env:MYCO_WINDOWS_NATIVE_TASK_LABEL")
+            }
+          } catch {
+            $cleanupFailures.Add("could not verify exact task cleanup: $($_.Exception.Message)")
+          }
+          try {
+            $contractExecutable = [IO.Path]::GetFullPath($env:MYCO_WINDOWS_NATIVE_EXE)
+            $contractProcesses = @(
+              Get-CimInstance -ClassName Win32_Process -ErrorAction Stop |
+                Where-Object {
+                  [StringComparer]::OrdinalIgnoreCase.Equals($_.ExecutablePath, $contractExecutable)
+                }
+            )
+            $processStopFailures = [System.Collections.Generic.List[string]]::new()
+            foreach ($contractProcess in $contractProcesses) {
+              try {
+                Stop-Process -Id $contractProcess.ProcessId -Force -ErrorAction Stop
+              } catch {
+                $processStopFailures.Add(
+                  "could not stop exact contract process $($contractProcess.ProcessId): $($_.Exception.Message)"
+                )
+              }
+            }
+
+            $processDeadline = [DateTime]::UtcNow.AddSeconds(10)
+            do {
+              $remainingContractProcesses = @(
+                Get-CimInstance -ClassName Win32_Process -ErrorAction Stop |
+                  Where-Object {
+                    [StringComparer]::OrdinalIgnoreCase.Equals($_.ExecutablePath, $contractExecutable)
+                  }
+              )
+              if ($remainingContractProcesses.Count -eq 0) {
+                break
+              }
+              Start-Sleep -Milliseconds 100
+            } while ([DateTime]::UtcNow -lt $processDeadline)
+
+            if ($remainingContractProcesses.Count -gt 0) {
+              $remainingPids = $remainingContractProcesses.ProcessId -join ', '
+              $cleanupFailures.Add("Contract child processes remained for exact executable ${contractExecutable}: ${remainingPids}")
+              foreach ($stopFailure in $processStopFailures) {
+                $cleanupFailures.Add($stopFailure)
+              }
+            }
+          } catch {
+            $cleanupFailures.Add("could not clean exact contract child processes: $($_.Exception.Message)")
+          }
+          Remove-Item -LiteralPath $env:MYCO_WINDOWS_NATIVE_SCRATCH -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $env:MYCO_WINDOWS_NATIVE_EXE -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath $env:MYCO_WINDOWS_NATIVE_SCRATCH) {
+            $cleanupFailures.Add("Scratch path remained: $env:MYCO_WINDOWS_NATIVE_SCRATCH")
+          }
+          if (Test-Path -LiteralPath $env:MYCO_WINDOWS_NATIVE_EXE) {
+            $cleanupFailures.Add("Contract executable remained: $env:MYCO_WINDOWS_NATIVE_EXE")
+          }
+          if ($cleanupFailures.Count -gt 0) {
+            throw ($cleanupFailures -join [Environment]::NewLine)
+          }

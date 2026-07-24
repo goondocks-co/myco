@@ -112,6 +112,19 @@ describe.skipIf(!supported)('LifecycleLock', () => {
     second.lock.release();
   });
 
+  it('release removes the process exit listener registered by acquire', () => {
+    const baseline = process.listenerCount('exit');
+
+    for (let index = 0; index < 12; index += 1) {
+      const result = LifecycleLock.acquire(lockPath);
+      expect(result.acquired).toBe(true);
+      if (!result.acquired) throw new Error('unreachable');
+      result.lock.release();
+    }
+
+    expect(process.listenerCount('exit')).toBe(baseline);
+  });
+
   it('a held lock refuses subsequent acquires and reports holder metadata', async () => {
     const holderPid = await spawnLockHolder();
 

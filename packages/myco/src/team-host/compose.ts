@@ -11,6 +11,7 @@
 import { resolveGroveDir, resolveMycoHome } from '@myco/grove/paths.js';
 import { resolveGlobalDaemonPort } from '@myco/daemon/service-state.js';
 import { writeSecret } from '@myco/config/secrets.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
 import { KEYED_CLOUD_PROVIDER_ENV } from '@myco/agent/harness/provider-health.js';
 
@@ -86,6 +87,7 @@ export interface ComposeEnableOptions extends HostEnableOptions {
 }
 
 export interface ComposeEnableDeps extends HostEnableDeps {
+  lockNamespace?: PerUserLockNamespace;
   /**
    * Confirm before minting a fresh one-time setup key when this machine was
    * ALREADY a Team Host before this call (server-mode design spec §3:
@@ -156,7 +158,7 @@ export async function hostEnableAndEmitJoin(
       // to prevent. Fail loudly instead.
       throw new Error(`Invariant violation: no env name registered for team key provider "${provider}" in KEYED_CLOUD_PROVIDER_ENV.`);
     }
-    writeSecret(groveDir, envKey, teamAgentKey);
+    writeSecret(groveDir, envKey, teamAgentKey, deps.lockNamespace);
     teamAgentKeyMasked = maskTeamAgentKey(teamAgentKey);
   }
 

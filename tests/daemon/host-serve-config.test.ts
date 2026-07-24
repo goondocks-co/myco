@@ -13,8 +13,8 @@ import path from 'node:path';
 import {
   isBindableOverlayAddress,
   isOverlayRangeAddress,
-  resolveHostServeBearer,
-  resolveHostServeConfig,
+  resolveHostServeBearer as resolveHostServeBearerWith,
+  resolveHostServeConfig as resolveHostServeConfigWith,
 } from '@myco/daemon/host-serve';
 import { MachineConfigSchema, type MachineConfig } from '@myco/config/schema';
 import { readSecrets } from '@myco/config/secrets';
@@ -22,6 +22,16 @@ import { HOST_SERVE_BEARER_SECRET } from '@myco/constants';
 import { LOG_KINDS } from '@myco/constants/log-kinds';
 import { createGrove } from '@myco/grove/registry';
 import { resolveGroveMetadataPath } from '@myco/grove/paths';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const resolveHostServeBearer = (mycoHome?: string) =>
+  resolveHostServeBearerWith(mycoHome, testPerUserLockNamespace);
+const resolveHostServeConfig = (
+  options: Parameters<typeof resolveHostServeConfigWith>[0],
+) => resolveHostServeConfigWith({
+  ...options,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 function machineConfig(hostServe?: {
   enabled?: boolean;

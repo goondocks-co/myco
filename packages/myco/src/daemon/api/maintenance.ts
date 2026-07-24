@@ -28,6 +28,7 @@ import {
   getLastDatabaseLogTimestamps,
 } from '@myco/db/queries/database.js';
 import { errorMessage } from '@myco/utils/error-message.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { resolveGroveBackupDir } from '@myco/backup/location.js';
 import { listBackups } from '@myco/backup/engine.js';
 import { listRegisteredProjects as listRegisteredProjectsForGrove } from '@myco/grove/registry.js';
@@ -108,6 +109,7 @@ export interface MaintenanceHandlersDeps {
   /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
   daemonStateDir: string;
   mycoHome?: string;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +368,13 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
           groves.push(emptySummary(scope.grove, errorMessage(err)));
         }
       },
-      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'maintenance-summary', parallel: true },
+      {
+        mycoHome,
+        daemonStateDir: deps.daemonStateDir,
+        jobName: 'maintenance-summary',
+        parallel: true,
+        lockNamespace: deps.lockNamespace,
+      },
     );
 
     const thresholds = {
@@ -511,7 +519,13 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
           }
         }
       },
-      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'release-provenance-manual-reconcile', parallel: false },
+      {
+        mycoHome,
+        daemonStateDir: deps.daemonStateDir,
+        jobName: 'release-provenance-manual-reconcile',
+        parallel: false,
+        lockNamespace: deps.lockNamespace,
+      },
     );
     return { body: { ok: true, results } };
   }

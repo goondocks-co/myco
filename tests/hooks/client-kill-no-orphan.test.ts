@@ -78,7 +78,9 @@ describe('killDaemon cleanup ownership', () => {
     );
 
     const client = new DaemonClient(vaultDir);
-    (client as unknown as { killDaemon: (info: { pid: number }) => void }).killDaemon({ pid: childPid });
+    await (client as unknown as {
+      killDaemon: (info: { pid: number }) => Promise<void>;
+    }).killDaemon({ pid: childPid });
 
     // Give a moment for any async unlink to settle.
     await new Promise((r) => setTimeout(r, 100));

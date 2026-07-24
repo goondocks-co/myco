@@ -5,6 +5,7 @@ import { ensureProjectManifest } from '@myco/config/project-manifest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 /**
  * Tool-surface guards. After Phase 1 of the MCP transport standardization,
@@ -20,7 +21,9 @@ describe('MCP tool surface (createMycoTools)', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mcp-'));
     ensureProjectManifest(tmpDir, { projectName: 'mcp-server-test' });
-    client = new DaemonClient(tmpDir);
+    client = new DaemonClient(tmpDir, {
+      lockNamespace: testPerUserLockNamespace,
+    });
   });
 
   afterEach(() => {

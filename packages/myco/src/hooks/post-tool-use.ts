@@ -3,9 +3,10 @@ import { readHookInput } from './input.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
 import { TOOL_OUTPUT_PREVIEW_CHARS } from '../constants.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
-export async function main() {
-  const VAULT_DIR = resolveProvisionedVaultDir();
+export async function main(lockNamespace?: PerUserLockNamespace) {
+  const VAULT_DIR = resolveProvisionedVaultDir(undefined, lockNamespace);
   if (!VAULT_DIR) return;
 
   let symbiont: string | undefined;
@@ -56,6 +57,7 @@ export async function main() {
         output_preview: outputPreview,
         transcript_path: input.transcriptPath,
       },
+      lockNamespace,
     });
   } catch (error) {
     process.stderr.write(`[myco] post-tool-use error: ${(error as Error).message}\n`);

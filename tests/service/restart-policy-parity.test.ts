@@ -48,14 +48,18 @@ describe('restart-policy parity (restart-on-failure only)', () => {
 
   test('windows: stops on clean exit(0), restarts on a non-zero code', () => {
     const script = renderWindowsServiceScript(specWith());
-    expect(script).toContain('if %errorlevel% equ 0 goto myco_done'); // exit 0 → stop
-    expect(script).toContain('goto myco_run');                        // non-zero → retry
+    expect(script).toContain('if ($exitCode -eq 0) { exit 0 }');
+    expect(script).toContain('if ($restarts -ge 10) { exit $exitCode }');
+    expect(script).toContain('while ($true)');
+    expect(script).toContain('catch {');
+    expect(script).toContain('[Console]::Error.WriteLine($_.Exception.ToString())');
+    expect(script).toContain('$exitCode = 1');
   });
 
   test('none supervise when keepAlive=false', () => {
     const off = { keepAlive: false } as const;
     expect(renderLaunchdPlist(specWith(off))).not.toContain('<key>KeepAlive</key>');
     expect(renderSystemdUnit(specWith(off))).toContain('Restart=no');
-    expect(renderWindowsServiceScript(specWith(off))).not.toContain(':myco_run');
+    expect(renderWindowsServiceScript(specWith(off))).not.toContain('while ($true)');
   });
 });

@@ -196,6 +196,7 @@ function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
   const release = (): void => {
     if (released) return;
     released = true;
+    process.off('exit', release);
     // Truncate so a fresh hook process doesn't read a dead holder's record.
     try { fs.writeFileSync(lockPath, ''); } catch { /* best-effort */ }
     try { const ov = winOverlapped(); k.UnlockFileEx(handle, 0, 1, 0, ptr(ov)); } catch { /* idem */ }
@@ -309,6 +310,7 @@ export const LifecycleLock = {
     const release = (): void => {
       if (released) return;
       released = true;
+      process.off('exit', release);
       // Truncate the lockfile in-place before releasing the flock so the
       // hook-discovery lock-tier fallback (readLockHolder) doesn't return
       // a dead holder's PID + port to a fresh hook process. The next

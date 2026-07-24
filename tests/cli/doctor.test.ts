@@ -14,6 +14,7 @@ import { resolveDaemonServiceState } from '@myco/daemon/service-state.js';
 import { recordMigrationPass, listMigrationErrors } from '@myco/db/queries/migration-log.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 function findManifest(name: string) {
   const manifest = loadManifests().find((entry) => entry.name === name);
@@ -26,7 +27,10 @@ describe('runChecks', () => {
     // RC-6: a missing vault config is the documented "run doctor from
     // $HOME after install" flow, not a failure. Only an unparseable
     // config fails the Vault row.
-    const checks = await runChecks('/tmp/nonexistent-vault-' + Date.now());
+    const checks = await runChecks(
+      '/tmp/nonexistent-vault-' + Date.now(),
+      testPerUserLockNamespace,
+    );
     const vaultCheck = checks.find((c) => c.name === 'Vault');
     expect(vaultCheck).toBeDefined();
     expect(vaultCheck!.status).toBe('warn');
@@ -37,7 +41,7 @@ describe('runChecks', () => {
     const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-badyaml-'));
     try {
       fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: [unclosed\n', 'utf-8');
-      const checks = await runChecks(vaultDir);
+      const checks = await runChecks(vaultDir, testPerUserLockNamespace);
       const vaultCheck = checks.find((c) => c.name === 'Vault');
       expect(vaultCheck!.status).toBe('fail');
     } finally {
@@ -46,7 +50,10 @@ describe('runChecks', () => {
   });
 
   it('returns all expected check names', async () => {
-    const checks = await runChecks('/tmp/nonexistent-vault-' + Date.now());
+    const checks = await runChecks(
+      '/tmp/nonexistent-vault-' + Date.now(),
+      testPerUserLockNamespace,
+    );
     const names = checks.map((c) => c.name);
     expect(names).toContain('Vault');
     expect(names).toContain('Database');
@@ -79,7 +86,7 @@ describe('doctor exit codes', () => {
   async function runDoctorQuietly(args: string[]): Promise<void> {
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
     try {
-      await run(args, vaultDir);
+      await run(args, vaultDir, testPerUserLockNamespace);
     } finally {
       logSpy.mockRestore();
     }
@@ -102,7 +109,7 @@ describe('doctor exit codes', () => {
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
     fs.writeFileSync(statePath, '{not json', 'utf-8');
 
-    const checks = await runChecks(vaultDir);
+    const checks = await runChecks(vaultDir, testPerUserLockNamespace);
     const daemon = checks.find((c) => c.name === 'Daemon');
     expect(daemon!.status).toBe('fail');
     expect(daemon!.fixable).toBe(true);
@@ -140,7 +147,8 @@ describe('doctor exit codes', () => {
     }) as never);
     const stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    await expect(run(['--fxi'], vaultDir)).rejects.toThrow(/process\.exit\(2\)/);
+    await expect(run(['--fxi'], vaultDir, testPerUserLockNamespace))
+      .rejects.toThrow(/process\.exit\(2\)/);
     expect(stderrSpy.mock.calls.flat().join('')).toContain("unknown flag '--fxi'");
 
     exitSpy.mockRestore();
@@ -182,7 +190,7 @@ describe('doctor fix registry dispatch', () => {
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
     fs.writeFileSync(statePath, JSON.stringify({ pid: 0, port: 12345 }), 'utf-8');
 
-    const checks = await runChecks(vaultDir);
+    const checks = await runChecks(vaultDir, testPerUserLockNamespace);
     const daemon = checks.find((c) => c.name === 'Daemon');
     expect(daemon).toBeDefined();
     expect(daemon!.status).toBe('warn');
@@ -804,19 +812,19 @@ describe('checkCaptureFlow', () => {
   }
 
   it('reports ok with a friendly nudge for a vault that has captured nothing yet', async () => {
-    const check = await checkCaptureFlow(seedVault([]));
+    const check = await checkCaptureFlow(seedVault([]), testPerUserLockNamespace);
     expect(check.status).toBe('ok');
     expect(check.detail).toContain('No sessions captured yet');
   });
 
   it('reports ok when a session landed within the freshness window', async () => {
-    const check = await checkCaptureFlow(seedVault([1]));
+    const check = await checkCaptureFlow(seedVault([1]), testPerUserLockNamespace);
     expect(check.status).toBe('ok');
     expect(check.detail).toContain('in the last 7 days');
   });
 
   it('warns when the newest session is stale (silent-capture-loss signature)', async () => {
-    const check = await checkCaptureFlow(seedVault([30, 45]));
+    const check = await checkCaptureFlow(seedVault([30, 45]), testPerUserLockNamespace);
     expect(check.status).toBe('warn');
     expect(check.detail).toContain('No sessions in the last 7 days');
   });

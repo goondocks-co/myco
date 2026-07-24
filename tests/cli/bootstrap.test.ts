@@ -38,6 +38,7 @@ import { ensureProjectVault } from '@myco/vault/provision.js';
 import { managedSkillsDir } from '@myco/install/managed-binary.js';
 import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
 
@@ -343,7 +344,11 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
 
     // Pre-condition: no Groves, no projects. A hook firing here would
     // silently fail to register.
-    const preBootstrap = resolveProjectBufferDirFromRoot(projectRoot, path.join(tmpHome, '.myco'));
+    const preBootstrap = resolveProjectBufferDirFromRoot(
+      projectRoot,
+      path.join(tmpHome, '.myco'),
+      testPerUserLockNamespace,
+    );
     expect(preBootstrap).toBeNull();
 
     // Run the bootstrap exactly as the daemon first-start does.
@@ -355,7 +360,11 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     const defaultGrove = loadGroveRecord(getDefaultGroveId(path.join(tmpHome, '.myco'))!, path.join(tmpHome, '.myco'))!;
     expect(listRegisteredProjects(defaultGrove.id, path.join(tmpHome, '.myco'))).toEqual([]);
 
-    const postBootstrap = resolveProjectBufferDirFromRoot(projectRoot, path.join(tmpHome, '.myco'));
+    const postBootstrap = resolveProjectBufferDirFromRoot(
+      projectRoot,
+      path.join(tmpHome, '.myco'),
+      testPerUserLockNamespace,
+    );
 
     // Explicit registration assertion — the test's reason for existing
     // is that the prior implementation silently no-op'd here. Asserting
@@ -382,7 +391,11 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     expect(manifest?.grove?.binding_id).toBeDefined();
     expect(manifest?.grove?.slug).toBe('default');
 
-    const buffer = resolveProjectBufferDirFromRoot(projectRoot, path.join(tmpHome, '.myco'));
+    const buffer = resolveProjectBufferDirFromRoot(
+      projectRoot,
+      path.join(tmpHome, '.myco'),
+      testPerUserLockNamespace,
+    );
     expect(buffer?.groveId).toBe(bootstrap.defaultGrove.id);
     expect(buffer?.projectId).toBe(provisioned.projectId);
 
@@ -416,7 +429,11 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
       execFileSync('git', ['init', '--quiet'], { cwd: projectA, stdio: 'pipe' });
       process.env.MYCO_HOME = homeA;
       clearGroveRegistryCaches();
-      const bufferA = resolveProjectBufferDirFromRoot(projectA, homeA);
+      const bufferA = resolveProjectBufferDirFromRoot(
+        projectA,
+        homeA,
+        testPerUserLockNamespace,
+      );
       expect(bufferA?.groveId).toBe(bootstrapA.defaultGrove.id);
       expect(listRegisteredProjects(bootstrapA.defaultGrove.id, homeA)).toHaveLength(1);
 
@@ -425,7 +442,11 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
       execFileSync('git', ['init', '--quiet'], { cwd: projectB, stdio: 'pipe' });
       process.env.MYCO_HOME = homeB;
       clearGroveRegistryCaches();
-      const bufferB = resolveProjectBufferDirFromRoot(projectB, homeB);
+      const bufferB = resolveProjectBufferDirFromRoot(
+        projectB,
+        homeB,
+        testPerUserLockNamespace,
+      );
       expect(bufferB?.groveId).toBe(bootstrapB.defaultGrove.id);
       expect(listRegisteredProjects(bootstrapB.defaultGrove.id, homeB)).toHaveLength(1);
     } finally {

@@ -7,9 +7,21 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { migrateProjectToGlobalInstall } from '@myco/grove/global-install-migration.js';
+import {
+  migrateProjectToGlobalInstall as migrateProjectToGlobalInstallWith,
+  type MigrateOptions,
+} from '@myco/grove/global-install-migration.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { MYCO_HOME_ENV } from '@myco/grove/paths.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const migrateProjectToGlobalInstall = (
+  projectRoot: string,
+  options: MigrateOptions = {},
+) => migrateProjectToGlobalInstallWith(projectRoot, {
+  ...options,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 const GEMINI_MYCO_SETTINGS = {
   hooks: {

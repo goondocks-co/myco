@@ -39,6 +39,7 @@ import type { AgentRunResult, ProviderConfig } from '@myco/agent/types.js';
 import { resolveRunConfig } from '@myco/agent/config-resolver.js';
 import { probeProviderAvailable } from '@myco/agent/harness/provider-health.js';
 import { loadLayeredSecrets } from '@myco/config/secrets.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { notify } from '@myco/notifications/notify.js';
 import { agentRunNotificationLink } from '@myco/notifications/links.js';
 import { HARNESS_HEALTH_TASK_NAME, notifyHarnessHealthFindings } from '@myco/notifications/harness-health-consumer.js';
@@ -383,6 +384,7 @@ export interface TaskSchedulingDeps {
   daemonStateDir: string;
   machineId: string;
   projectStateTracker: ProjectPowerStateTracker;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +401,7 @@ async function seedInitialLastRuns(
   logger: DaemonLogger,
   mycoHome: string,
   daemonStateDir: string,
+  lockNamespace?: PerUserLockNamespace,
 ): Promise<ProjectTaskLastRunMap> {
   const seed: ProjectTaskLastRunMap = {};
   const floorSeconds = Math.floor((Date.now() - SEED_FLOOR_DAYS * MS_PER_DAY) / 1000);
@@ -417,7 +420,12 @@ async function seedInitialLastRuns(
       const projectId = assertGroveProjectId(row.project_id);
       seed[lastRunKey(grove.id, projectId, row.task)] = row.last_completed * 1000;
     }
-  }, { mycoHome, daemonStateDir, jobName: 'seed-last-runs' });
+  }, {
+    mycoHome,
+    daemonStateDir,
+    jobName: 'seed-last-runs',
+    lockNamespace,
+  });
   return seed;
 }
 
@@ -505,6 +513,7 @@ export async function registerScheduledTasks(
     daemonStateDir,
     machineId,
     projectStateTracker,
+    lockNamespace,
   } = deps;
 
   if (!definitionsDir) {
@@ -581,7 +590,13 @@ export async function registerScheduledTasks(
   // Boot-time seed across all registered Groves, keyed by
   // `${projectId}:${taskName}` so warm projects don't double-fire on
   // restart. Failures are best-effort; an empty seed is fine.
-  const initialLastRuns = await seedInitialLastRuns(cache, logger, mycoHome, daemonStateDir).catch((err) => {
+  const initialLastRuns = await seedInitialLastRuns(
+    cache,
+    logger,
+    mycoHome,
+    daemonStateDir,
+    lockNamespace,
+  ).catch((err) => {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to seed scheduled-task lastRun map', {
       error: errorMessage(err),
     });
@@ -602,7 +617,7 @@ export async function registerScheduledTasks(
     // dispatch. Grove-scoped, not served-grove-specific: works the same for
     // any Grove, so a personal single-machine setup is unaffected (its
     // Grove secrets.env is typically empty).
-    loadLayeredSecrets([mycoHome, scope.groveHome]);
+    loadLayeredSecrets([mycoHome, scope.groveHome], process.env, lockNamespace);
     const { taskProviderOverride } = resolveRunConfig(
       DEFAULT_AGENT_ID,
       taskName,
@@ -732,6 +747,7 @@ export async function registerScheduledTasks(
           mycoHome,
           daemonStateDir,
           machineId,
+          lockNamespace,
           shouldVisit: (scope) => {
             const config = resolveProjectConfig(scope);
             if (!config) return false;

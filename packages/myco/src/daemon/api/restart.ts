@@ -9,6 +9,7 @@ import { getServiceManager } from '../../service/manager.js';
 import { serviceLabel } from '../../service/labels.js';
 import { resolveMycoHome } from '../../grove/paths.js';
 import type { ServiceManager, ServiceStatus } from '../../service/types.js';
+import { terminateDaemonProcess } from '../../service/daemon-termination.js';
 
 const RestartBodySchema = z.object({
   force: z.boolean().optional(),
@@ -23,6 +24,8 @@ export interface RestartHandlerDeps {
   progressTracker: ProgressTracker;
   /** Optional override for tests; defaults to the platform service manager. */
   serviceManager?: ServiceManager;
+  /** Schedules this daemon's termination. */
+  terminateSelf?: () => Promise<void>;
 }
 
 /**
@@ -152,7 +155,16 @@ export async function handleRestart(
     ? SERVICE_RESTART_FALLBACK_SIGTERM_MS
     : RESTART_RESPONSE_FLUSH_MS;
   setTimeout(() => {
-    process.kill(process.pid, 'SIGTERM');
+    void (deps.terminateSelf
+      ? deps.terminateSelf()
+      : terminateDaemonProcess(process.pid, 'SIGTERM'))
+      .catch((error) => {
+        try {
+          process.stderr.write(
+            `[myco] restart termination blocked: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        } catch { /* best-effort */ }
+      });
   }, sigtermDelay);
 
   return {

@@ -39,6 +39,7 @@ import type { ProxyLogger } from '../host-proxy.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
 import { resolveMemberProjectContext } from './member-project-context.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 /** Requests larger than this are rejected outright (413) before any
  *  per-artifact work — a batch this size is never a legitimate UI call. */
@@ -145,13 +146,19 @@ function statusForEntry(currentRoot: string, entry: unknown, logger: ProxyLogger
 export interface ContentClaimFileStatusDeps {
   logger: ProxyLogger;
   mycoHome?: string;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 export function createContentClaimFileStatusHandler(deps: ContentClaimFileStatusDeps): RouteHandler {
   return async (req): Promise<RouteResponse> => {
     const body = asRecord(req.body);
 
-    const context = await resolveMemberProjectContext(req, body, deps.mycoHome);
+    const context = await resolveMemberProjectContext(
+      req,
+      body,
+      deps.mycoHome,
+      deps.lockNamespace,
+    );
     if ('status' in context) {
       return context;
     }

@@ -8,7 +8,7 @@
  * from the project id — the journal is the only place the pairing is recorded.
  *
  * This module is deliberately DB-free and daemon-free — pure `fs`, atomic
- * temp+rename writes (the `host/registry.ts` `upsertHost` pattern). It is read
+ * temp+rename writes (the `host/registry.ts` record-write pattern). It is read
  * on the hot path from hook/client processes on every capture request (the
  * suppression gate), the same posture as `resolveAttachForProjectRoot`, so the
  * common no-transition case must short-circuit on a single `existsSync` before

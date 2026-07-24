@@ -14,8 +14,19 @@ import {
   createRenameGroveHandler,
   createSetDefaultGroveHandler,
   createUnarchiveProjectHandler,
-  listGroveSummaries,
+  listGroveSummaries as listGroveSummariesWith,
 } from '@myco/daemon/api/groves.js';
+import type {
+  GrovesLogger,
+  ServedGroveScope,
+} from '@myco/daemon/api/groves.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const listGroveSummaries = (
+  scope: ServedGroveScope = { groveIds: null },
+  options: { includeArchived?: boolean } = {},
+  logger?: GrovesLogger,
+) => listGroveSummariesWith(scope, options, logger, testPerUserLockNamespace);
 import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
 import { teamRegistry } from '@myco/team/registry.js';
 import { createProjectId, createTeamId } from '@myco/grove/ids.js';

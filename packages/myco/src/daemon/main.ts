@@ -8,7 +8,11 @@
 
 import { DaemonServer } from './server.js';
 import { resolveHostServeConfig } from './host-serve.js';
-import { ExternalMcpListener, defaultFunnelRunner } from './external-listener.js';
+import { ExternalMcpListener, defaultFunnelOffRunner } from './external-listener.js';
+import {
+  ExternalMcpContainmentAuthority,
+  type ExternalMcpListenerControl,
+} from './external-mcp-containment.js';
 import type { RouteRequest } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger, type Logger } from './logger.js';
@@ -104,6 +108,7 @@ import { registerContentClaimFileStatusRoute } from './api/content-claims-file-s
 import { registerDrainHealthRoute } from './api/drain-health.js';
 import { registerHostMembershipRoutes } from './api/host-membership.js';
 import { registerHostServeStatusRoute } from './api/host-serve-status.js';
+import { reconcileHostRollbackBearers } from '../host/registry.js';
 import { registerTeamConfigRoutes } from './api/team-config.js';
 import { registerTeamAgentTaskRoutes } from './api/team-agent-tasks.js';
 import { defaultDial, proxyLoggerFrom } from './host-proxy.js';
@@ -150,6 +155,7 @@ import { registerScheduledTasks } from './task-scheduling.js';
 import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove, forEachRegisteredProject, isProjectActive } from './scope-iteration.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
 import {
   ProjectPowerStateTracker,
@@ -247,7 +253,17 @@ import {
 } from '../constants.js';
 import { isProcessAlive, waitForProcessExit, readProcessCommandLine } from '@goondocks/myco-shared';
 import { getPluginVersion } from '../version.js';
-import { probeMycoDaemon, findPidsListeningOn, terminateProcess } from './eviction.js';
+import {
+  findPidsListeningOn,
+  isRetiredExternalMcpDaemon,
+  probeMycoDaemon,
+  terminateProcess,
+} from './eviction.js';
+import {
+  requestCooperativeShutdownAcceptance,
+  type CooperativeShutdownAcceptance,
+} from '../service/cooperative-shutdown.js';
+import { terminateDaemonProcess } from '../service/daemon-termination.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -288,11 +304,12 @@ export interface ReconcileDeps {
   readProcessCommandLine?: (pid: number) => string | null;
   /**
    * Ask the predecessor to shut down gracefully over HTTP before we resort to
-   * signals. Resolves true if the daemon accepted (HTTP 202). This is the only
-   * graceful drain path on Windows, where a cross-process SIGTERM maps to an
-   * uncatchable TerminateProcess that would abort the drain mid-flight.
+   * signals. Retirement-required callers may continue protected termination
+   * when an activation-capable predecessor refuses.
    */
-  requestShutdown?: (port: number, timeoutMs: number) => Promise<boolean>;
+  requestShutdown?: (port: number, timeoutMs: number) => Promise<CooperativeShutdownAcceptance>;
+  /** Require proof that any surviving predecessor cannot activate external MCP. */
+  requireRetiredExternalMcp?: boolean;
   /** How long to let an ACCEPTED cooperative shutdown drain before escalating
    *  to signals (ms). Defaults to RECONCILE_COOPERATIVE_GRACE_MS. */
   cooperativeGraceMs?: number;
@@ -303,36 +320,27 @@ export interface ReconcileDeps {
 
 /**
  * Default {@link ReconcileDeps.requestShutdown}: POST `/api/shutdown` on the
- * predecessor's loopback port. Accepted ONLY on the daemon's 202 ack — a non-202
- * (a foreign loopback service answering 200, or a daemon too old to expose the
- * route) is NOT treated as "draining", so the caller doesn't wait out the
- * cooperative grace and falls straight through to the signal escalation. Any
- * error resolves false for the same reason.
+ * predecessor's loopback port. A 202 is accepted, a 409 is an explicit
+ * refusal. The caller's retirement policy decides whether a refusal can safely
+ * leave the predecessor running.
  */
-async function requestDaemonShutdown(port: number, timeoutMs: number): Promise<boolean> {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    return res.status === 202;
-  } catch {
-    return false;
-  }
+async function requestDaemonShutdown(
+  port: number,
+  timeoutMs: number,
+): Promise<CooperativeShutdownAcceptance> {
+  return requestCooperativeShutdownAcceptance(port, { timeoutMs });
 }
 
 /**
  * Reconcile with any existing daemon for this vault before starting a new one.
  *
  * - If no daemon.json or the recorded pid is dead → 'ok' (take over).
- * - If the recorded daemon is recent, healthy, and running the same plugin
- *   version → 'step-aside' (a sibling just started; don't kill it). The caller
- *   exits cleanly. This is what stops the concurrent-spawn cascade where each
- *   new process SIGTERMs the last one standing.
+ * - If the recorded daemon is recent, healthy, and compatible with the
+ *   requested retirement policy → 'step-aside'.
  * - Otherwise (stale, unhealthy, or version-mismatch) → SIGTERM, poll for
  *   exit, escalate to SIGKILL if needed. If the pid survives both signals,
- *   log an error and return 'step-aside' — leaving the file in place is
- *   structurally safer than orphaning a live daemon.
+ *   return 'step-aside' only when the retirement policy permits it; otherwise
+ *   return 'blocked' so the caller keeps containment held.
  *
  * **Succession via atomic overwrite, not delete-then-write.** When this
  * function returns 'ok' the caller proceeds to `server.start()`, whose
@@ -357,7 +365,7 @@ export async function reconcileExistingDaemon(
   daemonService: DaemonServiceState,
   logger: DaemonLogger,
   deps: ReconcileDeps = {},
-): Promise<'ok' | 'step-aside'> {
+): Promise<'ok' | 'step-aside' | 'blocked'> {
   const kill = deps.kill ?? ((pid, sig) => process.kill(pid, sig));
   const alive = deps.isProcessAlive ?? isProcessAlive;
   const cmdlineReader = deps.readProcessCommandLine ?? readProcessCommandLine;
@@ -366,6 +374,7 @@ export async function reconcileExistingDaemon(
   const sigtermGraceMs = deps.sigtermGraceMs ?? RECONCILE_SIGTERM_GRACE_MS;
   const sigkillGraceMs = deps.sigkillGraceMs ?? RECONCILE_SIGKILL_GRACE_MS;
   const pollMs = deps.pollMs ?? RECONCILE_POLL_MS;
+  let retiredExternalMcpProven = false;
 
   const daemonJsonPath = daemonService.statePath;
   let info: { pid?: number; port?: number; command?: string | null };
@@ -410,14 +419,25 @@ export async function reconcileExistingDaemon(
         signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
       });
       if (res.ok) {
-        const data = await res.json() as { myco?: boolean; version?: string };
+        const data = await res.json() as {
+          myco?: boolean;
+          version?: string;
+          external_mcp_activation?: string;
+        };
         const existingCommand = info.command ?? null;
         // Use process.execPath, not process.argv[1]: under the bun-compiled
         // standalone, argv[1] is a virtual /$bunfs/... path that never
         // matches what daemon.json stores (the on-disk binary path).
         const currentCommand = process.execPath ?? null;
         const runtimeMismatch = Boolean(existingCommand && currentCommand && existingCommand !== currentCommand);
-        if (data.myco && (data.version === getPluginVersion() || runtimeMismatch)) {
+        retiredExternalMcpProven = isRetiredExternalMcpDaemon(data, info.pid);
+        const safeToStepAside = !deps.requireRetiredExternalMcp
+          || retiredExternalMcpProven;
+        if (
+          data.myco
+          && safeToStepAside
+          && (data.version === getPluginVersion() || runtimeMismatch)
+        ) {
           logger.info(LOG_KINDS.DAEMON_START, 'Sibling daemon already healthy — stepping aside', {
             existing_pid: info.pid,
             existing_port: info.port,
@@ -442,16 +462,34 @@ export async function reconcileExistingDaemon(
   // accepted, wait the drain-aware budget (the wait returns the instant the pid
   // exits, so a clean drain costs milliseconds); only a predecessor still alive
   // past that budget — its drain genuinely wedged — falls through to signals.
-  if (typeof info.port === 'number' && await requestShutdown(info.port, DAEMON_HEALTH_CHECK_TIMEOUT_MS)) {
-    logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Requested cooperative shutdown of stale daemon', {
-      pid: info.pid,
-      port: info.port,
-    });
-    if (await waitForExit(info.pid, alive, cooperativeGraceMs, pollMs)) {
-      logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor exited on cooperative shutdown; proceeding to take over', {
-        predecessor_pid: info.pid,
+  if (typeof info.port === 'number') {
+    const cooperativeResult = await requestShutdown(info.port, DAEMON_HEALTH_CHECK_TIMEOUT_MS);
+    if (cooperativeResult.kind === 'refused') {
+      if (!deps.requireRetiredExternalMcp || retiredExternalMcpProven) {
+        logger.error(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor refused shutdown; stepping aside without signalling', {
+          pid: info.pid,
+          port: info.port,
+          status: cooperativeResult.status,
+        });
+        return 'step-aside';
+      }
+      logger.warn(LOG_KINDS.DAEMON_RECONCILE, 'Activation-capable predecessor refused shutdown; continuing protected termination', {
+        pid: info.pid,
+        port: info.port,
+        status: cooperativeResult.status,
       });
-      return 'ok';
+    }
+    if (cooperativeResult.kind === 'accepted') {
+      logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Requested cooperative shutdown of stale daemon', {
+        pid: info.pid,
+        port: info.port,
+      });
+      if (await waitForExit(info.pid, alive, cooperativeGraceMs, pollMs)) {
+        logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor exited on cooperative shutdown; proceeding to take over', {
+          predecessor_pid: info.pid,
+        });
+        return 'ok';
+      }
     }
   }
 
@@ -552,7 +590,9 @@ export async function reconcileExistingDaemon(
       sigkill_grace_ms: sigkillGraceMs,
     },
   );
-  return 'step-aside';
+  return deps.requireRetiredExternalMcp && !retiredExternalMcpProven
+    ? 'blocked'
+    : 'step-aside';
 }
 
 async function waitForExit(
@@ -602,7 +642,12 @@ function scheduleShutdownWithAttribution(callerLabel: string, logger: DaemonLogg
       stack,
     });
     setTimeout(() => {
-      process.kill(process.pid, 'SIGTERM');
+      void terminateDaemonProcess(process.pid, 'SIGTERM').catch((error) => {
+        logger.error(LOG_KINDS.DAEMON_START, 'Shutdown termination blocked', {
+          caller: callerLabel,
+          error: errorMessage(error),
+        });
+      });
     }, RESTART_RESPONSE_FLUSH_MS);
   };
 }
@@ -620,6 +665,7 @@ export async function runInitialCanopyPopulateAcrossProjects(
   registry: CanopyJobsRegistry,
   liveConfig: { current: MycoConfig },
   daemonStateDir: string,
+  lockNamespace?: PerUserLockNamespace,
 ): Promise<void> {
   try {
     const thresholdDays = liveConfig.current.agent.cold_project_threshold_days ?? 14;
@@ -644,6 +690,7 @@ export async function runInitialCanopyPopulateAcrossProjects(
       {
         machineId,
         daemonStateDir,
+        lockNamespace,
         // Skip projects under an in-flight move/vacuum so the initial
         // populate doesn't write to a DB the op owns exclusively.
         shouldVisit: pauseAwareShouldVisit(mycoHome),
@@ -662,6 +709,31 @@ export async function main(): Promise<void> {
   // background promises. The daemon logger doesn't exist yet — the guards
   // fall back to stderr until `bindLogger` below.
   const processGuards = installProcessGuards();
+
+  const mycoHome = resolveMycoHome();
+  const daemonService = resolveDaemonServiceState(mycoHome, {
+    env: process.env,
+  });
+  let externalMcpListener: ExternalMcpListener | undefined;
+  const externalMcpListenerControl: ExternalMcpListenerControl = {
+    get isBound() {
+      return externalMcpListener?.isBound ?? false;
+    },
+    get port() {
+      return externalMcpListener?.port ?? 0;
+    },
+    async unbind() {
+      await externalMcpListener?.unbind();
+    },
+  };
+  const externalMcpContainment = new ExternalMcpContainmentAuthority({
+    mycoHome,
+    stateDir: daemonService.stateDir,
+    listener: externalMcpListenerControl,
+    runFunnelOff: defaultFunnelOffRunner,
+  });
+  return await externalMcpContainment.containWhile('retire', async () => {
+  const reconciledHostBearers = reconcileHostRollbackBearers();
 
   // `bootstrapVaultDir` is a *transitional* concept.
   //
@@ -730,7 +802,6 @@ export async function main(): Promise<void> {
   // relocate is the same lift+purge the migration performs, but idempotent
   // and sentinel-independent, so the window can never persist. Skip in the
   // phantom/global daemon, where bootstrapVaultDir IS the machine home.
-  const mycoHome = resolveMycoHome();
   if (!bootstrapIsPhantom && path.resolve(bootstrapVaultDir) !== path.resolve(mycoHome)) {
     try {
       const { relocateLegacyProjectSecrets } = await import('../config/secrets.js');
@@ -785,10 +856,6 @@ export async function main(): Promise<void> {
       env: process.env,
     });
   }
-  const daemonService = resolveDaemonServiceState(bootstrapVaultDir, {
-    requestContext: dataPaths.requestContext,
-    env: process.env,
-  });
   setOwnedServiceDirForCurrentProcess(daemonService.stateDir, resolveMycoHome());
   const logger = new DaemonLogger(resolveDaemonLogDir(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
@@ -845,44 +912,38 @@ export async function main(): Promise<void> {
   // handoff complete without each side hitting the legacy reconcile
   // path's HTTP probe.
   let daemonLifecycleLock: LockHandle | null = null;
-  const lockResult = await attemptDaemonStartup({
-    lockPath: daemonService.lockPath,
-    databasePath: dataPaths.databasePath,
-    waitForReleaseMs: 2000,
-  });
-
-  if (lockResult.outcome === 'refused') {
-    // Holder is still alive after the wait window. Defer to the
-    // existing reconcile path for the health decision. If healthy:
-    // step aside. If not: evict and retry the lock (another
-    // contender may take it during the eviction window — still a
-    // step-aside outcome for us).
-    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock held by another process', {
-      holder_pid: lockResult.holderPid,
-      reason: lockResult.reason,
-    });
-    const reconcileResult = await reconcileExistingDaemon(daemonService, logger);
-    if (reconcileResult === 'step-aside') {
-      process.exit(0);
-    }
-    const retry = await attemptDaemonStartup({
+  while (daemonLifecycleLock === null) {
+    const lockResult = await attemptDaemonStartup({
       lockPath: daemonService.lockPath,
       databasePath: dataPaths.databasePath,
       waitForReleaseMs: 2000,
     });
-    if (retry.outcome === 'refused') {
-      logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock taken by another contender during eviction — stepping aside', {
-        holder_pid: retry.holderPid,
+
+    if (lockResult.outcome === 'acquired') {
+      daemonLifecycleLock = lockResult.lock;
+      logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired', {
+        lock_path: daemonService.lockPath,
       });
+      break;
+    }
+
+    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock held by another process', {
+      holder_pid: lockResult.holderPid,
+      reason: lockResult.reason,
+    });
+    const reconcileResult = await reconcileExistingDaemon(daemonService, logger, {
+      requireRetiredExternalMcp: true,
+    });
+    if (reconcileResult === 'step-aside') {
       process.exit(0);
     }
-    daemonLifecycleLock = retry.lock;
-    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired after eviction', { lock_path: daemonService.lockPath });
-  } else {
-    // Acquired on the first try (or during the wait window). Skip the
-    // legacy reconcile path — flock denied none.
-    daemonLifecycleLock = lockResult.lock;
-    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired', { lock_path: daemonService.lockPath });
+    if (reconcileResult === 'blocked') {
+      logger.error(
+        LOG_KINDS.DAEMON_START,
+        'Activation-capable predecessor remains alive; containment stays held',
+      );
+      await new Promise((resolve) => setTimeout(resolve, RECONCILE_POLL_MS));
+    }
   }
 
   logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
@@ -890,6 +951,11 @@ export async function main(): Promise<void> {
     daemon_state: daemonService.statePath,
     embedding_provider: config.embedding.provider,
   });
+  if (reconciledHostBearers > 0) {
+    logger.info(LOG_KINDS.DAEMON_START, 'Reconciled rollback-readable host bearers', {
+      count: reconciledHostBearers,
+    });
+  }
   logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
   if (symbiontPlanTags.length > 0) {
     logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan transcript tags', { tags: symbiontPlanTags });
@@ -1217,7 +1283,7 @@ export async function main(): Promise<void> {
   // instance to bind/unbind. `resolveDatabase` mirrors the loopback `/mcp`
   // handler's wiring below so both surfaces reuse the SAME cached DB
   // handles rather than opening a private one per external call.
-  const externalMcpListener = new ExternalMcpListener({
+  externalMcpListener = new ExternalMcpListener({
     vaultDir: bootstrapVaultDir,
     hostServe,
     resolveDatabase: (databasePath) => databasePath === dataPaths.databasePath
@@ -1226,17 +1292,6 @@ export async function main(): Promise<void> {
     logger,
     mycoHome,
   });
-  // Re-bind from persisted config on boot when the toggle is already on —
-  // a restart must never leave `enabled: true` pointed at a dead port while
-  // Funnel is still fronting it. Never blocks/crashes boot: a bind failure
-  // logs (inside `bind`) and leaves the listener unbound, exactly like the
-  // overlay listener's own never-throws boot contract.
-  if (hostServe?.servedGroveId) {
-    const externalMcpConfig = loadMachineConfig(mycoHome).daemon.external_mcp;
-    if (externalMcpConfig.enabled) {
-      void externalMcpListener.bind(externalMcpConfig.port);
-    }
-  }
 
   // Team Host: the MEMBER-side transcript-content drain (capture-push C1). Ships
   // an attached session's transcript byte-deltas over the overlay to the host
@@ -1789,9 +1844,10 @@ export async function main(): Promise<void> {
     onConfigWrite: async (touchedPaths: string[], groveId: string) => {
       await applyConfigWriteReactions(touchedPaths, { vaultDir: bootstrapVaultDir, groveId });
     },
-    // Task 10: the toggle route binds/unbinds the SAME listener instance
-    // boot re-bind above uses, and fronts it with the real Funnel CLI.
-    externalMcp: { listener: externalMcpListener, runFunnel: defaultFunnelRunner },
+    externalMcp: {
+      listener: externalMcpListener,
+      containment: externalMcpContainment,
+    },
   };
   registerTeamConfigRoutes(server, teamWriteDeps);
   // Per-task table (spec §6.3) — the team-write counterpart to the
@@ -2317,7 +2373,11 @@ export async function main(): Promise<void> {
       bindAttemptsLeft--;
 
       const sibling = await probeMycoDaemon(canonicalPort);
-      if (sibling !== null && sibling.version === getPluginVersion()) {
+      if (
+        sibling !== null
+        && sibling.version === getPluginVersion()
+        && isRetiredExternalMcpDaemon(sibling)
+      ) {
         // A same-version sibling won a concurrent-startup race — its serving
         // is indistinguishable from ours. Step aside.
         logger.info(LOG_KINDS.DAEMON_START, 'Sibling claimed canonical port during startup — stepping aside', {
@@ -2739,17 +2799,23 @@ export async function main(): Promise<void> {
   // first invocation's promise so subsequent signals just await the same
   // settled outcome.
   let shutdownPromise: Promise<void> | null = null;
-  const shutdown = (signal: string): Promise<void> => {
-    if (shutdownPromise) {
-      logger.info(LOG_KINDS.DAEMON_START, `${signal} received during in-progress shutdown; awaiting prior signal`);
-      return shutdownPromise;
-    }
-    shutdownPromise = runShutdown(signal);
-    return shutdownPromise;
+  let shutdownPreparationPromise: Promise<void> | null = null;
+  let shutdownPrepared = false;
+  const prepareShutdown = (signal: string): Promise<void> => {
+    if (shutdownPrepared) return Promise.resolve();
+    if (shutdownPreparationPromise) return shutdownPreparationPromise;
+    logger.info(LOG_KINDS.DAEMON_START, `${signal} received`);
+    shutdownPreparationPromise = externalMcpContainment.contain('shutdown')
+      .then(() => {
+        shutdownPrepared = true;
+      })
+      .finally(() => {
+        shutdownPreparationPromise = null;
+      });
+    return shutdownPreparationPromise;
   };
 
-  const runShutdown = async (signal: string) => {
-    logger.info(LOG_KINDS.DAEMON_START, `${signal} received`);
+  const runPreparedShutdown = async () => {
     selfReconcileLoop.stop();
     powerManager.stop();
     eventLoopLagProbe.stop();
@@ -2778,7 +2844,6 @@ export async function main(): Promise<void> {
       }
     }
     registry.destroy();
-    await externalMcpListener.unbind();
     await server.stop();
     runtimeCache.closeAll();
     vectorStore.close();
@@ -2793,12 +2858,41 @@ export async function main(): Promise<void> {
     process.exit(0);
   };
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  const beginPreparedShutdown = (signal: string): Promise<void> => {
+    if (shutdownPromise) {
+      logger.info(LOG_KINDS.DAEMON_START, `${signal} received during in-progress shutdown; awaiting prior signal`);
+      return shutdownPromise;
+    }
+    shutdownPromise = runPreparedShutdown().catch((error) => {
+      shutdownPromise = null;
+      throw error;
+    });
+    return shutdownPromise;
+  };
+
+  const shutdown = async (signal: string): Promise<void> => {
+    await prepareShutdown(signal);
+    await beginPreparedShutdown(signal);
+  };
+
+  const requestShutdown = (signal: string): void => {
+    void shutdown(signal).catch((error) => {
+      logger.error(LOG_KINDS.DAEMON_START, 'Shutdown blocked by external MCP containment', {
+        signal,
+        error: errorMessage(error),
+      });
+    });
+  };
+  process.on('SIGTERM', () => requestShutdown('SIGTERM'));
+  process.on('SIGINT', () => requestShutdown('SIGINT'));
 
   // Cooperative cross-process shutdown. A successor daemon (reconcile takeover)
   // or the updater POSTs /api/shutdown to run THIS graceful path on Windows,
   // where a cross-process SIGTERM is an uncatchable TerminateProcess and the
   // signal handlers above never fire. Wired here, after `shutdown` exists.
-  server.onShutdownRequest(() => { void shutdown('shutdown-request'); });
+  server.onShutdownRequest(async () => {
+    await prepareShutdown('shutdown-request');
+    return () => beginPreparedShutdown('shutdown-request');
+  });
+  });
 }

@@ -12,12 +12,22 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  migrateProjectToGlobalInstall,
+  migrateProjectToGlobalInstall as migrateProjectToGlobalInstallWith,
+  type MigrateOptions,
   propagateLegacyMachineIdAtStartup,
   resolveSentinelPath,
   hasGlobalInstallMigrationCompleted,
   readMigrationSentinel,
 } from '@myco/grove/global-install-migration.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const migrateProjectToGlobalInstall = (
+  projectRoot: string,
+  options: MigrateOptions = {},
+) => migrateProjectToGlobalInstallWith(projectRoot, {
+  ...options,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 // Fixture helper: seed a Grove on disk with a registered project that
 // has a legacy machine_id in its vault. Matches the on-disk shape

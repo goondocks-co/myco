@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
-import { resolveProvisionedVaultDir } from '@myco/hooks/vault-gate.js';
+import { resolveProvisionedVaultDir as resolveProvisionedVaultDirWith } from '@myco/hooks/vault-gate.js';
 import {
   archiveProjectInGrove,
   clearGroveRegistryCaches,
@@ -28,6 +28,10 @@ import {
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
 import { createProjectId } from '@myco/grove/ids.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const resolveProvisionedVaultDir = (cwd?: string) =>
+  resolveProvisionedVaultDirWith(cwd, testPerUserLockNamespace);
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 
 let tmpDir: string;
