@@ -20,6 +20,8 @@ describe('provider secret handlers', () => {
   beforeEach(() => {
     originalOpenAiApiKey = process.env[OPENAI_API_KEY_ENV];
     originalOpenAiApiKeyAlias = process.env.OPENAI_API_KEY;
+    delete process.env[OPENAI_API_KEY_ENV];
+    delete process.env.OPENAI_API_KEY;
   });
 
   afterEach(() => {
