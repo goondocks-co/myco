@@ -31,9 +31,12 @@ import {
   createProjectId,
 } from '@myco/grove/ids';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
-import { writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import { HOST_BEARER_SECRET } from '@myco/constants';
 import { createStreamableMcpHttpHandler } from '@myco/mcp/http';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 
 interface HostHit { url: string; body: string; }
 
@@ -78,6 +81,7 @@ describe('/mcp attach short-circuit + proxy (chokepoint 2)', () => {
     overlayAddress = `127.0.0.1:${hostPort}`;
 
     const handler = createStreamableMcpHttpHandler(vaultDir, {
+      lockNamespace: testPerUserLockNamespace,
       resolveDatabase: () => {
         dbCalls += 1;
         return {} as never;

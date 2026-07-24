@@ -17,6 +17,7 @@ import {
   type ResolvedRegisteredProject,
 } from './registry.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 /**
  * Single source of truth for a project's Grove binding state.
@@ -48,6 +49,7 @@ export interface BindingInconsistency {
 
 export interface ResolveProjectGroveBindingOptions {
   mycoHome?: string;
+  lockNamespace?: PerUserLockNamespace;
   /**
    * When true, attempt to repair a recoverable inconsistency in place:
    *   - manifest missing but marker + registry present → rewrite project.toml
@@ -109,7 +111,15 @@ export function resolveProjectGroveBinding(
   // other two are consistent, rewrite the missing leg from authoritative
   // state. Repair is opt-in so read-only callers don't cause writes.
   if (options.repair) {
-    return resolveAfterRepair(vaultDir, projectRoot, manifest, marker, registered, mycoHome);
+    return resolveAfterRepair(
+      vaultDir,
+      projectRoot,
+      manifest,
+      marker,
+      registered,
+      mycoHome,
+      options.lockNamespace,
+    );
   }
 
   // Triple invariant: all three present and consistent.
@@ -167,6 +177,7 @@ function resolveAfterRepair(
   marker: ActivationMarker | null,
   registered: ResolvedRegisteredProject | null,
   mycoHome: string,
+  lockNamespace?: PerUserLockNamespace,
 ): GroveBindingResult {
   let nextManifest = manifest;
   let nextRegistered = registered;
@@ -208,7 +219,7 @@ function resolveAfterRepair(
   // transition in flight) hits the repair path.
   if (
     nextManifest?.grove?.binding_id && marker && !nextRegistered
-    && !isLocalRegistrationSuppressed(marker.project_id)
+    && !isLocalRegistrationSuppressed(marker.project_id, lockNamespace)
   ) {
     registerProjectInGrove(marker.grove_id, {
       projectId: marker.project_id,

@@ -15,6 +15,7 @@ import {
   type ProjectActivityWithBacklog,
 } from '@myco/db/queries/project-activity.js';
 import { forEachGrove, type GroveScope } from '../scope-iteration.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,6 +51,7 @@ export interface ProjectsActivityHandlersDeps {
   /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
   daemonStateDir: string;
   mycoHome?: string;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 const SECONDS_PER_DAY = MS_PER_DAY / 1000;
@@ -144,7 +146,13 @@ export function createProjectsActivityHandler(deps: ProjectsActivityHandlersDeps
           }
         }
       },
-      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'projects-activity', parallel: true },
+      {
+        mycoHome,
+        daemonStateDir: deps.daemonStateDir,
+        jobName: 'projects-activity',
+        parallel: true,
+        lockNamespace: deps.lockNamespace,
+      },
     );
 
     // Active first, then by last activity desc — cold projects sink to bottom.

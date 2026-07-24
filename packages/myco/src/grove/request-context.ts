@@ -22,6 +22,7 @@ import {
 } from '@myco/grove/registry.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { resolveAttach } from '@myco/host/registry.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 // Transports that resolve inbound requests catch this alongside the
 // resolver's own error types; re-exported so they import one module for
@@ -148,6 +149,7 @@ export interface RequestContextAuthOptions {
    * before regardless of this flag.
    */
   tolerateAttachedProject?: boolean;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault' | 'url';
@@ -385,7 +387,15 @@ export function requestContextFromHttpHeaders(
     // session headers. Auth has already been enforced above.
     const tenancySource = tenancySourceFromExplicit(explicit);
     if (explicit.groveId) {
-      return resolveRegisteredRequestContext(explicit, fallback, 'headers', tenancySource, enforceGroveOwnership, tolerateAttachedProject);
+      return resolveRegisteredRequestContext(
+        explicit,
+        fallback,
+        'headers',
+        tenancySource,
+        enforceGroveOwnership,
+        tolerateAttachedProject,
+        options.lockNamespace,
+      );
     }
     const manifestContext = resolveManifestHeaderRequestContext(explicit, fallback, 'headers', tenancySource, enforceGroveOwnership);
     if (manifestContext) return manifestContext;
@@ -996,6 +1006,7 @@ function resolveRegisteredRequestContext(
   tenancySource: TenancySource,
   enforceGroveOwnership: boolean,
   tolerateAttachedProject: boolean,
+  lockNamespace?: PerUserLockNamespace,
 ): MycoRequestContext {
   const inputProjectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
   const manifestFromInputRoot = inputProjectRoot
@@ -1060,7 +1071,7 @@ function resolveRegisteredRequestContext(
     // Resolve a display-only, grove-scoped, project-LESS-at-the-DB context so
     // machine-scoped surfaces serve. `resolveAttach` is a pure disk read (no
     // host dial); a non-attached miss falls through to the unchanged throw.
-    if (tolerateAttachedProject && resolveAttach(projectId)) {
+    if (tolerateAttachedProject && resolveAttach(projectId, lockNamespace)) {
       if (enforceGroveOwnership && !groveOwnedByThisDaemon(grove, mycoHome)) {
         throw new ForeignGroveError(grove.id);
       }

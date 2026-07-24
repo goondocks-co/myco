@@ -41,6 +41,10 @@ import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { getHostMembershipSnapshot } from '../host/registry.js';
 import type { RemoteTarget } from '../host/routing.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { deriveTranscriptId, MAX_TRANSCRIPT_PUSH_BYTES } from '../host/routed-transcript.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
@@ -303,8 +307,12 @@ export const defaultTranscriptTransport: TranscriptPostTransport = async (target
 /** Default host-target builder for the backstop / post-restart drain, when no
  *  live {@link RemoteTarget} is on hand (the throttle/flush paths pass one). Reads
  *  the host record + bearer from the machine-global registry. */
-function defaultResolveHostTarget(hostId: string, sample: DrainEntry): RemoteTarget | null {
-  const membership = getHostMembershipSnapshot(hostId);
+function defaultResolveHostTarget(
+  hostId: string,
+  sample: DrainEntry,
+  lockNamespace: PerUserLockNamespace,
+): RemoteTarget | null {
+  const membership = getHostMembershipSnapshot(hostId, lockNamespace);
   if (!membership) return null;
   const { record: host, bearer } = membership;
   return {
@@ -331,6 +339,7 @@ export interface TranscriptDrainDeps {
   transport?: TranscriptPostTransport;
   fileReader?: TranscriptFileReader;
   resolveHostTarget?: (hostId: string, sample: DrainEntry) => RemoteTarget | null;
+  lockNamespace?: PerUserLockNamespace;
   /** Per-POST byte cap (line-split at or below it). Default {@link MAX_TRANSCRIPT_PUSH_BYTES}. */
   chunkCapBytes?: number;
   /** Coalescing throttle for the mid-turn drain — mirrors live-reconcile's 3 s
@@ -378,7 +387,12 @@ export class TranscriptDrainQueue {
     this.store = deps.store ?? createFsDrainStore();
     this.transport = deps.transport ?? defaultTranscriptTransport;
     this.fileReader = deps.fileReader ?? defaultFileReader;
-    this.resolveHostTarget = deps.resolveHostTarget ?? defaultResolveHostTarget;
+    this.resolveHostTarget = deps.resolveHostTarget
+      ?? ((hostId, sample) => defaultResolveHostTarget(
+        hostId,
+        sample,
+        deps.lockNamespace ?? nativePerUserLockNamespace,
+      ));
     this.chunkCap = deps.chunkCapBytes ?? MAX_TRANSCRIPT_PUSH_BYTES;
     this.intervalMs = deps.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.now = deps.now ?? Date.now;

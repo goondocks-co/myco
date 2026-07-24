@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
+import { testPerUserLocksRoot } from '../helpers/per-user-lock-namespace.js';
 
 const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
@@ -23,7 +24,13 @@ function runStopHook(opts: {
 }) {
   return spawnSync(
     process.execPath,
-    [path.resolve('packages/myco/src/cli.ts'), 'hook', 'stop', '--symbiont', 'codex'],
+    [
+      path.resolve('tests/helpers/capture-hook-helper.ts'),
+      testPerUserLocksRoot,
+      'stop',
+      '--symbiont',
+      'codex',
+    ],
     {
       cwd: opts.projectRoot,
       // Isolate MYCO_HOME + block auto-spawn so daemon discovery cannot reach a

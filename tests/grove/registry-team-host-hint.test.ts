@@ -20,7 +20,21 @@ import { __resetTeamHostHintNoticeForTests } from '@myco/host/hint';
 import { type HostRecord } from '@myco/host/registry';
 import { createHostId } from '@myco/grove/ids';
 import { MYCO_HOME_ENV } from '@myco/grove/paths';
-import { ensureDefaultGrove, ensureProjectRegistered, findProjectByRoot } from '@myco/grove/registry';
+import {
+  ensureDefaultGrove,
+  ensureProjectRegistered as ensureProjectRegisteredWithDefaults,
+  findProjectByRoot,
+} from '@myco/grove/registry';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const ensureProjectRegistered = (
+  projectRoot: string,
+  mycoHome: string,
+) => ensureProjectRegisteredWithDefaults(
+  projectRoot,
+  mycoHome,
+  testPerUserLockNamespace,
+);
 
 function makeHost(hostId: string): HostRecord {
   return {

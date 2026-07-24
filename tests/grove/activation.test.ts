@@ -12,13 +12,21 @@ import { loadGroveRecord, listGroves } from '@myco/grove/registry.js';
 import { openDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import {
-  activateProjectMigration,
+  activateProjectMigration as activateProjectMigrationWithDefaults,
   activationMarkerPath,
 } from '@myco/grove/activation.js';
 import { createGrove, registerProjectInGrove, setDefaultGrove } from '@myco/grove/registry.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { listRegisteredProjects } from '@myco/grove/registry.js';
 import { requestContextFromEnvironment } from '@myco/grove/request-context.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const activateProjectMigration = (
+  input: Parameters<typeof activateProjectMigrationWithDefaults>[0],
+) => activateProjectMigrationWithDefaults({
+  ...input,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 describe('Grove project activation', () => {
   let tmpDir: string;

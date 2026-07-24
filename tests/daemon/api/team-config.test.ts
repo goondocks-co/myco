@@ -26,19 +26,22 @@ import http from 'node:http';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
-import { classifyRoute, matchRouteRule } from '@myco/host/routing';
+import { classifyRoute as classifyRouteWith, matchRouteRule } from '@myco/host/routing';
 import type { HostServeRuntime } from '@myco/daemon/host-serve';
-import { resolveServedGroveKeyHealthIsolated } from '@myco/daemon/host-serve';
 import {
-  handleGetTeamConfig,
+  resolveServedGroveKeyHealthIsolated as resolveServedGroveKeyHealthIsolatedWith,
+} from '@myco/daemon/host-serve';
+import {
+  handleGetTeamConfig as handleGetTeamConfigWith,
   handlePutTeamConfig,
-  handlePutTeamSecret,
-  handleDeleteTeamSecret,
-  handleRotateExternalMcpToken,
-  handleGetExternalMcp,
-  handlePutExternalMcpToggle,
-  registerTeamConfigRoutes,
+  handlePutTeamSecret as handlePutTeamSecretWith,
+  handleDeleteTeamSecret as handleDeleteTeamSecretWith,
+  handleRotateExternalMcpToken as handleRotateExternalMcpTokenWith,
+  handleGetExternalMcp as handleGetExternalMcpWith,
+  handlePutExternalMcpToggle as handlePutExternalMcpToggleWith,
+  registerTeamConfigRoutes as registerTeamConfigRoutesWith,
   type ExternalMcpListenerControl,
+  type TeamConfigRouteDeps,
 } from '@myco/daemon/api/team-config';
 import type { FunnelRunner } from '@myco/daemon/external-listener';
 import {
@@ -52,14 +55,56 @@ import {
   createHostId,
   createProjectId,
 } from '@myco/grove/ids';
-import { writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
 import { resolveGroveConfigPath, resolveGroveDir, resolveMycoHome } from '@myco/grove/paths';
-import { readSecrets, writeSecret } from '@myco/config/secrets';
+import { createSecretsOperations, readSecrets } from '@myco/config/secrets';
 import { loadMachineConfig, loadGroveConfig, saveMachineConfig } from '@myco/config/loader';
 import { EXTERNAL_MCP_DEFAULT_PORT, HOST_BEARER_SECRET, HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 import type { RouteRequest } from '@myco/daemon/router';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
+const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
+const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
+  classifyRouteWith(input, testPerUserLockNamespace);
+const resolveServedGroveKeyHealthIsolated = (
+  machineConfig: Parameters<typeof resolveServedGroveKeyHealthIsolatedWith>[0],
+  mycoHome?: string,
+) => resolveServedGroveKeyHealthIsolatedWith(
+  machineConfig,
+  mycoHome,
+  testPerUserLockNamespace,
+);
+
+function withTestLocks(deps: TeamConfigRouteDeps): TeamConfigRouteDeps {
+  return { ...deps, lockNamespace: testPerUserLockNamespace };
+}
+
+const handleGetTeamConfig = (deps: TeamConfigRouteDeps) =>
+  handleGetTeamConfigWith(withTestLocks(deps));
+const handlePutTeamSecret = (
+  deps: TeamConfigRouteDeps,
+  provider: string | undefined,
+  body: unknown,
+) => handlePutTeamSecretWith(withTestLocks(deps), provider, body);
+const handleDeleteTeamSecret = (
+  deps: TeamConfigRouteDeps,
+  provider: string | undefined,
+) => handleDeleteTeamSecretWith(withTestLocks(deps), provider);
+const handleRotateExternalMcpToken = (deps: TeamConfigRouteDeps) =>
+  handleRotateExternalMcpTokenWith(withTestLocks(deps));
+const handleGetExternalMcp = (deps: TeamConfigRouteDeps) =>
+  handleGetExternalMcpWith(withTestLocks(deps));
+const handlePutExternalMcpToggle = (
+  deps: TeamConfigRouteDeps,
+  body: unknown,
+) => handlePutExternalMcpToggleWith(withTestLocks(deps), body);
+const registerTeamConfigRoutes = (
+  server: Parameters<typeof registerTeamConfigRoutesWith>[0],
+  deps: TeamConfigRouteDeps,
+) => registerTeamConfigRoutesWith(server, withTestLocks(deps));
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 

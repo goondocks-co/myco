@@ -19,11 +19,15 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   readSecrets,
-  writeSecret,
-  relocateLegacyProjectSecrets,
+  createSecretsOperations,
 } from '@myco/config/secrets.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const cleanups: Array<() => void> = [];
+const {
+  writeSecret,
+  relocateLegacyProjectSecrets,
+} = createSecretsOperations(testPerUserLockNamespace);
 afterEach(() => {
   while (cleanups.length) cleanups.pop()!();
 });
@@ -243,13 +247,20 @@ describe('relocateLegacyProjectSecrets', () => {
       fs.writeFileSync(sourcePath, 'ONLY_COPY=preserved\n', { mode: 0o600 });
       const sourceBefore = fs.readFileSync(sourcePath);
       const destinationDir = fs.realpathSync(mycoHome);
+      const canonicalDestinationPath = path.join(destinationDir, 'secrets.env');
+      let destinationFileSynced = false;
       let removed = false;
       const originalFsync = fs.fsyncSync.bind(fs);
       const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
         let fdPath = '';
         try { fdPath = fs.realpathSync(`/dev/fd/${fd}`); } catch { /* closed or unsupported fd */ }
         originalFsync(fd);
-        if (!removed && fdPath === destinationDir) {
+        if (fdPath === canonicalDestinationPath) destinationFileSynced = true;
+        if (
+          !removed
+          && destinationFileSynced
+          && fdPath === destinationDir
+        ) {
           removed = true;
           fs.rmSync(destinationPath);
         }

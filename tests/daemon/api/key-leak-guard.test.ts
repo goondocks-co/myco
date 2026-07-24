@@ -39,8 +39,11 @@ import { registerTeamAgentTaskRoutes } from '@myco/daemon/api/team-agent-tasks.j
 import type { HostServeRuntime } from '@myco/daemon/host-serve.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
-import { readSecrets } from '@myco/config/secrets.js';
+import { createSecretsOperations, readSecrets } from '@myco/config/secrets.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
 
 const SENTINELS = {
   openai: 'sk-sentinel-openai-ABCDEF1234567890',
@@ -132,10 +135,14 @@ describe('cross-route API key leak guard', () => {
     logger = new DaemonLogger(path.join(tmpVault, 'logs'));
     setupTestDb();
 
-    server = new DaemonServer({ vaultDir: tmpVault, logger });
+    server = new DaemonServer({
+      vaultDir: tmpVault,
+      logger,
+      lockNamespace: testPerUserLockNamespace,
+    });
 
     // Wire up a representative surface of routes.
-    registerProviderRoutes(server);
+    registerProviderRoutes(server, { lockNamespace: testPerUserLockNamespace });
     server.registerRoute('GET', '/api/models', handleGetModels);
 
     const embeddingManager = {
@@ -321,8 +328,13 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: new DaemonLogger(path.join(tmp, 'host-logs')),
       hostServe,
+      lockNamespace: testPerUserLockNamespace,
     });
-    registerTeamConfigRoutes(overlayServer, { hostServe, mycoHome: home });
+    registerTeamConfigRoutes(overlayServer, {
+      hostServe,
+      mycoHome: home,
+      lockNamespace: testPerUserLockNamespace,
+    });
     // Per-task table (spec §6.3) — carries no secrets, so it needs no leak
     // assertions of its own, but is registered + swept here for uniformity
     // with the rest of the team-write route class.
@@ -352,7 +364,6 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
 
   it('MERGE GATE: no team-write response over the overlay ever contains a raw team key', async () => {
     // Seed an already-configured key directly, as if an earlier PUT had run.
-    const { writeSecret } = await import('@myco/config/secrets.js');
     const { resolveGroveDir } = await import('@myco/grove/paths.js');
     writeSecret(resolveGroveDir(grove.id, process.env.MYCO_HOME!), 'ANTHROPIC_API_KEY', TEAM_SENTINEL_EXISTING);
 

@@ -34,6 +34,7 @@ import { readResidencyJournal } from '@myco/host/residency-journal.js';
 import { listPendingForProject } from '@myco/db/queries/team-outbox.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 let home: string;
 let teamHome: string;
@@ -44,6 +45,7 @@ function baseDeps(): ResidencyDaemonDeps {
   return {
     machineId: 'local',
     mycoHome: home,
+    lockNamespace: testPerUserLockNamespace,
     withGroveDb: <T,>(_groveId: string, fn: (db: Database) => T): T => fn(getDatabase()),
   };
 }

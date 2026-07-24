@@ -35,6 +35,7 @@ import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { assertGroveProjectId, createProjectId, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 
 const noopProxyLogger = { warn(): void {}, error(): void {} };
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -110,6 +111,7 @@ describe('content claim materialize — local project', () => {
       logger: noopProxyLogger,
       machineId: 'daemon-machine',
       mycoHome,
+      lockNamespace: testPerUserLockNamespace,
     });
   }
 

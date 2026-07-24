@@ -14,14 +14,33 @@ import path from 'node:path';
 
 import { parseProjectManifest, type ProjectManifest } from '@myco/config/project-manifest';
 import { createHostId, createProjectId } from '@myco/grove/ids';
-import { attachProject, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import {
   __resetTeamHostHintNoticeForTests,
-  noticeTeamHostHintOnce,
-  resolveTeamHostHintState,
+  noticeTeamHostHintOnce as noticeTeamHostHintOnceWith,
+  resolveTeamHostHintState as resolveTeamHostHintStateWith,
   teamHostHintFromManifest,
   teamHostHintMessage,
 } from '@myco/host/hint';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { attachProject } = createHostRegistryOperations(testPerUserLockNamespace);
+const resolveTeamHostHintState = (
+  manifest: Parameters<typeof resolveTeamHostHintStateWith>[0],
+  projectId: string | null | undefined,
+) => resolveTeamHostHintStateWith(
+  manifest,
+  projectId,
+  testPerUserLockNamespace,
+);
+const noticeTeamHostHintOnce = (
+  manifest: Parameters<typeof noticeTeamHostHintOnceWith>[0],
+  projectId: string | null | undefined,
+) => noticeTeamHostHintOnceWith(
+  manifest,
+  projectId,
+  testPerUserLockNamespace,
+);
 
 function manifestWith(grove?: ProjectManifest['grove']): ProjectManifest {
   return { project: { id: 'proj_test' }, grove };

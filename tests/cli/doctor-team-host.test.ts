@@ -9,14 +9,26 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { checkTeamHostDrainHealth, checkTeamHostReachability, runChecks } from '@myco/cli/doctor.js';
-import { attachProject, type HostRecord } from '@myco/host/registry.js';
+import {
+  checkTeamHostDrainHealth as checkTeamHostDrainHealthWith,
+  checkTeamHostReachability as checkTeamHostReachabilityWith,
+  runChecks as runChecksWith,
+} from '@myco/cli/doctor.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { createFsDrainStore } from '@myco/capture/transcript-drain.js';
 import { deriveTranscriptId } from '@myco/host/routed-transcript.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { clearProjectManifestCache, ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const { attachProject } = createHostRegistryOperations(testPerUserLockNamespace);
+const checkTeamHostDrainHealth = () =>
+  checkTeamHostDrainHealthWith(testPerUserLockNamespace);
+const checkTeamHostReachability = () =>
+  checkTeamHostReachabilityWith(testPerUserLockNamespace);
+const runChecks = (vaultDir: string) =>
+  runChecksWith(vaultDir, testPerUserLockNamespace);
 
 function host(overrides: Partial<HostRecord> = {}): HostRecord {
   return {

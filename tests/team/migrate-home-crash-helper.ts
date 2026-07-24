@@ -7,9 +7,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { migrateTeamsHomeIfNeeded } from '@myco/team/migrate-home.js';
+import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
-const [legacyHome, destinationHome] = process.argv.slice(2);
-if (!legacyHome || !destinationHome) {
+const [lockRoot, legacyHome, destinationHome] = process.argv.slice(2);
+if (!lockRoot || !legacyHome || !destinationHome) {
   process.stderr.write('migration crash helper: required args missing\n');
   process.exit(64);
 }
@@ -26,5 +27,8 @@ fs.renameSync = ((source, destination) => {
   }
 }) as typeof fs.renameSync;
 
-migrateTeamsHomeIfNeeded([legacyHome]);
+migrateTeamsHomeIfNeeded(
+  [legacyHome],
+  createPerUserLockNamespace(() => lockRoot),
+);
 process.exit(70);

@@ -46,7 +46,10 @@ import {
 } from '@myco/utils/atomic-write.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
-import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import {
   assertHostOperationLease,
   type HostOperationLease,
@@ -206,29 +209,37 @@ export interface EnrollmentMembershipResult {
   created: boolean;
 }
 
-function hostRegistryLockPath(identity: string): string {
+function hostRegistryLockPath(
+  identity: string,
+  lockNamespace: PerUserLockNamespace,
+): string {
   const key = createHash('sha256')
     .update(`${HOST_REGISTRY_LOCK_NAMESPACE}\0${identity}`)
     .digest('hex');
-  return path.join(resolvePerUserLocksDir(), 'host-membership', `${key}.lock`);
+  return path.join(lockNamespace.resolve('host-membership'), `${key}.lock`);
 }
 
-function hostRegistryLockPaths(): string[] {
-  const lockDir = path.join(resolvePerUserLocksDir(), 'host-membership');
+function hostRegistryLockPaths(lockNamespace: PerUserLockNamespace): string[] {
+  const lockDir = lockNamespace.resolve('host-membership');
   fs.mkdirSync(lockDir, { recursive: true, mode: HOST_REGISTRY_LOCK_DIR_MODE });
   try { fs.chmodSync(lockDir, HOST_REGISTRY_LOCK_DIR_MODE); } catch { /* platform ACLs apply */ }
-  return physicalPathLockIdentities(resolveHostsDir()).map(hostRegistryLockPath).sort();
+  return physicalPathLockIdentities(resolveHostsDir())
+    .map((identity) => hostRegistryLockPath(identity, lockNamespace))
+    .sort();
 }
 
-function withHostRegistryTransaction<T>(fn: () => T): T {
+function withHostRegistryTransaction<T>(
+  lockNamespace: PerUserLockNamespace,
+  fn: () => T,
+): T {
   const RETRY = Symbol('retry-host-registry-locks');
   for (let attempt = 0; attempt < HOST_REGISTRY_LOCK_RETRIES; attempt += 1) {
-    const locks = hostRegistryLockPaths();
+    const locks = hostRegistryLockPaths(lockNamespace);
     const run = (index: number): T | typeof RETRY => {
       if (index < locks.length) {
         return withFileLockSync(locks[index]!, () => run(index + 1));
       }
-      const freshLocks = hostRegistryLockPaths();
+      const freshLocks = hostRegistryLockPaths(lockNamespace);
       if (freshLocks.length !== locks.length
         || freshLocks.some((lock, index) => lock !== locks[index])) return RETRY;
       return fn();
@@ -447,24 +458,38 @@ function readHostMembershipSnapshotsUnlocked(): HostMembershipSnapshot[] {
 }
 
 /** Read every committed, non-retired host record through one registry snapshot. */
-export function readHostRegistry(): HostRecord[] {
-  return withHostRegistryTransaction(readHostRegistryUnlocked);
+export function readHostRegistry(
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): HostRecord[] {
+  return withHostRegistryTransaction(lockNamespace, readHostRegistryUnlocked);
 }
 
-export function readHostMembershipSnapshots(): HostMembershipSnapshot[] {
-  return withHostRegistryTransaction(readHostMembershipSnapshotsUnlocked);
+export function readHostMembershipSnapshots(
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): HostMembershipSnapshot[] {
+  return withHostRegistryTransaction(lockNamespace, readHostMembershipSnapshotsUnlocked);
 }
 
 /** Read a single committed, non-retired host record by id. */
-export function getHost(hostId: string): HostRecord | null {
+export function getHost(
+  hostId: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): HostRecord | null {
   return withHostRegistryTransaction(
+    lockNamespace,
     () => readHostMembershipSnapshotUnlocked(hostId)?.record ?? null,
   );
 }
 
 /** Read a record and the bearer selected by its atomic generation pointer. */
-export function getHostMembershipSnapshot(hostId: string): HostMembershipSnapshot | null {
-  return withHostRegistryTransaction(() => readHostMembershipSnapshotUnlocked(hostId));
+export function getHostMembershipSnapshot(
+  hostId: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): HostMembershipSnapshot | null {
+  return withHostRegistryTransaction(
+    lockNamespace,
+    () => readHostMembershipSnapshotUnlocked(hostId),
+  );
 }
 
 function writeHostRecordUnlocked(record: HostRecord): void {
@@ -661,8 +686,9 @@ function assertClaimMatchesIntent(
 export function reserveHostProxyPort(
   hostId: string,
   preferredPort?: number,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): HostProxyPortReservation {
-  return withHostRegistryTransaction(() => {
+  return withHostRegistryTransaction(lockNamespace, () => {
     if (preferredPort !== undefined && !isValidProxyPort(preferredPort)) {
       throw new Error(`Invalid proxy port ${preferredPort}; expected an integer from 1 through ${MAX_TCP_PORT}.`);
     }
@@ -840,8 +866,11 @@ export function reserveHostProxyPort(
  * Release only the exact active claim represented by `reservation`.
  * Committed reservations and stale attempt tokens are no-ops.
  */
-export function releaseHostProxyPort(reservation: HostProxyPortReservation): void {
-  withHostRegistryTransaction(() => {
+export function releaseHostProxyPort(
+  reservation: HostProxyPortReservation,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): void {
+  withHostRegistryTransaction(lockNamespace, () => {
     const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
     if (!intent
       || intent.generation !== reservation.generation
@@ -872,8 +901,9 @@ export function advanceHostEnrollmentPhase(
   reservation: HostProxyPortReservation,
   phase: Exclude<HostEnrollmentPhase, 'teardown_pending'>,
   service?: { preexisting: boolean; label: string },
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): HostProxyPortReservation {
-  return withHostRegistryTransaction(() => {
+  return withHostRegistryTransaction(lockNamespace, () => {
     const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
     assertReservationMatchesIntent(reservation, intent);
     const claim = readHostProxyPortClaimUnlocked(reservation.hostId);
@@ -911,8 +941,9 @@ export function advanceHostEnrollmentPhase(
 
 export function markHostEnrollmentTeardownPending(
   reservation: HostProxyPortReservation,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
-  withHostRegistryTransaction(() => {
+  withHostRegistryTransaction(lockNamespace, () => {
     const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
     assertReservationMatchesIntent(reservation, intent);
     writeHostEnrollmentIntentUnlocked({
@@ -926,9 +957,10 @@ export function markHostEnrollmentTeardownPending(
 export function abandonHostEnrollment(
   reservation: HostProxyPortReservation,
   proof: LoopbackPortReleaseProof,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   assertLoopbackPortReleaseProof(proof, reservation.proxyPort);
-  withHostRegistryTransaction(() => {
+  withHostRegistryTransaction(lockNamespace, () => {
     const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
     assertReservationMatchesIntent(reservation, intent);
     const claim = readHostProxyPortClaimUnlocked(reservation.hostId);
@@ -1040,8 +1072,10 @@ export function persistEnrollmentMembership(
   enrollment: EnrollmentHostRecord,
   bearer: string,
   reservation: HostProxyPortReservation,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): EnrollmentMembershipResult {
   return withHostRegistryTransaction(
+    lockNamespace,
     () => persistEnrollmentMembershipUnlocked(enrollment, bearer, reservation),
   );
 }
@@ -1056,9 +1090,10 @@ export interface HostLeaveInspection {
 export function inspectHostMembershipForLeave(
   hostId: string,
   lease: HostOperationLease,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): HostLeaveInspection {
   assertHostOperationLease(lease, hostId, 'leave');
-  return withHostRegistryTransaction(() => {
+  return withHostRegistryTransaction(lockNamespace, () => {
     reconcileDurableRemovalTombstonesSync(resolveHostsDir());
     let record: HostRecord | null = null;
     let corrupt = false;
@@ -1114,9 +1149,10 @@ export function retireHostMembership(
   lease: HostOperationLease,
   proof: LoopbackPortReleaseProof,
   trustedProxyPort?: number,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   assertHostOperationLease(lease, hostId, 'leave');
-  withHostRegistryTransaction(() => {
+  withHostRegistryTransaction(lockNamespace, () => {
     let record: HostRecord | null = null;
     try { record = readHostRecordUnlocked(hostId); } catch (error) {
       if (!(error instanceof HostJoinStateCorruptError)) throw error;
@@ -1224,8 +1260,12 @@ export function attachProject(
   hostId: string,
   ref: AttachRef,
   mycoHome = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
-  withHostRegistryTransaction(() => attachProjectUnlocked(hostId, ref, mycoHome));
+  withHostRegistryTransaction(
+    lockNamespace,
+    () => attachProjectUnlocked(hostId, ref, mycoHome),
+  );
 }
 
 function attachProjectUnlocked(
@@ -1300,8 +1340,13 @@ function attachProjectUnlocked(
  * the member — a real downgrade stays the skew classifier's surface, not a
  * silent write. Returns the effective (post-write) recorded version.
  */
-export function recordHostProtocolVersion(hostId: string, observedVersion: number): number {
+export function recordHostProtocolVersion(
+  hostId: string,
+  observedVersion: number,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): number {
   return withHostRegistryTransaction(
+    lockNamespace,
     () => recordHostProtocolVersionUnlocked(hostId, observedVersion),
   );
 }
@@ -1324,8 +1369,15 @@ function recordHostProtocolVersionUnlocked(hostId: string, observedVersion: numb
 }
 
 /** Detach a project from a host. No-op if the host, or the attach ref, doesn't exist. */
-export function detachProject(hostId: string, projectId: string): void {
-  withHostRegistryTransaction(() => detachProjectUnlocked(hostId, projectId));
+export function detachProject(
+  hostId: string,
+  projectId: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): void {
+  withHostRegistryTransaction(
+    lockNamespace,
+    () => detachProjectUnlocked(hostId, projectId),
+  );
 }
 
 function detachProjectUnlocked(hostId: string, projectId: string): void {
@@ -1343,14 +1395,18 @@ function detachProjectUnlocked(hostId: string, projectId: string): void {
  * (member-side `classifyRoute`, client-side `ensureProjectRegistered`) —
  * a pure disk read across every host record, no daemon, no DB.
  */
-export function resolveAttach(projectId: string): { host: HostRecord; ref: AttachRef } | null {
-  return withHostRegistryTransaction(() => resolveAttachUnlocked(projectId));
+export function resolveAttach(
+  projectId: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): { host: HostRecord; ref: AttachRef } | null {
+  return withHostRegistryTransaction(lockNamespace, () => resolveAttachUnlocked(projectId));
 }
 
 export function resolveAttachMembership(
   projectId: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): { host: HostRecord; ref: AttachRef; bearer: string; secrets: Record<string, string> } | null {
-  return withHostRegistryTransaction(() => {
+  return withHostRegistryTransaction(lockNamespace, () => {
     for (const snapshot of readHostMembershipSnapshotsUnlocked()) {
       const ref = snapshot.record.projects.find((project) => project.project_id === projectId);
       if (ref) {
@@ -1382,8 +1438,10 @@ function resolveAttachUnlocked(projectId: string): { host: HostRecord; ref: Atta
  * `listGroves`, but if local state ever leaked for one, its id lands here so
  * the housekeeping/scheduler fan-out structurally skips it.
  */
-export function attachTargetGroveIds(): Set<string> {
-  return withHostRegistryTransaction(() => {
+export function attachTargetGroveIds(
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Set<string> {
+  return withHostRegistryTransaction(lockNamespace, () => {
     const ids = new Set<string>();
     for (const record of readHostRegistryUnlocked()) {
       for (const ref of record.projects) ids.add(ref.grove_id);
@@ -1400,8 +1458,10 @@ export function attachTargetGroveIds(): Set<string> {
  * hosted Grove, not the leak shape where a local→attached project's row
  * lingers in the local default Grove.
  */
-export function attachTargetProjectIds(): Set<string> {
-  return withHostRegistryTransaction(() => {
+export function attachTargetProjectIds(
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Set<string> {
+  return withHostRegistryTransaction(lockNamespace, () => {
     const ids = new Set<string>();
     for (const record of readHostRegistryUnlocked()) {
       for (const ref of record.projects) ids.add(ref.project_id);
@@ -1411,15 +1471,24 @@ export function attachTargetProjectIds(): Set<string> {
 }
 
 /** Read all secrets with the bearer selected by the committed generation pointer. */
-export function readHostSecrets(hostId: string): Record<string, string> {
+export function readHostSecrets(
+  hostId: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): Record<string, string> {
   return withHostRegistryTransaction(
+    lockNamespace,
     () => readHostMembershipSnapshotUnlocked(hostId)?.secrets ?? {},
   );
 }
 
 /** Write a host-scoped secret (e.g. the host bearer, `HOST_BEARER_SECRET`) to secrets.env. Never written to host.json. */
-export function writeHostSecret(hostId: string, key: string, value: string): void {
-  withHostRegistryTransaction(() => {
+export function writeHostSecret(
+  hostId: string,
+  key: string,
+  value: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): void {
+  withHostRegistryTransaction(lockNamespace, () => {
     const record = readHostRecordUnlocked(hostId);
     if (key === HOST_BEARER_SECRET && record?.bearer_generation !== undefined) {
       assertValidSecretEntry(key, value);
@@ -1431,7 +1500,70 @@ export function writeHostSecret(hostId: string, key: string, value: string): voi
       );
       return;
     }
-    writeSecretFile(resolveHostDir(hostId), key, value);
+    writeSecretFile(resolveHostDir(hostId), key, value, lockNamespace);
+  });
+}
+
+export function createHostRegistryOperations(lockNamespace: PerUserLockNamespace) {
+  return Object.freeze({
+    readHostRegistry: () => readHostRegistry(lockNamespace),
+    readHostMembershipSnapshots: () => readHostMembershipSnapshots(lockNamespace),
+    getHost: (hostId: string) => getHost(hostId, lockNamespace),
+    getHostMembershipSnapshot: (hostId: string) =>
+      getHostMembershipSnapshot(hostId, lockNamespace),
+    reserveHostProxyPort: (hostId: string, preferredPort?: number) =>
+      reserveHostProxyPort(hostId, preferredPort, lockNamespace),
+    releaseHostProxyPort: (reservation: HostProxyPortReservation) =>
+      releaseHostProxyPort(reservation, lockNamespace),
+    advanceHostEnrollmentPhase: (
+      reservation: HostProxyPortReservation,
+      phase: Exclude<HostEnrollmentPhase, 'teardown_pending'>,
+      service?: { preexisting: boolean; label: string },
+    ) => advanceHostEnrollmentPhase(reservation, phase, service, lockNamespace),
+    markHostEnrollmentTeardownPending: (reservation: HostProxyPortReservation) =>
+      markHostEnrollmentTeardownPending(reservation, lockNamespace),
+    abandonHostEnrollment: (
+      reservation: HostProxyPortReservation,
+      proof: LoopbackPortReleaseProof,
+    ) => abandonHostEnrollment(reservation, proof, lockNamespace),
+    persistEnrollmentMembership: (
+      enrollment: EnrollmentHostRecord,
+      bearer: string,
+      reservation: HostProxyPortReservation,
+    ) => persistEnrollmentMembership(enrollment, bearer, reservation, lockNamespace),
+    inspectHostMembershipForLeave: (
+      hostId: string,
+      lease: HostOperationLease,
+    ) => inspectHostMembershipForLeave(hostId, lease, lockNamespace),
+    retireHostMembership: (
+      hostId: string,
+      lease: HostOperationLease,
+      proof: LoopbackPortReleaseProof,
+      trustedProxyPort?: number,
+    ) => retireHostMembership(
+      hostId,
+      lease,
+      proof,
+      trustedProxyPort,
+      lockNamespace,
+    ),
+    attachProject: (
+      hostId: string,
+      ref: AttachRef,
+      mycoHome = resolveMycoHome(),
+    ) => attachProject(hostId, ref, mycoHome, lockNamespace),
+    recordHostProtocolVersion: (hostId: string, observedVersion: number) =>
+      recordHostProtocolVersion(hostId, observedVersion, lockNamespace),
+    detachProject: (hostId: string, projectId: string) =>
+      detachProject(hostId, projectId, lockNamespace),
+    resolveAttach: (projectId: string) => resolveAttach(projectId, lockNamespace),
+    resolveAttachMembership: (projectId: string) =>
+      resolveAttachMembership(projectId, lockNamespace),
+    attachTargetGroveIds: () => attachTargetGroveIds(lockNamespace),
+    attachTargetProjectIds: () => attachTargetProjectIds(lockNamespace),
+    readHostSecrets: (hostId: string) => readHostSecrets(hostId, lockNamespace),
+    writeHostSecret: (hostId: string, key: string, value: string) =>
+      writeHostSecret(hostId, key, value, lockNamespace),
   });
 }
 

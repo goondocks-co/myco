@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DaemonServer } from '@myco/daemon/server.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 
 // Server side of the cooperative-shutdown fix (#4). `POST /api/shutdown` lets a
@@ -22,7 +23,11 @@ describe('POST /api/shutdown route', () => {
     const vaultDir = path.join(tmp, '.myco');
     fs.mkdirSync(path.join(vaultDir, 'logs'), { recursive: true });
     logger = new DaemonLogger(path.join(vaultDir, 'logs'));
-    server = new DaemonServer({ vaultDir, logger });
+    server = new DaemonServer({
+      vaultDir,
+      logger,
+      lockNamespace: testPerUserLockNamespace,
+    });
     await server.start();
   });
 

@@ -24,10 +24,11 @@ import {
   type MemberOverlayDeps,
 } from '@myco/host/member-overlay.js';
 import { TAILSCALE_VERSION, type CommandRunner } from '@myco/host/overlay-binaries.js';
+import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { FakeServiceManager } from './fake-service-manager.js';
 
-const [teamHome, hostId, mode, readyPath, releasePath, resultPath, preferredPortRaw] = process.argv.slice(2);
-if (!teamHome || !hostId || !mode || !readyPath || !releasePath || !resultPath) {
+const [lockRoot, teamHome, hostId, mode, readyPath, releasePath, resultPath, preferredPortRaw] = process.argv.slice(2);
+if (!lockRoot || !teamHome || !hostId || !mode || !readyPath || !releasePath || !resultPath) {
   process.stderr.write('host join proxy reservation helper: required args missing\n');
   process.exit(64);
 }
@@ -79,6 +80,7 @@ const deps: MemberOverlayDeps = {
   enrollmentClient,
   logger: () => {},
   proxyPort: preferredPortRaw ? Number(preferredPortRaw) : undefined,
+  lockNamespace: createPerUserLockNamespace(() => lockRoot),
 };
 
 try {

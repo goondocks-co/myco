@@ -22,6 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { DaemonServer } from '@myco/daemon/server';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { readHostActionLog } from '@myco/host/action-log';
@@ -51,6 +52,7 @@ describe('Team Host enrollment endpoint (/api/host/enroll)', () => {
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, hostId: HOST_ID, label: HOST_LABEL },
+      lockNamespace: testPerUserLockNamespace,
     });
     // A different overlay route to prove the exemption did not widen the gate.
     server.registerRoute('GET', '/api/sessions', async () => {

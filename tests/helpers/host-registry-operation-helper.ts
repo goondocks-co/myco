@@ -16,12 +16,11 @@
 import fs from 'node:fs';
 
 import {
-  attachProject,
-  persistEnrollmentMembership,
-  reserveHostProxyPort,
+  createHostRegistryOperations,
   type AttachRef,
   type EnrollmentHostRecord,
 } from '@myco/host/registry.js';
+import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 interface EnrollmentOperation {
   mode: 'enroll';
@@ -37,13 +36,18 @@ interface AttachOperation {
 
 type RegistryOperation = EnrollmentOperation | AttachOperation;
 
-const [teamHome, payloadPath, startedPath, completedPath] = process.argv.slice(2);
-if (!teamHome || !payloadPath || !startedPath || !completedPath) {
+const [lockRoot, teamHome, payloadPath, startedPath, completedPath] = process.argv.slice(2);
+if (!lockRoot || !teamHome || !payloadPath || !startedPath || !completedPath) {
   process.stderr.write('host registry operation helper: required args missing\n');
   process.exit(64);
 }
 
 process.env.MYCO_TEAM_HOME = teamHome;
+const {
+  attachProject,
+  persistEnrollmentMembership,
+  reserveHostProxyPort,
+} = createHostRegistryOperations(createPerUserLockNamespace(() => lockRoot));
 const operation = JSON.parse(fs.readFileSync(payloadPath, 'utf-8')) as RegistryOperation;
 fs.writeFileSync(startedPath, 'started\n');
 

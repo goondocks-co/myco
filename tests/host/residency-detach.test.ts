@@ -27,8 +27,11 @@ import {
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
-import { attachProject, resolveAttach, type AttachRef, type HostRecord } from '@myco/host/registry.js';
-import { detachCommand, type BeginDetachResidency } from '@myco/host/attach-command.js';
+import { createHostRegistryOperations, type AttachRef, type HostRecord } from '@myco/host/registry.js';
+import {
+  detachCommand as detachCommandWith,
+  type BeginDetachResidency,
+} from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { abortResidency, beginDetachResidency, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import {
@@ -47,6 +50,11 @@ import {
 } from '@myco/host/residency-drain.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
 import { applyResidencyRows } from '@myco/db/queries/residency-apply.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { attachProject, resolveAttach } = createHostRegistryOperations(testPerUserLockNamespace);
+const detachCommand = (options: Parameters<typeof detachCommandWith>[0]) =>
+  detachCommandWith(options, testPerUserLockNamespace);
 
 let home: string;
 let teamHome: string;
@@ -58,6 +66,7 @@ function baseDeps(): ResidencyDaemonDeps {
     machineId: 'local',
     mycoHome: home,
     withGroveDb: <T,>(_groveId: string, fn: (db: Database) => T): T => fn(getDatabase()),
+    lockNamespace: testPerUserLockNamespace,
   };
 }
 
@@ -475,7 +484,7 @@ describe('detach — suppression during the window', () => {
       project_name: 'demo', root, backup_ref: null, cursors: {},
     });
 
-    const resolved = ensureProjectRegistered(root, home);
+    const resolved = ensureProjectRegistered(root, home, testPerUserLockNamespace);
     expect(resolved?.grove.id).toBe(host.served_grove_id);
     expect(resolved?.project.project_id).toBe(projectId);
   });
@@ -495,7 +504,7 @@ describe('detach — suppression during the window', () => {
       project_name: 'demo', root, backup_ref: null, cursors: { pull: 'done' },
     });
 
-    const resolved = ensureProjectRegistered(root, home);
+    const resolved = ensureProjectRegistered(root, home, testPerUserLockNamespace);
     expect(resolved?.grove.id).toBe(local.id); // local, not the host divert grove
     expect(resolved?.grove.id).not.toBe(host.served_grove_id);
   });

@@ -26,19 +26,41 @@ import { createGrove } from '@myco/grove/registry.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import { codedMembershipError } from '@myco/host/membership-error.js';
 import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
-import { getHost, type HostRecord } from '@myco/host/registry.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { RESIDENCY_MIN_HOST_PROTOCOL } from '@myco/host/residency-journal.js';
 import {
   classifyHostProtocolSkew,
   createHostMembershipAttachHandler,
   createHostMembershipDetachHandler,
-  createHostMembershipHealthHandler,
+  createHostMembershipHealthHandler as createHostMembershipHealthHandlerWith,
   createHostMembershipJoinHandler,
   createHostMembershipLeaveHandler,
-  createHostMembershipStatusHandler,
-  registerHostMembershipRoutes,
+  createHostMembershipStatusHandler as createHostMembershipStatusHandlerWith,
+  registerHostMembershipRoutes as registerHostMembershipRoutesWith,
+  type HostMembershipHealthRouteDeps,
+  type HostMembershipRouteDeps,
 } from '@myco/daemon/api/host-membership.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const { attachProject, getHost } = createHostRegistryOperations(testPerUserLockNamespace);
+const createHostMembershipHealthHandler = (deps: HostMembershipHealthRouteDeps = {}) =>
+  createHostMembershipHealthHandlerWith({
+    ...deps,
+    lockNamespace: testPerUserLockNamespace,
+  });
+const createHostMembershipStatusHandler = (deps: HostMembershipRouteDeps = {}) =>
+  createHostMembershipStatusHandlerWith({
+    ...deps,
+    lockNamespace: testPerUserLockNamespace,
+  });
+const registerHostMembershipRoutes = (
+  registrar: Parameters<typeof registerHostMembershipRoutesWith>[0],
+  deps: HostMembershipRouteDeps,
+) => registerHostMembershipRoutesWith(registrar, {
+  ...deps,
+  lockNamespace: testPerUserLockNamespace,
+});
 
 function req(body: unknown, query: Record<string, string> = {}): RouteRequest {
   return { body, query, params: {}, pathname: '/api/host-membership/x' };
@@ -576,7 +598,6 @@ describe('GET /api/host-membership/status', () => {
     const projectId = createProjectId();
     const root = makeCheckout(projectId, host.host_id);
     // Attach it — resolveTeamHostHintState reads resolveAttach, not the raw hint.
-    const { attachProject } = await import('@myco/host/registry.js');
     attachProject(host.host_id, { grove_id: createGroveId(), project_id: projectId, root });
 
     const handler = createHostMembershipStatusHandler({ mycoHome: home });

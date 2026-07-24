@@ -16,6 +16,7 @@ import {
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { epochSeconds } from '@myco/constants.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 
 function makeLogger(workDir: string): DaemonLogger {
   return new DaemonLogger(path.join(workDir, 'logs'), { level: 'error' });
@@ -100,6 +101,7 @@ describe('projects activity API', () => {
       cache,
       mycoHome,
       daemonStateDir: path.join(mycoHome, 'service'),
+      lockNamespace: testPerUserLockNamespace,
     });
     return { cache, handler };
   }

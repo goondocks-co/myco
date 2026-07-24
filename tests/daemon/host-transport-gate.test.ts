@@ -35,6 +35,7 @@ import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { assertGroveProjectId, createGroveId, createProjectId } from '@myco/grove/ids';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
 import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const HOST_BEARER = 'test-host-serve-bearer-0123456789abcdef';
@@ -96,6 +97,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
       vaultDir: path.join(tmp, 'vault'),
       logger,
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
       uiDir,
       hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, servedGroveId: servedGrove.id },
     });
@@ -466,6 +468,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
       hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, servedGroveId: servedGrove.id },
     });
 
@@ -707,6 +710,7 @@ describe('Team Host serve disabled → no second listener', () => {
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
       // no hostServe → host serving off
     });
     server.registerRoute('GET', '/api/sessions', async () => ({ body: { ok: true } }));

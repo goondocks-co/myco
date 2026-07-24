@@ -2,7 +2,11 @@ import { describe, expect, it, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
-import { migrateTeamsHomeIfNeeded } from '@myco/team/migrate-home.js';
+import { migrateTeamsHomeIfNeeded as migrateTeamsHomeIfNeededWith } from '@myco/team/migrate-home.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const migrateTeamsHomeIfNeeded = (extraHomes: string[]) =>
+  migrateTeamsHomeIfNeededWith(extraHomes, testPerUserLockNamespace);
 
 describe('startup migration is loss-safe and non-throwing', () => {
   let sb: ReturnType<typeof sandboxMycoHome>;

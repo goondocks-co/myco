@@ -35,6 +35,7 @@ import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
 import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants.js';
 import { vi } from '../helpers/vi-shim.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 // ---------------------------------------------------------------------------
 // Pure predicate — fast, isolated coverage of every servedGroveRefusal branch.
@@ -190,6 +191,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       logger,
       daemonStateAuthority: stubAuthority,
       hostServe,
+      lockNamespace: testPerUserLockNamespace,
     });
     server.registerRoute('GET', PROBE_ROUTE, async (req) => ({
       body: { ok: true, groveId: req.requestContext?.groveId ?? null },
@@ -201,6 +203,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       // chokepoint 2's throttled refusal warn (Task 2, E-4 W2) is exercised
       // here too, not just chokepoint 1's router-route dispatch.
       logger,
+      lockNamespace: testPerUserLockNamespace,
     }));
     await server.start(0);
     servers.push(server);

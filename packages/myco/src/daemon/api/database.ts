@@ -19,6 +19,7 @@ import {
   type ActionScope,
 } from './action-scope.js';
 import { ActionInflightRegistry } from './action-inflight.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import {
   runScopedAction,
   wrapPerGroveResult,
@@ -38,6 +39,7 @@ export interface DatabaseMaintenanceRouteDeps {
   daemonStateDir: string;
   /** Override Myco home (tests). */
   mycoHome?: string;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 // Database maintenance is Grove-DB-only — there is no project-narrowed
@@ -98,7 +100,13 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
       },
       // Each Grove has its own DB file; cross-Grove parallelism is safe
       // (per-DB write locks don't span Groves).
-      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'database-action', parallel: true },
+      {
+        mycoHome,
+        daemonStateDir: deps.daemonStateDir,
+        jobName: 'database-action',
+        parallel: true,
+        lockNamespace: deps.lockNamespace,
+      },
     );
     return results;
   }

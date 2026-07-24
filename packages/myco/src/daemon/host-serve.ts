@@ -38,6 +38,10 @@ import {
 } from '../constants.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { readSecrets, writeSecret, writeSecretIfAbsent, loadLayeredSecrets } from '../config/secrets.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { loadMergedConfig } from '../config/loader.js';
 import type { MachineConfig } from '../config/schema.js';
 import { listGroves } from '../grove/registry.js';
@@ -164,13 +168,21 @@ export function isOverlayRangeAddress(address: string | null | undefined): boole
  * (never in any registry/config file), owner-only perms via the secrets helper.
  * This is the single flat-trust host bearer Task 2.4 hands to joining members.
  */
-export function resolveHostServeBearer(mycoHome: string = resolveMycoHome()): string {
+export function resolveHostServeBearer(
+  mycoHome: string = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): string {
   // Mint-if-absent at the secrets-write layer: a cross-process race (two
   // daemons on a restart overlap, or a CLI-and-daemon pair) that both mint a
   // fresh bearer converges on ONE stored value, and a losing minter returns
   // the winner's stored bearer — never an orphaned one a member could enroll
   // with but the host never persists.
-  return writeSecretIfAbsent(mycoHome, HOST_SERVE_BEARER_SECRET, () => crypto.randomBytes(32).toString('hex')).value;
+  return writeSecretIfAbsent(
+    mycoHome,
+    HOST_SERVE_BEARER_SECRET,
+    () => crypto.randomBytes(32).toString('hex'),
+    lockNamespace,
+  ).value;
 }
 
 /**
@@ -181,9 +193,12 @@ export function resolveHostServeBearer(mycoHome: string = resolveMycoHome()): st
  * a rotation is inert until the daemon restarts; the operator CLI restarts it and
  * warns that every member must re-join. Returns the new bearer for confirmation.
  */
-export function rotateHostServeBearer(mycoHome: string = resolveMycoHome()): string {
+export function rotateHostServeBearer(
+  mycoHome: string = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): string {
   const minted = crypto.randomBytes(32).toString('hex');
-  writeSecret(mycoHome, HOST_SERVE_BEARER_SECRET, minted);
+  writeSecret(mycoHome, HOST_SERVE_BEARER_SECRET, minted, lockNamespace);
   return minted;
 }
 
@@ -210,6 +225,7 @@ export function resolveHostServeConfig(options: {
   machineConfig: MachineConfig;
   mycoHome?: string;
   logger?: HostServeLogger;
+  lockNamespace?: PerUserLockNamespace;
 }): HostServeRuntime | null {
   const hostServe = options.machineConfig.daemon.host_serve;
   if (!hostServe?.enabled) return null;
@@ -254,7 +270,10 @@ export function resolveHostServeConfig(options: {
   }
 
   try {
-    const bearer = resolveHostServeBearer(mycoHome);
+    const bearer = resolveHostServeBearer(
+      mycoHome,
+      options.lockNamespace ?? nativePerUserLockNamespace,
+    );
     return {
       overlayAddress: (address as string).trim(),
       bearer,
@@ -385,6 +404,7 @@ export type ServedGroveKeyHealth =
 export function resolveServedGroveKeyHealth(
   machineConfig: MachineConfig,
   mycoHome: string = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): ServedGroveKeyHealth {
   const designation = resolveServedGroveDesignationHealth(machineConfig, mycoHome);
   if (designation.kind !== 'ok') return { kind: 'not_applicable' };
@@ -398,7 +418,7 @@ export function resolveServedGroveKeyHealth(
     // file, and a key deleted from both files is removed from the env. So
     // this classifier can never disagree with what a real dispatch would
     // see, including after a Team-page update or delete.
-    loadLayeredSecrets([mycoHome, groveDir]);
+    loadLayeredSecrets([mycoHome, groveDir], process.env, lockNamespace);
     const mycoConfig = loadMergedConfig(groveDir, {
       groveId: designation.servedGroveId,
       mycoHome,
@@ -438,10 +458,11 @@ export function resolveServedGroveKeyHealth(
 export function resolveServedGroveKeyHealthIsolated(
   machineConfig: MachineConfig,
   mycoHome: string = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): ServedGroveKeyHealth {
   const before = new Set(Object.keys(process.env));
   try {
-    return resolveServedGroveKeyHealth(machineConfig, mycoHome);
+    return resolveServedGroveKeyHealth(machineConfig, mycoHome, lockNamespace);
   } finally {
     for (const key of Object.keys(process.env)) {
       if (!before.has(key)) delete process.env[key];

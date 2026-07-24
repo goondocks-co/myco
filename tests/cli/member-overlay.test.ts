@@ -21,15 +21,9 @@ import {
   resolveMemberTailscaledSocketPath,
   resolveMemberTailscaledStateDir,
 } from '@myco/grove/paths';
-import { classifyRoute } from '@myco/host/routing';
+import { classifyRoute as classifyRouteWith } from '@myco/host/routing';
 import {
-  advanceHostEnrollmentPhase,
-  attachProject,
-  getHost,
-  markHostEnrollmentTeardownPending,
-  readHostRegistry,
-  readHostSecrets,
-  reserveHostProxyPort,
+  createHostRegistryOperations,
 } from '@myco/host/registry';
 import {
   buildMemberTailscaledSpec,
@@ -53,6 +47,19 @@ import type {
   ServiceSpec,
   ServiceStatus,
 } from '@myco/service/types';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const {
+  advanceHostEnrollmentPhase,
+  attachProject,
+  getHost,
+  markHostEnrollmentTeardownPending,
+  readHostRegistry,
+  readHostSecrets,
+  reserveHostProxyPort,
+} = createHostRegistryOperations(testPerUserLockNamespace);
+const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
+  classifyRouteWith(input, testPerUserLockNamespace);
 
 async function findFreeLoopbackPort(): Promise<number> {
   const server = net.createServer();
@@ -174,6 +181,7 @@ describe('member overlay — multi-host join / leave', () => {
       waitForSocket: async () => true,
       checkHostReachable: async () => true,
       logger: () => {},
+      lockNamespace: testPerUserLockNamespace,
       ...overrides,
     };
   }

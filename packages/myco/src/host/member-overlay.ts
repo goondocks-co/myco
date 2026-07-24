@@ -85,6 +85,10 @@ import {
 } from './operation-lock.js';
 import { withLoopbackPortReleaseProof } from './loopback-port-proof.js';
 import { assertValidSecretEntry, InvalidSecretValueError } from '@myco/config/secrets.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { codedMembershipError } from './membership-error.js';
 import {
   abandonHostEnrollment,
@@ -553,6 +557,7 @@ export interface MemberOverlayDeps {
    *  fake). Default a plain `setTimeout` wrapped as a Promise. */
   sleep?: (ms: number) => Promise<void>;
   logger?: (message: string) => void;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 export interface JoinResult {
@@ -583,6 +588,7 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
     hostId,
     'join',
     () => joinHostLocked(options, deps, hostId),
+    deps.lockNamespace ?? nativePerUserLockNamespace,
   );
 }
 
@@ -596,6 +602,7 @@ async function joinHostLocked(
   const runner = deps.runner ?? realCommandRunner;
   const fetcher = deps.fetcher ?? realFetcher;
   const platform = deps.platform ?? process.platform;
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const target = resolveOverlayTarget(platform, deps.arch ?? process.arch);
   const serviceManager = deps.serviceManager ?? getServiceManager({ platform });
   // Default to the REAL client (fetches the bearer over the overlay). An explicit
@@ -613,7 +620,7 @@ async function joinHostLocked(
   const overlayDir = resolveMemberOverlayDir();
   assertSocketPathFits(socketPath, platform);
 
-  let proxyPortReservation = reserveHostProxyPort(hostId, deps.proxyPort);
+  let proxyPortReservation = reserveHostProxyPort(hostId, deps.proxyPort, lockNamespace);
   if (proxyPortReservation.phase === 'teardown_pending') {
     throw new Error(
       `Host ${hostId} has an enrollment teardown pending; run \`myco leave ${hostId}\` `
@@ -645,7 +652,7 @@ async function joinHostLocked(
           `Host ${hostId} is enrolled, but its member overlay IP could not be resolved from ${socketPath}.`,
         );
       }
-      const record = getHost(hostId);
+      const record = getHost(hostId, lockNamespace);
       if (!record
         || record.enrollment_generation !== proxyPortReservation.generation
         || record.proxy_port !== proxyPort) {
@@ -682,6 +689,7 @@ async function joinHostLocked(
       proxyPortReservation,
       'service_preparing',
       { preexisting: servicePreexisting, label },
+      lockNamespace,
     );
     const install = await serviceManager.install(spec);
     const status = await serviceManager.status(label);
@@ -691,7 +699,12 @@ async function joinHostLocked(
     } else {
       log(`member tailscaled already running (user LaunchAgent ${label}).`);
     }
-    proxyPortReservation = advanceHostEnrollmentPhase(proxyPortReservation, 'service_ready');
+    proxyPortReservation = advanceHostEnrollmentPhase(
+      proxyPortReservation,
+      'service_ready',
+      undefined,
+      lockNamespace,
+    );
     // 3. Wait for the freshly-started tailscaled to bind its socket before we drive
     //    the CLI against it (the start→up race). Bounded, then a clear error.
     const waitForSocket = deps.waitForSocket ?? defaultWaitForSocket;
@@ -718,6 +731,8 @@ async function joinHostLocked(
       proxyPortReservation = advanceHostEnrollmentPhase(
         proxyPortReservation,
         'overlay_joining',
+        undefined,
+        lockNamespace,
       );
       const up = await runner.run(tailscale.tailscaleBin, [
         '--socket', socketPath,
@@ -742,14 +757,24 @@ async function joinHostLocked(
         + 'The overlay join may not have completed — check the tailscaled LaunchAgent logs and retry.',
       );
     }
-    proxyPortReservation = advanceHostEnrollmentPhase(proxyPortReservation, 'overlay_joined');
+    proxyPortReservation = advanceHostEnrollmentPhase(
+      proxyPortReservation,
+      'overlay_joined',
+      undefined,
+      lockNamespace,
+    );
     log(`Member overlay IP on host ${hostId}: ${memberOverlayIp}`);
 
     // 5. Enroll: obtain the host's overlay address + serve-bearer (Task 2.4 seam).
     //    Bounded retry-with-backoff (design spec §4) — a transient overlay/DERP-
     //    settling failure shouldn't burn the whole join.
     const sleep = deps.sleep ?? defaultSleep;
-    proxyPortReservation = advanceHostEnrollmentPhase(proxyPortReservation, 'enrolling');
+    proxyPortReservation = advanceHostEnrollmentPhase(
+      proxyPortReservation,
+      'enrolling',
+      undefined,
+      lockNamespace,
+    );
     const enrollment = validateEnrollment(await enrollWithRetry(enrollmentClient, {
       hostId,
       hostRef: options.hostRef.trim(),
@@ -805,7 +830,12 @@ async function joinHostLocked(
         : {}),
       created_at: new Date().toISOString(),
     };
-    const persisted = persistEnrollmentMembership(record, enrollment.bearer, proxyPortReservation);
+    const persisted = persistEnrollmentMembership(
+      record,
+      enrollment.bearer,
+      proxyPortReservation,
+      lockNamespace,
+    );
     enrollmentCommitted = true;
     log(`${persisted.created ? 'Wrote' : 'Updated'} host record ${hostId} (proxy_port=${proxyPort}).`);
 
@@ -838,11 +868,13 @@ async function joinHostLocked(
         }
         await serviceManager.uninstall(label);
         await withLoopbackPortReleaseProof(proxyPortReservation.proxyPort, async (proof) => {
-          abandonHostEnrollment(proxyPortReservation, proof);
+          abandonHostEnrollment(proxyPortReservation, proof, lockNamespace);
         });
         try { fs.rmSync(socketPath, { force: true }); } catch { /* stale socket cleanup is best-effort */ }
       } catch (cleanupError) {
-        try { markHostEnrollmentTeardownPending(proxyPortReservation); } catch { /* original state stays diagnosable */ }
+        try {
+          markHostEnrollmentTeardownPending(proxyPortReservation, lockNamespace);
+        } catch { /* original state stays diagnosable */ }
         throw new AggregateError(
           [error, cleanupError],
           `Join failed and the uncommitted tailscaled instance for host ${hostId} could not be removed; its proxy-port claim remains reserved.`,
@@ -852,7 +884,7 @@ async function joinHostLocked(
       && proxyPortReservation.phase === 'reserved'
       && servicePreexisting === null) {
       try {
-        releaseHostProxyPort(proxyPortReservation);
+        releaseHostProxyPort(proxyPortReservation, lockNamespace);
       } catch (releaseError) {
         throw new AggregateError(
           [error, releaseError],
@@ -890,6 +922,7 @@ export async function leaveHost(hostRef: string, deps: MemberOverlayDeps = {}): 
     hostId,
     'leave',
     (lease) => leaveHostLocked(hostId, deps, lease),
+    deps.lockNamespace ?? nativePerUserLockNamespace,
   );
 }
 
@@ -924,10 +957,11 @@ async function leaveHostLocked(
 ): Promise<LeaveResult> {
   const log = deps.logger ?? ((m: string) => console.log(m));
   const platform = deps.platform ?? process.platform;
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const serviceManager = deps.serviceManager ?? getServiceManager({ platform });
   const notes: string[] = [];
 
-  const inspection = inspectHostMembershipForLeave(hostId, lease);
+  const inspection = inspectHostMembershipForLeave(hostId, lease, lockNamespace);
   const label = memberTailscaledLabel(hostId);
   const installed = await serviceManager.inspect(label);
   const servicePort = installed
@@ -963,7 +997,7 @@ async function leaveHostLocked(
   try {
     await serviceManager.uninstall(label);
     await withLoopbackPortReleaseProof(proxyPort, async (proof) => {
-      retireHostMembership(hostId, lease, proof, proxyPort);
+      retireHostMembership(hostId, lease, proof, proxyPort, lockNamespace);
     });
     tailscaledRemoved = installed !== null;
   } catch (err) {
@@ -977,7 +1011,7 @@ async function leaveHostLocked(
 
   log(`Removed host record + bearer for ${hostId}; tore down its tailscaled (${label}).`);
 
-  const remaining = readHostRegistry().length;
+  const remaining = readHostRegistry(lockNamespace).length;
   if (remaining > 0) log(`${remaining} other host(s) still joined — their overlays are untouched.`);
 
   return { removed: true, tailscaledRemoved, notes };

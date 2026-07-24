@@ -59,7 +59,10 @@ import {
   physicalPathIdentity,
   physicalPathLockIdentities,
 } from '@myco/utils/physical-path-identity.js';
-import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 const SECRET_PREVIEW_PREFIX_CHARS = 8;
 const SECRET_PREVIEW_SUFFIX_CHARS = 4;
@@ -87,8 +90,11 @@ function requireFunnelSuccess(
   if (!result.ok) throw new Error(`${operation}: ${result.detail}`);
 }
 
-function externalMcpActivationLockPaths(mycoHome: string): string[] {
-  const lockDir = path.join(resolvePerUserLocksDir(), 'external-mcp-activation');
+function externalMcpActivationLockPaths(
+  mycoHome: string,
+  lockNamespace: PerUserLockNamespace,
+): string[] {
+  const lockDir = lockNamespace.resolve('external-mcp-activation');
   return physicalPathLockIdentities(mycoHome)
     .map((identity) => {
       const key = crypto.createHash('sha256')
@@ -105,10 +111,11 @@ function releaseExternalMcpActivationLocks(locks: LockHandle[]): void {
 
 async function withExternalMcpActivationFileLocks<T>(
   mycoHome: string,
+  lockNamespace: PerUserLockNamespace,
   fn: () => Promise<T>,
 ): Promise<T> {
   for (let attempt = 0; attempt < EXTERNAL_MCP_ACTIVATION_LOCK_RETRIES; attempt += 1) {
-    const paths = externalMcpActivationLockPaths(mycoHome);
+    const paths = externalMcpActivationLockPaths(mycoHome, lockNamespace);
     const locks: LockHandle[] = [];
     try {
       for (const lockPath of paths) {
@@ -123,7 +130,7 @@ async function withExternalMcpActivationFileLocks<T>(
       throw error;
     }
 
-    const freshPaths = externalMcpActivationLockPaths(mycoHome);
+    const freshPaths = externalMcpActivationLockPaths(mycoHome, lockNamespace);
     if (freshPaths.length !== paths.length
       || freshPaths.some((lockPath, index) => lockPath !== paths[index])) {
       releaseExternalMcpActivationLocks(locks);
@@ -141,6 +148,7 @@ async function withExternalMcpActivationFileLocks<T>(
 
 async function withExternalMcpActivation<T>(
   mycoHome: string,
+  lockNamespace: PerUserLockNamespace,
   fn: () => Promise<T>,
 ): Promise<T> {
   const queueKey = physicalPathIdentity(mycoHome);
@@ -153,7 +161,7 @@ async function withExternalMcpActivation<T>(
   externalMcpActivationQueues.set(queueKey, tail);
   await previous.catch(() => {});
   try {
-    return await withExternalMcpActivationFileLocks(mycoHome, fn);
+    return await withExternalMcpActivationFileLocks(mycoHome, lockNamespace, fn);
   } finally {
     releaseQueue();
     if (externalMcpActivationQueues.get(queueKey) === tail) {
@@ -231,6 +239,7 @@ export interface TeamConfigRouteDeps {
    *  refuses `not_serving` in that case, never guesses a Grove. */
   hostServe: HostServeRuntime | null;
   mycoHome?: string;
+  lockNamespace?: PerUserLockNamespace;
   /**
    * Fired after a successful `PUT /api/team/config` write with the touched
    * dot-paths and the served grove id, so the daemon can run the SAME
@@ -289,6 +298,7 @@ export async function handleGetTeamConfig(deps: TeamConfigRouteDeps): Promise<Ro
   const keyHealth: ServedGroveKeyHealth = resolveServedGroveKeyHealthIsolated(
     loadMachineConfig(mycoHome),
     mycoHome,
+    deps.lockNamespace ?? nativePerUserLockNamespace,
   );
   const body = (base.body ?? {}) as Record<string, unknown>;
   return { ...base, body: { ...body, keyHealth: keyHealth.kind } };
@@ -347,7 +357,12 @@ export async function handlePutTeamSecret(
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const groveDir = resolveGroveDir(groveIdOrRefusal, mycoHome);
-  writeSecret(groveDir, envKey, secret);
+  writeSecret(
+    groveDir,
+    envKey,
+    secret,
+    deps.lockNamespace ?? nativePerUserLockNamespace,
+  );
 
   const responseBody: TeamSecretResponseBody = { provider, maskedValue: maskSecret(secret) };
   return { body: responseBody };
@@ -367,7 +382,11 @@ export async function handleDeleteTeamSecret(
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const groveDir = resolveGroveDir(groveIdOrRefusal, mycoHome);
-  deleteSecrets(groveDir, KEYED_CLOUD_PROVIDER_ENV[provider] ?? []);
+  deleteSecrets(
+    groveDir,
+    KEYED_CLOUD_PROVIDER_ENV[provider] ?? [],
+    deps.lockNamespace ?? nativePerUserLockNamespace,
+  );
 
   const responseBody: TeamSecretResponseBody = { provider, maskedValue: null };
   return { body: responseBody };
@@ -399,10 +418,11 @@ export async function handleRotateExternalMcpToken(deps: TeamConfigRouteDeps): P
   if (isRefusal(groveIdOrRefusal)) return groveIdOrRefusal;
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   try {
-    return await withExternalMcpActivation(mycoHome, async () => {
+    return await withExternalMcpActivation(mycoHome, lockNamespace, async () => {
       const token = crypto.randomBytes(32).toString('hex');
-      writeSecret(mycoHome, HOST_EXTERNAL_MCP_TOKEN_SECRET, token);
+      writeSecret(mycoHome, HOST_EXTERNAL_MCP_TOKEN_SECRET, token, lockNamespace);
       return { body: { token, tokenHash: nonSecretTokenHash(token) } };
     });
   } catch (error) {
@@ -497,6 +517,7 @@ export async function handlePutExternalMcpToggle(
   }
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
 
   // Range-validate BEFORE any side effect (mint, bind, persist, Funnel) —
   // the SAME bounds `ExternalMcpSchema` enforces on load, so a bad port can
@@ -516,7 +537,7 @@ export async function handlePutExternalMcpToggle(
   }
 
   try {
-    return await withExternalMcpActivation(mycoHome, async () => {
+    return await withExternalMcpActivation(mycoHome, lockNamespace, async () => {
       const machine = loadMachineConfig(mycoHome);
       const requestedPort = requestedPortOverride
         ?? machine.daemon.external_mcp.port
@@ -661,6 +682,7 @@ export async function handlePutExternalMcpToggle(
             candidate = crypto.randomBytes(32).toString('hex');
             return candidate;
           },
+          lockNamespace,
         );
         token = result.value;
         freshlyMinted = result.minted;

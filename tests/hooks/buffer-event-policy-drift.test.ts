@@ -9,6 +9,7 @@ import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveProjectBufferDir, resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
 import { getPluginVersion } from '@myco/version.js';
 import { listenEphemeral, closeServer } from '../helpers/net.js';
+import { testPerUserLocksRoot } from '../helpers/per-user-lock-namespace.js';
 
 const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
@@ -90,7 +91,13 @@ describe('policy table ↔ hook bufferEvent behavior (drift guard)', () => {
     return new Promise((resolve, reject) => {
       const child = spawn(
         process.execPath,
-        [path.resolve('packages/myco/src/cli.ts'), 'hook', hook, '--symbiont', 'claude-code'],
+        [
+          path.resolve('tests/helpers/capture-hook-helper.ts'),
+          testPerUserLocksRoot,
+          hook,
+          '--symbiont',
+          'claude-code',
+        ],
         {
           cwd: projectRoot,
           env: { ...process.env, MYCO_NO_AUTO_SPAWN: '1', MYCO_HOME: mycoHome },

@@ -17,11 +17,22 @@ import net from 'node:net';
 import { HOST_BEARER_SECRET } from '@myco/constants';
 import { createHostId } from '@myco/grove/ids';
 import {
+  createHostRegistryOperations,
+  ProjectAttachedToOtherHostError,
+  type HostRecord,
+} from '@myco/host/registry';
+import { createHostOperationLock } from '@myco/host/operation-lock';
+import { withLoopbackPortReleaseProof } from '@myco/host/loopback-port-proof';
+import {
+  testPerUserLockNamespace,
+  testPerUserLocksRoot,
+} from '../helpers/per-user-lock-namespace.js';
+
+const {
   advanceHostEnrollmentPhase,
   attachProject,
   detachProject,
   getHost,
-  ProjectAttachedToOtherHostError,
   persistEnrollmentMembership,
   readHostRegistry,
   readHostSecrets,
@@ -30,10 +41,8 @@ import {
   retireHostMembership,
   resolveAttach,
   writeHostSecret,
-  type HostRecord,
-} from '@myco/host/registry';
-import { withHostOperationLock } from '@myco/host/operation-lock';
-import { withLoopbackPortReleaseProof } from '@myco/host/loopback-port-proof';
+} = createHostRegistryOperations(testPerUserLockNamespace);
+const withHostOperationLock = createHostOperationLock(testPerUserLockNamespace);
 
 async function findFreeLoopbackPort(): Promise<number> {
   const server = net.createServer();
@@ -73,6 +82,20 @@ describe('host registry', () => {
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
     else process.env.MYCO_TEAM_HOME = savedTeamHome;
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('uses explicit namespaces for registry and host-operation locks', async () => {
+    expect(readHostRegistry()).toEqual([]);
+    const operationLockDir = path.join(testPerUserLocksRoot, 'host-operations');
+    await withHostOperationLock(
+      createHostId(),
+      'join',
+      async () => {},
+    );
+
+    expect(fs.readdirSync(path.join(testPerUserLocksRoot, 'host-membership')).length)
+      .toBeGreaterThan(0);
+    expect(fs.readdirSync(operationLockDir).length).toBeGreaterThan(0);
   });
 
   test('round-trip: fixture seed then read back, with an attached project', () => {

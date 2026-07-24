@@ -3,10 +3,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
-  handleDeleteProviderSecret,
+  handleDeleteProviderSecret as handleDeleteProviderSecretWith,
   handleGetProviderSecrets,
-  handlePutProviderSecret,
+  handlePutProviderSecret as handlePutProviderSecretWith,
 } from '@myco/daemon/api/provider-secrets.js';
+import type { RouteRequest } from '@myco/daemon/router.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const handlePutProviderSecret = (req: RouteRequest) =>
+  handlePutProviderSecretWith(req, testPerUserLockNamespace);
+const handleDeleteProviderSecret = (req: RouteRequest) =>
+  handleDeleteProviderSecretWith(req, testPerUserLockNamespace);
 import { OPENAI_API_KEY_ENV } from '@myco/providers/env.js';
 import { GITHUB_TOKEN_ENV } from '@myco/release-provenance/github.js';
 

@@ -16,7 +16,7 @@ import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
-import { attachProject, resolveAttach, type HostRecord } from '@myco/host/registry.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { abortResidency, residencyStatus, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import {
@@ -25,6 +25,9 @@ import {
   readResidencyJournal,
   startResidencyJournal,
 } from '@myco/host/residency-journal.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { attachProject, resolveAttach } = createHostRegistryOperations(testPerUserLockNamespace);
 
 let home: string;
 let teamHome: string;
@@ -36,6 +39,7 @@ function baseDeps(): ResidencyDaemonDeps {
     machineId: 'local',
     mycoHome: home,
     withGroveDb: <T,>(_g: string, fn: (db: Database) => T): T => fn(getDatabase()),
+    lockNamespace: testPerUserLockNamespace,
   };
 }
 

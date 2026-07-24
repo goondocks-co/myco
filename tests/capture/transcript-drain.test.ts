@@ -41,11 +41,13 @@ import {
   createHostId,
   createProjectId,
 } from '@myco/grove/ids';
-import { writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { HOST_BEARER_SECRET } from '@myco/constants';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const MACHINE = 'alice_a1b2c3d4';
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HOST_B = 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
@@ -140,6 +142,7 @@ function target(opts: { hostId?: string; proxyPort?: number; overlay?: string; p
  *  only drain is the explicit `flushBeforeForward`/`drainAll` the test drives —
  *  the leading edge never fires and the trailing timer never runs. */
 const noThrottle = {
+  lockNamespace: testPerUserLockNamespace,
   now: () => 1000,
   intervalMs: 100_000,
   setTimer: (() => 0) as unknown as (fn: () => void, ms: number) => ReturnType<typeof setTimeout>,
@@ -621,6 +624,7 @@ describe('chokepoint 1 (router dispatch) threads the capture deps', () => {
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
       hostProxyDeps: {
         flushBeforeForward: async () => { flushCalls += 1; },
         noteCollectEvent: (_t, event) => { noteCalls.push(event); },
@@ -741,6 +745,7 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
     overlayAddress = `127.0.0.1:${hostPort}`;
 
     const handler = createStreamableMcpHttpHandler(vaultDir, {
+      lockNamespace: testPerUserLockNamespace,
       resolveDatabase: () => ({} as never),
       // The FULL capture-deps shape threaded at chokepoint 2 — the same object
       // shape main.ts's captureProxyDeps carries. A spy `dial` proves the

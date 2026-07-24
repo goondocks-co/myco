@@ -36,6 +36,10 @@ import { getServiceManager } from '../service/manager.js';
 import type { ServiceManager } from '../service/types.js';
 import { ensureProjectRegistered } from '../grove/registry.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -122,13 +126,14 @@ interface RequestFailureRecovery {
   captureCritical?: boolean;
 }
 
-interface DaemonClientOptions {
+export interface DaemonClientOptions {
   requestContext?: MycoRequestContext;
   headers?: Record<string, string>;
   /** Optional override for the platform service manager. Defaults to
    *  `getServiceManager()`. Tests inject a fake to bypass real launchd /
    *  systemd state on the host. */
   serviceManager?: ServiceManager;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 interface HookRequestContextInput {
@@ -198,6 +203,7 @@ export class DaemonClient {
   private defaultHeaders: Record<string, string>;
   private daemonService: DaemonServiceState;
   private serviceManager: ServiceManager | null;
+  private lockNamespace: PerUserLockNamespace;
 
   constructor(vaultDir: string, options: DaemonClientOptions = {}) {
     this.vaultDir = vaultDir;
@@ -211,6 +217,7 @@ export class DaemonClient {
       ...(options.headers ?? {}),
     };
     this.serviceManager = options.serviceManager ?? null;
+    this.lockNamespace = options.lockNamespace ?? nativePerUserLockNamespace;
   }
 
   async post(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
@@ -509,7 +516,11 @@ export class DaemonClient {
 
   private refreshedRequestContextHeaders(): Record<string, string> {
     try {
-      ensureProjectRegistered(resolveProjectRoot(this.vaultDir));
+      ensureProjectRegistered(
+        resolveProjectRoot(this.vaultDir),
+        undefined,
+        this.lockNamespace,
+      );
       const context = requestContextFromEnvironment(process.env, this.vaultDir);
       return context.groveId ? requestContextHeaders(context) : {};
     } catch {
@@ -742,8 +753,12 @@ export function requestContextForHook(
 export function createHookDaemonClient(
   vaultDir: string,
   input: HookRequestContextInput = {},
+  lockNamespace?: PerUserLockNamespace,
 ): DaemonClient {
-  return new DaemonClient(vaultDir, { requestContext: requestContextForHook(vaultDir, input) });
+  return new DaemonClient(vaultDir, {
+    requestContext: requestContextForHook(vaultDir, input),
+    lockNamespace,
+  });
 }
 
 /**

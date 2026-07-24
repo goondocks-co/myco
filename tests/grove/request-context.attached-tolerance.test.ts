@@ -31,6 +31,7 @@ import { resolveGroveDbPath, resolveGroveDir } from '@myco/grove/paths.js';
 import { createGroveId, createProjectId } from '@myco/grove/ids.js';
 import { type HostRecord } from '@myco/host/registry.js';
 import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 /** A local display Grove owned by this daemon, plus an attached project (host
  *  ref only, NO local Grove row — the never-materialize shape). */
@@ -56,7 +57,11 @@ function seedAttachedProject(mycoHome: string): { localGroveId: string; attached
   return { localGroveId: localGrove.id, attachedId };
 }
 
-const TOLERATE = { enforceGroveOwnership: true, tolerateAttachedProject: true } as const;
+const TOLERATE = {
+  enforceGroveOwnership: true,
+  tolerateAttachedProject: true,
+  lockNamespace: testPerUserLockNamespace,
+} as const;
 
 describe('attached-project local-dispatch tolerance', () => {
   let sandbox: ReturnType<typeof sandboxMycoHome>;

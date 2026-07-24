@@ -4,6 +4,7 @@ import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { AntigravityJsonlParser } from '../symbionts/parsers/antigravity-jsonl.js';
 import { runGit } from '../utils/git.js';
 import fs from 'node:fs';
@@ -43,8 +44,8 @@ async function readAntigravityPromptsWithRetry(transcriptPath: string): Promise<
   return readAntigravityPromptsFromTranscript(transcriptPath);
 }
 
-export async function main() {
-  const VAULT_DIR = resolveProvisionedVaultDir();
+export async function main(lockNamespace?: PerUserLockNamespace) {
+  const VAULT_DIR = resolveProvisionedVaultDir(undefined, lockNamespace);
   if (!VAULT_DIR) return;
 
   let symbiont: string | undefined;
@@ -67,7 +68,7 @@ export async function main() {
       return;
     }
 
-    const client = createHookDaemonClient(VAULT_DIR, { sessionId });
+    const client = createHookDaemonClient(VAULT_DIR, { sessionId }, lockNamespace);
     const healthy = await client.ensureRunning();
     if (!healthy) {
       writeHookResponse(symbiont, 'session-start');

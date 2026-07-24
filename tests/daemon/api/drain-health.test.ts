@@ -12,11 +12,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createDrainHealthHandler } from '@myco/daemon/api/drain-health.js';
+import {
+  createDrainHealthHandler as createDrainHealthHandlerWith,
+  type DrainHealthRouteDeps,
+} from '@myco/daemon/api/drain-health.js';
 import { type HostRecord } from '@myco/host/registry.js';
 import type { DrainHealthCounters } from '@myco/capture/drain-health.js';
 import { PlanDrainQueue, type PlanDrainStore, type PlanDrainEntry, type PlanFileReader, type PlanPostTransport } from '@myco/capture/plan-drain.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const createDrainHealthHandler = (deps: DrainHealthRouteDeps) =>
+  createDrainHealthHandlerWith({
+    ...deps,
+    lockNamespace: testPerUserLockNamespace,
+  });
 
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HOST_B = 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';

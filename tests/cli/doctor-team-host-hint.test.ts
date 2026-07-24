@@ -17,12 +17,19 @@ import path from 'node:path';
 import { clearProjectManifestCache } from '@myco/config/project-manifest';
 import { createHostId, createProjectId } from '@myco/grove/ids';
 import {
+  createHostRegistryOperations,
+  type HostRecord,
+} from '@myco/host/registry';
+import { checkTeamHostHint as checkTeamHostHintWith } from '@myco/cli/doctor';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const {
   attachProject,
   readHostRegistry,
   resolveAttach,
-  type HostRecord,
-} from '@myco/host/registry';
-import { checkTeamHostHint } from '@myco/cli/doctor';
+} = createHostRegistryOperations(testPerUserLockNamespace);
+const checkTeamHostHint = (vaultDir: string) =>
+  checkTeamHostHintWith(vaultDir, testPerUserLockNamespace);
 
 function makeHost(hostId: string): HostRecord {
   return {

@@ -5,13 +5,44 @@ import os from 'node:os';
 import path from 'node:path';
 import { invalidateMergedConfigCache } from '@myco/config/loader.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
-import { createListGroveProjectsHandler, createListGrovesHandler, servedGroveScopeForDaemon } from '@myco/daemon/api/groves.js';
-import type { GroveProjectSummary } from '@myco/daemon/api/groves.js';
+import {
+  createListGroveProjectsHandler as createListGroveProjectsHandlerWith,
+  createListGrovesHandler as createListGrovesHandlerWith,
+  servedGroveScopeForDaemon,
+} from '@myco/daemon/api/groves.js';
+import type {
+  GrovesLogger,
+  GroveProjectSummary,
+  ServedGroveScope,
+} from '@myco/daemon/api/groves.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { createGrove, deleteGrove, registerProjectInGrove, setDefaultGrove } from '@myco/grove/registry.js';
 import { createGroveId, createProjectId, createTeamId, projectUrlSlug } from '@myco/grove/ids.js';
 import { type HostRecord } from '@myco/host/registry.js';
 import { teamRegistry } from '@myco/team/registry.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+const createListGrovesHandler = (
+  scope: ServedGroveScope,
+  daemonStateDir: string,
+  logger?: GrovesLogger,
+) => createListGrovesHandlerWith(
+  scope,
+  daemonStateDir,
+  logger,
+  testPerUserLockNamespace,
+);
+
+const createListGroveProjectsHandler = (
+  scope: ServedGroveScope,
+  daemonStateDir: string,
+  logger?: GrovesLogger,
+) => createListGroveProjectsHandlerWith(
+  scope,
+  daemonStateDir,
+  logger,
+  testPerUserLockNamespace,
+);
 
 describe('Grove discovery API', () => {
   let testDir: string;

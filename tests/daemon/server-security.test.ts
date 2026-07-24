@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { DaemonLogger } from '@myco/daemon/logger';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 import fs from 'node:fs';
@@ -25,7 +26,11 @@ describe('DaemonServer CSRF/Origin/Content-Type gate', () => {
     ensureProjectManifest(vaultDir, { projectName: 'sec-test' });
     fs.mkdirSync(path.join(vaultDir, 'logs'), { recursive: true });
     logger = new DaemonLogger(path.join(vaultDir, 'logs'));
-    server = new DaemonServer({ vaultDir, logger });
+    server = new DaemonServer({
+      vaultDir,
+      logger,
+      lockNamespace: testPerUserLockNamespace,
+    });
     // A representative mutating route and a representative DELETE route.
     server.registerRoute('POST', '/test/echo', async (req) => ({ body: { ok: true, received: req.body } }));
     server.registerRoute('DELETE', '/test/thing/:id', async (req) => ({ body: { ok: true, id: req.params.id } }));

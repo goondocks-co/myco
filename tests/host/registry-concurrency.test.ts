@@ -29,6 +29,17 @@ import {
 } from '@myco/constants.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import {
+  createHostRegistryOperations,
+  type EnrollmentHostRecord,
+  type HostRecord,
+} from '@myco/host/registry.js';
+import * as registryModule from '@myco/host/registry.js';
+import {
+  testPerUserLockNamespace,
+  testPerUserLocksRoot,
+} from '../helpers/per-user-lock-namespace.js';
+
+const {
   attachProject,
   advanceHostEnrollmentPhase,
   getHost,
@@ -39,10 +50,7 @@ import {
   releaseHostProxyPort,
   reserveHostProxyPort,
   writeHostSecret,
-  type EnrollmentHostRecord,
-  type HostRecord,
-} from '@myco/host/registry.js';
-import * as registryModule from '@myco/host/registry.js';
+} = createHostRegistryOperations(testPerUserLockNamespace);
 
 const JOIN_RESERVATION_HELPER = path.resolve('tests/helpers/host-join-proxy-reservation-helper.ts');
 const WAIT_TIMEOUT_MS = 10_000;
@@ -107,6 +115,7 @@ function spawnJoin(
     [
       'run',
       JOIN_RESERVATION_HELPER,
+      testPerUserLocksRoot,
       teamHome,
       hostId,
       mode,

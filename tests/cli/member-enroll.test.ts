@@ -21,6 +21,7 @@ import path from 'node:path';
 
 import { HOST_ENROLL_ROUTE, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 import { DaemonServer } from '@myco/daemon/server';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import {
@@ -224,6 +225,7 @@ describe('member enrollment client — end-to-end through the CONNECT proxy', ()
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, hostId: 'host_e2e', label: 'e2e' },
+      lockNamespace: testPerUserLockNamespace,
     });
     await server.start(0);
 

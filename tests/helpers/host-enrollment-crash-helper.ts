@@ -17,9 +17,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
+import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
-const [teamHome, hostId, boundary, label, bearer] = process.argv.slice(2);
-if (!teamHome || !hostId || !boundary || !label || !bearer) process.exit(64);
+const [lockRoot, teamHome, hostId, boundary, label, bearer] = process.argv.slice(2);
+if (!lockRoot || !teamHome || !hostId || !boundary || !label || !bearer) process.exit(64);
 process.env.MYCO_TEAM_HOME = teamHome;
 
 const originalRename = fs.renameSync.bind(fs);
@@ -48,10 +49,13 @@ fs.renameSync = ((source: fs.PathLike, destination: fs.PathLike): void => {
 }) as typeof fs.renameSync;
 
 const {
+  createHostRegistryOperations,
+} = await import('@myco/host/registry.js');
+const {
   advanceHostEnrollmentPhase,
   persistEnrollmentMembership,
   reserveHostProxyPort,
-} = await import('@myco/host/registry.js');
+} = createHostRegistryOperations(createPerUserLockNamespace(() => lockRoot));
 
 const reservation = reserveHostProxyPort(hostId);
 advanceHostEnrollmentPhase(reservation, 'enrolling');

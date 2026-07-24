@@ -4,11 +4,12 @@
  */
 
 import { writeSecret } from '@myco/config/secrets.js';
+import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
-const [vaultDir, key, value] = process.argv.slice(2);
-if (!vaultDir || !key || value === undefined) {
+const [lockRoot, vaultDir, key, value] = process.argv.slice(2);
+if (!lockRoot || !vaultDir || !key || value === undefined) {
   process.stderr.write('secrets writer: required args missing\n');
   process.exit(64);
 }
 
-writeSecret(vaultDir, key, value);
+writeSecret(vaultDir, key, value, createPerUserLockNamespace(() => lockRoot));

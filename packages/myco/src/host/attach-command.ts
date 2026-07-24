@@ -58,6 +58,10 @@ import {
   type HostRecord,
 } from './registry.js';
 import { RESIDENCY_MIN_HOST_PROTOCOL, residencyTransitionInFlight } from './residency-journal.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 export interface AttachOptions {
   /** The `<project>` positional — a path to the local checkout (default cwd). */
@@ -208,7 +212,10 @@ function resolveLocalGroveId(explicit: string | undefined, mycoHome: string): st
  * a project that still has local Grove data is refused (migration is A2), and a
  * project already attached to a different host is refused.
  */
-export function attachCommand(options: AttachOptions): AttachResult {
+export function attachCommand(
+  options: AttachOptions,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): AttachResult {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
   const root = path.resolve(options.projectPath ?? '.');
   const projectId = resolveProjectId(root, options.projectId);
@@ -233,7 +240,7 @@ export function attachCommand(options: AttachOptions): AttachResult {
     );
   }
 
-  const host = getHost(hostId);
+  const host = getHost(hostId, lockNamespace);
   if (!host) {
     throw codedMembershipError(
       'not_joined',
@@ -257,7 +264,7 @@ export function attachCommand(options: AttachOptions): AttachResult {
   }
 
   const notes: string[] = [];
-  const existing = resolveAttach(projectId);
+  const existing = resolveAttach(projectId, lockNamespace);
   const alreadyAttached = existing?.host.host_id === hostId;
   if (alreadyAttached && existing && existing.ref.grove_id !== groveId) {
     notes.push(
@@ -269,7 +276,7 @@ export function attachCommand(options: AttachOptions): AttachResult {
   const localGroveId = resolveLocalGroveId(options.localGroveId, mycoHome);
   const ref: AttachRef = { grove_id: groveId, project_id: projectId, root, local_grove_id: localGroveId };
   try {
-    attachProject(hostId, ref, mycoHome);
+    attachProject(hostId, ref, mycoHome, lockNamespace);
   } catch (err) {
     // With-history attach (Phase F, D-F-1): a project that still holds local
     // Grove data is no longer refused — the daemon runs the residency
@@ -307,7 +314,10 @@ export function attachCommand(options: AttachOptions): AttachResult {
  * (the team → local re-materialization is A2). A no-op with a clear result when
  * the project is not attached anywhere.
  */
-export function detachCommand(options: DetachOptions): DetachResult {
+export function detachCommand(
+  options: DetachOptions,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): DetachResult {
   const root = path.resolve(options.projectPath ?? '.');
   const projectId = resolveProjectId(root, options.projectId);
 
@@ -321,14 +331,14 @@ export function detachCommand(options: DetachOptions): DetachResult {
     );
   }
 
-  const existing = resolveAttach(projectId);
+  const existing = resolveAttach(projectId, lockNamespace);
   if (!existing) return { projectId, detachedFromHostId: null };
 
   // With-pull detach (daemon-only, Phase F): pull this machine's data back before
   // flipping to local. Only the daemon injects the capability; a plain
   // in-process/CLI detach keeps the legacy mapping-flip behavior below.
   if (options.beginDetachResidency) {
-    const host = getHost(existing.host.host_id);
+    const host = getHost(existing.host.host_id, lockNamespace);
     if (host && host.protocol_version >= RESIDENCY_MIN_HOST_PROTOCOL) {
       return options.beginDetachResidency({ hostId: existing.host.host_id, host, projectId, ref: existing.ref });
     }
@@ -344,7 +354,7 @@ export function detachCommand(options: DetachOptions): DetachResult {
     }
   }
 
-  detachProject(existing.host.host_id, projectId);
+  detachProject(existing.host.host_id, projectId, lockNamespace);
   // Purge-on-detach (capture-push §5.2, §5.5): drop this project's un-shipped
   // transcript-drain, plan-drain, AND live-event replay high-water entries for the
   // host it was attached to, so a re-attach starts clean and no stale entry holds

@@ -25,6 +25,14 @@ import { createHostId } from '@myco/grove/ids.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import {
+  createHostRegistryOperations,
+} from '@myco/host/registry.js';
+import {
+  testPerUserLockNamespace,
+  testPerUserLocksRoot,
+} from '../helpers/per-user-lock-namespace.js';
+
+const {
   advanceHostEnrollmentPhase,
   getHost,
   getHostMembershipSnapshot,
@@ -32,7 +40,7 @@ import {
   readHostRegistry,
   readHostSecrets,
   reserveHostProxyPort,
-} from '@myco/host/registry.js';
+} = createHostRegistryOperations(testPerUserLockNamespace);
 
 const HELPER = path.resolve('tests/helpers/host-enrollment-crash-helper.ts');
 const READER_HELPER = path.resolve('tests/helpers/host-membership-read-helper.ts');
@@ -55,7 +63,7 @@ function crashAt(
 ): Promise<{ code: number | null; stderr: string }> {
   const child = spawn(
     process.execPath,
-    ['run', HELPER, teamHome, hostId, boundary, label, bearer],
+    ['run', HELPER, testPerUserLocksRoot, teamHome, hostId, boundary, label, bearer],
     {
       cwd: process.cwd(),
       env: { ...process.env, MYCO_TEAM_HOME: teamHome },
@@ -77,7 +85,7 @@ function crashLeaveAt(
 ): Promise<{ code: number | null; stderr: string }> {
   const child = spawn(
     process.execPath,
-    ['run', LEAVE_HELPER, teamHome, hostId, boundary],
+    ['run', LEAVE_HELPER, testPerUserLocksRoot, teamHome, hostId, boundary],
     {
       cwd: process.cwd(),
       env: { ...process.env, MYCO_TEAM_HOME: teamHome, HOME: teamHome },
@@ -275,7 +283,7 @@ describe.skipIf(process.platform === 'win32')('host enrollment crash recovery', 
 
     const writer = spawn(
       process.execPath,
-      ['run', HELPER, tmp, hostId, 'pause_bearer', 'New', 'new-bearer'],
+      ['run', HELPER, testPerUserLocksRoot, tmp, hostId, 'pause_bearer', 'New', 'new-bearer'],
       {
         cwd: process.cwd(),
         env: { ...process.env, MYCO_TEAM_HOME: tmp },
@@ -291,7 +299,7 @@ describe.skipIf(process.platform === 'win32')('host enrollment crash recovery', 
     const readerResult = path.join(tmp, 'reader.result');
     const reader = spawn(
       process.execPath,
-      ['run', READER_HELPER, tmp, hostId, readerStarted, readerResult],
+      ['run', READER_HELPER, testPerUserLocksRoot, tmp, hostId, readerStarted, readerResult],
       {
         cwd: process.cwd(),
         env: { ...process.env, MYCO_TEAM_HOME: tmp },

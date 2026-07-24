@@ -6,10 +6,16 @@ import { createHash } from 'node:crypto';
 import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import { vi } from '../helpers/vi-shim.js';
-import { migrateTeamsHomeIfNeeded, defaultLegacyTeamHomes } from '@myco/team/migrate-home.js';
+import {
+  migrateTeamsHomeIfNeeded as migrateTeamsHomeIfNeededWith,
+  defaultLegacyTeamHomes,
+} from '@myco/team/migrate-home.js';
 import { secretStoreLockKeys } from '@myco/config/secret-store-lock.js';
 import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
-import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import {
+  testPerUserLockNamespace,
+  testPerUserLocksRoot,
+} from '../helpers/per-user-lock-namespace.js';
 
 const TEAM_ID = 'team_' + 'c'.repeat(32);
 const SECRETS_WRITER_HELPER = path.resolve('tests/helpers/secrets-writer-helper.ts');
@@ -17,12 +23,18 @@ const SECRETS_LOCK_HOLDER_HELPER = path.resolve('tests/helpers/secrets-lock-hold
 const SECRETS_PROPAGATE_HELPER = path.resolve('tests/helpers/secrets-propagate-helper.ts');
 const MIGRATION_CRASH_HELPER = path.resolve('tests/team/migrate-home-crash-helper.ts');
 
+function migrateTeamsHomeIfNeeded(
+  legacyHomes: string[] = defaultLegacyTeamHomes(),
+) {
+  return migrateTeamsHomeIfNeededWith(legacyHomes, testPerUserLockNamespace);
+}
+
 function secretStoreKeys(vaultDir: string): string[] {
   return secretStoreLockKeys(vaultDir);
 }
 
 function topologyLockPaths(teamsDir: string): string[] {
-  const lockDir = path.join(resolvePerUserLocksDir(), 'legacy-team-home');
+  const lockDir = path.join(testPerUserLocksRoot, 'legacy-team-home');
   const physicalLocks = physicalPathLockIdentities(teamsDir)
     .map((identity) => path.join(
       lockDir,
@@ -79,6 +91,20 @@ describe('migrateTeamsHomeIfNeeded', () => {
     fs.rmSync(dest, { recursive: true, force: true });
   });
 
+  it('uses one explicit namespace for topology and nested secret-store locks', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-lock-namespace-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-lock-namespace-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+
+    migrateTeamsHomeIfNeeded([legacy]);
+
+    expect(fs.readdirSync(path.join(testPerUserLocksRoot, 'legacy-team-home')).length)
+      .toBeGreaterThan(0);
+    expect(fs.readdirSync(path.join(testPerUserLocksRoot, 'secrets')).length)
+      .toBeGreaterThan(0);
+  });
+
   it('copies + verifies legacy teams, then retires the source dir; idempotent', () => {
     legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
     dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
@@ -112,7 +138,7 @@ describe('migrateTeamsHomeIfNeeded', () => {
       const open = vi.spyOn(fs, 'openSync').mockImplementation(
         ((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
           const resolved = path.resolve(String(target));
-          if (resolved.startsWith(path.resolve(path.join(resolvePerUserLocksDir(), 'legacy-team-home')) + path.sep)) {
+          if (resolved.startsWith(path.resolve(path.join(testPerUserLocksRoot, 'legacy-team-home')) + path.sep)) {
             openedTopologyLocks.push(resolved);
           }
           return originalOpen(target, flags, mode);
@@ -141,7 +167,7 @@ describe('migrateTeamsHomeIfNeeded', () => {
       const alias = path.join(aliasRoot, 'alias');
       fs.symlinkSync(legacy, alias, 'dir');
       const canonicalTeamsDir = fs.realpathSync(path.join(legacy, 'teams'));
-      const lockDir = path.join(resolvePerUserLocksDir(), 'legacy-team-home');
+      const lockDir = path.join(testPerUserLocksRoot, 'legacy-team-home');
       const oldCanonicalLock = path.join(
         lockDir,
         `${createHash('sha256').update(canonicalTeamsDir).digest('hex')}.lock`,
@@ -183,7 +209,7 @@ describe('migrateTeamsHomeIfNeeded', () => {
       dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
       process.env.MYCO_TEAM_HOME = dest;
       const openedTopologyLocks: string[] = [];
-      const lockDir = path.resolve(path.join(resolvePerUserLocksDir(), 'legacy-team-home'));
+      const lockDir = path.resolve(path.join(testPerUserLocksRoot, 'legacy-team-home'));
       const originalOpen = fs.openSync.bind(fs);
       let materialized = false;
       let freshLocks: string[] = [];
@@ -545,10 +571,10 @@ describe('migrateTeamsHomeIfNeeded', () => {
     expect(fs.lstatSync(legacyTeams).isSymbolicLink()).toBe(true);
 
     const children = [
-      spawn(process.execPath, ['run', SECRETS_WRITER_HELPER, path.join(legacyTeams, TEAM_ID), 'LEGACY_WRITER', 'redirected'], {
+      spawn(process.execPath, ['run', SECRETS_WRITER_HELPER, testPerUserLocksRoot, path.join(legacyTeams, TEAM_ID), 'LEGACY_WRITER', 'redirected'], {
         stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd(),
       }),
-      spawn(process.execPath, ['run', SECRETS_WRITER_HELPER, path.join(dest, 'teams', TEAM_ID), 'CANONICAL_WRITER', 'canonical'], {
+      spawn(process.execPath, ['run', SECRETS_WRITER_HELPER, testPerUserLocksRoot, path.join(dest, 'teams', TEAM_ID), 'CANONICAL_WRITER', 'canonical'], {
         stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd(),
       }),
     ];
@@ -698,7 +724,7 @@ describe('migrateTeamsHomeIfNeeded', () => {
 
     const crashed = spawnSync(
       process.execPath,
-      ['run', MIGRATION_CRASH_HELPER, legacy, dest],
+      ['run', MIGRATION_CRASH_HELPER, testPerUserLocksRoot, legacy, dest],
       { cwd: process.cwd(), encoding: 'utf-8' },
     );
     expect(crashed.status).toBe(86);
@@ -871,7 +897,7 @@ describe('migrateTeamsHomeIfNeeded', () => {
       try {
         const holder = spawn(
           process.execPath,
-          ['run', SECRETS_LOCK_HOLDER_HELPER, anchor, '2000', 'hold-only'],
+          ['run', SECRETS_LOCK_HOLDER_HELPER, testPerUserLocksRoot, anchor, '2000', 'hold-only'],
           { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() },
         );
         const holderExit = successfulExit(holder, 'anchor holder');
@@ -880,7 +906,7 @@ describe('migrateTeamsHomeIfNeeded', () => {
         const started = path.join(anchor, 'propagate-started');
         const waiter = spawn(
           process.execPath,
-          ['run', SECRETS_PROPAGATE_HELPER, anchor, legacyTeamDir, started],
+          ['run', SECRETS_PROPAGATE_HELPER, testPerUserLocksRoot, anchor, legacyTeamDir, started],
           { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() },
         );
         const waiterExit = successfulExit(waiter, 'stale-identity waiter');
@@ -891,7 +917,7 @@ describe('migrateTeamsHomeIfNeeded', () => {
         const canonicalTeamDir = path.join(dest, 'teams', TEAM_ID);
         const canonicalWriter = spawn(
           process.execPath,
-          ['run', SECRETS_WRITER_HELPER, canonicalTeamDir, 'CANONICAL_WRITER', 'canonical'],
+          ['run', SECRETS_WRITER_HELPER, testPerUserLocksRoot, canonicalTeamDir, 'CANONICAL_WRITER', 'canonical'],
           { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() },
         );
         await successfulExit(canonicalWriter, 'canonical writer');

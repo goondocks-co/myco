@@ -10,8 +10,11 @@ import {
 } from '@myco/config/secrets.js';
 import { pathsEquivalent, resolveTeamsDir, TEAMS_DIRNAME } from '@myco/grove/paths.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
-import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 
 const BAK_SUFFIX = '.bak-pre-myco-team';
 const MYCO_TEAM_LEGACY_HOMES_ENV = 'MYCO_TEAM_LEGACY_HOMES';
@@ -211,8 +214,11 @@ function canonicalLexicalPath(target: string): string {
   }
 }
 
-function topologyLockPaths(legacyTeamsDir: string): string[] {
-  const lockDir = path.join(resolvePerUserLocksDir(), 'legacy-team-home');
+function topologyLockPaths(
+  legacyTeamsDir: string,
+  lockNamespace: PerUserLockNamespace,
+): string[] {
+  const lockDir = lockNamespace.resolve('legacy-team-home');
   fs.mkdirSync(lockDir, { recursive: true, mode: OWNER_ONLY_DIR_MODE });
   try { fs.chmodSync(lockDir, OWNER_ONLY_DIR_MODE); } catch { /* platform ACLs apply */ }
   const physicalLocks = physicalPathLockIdentities(legacyTeamsDir)
@@ -229,14 +235,18 @@ function topologyLockPaths(legacyTeamsDir: string): string[] {
   return [...new Set([...physicalLocks, ...legacyLocks])].sort();
 }
 
-function withTopologyLock<T>(legacyTeamsDir: string, fn: () => T): T {
+function withTopologyLock<T>(
+  legacyTeamsDir: string,
+  lockNamespace: PerUserLockNamespace,
+  fn: () => T,
+): T {
   const retry = Symbol('retry-team-topology-locks');
   const maxRetries = 8;
   for (let attempt = 0; attempt < maxRetries; attempt += 1) {
-    const locks = topologyLockPaths(legacyTeamsDir);
+    const locks = topologyLockPaths(legacyTeamsDir, lockNamespace);
     const run = (index: number): T | typeof retry => {
       if (index < locks.length) return withFileLockSync(locks[index]!, () => run(index + 1));
-      const freshLocks = topologyLockPaths(legacyTeamsDir);
+      const freshLocks = topologyLockPaths(legacyTeamsDir, lockNamespace);
       if (freshLocks.length !== locks.length
         || freshLocks.some((lock, lockIndex) => lock !== locks[lockIndex])) {
         return retry;
@@ -430,10 +440,12 @@ function migrationSecretPairs(migrations: readonly TeamMigration[]) {
 function reconcileTeamMigrations(
   migrations: readonly TeamMigration[],
   result: MigrateTeamsResult,
+  lockNamespace: PerUserLockNamespace,
 ): void {
   const firstPass = withLegacyTeamSecretSnapshotsReconciledSync(
     migrationSecretPairs(migrations),
     () => 'complete',
+    lockNamespace,
   );
   migrations.forEach((migration, index) => {
     const files = reconcileTeamDir(migration.sourceDir, migration.destinationDir);
@@ -449,6 +461,7 @@ function recoverArchivedLegacyTeamsDir(
   destTeamsDir: string,
   result: MigrateTeamsResult,
   publishedRedirect = false,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   const archivePath = legacyTeamsDir + BAK_SUFFIX;
   const reusableRedirects = verifiedTemporaryRedirects(legacyTeamsDir, destTeamsDir);
@@ -456,7 +469,7 @@ function recoverArchivedLegacyTeamsDir(
   const recoveryRedirects = publishedRedirect
     ? reusableRedirects
     : claimLegacyTeamsRedirect(legacyTeamsDir, destTeamsDir, reusableRedirects);
-  reconcileTeamMigrations(migrations, result);
+  reconcileTeamMigrations(migrations, result, lockNamespace);
 
   const finalPass = withLegacyTeamSecretSnapshotsReconciledSync(
     migrationSecretPairs(migrations),
@@ -466,6 +479,7 @@ function recoverArchivedLegacyTeamsDir(
       }
       return 'complete';
     },
+    lockNamespace,
   );
   if (finalPass.outcome === 'complete') {
     recoveryRedirects.forEach(removeOwnedTemporaryRedirect);
@@ -494,6 +508,7 @@ function migrateLegacyTeamsDir(
   legacyTeamsDir: string,
   destTeamsDir: string,
   result: MigrateTeamsResult,
+  lockNamespace: PerUserLockNamespace,
 ): void {
   const existing = lstatOrUndefined(legacyTeamsDir);
   const archivePath = legacyTeamsDir + BAK_SUFFIX;
@@ -505,14 +520,14 @@ function migrateLegacyTeamsDir(
   }
   if (existing === undefined) {
     if (archive === undefined) return;
-    recoverArchivedLegacyTeamsDir(legacyTeamsDir, destTeamsDir, result);
+    recoverArchivedLegacyTeamsDir(legacyTeamsDir, destTeamsDir, result, false, lockNamespace);
     return;
   }
   if (existing.isSymbolicLink()) {
     if (pathsEquivalent(legacyTeamsDir, destTeamsDir)) {
       if (archive !== undefined
         && verifiedTemporaryRedirects(legacyTeamsDir, destTeamsDir).length > 0) {
-        recoverArchivedLegacyTeamsDir(legacyTeamsDir, destTeamsDir, result, true);
+        recoverArchivedLegacyTeamsDir(legacyTeamsDir, destTeamsDir, result, true, lockNamespace);
       }
       return;
     }
@@ -527,19 +542,26 @@ function migrateLegacyTeamsDir(
 
   const migrations = planTeamMigrations(legacyTeamsDir, destTeamsDir);
   const pairs = migrationSecretPairs(migrations);
-  reconcileTeamMigrations(migrations, result);
+  reconcileTeamMigrations(migrations, result, lockNamespace);
 
-  const finalPass = withLegacyTeamSecretSnapshotsReconciledSync(pairs, () => {
-    if (!migrations.every((migration) => verifyCopied(migration.sourceDir, migration.destinationDir))) {
-      return 'deferred';
-    }
-    retireLegacyTeamsDir(legacyTeamsDir, destTeamsDir, migrations);
-    return 'complete';
-  });
+  const finalPass = withLegacyTeamSecretSnapshotsReconciledSync(
+    pairs,
+    () => {
+      if (!migrations.every((migration) => verifyCopied(migration.sourceDir, migration.destinationDir))) {
+        return 'deferred';
+      }
+      retireLegacyTeamsDir(legacyTeamsDir, destTeamsDir, migrations);
+      return 'complete';
+    },
+    lockNamespace,
+  );
   if (finalPass.outcome === 'complete') result.retiredHomes.push(legacyTeamsDir);
 }
 
-export function migrateTeamsHomeIfNeeded(legacyHomes: string[] = defaultLegacyTeamHomes()): MigrateTeamsResult {
+export function migrateTeamsHomeIfNeeded(
+  legacyHomes: string[] = defaultLegacyTeamHomes(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): MigrateTeamsResult {
   const result: MigrateTeamsResult = { copied: [], gapFilled: [], conflicted: [], retiredHomes: [] };
   const destTeamsDir = resolveTeamsDir();
   const seen = new Set<string>();
@@ -551,8 +573,8 @@ export function migrateTeamsHomeIfNeeded(legacyHomes: string[] = defaultLegacyTe
       : path.resolve(legacyTeamsDir);
     if (seen.has(key)) continue;
     seen.add(key);
-    withTopologyLock(legacyTeamsDir, () => {
-      migrateLegacyTeamsDir(legacyTeamsDir, destTeamsDir, result);
+    withTopologyLock(legacyTeamsDir, lockNamespace, () => {
+      migrateLegacyTeamsDir(legacyTeamsDir, destTeamsDir, result, lockNamespace);
     });
   }
 

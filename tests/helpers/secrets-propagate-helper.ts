@@ -15,12 +15,17 @@
  */
 import fs from 'node:fs';
 import { propagateLegacySecrets } from '@myco/config/secrets.js';
+import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
-const [sourceVaultDir, destinationVaultDir, startedPath] = process.argv.slice(2);
-if (!sourceVaultDir || !destinationVaultDir || !startedPath) {
+const [lockRoot, sourceVaultDir, destinationVaultDir, startedPath] = process.argv.slice(2);
+if (!lockRoot || !sourceVaultDir || !destinationVaultDir || !startedPath) {
   process.stderr.write('secrets propagate helper: required args missing\n');
   process.exit(64);
 }
 
 fs.writeFileSync(startedPath, 'started\n');
-propagateLegacySecrets(sourceVaultDir, destinationVaultDir);
+propagateLegacySecrets(
+  sourceVaultDir,
+  destinationVaultDir,
+  createPerUserLockNamespace(() => lockRoot),
+);

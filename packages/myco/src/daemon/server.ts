@@ -25,6 +25,10 @@ import {
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
 import { classifyRoute, overlayHostStampRefusal, refusalJson, type RefusalPayload } from '../host/routing.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { maybeRegisterHostedProjectOnIngest } from '../host/hosted-projects.js';
 import { defaultDial, handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from './host-proxy.js';
 import { handleAttachedConfigRequest } from './attached-config.js';
@@ -119,6 +123,7 @@ export interface DaemonServerConfig {
    * tests that don't exercise routed capture; the proxy's no-op defaults apply.
    */
   hostProxyDeps?: Partial<HostProxyDeps>;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 export type RawRouteHandler = (
@@ -143,6 +148,7 @@ export class DaemonServer {
   /** Capture-side proxy deps (transcript-drain flush + collect enqueue) threaded
    *  into `handleAttachedRequest` for attached projects. See {@link DaemonServerConfig}. */
   private hostProxyDeps: Partial<HostProxyDeps>;
+  private lockNamespace: PerUserLockNamespace;
   /** The overlay listener's bound port (0 until it binds). Public so tests /
    *  enrollment can read the port the overlay surface is reachable on. */
   overlayPort = 0;
@@ -204,6 +210,7 @@ export class DaemonServer {
     this.ownsRuntimeCache = config.runtimeCache === undefined;
     this.hostServe = config.hostServe ?? null;
     this.hostProxyDeps = config.hostProxyDeps ?? {};
+    this.lockNamespace = config.lockNamespace ?? nativePerUserLockNamespace;
     this.version = getPluginVersion();
     this.authToken = mintDaemonAuthToken();
     // Export to env so direct children inherit the bearer without
@@ -745,7 +752,7 @@ export class DaemonServer {
             method: req.method!,
             pathname: match.pathname,
             projectId: inboundProjectId,
-          });
+          }, this.lockNamespace);
           if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
             this.writeRefusal(res, decision.refusal, versionHeader);
             return;
@@ -776,6 +783,7 @@ export class DaemonServer {
             await handleAttachedConfigRequest(req, res, match.pathname, decision.target, carveBody, {
               dial: defaultDial,
               logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
+              lockNamespace: this.lockNamespace,
             });
             return;
           }
@@ -1115,6 +1123,7 @@ export class DaemonServer {
       // serve instead of 404ing. Only this member-dispatch seam sets it; the
       // `/mcp` transport, external listener, and URL tenancy leave it off.
       tolerateAttachedProject: true,
+      lockNamespace: this.lockNamespace,
     });
   }
 

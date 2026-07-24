@@ -17,12 +17,14 @@ import { upsertPlan } from '@myco/db/queries/plans.js';
 import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveGroveDbPath, resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
-import { writeHostSecret } from '@myco/host/registry.js';
+import { createHostRegistryOperations } from '@myco/host/registry.js';
 import { HOST_BEARER_SECRET } from '@myco/constants.js';
 import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const CLI_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 
 /** Minimal `DaemonClient` stand-in for the LOCAL daemon's `/mcp` handler.
  *  Only `get('/api/digest', ...)` is exercised by the tools under test
@@ -142,7 +144,10 @@ describe('myco tool CLI', () => {
    * `createMycoTools` in-process (decision-14e572a3).
    */
   async function startLocalDaemon(): Promise<void> {
-    const handler = createStreamableMcpHttpHandler(tmpDir, { client: mockDaemonClient(digestHeaders) });
+    const handler = createStreamableMcpHttpHandler(tmpDir, {
+      client: mockDaemonClient(digestHeaders),
+      lockNamespace: testPerUserLockNamespace,
+    });
     const server = http.createServer((req, res) => {
       // DaemonClient.ensureRunning()/isHealthy() probe this before the CLI
       // ever dials `/mcp` — a bare wrapper around the MCP handler alone
@@ -467,7 +472,10 @@ describe('myco tool CLI — attached (Team Host) project', () => {
     // every request short-circuits to the host BEFORE `client` is ever
     // touched (mcp/http.ts's classifyRoute chokepoint), so a trivial mock
     // suffices.
-    const localHandler = createStreamableMcpHttpHandler(vaultDir, { client: mockDaemonClient() });
+    const localHandler = createStreamableMcpHttpHandler(vaultDir, {
+      client: mockDaemonClient(),
+      lockNamespace: testPerUserLockNamespace,
+    });
     member = http.createServer((req, res) => {
       if (req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });

@@ -29,11 +29,20 @@ import {
   type HostEnrollment,
   type MemberOverlayDeps,
 } from '@myco/host/member-overlay.js';
-import { getHost, readHostSecrets, resolveAttach } from '@myco/host/registry.js';
-import { attachCommand } from '@myco/host/attach-command.js';
+import { createHostRegistryOperations } from '@myco/host/registry.js';
+import { attachCommand as attachCommandWith } from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { TAILSCALE_VERSION, type CommandRunner } from '@myco/host/overlay-binaries.js';
 import { FakeServiceManager } from '../helpers/fake-service-manager.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const {
+  getHost,
+  readHostSecrets,
+  resolveAttach,
+} = createHostRegistryOperations(testPerUserLockNamespace);
+const attachCommand = (options: Parameters<typeof attachCommandWith>[0]) =>
+  attachCommandWith(options, testPerUserLockNamespace);
 
 // ---------------------------------------------------------------------------
 // (a, part 1) Host side: buildHostEnrollmentPayload self-reports served_grove_id.
@@ -139,6 +148,7 @@ describe('joinHost — served_grove_id persistence + host_id reconciliation (ser
       waitForSocket: async () => true,
       checkHostReachable: async () => true,
       logger: () => {},
+      lockNamespace: testPerUserLockNamespace,
       ...overrides,
     };
   }

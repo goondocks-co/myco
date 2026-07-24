@@ -14,11 +14,15 @@
  * limitations under the License.
  */
 import fs from 'node:fs';
+import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
-const [teamHome, hostId, startedPath, resultPath] = process.argv.slice(2);
-if (!teamHome || !hostId || !startedPath || !resultPath) process.exit(64);
+const [lockRoot, teamHome, hostId, startedPath, resultPath] = process.argv.slice(2);
+if (!lockRoot || !teamHome || !hostId || !startedPath || !resultPath) process.exit(64);
 process.env.MYCO_TEAM_HOME = teamHome;
 
 fs.writeFileSync(startedPath, 'started\n');
-const { getHostMembershipSnapshot } = await import('@myco/host/registry.js');
+const { createHostRegistryOperations } = await import('@myco/host/registry.js');
+const { getHostMembershipSnapshot } = createHostRegistryOperations(
+  createPerUserLockNamespace(() => lockRoot),
+);
 fs.writeFileSync(resultPath, JSON.stringify(getHostMembershipSnapshot(hostId)));

@@ -22,9 +22,9 @@ import {
   createProjectId,
   type GroveProjectId,
 } from '@myco/grove/ids';
-import { writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import {
-  classifyRoute,
+  classifyRoute as classifyRouteWith,
   classifyRouteStamp,
   configHostAuthoritative,
   hostedCapabilityUnavailable,
@@ -32,6 +32,11 @@ import {
   refusalJson,
   refusalMcpBody,
 } from '@myco/host/routing';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
+const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
+  classifyRouteWith(input, testPerUserLockNamespace);
 
 function seedAttached(overrides: Partial<HostRecord> = {}): { projectId: GroveProjectId; groveId: string; host: HostRecord } {
   const groveId = createGroveId();

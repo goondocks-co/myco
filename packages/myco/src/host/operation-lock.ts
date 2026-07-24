@@ -22,8 +22,11 @@ import {
   LifecycleLock,
   type LockHandle,
 } from '@myco/utils/lifecycle-lock.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
-import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 
 const HOST_OPERATION_LOCK_DIR_MODE = 0o700;
 const HOST_OPERATION_LOCK_RETRIES = 8;
@@ -37,20 +40,27 @@ export interface HostOperationLease {
   readonly [hostOperationLeaseBrand]: true;
 }
 
-function hostOperationLockPath(identity: string, hostId: string): string {
+function hostOperationLockPath(
+  identity: string,
+  hostId: string,
+  lockNamespace: PerUserLockNamespace,
+): string {
   const key = createHash('sha256')
     .update(`${HOST_OPERATION_LOCK_NAMESPACE}\0${identity}\0${hostId}`)
     .digest('hex');
-  return path.join(resolvePerUserLocksDir(), 'host-operations', `${key}.lock`);
+  return path.join(lockNamespace.resolve('host-operations'), `${key}.lock`);
 }
 
-function hostOperationLockPaths(hostId: string): string[] {
-  const lockDir = path.join(resolvePerUserLocksDir(), 'host-operations');
+function hostOperationLockPaths(
+  hostId: string,
+  lockNamespace: PerUserLockNamespace,
+): string[] {
+  const lockDir = lockNamespace.resolve('host-operations');
   fs.mkdirSync(lockDir, { recursive: true, mode: HOST_OPERATION_LOCK_DIR_MODE });
   try { fs.chmodSync(lockDir, HOST_OPERATION_LOCK_DIR_MODE); } catch { /* platform ACLs apply */ }
   fs.mkdirSync(resolveHostsDir(), { recursive: true, mode: HOST_OPERATION_LOCK_DIR_MODE });
   return physicalPathLockIdentities(resolveHostsDir())
-    .map((identity) => hostOperationLockPath(identity, hostId))
+    .map((identity) => hostOperationLockPath(identity, hostId, lockNamespace))
     .sort();
 }
 
@@ -62,9 +72,10 @@ async function withAcquiredHostOperationLocks<T>(
   hostId: string,
   operation: 'join' | 'leave',
   fn: (lease: HostOperationLease) => Promise<T>,
+  lockNamespace: PerUserLockNamespace,
 ): Promise<T> {
   for (let attempt = 0; attempt < HOST_OPERATION_LOCK_RETRIES; attempt += 1) {
-    const paths = hostOperationLockPaths(hostId);
+    const paths = hostOperationLockPaths(hostId, lockNamespace);
     const locks: LockHandle[] = [];
     for (const lockPath of paths) {
       const result = LifecycleLock.acquire(lockPath, {
@@ -80,7 +91,7 @@ async function withAcquiredHostOperationLocks<T>(
       locks.push(result.lock);
     }
 
-    const freshPaths = hostOperationLockPaths(hostId);
+    const freshPaths = hostOperationLockPaths(hostId, lockNamespace);
     if (freshPaths.length !== paths.length
       || freshPaths.some((lockPath, index) => lockPath !== paths[index])) {
       releaseLocks(locks);
@@ -107,8 +118,17 @@ export function withHostOperationLock<T>(
   hostId: string,
   operation: 'join' | 'leave',
   fn: (lease: HostOperationLease) => Promise<T>,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Promise<T> {
-  return withAcquiredHostOperationLocks(hostId, operation, fn);
+  return withAcquiredHostOperationLocks(hostId, operation, fn, lockNamespace);
+}
+
+export function createHostOperationLock(lockNamespace: PerUserLockNamespace) {
+  return <T>(
+    hostId: string,
+    operation: 'join' | 'leave',
+    fn: (lease: HostOperationLease) => Promise<T>,
+  ): Promise<T> => withHostOperationLock(hostId, operation, fn, lockNamespace);
 }
 
 export function assertHostOperationLease(

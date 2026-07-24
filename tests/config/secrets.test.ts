@@ -6,20 +6,28 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   assertValidSecretEntry,
-  deleteSecrets,
+  createSecretsOperations,
   InvalidSecretValueError,
-  loadLayeredSecrets,
-  loadSecrets,
-  propagateLegacySecrets,
   readSecrets,
-  tightenSecretsPermissions,
-  writeSecret,
-  writeSecretIfAbsent,
-  withLegacyTeamSecretSnapshotsReconciledSync,
 } from '@myco/config/secrets';
 import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
 import { secretStoreLockKeys } from '@myco/config/secret-store-lock.js';
 import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
+import {
+  testPerUserLockNamespace,
+  testPerUserLocksRoot,
+} from '../helpers/per-user-lock-namespace.js';
+
+const {
+  deleteSecrets,
+  loadLayeredSecrets,
+  loadSecrets,
+  propagateLegacySecrets,
+  tightenSecretsPermissions,
+  writeSecret,
+  writeSecretIfAbsent,
+  withLegacyTeamSecretSnapshotsReconciledSync,
+} = createSecretsOperations(testPerUserLockNamespace);
 
 const POSIX = process.platform !== 'win32';
 const SECRETS_LOCK_HOLDER_HELPER = path.resolve('tests/helpers/secrets-lock-holder-helper.ts');
@@ -64,7 +72,7 @@ async function runSecretStoreRace(
 ): Promise<number> {
   const child = spawn(
     process.execPath,
-    ['run', SECRETS_LOCK_HOLDER_HELPER, holderVaultDir, '400', mode, ready],
+    ['run', SECRETS_LOCK_HOLDER_HELPER, testPerUserLocksRoot, holderVaultDir, '400', mode, ready],
     {
       stdio: ['ignore', 'ignore', 'pipe'],
       cwd: process.cwd(),
@@ -104,6 +112,15 @@ describe('secrets', () => {
 
   afterEach(() => {
     fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('uses an explicitly injected lock namespace for secret transactions', () => {
+    writeSecret(testDir, 'LOCK_NAMESPACE', 'isolated');
+
+    const lockPaths = secretStoreLockKeys(testDir)
+      .map((key) => path.join(testPerUserLocksRoot, 'secrets', `${key}.lock`));
+    expect(lockPaths.length).toBeGreaterThan(0);
+    expect(lockPaths.every((lockPath) => fs.existsSync(lockPath))).toBe(true);
   });
 
   describe('readSecrets', () => {
@@ -511,7 +528,7 @@ describe('secrets', () => {
       fs.mkdirSync(childHome);
       const child = spawn(
         process.execPath,
-        ['run', SECRETS_LOCK_HOLDER_HELPER, testDir, String(holdMs)],
+        ['run', SECRETS_LOCK_HOLDER_HELPER, testPerUserLocksRoot, testDir, String(holdMs)],
         {
           stdio: ['ignore', 'ignore', 'pipe'],
           cwd: process.cwd(),
@@ -640,7 +657,7 @@ describe('secrets', () => {
 
       const child = spawn(
         process.execPath,
-        ['run', SECRETS_LOCK_HOLDER_HELPER, vaultDir, '400', 'file-replace'],
+        ['run', SECRETS_LOCK_HOLDER_HELPER, testPerUserLocksRoot, vaultDir, '400', 'file-replace'],
         {
           stdio: ['ignore', 'ignore', 'pipe'],
           cwd: process.cwd(),
@@ -678,7 +695,7 @@ describe('secrets', () => {
       writeSecret(testDir, 'OLD', 'old');
       const child = spawn(
         process.execPath,
-        ['run', SECRETS_LOCK_HOLDER_HELPER, testDir, '400', 'delete-race'],
+        ['run', SECRETS_LOCK_HOLDER_HELPER, testPerUserLocksRoot, testDir, '400', 'delete-race'],
         {
           stdio: ['ignore', 'ignore', 'pipe'],
           cwd: process.cwd(),

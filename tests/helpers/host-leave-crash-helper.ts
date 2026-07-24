@@ -15,9 +15,10 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
-const [teamHome, hostId, boundary] = process.argv.slice(2);
-if (!teamHome || !hostId || !boundary) process.exit(64);
+const [lockRoot, teamHome, hostId, boundary] = process.argv.slice(2);
+if (!lockRoot || !teamHome || !hostId || !boundary) process.exit(64);
 process.env.MYCO_TEAM_HOME = teamHome;
 process.env.HOME = teamHome;
 
@@ -42,4 +43,5 @@ await leaveHost(hostId, {
   platform: 'darwin',
   serviceManager: new FakeServiceManager(),
   logger: () => {},
+  lockNamespace: createPerUserLockNamespace(() => lockRoot),
 });

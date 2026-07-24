@@ -14,6 +14,10 @@ import { pathsEquivalent, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { isHostServedRequest } from '@myco/grove/request-context.js';
 import { findRegisteredProject, type ResolvedRegisteredProject } from '@myco/grove/registry.js';
 import { resolveAttachMembership } from '@myco/host/registry.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 import type { RouteRequest } from '../router.js';
 import { errorBody } from './error-envelope.js';
@@ -57,6 +61,7 @@ export async function resolveMemberProjectContext(
   req: RouteRequest,
   body: Record<string, unknown>,
   mycoHome?: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Promise<MemberProjectContext | MemberProjectContextError> {
   // Defense in depth: `localhost-only` (host/routing.ts) already refuses an
   // overlay-origin request before any localhost-only handler runs, and every
@@ -83,7 +88,7 @@ export async function resolveMemberProjectContext(
     };
   }
 
-  const attach = resolveAttachMembership(projectId);
+  const attach = resolveAttachMembership(projectId, lockNamespace);
   if (attach) {
     if (attach.ref.root && !pathsEquivalent(attach.ref.root, currentRoot)) {
       return {

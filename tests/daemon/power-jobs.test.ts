@@ -21,6 +21,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { CONTENT_CLAIM_RETENTION_MS, ROUTED_EVENT_DEDUP_RETENTION_MS } from '@myco/constants.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { resolveRoutedTranscriptPath, resolveRoutedTranscriptsDir } from '@myco/grove/paths.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 // ---------------------------------------------------------------------------
 // Test fixture: bring up a real Myco home with one Grove and an open DB
@@ -192,6 +193,7 @@ function buildDeps(fx: GroveFixture, overrides: Partial<Record<string, unknown>>
     embeddingRuntimeFactory: fx.factory,
     mycoHome: fx.mycoHome,
     daemonStateDir: path.join(fx.mycoHome, 'service'),
+    lockNamespace: testPerUserLockNamespace,
   };
 }
 

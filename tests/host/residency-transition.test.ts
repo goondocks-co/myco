@@ -20,12 +20,22 @@ import { createGroveId, createHostId, createProjectId, projectScope, type GroveP
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
-import { getHost, resolveAttach, type HostRecord } from '@myco/host/registry.js';
-import { attachCommand, detachCommand } from '@myco/host/attach-command.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
+import {
+  attachCommand as attachCommandWith,
+  detachCommand as detachCommandWith,
+} from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { beginAttachResidency, completeAttachParking, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import { readResidencyJournal, startResidencyJournal, advanceResidencyPhase } from '@myco/host/residency-journal.js';
 import { listPendingForProject } from '@myco/db/queries/team-outbox.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { getHost, resolveAttach } = createHostRegistryOperations(testPerUserLockNamespace);
+const attachCommand = (options: Parameters<typeof attachCommandWith>[0]) =>
+  attachCommandWith(options, testPerUserLockNamespace);
+const detachCommand = (options: Parameters<typeof detachCommandWith>[0]) =>
+  detachCommandWith(options, testPerUserLockNamespace);
 
 let home: string;
 let teamHome: string;
@@ -39,6 +49,7 @@ function deps(): ResidencyDaemonDeps {
     // The in-memory singleton stands in for the source Grove DB; getDatabase()
     // inside the transition helpers already resolves to it.
     withGroveDb: <T,>(_groveId: string, fn: (db: Database) => T): T => fn(getDatabase()),
+    lockNamespace: testPerUserLockNamespace,
   };
 }
 

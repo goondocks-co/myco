@@ -49,6 +49,10 @@ import {
   handlePutScopedConfig,
 } from './api/config.js';
 import { defaultDial, logVersionMismatchOnce, type Dialer, type ProxyLogger } from './host-proxy.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 /** Fired once per host when the grove-tier fetch fails, so the member warns
  *  once rather than on every merged read (routing-layer §6.3 degrade). */
@@ -64,6 +68,7 @@ export interface AttachedConfigDeps {
    *  hit a localhost fixture; production rides the same dialer the proxy uses. */
   dial: Dialer;
   logger: ProxyLogger;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 function readHeader(req: http.IncomingMessage, name: string): string | undefined {
@@ -281,7 +286,10 @@ export async function handleAttachedConfigRequest(
   deps: AttachedConfigDeps,
 ): Promise<void> {
   const projectRoot = readHeader(req, REQUEST_CONTEXT_HEADERS.projectRoot)
-    ?? resolveAttach(target.projectId)?.ref.root;
+    ?? resolveAttach(
+      target.projectId,
+      deps.lockNamespace ?? nativePerUserLockNamespace,
+    )?.ref.root;
   if (!projectRoot) {
     respondJson(res, { status: 400, body: { error: 'missing_project_root' } });
     return;

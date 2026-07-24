@@ -45,12 +45,15 @@ import type { ToolDefinition } from '@myco/tools/definitions';
 import { DaemonLogger } from '@myco/daemon/logger';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids';
-import { writeSecret } from '@myco/config/secrets';
+import { createSecretsOperations } from '@myco/config/secrets';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '@myco/constants';
 import type { HostServeRuntime } from '@myco/daemon/host-serve';
 import type { DaemonClient } from '@myco/hooks/client';
 import { vi } from '../helpers/vi-shim.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
 
 // ---------------------------------------------------------------------------
 // (a)/(b) — pure allowlist unit tests (no HTTP, no daemon)

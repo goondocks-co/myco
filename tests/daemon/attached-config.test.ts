@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import YAML from 'yaml';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 import {
   handleAttachedConfigRequest,
@@ -70,6 +71,7 @@ function target(): RemoteTarget {
 function deps(): AttachedConfigDeps {
   return {
     dial: defaultDial,
+    lockNamespace: testPerUserLockNamespace,
     logger: {
       warn: (m, meta) => warns.push([m, meta]),
       error: (m, meta) => errors.push([m, meta]),

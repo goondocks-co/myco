@@ -63,6 +63,10 @@ import { readHostRegistry, recordHostProtocolVersion, type HostRecord } from '..
 import type { DaemonLogger } from '../logger.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 /**
  * The single deps bag `registerHostMembershipRoutes` threads to every handler
@@ -338,8 +342,9 @@ export function createHostMembershipDetachHandler(deps: HostMembershipRouteDeps)
 
 export function createHostMembershipStatusHandler(deps: HostMembershipRouteDeps = {}): RouteHandler {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   return async (req) => {
-    const hosts = readHostRegistry().map((record) => {
+    const hosts = readHostRegistry(lockNamespace).map((record) => {
       const servedGroveKnown = Object.hasOwn(record, 'served_grove_id');
       return {
         host_id: record.host_id,
@@ -375,7 +380,11 @@ export function createHostMembershipStatusHandler(deps: HostMembershipRouteDeps 
     if (projectRoot) {
       try {
         const manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
-        const state = resolveTeamHostHintState(manifest, manifest?.project.id);
+        const state = resolveTeamHostHintState(
+          manifest,
+          manifest?.project.id,
+          lockNamespace,
+        );
         const message = teamHostHintMessage(state);
         if (message && (state.kind === 'not_joined' || state.kind === 'not_attached')) {
           hint = { host_id: state.hostId, state: state.kind, message };
@@ -447,6 +456,7 @@ export interface HostMembershipHealthRouteDeps {
   ttlMs?: number;
   /** Test seam: current-time source, for TTL determinism. */
   now?: () => number;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 /**
@@ -478,7 +488,8 @@ export type HostMembershipHealthHandler = RouteHandler & {
 
 export function createHostMembershipHealthHandler(deps: HostMembershipHealthRouteDeps = {}): HostMembershipHealthHandler {
   const checkReachable = deps.checkReachable ?? dialHostHealth;
-  const readRegistry = deps.readRegistry ?? readHostRegistry;
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
+  const readRegistry = deps.readRegistry ?? (() => readHostRegistry(lockNamespace));
   const ttlMs = deps.ttlMs ?? HOST_HEALTH_CACHE_TTL_MS;
   const now = deps.now ?? Date.now;
 
@@ -514,7 +525,7 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
       // CURRENT version, not the stale join-time one. Skew is classified from the
       // effective (post-write) version.
       const effectiveVersion = observedVersion !== null
-        ? recordHostProtocolVersion(host.host_id, observedVersion)
+        ? recordHostProtocolVersion(host.host_id, observedVersion, lockNamespace)
         : host.protocol_version;
       return {
         host_id: host.host_id,

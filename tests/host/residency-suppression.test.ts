@@ -29,6 +29,7 @@ import { findRegisteredProjectById } from '@myco/grove/registry-resolve.js';
 import { resolveProjectGroveBinding } from '@myco/grove/binding.js';
 import { resolveProjectBufferDirFromRoot } from '@myco/capture/buffer-location.js';
 import { startResidencyJournal } from '@myco/host/residency-journal.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 let home: string;
 let teamHome: string;
@@ -76,7 +77,8 @@ describe('residency suppression — ensureProjectRegistered diverts', () => {
     clearGroveRegistryCaches();
 
     // Before any journal: resolves to the local source Grove.
-    expect(ensureProjectRegistered(root, home)?.grove.id).toBe(source.id);
+    expect(ensureProjectRegistered(root, home, testPerUserLockNamespace)?.grove.id)
+      .toBe(source.id);
 
     const divertGroveId = createGroveId(); // the host's served Grove — never a local Grove here
     startResidencyJournal({
@@ -92,7 +94,7 @@ describe('residency suppression — ensureProjectRegistered diverts', () => {
       cursors: {},
     });
 
-    const resolved = ensureProjectRegistered(root, home);
+    const resolved = ensureProjectRegistered(root, home, testPerUserLockNamespace);
     expect(resolved?.grove.id).toBe(divertGroveId);
     expect(resolved?.project.project_id).toBe(projectId);
 
@@ -121,7 +123,11 @@ describe('residency suppression — ensureProjectRegistered diverts', () => {
       cursors: {},
     });
 
-    const location = resolveProjectBufferDirFromRoot(root, home);
+    const location = resolveProjectBufferDirFromRoot(
+      root,
+      home,
+      testPerUserLockNamespace,
+    );
     expect(location?.groveId).toBe(divertGroveId);
     expect(location?.projectId).toBe(projectId);
     expect(location?.bufferDir).toBe(resolveProjectBufferDir(divertGroveId, projectId, home));
@@ -162,7 +168,11 @@ describe('residency suppression — binding repair', () => {
     const { vaultDir, projectId } = makeParkedBinding(grove);
     expect(findRegisteredProjectById(projectId, home)).toBeNull();
 
-    resolveProjectGroveBinding(vaultDir, { repair: true, mycoHome: home });
+    resolveProjectGroveBinding(vaultDir, {
+      repair: true,
+      mycoHome: home,
+      lockNamespace: testPerUserLockNamespace,
+    });
 
     expect(findRegisteredProjectById(projectId, home)).not.toBeNull();
   });
@@ -179,7 +189,11 @@ describe('residency suppression — binding repair', () => {
       projects: [{ grove_id: hostGrove, project_id: projectId, root: path.dirname(vaultDir) }],
     });
 
-    resolveProjectGroveBinding(vaultDir, { repair: true, mycoHome: home });
+    resolveProjectGroveBinding(vaultDir, {
+      repair: true,
+      mycoHome: home,
+      lockNamespace: testPerUserLockNamespace,
+    });
 
     expect(findRegisteredProjectById(projectId, home)).toBeNull();
   });
@@ -200,7 +214,11 @@ describe('residency suppression — binding repair', () => {
       cursors: {},
     });
 
-    resolveProjectGroveBinding(vaultDir, { repair: true, mycoHome: home });
+    resolveProjectGroveBinding(vaultDir, {
+      repair: true,
+      mycoHome: home,
+      lockNamespace: testPerUserLockNamespace,
+    });
 
     expect(findRegisteredProjectById(projectId, home)).toBeNull();
   });

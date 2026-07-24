@@ -35,10 +35,12 @@ import {
   createHostId,
   createProjectId,
 } from '@myco/grove/ids';
-import { writeHostSecret, type HostRecord } from '@myco/host/registry';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 
 interface HostHit { method: string; url: string; headers: http.IncomingHttpHeaders; }
 
@@ -95,6 +97,7 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
+      lockNamespace: testPerUserLockNamespace,
       runtimeCache,
     });
     server.registerRoute('GET', '/api/sessions', async () => {

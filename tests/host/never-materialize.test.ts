@@ -47,12 +47,17 @@ import {
   type GroveRecord,
 } from '@myco/grove/registry.js';
 import {
-  attachProject,
-  getHost,
+  createHostRegistryOperations,
   ProjectRegisteredLocallyError,
-  resolveAttach,
   type HostRecord,
 } from '@myco/host/registry.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const {
+  attachProject,
+  getHost,
+  resolveAttach,
+} = createHostRegistryOperations(testPerUserLockNamespace);
 
 let home: string;
 let teamHome: string;
@@ -153,7 +158,7 @@ describe('Team Host never-materialize invariant', () => {
       const projectRoot = makeCheckout(attachProjectId);
       attach(attachGroveId, attachProjectId);
 
-      const resolved = ensureProjectRegistered(projectRoot, home);
+      const resolved = ensureProjectRegistered(projectRoot, home, testPerUserLockNamespace);
 
       // Tenancy comes straight from the attach ref — not a locally-minted row.
       expect(resolved).not.toBeNull();
@@ -174,7 +179,11 @@ describe('Team Host never-materialize invariant', () => {
       const projectRoot = makeCheckout(attachProjectId);
       attach(attachGroveId, attachProjectId);
 
-      const location = resolveProjectBufferDirFromRoot(projectRoot, home);
+      const location = resolveProjectBufferDirFromRoot(
+        projectRoot,
+        home,
+        testPerUserLockNamespace,
+      );
 
       expect(location).not.toBeNull();
       expect(location!.groveId).toBe(attachGroveId);
@@ -212,7 +221,7 @@ describe('Team Host never-materialize invariant', () => {
         cache,
         makeLogger(),
         ({ grove }) => { visited.push(grove.id); },
-        { mycoHome: home },
+        { mycoHome: home, lockNamespace: testPerUserLockNamespace },
       );
       cache.closeAll();
 
@@ -229,7 +238,11 @@ describe('Team Host never-materialize invariant', () => {
       const projectRoot = makeCheckout(attachProjectId);
       const host = attach(attachGroveId, attachProjectId);
 
-      expect(() => activateProjectMigration({ projectRoot, mycoHome: home }))
+      expect(() => activateProjectMigration({
+        projectRoot,
+        mycoHome: home,
+        lockNamespace: testPerUserLockNamespace,
+      }))
         .toThrow(new RegExp(`served by host ${host.label}`));
 
       expect(listRegisteredProjects(defaultGrove.id, home, { includeArchived: true })).toEqual([]);
@@ -244,7 +257,7 @@ describe('Team Host never-materialize invariant', () => {
       const defaultGrove = ensureDefaultGrove(home);
       const projectRoot = makeCheckout();
 
-      const resolved = ensureProjectRegistered(projectRoot, home);
+      const resolved = ensureProjectRegistered(projectRoot, home, testPerUserLockNamespace);
 
       expect(resolved).not.toBeNull();
       expect(resolved!.grove.id).toBe(defaultGrove.id);
@@ -260,7 +273,11 @@ describe('Team Host never-materialize invariant', () => {
       const defaultGrove = ensureDefaultGrove(home);
       const projectRoot = makeCheckout();
 
-      const location = resolveProjectBufferDirFromRoot(projectRoot, home);
+      const location = resolveProjectBufferDirFromRoot(
+        projectRoot,
+        home,
+        testPerUserLockNamespace,
+      );
 
       expect(location).not.toBeNull();
       expect(location!.groveId).toBe(defaultGrove.id);
@@ -286,7 +303,7 @@ describe('Team Host never-materialize invariant', () => {
         cache,
         makeLogger(),
         ({ grove }) => { visited.push(grove.id); },
-        { mycoHome: home },
+        { mycoHome: home, lockNamespace: testPerUserLockNamespace },
       );
       cache.closeAll();
 
@@ -301,7 +318,11 @@ describe('Team Host never-materialize invariant', () => {
 
       // Not attached → the gate is transparent; activation proceeds until it
       // hits the real first-run precondition (no legacy source DB present).
-      expect(() => activateProjectMigration({ projectRoot, mycoHome: home }))
+      expect(() => activateProjectMigration({
+        projectRoot,
+        mycoHome: home,
+        lockNamespace: testPerUserLockNamespace,
+      }))
         .toThrow(/Legacy project database not found/);
 
       fs.rmSync(projectRoot, { recursive: true, force: true });
@@ -342,7 +363,11 @@ describe('Team Host never-materialize invariant', () => {
         cache,
         makeLogger(),
         ({ projectId }) => { visited.push(projectId); },
-        { mycoHome: home, machineId: 'machine-test' },
+        {
+          mycoHome: home,
+          machineId: 'machine-test',
+          lockNamespace: testPerUserLockNamespace,
+        },
       );
       cache.closeAll();
 

@@ -22,7 +22,7 @@ import {
   EventReplayDrainQueue,
   createEventReplayDrainQueue,
   createFsReplayStore,
-  listAttachedReplayTargets,
+  listAttachedReplayTargets as listAttachedReplayTargetsWith,
   type AttachedReplayTarget,
   type CollectBufferReader,
   type EventReplayTransport,
@@ -39,12 +39,16 @@ import {
 import { EventBuffer } from '@myco/capture/buffer';
 import { resolveProjectBufferDir } from '@myco/grove/paths';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
-import { writeHostSecret } from '@myco/host/registry';
+import { createHostRegistryOperations } from '@myco/host/registry';
 import { listGroves } from '@myco/grove/registry';
 import type { RemoteTarget } from '@myco/host/routing';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const MACHINE = 'alice_a1b2c3d4';
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
+const listAttachedReplayTargets = () =>
+  listAttachedReplayTargetsWith(testPerUserLockNamespace);
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HOST_B = 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const GROVE_A = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -833,7 +837,11 @@ describe('never-materialize + attach-registry enumeration (real fs)', () => {
     registerAttached();
     const sink = recordingSink();
     // Default store + reader + enumeration; only the transport is faked (no network).
-    const q = createEventReplayDrainQueue({ machineId: MACHINE, transport: sink.transport });
+    const q = createEventReplayDrainQueue({
+      machineId: MACHINE,
+      transport: sink.transport,
+      lockNamespace: testPerUserLockNamespace,
+    });
 
     await q.drainAll();
 
@@ -852,7 +860,11 @@ describe('never-materialize + attach-registry enumeration (real fs)', () => {
     // ...but NO host/attach registered. The registry-driven enumeration yields nothing.
     expect(listAttachedReplayTargets()).toHaveLength(0);
     const sink = recordingSink();
-    const q = createEventReplayDrainQueue({ machineId: MACHINE, transport: sink.transport });
+    const q = createEventReplayDrainQueue({
+      machineId: MACHINE,
+      transport: sink.transport,
+      lockNamespace: testPerUserLockNamespace,
+    });
     await q.drainAll();
     expect(sink.calls).toHaveLength(0);
   });

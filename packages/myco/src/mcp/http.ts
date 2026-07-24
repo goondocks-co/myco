@@ -21,6 +21,10 @@ import { REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '../constants.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 
 export type StreamableMcpHttpHandler = (
   req: http.IncomingMessage,
@@ -59,6 +63,7 @@ export interface StreamableMcpHttpHandlerOptions {
    * false), so the filter is inert rather than misapplied.
    */
   hostServe?: HostServeRuntime | null;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 /**
@@ -157,6 +162,7 @@ export function createStreamableMcpHttpHandler(
   options: StreamableMcpHttpHandlerOptions = {},
 ): StreamableMcpHttpHandler {
   const client = options.client ?? new DaemonClient(vaultDir);
+  const lockNamespace = options.lockNamespace ?? nativePerUserLockNamespace;
   return async (req, res) => {
     // Team Host chokepoint 2: the raw /mcp route bypasses route dispatch and
     // resolves its own context, so the attach short-circuit lives here too, as
@@ -176,7 +182,10 @@ export function createStreamableMcpHttpHandler(
         const { projectId } = resolveInboundProjectId(req.headers, vaultDir, {
           expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
         });
-        const decision = classifyRoute({ method: req.method ?? 'POST', pathname: '/mcp', projectId });
+        const decision = classifyRoute(
+          { method: req.method ?? 'POST', pathname: '/mcp', projectId },
+          lockNamespace,
+        );
         if (decision.kind === 'degraded' || decision.kind === 'config_locked') {
           res.statusCode = decision.refusal.status;
           res.setHeader('Content-Type', 'application/json');

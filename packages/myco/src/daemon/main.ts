@@ -150,6 +150,7 @@ import { registerScheduledTasks } from './task-scheduling.js';
 import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove, forEachRegisteredProject, isProjectActive } from './scope-iteration.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
 import {
   ProjectPowerStateTracker,
@@ -620,6 +621,7 @@ export async function runInitialCanopyPopulateAcrossProjects(
   registry: CanopyJobsRegistry,
   liveConfig: { current: MycoConfig },
   daemonStateDir: string,
+  lockNamespace?: PerUserLockNamespace,
 ): Promise<void> {
   try {
     const thresholdDays = liveConfig.current.agent.cold_project_threshold_days ?? 14;
@@ -644,6 +646,7 @@ export async function runInitialCanopyPopulateAcrossProjects(
       {
         machineId,
         daemonStateDir,
+        lockNamespace,
         // Skip projects under an in-flight move/vacuum so the initial
         // populate doesn't write to a DB the op owns exclusively.
         shouldVisit: pauseAwareShouldVisit(mycoHome),

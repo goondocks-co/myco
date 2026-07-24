@@ -23,8 +23,13 @@ import {
   createProjectId,
   type GroveProjectId,
 } from '@myco/grove/ids';
-import { writeHostSecret, type HostRecord } from '@myco/host/registry';
-import { classifyRoute, classifyRouteStamp, groveTierWriteRefusal } from '@myco/host/routing';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
+import { classifyRoute as classifyRouteWith, classifyRouteStamp, groveTierWriteRefusal } from '@myco/host/routing';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
+const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
+  classifyRouteWith(input, testPerUserLockNamespace);
 
 function seedAttached(): { projectId: GroveProjectId; groveId: string; host: HostRecord } {
   const groveId = createGroveId();

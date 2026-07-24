@@ -24,7 +24,10 @@ import {
   reconcileDurableRemovalTombstonesSync,
 } from '@myco/utils/atomic-write.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
-import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import {
   secretStoreIdentity,
   secretStoreLockKeys,
@@ -43,25 +46,40 @@ const PROTOTYPE_LIKE_ENV_KEYS = new Set(['__proto__', 'prototype', 'constructor'
  * still coordinate. The key is the canonical vault directory plus the literal
  * secrets filename; replacing an exact-file symlink cannot change it.
  */
-function secretStoreLockPaths(vaultDir: string): string[] {
-  const lockDir = path.join(resolvePerUserLocksDir(), 'secrets');
+function secretStoreLockPaths(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace,
+): string[] {
+  const lockDir = lockNamespace.resolve('secrets');
   fs.mkdirSync(lockDir, { recursive: true, mode: SECRETS_DIR_MODE });
   try { fs.chmodSync(lockDir, SECRETS_DIR_MODE); } catch { /* platform ACLs apply */ }
   return secretStoreLockKeys(vaultDir).map((key) => path.join(lockDir, `${key}.lock`));
 }
 
-function withSecretsTransaction<T>(vaultDir: string, fn: () => T): T {
-  return withSecretsTransactions([vaultDir], fn);
+function withSecretsTransaction<T>(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace,
+  fn: () => T,
+): T {
+  return withSecretsTransactions([vaultDir], lockNamespace, fn);
 }
 
-function withSecretsTransactions<T>(vaultDirs: readonly string[], fn: () => T): T {
+function withSecretsTransactions<T>(
+  vaultDirs: readonly string[],
+  lockNamespace: PerUserLockNamespace,
+  fn: () => T,
+): T {
   const RETRY = Symbol('retry-secret-locks');
   const MAX_LOCK_RETRIES = 8;
   for (let attempt = 0; attempt < MAX_LOCK_RETRIES; attempt += 1) {
-    const locks = [...new Set(vaultDirs.flatMap(secretStoreLockPaths))].sort();
+    const locks = [...new Set(vaultDirs.flatMap(
+      (vaultDir) => secretStoreLockPaths(vaultDir, lockNamespace),
+    ))].sort();
     const run = (index: number): T | typeof RETRY => {
       if (index < locks.length) return withFileLockSync(locks[index]!, () => run(index + 1));
-      const freshLocks = [...new Set(vaultDirs.flatMap(secretStoreLockPaths))].sort();
+      const freshLocks = [...new Set(vaultDirs.flatMap(
+        (vaultDir) => secretStoreLockPaths(vaultDir, lockNamespace),
+      ))].sort();
       if (freshLocks.length !== locks.length || freshLocks.some((lock, i) => lock !== locks[i])) return RETRY;
       for (const vaultDir of new Set(vaultDirs)) {
         reconcileDurableRemovalTombstonesSync(vaultDir, SECRETS_FILE);
@@ -113,9 +131,14 @@ export function readSecretsFile(secretsPath: string): Record<string, string> {
  * permissions (0o700 / 0o600) on every write so a sloppy umask cannot
  * leak secrets into the user-readable namespace.
  */
-export function writeSecret(vaultDir: string, key: string, value: string): void {
+export function writeSecret(
+  vaultDir: string,
+  key: string,
+  value: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): void {
   assertValidSecretEntry(key, value);
-  withSecretsTransaction(vaultDir, () => {
+  withSecretsTransaction(vaultDir, lockNamespace, () => {
     assertMutableSecretsPath(vaultDir);
     const existing = readSecrets(vaultDir);
     existing[key] = value;
@@ -177,9 +200,10 @@ export function writeSecretIfAbsent(
   vaultDir: string,
   key: string,
   mint: () => string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): MintIfAbsentResult {
   assertValidSecretEntry(key, '');
-  return withSecretsTransaction(vaultDir, () => {
+  return withSecretsTransaction(vaultDir, lockNamespace, () => {
     assertMutableSecretsPath(vaultDir);
     // Fast path: a completed prior mint already sits in secrets.env.
     const existing = readSecrets(vaultDir)[key];
@@ -276,8 +300,16 @@ function adoptMintedSecretUnlocked(vaultDir: string, key: string, claimPath: str
  * call after migration is a no-op
  * because the global file now has every legacy key.
  */
-export function propagateLegacySecrets(vaultDir: string, mycoHome: string): string[] {
-  return withSecretsTransactions([vaultDir, mycoHome], () => propagateLegacySecretsUnlocked(vaultDir, mycoHome));
+export function propagateLegacySecrets(
+  vaultDir: string,
+  mycoHome: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): string[] {
+  return withSecretsTransactions(
+    [vaultDir, mycoHome],
+    lockNamespace,
+    () => propagateLegacySecretsUnlocked(vaultDir, mycoHome),
+  );
 }
 
 function propagateLegacySecretsUnlocked(
@@ -326,12 +358,16 @@ function propagateLegacySecretsUnlocked(
  * (machine-absent keys only); keys already present at machine scope are
  * dropped on purge since the machine value is canonical.
  */
-export function relocateLegacyProjectSecrets(vaultDir: string, mycoHome: string): string[] {
+export function relocateLegacyProjectSecrets(
+  vaultDir: string,
+  mycoHome: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): string[] {
   const secretsPath = path.join(vaultDir, SECRETS_FILE);
   const destinationPath = path.join(mycoHome, SECRETS_FILE);
   if (!fs.existsSync(secretsPath)) return [];
   if (secretStoreIdentity(vaultDir) === secretStoreIdentity(mycoHome)) return [];
-  return withSecretsTransactions([vaultDir, mycoHome], () => {
+  return withSecretsTransactions([vaultDir, mycoHome], lockNamespace, () => {
     const sourceExists = assertRegularOrMissingSecretsPath(vaultDir);
     const destinationExisted = assertRegularOrMissingSecretsPath(mycoHome);
     if (!sourceExists) return [];
@@ -362,9 +398,13 @@ export function relocateLegacyProjectSecrets(vaultDir: string, mycoHome: string)
 }
 
 /** Remove one or more secrets from <vault>/secrets.env, preserving remaining entries. */
-export function deleteSecrets(vaultDir: string, keys: string[]): void {
+export function deleteSecrets(
+  vaultDir: string,
+  keys: string[],
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): void {
   for (const key of keys) assertValidSecretEntry(key, '');
-  withSecretsTransaction(vaultDir, () => {
+  withSecretsTransaction(vaultDir, lockNamespace, () => {
     const secretsPath = path.join(vaultDir, SECRETS_FILE);
     if (!fs.existsSync(secretsPath)) return;
     assertMutableSecretsPath(vaultDir);
@@ -386,8 +426,11 @@ export function deleteSecrets(vaultDir: string, keys: string[]): void {
  * the file's perms to 0o600 if a pre-Grove install left them looser —
  * see `tightenSecretsPermissions` for the no-op-on-missing semantics.
  */
-export function loadSecrets(vaultDir: string): void {
-  const secrets = readSecretsWithSecurePermissions(vaultDir);
+export function loadSecrets(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): void {
+  const secrets = readSecretsWithSecurePermissions(vaultDir, lockNamespace);
   for (const [key, value] of Object.entries(secrets)) {
     if (!process.env[key]) {
       process.env[key] = value;
@@ -430,10 +473,11 @@ const layeredSecretOwnership = new WeakMap<NodeJS.ProcessEnv, Map<string, string
 export function loadLayeredSecrets(
   secretsDirs: string[],
   env: NodeJS.ProcessEnv = process.env,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   const stores = secretsDirs.map((dir) => ({
     dir,
-    secrets: readSecretsWithSecurePermissions(dir),
+    secrets: readSecretsWithSecurePermissions(dir, lockNamespace),
   }));
 
   const owned = layeredSecretOwnership.get(env) ?? new Map<string, string>();
@@ -479,13 +523,23 @@ export function loadLayeredSecrets(
  * On non-POSIX platforms (Windows) `fs.chmod` is a no-op for the bits
  * we care about; we rely on NTFS ACLs there and skip without erroring.
  */
-export function tightenSecretsPermissions(vaultDir: string): void {
-  readSecretsWithSecurePermissions(vaultDir);
+export function tightenSecretsPermissions(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): void {
+  readSecretsWithSecurePermissions(vaultDir, lockNamespace);
 }
 
-function readSecretsWithSecurePermissions(vaultDir: string): Record<string, string> {
+function readSecretsWithSecurePermissions(
+  vaultDir: string,
+  lockNamespace: PerUserLockNamespace,
+): Record<string, string> {
   prepareSecretsDirectoryForLock(vaultDir);
-  return withSecretsTransaction(vaultDir, () => tightenSecretsPermissionsUnlocked(vaultDir));
+  return withSecretsTransaction(
+    vaultDir,
+    lockNamespace,
+    () => tightenSecretsPermissionsUnlocked(vaultDir),
+  );
 }
 
 function tightenSecretsPermissionsUnlocked(vaultDir: string): Record<string, string> {
@@ -712,6 +766,7 @@ interface LegacyTeamSecretPlan {
 export function withLegacyTeamSecretSnapshotsReconciledSync(
   pairs: readonly LegacyTeamSecretReconcilePair[],
   finalizer: () => LegacyTeamSecretFinalizerOutcome,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): LegacyTeamSecretReconcileResult {
   assertLegacyTeamSecretPairs(pairs);
   if (finalizer.constructor.name === 'AsyncFunction') {
@@ -719,6 +774,7 @@ export function withLegacyTeamSecretSnapshotsReconciledSync(
   }
   return withSecretsTransactions(
     pairs.flatMap((pair) => [pair.sourceVaultDir, pair.destinationVaultDir]),
+    lockNamespace,
     () => {
       const plans = planLegacyTeamSecretReconciliation(pairs);
       for (const plan of plans) {
@@ -744,6 +800,36 @@ export function withLegacyTeamSecretSnapshotsReconciledSync(
       return { dispositions: plans.map((plan) => plan.disposition), outcome };
     },
   );
+}
+
+export function createSecretsOperations(lockNamespace: PerUserLockNamespace) {
+  return Object.freeze({
+    writeSecret: (vaultDir: string, key: string, value: string) =>
+      writeSecret(vaultDir, key, value, lockNamespace),
+    writeSecretIfAbsent: (vaultDir: string, key: string, mint: () => string) =>
+      writeSecretIfAbsent(vaultDir, key, mint, lockNamespace),
+    propagateLegacySecrets: (vaultDir: string, mycoHome: string) =>
+      propagateLegacySecrets(vaultDir, mycoHome, lockNamespace),
+    relocateLegacyProjectSecrets: (vaultDir: string, mycoHome: string) =>
+      relocateLegacyProjectSecrets(vaultDir, mycoHome, lockNamespace),
+    deleteSecrets: (vaultDir: string, keys: string[]) =>
+      deleteSecrets(vaultDir, keys, lockNamespace),
+    loadSecrets: (vaultDir: string) => loadSecrets(vaultDir, lockNamespace),
+    loadLayeredSecrets: (
+      secretsDirs: string[],
+      env: NodeJS.ProcessEnv = process.env,
+    ) => loadLayeredSecrets(secretsDirs, env, lockNamespace),
+    tightenSecretsPermissions: (vaultDir: string) =>
+      tightenSecretsPermissions(vaultDir, lockNamespace),
+    withLegacyTeamSecretSnapshotsReconciledSync: (
+      pairs: readonly LegacyTeamSecretReconcilePair[],
+      finalizer: () => LegacyTeamSecretFinalizerOutcome,
+    ) => withLegacyTeamSecretSnapshotsReconciledSync(
+      pairs,
+      finalizer,
+      lockNamespace,
+    ),
+  });
 }
 
 function assertLegacyTeamSecretPairs(pairs: readonly LegacyTeamSecretReconcilePair[]): void {

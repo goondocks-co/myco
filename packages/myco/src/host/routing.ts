@@ -52,6 +52,10 @@
 import type { GroveProjectId } from '../grove/ids.js';
 import { scopePolicyForPath } from '../config/scope.js';
 import { resolveAttachMembership } from './registry.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { ROUTED_RESIDENCY_PULL_PATH, ROUTED_RESIDENCY_ROWS_PATH } from './residency-journal.js';
 
 /** The scope-map stamp a route carries. See the module docstring. */
@@ -670,10 +674,10 @@ export function classifyRoute(input: {
   method: string;
   pathname: string;
   projectId: GroveProjectId | null;
-}): RouteDecision {
+}, lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace): RouteDecision {
   if (!input.projectId) return { kind: 'local' };
 
-  const attach = resolveAttachMembership(input.projectId);
+  const attach = resolveAttachMembership(input.projectId, lockNamespace);
   if (!attach) return { kind: 'local' };
 
   const classification = classifyRouteStamp(input.method, input.pathname);

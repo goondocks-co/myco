@@ -40,6 +40,10 @@ import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { getHostMembershipSnapshot } from '../host/registry.js';
 import type { RemoteTarget } from '../host/routing.js';
+import {
+  nativePerUserLockNamespace,
+  type PerUserLockNamespace,
+} from '@myco/utils/per-user-lock-namespace.js';
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import { isPlanWriteEvent, type PlanWatchConfig } from '../daemon/plan-capture.js';
 import type { DaemonLogger } from '../daemon/logger.js';
@@ -291,8 +295,12 @@ export const defaultPlanTransport: PlanPostTransport = async (target, body) => {
 /** Default host-target builder for the backstop / post-restart drain, when no live
  *  {@link RemoteTarget} is on hand. Reads the host record + bearer from the
  *  machine-global registry. */
-function defaultResolveHostTarget(hostId: string, sample: PlanDrainEntry): RemoteTarget | null {
-  const membership = getHostMembershipSnapshot(hostId);
+function defaultResolveHostTarget(
+  hostId: string,
+  sample: PlanDrainEntry,
+  lockNamespace: PerUserLockNamespace,
+): RemoteTarget | null {
+  const membership = getHostMembershipSnapshot(hostId, lockNamespace);
   if (!membership) return null;
   const { record: host, bearer } = membership;
   return {
@@ -322,6 +330,7 @@ export interface PlanDrainDeps {
   transport?: PlanPostTransport;
   fileReader?: PlanFileReader;
   resolveHostTarget?: (hostId: string, sample: PlanDrainEntry) => RemoteTarget | null;
+  lockNamespace?: PerUserLockNamespace;
   /** Coalescing throttle for the mid-turn drain — mirrors live-reconcile's 3 s
    *  leading+trailing throttle. Default 3000ms. */
   intervalMs?: number;
@@ -363,7 +372,12 @@ export class PlanDrainQueue {
     this.store = deps.store ?? createFsPlanDrainStore();
     this.transport = deps.transport ?? defaultPlanTransport;
     this.fileReader = deps.fileReader ?? defaultFileReader;
-    this.resolveHostTarget = deps.resolveHostTarget ?? defaultResolveHostTarget;
+    this.resolveHostTarget = deps.resolveHostTarget
+      ?? ((hostId, sample) => defaultResolveHostTarget(
+        hostId,
+        sample,
+        deps.lockNamespace ?? nativePerUserLockNamespace,
+      ));
     this.intervalMs = deps.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.now = deps.now ?? Date.now;
     this.setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));

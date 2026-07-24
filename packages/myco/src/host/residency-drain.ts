@@ -54,6 +54,7 @@ import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { resolveProjectBufferDir } from '../grove/paths.js';
 import { detachProject, getHostMembershipSnapshot } from './registry.js';
+import { nativePerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { registerProjectInGrove } from '../grove/registry.js';
 import type { RemoteTarget } from './routing.js';
 import { completeAttachParking, type ResidencyDaemonDeps } from './residency-transition.js';
@@ -192,8 +193,13 @@ export const defaultResidencyTransport: ResidencyPostTransport = async (target, 
 
 /** Default host-target builder: read the host record + bearer from the machine-
  *  global registry, tenancy scoped to the residency push (host's served Grove). */
-const defaultResolveResidencyTarget: ResolveResidencyTarget = (hostId, groveId, projectId) => {
-  const membership = getHostMembershipSnapshot(hostId);
+const defaultResolveResidencyTarget = (
+  hostId: string,
+  groveId: string,
+  projectId: string,
+  lockNamespace = nativePerUserLockNamespace,
+): RemoteTarget | null => {
+  const membership = getHostMembershipSnapshot(hostId, lockNamespace);
   if (!membership) return null;
   const { record: host, bearer } = membership;
   return {
@@ -329,7 +335,10 @@ export function residencyHealthByHost(teamsHome?: string): Map<string, DrainHeal
 export async function runResidencyTransitions(deps: ResidencyDrainDeps): Promise<{ processed: number }> {
   const transport = deps.transport ?? defaultResidencyTransport;
   const pullTransport = deps.pullTransport ?? defaultResidencyPullTransport;
-  const resolveTarget = deps.resolveHostTarget ?? defaultResolveResidencyTarget;
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
+  const resolveTarget = deps.resolveHostTarget
+    ?? ((hostId, groveId, projectId) =>
+      defaultResolveResidencyTarget(hostId, groveId, projectId, lockNamespace));
   const teamsHome = deps.teamsHome;
   let processed = 0;
 
@@ -377,6 +386,7 @@ async function runDetachTransition(
   resolveTarget: ResolveResidencyTarget,
   teamsHome: string | undefined,
 ): Promise<void> {
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const targetGroveId = journal.target_grove_id;
   if (!targetGroveId) {
     // A detach journal always carries its re-materialize target; a missing one is
@@ -435,7 +445,7 @@ async function runDetachTransition(
 
     // Flip: the journal already records target_grove_id + root (written at begin),
     // so a crash between these two steps re-drives idempotently next tick.
-    detachProject(journal.host_id, journal.project_id);
+    detachProject(journal.host_id, journal.project_id, lockNamespace);
     registerProjectInGrove(targetGroveId, {
       projectId: journal.project_id,
       projectName: journal.project_name,

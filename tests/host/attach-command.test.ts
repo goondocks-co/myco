@@ -27,10 +27,20 @@ import {
   listGroves,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
-import { getHost, resolveAttach, type HostRecord } from '@myco/host/registry.js';
-import { attachCommand, detachCommand } from '@myco/host/attach-command.js';
+import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
+import {
+  attachCommand as attachCommandWith,
+  detachCommand as detachCommandWith,
+} from '@myco/host/attach-command.js';
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { createFsDrainStore } from '@myco/capture/transcript-drain.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+
+const { getHost, resolveAttach } = createHostRegistryOperations(testPerUserLockNamespace);
+const attachCommand = (options: Parameters<typeof attachCommandWith>[0]) =>
+  attachCommandWith(options, testPerUserLockNamespace);
+const detachCommand = (options: Parameters<typeof detachCommandWith>[0]) =>
+  detachCommandWith(options, testPerUserLockNamespace);
 
 let home: string;
 let teamHome: string;

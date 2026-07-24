@@ -35,6 +35,7 @@ import {
 } from '@myco/grove/registry.js';
 import { residencyTransitionInFlight } from '@myco/host/residency-journal.js';
 import { slugifyGroveName } from '@myco/grove/ids.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 export const GROVE_ACTIVATION_MARKER = 'grove-activation.json';
 
@@ -46,6 +47,7 @@ export interface ActivateProjectMigrationInput {
   projectName?: string;
   migrationId?: string;
   targetMachineId?: string | null;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 export interface ActivationValidationSummary {
@@ -207,7 +209,7 @@ export function activateProjectMigration(
   // Team Host never-materialize invariant: refuse to migrate an attached
   // project into a LOCAL Grove — its Grove lives on the host, and activation
   // would materialize exactly the local Grove/DB the attach model forbids.
-  const attach = resolveAttachForProjectRoot(projectRoot);
+  const attach = resolveAttachForProjectRoot(projectRoot, input.lockNamespace);
   if (attach) {
     throw new Error(
       `Project is served by host ${attach.host.label} (${attach.host.overlay_address}); `

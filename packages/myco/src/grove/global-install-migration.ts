@@ -29,6 +29,7 @@ import { readJsonFile, writeOrDeleteJsonFile } from '../symbionts/json-helpers.j
 import { propagateLegacyMachineId } from '@myco/machine-id.js';
 import { relocateLegacyProjectSecrets, SECRETS_FILE } from '@myco/config/secrets.js';
 import { epochSeconds } from '@myco/constants.js';
+import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 /**
  * On-disk shape of the per-project sentinel that marks the global-install
@@ -128,6 +129,7 @@ export interface MigrateOptions {
    * Production callers leave undefined to use `resolvePackageRoot()`.
    */
   packageRoot?: string;
+  lockNamespace?: PerUserLockNamespace;
 }
 
 /**
@@ -261,7 +263,11 @@ export function migrateProjectToGlobalInstall(
   // would be deleted by the migration. Global-side keys win on conflict;
   // any key absent globally is lifted from the project file.
   const hadLegacySecrets = fs.existsSync(path.join(vaultDir, SECRETS_FILE));
-  const secretsPropagated = relocateLegacyProjectSecrets(vaultDir, resolveMycoHome());
+  const secretsPropagated = relocateLegacyProjectSecrets(
+    vaultDir,
+    resolveMycoHome(),
+    options.lockNamespace,
+  );
 
   // Step 5 — cleanup empty co-tenant files and directories the strip
   // step may have hollowed out. We never delete a non-empty file; the
@@ -612,6 +618,7 @@ export function runGlobalInstallMigrationPass(
     mycoHome?: string;
     manifests?: SymbiontManifest[];
     packageRoot?: string;
+    lockNamespace?: PerUserLockNamespace;
   } = {},
 ): MigrationPassResult {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
@@ -640,7 +647,11 @@ export function runGlobalInstallMigrationPass(
         continue;
       }
       try {
-        const result = migrateProjectToGlobalInstall(project.root, { manifests, packageRoot });
+        const result = migrateProjectToGlobalInstall(project.root, {
+          manifests,
+          packageRoot,
+          lockNamespace: options.lockNamespace,
+        });
         outcomes.push({
           groveId: grove.id,
           projectId: project.project_id,
