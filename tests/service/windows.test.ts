@@ -41,6 +41,7 @@ class StubRunner implements SchtasksRunner {
   taskStates: TaskSchedulerState[] = [];
   lastResult = '0';
   runExitCode = 0;
+  xmlQueryExitCode = 0;
   deleteLeavesTask = false;
   taskCommand: string | null = null;
   exitOverrides: Map<string, { stdout: string; exitCode: number }> = new Map();
@@ -54,6 +55,9 @@ class StubRunner implements SchtasksRunner {
     if (args[0] === '/query') {
       if (!this.taskExists) return { stdout: 'ERROR: cannot find', exitCode: 1 };
       if (args.includes('/xml')) {
+        if (this.xmlQueryExitCode !== 0) {
+          return { stdout: 'Task Scheduler provider unavailable', exitCode: this.xmlQueryExitCode };
+        }
         const command = this.taskCommand ?? '';
         return { stdout: `<Task><Actions><Exec><Command>${command}</Command></Exec></Actions></Task>`, exitCode: 0 };
       }
@@ -66,7 +70,7 @@ class StubRunner implements SchtasksRunner {
     if (override) return override;
     if (args[0] === '/create') {
       this.taskExists = true;
-      this.taskCommand = args[args.indexOf('/tr') + 1]?.replace(/^"|"$/g, '') ?? null;
+      this.taskCommand = args[args.indexOf('/tr') + 1] ?? null;
     }
     if (args[0] === '/delete' && !this.deleteLeavesTask) this.taskExists = false;
     if (args[0] === '/run' && this.runExitCode !== 0) {
@@ -149,10 +153,7 @@ describe('WindowsTaskServiceManager', () => {
     await expect(mgr.start('co.goondocks.myco')).rejects.toThrow(/schtasks \/run.*failed.*exit 1/i);
   });
 
-  test('quotes the /tr action so a spaced script dir does not split at logon (P2)', async () => {
-    // A default service dir under a spaced user profile
-    // (`C:\Users\First Last\.myco\service\…cmd`) must not split the schtasks
-    // action at the space — Task Scheduler re-parses the stored action string.
+  test('passes a spaced /tr action as one unquoted argv value', async () => {
     const scriptDir = path.join(tmp('myco-wt-'), 'First Last');
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
@@ -163,7 +164,38 @@ describe('WindowsTaskServiceManager', () => {
     expect(scriptPath).toContain(' '); // sanity: the path really has a space
     const create = runner.calls.find((c) => c[0] === '/create')!;
     const trValue = create[create.indexOf('/tr') + 1];
-    expect(trValue).toBe(`"${scriptPath}"`);
+    expect(trValue).toBe(scriptPath);
+  });
+
+  test('recreates a quoted task action instead of accepting a non-runnable install', async () => {
+    const scriptDir = path.join(tmp('myco-wt-'), 'First Last');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    runner.taskCommand = `"${scriptPath}"`;
+    runner.calls.length = 0;
+
+    const result = await mgr.install(spec);
+
+    expect(result.changed).toBe(true);
+    const create = runner.calls.find((call) => call[0] === '/create');
+    expect(create?.[create.indexOf('/tr') + 1]).toBe(scriptPath);
+  });
+
+  test('does not overwrite an existing task when XML inspection fails', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
+    const spec = makeSpec();
+
+    await mgr.install(spec);
+    runner.xmlQueryExitCode = 1;
+    runner.calls.length = 0;
+
+    await expect(mgr.install(spec)).rejects.toThrow(/Task Scheduler.*inspection failed/i);
+    expect(runner.calls.some((call) => call[0] === '/create')).toBe(false);
   });
 
   test('isInstalled reflects the locale-independent task state', async () => {

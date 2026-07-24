@@ -225,7 +225,13 @@ export class WindowsTaskServiceManager implements ServiceManager {
     }
 
     const task = await this.runner.run(['/query', '/tn', label, '/xml']);
-    if (task.exitCode !== 0) return null;
+    if (task.exitCode !== 0) {
+      if (await this.runner.queryState(label) === 'absent') return null;
+      throw new Error(
+        `Task Scheduler task inspection failed for ${label}: `
+        + `schtasks /query exited ${task.exitCode}: ${task.stdout}`,
+      );
+    }
     const taskCommand = parseTaskCommand(task.stdout);
     if (taskCommand !== scriptPath) return null;
     return parseWindowsLauncherCommand(script);
@@ -236,8 +242,12 @@ export class WindowsTaskServiceManager implements ServiceManager {
     const rendered = renderWindowsServiceScript(spec);
     let existing: string | null = null;
     try { existing = fs.readFileSync(scriptPath, 'utf-8'); } catch { /* ENOENT */ }
-    const taskExists = await this.isInstalled(spec.label);
-    if (existing === rendered && taskExists) {
+    const installed = existing === rendered
+      ? await this.inspect(spec.label)
+      : null;
+    if (installed?.executable === spec.executable
+      && installed.args.length === spec.args.length
+      && installed.args.every((arg, index) => arg === spec.args[index])) {
       return { changed: false, supervisorReloaded: false };
     }
 
@@ -251,14 +261,8 @@ export class WindowsTaskServiceManager implements ServiceManager {
     // (non-elevated) rights. A non-RunAtLoad spec gets an on-demand task with
     // no automatic trigger.
     const trigger = spec.runAtLoad ? ['/sc', 'onlogon'] : ['/sc', 'once', '/st', '00:00', '/sd', '01/01/2099'];
-    // Quote the /tr action: Task Scheduler re-parses the stored action string and
-    // splits an unquoted path at the first space, so a default script dir under a
-    // spaced user profile (`C:\Users\First Last\.myco\service\…cmd`) would fail to
-    // launch at logon. The embedded quotes are part of the argv value (the runner
-    // spawns schtasks without a shell), which is how schtasks delimits a spaced
-    // executable path.
     assertRunSucceeded(
-      await this.runner.run(['/create', '/tn', spec.label, '/tr', `"${scriptPath}"`, ...trigger, '/rl', 'limited', '/f']),
+      await this.runner.run(['/create', '/tn', spec.label, '/tr', scriptPath, ...trigger, '/rl', 'limited', '/f']),
       `schtasks /create /tn ${spec.label}`,
     );
     return { changed: true, supervisorReloaded: true };
@@ -354,9 +358,7 @@ function parseTaskCommand(xml: string): string | null {
   if (commands.length !== 1) return null;
   const decoded = decodeXmlText(commands[0][1]);
   if (decoded === null) return null;
-  return decoded.startsWith('"') && decoded.endsWith('"')
-    ? decoded.slice(1, -1)
-    : decoded;
+  return decoded;
 }
 
 function parseWindowsLauncherCommand(script: string): InstalledServiceCommand | null {
