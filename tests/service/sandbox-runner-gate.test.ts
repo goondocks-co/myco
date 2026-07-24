@@ -67,15 +67,20 @@ describe('Real runners refuse to shell out when sandbox env var is set', () => {
 
   test('RealSchtasksRunner distinguishes a successful empty enumeration from provider failure', async () => {
     class TestRunner extends RealSchtasksRunner {
+      command: string | undefined;
       constructor(private readonly result: { stdout: string; exitCode: number }) { super(); }
-      protected override async runPowerShell(): Promise<{ stdout: string; exitCode: number }> {
+      protected override async runPowerShell(args: string[]): Promise<{ stdout: string; exitCode: number }> {
+        this.command = args.at(-1);
         return this.result;
       }
     }
     delete process.env[SERVICE_UNIT_DIR_ENV];
     try {
-      await expect(new TestRunner({ stdout: '-1\r\n', exitCode: 0 }).queryState('co.goondocks.myco'))
+      const emptyRunner = new TestRunner({ stdout: '-1\r\n', exitCode: 0 });
+      await expect(emptyRunner.queryState('co.goondocks.myco'))
         .resolves.toBe('absent');
+      expect(emptyRunner.command).toContain("}\nelseif");
+      expect(emptyRunner.command).not.toContain('}; elseif');
       await expect(new TestRunner({ stdout: 'CIM provider unavailable', exitCode: 1 }).queryState('co.goondocks.myco'))
         .rejects.toThrow(/Get-ScheduledTask.*failed.*exit 1/i);
     } finally {

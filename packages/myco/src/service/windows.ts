@@ -82,7 +82,7 @@ export class RealSchtasksRunner implements SchtasksRunner {
       'elseif ($tasks.Count -eq 1) { Write-Output ([int]$tasks[0].State) }',
       "else { throw 'Multiple exact-name tasks found' }",
       '} catch { Write-Error $_; exit 1 }',
-    ].join('; ');
+    ].join('\n');
     const result = await this.runPowerShell([
       '-NoProfile',
       '-NonInteractive',
