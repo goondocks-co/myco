@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   WindowsTaskServiceManager,
   type SchtasksRunner,
+  type TaskSchedulerRegistration,
   type TaskSchedulerState,
   type WindowsManagerOptions,
 } from '../../packages/myco/src/service/windows';
@@ -33,9 +34,27 @@ function makeSpec(over: Partial<ServiceSpec> = {}): ServiceSpec {
   };
 }
 
+function expectedTaskHost(): string {
+  return path.win32.join(
+    process.env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+}
+
+function expectedTaskHostArguments(scriptPath: string): string {
+  const literalScriptPath = `'${scriptPath.replace(/'/g, "''")}'`;
+  const encodedCommand = Buffer.from(`& ${literalScriptPath}`, 'utf16le').toString('base64');
+  return `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
+}
+
 /** Stub schtasks: records argv, fakes /query existence + /v status. */
 class StubRunner implements SchtasksRunner {
   calls: string[][] = [];
+  registrations: TaskSchedulerRegistration[] = [];
+  currentUserSidValue = 'S-1-5-21-1000';
   taskExists = false;
   taskState: TaskSchedulerState = 'ready';
   taskStates: TaskSchedulerState[] = [];
@@ -45,6 +64,15 @@ class StubRunner implements SchtasksRunner {
   deleteLeavesTask = false;
   taskCommand: string | null = null;
   taskArguments: string | null = null;
+  taskUserId = this.currentUserSidValue;
+  taskLogonType = 'InteractiveToken';
+  taskRunLevel = 'LeastPrivilege';
+  taskDisallowStartIfOnBatteries = 'false';
+  taskStopIfGoingOnBatteries = 'false';
+  taskExecutionTimeLimit = 'PT0S';
+  taskRunAtLoad = true;
+  extraTriggerXml = '';
+  registerResult = { stdout: '', exitCode: 0 };
   exitOverrides: Map<string, { stdout: string; exitCode: number }> = new Map();
   async queryState(label: string): Promise<TaskSchedulerState> {
     this.calls.push(['/state', label]);
@@ -64,7 +92,27 @@ class StubRunner implements SchtasksRunner {
           ? ''
           : `<Arguments>${this.taskArguments}</Arguments>`;
         return {
-          stdout: `<Task><Actions><Exec><Command>${command}</Command>${argumentsXml}</Exec></Actions></Task>`,
+          stdout: [
+            '<Task>',
+            '<Principals><Principal>',
+            `<UserId>${this.taskUserId}</UserId>`,
+            `<LogonType>${this.taskLogonType}</LogonType>`,
+            `<RunLevel>${this.taskRunLevel}</RunLevel>`,
+            '</Principal></Principals>',
+            '<Settings>',
+            `<DisallowStartIfOnBatteries>${this.taskDisallowStartIfOnBatteries}</DisallowStartIfOnBatteries>`,
+            `<StopIfGoingOnBatteries>${this.taskStopIfGoingOnBatteries}</StopIfGoingOnBatteries>`,
+            `<ExecutionTimeLimit>${this.taskExecutionTimeLimit}</ExecutionTimeLimit>`,
+            '</Settings>',
+            '<Triggers>',
+            ...(this.taskRunAtLoad
+              ? [`<LogonTrigger><UserId>${this.taskUserId}</UserId></LogonTrigger>`]
+              : []),
+            this.extraTriggerXml,
+            '</Triggers>',
+            `<Actions><Exec><Command>${command}</Command>${argumentsXml}</Exec></Actions>`,
+            '</Task>',
+          ].join(''),
           exitCode: 0,
         };
       }
@@ -75,18 +123,33 @@ class StubRunner implements SchtasksRunner {
     }
     const override = this.exitOverrides.get(args[0]);
     if (override) return override;
-    if (args[0] === '/create') {
-      this.taskExists = true;
-      const taskRun = args[args.indexOf('/tr') + 1] ?? '';
-      const separator = taskRun.indexOf(' ');
-      this.taskCommand = separator === -1 ? taskRun : taskRun.slice(0, separator);
-      this.taskArguments = separator === -1 ? null : taskRun.slice(separator + 1);
-    }
     if (args[0] === '/delete' && !this.deleteLeavesTask) this.taskExists = false;
     if (args[0] === '/run' && this.runExitCode !== 0) {
       return { stdout: 'ERROR: The system cannot find the path specified.', exitCode: this.runExitCode };
     }
     return { stdout: '', exitCode: 0 };
+  }
+  async currentUserSid(): Promise<string> {
+    return this.currentUserSidValue;
+  }
+  async register(
+    registration: TaskSchedulerRegistration,
+  ): Promise<{ stdout: string; exitCode: number }> {
+    this.registrations.push(registration);
+    if (this.registerResult.exitCode === 0) {
+      this.taskExists = true;
+      this.taskCommand = registration.command;
+      this.taskArguments = registration.arguments;
+      this.taskUserId = this.currentUserSidValue;
+      this.taskLogonType = 'InteractiveToken';
+      this.taskRunLevel = 'LeastPrivilege';
+      this.taskDisallowStartIfOnBatteries = 'false';
+      this.taskStopIfGoingOnBatteries = 'false';
+      this.taskExecutionTimeLimit = 'PT0S';
+      this.taskRunAtLoad = registration.runAtLoad;
+      this.extraTriggerXml = '';
+    }
+    return this.registerResult;
   }
 }
 
@@ -165,13 +228,60 @@ describe('WindowsTaskServiceManager', () => {
       Buffer.from([0xef, 0xbb, 0xbf]),
     );
 
-    const create = runner.calls.find((c) => c[0] === '/create');
-    expect(create).toBeDefined();
-    expect(create).toEqual(expect.arrayContaining(['/tn', spec.label, '/sc', 'onlogon', '/rl', 'limited', '/f']));
+    expect(runner.registrations).toEqual([{
+      label: spec.label,
+      command: expectedTaskHost(),
+      arguments: expectedTaskHostArguments(scriptPath),
+      runAtLoad: true,
+    }]);
+    expect(runner.calls.some((call) => call[0] === '/create')).toBe(false);
 
     // Unchanged spec + existing task -> no rewrite.
     const r2 = await mgr.install(spec);
     expect(r2.changed).toBe(false);
+  });
+
+  test('re-registers when runAtLoad changes instead of retaining a stale logon trigger', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
+    });
+    const spec = makeSpec({ runAtLoad: true });
+    await mgr.install(spec);
+
+    const result = await mgr.install({ ...spec, runAtLoad: false });
+
+    expect(result.changed).toBe(true);
+    expect(runner.registrations).toHaveLength(2);
+    expect(runner.registrations.at(-1)?.runAtLoad).toBe(false);
+    expect(runner.taskRunAtLoad).toBe(false);
+  });
+
+  test('re-registers same-action tasks whose principal or daemon settings drift', async () => {
+    const driftCases: Array<(runner: StubRunner) => void> = [
+      (runner) => { runner.taskUserId = 'S-1-5-21-2000'; },
+      (runner) => { runner.taskLogonType = 'Password'; },
+      (runner) => { runner.taskRunLevel = 'HighestAvailable'; },
+      (runner) => { runner.taskDisallowStartIfOnBatteries = 'true'; },
+      (runner) => { runner.taskStopIfGoingOnBatteries = 'true'; },
+      (runner) => { runner.taskExecutionTimeLimit = 'PT72H'; },
+      (runner) => { runner.extraTriggerXml = '<RegistrationTrigger />'; },
+    ];
+
+    for (const introduceDrift of driftCases) {
+      const runner = new StubRunner();
+      const mgr = new WindowsTaskServiceManager({
+        runner,
+        scriptDir: tmp('myco-wt-'),
+      });
+      const spec = makeSpec();
+      await mgr.install(spec);
+      introduceDrift(runner);
+
+      await expect(mgr.install(spec)).resolves.toMatchObject({ changed: true });
+      expect(runner.registrations).toHaveLength(2);
+    }
   });
 
   test('start throws when schtasks /run exits non-zero (no silent success)', async () => {
@@ -181,8 +291,8 @@ describe('WindowsTaskServiceManager', () => {
     await expect(mgr.start('co.goondocks.myco')).rejects.toThrow(/schtasks \/run.*failed.*exit 1/i);
   });
 
-  test('passes a spaced /tr action to non-interactive PowerShell', async () => {
-    const scriptDir = path.join(tmp('myco-wt-'), 'First Last');
+  test('registers a hostile launcher path as structured Task Scheduler fields', async () => {
+    const scriptDir = path.join(tmp('myco-wt-'), "First Last %PATH% & ! O'Brien Ω");
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
     const spec = makeSpec();
@@ -190,11 +300,12 @@ describe('WindowsTaskServiceManager', () => {
     await mgr.install(spec);
     const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
     expect(scriptPath).toContain(' '); // sanity: the path really has a space
-    const create = runner.calls.find((c) => c[0] === '/create')!;
-    const trValue = create[create.indexOf('/tr') + 1];
-    expect(trValue).toBe(
-      `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`,
-    );
+    const registration = runner.registrations[0];
+    expect(registration.command).toBe(expectedTaskHost());
+    expect(registration.arguments).toBe(expectedTaskHostArguments(scriptPath));
+    expect(registration.arguments).not.toContain(scriptPath);
+    expect(`${registration.command} ${registration.arguments}`.length).toBeGreaterThan(262);
+    expect(runner.calls.some((call) => call.includes('/tr'))).toBe(false);
   });
 
   test('retires the legacy batch launcher only after task recreation succeeds', async () => {
@@ -204,12 +315,12 @@ describe('WindowsTaskServiceManager', () => {
     const spec = makeSpec();
 
     const failingRunner = new StubRunner();
-    failingRunner.exitOverrides.set('/create', { stdout: 'provider failure', exitCode: 1 });
+    failingRunner.registerResult = { stdout: 'provider failure', exitCode: 1 };
     const failingManager = new WindowsTaskServiceManager({
       runner: failingRunner,
       scriptDir,
     });
-    await expect(failingManager.install(spec)).rejects.toThrow(/schtasks.*create/i);
+    await expect(failingManager.install(spec)).rejects.toThrow(/Register-ScheduledTask.*failed/i);
     expect(fs.existsSync(legacyPath)).toBe(true);
 
     const runner = new StubRunner();
@@ -234,11 +345,12 @@ describe('WindowsTaskServiceManager', () => {
     const result = await mgr.install(spec);
 
     expect(result.changed).toBe(true);
-    const create = runner.calls.find((call) => call[0] === '/create');
-    expect(create?.[create.indexOf('/tr') + 1])
-      .toBe(
-        `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`,
-      );
+    expect(runner.registrations.at(-1)).toEqual({
+      label: spec.label,
+      command: expectedTaskHost(),
+      arguments: expectedTaskHostArguments(scriptPath),
+      runAtLoad: true,
+    });
   });
 
   test('does not overwrite an existing task when XML inspection fails', async () => {
@@ -251,7 +363,7 @@ describe('WindowsTaskServiceManager', () => {
     runner.calls.length = 0;
 
     await expect(mgr.install(spec)).rejects.toThrow(/Task Scheduler.*inspection failed/i);
-    expect(runner.calls.some((call) => call[0] === '/create')).toBe(false);
+    expect(runner.registrations).toHaveLength(1);
   });
 
   test('keeps shell metacharacters literal in the PowerShell launcher path', async () => {
@@ -261,9 +373,11 @@ describe('WindowsTaskServiceManager', () => {
     const spec = makeSpec();
 
     await expect(mgr.install(spec)).resolves.toMatchObject({ changed: true });
-    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.ps1`))).toBe(true);
-    const create = runner.calls.find((call) => call[0] === '/create');
-    expect(create?.[create.indexOf('/tr') + 1]).toContain(`-File "${scriptDir}`);
+    const scriptPath = path.join(scriptDir, `${spec.label}.ps1`);
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(runner.registrations[0].arguments).toBe(
+      expectedTaskHostArguments(scriptPath),
+    );
   });
 
   test('isInstalled reflects the locale-independent task state', async () => {
@@ -544,6 +658,8 @@ describe('WindowsTaskServiceManager', () => {
     const runner: SchtasksRunner = {
       async run(args) { events.push('schtasks:' + args.join(' ')); return { stdout: '', exitCode: 0 }; },
       async queryState() { return 'absent'; },
+      async currentUserSid() { return 'S-1-5-21-1000'; },
+      async register() { return { stdout: '', exitCode: 0 }; },
     };
     return new WindowsTaskServiceManager({
       runner,
@@ -568,6 +684,12 @@ describe('WindowsTaskServiceManager', () => {
         return events.includes('schtasks:/end /tn co.goondocks.myco-dev')
           ? 'ready'
           : 'running';
+      },
+      async currentUserSid() {
+        return 'S-1-5-21-1000';
+      },
+      async register() {
+        return { stdout: '', exitCode: 0 };
       },
     };
     const mgr = new WindowsTaskServiceManager({

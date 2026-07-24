@@ -44,6 +44,18 @@ function readDaemonPortForLabel(_label: string): number | null {
 export interface SchtasksRunner {
   run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
   queryState(label: string): Promise<TaskSchedulerState>;
+  currentUserSid(): Promise<string>;
+  register(registration: TaskSchedulerRegistration): Promise<{
+    stdout: string;
+    exitCode: number;
+  }>;
+}
+
+export interface TaskSchedulerRegistration {
+  label: string;
+  command: string;
+  arguments: string;
+  runAtLoad: boolean;
 }
 
 export type TaskSchedulerState =
@@ -97,8 +109,69 @@ export class RealSchtasksRunner implements SchtasksRunner {
     return taskSchedulerStateFromNumber(parseInt(output, 10), label);
   }
 
+  async currentUserSid(): Promise<string> {
+    if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) return 'S-1-0-0';
+    const result = await this.runPowerShell([
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
+    ]);
+    assertRunSucceeded(result, 'PowerShell current Windows user SID');
+    const sid = result.stdout.trim();
+    if (!/^S-\d+(?:-\d+)+$/i.test(sid)) {
+      throw new Error(`Invalid current Windows user SID: ${JSON.stringify(sid)}`);
+    }
+    return sid;
+  }
+
+  async register(
+    registration: TaskSchedulerRegistration,
+  ): Promise<{ stdout: string; exitCode: number }> {
+    if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
+      return {
+        stdout: `[sandbox] skipped Task Scheduler registration ${registration.label}`,
+        exitCode: 0,
+      };
+    }
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      'try {',
+      '  $userId = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
+      `  $action = New-ScheduledTaskAction -Execute ${powerShellLiteral(registration.command)} -Argument ${powerShellLiteral(registration.arguments)}`,
+      "  $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited",
+      '  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)',
+      '  $parameters = @{',
+      `    TaskName = ${powerShellLiteral(registration.label)}`,
+      '    Action = $action',
+      '    Principal = $principal',
+      '    Settings = $settings',
+      '    Force = $true',
+      '  }',
+      ...(registration.runAtLoad
+        ? [
+            "  $parameters['Trigger'] = New-ScheduledTaskTrigger -AtLogOn -User $userId",
+          ]
+        : []),
+      '  Register-ScheduledTask @parameters | Out-Null',
+      '} catch {',
+      '  Write-Error $_',
+      '  exit 1',
+      '}',
+    ].join('\n');
+    return this.runPowerShell([
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      encodePowerShellCommand(command),
+    ]);
+  }
+
   protected runPowerShell(args: string[]): Promise<{ stdout: string; exitCode: number }> {
-    return spawnCombinedOutput('powershell.exe', args);
+    return spawnCombinedOutput(WINDOWS_TASK_HOST, args);
   }
 }
 
@@ -127,12 +200,17 @@ const WINDOWS_TASK_HOST = path.win32.join(
 );
 const WINDOWS_POWERSHELL_UTF8_BOM = '\uFEFF';
 
-function windowsTaskHostArguments(scriptPath: string): string {
-  return `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`;
+function powerShellLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
-function windowsTaskRunCommand(scriptPath: string): string {
-  return `${WINDOWS_TASK_HOST} ${windowsTaskHostArguments(scriptPath)}`;
+function encodePowerShellCommand(command: string): string {
+  return Buffer.from(command, 'utf16le').toString('base64');
+}
+
+function windowsTaskHostArguments(scriptPath: string): string {
+  const encodedCommand = encodePowerShellCommand(`& ${powerShellLiteral(scriptPath)}`);
+  return `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
 }
 
 export class ExternalMcpHardKillBlockedError extends Error {
@@ -245,6 +323,13 @@ export class WindowsTaskServiceManager implements ServiceManager {
   }
 
   async inspect(label: string): Promise<InstalledServiceCommand | null> {
+    return this.inspectRegistration(label);
+  }
+
+  private async inspectRegistration(
+    label: string,
+    expectedRunAtLoad?: boolean,
+  ): Promise<InstalledServiceCommand | null> {
     const scriptPath = this.scriptPath(label);
     let script: string;
     try {
@@ -266,6 +351,10 @@ export class WindowsTaskServiceManager implements ServiceManager {
       || taskAction.arguments !== windowsTaskHostArguments(scriptPath)) {
       return null;
     }
+    const currentUserSid = await this.runner.currentUserSid();
+    if (!taskPolicyMatches(task.stdout, currentUserSid, expectedRunAtLoad)) {
+      return null;
+    }
     return parseWindowsLauncherCommand(script);
   }
 
@@ -275,7 +364,7 @@ export class WindowsTaskServiceManager implements ServiceManager {
     let existing: string | null = null;
     try { existing = fs.readFileSync(scriptPath, 'utf-8'); } catch { /* ENOENT */ }
     const installed = existing === rendered
-      ? await this.inspect(spec.label)
+      ? await this.inspectRegistration(spec.label, spec.runAtLoad)
       : null;
     if (installed?.executable === spec.executable
       && installed.args.length === spec.args.length
@@ -291,24 +380,14 @@ export class WindowsTaskServiceManager implements ServiceManager {
     fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
     atomicWriteFileSync(scriptPath, rendered);
 
-    // `/sc onlogon` starts the daemon at user logon (RunAtLoad); `/f`
-    // overwrites an existing task; `/rl limited` runs with the user's normal
-    // (non-elevated) rights. A non-RunAtLoad spec gets an on-demand task with
-    // no automatic trigger.
-    const trigger = spec.runAtLoad ? ['/sc', 'onlogon'] : ['/sc', 'once', '/st', '00:00', '/sd', '01/01/2099'];
     assertRunSucceeded(
-      await this.runner.run([
-        '/create',
-        '/tn',
-        spec.label,
-        '/tr',
-        windowsTaskRunCommand(scriptPath),
-        ...trigger,
-        '/rl',
-        'limited',
-        '/f',
-      ]),
-      `schtasks /create /tn ${spec.label}`,
+      await this.runner.register({
+        label: spec.label,
+        command: WINDOWS_TASK_HOST,
+        arguments: windowsTaskHostArguments(scriptPath),
+        runAtLoad: spec.runAtLoad,
+      }),
+      `Register-ScheduledTask ${spec.label}`,
     );
     const legacyScriptPath = this.legacyScriptPath(spec.label);
     if (fs.existsSync(legacyScriptPath)) fs.unlinkSync(legacyScriptPath);
@@ -410,6 +489,54 @@ function parseTaskAction(
   return command === null || argumentsValue === null
     ? null
     : { command, arguments: argumentsValue };
+}
+
+function taskPolicyMatches(
+  xml: string,
+  currentUserSid: string,
+  expectedRunAtLoad?: boolean,
+): boolean {
+  const principal = singleXmlElementBody(xml, 'Principal');
+  const settings = singleXmlElementBody(xml, 'Settings');
+  if (principal === null || settings === null) return false;
+
+  const principalUserId = singleXmlText(principal, 'UserId');
+  if (principalUserId?.toLowerCase() !== currentUserSid.toLowerCase()
+    || singleXmlText(principal, 'LogonType') !== 'InteractiveToken'
+    || singleXmlText(principal, 'RunLevel') !== 'LeastPrivilege'
+    || singleXmlText(settings, 'DisallowStartIfOnBatteries')?.toLowerCase() !== 'false'
+    || singleXmlText(settings, 'StopIfGoingOnBatteries')?.toLowerCase() !== 'false'
+    || singleXmlText(settings, 'ExecutionTimeLimit')?.toUpperCase() !== 'PT0S') {
+    return false;
+  }
+
+  const triggers = singleXmlElementBody(xml, 'Triggers');
+  const triggerOpenings = triggers === null
+    ? []
+    : [...triggers.matchAll(/<([A-Za-z]+Trigger)\b/gi)];
+  const logonTriggers = triggers === null
+    ? []
+    : [...triggers.matchAll(/<LogonTrigger\b[\s\S]*?<\/LogonTrigger>/gi)];
+  const hasExpectedLogonTrigger = triggerOpenings.length === 1
+    && logonTriggers.length === 1
+    && singleXmlText(logonTriggers[0][0], 'UserId')?.toLowerCase()
+      === currentUserSid.toLowerCase();
+  if (expectedRunAtLoad === true) return hasExpectedLogonTrigger;
+  if (expectedRunAtLoad === false) return triggerOpenings.length === 0;
+  return triggerOpenings.length === 0 || hasExpectedLogonTrigger;
+}
+
+function singleXmlElementBody(xml: string, element: string): string | null {
+  const pattern = new RegExp(`<${element}\\b[^>]*>([\\s\\S]*?)<\\/${element}>`, 'gi');
+  const matches = [...xml.matchAll(pattern)];
+  return matches.length === 1 ? matches[0][1] : null;
+}
+
+function singleXmlText(xml: string, element: string): string | null {
+  const body = singleXmlElementBody(xml, element);
+  if (body === null) return null;
+  const decoded = decodeXmlText(body);
+  return decoded?.trim() ?? null;
 }
 
 function parseWindowsLauncherCommand(script: string): InstalledServiceCommand | null {
