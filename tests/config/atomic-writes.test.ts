@@ -7,7 +7,10 @@ import {
   durableRemovePathSync,
   reconcileDurableRemovalTombstonesSync,
 } from '../../packages/myco/src/utils/atomic-write.js';
-import { saveConfig } from '../../packages/myco/src/config/loader.js';
+import {
+  saveConfig,
+  updateTierConfigRaw,
+} from '../../packages/myco/src/config/loader.js';
 import { MycoConfigSchema } from '../../packages/myco/src/config/schema.js';
 
 // Smallest valid config: schema requires `version: 3`; every other field
@@ -52,6 +55,91 @@ describe('config atomic writes', () => {
 });
 
 describe('atomicWriteFileSync mode option', () => {
+  test.skipIf(process.platform === 'win32')(
+    'updateTierConfigRaw forwards durable publication to the atomic writer',
+    () => {
+      const mycoHome = mkdtempSync(join(tmpdir(), 'myco-tier-durable-'));
+      const configPath = join(mycoHome, 'config.yaml');
+      const events: string[] = [];
+      const fdPaths = new Map<number, string>();
+      const originalOpen = fs.openSync.bind(fs);
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const originalRename = fs.renameSync.bind(fs);
+      const openSpy = spyOn(fs, 'openSync').mockImplementation(
+        ((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+          const fd = originalOpen(target, flags, mode);
+          fdPaths.set(fd, String(target));
+          return fd;
+        }) as typeof fs.openSync,
+      );
+      const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        events.push(`fsync:${fdPaths.get(fd) ?? 'unknown'}`);
+        originalFsync(fd);
+      });
+      const renameSpy = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        events.push(`rename:${String(destination)}`);
+        originalRename(source, destination);
+      });
+
+      try {
+        updateTierConfigRaw(
+          { kind: 'machine' },
+          (raw) => {
+            raw.daemon = { external_mcp: { enabled: false, port: 8743 } };
+          },
+          { mycoHome, durable: true },
+        );
+      } finally {
+        renameSpy.mockRestore();
+        fsyncSpy.mockRestore();
+        openSpy.mockRestore();
+      }
+
+      const publishIndex = events.indexOf(`rename:${configPath}`);
+      expect(publishIndex).toBeGreaterThanOrEqual(0);
+      expect(events.indexOf(`fsync:${mycoHome}`)).toBeGreaterThan(publishIndex);
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'updateTierConfigRaw remains non-durable unless requested',
+    () => {
+      const mycoHome = mkdtempSync(join(tmpdir(), 'myco-tier-default-write-'));
+      const fdPaths = new Map<number, string>();
+      const fsyncedPaths: string[] = [];
+      const originalOpen = fs.openSync.bind(fs);
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const openSpy = spyOn(fs, 'openSync').mockImplementation(
+        ((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+          const fd = originalOpen(target, flags, mode);
+          fdPaths.set(fd, String(target));
+          return fd;
+        }) as typeof fs.openSync,
+      );
+      const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        fsyncedPaths.push(fdPaths.get(fd) ?? 'unknown');
+        originalFsync(fd);
+      });
+
+      try {
+        updateTierConfigRaw(
+          { kind: 'machine' },
+          (raw) => {
+            raw.daemon = { external_mcp: { enabled: false, port: 8743 } };
+          },
+          { mycoHome },
+        );
+      } finally {
+        fsyncSpy.mockRestore();
+        openSpy.mockRestore();
+      }
+
+      expect(fsyncedPaths.some((openedPath) => openedPath.includes('config.yaml.tmp-')))
+        .toBe(true);
+      expect(fsyncedPaths).not.toContain(mycoHome);
+    },
+  );
+
   test.skipIf(process.platform === 'win32')(
     'durable publication flushes the containing directory after rename',
     () => {

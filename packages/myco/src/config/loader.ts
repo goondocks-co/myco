@@ -377,21 +377,25 @@ function parseTierDocTolerant<T>(parse: (doc: unknown) => T, rawDoc: Record<stri
 }
 
 export type TierWriteTarget = { kind: 'machine' } | { kind: 'grove'; groveId: string };
+export interface TierWriteOptions {
+  mycoHome?: string;
+  durable?: boolean;
+}
 
 export function updateTierConfigRaw(
   target: { kind: 'machine' },
   mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
-  opts?: { mycoHome?: string },
+  opts?: TierWriteOptions,
 ): MachineConfig;
 export function updateTierConfigRaw(
   target: { kind: 'grove'; groveId: string },
   mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
-  opts?: { mycoHome?: string },
+  opts?: TierWriteOptions,
 ): GroveConfig;
 export function updateTierConfigRaw(
   target: TierWriteTarget,
   mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
-  opts?: { mycoHome?: string },
+  opts?: TierWriteOptions,
 ): MachineConfig | GroveConfig;
 /**
  * Canonical write path for machine/grove tier files. Reads the RAW on-disk
@@ -404,7 +408,7 @@ export function updateTierConfigRaw(
 export function updateTierConfigRaw(
   target: TierWriteTarget,
   mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
-  opts?: { mycoHome?: string },
+  opts?: TierWriteOptions,
 ): MachineConfig | GroveConfig {
   const mycoHome = opts?.mycoHome ?? resolveMycoHome();
   const filePath = target.kind === 'machine'
@@ -418,7 +422,10 @@ export function updateTierConfigRaw(
     : parseTierDocTolerant((doc) => GroveConfigSchema.parse(doc), nextRaw);
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  atomicWriteFileSync(filePath, YAML.stringify(nextRaw), 'utf-8');
+  atomicWriteFileSync(filePath, YAML.stringify(nextRaw), {
+    encoding: 'utf-8',
+    durable: opts?.durable,
+  });
   if (target.kind === 'machine') machineConfigCache.delete(filePath);
   else groveConfigCache.delete(filePath);
   invalidateMergedConfigCache();
