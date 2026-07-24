@@ -114,6 +114,17 @@ function assertCondition(condition: unknown, message: string): asserts condition
   if (!condition) throw new Error(message);
 }
 
+export function assertLimitedTaskRunLevel(xml: string): void {
+  const runLevels = [
+    ...xml.matchAll(/<RunLevel\b[^>]*>([^<]+)<\/RunLevel>/gi),
+  ].map((match) => match[1].trim());
+  assertCondition(
+    runLevels.length === 0
+      || (runLevels.length === 1 && runLevels[0] === 'LeastPrivilege'),
+    `Task Scheduler task is not limited-rights: ${JSON.stringify(runLevels)}`,
+  );
+}
+
 function spawnSelf(args: string[], env: NodeJS.ProcessEnv = process.env): ChildProcess {
   return spawn(process.execPath, args, {
     cwd: process.cwd(),
@@ -356,14 +367,7 @@ async function proveNativeTaskScheduler(
 
   const xml = await runner.run(['/query', '/tn', taskLabel, '/xml']);
   assertCondition(xml.exitCode === 0, 'Task Scheduler XML query failed');
-  const runLevel = xml.stdout.match(/<RunLevel\b[^>]*>([^<]+)<\/RunLevel>/i)?.[1]?.trim();
-  assertCondition(
-    runLevel === 'LeastPrivilege',
-    [
-      `Task Scheduler task is not limited-rights: ${JSON.stringify(runLevel ?? null)}`,
-      `Task XML: ${JSON.stringify(xml.stdout.slice(0, 4_000))}`,
-    ].join('\n'),
-  );
+  assertLimitedTaskRunLevel(xml.stdout);
   assertCondition(
     !/<LogonTrigger\b/i.test(xml.stdout),
     'runAtLoad:false unexpectedly installed a logon trigger',

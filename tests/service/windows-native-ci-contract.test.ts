@@ -175,4 +175,15 @@ describe('Windows native CI contract', () => {
       ['/delete', '/tn', 'Myco-CI-Native-123-1', '/f'],
     ]);
   });
+
+  test('limited task proof accepts the scheduler default and rejects elevation', async () => {
+    const { assertLimitedTaskRunLevel } = await import('../helpers/windows-native-contract.js');
+
+    expect(() => assertLimitedTaskRunLevel('<Principal><LogonType>InteractiveToken</LogonType></Principal>'))
+      .not.toThrow();
+    expect(() => assertLimitedTaskRunLevel('<Principal><RunLevel>LeastPrivilege</RunLevel></Principal>'))
+      .not.toThrow();
+    expect(() => assertLimitedTaskRunLevel('<Principal><RunLevel>HighestAvailable</RunLevel></Principal>'))
+      .toThrow(/limited-rights/);
+  });
 });
