@@ -501,9 +501,11 @@ function taskPolicyMatches(
   if (principal === null || settings === null) return false;
 
   const principalUserId = singleXmlText(principal, 'UserId');
+  const runLevel = singleOptionalXmlText(principal, 'RunLevel');
   if (principalUserId?.toLowerCase() !== currentUserSid.toLowerCase()
     || singleXmlText(principal, 'LogonType') !== 'InteractiveToken'
-    || singleXmlText(principal, 'RunLevel') !== 'LeastPrivilege'
+    || runLevel === undefined
+    || (runLevel !== null && runLevel !== 'LeastPrivilege')
     || singleXmlText(settings, 'DisallowStartIfOnBatteries')?.toLowerCase() !== 'false'
     || singleXmlText(settings, 'StopIfGoingOnBatteries')?.toLowerCase() !== 'false'
     || singleXmlText(settings, 'ExecutionTimeLimit')?.toUpperCase() !== 'PT0S') {
@@ -537,6 +539,16 @@ function singleXmlText(xml: string, element: string): string | null {
   if (body === null) return null;
   const decoded = decodeXmlText(body);
   return decoded?.trim() ?? null;
+}
+
+function singleOptionalXmlText(
+  xml: string,
+  element: string,
+): string | null | undefined {
+  const openings = [...xml.matchAll(new RegExp(`<${element}\\b`, 'gi'))];
+  if (openings.length === 0) return null;
+  if (openings.length !== 1) return undefined;
+  return singleXmlText(xml, element) ?? undefined;
 }
 
 function parseWindowsLauncherCommand(script: string): InstalledServiceCommand | null {

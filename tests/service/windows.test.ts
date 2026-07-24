@@ -66,7 +66,7 @@ class StubRunner implements SchtasksRunner {
   taskArguments: string | null = null;
   taskUserId = this.currentUserSidValue;
   taskLogonType = 'InteractiveToken';
-  taskRunLevel = 'LeastPrivilege';
+  taskRunLevel: string | null = 'LeastPrivilege';
   taskDisallowStartIfOnBatteries = 'false';
   taskStopIfGoingOnBatteries = 'false';
   taskExecutionTimeLimit = 'PT0S';
@@ -97,7 +97,9 @@ class StubRunner implements SchtasksRunner {
             '<Principals><Principal>',
             `<UserId>${this.taskUserId}</UserId>`,
             `<LogonType>${this.taskLogonType}</LogonType>`,
-            `<RunLevel>${this.taskRunLevel}</RunLevel>`,
+            ...(this.taskRunLevel === null
+              ? []
+              : [`<RunLevel>${this.taskRunLevel}</RunLevel>`]),
             '</Principal></Principals>',
             '<Settings>',
             `<DisallowStartIfOnBatteries>${this.taskDisallowStartIfOnBatteries}</DisallowStartIfOnBatteries>`,
@@ -256,6 +258,20 @@ describe('WindowsTaskServiceManager', () => {
     expect(runner.registrations).toHaveLength(2);
     expect(runner.registrations.at(-1)?.runAtLoad).toBe(false);
     expect(runner.taskRunAtLoad).toBe(false);
+  });
+
+  test('accepts the omitted default least-privilege run level', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({
+      runner,
+      scriptDir: tmp('myco-wt-'),
+    });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    runner.taskRunLevel = null;
+
+    await expect(mgr.install(spec)).resolves.toMatchObject({ changed: false });
+    expect(runner.registrations).toHaveLength(1);
   });
 
   test('re-registers same-action tasks whose principal or daemon settings drift', async () => {
