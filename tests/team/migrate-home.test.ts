@@ -3,18 +3,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { vi } from '../helpers/vi-shim.js';
 import { migrateTeamsHomeIfNeeded, defaultLegacyTeamHomes } from '@myco/team/migrate-home.js';
+import { secretStoreLockKeys } from '@myco/config/secret-store-lock.js';
 
 const TEAM_ID = 'team_' + 'c'.repeat(32);
 const SECRETS_WRITER_HELPER = path.resolve('tests/helpers/secrets-writer-helper.ts');
 const SECRETS_LOCK_HOLDER_HELPER = path.resolve('tests/helpers/secrets-lock-holder-helper.ts');
 const SECRETS_PROPAGATE_HELPER = path.resolve('tests/helpers/secrets-propagate-helper.ts');
 
-function secretStoreKey(vaultDir: string): string {
-  const identity = path.join(fs.realpathSync(vaultDir), 'secrets.env');
-  return createHash('sha256').update(process.platform === 'win32' ? identity.toLowerCase() : identity).digest('hex');
+function secretStoreKeys(vaultDir: string): string[] {
+  return secretStoreLockKeys(vaultDir);
 }
 
 async function waitForPath(target: string): Promise<void> {
@@ -348,7 +347,9 @@ describe('migrateTeamsHomeIfNeeded', () => {
       let anchor: string;
       do {
         anchor = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-anchor-'));
-        if (secretStoreKey(anchor) >= secretStoreKey(legacyTeamDir)) {
+        if (!secretStoreKeys(anchor).every((anchorKey) => (
+          secretStoreKeys(legacyTeamDir).every((legacyKey) => anchorKey < legacyKey)
+        ))) {
           fs.rmSync(anchor, { recursive: true, force: true });
           anchor = '';
         }

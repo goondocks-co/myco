@@ -13,7 +13,7 @@
  * daemon runs on every boot to close that window.
  */
 
-import { describe, test, expect, afterEach } from 'bun:test';
+import { describe, test, expect, afterEach, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -76,6 +76,23 @@ describe('relocateLegacyProjectSecrets', () => {
     expect(fs.existsSync(path.join(vaultDir, 'secrets.env'))).toBe(false);
   });
 
+  test.skipIf(process.platform === 'win32')(
+    'refuses a destination secrets.env symlink before reading or deleting the source',
+    () => {
+      const { vaultDir, mycoHome } = tmpDirs();
+      const sourcePath = path.join(vaultDir, 'secrets.env');
+      const destinationPath = path.join(mycoHome, 'secrets.env');
+      fs.writeFileSync(sourcePath, 'ONLY_COPY=preserved\n', { mode: 0o600 });
+      fs.symlinkSync(sourcePath, destinationPath);
+      const sourceBefore = fs.readFileSync(sourcePath);
+
+      expect(() => relocateLegacyProjectSecrets(vaultDir, mycoHome))
+        .toThrow(/non-regular secret store/);
+      expect(fs.readFileSync(sourcePath)).toEqual(sourceBefore);
+      expect(fs.lstatSync(destinationPath).isSymbolicLink()).toBe(true);
+    },
+  );
+
   test('lifts machine-absent keys while keeping machine-present ones', () => {
     const { vaultDir, mycoHome } = tmpDirs();
     writeSecret(mycoHome, 'ANTHROPIC_API_KEY', 'machine-anthropic');
@@ -118,4 +135,135 @@ describe('relocateLegacyProjectSecrets', () => {
     expect(readSecrets(mycoHome).OPENAI_API_KEY).toBe('proj-openai');
     expect(fs.existsSync(path.join(vaultDir, 'secrets.env'))).toBe(false);
   });
+
+  test.skipIf(process.platform === 'win32')(
+    'does not unlink the source until destination file and parent publication are durable',
+    () => {
+      const { vaultDir, mycoHome } = tmpDirs();
+      const sourcePath = path.join(vaultDir, 'secrets.env');
+      fs.writeFileSync(sourcePath, 'ONLY_COPY=preserved\n', { mode: 0o600 });
+      const sourceBefore = fs.readFileSync(sourcePath);
+      const destinationDir = fs.realpathSync(mycoHome);
+      const durabilityFailure = new Error('destination directory fsync failed');
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        let fdPath = '';
+        try { fdPath = fs.realpathSync(`/dev/fd/${fd}`); } catch { /* closed or unsupported fd */ }
+        if (fdPath === destinationDir) throw durabilityFailure;
+        originalFsync(fd);
+      });
+
+      try {
+        expect(() => relocateLegacyProjectSecrets(vaultDir, mycoHome))
+          .toThrow(durabilityFailure);
+      } finally {
+        fsyncSpy.mockRestore();
+      }
+      expect(fs.readFileSync(sourcePath)).toEqual(sourceBefore);
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'syncs destination publication before unlink and the source parent after unlink',
+    () => {
+      const { vaultDir, mycoHome } = tmpDirs();
+      const sourcePath = path.join(vaultDir, 'secrets.env');
+      fs.writeFileSync(sourcePath, 'ONLY_COPY=preserved\n', { mode: 0o600 });
+      const sourceDir = fs.realpathSync(vaultDir);
+      const destinationDir = fs.realpathSync(mycoHome);
+      const events: string[] = [];
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const originalRm = fs.rmSync.bind(fs);
+      const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        let fdPath = '';
+        try { fdPath = fs.realpathSync(`/dev/fd/${fd}`); } catch { /* closed or unsupported fd */ }
+        if (fdPath === sourceDir || fdPath === destinationDir) events.push(`fsync:${fdPath}`);
+        originalFsync(fd);
+      });
+      const rmSpy = spyOn(fs, 'rmSync').mockImplementation(((target: fs.PathLike, options?: fs.RmDirOptions) => {
+        if (path.resolve(String(target)) === sourcePath) events.push('rm:source');
+        originalRm(target, options);
+      }) as typeof fs.rmSync);
+
+      try {
+        relocateLegacyProjectSecrets(vaultDir, mycoHome);
+      } finally {
+        fsyncSpy.mockRestore();
+        rmSpy.mockRestore();
+      }
+
+      expect(events.indexOf(`fsync:${destinationDir}`)).toBeGreaterThanOrEqual(0);
+      expect(events.indexOf(`fsync:${destinationDir}`)).toBeLessThan(events.indexOf('rm:source'));
+      expect(events.lastIndexOf(`fsync:${sourceDir}`)).toBeGreaterThan(events.indexOf('rm:source'));
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'revalidates the destination exact path immediately before source removal',
+    () => {
+      const { vaultDir, mycoHome } = tmpDirs();
+      const sourcePath = path.join(vaultDir, 'secrets.env');
+      const destinationPath = path.join(mycoHome, 'secrets.env');
+      const displacedPath = path.join(mycoHome, 'secrets.env.displaced');
+      fs.writeFileSync(sourcePath, 'ONLY_COPY=preserved\n', { mode: 0o600 });
+      fs.writeFileSync(destinationPath, 'ONLY_COPY=canonical\n', { mode: 0o600 });
+      const sourceBefore = fs.readFileSync(sourcePath);
+      const destinationDir = fs.realpathSync(mycoHome);
+      let swapped = false;
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        let fdPath = '';
+        try { fdPath = fs.realpathSync(`/dev/fd/${fd}`); } catch { /* closed or unsupported fd */ }
+        originalFsync(fd);
+        if (!swapped && fdPath === destinationDir) {
+          swapped = true;
+          fs.renameSync(destinationPath, displacedPath);
+          fs.symlinkSync(sourcePath, destinationPath);
+        }
+      });
+
+      try {
+        expect(() => relocateLegacyProjectSecrets(vaultDir, mycoHome))
+          .toThrow(/non-regular secret store/);
+      } finally {
+        fsyncSpy.mockRestore();
+      }
+      expect(swapped).toBe(true);
+      expect(fs.readFileSync(sourcePath)).toEqual(sourceBefore);
+      expect(fs.lstatSync(destinationPath).isSymbolicLink()).toBe(true);
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'preserves a non-empty source when the destination disappears after publication',
+    () => {
+      const { vaultDir, mycoHome } = tmpDirs();
+      const sourcePath = path.join(vaultDir, 'secrets.env');
+      const destinationPath = path.join(mycoHome, 'secrets.env');
+      fs.writeFileSync(sourcePath, 'ONLY_COPY=preserved\n', { mode: 0o600 });
+      const sourceBefore = fs.readFileSync(sourcePath);
+      const destinationDir = fs.realpathSync(mycoHome);
+      let removed = false;
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        let fdPath = '';
+        try { fdPath = fs.realpathSync(`/dev/fd/${fd}`); } catch { /* closed or unsupported fd */ }
+        originalFsync(fd);
+        if (!removed && fdPath === destinationDir) {
+          removed = true;
+          fs.rmSync(destinationPath);
+        }
+      });
+
+      try {
+        expect(() => relocateLegacyProjectSecrets(vaultDir, mycoHome))
+          .toThrow(/destination.*disappeared/i);
+      } finally {
+        fsyncSpy.mockRestore();
+      }
+      expect(removed).toBe(true);
+      expect(fs.readFileSync(sourcePath)).toEqual(sourceBefore);
+      expect(fs.existsSync(destinationPath)).toBe(false);
+    },
+  );
 });

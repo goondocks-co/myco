@@ -12,7 +12,7 @@ import { MycoConfigSchema } from '../../packages/myco/src/config/schema.js';
 const validConfig = MycoConfigSchema.parse({ version: 3 });
 
 describe('config atomic writes', () => {
-  test('saveConfig writes atomically via temp + rename', () => {
+  test.skipIf(process.platform === 'win32')('saveConfig writes atomically via temp + rename', () => {
     // Non-vacuous regression check: if anyone reverts a converted call
     // site to a direct writeFileSync, renameSync won't be called and
     // this test fails. The temp-path naming is the atomic-write helper's
@@ -48,6 +48,41 @@ describe('config atomic writes', () => {
 });
 
 describe('atomicWriteFileSync mode option', () => {
+  test.skipIf(process.platform === 'win32')(
+    'flushes and closes the tempfile before invoking the publication primitive',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-order-'));
+      const finalPath = join(dir, 'secrets.env');
+      const events: string[] = [];
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const originalClose = fs.closeSync.bind(fs);
+      const originalRename = fs.renameSync.bind(fs);
+      const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+        events.push('fsync');
+        originalFsync(fd);
+      });
+      const closeSpy = spyOn(fs, 'closeSync').mockImplementation((fd) => {
+        events.push('close');
+        originalClose(fd);
+      });
+      const renameSpy = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        events.push('publish');
+        originalRename(source, destination);
+      });
+
+      try {
+        atomicWriteFileSync(finalPath, 'TOKEN=abc\n', { mode: 0o600 });
+      } finally {
+        renameSpy.mockRestore();
+        closeSpy.mockRestore();
+        fsyncSpy.mockRestore();
+      }
+
+      expect(events).toEqual(['fsync', 'close', 'publish']);
+      expect(readFileSync(finalPath, 'utf-8')).toBe('TOKEN=abc\n');
+    },
+  );
+
   test('opens the tempfile O_EXCL with the requested mode (no umask window)', () => {
     // The previous implementation used writeFileSync + chmodSync, which
     // briefly exposed the tempfile at the default umask (0o644 typical)
@@ -74,10 +109,14 @@ describe('atomicWriteFileSync mode option', () => {
       expect(openCall[1]).toBe(expectedFlags);
       expect(openCall[2]).toBe(0o600);
 
-      expect(renameSpy).toHaveBeenCalledTimes(1);
-      const renameCall = renameSpy.mock.calls[0] as [string, string];
-      expect((renameCall[0] as string).startsWith(`${finalPath}.tmp-`)).toBe(true);
-      expect(renameCall[1]).toBe(finalPath);
+      if (process.platform === 'win32') {
+        expect(renameSpy).not.toHaveBeenCalled();
+      } else {
+        expect(renameSpy).toHaveBeenCalledTimes(1);
+        const renameCall = renameSpy.mock.calls[0] as [string, string];
+        expect((renameCall[0] as string).startsWith(`${finalPath}.tmp-`)).toBe(true);
+        expect(renameCall[1]).toBe(finalPath);
+      }
     } finally {
       openSpy.mockRestore();
       renameSpy.mockRestore();
@@ -131,7 +170,7 @@ describe('atomicWriteFileSync mode option', () => {
     expect(readFileSync(finalPath, 'utf-8')).toBe('hello');
   });
 
-  test('cleans up the tempfile when renameSync throws', () => {
+  test.skipIf(process.platform === 'win32')('cleans up the tempfile when renameSync throws', () => {
     // If rename fails (cross-device, EBUSY, ENOSPC), the tempfile must
     // not be left behind — it would otherwise sit at a predictable
     // `.tmp-<pid>-<ts>` path carrying secret bytes (auth tokens,
@@ -158,4 +197,31 @@ describe('atomicWriteFileSync mode option', () => {
     );
     expect(leftover).toEqual([]);
   });
+
+  test.skipIf(process.platform !== 'win32')(
+    'publishes through the native Windows replacement path',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-win-native-'));
+      const longDir = join(
+        dir,
+        'a'.repeat(80),
+        'b'.repeat(80),
+        'c'.repeat(80),
+        'd'.repeat(80),
+      );
+      fs.mkdirSync(longDir, { recursive: true });
+      const finalPath = join(longDir, 'secrets.env');
+      expect(finalPath.length).toBeGreaterThan(260);
+      writeFileSync(finalPath, 'TOKEN=old\n');
+      const renameSpy = spyOn(fs, 'renameSync');
+      try {
+        atomicWriteFileSync(finalPath, 'TOKEN=new\n', { mode: 0o600 });
+        expect(renameSpy).not.toHaveBeenCalled();
+      } finally {
+        renameSpy.mockRestore();
+      }
+      expect(readFileSync(finalPath, 'utf-8')).toBe('TOKEN=new\n');
+      expect(readdirSync(longDir).some((name) => name.startsWith('secrets.env.tmp-'))).toBe(false);
+    },
+  );
 });

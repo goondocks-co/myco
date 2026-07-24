@@ -16,34 +16,19 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { TextDecoder } from 'node:util';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import {
+  secretStoreIdentity,
+  secretStoreLockKeys,
+} from '@myco/config/secret-store-lock.js';
 
 export const SECRETS_FILE = 'secrets.env';
 const SECRETS_FILE_MODE = 0o600;
 const SECRETS_DIR_MODE = 0o700;
-
-function canonicalDirectory(target: string): string {
-  let current = path.resolve(target);
-  const unresolved: string[] = [];
-  while (!fs.existsSync(current)) {
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    unresolved.unshift(path.basename(current));
-    current = parent;
-  }
-  try {
-    current = fs.realpathSync(current);
-  } catch {
-    // The process will surface the real filesystem error when the transaction
-    // attempts its actual read or write.
-  }
-  const resolved = path.join(current, ...unresolved);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-}
 
 /**
  * Stable external lock identity for one secrets store. The lock root is tied
@@ -52,13 +37,11 @@ function canonicalDirectory(target: string): string {
  * still coordinate. The key is the canonical vault directory plus the literal
  * secrets filename; replacing an exact-file symlink cannot change it.
  */
-function secretStoreLockPath(vaultDir: string): string {
+function secretStoreLockPaths(vaultDir: string): string[] {
   const lockDir = path.join(resolvePerUserLocksDir(), 'secrets');
   fs.mkdirSync(lockDir, { recursive: true, mode: SECRETS_DIR_MODE });
   try { fs.chmodSync(lockDir, SECRETS_DIR_MODE); } catch { /* platform ACLs apply */ }
-  const storePath = path.join(canonicalDirectory(vaultDir), SECRETS_FILE);
-  const key = createHash('sha256').update(storePath).digest('hex');
-  return path.join(lockDir, `${key}.lock`);
+  return secretStoreLockKeys(vaultDir).map((key) => path.join(lockDir, `${key}.lock`));
 }
 
 function withSecretsTransaction<T>(vaultDir: string, fn: () => T): T {
@@ -69,10 +52,10 @@ function withSecretsTransactions<T>(vaultDirs: readonly string[], fn: () => T): 
   const RETRY = Symbol('retry-secret-locks');
   const MAX_LOCK_RETRIES = 8;
   for (let attempt = 0; attempt < MAX_LOCK_RETRIES; attempt += 1) {
-    const locks = [...new Set(vaultDirs.map(secretStoreLockPath))].sort();
+    const locks = [...new Set(vaultDirs.flatMap(secretStoreLockPaths))].sort();
     const run = (index: number): T | typeof RETRY => {
       if (index < locks.length) return withFileLockSync(locks[index]!, () => run(index + 1));
-      const freshLocks = [...new Set(vaultDirs.map(secretStoreLockPath))].sort();
+      const freshLocks = [...new Set(vaultDirs.flatMap(secretStoreLockPaths))].sort();
       if (freshLocks.length !== locks.length || freshLocks.some((lock, i) => lock !== locks[i])) return RETRY;
       return fn();
     };
@@ -286,8 +269,11 @@ export function propagateLegacySecrets(vaultDir: string, mycoHome: string): stri
   return withSecretsTransactions([vaultDir, mycoHome], () => propagateLegacySecretsUnlocked(vaultDir, mycoHome));
 }
 
-function propagateLegacySecretsUnlocked(vaultDir: string, mycoHome: string): string[] {
-  const legacy = readSecrets(vaultDir);
+function propagateLegacySecretsUnlocked(
+  vaultDir: string,
+  mycoHome: string,
+  legacy = readSecrets(vaultDir),
+): string[] {
   const legacyEntries = Object.entries(legacy);
   if (legacyEntries.length === 0) return [];
 
@@ -331,21 +317,35 @@ function propagateLegacySecretsUnlocked(vaultDir: string, mycoHome: string): str
  */
 export function relocateLegacyProjectSecrets(vaultDir: string, mycoHome: string): string[] {
   const secretsPath = path.join(vaultDir, SECRETS_FILE);
+  const destinationPath = path.join(mycoHome, SECRETS_FILE);
   if (!fs.existsSync(secretsPath)) return [];
-  if (secretStoreLockPath(vaultDir) === secretStoreLockPath(mycoHome)) return [];
+  if (secretStoreIdentity(vaultDir) === secretStoreIdentity(mycoHome)) return [];
   return withSecretsTransactions([vaultDir, mycoHome], () => {
-    if (!fs.existsSync(secretsPath)) return [];
-    assertMutableSecretsPath(vaultDir);
-    const propagated = propagateLegacySecretsUnlocked(vaultDir, mycoHome);
-    // Purge the project file regardless of how many keys were lifted: keys
-    // already at machine scope are intentionally discarded (machine wins),
-    // and lifted keys now live at their canonical home. Best-effort — a
-    // failed unlink retries on the next boot.
+    const sourceExists = assertRegularOrMissingSecretsPath(vaultDir);
+    const destinationExisted = assertRegularOrMissingSecretsPath(mycoHome);
+    if (!sourceExists) return [];
+    const legacy = readSecrets(vaultDir);
+    const sourceHasSecrets = Object.keys(legacy).length > 0;
+    const propagated = propagateLegacySecretsUnlocked(vaultDir, mycoHome, legacy);
+    if (sourceHasSecrets || destinationExisted) {
+      syncPublishedFileAndParent(destinationPath);
+    }
+
+    const sourceStillExists = assertRegularOrMissingSecretsPath(vaultDir);
+    const destinationStillExists = assertRegularOrMissingSecretsPath(mycoHome);
+    if (!sourceStillExists) return propagated;
+    if (sourceHasSecrets && !destinationStillExists) {
+      throw new Error(
+        `Secret relocation destination disappeared before source removal: ${destinationPath}`,
+      );
+    }
+
     try {
       fs.rmSync(secretsPath, { force: true });
     } catch {
-      // Leave the file in place; the next boot retries the relocate+purge.
+      return propagated;
     }
+    syncDirectoryForDurability(vaultDir);
     return propagated;
   });
 }
@@ -512,14 +512,42 @@ function ensureSecretsDirSecure(vaultDir: string): void {
 }
 
 function assertMutableSecretsPath(vaultDir: string): void {
+  assertRegularOrMissingSecretsPath(vaultDir);
+}
+
+function assertRegularOrMissingSecretsPath(vaultDir: string): boolean {
   const secretsPath = path.join(vaultDir, SECRETS_FILE);
   try {
     const stat = fs.lstatSync(secretsPath);
     if (stat.isSymbolicLink() || !stat.isFile()) {
       throw new Error(`Refusing to mutate non-regular secret store: ${secretsPath}`);
     }
+    return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return false;
+  }
+}
+
+function syncPublishedFileAndParent(filePath: string): void {
+  const noFollow = process.platform === 'win32' ? 0 : (fs.constants.O_NOFOLLOW ?? 0);
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  syncDirectoryForDurability(path.dirname(filePath));
+}
+
+function syncDirectoryForDurability(directory: string): void {
+  // Node does not expose a portable Windows directory-flush handle.
+  if (process.platform === 'win32') return;
+  const fd = fs.openSync(directory, fs.constants.O_RDONLY);
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -649,8 +677,8 @@ function assertLegacyTeamSecretPairs(pairs: readonly LegacyTeamSecretReconcilePa
       || typeof pair.sourceVaultDir !== 'string' || typeof pair.destinationVaultDir !== 'string') {
       throw new TypeError('Legacy Team secret pair has unsupported fields');
     }
-    const sourceIdentity = secretStoreLockPath(pair.sourceVaultDir);
-    const destinationIdentity = secretStoreLockPath(pair.destinationVaultDir);
+    const sourceIdentity = secretStoreIdentity(pair.sourceVaultDir);
+    const destinationIdentity = secretStoreIdentity(pair.destinationVaultDir);
     if (sourceIdentity === destinationIdentity) {
       throw new Error('Legacy Team secret source and destination must be different stores');
     }

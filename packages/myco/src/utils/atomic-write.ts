@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { constants as fsConstants } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { moveFileReplaceWriteThrough } from '@myco/utils/windows-atomic-replace.js';
 
 export interface AtomicWriteOptions {
   encoding?: BufferEncoding;
@@ -42,6 +43,18 @@ export function atomicWriteFileSync(
   filePath: string,
   contents: string | Buffer,
   encodingOrOptions: BufferEncoding | AtomicWriteOptions = 'utf-8',
+): void {
+  const publish = process.platform === 'win32'
+    ? moveFileReplaceWriteThrough
+    : fs.renameSync;
+  atomicWriteFileSyncWithPublisher(filePath, contents, encodingOrOptions, publish);
+}
+
+function atomicWriteFileSyncWithPublisher(
+  filePath: string,
+  contents: string | Buffer,
+  encodingOrOptions: BufferEncoding | AtomicWriteOptions,
+  publish: (temporaryPath: string, targetPath: string) => void,
 ): void {
   const options: AtomicWriteOptions = typeof encodingOrOptions === 'string'
     ? { encoding: encodingOrOptions }
@@ -88,9 +101,9 @@ export function atomicWriteFileSync(
   }
 
   try {
-    fs.renameSync(tmp, filePath);
+    publish(tmp, filePath);
   } catch (err) {
-    // Rename failed (cross-device, EBUSY on Windows, ENOSPC, etc.).
+    // Publication failed (cross-device, EBUSY, ENOSPC, etc.).
     // Clean up the tempfile rather than leaving stale — possibly
     // secret-bearing — data at a `.tmp-<pid>-<rand>` path for a future
     // read by the same user to harvest.

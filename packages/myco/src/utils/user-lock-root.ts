@@ -16,6 +16,24 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveWindowsNativeProfile } from '@myco/utils/windows-native-profile.js';
+
+export function resolveWindowsLockRootFromProfile(profile: string): string {
+  if (!path.win32.isAbsolute(profile) || profile.includes('\0')) {
+    throw new Error('Windows native profile path must be absolute');
+  }
+  return path.win32.join(profile, '.myco', 'locks');
+}
+
+function resolveWindowsLocksDir(): string {
+  const lockRoot = resolveWindowsLockRootFromProfile(resolveWindowsNativeProfile());
+  fs.mkdirSync(lockRoot, { recursive: true });
+  const stat = fs.lstatSync(lockRoot);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`Windows per-user lock root is not a real directory: ${lockRoot}`);
+  }
+  return lockRoot;
+}
 
 /**
  * Fixed lock root for the operating-system account. POSIX uses the numeric uid
@@ -23,7 +41,10 @@ import path from 'node:path';
  * The root is accepted only when it is a private real directory owned by uid.
  */
 export function resolvePerUserLocksDir(): string {
-  if (process.platform === 'win32' || typeof process.getuid !== 'function') {
+  if (process.platform === 'win32') {
+    return resolveWindowsLocksDir();
+  }
+  if (typeof process.getuid !== 'function') {
     return path.join(os.userInfo().homedir, '.myco', 'locks');
   }
 

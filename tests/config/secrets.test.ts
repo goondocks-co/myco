@@ -18,9 +18,82 @@ import {
   withLegacyTeamSecretSnapshotsReconciledSync,
 } from '@myco/config/secrets';
 import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import { secretStoreLockKeys } from '@myco/config/secret-store-lock.js';
+import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
 
 const POSIX = process.platform !== 'win32';
 const SECRETS_LOCK_HOLDER_HELPER = path.resolve('tests/helpers/secrets-lock-holder-helper.ts');
+const CASE_INSENSITIVE_TMP = (() => {
+  if (process.platform !== 'darwin') return false;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'MycoCaseProbe-'));
+  const upper = path.join(root, 'StoreN');
+  const lower = path.join(root, 'storen');
+  try {
+    fs.mkdirSync(upper);
+    return fs.existsSync(lower)
+      && fs.statSync(upper).dev === fs.statSync(lower).dev
+      && fs.statSync(upper).ino === fs.statSync(lower).ino;
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+})();
+const CASE_SENSITIVE_TMP = (() => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'MycoCaseSensitiveProbe-'));
+  const upper = path.join(root, 'StoreN');
+  const lower = path.join(root, 'storen');
+  try {
+    fs.mkdirSync(upper);
+    try {
+      fs.mkdirSync(lower);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw error;
+    }
+    return fs.statSync(upper).ino !== fs.statSync(lower).ino
+      || fs.statSync(upper).dev !== fs.statSync(lower).dev;
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+})();
+
+async function runSecretStoreRace(
+  holderVaultDir: string,
+  writerVaultDir: string,
+  ready: string,
+  mode: 'materialize' | 'write-race' = 'materialize',
+): Promise<number> {
+  const child = spawn(
+    process.execPath,
+    ['run', SECRETS_LOCK_HOLDER_HELPER, holderVaultDir, '400', mode, ready],
+    {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      cwd: process.cwd(),
+    },
+  );
+  let stderr = '';
+  child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8'); });
+  const childExit = new Promise<void>((resolve, reject) => {
+    child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`materialized-store holder exited ${code}: ${stderr}`)));
+    child.on('error', reject);
+  });
+
+  const deadline = Date.now() + 10_000;
+  while (!fs.existsSync(ready)) {
+    if (Date.now() >= deadline) throw new Error(`materialized-store holder never signalled readiness: ${stderr}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  if (mode === 'materialize') {
+    expect(fs.statSync(holderVaultDir).isDirectory()).toBe(true);
+  } else {
+    expect(fs.existsSync(holderVaultDir)).toBe(false);
+  }
+
+  const startedAt = Date.now();
+  writeSecret(writerVaultDir, 'PARENT_WRITER', 'parent');
+  const blockedMs = Date.now() - startedAt;
+  await childExit;
+  return blockedMs;
+}
 
 describe('secrets', () => {
   let testDir: string;
@@ -266,6 +339,19 @@ describe('secrets', () => {
       expect(stat.mode & 0o777).toBe(0o700);
     });
 
+    it.skipIf(!CASE_SENSITIVE_TMP)(
+      'keeps existing differently-cased directories distinct on a case-sensitive volume',
+      () => {
+        const upperVaultDir = path.join(testDir, 'StoreN');
+        const lowerVaultDir = path.join(testDir, 'storen');
+        fs.mkdirSync(upperVaultDir);
+        fs.mkdirSync(lowerVaultDir);
+
+        expect(secretStoreLockKeys(upperVaultDir))
+          .not.toEqual(secretStoreLockKeys(lowerVaultDir));
+      },
+    );
+
     it('serializes unrelated writers behind the same store lock without losing either entry', async () => {
       const holdMs = 400;
       const childTmp = path.join(testDir, 'child-tmp');
@@ -311,16 +397,99 @@ describe('secrets', () => {
       expect(blockedMs).toBeGreaterThanOrEqual(200);
     }, 30_000);
 
-    it('keeps one lock identity when an exact-file symlink is atomically replaced', async () => {
-      const vaultDir = path.join(testDir, 'symlink-vault');
+    it.skipIf(!CASE_INSENSITIVE_TMP)(
+      'serializes differently-cased APFS aliases while the store is still missing',
+      async () => {
+        const upperVaultDir = path.join(testDir, 'StoreN');
+        const lowerVaultDir = path.join(testDir, 'storen');
+        const ready = path.join(testDir, 'missing-case-alias-lock-ready');
+
+        const blockedMs = await runSecretStoreRace(
+          upperVaultDir,
+          lowerVaultDir,
+          ready,
+          'write-race',
+        );
+
+        expect(fs.statSync(upperVaultDir).ino).toBe(fs.statSync(lowerVaultDir).ino);
+        expect(readSecrets(upperVaultDir)).toEqual({ CHILD_WRITER: 'child', PARENT_WRITER: 'parent' });
+        expect(blockedMs).toBeGreaterThanOrEqual(200);
+      },
+      30_000,
+    );
+
+    it.skipIf(!CASE_INSENSITIVE_TMP)(
+      'serializes differently-cased APFS aliases after the holder materializes the store',
+      async () => {
+        const upperVaultDir = path.join(testDir, 'PromotedStoreN');
+        const lowerVaultDir = path.join(testDir, 'promotedstoren');
+        const ready = path.join(testDir, 'promoted-case-alias-lock-ready');
+
+        const blockedMs = await runSecretStoreRace(upperVaultDir, lowerVaultDir, ready);
+
+        expect(fs.statSync(upperVaultDir).ino).toBe(fs.statSync(lowerVaultDir).ino);
+        expect(readSecrets(upperVaultDir)).toEqual({ CHILD_WRITER: 'child', PARENT_WRITER: 'parent' });
+        expect(blockedMs).toBeGreaterThanOrEqual(200);
+      },
+      30_000,
+    );
+
+    it.skipIf(!CASE_INSENSITIVE_TMP)(
+      'keeps the transition lock when only an existing ancestor has a case alias',
+      async () => {
+        const canonicalParent = path.join(testDir, 'RootParent');
+        const aliasParent = path.join(testDir, 'rootparent');
+        fs.mkdirSync(canonicalParent);
+        const holderVaultDir = path.join(canonicalParent, '123');
+        const writerVaultDir = path.join(aliasParent, '123');
+        const ready = path.join(testDir, 'ancestor-case-alias-lock-ready');
+
+        const blockedMs = await runSecretStoreRace(holderVaultDir, writerVaultDir, ready);
+
+        expect(fs.statSync(holderVaultDir).ino).toBe(fs.statSync(writerVaultDir).ino);
+        expect(physicalPathLockIdentities(holderVaultDir).some((identity) => (
+          identity.startsWith('casefold:')
+        ))).toBe(true);
+        expect(readSecrets(holderVaultDir)).toEqual({ CHILD_WRITER: 'child', PARENT_WRITER: 'parent' });
+        expect(blockedMs).toBeGreaterThanOrEqual(200);
+      },
+      30_000,
+    );
+
+    it('serializes a multi-component missing store after the holder materializes it', async () => {
+      const vaultDir = path.join(testDir, 'missing-parent', 'missing-store');
+      const ready = path.join(testDir, 'multi-component-lock-ready');
+
+      const blockedMs = await runSecretStoreRace(vaultDir, vaultDir, ready);
+
+      expect(readSecrets(vaultDir)).toEqual({ CHILD_WRITER: 'child', PARENT_WRITER: 'parent' });
+      expect(blockedMs).toBeGreaterThanOrEqual(200);
+    }, 30_000);
+
+    it('serializes a missing store across a symlinked ancestor after materialization', async () => {
+      const realParent = path.join(testDir, 'real-parent');
+      const aliasParent = path.join(testDir, 'alias-parent');
+      fs.mkdirSync(realParent);
+      fs.symlinkSync(realParent, aliasParent, 'dir');
+      const holderVaultDir = path.join(aliasParent, 'missing-store');
+      const writerVaultDir = path.join(realParent, 'missing-store');
+      const ready = path.join(testDir, 'symlink-ancestor-lock-ready');
+
+      const blockedMs = await runSecretStoreRace(holderVaultDir, writerVaultDir, ready);
+
+      expect(fs.statSync(holderVaultDir).ino).toBe(fs.statSync(writerVaultDir).ino);
+      expect(readSecrets(writerVaultDir)).toEqual({ CHILD_WRITER: 'child', PARENT_WRITER: 'parent' });
+      expect(blockedMs).toBeGreaterThanOrEqual(200);
+    }, 30_000);
+
+    it('keeps one lock identity when secrets.env is atomically replaced', async () => {
+      const vaultDir = path.join(testDir, 'replacement-vault');
       fs.mkdirSync(vaultDir);
-      const target = path.join(testDir, 'symlink-target.env');
-      fs.writeFileSync(target, 'TARGET=original\n', { mode: 0o600 });
-      fs.symlinkSync(target, path.join(vaultDir, 'secrets.env'));
+      fs.writeFileSync(path.join(vaultDir, 'secrets.env'), 'INITIAL=original\n', { mode: 0o600 });
 
       const child = spawn(
         process.execPath,
-        ['run', SECRETS_LOCK_HOLDER_HELPER, vaultDir, '0', 'symlink-replace', '400'],
+        ['run', SECRETS_LOCK_HOLDER_HELPER, vaultDir, '400', 'file-replace'],
         {
           stdio: ['ignore', 'ignore', 'pipe'],
           cwd: process.cwd(),
@@ -346,8 +515,11 @@ describe('secrets', () => {
       await childExit;
 
       expect(fs.lstatSync(path.join(vaultDir, 'secrets.env')).isSymbolicLink()).toBe(false);
-      expect(readSecrets(vaultDir)).toEqual({ CHILD_WRITER: 'child', PARENT_WRITER: 'parent' });
-      expect(fs.readFileSync(target, 'utf-8')).toBe('TARGET=original\n');
+      expect(readSecrets(vaultDir)).toEqual({
+        REPLACED_DURING_LOCK: 'preserved',
+        CHILD_WRITER: 'child',
+        PARENT_WRITER: 'parent',
+      });
       expect(blockedMs).toBeGreaterThanOrEqual(200);
     }, 30_000);
 
