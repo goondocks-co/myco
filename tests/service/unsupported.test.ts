@@ -24,4 +24,9 @@ describe('UnsupportedServiceManager', () => {
     expect(st.installed).toBe(false);
     expect(st.running).toBe(false);
   });
+
+  test('inspect returns null because no installed command can be proven', async () => {
+    const mgr = new UnsupportedServiceManager('sunos');
+    await expect(mgr.inspect('x')).resolves.toBeNull();
+  });
 });

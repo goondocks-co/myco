@@ -20,6 +20,7 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { RealLaunchctlRunner } from '../../packages/myco/src/service/launchd';
 import { RealSystemctlRunner } from '../../packages/myco/src/service/systemd';
+import { RealSchtasksRunner } from '../../packages/myco/src/service/windows';
 import { SERVICE_UNIT_DIR_ENV } from '../../packages/myco/src/service/paths';
 
 const originalEnv = process.env[SERVICE_UNIT_DIR_ENV];
@@ -50,6 +51,36 @@ describe('Real runners refuse to shell out when sandbox env var is set', () => {
     const result = await runner.run(['--user', 'daemon-reload']);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toMatch(/^\[sandbox\] skipped systemctl /);
+  });
+
+  test('sandbox supervisor reads report the intentionally unregistered service as absent', async () => {
+    const launchd = await new RealLaunchctlRunner().run(['print', 'gui/501/co.goondocks.myco']);
+    const systemd = await new RealSystemctlRunner().run(['--user', 'show', 'co.goondocks.myco.service']);
+    const windows = await new RealSchtasksRunner().run(['/query', '/tn', 'co.goondocks.myco']);
+    const windowsState = await new RealSchtasksRunner().queryState('co.goondocks.myco');
+
+    expect(launchd.exitCode).not.toBe(0);
+    expect(systemd.exitCode).not.toBe(0);
+    expect(windows.exitCode).not.toBe(0);
+    expect(windowsState).toBe('absent');
+  });
+
+  test('RealSchtasksRunner distinguishes a successful empty enumeration from provider failure', async () => {
+    class TestRunner extends RealSchtasksRunner {
+      constructor(private readonly result: { stdout: string; exitCode: number }) { super(); }
+      protected override async runPowerShell(): Promise<{ stdout: string; exitCode: number }> {
+        return this.result;
+      }
+    }
+    delete process.env[SERVICE_UNIT_DIR_ENV];
+    try {
+      await expect(new TestRunner({ stdout: '-1\r\n', exitCode: 0 }).queryState('co.goondocks.myco'))
+        .resolves.toBe('absent');
+      await expect(new TestRunner({ stdout: 'CIM provider unavailable', exitCode: 1 }).queryState('co.goondocks.myco'))
+        .rejects.toThrow(/Get-ScheduledTask.*failed.*exit 1/i);
+    } finally {
+      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir';
+    }
   });
 });
 

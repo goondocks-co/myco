@@ -2,7 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { WindowsTaskServiceManager, type SchtasksRunner } from '../../packages/myco/src/service/windows';
+import {
+  WindowsTaskServiceManager,
+  type SchtasksRunner,
+  type TaskSchedulerState,
+} from '../../packages/myco/src/service/windows';
 import { renderWindowsServiceScript } from '../../packages/myco/src/service/windows-task';
 import type { ServiceSpec } from '../../packages/myco/src/service/types';
 
@@ -32,20 +36,38 @@ function makeSpec(over: Partial<ServiceSpec> = {}): ServiceSpec {
 class StubRunner implements SchtasksRunner {
   calls: string[][] = [];
   taskExists = false;
-  taskStatus = 'Ready';
+  taskState: TaskSchedulerState = 'ready';
+  taskStates: TaskSchedulerState[] = [];
   lastResult = '0';
   runExitCode = 0;
+  deleteLeavesTask = false;
+  taskCommand: string | null = null;
+  exitOverrides: Map<string, { stdout: string; exitCode: number }> = new Map();
+  async queryState(label: string): Promise<TaskSchedulerState> {
+    this.calls.push(['/state', label]);
+    if (!this.taskExists) return 'absent';
+    return this.taskStates.shift() ?? this.taskState;
+  }
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     this.calls.push(args);
     if (args[0] === '/query') {
       if (!this.taskExists) return { stdout: 'ERROR: cannot find', exitCode: 1 };
+      if (args.includes('/xml')) {
+        const command = this.taskCommand ?? '';
+        return { stdout: `<Task><Actions><Exec><Command>${command}</Command></Exec></Actions></Task>`, exitCode: 0 };
+      }
       if (args.includes('/v')) {
-        return { stdout: `TaskName: ${args[2]}\r\nStatus: ${this.taskStatus}\r\nLast Result: ${this.lastResult}\r\n`, exitCode: 0 };
+        return { stdout: `TaskName: ${args[2]}\r\nLast Result: ${this.lastResult}\r\n`, exitCode: 0 };
       }
       return { stdout: '', exitCode: 0 };
     }
-    if (args[0] === '/create') this.taskExists = true;
-    if (args[0] === '/delete') this.taskExists = false;
+    const override = this.exitOverrides.get(args[0]);
+    if (override) return override;
+    if (args[0] === '/create') {
+      this.taskExists = true;
+      this.taskCommand = args[args.indexOf('/tr') + 1]?.replace(/^"|"$/g, '') ?? null;
+    }
+    if (args[0] === '/delete' && !this.deleteLeavesTask) this.taskExists = false;
     if (args[0] === '/run' && this.runExitCode !== 0) {
       return { stdout: 'ERROR: The system cannot find the path specified.', exitCode: this.runExitCode };
     }
@@ -136,7 +158,7 @@ describe('WindowsTaskServiceManager', () => {
     expect(trValue).toBe(`"${scriptPath}"`);
   });
 
-  test('isInstalled reflects schtasks /query exit code', async () => {
+  test('isInstalled reflects the locale-independent task state', async () => {
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
     expect(await mgr.isInstalled('co.goondocks.myco')).toBe(false);
@@ -146,7 +168,7 @@ describe('WindowsTaskServiceManager', () => {
 
   test('status parses Running + Last Result', async () => {
     const runner = new StubRunner();
-    runner.taskExists = true; runner.taskStatus = 'Running'; runner.lastResult = '0';
+    runner.taskExists = true; runner.taskState = 'running'; runner.lastResult = '0';
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
     const st = await mgr.status('co.goondocks.myco-dev');
     expect(st.installed).toBe(true);
@@ -156,7 +178,7 @@ describe('WindowsTaskServiceManager', () => {
 
   test('status maps the SCHED_S_TASK_RUNNING sentinel (0x41301) to null, not a fake exit code', async () => {
     const runner = new StubRunner();
-    runner.taskExists = true; runner.taskStatus = 'Running'; runner.lastResult = '267009';
+    runner.taskExists = true; runner.taskState = 'running'; runner.lastResult = '267009';
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
     const st = await mgr.status('co.goondocks.myco-dev');
     expect(st.running).toBe(true);
@@ -169,6 +191,56 @@ describe('WindowsTaskServiceManager', () => {
     const st = await mgr.status('co.goondocks.myco');
     expect(st.installed).toBe(false);
     expect(st.running).toBe(false);
+  });
+
+  test('inspect returns the exact executable and arguments from the installed task launcher', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
+    const spec = makeSpec({ args: ['daemon', '--port', '28876', '--foreground'] });
+    await mgr.install(spec);
+
+    await expect(mgr.inspect(spec.label)).resolves.toEqual({
+      executable: spec.executable,
+      args: spec.args,
+    });
+  });
+
+  test('inspect fails closed for a malformed installed task launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const label = 'co.goondocks.myco.malformed';
+    const scriptPath = path.join(scriptDir, `${label}.cmd`);
+    fs.writeFileSync(scriptPath, '@echo off\r\nthis is not a service command\r\n');
+    runner.taskExists = true;
+    runner.taskCommand = scriptPath;
+
+    await expect(mgr.inspect(label)).resolves.toBeNull();
+  });
+
+  test('inspect returns null when a live task has no installed launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const label = 'co.goondocks.myco.orphaned';
+    runner.taskExists = true;
+    runner.taskState = 'running';
+    runner.taskCommand = path.join(scriptDir, `${label}.cmd`);
+
+    const status = await mgr.status(label);
+    expect(status).toMatchObject({ installed: true, running: true, unitPath: null });
+    await expect(mgr.inspect(label)).resolves.toBeNull();
+  });
+
+  test('inspect returns null when the task action does not match the launcher path', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    runner.taskCommand = path.join(scriptDir, 'different.cmd');
+
+    await expect(mgr.inspect(spec.label)).resolves.toBeNull();
   });
 
   test('restartShellCommand is a literal schtasks /run', () => {
@@ -188,6 +260,105 @@ describe('WindowsTaskServiceManager', () => {
     expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(false);
   });
 
+  test('uninstall rejects a failed /end and preserves the launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    runner.exitOverrides.set('/end', { stdout: 'ERROR: Access is denied.', exitCode: 1 });
+
+    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/schtasks \/end.*failed.*exit 1/i);
+
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(runner.calls.some((call) => call[0] === '/delete')).toBe(false);
+  });
+
+  test('uninstall polls until a delayed task exit before deleting it', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const spec = makeSpec();
+    runner.taskExists = true;
+    runner.taskStates = ['running', 'running', 'ready'];
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir, sleep: async () => {} });
+
+    await mgr.uninstall(spec.label);
+
+    const stateCallIndexes = runner.calls
+      .map((call, index) => call[0] === '/state' ? index : -1)
+      .filter((index) => index >= 0);
+    expect(stateCallIndexes).toHaveLength(4);
+    const deleteIndex = runner.calls.findIndex((call) => call[0] === '/delete');
+    expect(deleteIndex).toBeGreaterThan(stateCallIndexes[2]);
+    expect(deleteIndex).toBeLessThan(stateCallIndexes[3]);
+  });
+
+  test('uninstall rejects a failed /delete and preserves the launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    runner.exitOverrides.set('/delete', { stdout: 'ERROR: Access is denied.', exitCode: 1 });
+
+    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/schtasks \/delete.*failed.*exit 1/i);
+
+    expect(fs.existsSync(scriptPath)).toBe(true);
+  });
+
+  test('uninstall confirms task absence after /delete before removing the launcher', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir, sleep: async () => {} });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    runner.deleteLeavesTask = true;
+
+    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/timed out.*Task Scheduler.*deletion/i);
+
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(runner.calls.filter((call) => call[0] === '/state').length).toBeGreaterThan(1);
+  });
+
+  test('uninstall is idempotent when the task and launcher are already absent', async () => {
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
+
+    await mgr.uninstall('co.goondocks.myco.absent');
+
+    expect(runner.calls).toEqual([
+      ['/state', 'co.goondocks.myco.absent'],
+    ]);
+  });
+
+  test('uninstall rejects an unknown Task Scheduler state', async () => {
+    const runner = new StubRunner();
+    runner.taskExists = true;
+    runner.taskState = 'unknown';
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
+
+    await expect(mgr.uninstall('co.goondocks.myco.unknown'))
+      .rejects.toThrow(/unknown Task Scheduler state/i);
+  });
+
+  test('uninstall times out while Task Scheduler still reports the task running', async () => {
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir, sleep: async () => {} });
+    const spec = makeSpec();
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    runner.taskState = 'running';
+
+    await expect(mgr.uninstall(spec.label)).rejects.toThrow(/timed out.*Task Scheduler.*exit/i);
+
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(runner.calls.some((call) => call[0] === '/delete')).toBe(false);
+  });
+
   // Cooperative drain (#4): `schtasks /end` is an uncatchable TerminateProcess,
   // so restart/stop must drain the daemon over HTTP FIRST or every Windows
   // restart/update orphans in-flight runs + the team-sync outbox.
@@ -199,6 +370,7 @@ describe('WindowsTaskServiceManager', () => {
   }) {
     const runner: SchtasksRunner = {
       async run(args) { events.push('schtasks:' + args.join(' ')); return { stdout: '', exitCode: 0 }; },
+      async queryState() { return 'absent'; },
     };
     return new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-'), ...opts });
   }

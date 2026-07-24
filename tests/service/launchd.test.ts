@@ -3,19 +3,29 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LaunchdServiceManager, type LaunchctlRunner } from '../../packages/myco/src/service/launchd';
+import { renderLaunchdPlist } from '../../packages/myco/src/service/launchd-plist';
 import type { ServiceSpec } from '../../packages/myco/src/service/types';
 
 class FakeRunner implements LaunchctlRunner {
   calls: string[][] = [];
   printResponse = '';
   printExitCode = 0;
+  printResponses: Array<{ stdout: string; exitCode: number }> = [];
+  exitAfterBootout = true;
   /** Map from first arg ("kickstart", "kill", ...) to forced exit code+stdout. */
   exitOverrides: Map<string, { stdout: string; exitCode: number }> = new Map();
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     this.calls.push(args);
-    if (args[0] === 'print') return { stdout: this.printResponse, exitCode: this.printExitCode };
+    if (args[0] === 'print') {
+      return this.printResponses.shift()
+        ?? { stdout: this.printResponse, exitCode: this.printExitCode };
+    }
     const override = this.exitOverrides.get(args[0]);
     if (override) return override;
+    if (args[0] === 'bootout' && this.exitAfterBootout && this.printResponses.length === 0) {
+      this.printExitCode = 1;
+      this.printResponse = 'Could not find service';
+    }
     return { stdout: '', exitCode: 0 };
   }
 }
@@ -122,8 +132,136 @@ describe('LaunchdServiceManager', () => {
     const plistPath = path.join(agentsDir, `${s.label}.plist`);
     runner.calls.length = 0;
     await mgr.uninstall(s.label);
-    expect(runner.calls[0]).toEqual(['bootout', `gui/501/${s.label}`]);
+    expect(runner.calls).toEqual([
+      ['print', `gui/501/${s.label}`],
+      ['bootout', `gui/501/${s.label}`],
+      ['print', `gui/501/${s.label}`],
+    ]);
     expect(fs.existsSync(plistPath)).toBe(false);
+  });
+
+  test('uninstall rejects a failed bootout and preserves the plist', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    const plistPath = path.join(agentsDir, `${s.label}.plist`);
+    runner.calls.length = 0;
+    runner.exitOverrides.set('bootout', { stdout: 'Boot-out failed: 5: Input/output error', exitCode: 5 });
+
+    await expect(mgr.uninstall(s.label)).rejects.toThrow(/launchctl bootout.*failed.*exit 5/i);
+
+    expect(fs.existsSync(plistPath)).toBe(true);
+    expect(runner.calls.some((call) => call[0] === 'print')).toBe(true);
+  });
+
+  test('uninstall polls launchd until a delayed job exit is confirmed', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    runner.calls.length = 0;
+    runner.exitAfterBootout = false;
+    runner.printResponses = [
+      { stdout: 'pid = 4321\n', exitCode: 0 },
+      { stdout: 'pid = 4321\n', exitCode: 0 },
+      { stdout: 'Could not find service\n', exitCode: 1 },
+    ];
+    mgr = new LaunchdServiceManager({ runner, agentsDir, uid: 501, sleep: async () => {} });
+
+    await mgr.uninstall(s.label);
+
+    expect(runner.calls.filter((call) => call[0] === 'print')).toHaveLength(3);
+    expect(fs.existsSync(path.join(agentsDir, `${s.label}.plist`))).toBe(false);
+  });
+
+  test('uninstall stops a live launchd job even when its plist is already absent', async () => {
+    const label = 'co.goondocks.myco.orphaned';
+    runner.printResponses = [
+      { stdout: 'pid = 4321\n', exitCode: 0 },
+      { stdout: 'Could not find service\n', exitCode: 1 },
+    ];
+
+    await mgr.uninstall(label);
+
+    expect(runner.calls).toEqual([
+      ['print', `gui/501/${label}`],
+      ['bootout', `gui/501/${label}`],
+      ['print', `gui/501/${label}`],
+    ]);
+  });
+
+  test('uninstall is idempotent when the plist and launchd job are already absent', async () => {
+    const label = 'co.goondocks.myco.absent';
+    runner.printExitCode = 1;
+    runner.printResponse = 'Could not find service';
+
+    await mgr.uninstall(label);
+
+    expect(runner.calls).toEqual([['print', `gui/501/${label}`]]);
+  });
+
+  test('uninstall rejects an inconclusive launchd query failure', async () => {
+    const label = 'co.goondocks.myco.unknown';
+    runner.printExitCode = 5;
+    runner.printResponse = 'Input/output error';
+
+    await expect(mgr.uninstall(label)).rejects.toThrow(/launchctl print.*failed.*exit 5/i);
+  });
+
+  test('uninstall times out while launchd still reports the job and preserves the plist', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    const plistPath = path.join(agentsDir, `${s.label}.plist`);
+    runner.calls.length = 0;
+    runner.exitAfterBootout = false;
+    runner.printResponse = 'pid = 4321\n';
+    runner.printExitCode = 0;
+    mgr = new LaunchdServiceManager({ runner, agentsDir, uid: 501, sleep: async () => {} });
+
+    await expect(mgr.uninstall(s.label)).rejects.toThrow(/timed out.*launchd.*exit/i);
+
+    expect(runner.calls.filter((call) => call[0] === 'print').length).toBeGreaterThan(1);
+    expect(fs.existsSync(plistPath)).toBe(true);
+  });
+
+  test('pruneSupersededUnits rejects a failed sibling bootout and preserves its plist', async () => {
+    const stale = { ...spec(home), label: 'co.goondocks.myco.stale' };
+    fs.writeFileSync(path.join(agentsDir, `${stale.label}.plist`), renderLaunchdPlist(stale));
+    fs.unlinkSync(stale.executable);
+    runner.exitOverrides.set('bootout', { stdout: 'Boot-out failed', exitCode: 5 });
+
+    await expect(mgr.pruneSupersededUnits()).rejects.toThrow(/launchctl bootout.*failed.*exit 5/i);
+
+    expect(fs.existsSync(path.join(agentsDir, `${stale.label}.plist`))).toBe(true);
+  });
+
+  test('pruneSupersededUnits waits for sibling job absence before removing its plist', async () => {
+    const stale = { ...spec(home), label: 'co.goondocks.myco.stale' };
+    const plistPath = path.join(agentsDir, `${stale.label}.plist`);
+    fs.writeFileSync(plistPath, renderLaunchdPlist(stale));
+    fs.unlinkSync(stale.executable);
+    runner.exitAfterBootout = false;
+    runner.printResponses = [
+      { stdout: 'pid = 4321\n', exitCode: 0 },
+      { stdout: 'pid = 4321\n', exitCode: 0 },
+      { stdout: 'Could not find service\n', exitCode: 1 },
+    ];
+    mgr = new LaunchdServiceManager({ runner, agentsDir, uid: 501, sleep: async () => {} });
+
+    await expect(mgr.pruneSupersededUnits()).resolves.toEqual([stale.label]);
+
+    expect(runner.calls.filter((call) => call[0] === 'print')).toHaveLength(3);
+    expect(fs.existsSync(plistPath)).toBe(false);
+  });
+
+  test('pruneSupersededUnits leaves a plist whose top-level label mismatches its filename', async () => {
+    const fileLabel = 'co.goondocks.myco.stale';
+    const plistSpec = { ...spec(home), label: 'co.goondocks.myco.different' };
+    const plistPath = path.join(agentsDir, `${fileLabel}.plist`);
+    fs.writeFileSync(plistPath, renderLaunchdPlist(plistSpec));
+    fs.unlinkSync(plistSpec.executable);
+
+    await expect(mgr.pruneSupersededUnits()).resolves.toEqual([]);
+
+    expect(fs.existsSync(plistPath)).toBe(true);
+    expect(runner.calls).toEqual([]);
   });
 
   test('status reports installed=false when plist absent', async () => {
@@ -152,6 +290,72 @@ describe('LaunchdServiceManager', () => {
     const st = await mgr.status(s.label);
     expect(st.lastExitCode).toBe(78);
     expect(st.running).toBe(false);
+  });
+
+  test('inspect returns the exact executable and arguments from the installed plist', async () => {
+    const s = spec(home);
+    s.args = ['daemon', '--port', '28876', '--home', 'path & <home> "quoted"'];
+    await mgr.install(s);
+
+    await expect(mgr.inspect(s.label)).resolves.toEqual({
+      executable: s.executable,
+      args: s.args,
+    });
+  });
+
+  test('inspect fails closed for a malformed installed plist', async () => {
+    const label = 'co.goondocks.myco.malformed';
+    fs.writeFileSync(
+      path.join(agentsDir, `${label}.plist`),
+      `<plist><dict>
+<key>Label</key><string>${label}</string>
+<key>ProgramArguments</key><array>
+<string>/valid/executable</string>
+<string>--port</string>
+<string>&unknown;</string>
+</array>
+</dict></plist>`,
+    );
+
+    await expect(mgr.inspect(label)).resolves.toBeNull();
+  });
+
+  test('inspect fails closed when a top-level Program changes launchd executable semantics', async () => {
+    const s = spec(home);
+    const plist = renderLaunchdPlist(s).replace(
+      '<key>ProgramArguments</key>',
+      '<key>Program</key><string>/different/executable</string>\n  <key>ProgramArguments</key>',
+    );
+    fs.writeFileSync(path.join(agentsDir, `${s.label}.plist`), plist);
+
+    await expect(mgr.inspect(s.label)).resolves.toBeNull();
+  });
+
+  test('inspect ignores nested lookalike keys and reads the top-level command', async () => {
+    const s = spec(home);
+    const plist = renderLaunchdPlist(s).replace(
+      '<key>EnvironmentVariables</key>\n  <dict>',
+      `<key>EnvironmentVariables</key>
+  <dict>
+    <key>ProgramArguments</key>
+    <array><string>/nested/wrong</string></array>`,
+    );
+    fs.writeFileSync(path.join(agentsDir, `${s.label}.plist`), plist);
+
+    await expect(mgr.inspect(s.label)).resolves.toEqual({
+      executable: s.executable,
+      args: s.args,
+    });
+  });
+
+  test('inspect returns null when a live launchd job has no installed plist', async () => {
+    const label = 'co.goondocks.myco.orphaned';
+    runner.printResponse = 'pid = 4321\n';
+    runner.printExitCode = 0;
+
+    const status = await mgr.status(label);
+    expect(status).toMatchObject({ installed: false, running: true, pid: 4321 });
+    await expect(mgr.inspect(label)).resolves.toBeNull();
   });
 
   test('platformName is "launchd"', () => {

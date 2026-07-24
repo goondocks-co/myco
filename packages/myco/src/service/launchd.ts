@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderLaunchdPlist } from './launchd-plist.js';
 import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
@@ -8,6 +9,7 @@ import { SERVICE_UNIT_DIR_ENV } from './paths.js';
 import type {
   InstallOptions,
   InstallResult,
+  InstalledServiceCommand,
   ServiceManager,
   ServiceSpec,
   ServiceStatus,
@@ -30,7 +32,10 @@ export interface LaunchctlRunner {
 export class RealLaunchctlRunner implements LaunchctlRunner {
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
-      return { stdout: `[sandbox] skipped launchctl ${args.join(' ')}`, exitCode: 0 };
+      return {
+        stdout: `[sandbox] skipped launchctl ${args.join(' ')}`,
+        exitCode: args[0] === 'print' ? 1 : 0,
+      };
     }
     return spawnCombinedOutput('launchctl', args);
   }
@@ -42,7 +47,12 @@ export interface LaunchdManagerOptions {
   agentsDir?: string;
   /** Current user's uid (for gui/<uid> domain). */
   uid?: number;
+  /** Wait between launchd teardown observations. */
+  sleep?: (delayMs: number) => Promise<void>;
 }
+
+const LAUNCHD_TEARDOWN_TIMEOUT_MS = 10_000;
+const LAUNCHD_TEARDOWN_POLL_INTERVAL_MS = 100;
 
 export class LaunchdServiceManager implements ServiceManager {
   readonly supported = true;
@@ -50,11 +60,13 @@ export class LaunchdServiceManager implements ServiceManager {
   private readonly runner: LaunchctlRunner;
   readonly agentsDir: string;
   private readonly uid: number;
+  private readonly sleep: (delayMs: number) => Promise<void>;
 
   constructor(opts: LaunchdManagerOptions = {}) {
     this.runner = opts.runner ?? new RealLaunchctlRunner();
     this.agentsDir = opts.agentsDir ?? path.join(os.homedir(), 'Library', 'LaunchAgents');
     this.uid = opts.uid ?? process.getuid?.() ?? 501;
+    this.sleep = opts.sleep ?? sleep;
   }
 
   private plistPath(label: string): string {
@@ -67,6 +79,16 @@ export class LaunchdServiceManager implements ServiceManager {
 
   async isInstalled(label: string): Promise<boolean> {
     return fs.existsSync(this.plistPath(label));
+  }
+
+  async inspect(label: string): Promise<InstalledServiceCommand | null> {
+    let plist: string;
+    try {
+      plist = fs.readFileSync(this.plistPath(label), 'utf-8');
+    } catch {
+      return null;
+    }
+    return parsePlistCommand(plist, label);
   }
 
   async install(spec: ServiceSpec, opts: InstallOptions = {}): Promise<InstallResult> {
@@ -135,7 +157,7 @@ export class LaunchdServiceManager implements ServiceManager {
 
   async uninstall(label: string): Promise<void> {
     const plistPath = this.plistPath(label);
-    await this.runner.run(['bootout', this.domainTarget(label)]);
+    await this.unloadIfLoaded(label);
     if (fs.existsSync(plistPath)) fs.unlinkSync(plistPath);
     // Sweep any sibling plists whose target binary is gone (old version dirs,
     // removed dev-build worktrees) so launchd stops churning on dead units.
@@ -172,20 +194,53 @@ export class LaunchdServiceManager implements ServiceManager {
 
   async status(label: string): Promise<ServiceStatus> {
     const plistPath = this.plistPath(label);
-    if (!fs.existsSync(plistPath)) {
-      return { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
+    const installed = fs.existsSync(plistPath);
+    const { stdout, exitCode } = await this.runner.run(['print', this.domainTarget(label)]);
+    if (exitCode !== 0) {
+      return {
+        installed,
+        running: false,
+        pid: null,
+        lastExitCode: null,
+        unitPath: installed ? plistPath : null,
+      };
     }
-    const { stdout } = await this.runner.run(['print', this.domainTarget(label)]);
     const pidMatch = stdout.match(/pid\s*=\s*(\d+)/);
     const exitMatch = stdout.match(/last exit code\s*=\s*(-?\d+)/);
     const pid = pidMatch ? parseInt(pidMatch[1], 10) : null;
     return {
-      installed: true,
+      installed,
       running: pid !== null,
       pid,
       lastExitCode: exitMatch ? parseInt(exitMatch[1], 10) : null,
-      unitPath: plistPath,
+      unitPath: installed ? plistPath : null,
     };
+  }
+
+  private async isLoaded(label: string): Promise<boolean> {
+    const result = await this.runner.run(['print', this.domainTarget(label)]);
+    if (result.exitCode === 0) return true;
+    if (isLaunchdJobAbsent(result.stdout)) return false;
+    assertRunSucceeded(result, `launchctl print ${this.domainTarget(label)}`);
+    return false;
+  }
+
+  private async waitUntilUnloaded(label: string): Promise<void> {
+    const maxPolls = Math.ceil(LAUNCHD_TEARDOWN_TIMEOUT_MS / LAUNCHD_TEARDOWN_POLL_INTERVAL_MS);
+    for (let poll = 0; poll <= maxPolls; poll++) {
+      if (!(await this.isLoaded(label))) return;
+      if (poll < maxPolls) await this.sleep(LAUNCHD_TEARDOWN_POLL_INTERVAL_MS);
+    }
+    throw new Error(`Timed out waiting for launchd job ${label} to exit`);
+  }
+
+  private async unloadIfLoaded(label: string): Promise<void> {
+    if (!(await this.isLoaded(label))) return;
+    assertRunSucceeded(
+      await this.runner.run(['bootout', this.domainTarget(label)]),
+      `launchctl bootout ${this.domainTarget(label)}`,
+    );
+    await this.waitUntilUnloaded(label);
   }
 
   /**
@@ -211,12 +266,12 @@ export class LaunchdServiceManager implements ServiceManager {
       const plistPath = path.join(this.agentsDir, file);
       let content: string;
       try { content = fs.readFileSync(plistPath, 'utf-8'); } catch { continue; }
-      const exe = parsePlistExecutable(content);
+      const exe = parsePlistExecutable(content, label);
       // Only prune a unit we can positively identify as dead (executable gone).
       // Unparseable or still-present → leave it; never delete by label pattern.
       if (!exe || fs.existsSync(exe)) continue;
-      await this.runner.run(['bootout', this.domainTarget(label)]);
-      try { fs.unlinkSync(plistPath); } catch { /* best-effort */ }
+      await this.unloadIfLoaded(label);
+      fs.unlinkSync(plistPath);
       pruned.push(label);
     }
     return pruned;
@@ -224,8 +279,105 @@ export class LaunchdServiceManager implements ServiceManager {
 }
 
 /** First ProgramArguments <string> (the executable) from a launchd plist. */
-function parsePlistExecutable(plist: string): string | null {
-  const arrayBlock = plist.split('<key>ProgramArguments</key>')[1]?.split('</array>')[0];
-  const m = arrayBlock?.match(/<string>([^<]*)<\/string>/);
-  return m ? m[1] : null;
+function parsePlistExecutable(plist: string, expectedLabel?: string): string | null {
+  return parsePlistCommand(plist, expectedLabel)?.executable ?? null;
+}
+
+function parsePlistCommand(plist: string, expectedLabel?: string): InstalledServiceCommand | null {
+  const parsed = parsePlistDocument(plist);
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return null;
+  if (expectedLabel !== undefined && parsed.Label !== expectedLabel) return null;
+  if (Object.hasOwn(parsed, 'Program')) return null;
+  if (!Array.isArray(parsed.ProgramArguments) || parsed.ProgramArguments.length === 0) return null;
+  if (!parsed.ProgramArguments.every((value) => typeof value === 'string')) return null;
+  const [executable, ...args] = parsed.ProgramArguments;
+  return { executable, args };
+}
+
+function decodePlistString(value: string): string | null {
+  if (/&(?!(?:amp|lt|gt|quot);)/.test(value)) return null;
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+function isLaunchdJobAbsent(stdout: string): boolean {
+  return /^\[sandbox\] skipped launchctl print /i.test(stdout)
+    || /(?:could not find|not found|unknown) service/i.test(stdout);
+}
+
+type PlistValue = string | number | boolean | PlistValue[] | { [key: string]: PlistValue };
+
+function parsePlistDocument(plist: string): { [key: string]: PlistValue } | null {
+  const xml = plist
+    .replace(/^\s*<\?xml[^>]*\?>/, '')
+    .replace(/^\s*<!DOCTYPE[^>]*>/, '');
+  let index = 0;
+
+  const skipWhitespace = (): void => {
+    while (/\s/.test(xml[index] ?? '')) index++;
+  };
+  const consume = (pattern: RegExp): string | null => {
+    skipWhitespace();
+    const match = xml.slice(index).match(pattern);
+    if (!match || match.index !== 0) return null;
+    index += match[0].length;
+    return match[0];
+  };
+  const textElement = (tag: 'key' | 'string'): string | undefined => {
+    if (consume(new RegExp(`^<${tag}>`)) === null) return undefined;
+    const close = `</${tag}>`;
+    const closeIndex = xml.indexOf(close, index);
+    if (closeIndex === -1) return undefined;
+    const encoded = xml.slice(index, closeIndex);
+    if (encoded.includes('<')) return undefined;
+    index = closeIndex + close.length;
+    return decodePlistString(encoded) ?? undefined;
+  };
+  const value = (): PlistValue | undefined => {
+    skipWhitespace();
+    if (xml.startsWith('<string>', index)) return textElement('string');
+    if (consume(/^<true\s*\/>/) !== null) return true;
+    if (consume(/^<false\s*\/>/) !== null) return false;
+    if (consume(/^<integer>/) !== null) {
+      const closeIndex = xml.indexOf('</integer>', index);
+      if (closeIndex === -1) return undefined;
+      const raw = xml.slice(index, closeIndex);
+      if (!/^-?\d+$/.test(raw)) return undefined;
+      index = closeIndex + '</integer>'.length;
+      return parseInt(raw, 10);
+    }
+    if (consume(/^<array>/) !== null) {
+      const result: PlistValue[] = [];
+      while (true) {
+        skipWhitespace();
+        if (consume(/^<\/array>/) !== null) return result;
+        const item = value();
+        if (item === undefined) return undefined;
+        result.push(item);
+      }
+    }
+    if (consume(/^<dict>/) !== null) {
+      const result: { [key: string]: PlistValue } = Object.create(null) as { [key: string]: PlistValue };
+      while (true) {
+        skipWhitespace();
+        if (consume(/^<\/dict>/) !== null) return result;
+        const key = textElement('key');
+        if (key === undefined || Object.hasOwn(result, key)) return undefined;
+        const item = value();
+        if (item === undefined) return undefined;
+        result[key] = item;
+      }
+    }
+    return undefined;
+  };
+
+  if (consume(/^<plist(?:\s[^>]*)?>/) === null) return null;
+  const root = value();
+  if (!root || Array.isArray(root) || typeof root !== 'object') return null;
+  if (consume(/^<\/plist>/) === null) return null;
+  skipWhitespace();
+  return index === xml.length ? root : null;
 }
