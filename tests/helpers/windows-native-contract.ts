@@ -346,7 +346,7 @@ async function proveNativeTaskScheduler(
 ): Promise<void> {
   const runner = new RealSchtasksRunner();
   const manager = new WindowsTaskServiceManager({
-    scriptDir: path.win32.join(scratch, 'Task Scripts & ! Ω'),
+    scriptDir: path.win32.join(scratch, 'Task Scripts Ω'),
     resolveDaemonPort: () => null,
   });
   const spec = buildWindowsNativeTaskSpec({ taskLabel, executable, scratch });
@@ -448,7 +448,7 @@ async function runParentContract(): Promise<void> {
 
   const fallbackRunner = new RealSchtasksRunner();
   const fallbackManager = new WindowsTaskServiceManager({
-    scriptDir: path.win32.join(scratch, 'Task Scripts & ! Ω'),
+    scriptDir: path.win32.join(scratch, 'Task Scripts Ω'),
     resolveDaemonPort: () => null,
   });
   let primaryError: unknown;

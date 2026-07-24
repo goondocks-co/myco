@@ -128,7 +128,9 @@ function windowsTaskRunCommand(scriptPath: string): string {
   return `${WINDOWS_TASK_SHELL} ${windowsTaskShellArguments(scriptPath)}`;
 }
 
-function assertNoWindowsPercentExpansion(
+const WINDOWS_COMMAND_SHELL_META = /[%!&|<>^()\r\n]/;
+
+function assertWindowsCommandShellSafe(
   spec: ServiceSpec,
   scriptPath: string,
 ): void {
@@ -143,10 +145,10 @@ function assertNoWindowsPercentExpansion(
       ([key, value]): [string, string] => [`environment value ${key}`, value],
     ),
   ];
-  const unsafe = inputs.find(([, value]) => value.includes('%'));
+  const unsafe = inputs.find(([, value]) => WINDOWS_COMMAND_SHELL_META.test(value));
   if (unsafe) {
     throw new Error(
-      `Windows service ${unsafe[0]} contains unsupported percent expansion syntax`,
+      `Windows service ${unsafe[0]} contains unsupported command-shell syntax`,
     );
   }
 }
@@ -274,7 +276,7 @@ export class WindowsTaskServiceManager implements ServiceManager {
 
   async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
     const scriptPath = this.scriptPath(spec.label);
-    assertNoWindowsPercentExpansion(spec, scriptPath);
+    assertWindowsCommandShellSafe(spec, scriptPath);
     const rendered = renderWindowsServiceScript(spec);
     let existing: string | null = null;
     try { existing = fs.readFileSync(scriptPath, 'utf-8'); } catch { /* ENOENT */ }

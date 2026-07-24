@@ -164,7 +164,7 @@ describe('WindowsTaskServiceManager', () => {
   });
 
   test('wraps a spaced /tr action in a non-interactive command shell', async () => {
-    const scriptDir = path.join(tmp('myco-wt-'), 'First & ! Last');
+    const scriptDir = path.join(tmp('myco-wt-'), 'First Last');
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
     const spec = makeSpec();
@@ -210,15 +210,17 @@ describe('WindowsTaskServiceManager', () => {
     expect(runner.calls.some((call) => call[0] === '/create')).toBe(false);
   });
 
-  test('rejects percent expansion in launcher inputs before writing or registration', async () => {
-    const scriptDir = path.join(tmp('myco-wt-'), '%PATH%');
-    const runner = new StubRunner();
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
-    const spec = makeSpec();
+  test('rejects command-shell metacharacters before writing or registration', async () => {
+    for (const unsafeSegment of ['%PATH%', 'Ampersand &', 'Bang !']) {
+      const scriptDir = path.join(tmp('myco-wt-'), unsafeSegment);
+      const runner = new StubRunner();
+      const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+      const spec = makeSpec();
 
-    await expect(mgr.install(spec)).rejects.toThrow(/percent.*expansion/i);
-    expect(runner.calls).toEqual([]);
-    expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(false);
+      await expect(mgr.install(spec)).rejects.toThrow(/command-shell syntax/i);
+      expect(runner.calls).toEqual([]);
+      expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(false);
+    }
   });
 
   test('isInstalled reflects the locale-independent task state', async () => {
