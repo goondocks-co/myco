@@ -199,4 +199,13 @@ describe('Windows native CI contract', () => {
     expect(productionInspect).toBeGreaterThan(xmlQuery);
     expect(diagnostic).toBeGreaterThan(productionInspect);
   });
+
+  test('helper retries transient Windows scratch cleanup failures within a bound', () => {
+    const helper = fs.readFileSync(HELPER_PATH, 'utf8');
+
+    expect(helper).toContain("new Set(['EBUSY', 'ENOTEMPTY', 'EPERM'])");
+    expect(helper).toContain('const CLEANUP_TIMEOUT_MS = 10_000');
+    expect(helper).toContain('await removeScratchDirectory(scratch)');
+    expect(helper).toContain('Date.now() >= deadline');
+  });
 });

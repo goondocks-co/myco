@@ -33,6 +33,8 @@ const TASK_MARKER_NAME = 'task-proof.json';
 const TASK_LABEL_PREFIX = 'Myco-CI-Native-';
 const CHILD_TIMEOUT_MS = 15_000;
 const POLL_INTERVAL_MS = 50;
+const CLEANUP_TIMEOUT_MS = 10_000;
+const TRANSIENT_WINDOWS_CLEANUP_ERRORS = new Set(['EBUSY', 'ENOTEMPTY', 'EPERM']);
 
 interface ContractScope {
   runnerTemp: string;
@@ -387,6 +389,22 @@ export async function cleanupTask(
   }
 }
 
+async function removeScratchDirectory(scratch: string): Promise<void> {
+  const deadline = Date.now() + CLEANUP_TIMEOUT_MS;
+  for (;;) {
+    try {
+      fs.rmSync(path.win32.toNamespacedPath(scratch), { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!code || !TRANSIENT_WINDOWS_CLEANUP_ERRORS.has(code) || Date.now() >= deadline) {
+        throw error;
+      }
+      await sleep(POLL_INTERVAL_MS);
+    }
+  }
+}
+
 async function proveNativeTaskScheduler(
   scratch: string,
   executable: string,
@@ -552,7 +570,7 @@ async function runParentContract(): Promise<void> {
     await cleanupTask(fallbackManager, fallbackRunner, taskLabel)
       .catch((error) => cleanupErrors.push(error));
     try {
-      fs.rmSync(path.win32.toNamespacedPath(scratch), { recursive: true, force: true });
+      await removeScratchDirectory(scratch);
     } catch (error) {
       cleanupErrors.push(error);
     }
