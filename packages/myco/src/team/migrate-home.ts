@@ -83,6 +83,33 @@ function ensureRealDirectory(target: string, label: string): void {
   }
 }
 
+function copyFileExclusive(sourcePath: string, destinationPath: string): boolean {
+  try {
+    fs.copyFileSync(sourcePath, destinationPath, fs.constants.COPYFILE_EXCL);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
+}
+
+function reconcileRegularFile(
+  sourcePath: string,
+  destinationPath: string,
+): { filled: boolean; conflicted: boolean } {
+  if (copyFileExclusive(sourcePath, destinationPath)) {
+    return { filled: true, conflicted: false };
+  }
+  if (filesEqual(sourcePath, destinationPath)) {
+    return { filled: false, conflicted: false };
+  }
+  const backupPath = destinationPath + BAK_SUFFIX;
+  if (!copyFileExclusive(sourcePath, backupPath) && !filesEqual(sourcePath, backupPath)) {
+    throw new Error(`Refusing to overwrite divergent legacy Team backup: ${backupPath}`);
+  }
+  return { filled: false, conflicted: true };
+}
+
 /**
  * Fill missing files and subdirectories into dst. Destination content wins;
  * divergent legacy files are retained beside it under the fixed backup suffix.
@@ -98,27 +125,19 @@ function reconcileTeamDir(src: string, dst: string): { filled: boolean; conflict
     if (entry.name === SECRETS_FILE) continue;
     if (entry.isDirectory()) {
       if (!fs.existsSync(destinationPath)) {
-        fs.cpSync(sourcePath, destinationPath, { recursive: true });
+        fs.cpSync(sourcePath, destinationPath, {
+          recursive: true,
+          force: false,
+          errorOnExist: false,
+        });
         filled = true;
       }
       continue;
     }
     if (!entry.isFile()) continue;
-    if (!fs.existsSync(destinationPath)) {
-      fs.copyFileSync(sourcePath, destinationPath);
-      filled = true;
-      continue;
-    }
-    if (filesEqual(sourcePath, destinationPath)) continue;
-    const backupPath = destinationPath + BAK_SUFFIX;
-    if (fs.existsSync(backupPath)) {
-      if (!filesEqual(sourcePath, backupPath)) {
-        throw new Error(`Refusing to overwrite divergent legacy Team backup: ${backupPath}`);
-      }
-    } else {
-      fs.copyFileSync(sourcePath, backupPath);
-    }
-    conflicted = true;
+    const outcome = reconcileRegularFile(sourcePath, destinationPath);
+    filled ||= outcome.filled;
+    conflicted ||= outcome.conflicted;
   }
   return { filled, conflicted };
 }
@@ -197,6 +216,63 @@ function removeOwnedTemporaryRedirect(tempPath: string): void {
   }
 }
 
+function verifiedTemporaryRedirects(legacyTeamsDir: string, destTeamsDir: string): string[] {
+  const parent = path.dirname(legacyTeamsDir);
+  const prefix = `${path.basename(legacyTeamsDir)}.redirect-`;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(parent, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.name.startsWith(prefix))
+    .map((entry) => path.join(parent, entry.name))
+    .map((candidate) => {
+      const stat = fs.lstatSync(candidate);
+      if (!stat.isSymbolicLink() || !pathsEquivalent(candidate, destTeamsDir)) {
+        throw new Error(`Refusing unexpected legacy Team redirect staging path: ${candidate}`);
+      }
+      return candidate;
+    })
+    .sort();
+}
+
+function temporaryRedirectPath(legacyTeamsDir: string): string {
+  return `${legacyTeamsDir}.redirect-${process.pid}-${randomBytes(12).toString('hex')}`;
+}
+
+function claimLegacyTeamsRedirect(
+  legacyTeamsDir: string,
+  destTeamsDir: string,
+  reusableRedirects: readonly string[] = [],
+): string[] {
+  fs.mkdirSync(destTeamsDir, { recursive: true });
+  const tempRedirect = reusableRedirects[0]
+    ?? temporaryRedirectPath(legacyTeamsDir);
+  const recoveryRedirects = reusableRedirects.slice(1);
+  let published = false;
+  try {
+    if (recoveryRedirects.length === 0) {
+      const recoveryRedirect = temporaryRedirectPath(legacyTeamsDir);
+      recoveryRedirects.push(recoveryRedirect);
+      createVerifiedRedirect(recoveryRedirect, destTeamsDir);
+    }
+    if (reusableRedirects.length === 0) createVerifiedRedirect(tempRedirect, destTeamsDir);
+    fs.renameSync(tempRedirect, legacyTeamsDir);
+    published = true;
+    if (!fs.lstatSync(legacyTeamsDir).isSymbolicLink() || !pathsEquivalent(legacyTeamsDir, destTeamsDir)) {
+      throw new Error(`Legacy Team redirect publication failed: ${legacyTeamsDir}`);
+    }
+    return recoveryRedirects;
+  } catch (error) {
+    removeOwnedTemporaryRedirect(tempRedirect);
+    if (!published) recoveryRedirects.forEach(removeOwnedTemporaryRedirect);
+    throw error;
+  }
+}
+
 /**
  * Publish the durable redirect after the source tree is fully accounted for.
  * The temporary link is verified before the source rename, and rollback never
@@ -212,10 +288,10 @@ function retireLegacyTeamsDir(
     throw new Error(`Legacy Team archive already exists: ${archivePath}`);
   }
 
-  fs.mkdirSync(destTeamsDir, { recursive: true });
   const tempRedirect = `${legacyTeamsDir}.redirect-${process.pid}-${randomBytes(12).toString('hex')}`;
   let archived = false;
   try {
+    fs.mkdirSync(destTeamsDir, { recursive: true });
     createVerifiedRedirect(tempRedirect, destTeamsDir);
     fs.renameSync(legacyTeamsDir, archivePath);
     archived = true;
@@ -250,6 +326,78 @@ function retireLegacyTeamsDir(
   }
 }
 
+function planTeamMigrations(sourceTeamsDir: string, destTeamsDir: string): TeamMigration[] {
+  assertExistingRealDirectory(sourceTeamsDir, 'Legacy Team source home');
+  const entries = fs.readdirSync(sourceTeamsDir, { withFileTypes: true });
+  if (entries.some((entry) => !entry.isDirectory())) {
+    throw new Error(`Legacy Team home contains an unsupported top-level entry: ${sourceTeamsDir}`);
+  }
+  return entries.map((entry) => {
+    const sourceDir = path.join(sourceTeamsDir, entry.name);
+    const destinationDir = path.join(destTeamsDir, entry.name);
+    assertExistingRealDirectory(sourceDir, 'Legacy Team source');
+    return {
+      name: entry.name,
+      sourceDir,
+      destinationDir,
+      destinationExisted: assertOptionalRealDirectory(destinationDir, 'Canonical Team destination'),
+    };
+  });
+}
+
+function migrationSecretPairs(migrations: readonly TeamMigration[]) {
+  return migrations.map((migration) => ({
+    sourceVaultDir: migration.sourceDir,
+    destinationVaultDir: migration.destinationDir,
+  }));
+}
+
+function reconcileTeamMigrations(
+  migrations: readonly TeamMigration[],
+  result: MigrateTeamsResult,
+): void {
+  const firstPass = withLegacyTeamSecretSnapshotsReconciledSync(
+    migrationSecretPairs(migrations),
+    () => 'complete',
+  );
+  migrations.forEach((migration, index) => {
+    const files = reconcileTeamDir(migration.sourceDir, migration.destinationDir);
+    if (!verifyCopied(migration.sourceDir, migration.destinationDir)) {
+      throw new Error(`Legacy Team verification failed: ${migration.name}`);
+    }
+    recordDisposition(result, migration.name, combinedDisposition(migration, files, firstPass.dispositions[index]!));
+  });
+}
+
+function recoverArchivedLegacyTeamsDir(
+  legacyTeamsDir: string,
+  destTeamsDir: string,
+  result: MigrateTeamsResult,
+  publishedRedirect = false,
+): void {
+  const archivePath = legacyTeamsDir + BAK_SUFFIX;
+  const reusableRedirects = verifiedTemporaryRedirects(legacyTeamsDir, destTeamsDir);
+  const migrations = planTeamMigrations(archivePath, destTeamsDir);
+  const recoveryRedirects = publishedRedirect
+    ? reusableRedirects
+    : claimLegacyTeamsRedirect(legacyTeamsDir, destTeamsDir, reusableRedirects);
+  reconcileTeamMigrations(migrations, result);
+
+  const finalPass = withLegacyTeamSecretSnapshotsReconciledSync(
+    migrationSecretPairs(migrations),
+    () => {
+      if (!migrations.every((migration) => verifyCopied(migration.sourceDir, migration.destinationDir))) {
+        return 'deferred';
+      }
+      return 'complete';
+    },
+  );
+  if (finalPass.outcome === 'complete') {
+    recoveryRedirects.forEach(removeOwnedTemporaryRedirect);
+    result.retiredHomes.push(legacyTeamsDir);
+  }
+}
+
 function combinedDisposition(
   migration: TeamMigration,
   files: { filled: boolean; conflicted: boolean },
@@ -273,45 +421,38 @@ function migrateLegacyTeamsDir(
   result: MigrateTeamsResult,
 ): void {
   const existing = lstatOrUndefined(legacyTeamsDir);
-  if (existing === undefined) return;
+  const archivePath = legacyTeamsDir + BAK_SUFFIX;
+  const archive = lstatOrUndefined(archivePath);
+  if (existing !== undefined
+    && !existing.isSymbolicLink()
+    && pathsEquivalent(legacyTeamsDir, destTeamsDir)) {
+    return;
+  }
+  if (existing === undefined) {
+    if (archive === undefined) return;
+    recoverArchivedLegacyTeamsDir(legacyTeamsDir, destTeamsDir, result);
+    return;
+  }
   if (existing.isSymbolicLink()) {
-    if (pathsEquivalent(legacyTeamsDir, destTeamsDir)) return;
+    if (pathsEquivalent(legacyTeamsDir, destTeamsDir)) {
+      if (archive !== undefined
+        && verifiedTemporaryRedirects(legacyTeamsDir, destTeamsDir).length > 0) {
+        recoverArchivedLegacyTeamsDir(legacyTeamsDir, destTeamsDir, result, true);
+      }
+      return;
+    }
     throw new Error(`Legacy Team redirect points somewhere unexpected: ${legacyTeamsDir}`);
+  }
+  if (archive !== undefined) {
+    throw new Error(`Legacy Team archive already exists: ${archivePath}`);
   }
   if (!existing.isDirectory()) {
     throw new Error(`Legacy Team path is not a directory: ${legacyTeamsDir}`);
   }
 
-  const entries = fs.readdirSync(legacyTeamsDir, { withFileTypes: true });
-  if (entries.some((entry) => !entry.isDirectory())) {
-    throw new Error(`Legacy Team home contains an unsupported top-level entry: ${legacyTeamsDir}`);
-  }
-  const migrations: TeamMigration[] = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => {
-      const sourceDir = path.join(legacyTeamsDir, entry.name);
-      const destinationDir = path.join(destTeamsDir, entry.name);
-      assertExistingRealDirectory(sourceDir, 'Legacy Team source');
-      return {
-        name: entry.name,
-        sourceDir,
-        destinationDir,
-        destinationExisted: assertOptionalRealDirectory(destinationDir, 'Canonical Team destination'),
-      };
-    });
-  const pairs = migrations.map((migration) => ({
-    sourceVaultDir: migration.sourceDir,
-    destinationVaultDir: migration.destinationDir,
-  }));
-
-  const firstPass = withLegacyTeamSecretSnapshotsReconciledSync(pairs, () => 'complete');
-  migrations.forEach((migration, index) => {
-    const files = reconcileTeamDir(migration.sourceDir, migration.destinationDir);
-    if (!verifyCopied(migration.sourceDir, migration.destinationDir)) {
-      throw new Error(`Legacy Team verification failed: ${migration.name}`);
-    }
-    recordDisposition(result, migration.name, combinedDisposition(migration, files, firstPass.dispositions[index]!));
-  });
+  const migrations = planTeamMigrations(legacyTeamsDir, destTeamsDir);
+  const pairs = migrationSecretPairs(migrations);
+  reconcileTeamMigrations(migrations, result);
 
   const finalPass = withLegacyTeamSecretSnapshotsReconciledSync(pairs, () => {
     if (!migrations.every((migration) => verifyCopied(migration.sourceDir, migration.destinationDir))) {
@@ -330,7 +471,6 @@ export function migrateTeamsHomeIfNeeded(legacyHomes: string[] = defaultLegacyTe
 
   for (const home of legacyHomes) {
     const legacyTeamsDir = path.join(home, TEAMS_DIRNAME);
-    if (pathsEquivalent(legacyTeamsDir, destTeamsDir)) continue;
     const key = process.platform === 'win32'
       ? path.resolve(legacyTeamsDir).toLowerCase()
       : path.resolve(legacyTeamsDir);

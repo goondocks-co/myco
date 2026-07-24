@@ -2,7 +2,7 @@ import { describe, expect, it, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { vi } from '../helpers/vi-shim.js';
 import { migrateTeamsHomeIfNeeded, defaultLegacyTeamHomes } from '@myco/team/migrate-home.js';
 import { secretStoreLockKeys } from '@myco/config/secret-store-lock.js';
@@ -11,6 +11,7 @@ const TEAM_ID = 'team_' + 'c'.repeat(32);
 const SECRETS_WRITER_HELPER = path.resolve('tests/helpers/secrets-writer-helper.ts');
 const SECRETS_LOCK_HOLDER_HELPER = path.resolve('tests/helpers/secrets-lock-holder-helper.ts');
 const SECRETS_PROPAGATE_HELPER = path.resolve('tests/helpers/secrets-propagate-helper.ts');
+const MIGRATION_CRASH_HELPER = path.resolve('tests/team/migrate-home-crash-helper.ts');
 
 function secretStoreKeys(vaultDir: string): string[] {
   return secretStoreLockKeys(vaultDir);
@@ -335,6 +336,188 @@ describe('migrateTeamsHomeIfNeeded', () => {
     expect(migrateTeamsHomeIfNeeded([legacy]).retiredHomes).toEqual([]);
   }, 30_000);
 
+  it('upgrades an archive-only legacy topology by recovering the durable redirect', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    const config = { team_id: TEAM_ID, name: 'L', projects: [] };
+    writeTeam(legacy, TEAM_ID, config);
+    writeTeam(dest, TEAM_ID, config);
+    fs.rmSync(path.join(dest, 'teams', TEAM_ID, 'secrets.env'));
+    const legacyTeams = path.join(legacy, 'teams');
+    const archive = legacyTeams + '.bak-pre-myco-team';
+    fs.renameSync(legacyTeams, archive);
+
+    const result = migrateTeamsHomeIfNeeded([legacy]);
+
+    expect(result.retiredHomes).toEqual([legacyTeams]);
+    expect(fs.lstatSync(legacyTeams).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(legacyTeams)).toBe(fs.realpathSync(path.join(dest, 'teams')));
+    expect(fs.existsSync(path.join(archive, TEAM_ID, 'team.json'))).toBe(true);
+    expect(fs.readFileSync(path.join(dest, 'teams', TEAM_ID, 'secrets.env'), 'utf-8'))
+      .toBe('MYCO_TEAM_API_KEY=abc\n');
+    expect(migrateTeamsHomeIfNeeded([legacy]).retiredHomes).toEqual([]);
+  });
+
+  it('resumes after process termination between archive and redirect publication', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+    const legacyTeams = path.join(legacy, 'teams');
+    const archive = legacyTeams + '.bak-pre-myco-team';
+
+    const crashed = spawnSync(
+      process.execPath,
+      ['run', MIGRATION_CRASH_HELPER, legacy, dest],
+      { cwd: process.cwd(), encoding: 'utf-8' },
+    );
+    expect(crashed.status).toBe(86);
+    expect(fs.existsSync(legacyTeams)).toBe(false);
+    expect(fs.existsSync(path.join(archive, TEAM_ID, 'team.json'))).toBe(true);
+
+    const result = migrateTeamsHomeIfNeeded([legacy]);
+
+    expect(result.retiredHomes).toEqual([legacyTeams]);
+    expect(fs.lstatSync(legacyTeams).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(legacyTeams)).toBe(fs.realpathSync(path.join(dest, 'teams')));
+    expect(fs.existsSync(path.join(archive, TEAM_ID, 'team.json'))).toBe(true);
+    expect(fs.readdirSync(legacy).filter((name) => name.startsWith('teams.redirect-'))).toEqual([]);
+  });
+
+  it('refuses a source recreated during recovery before copying archive data', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'archived', projects: [] });
+    const legacyTeams = path.join(legacy, 'teams');
+    const archive = legacyTeams + '.bak-pre-myco-team';
+    fs.renameSync(legacyTeams, archive);
+    const readdirSync = fs.readdirSync.bind(fs);
+    let recreated = false;
+    const readdir = vi.spyOn(fs, 'readdirSync').mockImplementation(((target, options) => {
+      if (!recreated && path.resolve(String(target)) === path.resolve(archive)) {
+        recreated = true;
+        writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'recreated', projects: [] });
+      }
+      return readdirSync(target, options);
+    }) as typeof fs.readdirSync);
+
+    expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow();
+    readdir.mockRestore();
+
+    expect(recreated).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(legacyTeams, TEAM_ID, 'team.json'), 'utf-8')).name)
+      .toBe('recreated');
+    expect(JSON.parse(fs.readFileSync(path.join(archive, TEAM_ID, 'team.json'), 'utf-8')).name)
+      .toBe('archived');
+    expect(fs.existsSync(path.join(dest, 'teams', TEAM_ID, 'team.json'))).toBe(false);
+  });
+
+  it('preserves a canonical record written through the claimed redirect during recovery', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'archived', projects: [] });
+    const legacyTeams = path.join(legacy, 'teams');
+    const archive = legacyTeams + '.bak-pre-myco-team';
+    fs.renameSync(legacyTeams, archive);
+    const destinationRecord = path.join(dest, 'teams', TEAM_ID, 'team.json');
+    const copyFileSync = fs.copyFileSync.bind(fs);
+    let wroteConcurrentRecord = false;
+    const copyFile = vi.spyOn(fs, 'copyFileSync').mockImplementation(((source, destination, mode) => {
+      if (!wroteConcurrentRecord
+        && path.resolve(String(destination)) === path.resolve(destinationRecord)) {
+        wroteConcurrentRecord = true;
+        fs.writeFileSync(
+          path.join(legacyTeams, TEAM_ID, 'team.json'),
+          JSON.stringify({ team_id: TEAM_ID, name: 'concurrent-writer', projects: [] }),
+        );
+      }
+      copyFileSync(source, destination, mode);
+    }) as typeof fs.copyFileSync);
+
+    migrateTeamsHomeIfNeeded([legacy]);
+    copyFile.mockRestore();
+
+    expect(wroteConcurrentRecord).toBe(true);
+    expect(JSON.parse(fs.readFileSync(destinationRecord, 'utf-8')).name).toBe('concurrent-writer');
+    expect(JSON.parse(fs.readFileSync(`${destinationRecord}.bak-pre-myco-team`, 'utf-8')).name)
+      .toBe('archived');
+  });
+
+  it('preserves a canonical subtree file written through the claimed redirect during recovery', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'archived', projects: [] });
+    const legacyWorker = path.join(legacy, 'teams', TEAM_ID, 'worker');
+    fs.mkdirSync(path.join(legacyWorker, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(legacyWorker, 'src', 'index.ts'), 'archive\n');
+    fs.writeFileSync(path.join(legacyWorker, 'src', 'archive-only.ts'), 'archive-only\n');
+    const legacyTeams = path.join(legacy, 'teams');
+    const archive = legacyTeams + '.bak-pre-myco-team';
+    fs.renameSync(legacyTeams, archive);
+    const destinationWorker = path.join(dest, 'teams', TEAM_ID, 'worker');
+    const cpSync = fs.cpSync.bind(fs);
+    let wroteConcurrentFile = false;
+    const cp = vi.spyOn(fs, 'cpSync').mockImplementation(((source, destination, options) => {
+      if (!wroteConcurrentFile
+        && path.resolve(String(destination)) === path.resolve(destinationWorker)) {
+        wroteConcurrentFile = true;
+        const writerSource = path.join(legacyTeams, TEAM_ID, 'worker', 'src');
+        fs.mkdirSync(writerSource, { recursive: true });
+        fs.writeFileSync(path.join(writerSource, 'index.ts'), 'concurrent-writer\n');
+      }
+      cpSync(source, destination, options);
+    }) as typeof fs.cpSync);
+
+    migrateTeamsHomeIfNeeded([legacy]);
+    cp.mockRestore();
+
+    expect(wroteConcurrentFile).toBe(true);
+    expect(fs.readFileSync(path.join(destinationWorker, 'src', 'index.ts'), 'utf-8'))
+      .toBe('concurrent-writer\n');
+    expect(fs.readFileSync(path.join(destinationWorker, 'src', 'archive-only.ts'), 'utf-8'))
+      .toBe('archive-only\n');
+    expect(fs.readFileSync(path.join(archive, TEAM_ID, 'worker', 'src', 'index.ts'), 'utf-8'))
+      .toBe('archive\n');
+  });
+
+  it('retains a recovery marker when redirect verification fails after publication', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'archived', projects: [] });
+    const legacyTeams = path.join(legacy, 'teams');
+    const archive = legacyTeams + '.bak-pre-myco-team';
+    fs.renameSync(legacyTeams, archive);
+    const lstatSync = fs.lstatSync.bind(fs);
+    let legacyStats = 0;
+    const lstat = vi.spyOn(fs, 'lstatSync').mockImplementation(((target, options) => {
+      if (path.resolve(String(target)) === path.resolve(legacyTeams)) {
+        legacyStats += 1;
+        if (legacyStats === 2) {
+          throw Object.assign(new Error('injected redirect verification failure'), { code: 'EIO' });
+        }
+      }
+      return lstatSync(target, options);
+    }) as typeof fs.lstatSync);
+
+    expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow('injected redirect verification failure');
+    lstat.mockRestore();
+    expect(fs.lstatSync(legacyTeams).isSymbolicLink()).toBe(true);
+    expect(fs.readdirSync(legacy).some((name) => name.startsWith('teams.redirect-'))).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'teams', TEAM_ID, 'team.json'))).toBe(false);
+
+    const result = migrateTeamsHomeIfNeeded([legacy]);
+
+    expect(result.retiredHomes).toEqual([legacyTeams]);
+    expect(JSON.parse(fs.readFileSync(path.join(dest, 'teams', TEAM_ID, 'team.json'), 'utf-8')).name)
+      .toBe('archived');
+    expect(fs.readdirSync(legacy).filter((name) => name.startsWith('teams.redirect-'))).toEqual([]);
+  });
+
   it.skipIf(process.platform === 'win32')(
     'revalidates a waiter that computed the legacy identity before redirect publication',
     async () => {
@@ -416,17 +599,23 @@ describe('migrateTeamsHomeIfNeeded', () => {
     }
   });
 
-  it('refuses a recreated real source when the fixed legacy archive already exists', () => {
+  it('refuses a recreated real source that conflicts with the fixed archive before copying', () => {
     legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
     dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
     process.env.MYCO_TEAM_HOME = dest;
-    fs.mkdirSync(path.join(legacy, 'teams.bak-pre-myco-team'), { recursive: true });
-    fs.writeFileSync(path.join(legacy, 'teams.bak-pre-myco-team', 'retained.txt'), 'retained\n');
+    const archiveHome = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-archive-'));
+    writeTeam(archiveHome, TEAM_ID, { team_id: TEAM_ID, name: 'archived', projects: [] });
+    fs.renameSync(path.join(archiveHome, 'teams'), path.join(legacy, 'teams.bak-pre-myco-team'));
+    fs.rmSync(archiveHome, { recursive: true, force: true });
     writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'recreated', projects: [] });
+
     expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow(/archive already exists/);
-    expect(fs.readFileSync(path.join(legacy, 'teams.bak-pre-myco-team', 'retained.txt'), 'utf-8')).toBe('retained\n');
+    expect(JSON.parse(fs.readFileSync(
+      path.join(legacy, 'teams.bak-pre-myco-team', TEAM_ID, 'team.json'),
+      'utf-8',
+    )).name).toBe('archived');
     expect(fs.existsSync(path.join(legacy, 'teams', TEAM_ID, 'team.json'))).toBe(true);
-    expect(fs.existsSync(path.join(dest, 'teams', TEAM_ID, 'team.json'))).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'teams', TEAM_ID, 'team.json'))).toBe(false);
   });
 
   it('rolls the source tree back when durable redirect creation fails', () => {
