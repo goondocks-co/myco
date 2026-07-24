@@ -19,6 +19,11 @@ export const POLL_INTERVALS = {
   HOST_MEMBERSHIP: 10_000,
   DRAIN_HEALTH: 15_000,
   HOST_SERVE_STATUS: 15_000,
+  // Residency transition progress — only polled while an attach/detach round
+  // trip is actually in flight (the hook self-disarms once it isn't), so a
+  // tighter interval than the other host reads is affordable and keeps the
+  // progress line moving.
+  RESIDENCY_STATUS: 2_000,
 } as const;
 
 export const STALE_TIME = 10_000;

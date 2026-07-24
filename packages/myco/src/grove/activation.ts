@@ -33,6 +33,7 @@ import {
   resolveGrove,
   type GroveRecord,
 } from '@myco/grove/registry.js';
+import { residencyTransitionInFlight } from '@myco/host/residency-journal.js';
 import { slugifyGroveName } from '@myco/grove/ids.js';
 
 export const GROVE_ACTIVATION_MARKER = 'grove-activation.json';
@@ -217,6 +218,21 @@ export function activateProjectMigration(
 
   const earlyManifest = loadProjectManifest(projectVaultDir);
   const earlyMarker = readActivationMarker(activationMarkerPath(projectVaultDir));
+
+  // Never-materialize invariant, residency-transition arm (F-12 vector): the
+  // attach refusal above catches a SETTLED attached project, but during an
+  // attach's parking window the project has no ref YET while a journal is in
+  // flight — minting a local Grove row here would break the move. Both
+  // downstream registrations (the marker-repair re-register and the fresh
+  // register) sit below this gate, so one check covers both vectors.
+  const earlyProjectId = earlyManifest?.project.id;
+  if (earlyProjectId && residencyTransitionInFlight(earlyProjectId)) {
+    throw new Error(
+      `Project ${earlyProjectId} has a residency transition in flight; refusing to activate a local Grove `
+      + 'migration until it finishes or is aborted.',
+    );
+  }
+
   const grove = resolveActivationGrove({
     groveRef: input.groveRef,
     existingManifest: earlyManifest,

@@ -65,6 +65,10 @@ export interface SessionDetail {
   id: string;
   agent: string;
   user: string | null;
+  /** Grove-era project id of the session's owning project. Used to join a
+   *  session back to its Team Host membership ref so an attached session's
+   *  synthetic host root can be shown as the member's own checkout path. */
+  project_id: string | null;
   project_root: string | null;
   branch: string | null;
   started_at: number;

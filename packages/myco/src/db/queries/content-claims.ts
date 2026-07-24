@@ -225,6 +225,27 @@ export function releaseContentClaim(id: string, releasedAt: number): ContentClai
 }
 
 /**
+ * Release EVERY active claim a machine holds on one project — the detach-pull's
+ * first-page side effect (Phase F T3, D-F-4). A member leaving a project must not
+ * strand a live publication lock behind it: its rows come back, so its claims are
+ * dropped too. Scoped to `(machine_id, project_id)` so a member's claims on OTHER
+ * projects it still hosts are untouched. Idempotent — a re-pulled first page finds
+ * the rows already `released` and changes nothing. Returns the count released.
+ */
+export function releaseActiveContentClaimsForMachine(
+  machineId: string,
+  projectId: string,
+  releasedAt: number,
+): number {
+  const db = getDatabase();
+  const result = db.prepare(
+    `UPDATE content_claims SET state = 'released', released_at = ?
+      WHERE state = 'active' AND machine_id = ? AND project_id = ?`,
+  ).run(releasedAt, machineId, projectId);
+  return result.changes;
+}
+
+/**
  * Cancels the active claim (if any) for an artifact that is being deleted —
  * the delete flow's explicit, non-cascading cancel (spec §5: deletion ends
  * the claim via an explicit call in the delete path, never an FK cascade).

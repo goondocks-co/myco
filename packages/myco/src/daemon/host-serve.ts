@@ -515,6 +515,12 @@ export function overlayBearerRejection(
   if (!presented || !timingSafeStringEqual(presented, bearer)) {
     return {
       status: 401,
+      // Stamp the host's live protocol version even on the unauthenticated
+      // refusal — the member's reachability probe (no bearer) reads it here to
+      // learn a host that has upgraded since join, so its recorded version can
+      // catch up without a re-join (the version is public, like an API-version
+      // header; the 409 version gate already echoes it to authenticated callers).
+      headers: { [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION) },
       body: {
         error: 'host_unauthorized',
         message: 'Overlay requests to a Team Host require the host bearer.',

@@ -112,10 +112,11 @@ export function HostDetailPanel({ host }: HostDetailPanelProps) {
 
       <Panel tone="sage" title="Capture delivery">
         {drainHost ? (
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <DrainCell label="Transcript" counters={drainHost.drains.transcript} />
             <DrainCell label="Plan" counters={drainHost.drains.plan} />
             <DrainCell label="Live events" counters={drainHost.drains.event_replay} />
+            <DrainCell label="Residency" counters={drainHost.drains.residency} />
           </div>
         ) : (
           <p className="text-sm text-on-surface-variant m-0">Nothing to report yet.</p>

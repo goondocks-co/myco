@@ -1,4 +1,10 @@
 import { ApiError } from './api';
+import type { ResidencyDirection, ResidencyPhase } from '../hooks/use-host-membership';
+
+/** Direction-agnostic `residency_abort_too_late` line — the map entry and the
+ *  `residencyAbortTooLateCopy` fallback share it so they never drift. */
+const RESIDENCY_ABORT_TOO_LATE_GENERIC =
+  "This move is too far along to cancel — it'll finish on its own in a moment.";
 
 /**
  * Outcome copy for Team Host membership failures (copy doctrine,
@@ -30,6 +36,17 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
     "This project's link points at team storage the host no longer serves. Detach and re-attach to route it to the host's current team storage.",
   unknown_local_grove:
     "That Grove doesn't exist on this machine. Pick one of your local Groves, or leave it blank to use your default Grove.",
+  // Phase F residency round-trip refusals (`host/membership-error.ts`). Same
+  // doctrine: user-outcome sentences, no CLI verbs, no mechanism nouns.
+  residency_transition_in_flight:
+    'A move is already in progress for this project — let it finish (or cancel it) first.',
+  residency_requires_host_update:
+    "The team host needs an update before it can accept this project's history.",
+  residency_pull_unavailable:
+    "This host is running an older Myco version and can't send this project's data back yet — you can disconnect without bringing it back, or update the host first.",
+  residency_detach_needs_root:
+    'Reconnect this project once first so Myco learns its folder, then disconnect.',
+  residency_abort_too_late: RESIDENCY_ABORT_TOO_LATE_GENERIC,
 };
 
 /**
@@ -130,12 +147,107 @@ function apiErrorCode(err: ApiError): string | null {
   return typeof code === 'string' ? code : null;
 }
 
+/** The stable membership error code carried by a failed mutation, or `null`
+ *  for an uncoded / non-ApiError failure. The single place a component reads
+ *  the code — flows that branch on a specific refusal (the detach
+ *  `residency_pull_unavailable` fallback) key off this rather than re-deriving
+ *  a check against `ApiError.body`. */
+export function membershipErrorCode(err: unknown): string | null {
+  return err instanceof ApiError ? apiErrorCode(err) : null;
+}
+
 /** Display copy for a failed membership mutation: mapped outcome copy for a
  *  known code, the raw message otherwise. Safe on any thrown value. */
 export function membershipErrorCopy(err: unknown): string {
-  if (err instanceof ApiError) {
-    const code = apiErrorCode(err);
-    if (code && MEMBERSHIP_ERROR_COPY[code]) return MEMBERSHIP_ERROR_COPY[code];
-  }
+  const code = membershipErrorCode(err);
+  if (code && MEMBERSHIP_ERROR_COPY[code]) return MEMBERSHIP_ERROR_COPY[code];
   return err instanceof Error ? err.message : String(err);
+}
+
+// ---------------------------------------------------------------------------
+// Residency round-trip copy (Phase F, T5). Attach/detach become a data move,
+// so each action sets expectations honestly BEFORE it runs, shows friendly
+// progress WHILE it runs, and offers plain-language recovery. User-outcome
+// vocabulary only: "moves to the team", never outbox/journal/rows — a subdued
+// detail line may show a plain count.
+// ---------------------------------------------------------------------------
+
+/** Attach confirmation (D-F-1 / D-F-2). Sets the honest expectation that
+ *  local history moves to the host after a local safety backup, and that
+ *  earlier sessions keep only their knowledge summaries. */
+export const ATTACH_CONFIRM_TITLE = 'Connect this project to the team?';
+export const ATTACH_CONFIRM_COPY =
+  'Connect this project to the team. If it has local history, that history moves to the team host — '
+  + 'Myco saves a local backup first. Full session detail starts flowing from now on; earlier sessions '
+  + 'carry their knowledge summaries.';
+export const ATTACH_CONFIRM_LABEL = 'Connect to team';
+
+/** Detach confirmation (D-F-4). */
+export const DETACH_CONFIRM_TITLE = 'Disconnect this project?';
+export const DETACH_CONFIRM_COPY =
+  'Disconnect this project. Everything your machine contributed comes back; the team keeps its copy.';
+export const DETACH_CONFIRM_LABEL = 'Disconnect';
+
+/** Second-stage detach copy when the host refused with
+ *  `residency_pull_unavailable` (too old to return data). The member can
+ *  proceed without pulling data back (`allow_no_pull: true`). */
+export const DETACH_NO_PULL_CONFIRM_COPY =
+  "This host is running an older Myco version, so it can't send your data back right now. "
+  + 'Disconnect anyway without bringing data back?';
+export const DETACH_NO_PULL_CONFIRM_LABEL = 'Disconnect anyway';
+
+/** Cancel-move confirmation (residency-abort). */
+export const CANCEL_MOVE_CONFIRM_COPY = 'Cancel and put the project back the way it was?';
+
+/** Direction-aware progress headline while a transition is in flight. */
+export function residencyProgressHeadline(direction: ResidencyDirection | undefined): string {
+  return direction === 'detach' ? 'Bringing your data back…' : 'Moving history to the team host…';
+}
+
+/** Friendly step label for a residency phase. `undefined` (phase not yet
+ *  reported) renders no step, so callers should treat an empty string as
+ *  "no step to show" rather than printing a placeholder. */
+const RESIDENCY_PHASE_LABELS: Record<ResidencyPhase, string> = {
+  parking: 'backing up',
+  pushing: 'moving',
+  pulling: 'retrieving',
+  applying: 'restoring',
+  rehoming: 'finishing',
+};
+
+export function residencyPhaseLabel(phase: ResidencyPhase | undefined): string {
+  return phase ? RESIDENCY_PHASE_LABELS[phase] : '';
+}
+
+/** Subdued pending-count detail, or `null` when the daemon isn't reporting a
+ *  count. Plain "items", never "rows". */
+export function residencyPendingDetail(rowsPending: number | null | undefined): string | null {
+  if (rowsPending === null || rowsPending === undefined) return null;
+  return `${rowsPending.toLocaleString()} item${rowsPending === 1 ? '' : 's'} left`;
+}
+
+/** Quiet warning shown when the transition's last attempt hit a problem. The
+ *  raw `last_error` string is kept out of the visible line (surfaced only as a
+ *  hover title by the caller) — this states the outcome and the way out. */
+export const RESIDENCY_STALLED_COPY =
+  'The last step ran into a problem and will keep retrying. Cancel the move to put the project back, then try again.';
+
+/**
+ * `residency_abort_too_late` copy for the Cancel-move control, branched on the
+ * transition's direction (the progress line knows it). Attach past the point of
+ * no return means the history already moved and the local rows are gone — so
+ * the recovery is to disconnect, which brings the data back. Detach past the
+ * point of no return means the project already switched back to local and is
+ * just finishing. `undefined` falls back to a direction-agnostic line (the same
+ * one the `MEMBERSHIP_ERROR_COPY` map carries for non-directional callers).
+ */
+export function residencyAbortTooLateCopy(direction: ResidencyDirection | undefined): string {
+  switch (direction) {
+    case 'attach':
+      return "This move already completed — it can't be cancelled. To bring your data back, disconnect the project.";
+    case 'detach':
+      return 'Too late to cancel — the project is already back on this machine; let it finish.';
+    default:
+      return RESIDENCY_ABORT_TOO_LATE_GENERIC;
+  }
 }

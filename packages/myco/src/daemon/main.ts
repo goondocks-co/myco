@@ -147,7 +147,7 @@ import {
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerNotificationRoutes } from './routes/notifications.js';
 import { registerScheduledTasks } from './task-scheduling.js';
-import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, type Database } from '../db/client.js';
+import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove, forEachRegisteredProject, isProjectActive } from './scope-iteration.js';
 import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
@@ -202,8 +202,13 @@ import { captureBatchImages } from './capture-images.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
 import { createRoutedPlanHandler } from '../host/routed-plan.js';
+import { createRoutedResidencyHandler } from '../host/routed-residency.js';
+import { createRoutedResidencyPullHandler } from '../host/routed-residency-pull.js';
 import type { RemoteTarget } from '../host/routing.js';
 import { pruneHostedProjects } from '../host/hosted-projects.js';
+import { abortResidency, beginAttachResidency, beginDetachResidency, residencyStatus, type ResidencyDaemonDeps } from '../host/residency-transition.js';
+import { countResidencyInFlight, createResidencyKicker, runResidencyTransitions } from '../host/residency-drain.js';
+import { applyResidencyRows } from '../db/queries/residency-apply.js';
 import { createTranscriptDrainQueue } from '../capture/transcript-drain.js';
 import { createPlanDrainQueue } from '../capture/plan-drain.js';
 import { createEventReplayDrainQueue } from '../capture/event-replay-drain.js';
@@ -1512,6 +1517,21 @@ export async function main(): Promise<void> {
   // Stamped `collect` in host/routing.ts, so it rides the overlay bearer/version
   // gate and is served locally on the host (never re-proxied).
   server.registerRoute('POST', '/routed-capture/plan', createRoutedPlanHandler({ logger }));
+  // Team Host — routed residency-rows ingest (Phase F T2). A with-history attach
+  // drains a project's rows here, one allow-listed table per request; the host
+  // applies them to its served Grove DB under the per-table residency apply rules.
+  // Stamped `collect` in host/routing.ts (as ROUTED_RESIDENCY_ROWS_PATH), so it
+  // rides the overlay bearer/version gate and is served locally on the host. The
+  // path is written as a literal here (the route-stamp completeness scanner only
+  // parses literal registerRoute paths); it MUST equal ROUTED_RESIDENCY_ROWS_PATH,
+  // pinned by tests/host/routed-residency.test.ts.
+  server.registerRoute('POST', '/routed-capture/residency-rows', createRoutedResidencyHandler({ logger }));
+  // Team Host — routed residency-pull ingest (Phase F T3). A detaching member pages
+  // its own rows back from the host here; the host serves the page and runs the
+  // detach side effects (first-page claim release, done-page transcript purge + stub
+  // deregister). Stamped `collect` in host/routing.ts (ROUTED_RESIDENCY_PULL_PATH);
+  // the literal here must equal that constant (pinned by tests).
+  server.registerRoute('POST', '/routed-capture/residency-pull', createRoutedResidencyPullHandler({ logger }));
 
   // --- Context injection (cortex brief + semantic spore search) ---
   const contextDeps = {
@@ -1574,10 +1594,43 @@ export async function main(): Promise<void> {
   // derived-counters summary for the member's own dashboard. No new state —
   // reads the drains' already-persisted queue stores.
   registerDrainHealthRoute(server, { transcriptDrain, planDrain, eventReplayDrain });
+
+  // Residency transition (Phase F) daemon capabilities, shared by the attach
+  // API handler (which starts a with-history transition) and the drain job
+  // (which ships it and, on full ack, purges locally). `withGroveDb` pins +
+  // scopes a Grove connection so the transition/backfill helpers' `getDatabase()`
+  // resolves to it.
+  const residencyDeps: ResidencyDaemonDeps = {
+    machineId,
+    mycoHome,
+    logger,
+    withGroveDb: <T,>(groveId: string, fn: (db: Database) => T): T => {
+      const dbPath = resolveGroveDbPath(groveId, mycoHome);
+      return runtimeCache.withPinned(dbPath, () =>
+        withDatabase(runtimeCache.getDatabase(dbPath), () => fn(runtimeCache.getDatabase(dbPath))),
+      );
+    },
+  };
+  // One serialized runner drives BOTH the immediate kick (on begin/abort) and the
+  // periodic job, so a user-initiated transition starts in milliseconds instead
+  // of waiting out the housekeeping round-robin — with no overlapping passes.
+  const residencyKicker = createResidencyKicker(() => runResidencyTransitions({
+    ...residencyDeps,
+    applyStagedRows: (db, table, rows) => { applyResidencyRows(db, table, rows, { logger }); },
+  }));
+  residencyDeps.kickResidencyDrain = residencyKicker.kick;
+
   // Team Host MEMBERSHIP lifecycle (consolidation Task D-2): join/leave/
   // attach/detach as daemon API, the Team page's primary write surface (the
   // CLI wrappers become a thin fallback over this same route set).
-  registerHostMembershipRoutes(server, { mycoHome, logger });
+  registerHostMembershipRoutes(server, {
+    mycoHome,
+    logger,
+    beginResidency: (ctx) => beginAttachResidency(ctx, residencyDeps),
+    beginDetachResidency: (ctx) => beginDetachResidency(ctx, residencyDeps),
+    residencyStatus: (projectId) => residencyStatus(projectId, residencyDeps),
+    residencyAbort: (projectId) => abortResidency(projectId, residencyDeps),
+  });
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};
@@ -2460,6 +2513,31 @@ export async function main(): Promise<void> {
     hold: { pending: () => eventReplayDrain.pendingCount() },
     fn: async () => {
       await eventReplayDrain.drainAll();
+    },
+  });
+
+  // Residency transition drain (Phase F). Carries a transition the rest of the
+  // way in both directions: attach re-drives `parking` → `pushing` → push → local
+  // delete; detach pulls `pulling` → staging → flip → `applying` → apply into the
+  // local Grove → re-home → done. `hold.pending` keeps the machine awake while
+  // any transition is unfinished, so a half-moved project is never abandoned to
+  // sleep. Runs in every power state, like the other member drains.
+  //
+  // `applyStagedRows` (baked into residencyKicker's runPass above) wires the
+  // detach apply to the SHARED engine (`db/queries/residency-apply.ts`), so the
+  // member re-materialize applies with the same per-table rules as the host
+  // ingest, in one transaction; the engine throws on an absent FK, rolling the
+  // batch back and leaving the journal in `applying` to retry — never a silent
+  // skip. This periodic job is the retry/resume backstop; the on-begin/abort
+  // kick (residencyDeps.kickResidencyDrain) drives the SAME serialized runner for
+  // immediate progress.
+  jobRunner.register({
+    name: 'residency-transition',
+    runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
+    hold: { pending: () => countResidencyInFlight() },
+    fn: async () => {
+      await residencyKicker.run();
     },
   });
 

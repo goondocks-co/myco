@@ -84,6 +84,13 @@ function useInvalidateHostMembershipStatus() {
     // unavailable state after a detach until something else remounted it.
     // Prefix match: the scoped key is ['git-identity', {projectSelection}].
     void qc.invalidateQueries({ queryKey: ['git-identity'] });
+    // Attach/detach kick off (or cancel) a residency round trip. Nudge the
+    // residency-status query so the progress line picks the fresh in-flight
+    // state up immediately — including the case where the SAME project is
+    // transitioned again after a prior one finished, where the query key is
+    // unchanged and its self-disarmed poll would otherwise stay parked.
+    // Prefix match: the key is ['residency-status', projectId].
+    void qc.invalidateQueries({ queryKey: RESIDENCY_STATUS_KEY });
   };
 }
 
@@ -183,11 +190,21 @@ export interface DetachProjectResponse {
   detached_from_host_id: string | null;
 }
 
+export interface DetachProjectInput {
+  project_root: string;
+  project_id?: string;
+  /** Detach even though the host is too old to return this project's data
+   *  (Phase F). Sent only after the member explicitly accepts the
+   *  `residency_pull_unavailable` fallback ("Disconnect anyway without
+   *  bringing data back?"). */
+  allow_no_pull?: boolean;
+}
+
 /** POST /api/host-membership/detach. */
 export function useDetachProject() {
   const invalidate = useInvalidateHostMembershipStatus();
   return useMutation({
-    mutationFn: (input: { project_root: string; project_id?: string }) =>
+    mutationFn: (input: DetachProjectInput) =>
       postJson<DetachProjectResponse>('/host-membership/detach', input),
     onSettled: invalidate,
   });
@@ -212,6 +229,11 @@ export interface DrainHealthHost {
     transcript: DrainCounters;
     plan: DrainCounters;
     event_replay: DrainCounters;
+    /** Residency-transition ship queue (Phase F) — the attach/detach round
+     *  trip's own drain, reported with the same per-kind shape as the other
+     *  three so it renders through the shared `DrainCell` with no special
+     *  casing. */
+    residency: DrainCounters;
   };
 }
 
@@ -279,5 +301,74 @@ export function useHostMembershipHealth(enabled: boolean) {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     retry: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Residency transition status + abort (Phase F, T5) — the attach/detach
+// round trip's live progress and its cancel control.
+// ---------------------------------------------------------------------------
+
+/** Which way a residency round trip is moving data. */
+export type ResidencyDirection = 'attach' | 'detach';
+
+/** Coarse step a residency round trip is on (wire order roughly matches this
+ *  order per direction). Rendered as a friendly label in the UI, never raw. */
+export type ResidencyPhase = 'parking' | 'pushing' | 'pulling' | 'applying' | 'rehoming';
+
+/**
+ * `GET /api/host-membership/residency-status?project_id=…` (localhost member
+ * route). `in_flight: false` with the other fields absent is the steady state
+ * for a project with no transition running.
+ */
+export interface ResidencyStatus {
+  in_flight: boolean;
+  direction?: ResidencyDirection;
+  phase?: ResidencyPhase;
+  rows_pending?: number | null;
+  last_error?: string | null;
+}
+
+const RESIDENCY_STATUS_KEY = ['residency-status'] as const;
+
+/**
+ * Poll a project's residency-transition status while a round trip may be in
+ * flight. Enabled by the caller only after an attach/detach mutation resolves
+ * (or when a transition is otherwise known to be underway); it then
+ * self-disarms once the daemon reports `in_flight: false`, mirroring
+ * `useHostServeStatus`'s conditional `refetchInterval`. `contextFree`: the
+ * watch is keyed to a specific project id (the wire query param), independent
+ * of whichever project the UI has selected, so it must not be project-scoped.
+ */
+export function useResidencyStatus(projectId: string | undefined, enabled: boolean) {
+  return usePowerQuery<ResidencyStatus>({
+    queryKey: [...RESIDENCY_STATUS_KEY, projectId ?? null],
+    queryFn: ({ signal }) =>
+      fetchJson<ResidencyStatus>(
+        `/host-membership/residency-status?project_id=${encodeURIComponent(projectId ?? '')}`,
+        { signal },
+      ),
+    enabled: enabled && Boolean(projectId),
+    // Self-disarm: keep polling while a transition may be running, stop the
+    // moment the daemon reports there is none. A fresh mutation re-arms this
+    // via the residency-status invalidation in useInvalidateHostMembershipStatus.
+    refetchInterval: (query) => (query.state.data?.in_flight === false ? false : POLL_INTERVALS.RESIDENCY_STATUS),
+    pollCategory: 'standard',
+    contextFree: true,
+  });
+}
+
+export interface ResidencyAbortResponse {
+  ok: true;
+}
+
+/** POST /api/host-membership/residency-abort — cancel an in-flight transition
+ *  and restore the project to its pre-transition state. */
+export function useResidencyAbort() {
+  const invalidate = useInvalidateHostMembershipStatus();
+  return useMutation({
+    mutationFn: (input: { project_id: string }) =>
+      postJson<ResidencyAbortResponse>('/host-membership/residency-abort', input),
+    onSettled: invalidate,
   });
 }

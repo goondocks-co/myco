@@ -28,6 +28,7 @@ import {
 import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
 import { loadMachineConfig } from '../config/loader.js';
 import { resolveAttach, type AttachRef, type HostRecord } from '../host/registry.js';
+import { isResidencyDivertActive, readResidencyJournal, residencyDirExists, residencyTransitionInFlight } from '../host/residency-journal.js';
 import { noticeTeamHostHintOnce } from '../host/hint.js';
 
 export interface GroveRecord {
@@ -662,6 +663,21 @@ export function resolveAttachForProjectRoot(
 }
 
 /**
+ * The shared never-materialize gate for registration vectors BEYOND the hook
+ * path (`myco init`/activation, the legacy importer, the binding-repair
+ * re-register): a local Grove row must not be minted for a project that is
+ * already attached to a host (F-3 latent hole — a repair/init re-register of a
+ * settled attached project, no transition even in flight) or mid-residency
+ * transition. Keyed on the project id alone — both an attach ref and a residency
+ * journal are resolvable from it — so a caller with the id can gate before it
+ * writes. `ensureProjectRegistered` already inlines both checks for the hot hook
+ * path; this is the same policy for the colder vectors.
+ */
+export function isLocalRegistrationSuppressed(projectId: string): boolean {
+  return residencyTransitionInFlight(projectId) || resolveAttach(projectId) !== null;
+}
+
+/**
  * Resolve the LOCAL Grove an attach ref should display under (E-4
  * local-view requirement, decision-ef693c71). Prefers `ref.local_grove_id`
  * when it still names an existing local Grove; falls back to the machine's
@@ -728,6 +744,46 @@ function attachedRegistration(
 }
 
 /**
+ * Synthesize the tenancy capture must DIVERT to while a residency transition is
+ * in flight for the checkout at `projectRoot` — the journal's destination
+ * `(divert_grove_id, project_id)`, exactly the shape {@link attachedRegistration}
+ * gives a settled attach. NO local Grove row is minted or read: the journal is
+ * authoritative for the window. Short-circuits on the residency-dir stat so the
+ * common no-transition path pays only one `existsSync`. Client-process-safe —
+ * pure fs, called on every capture request.
+ */
+function resolveResidencyDivert(projectRoot: string): ResolvedRegisteredProject | null {
+  if (!residencyDirExists()) return null;
+  const manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
+  const projectId = manifest?.project.id;
+  if (!projectId || !isGroveEraId(projectId, 'project')) return null;
+  const journal = readResidencyJournal(projectId);
+  // Divert only during the data-in-motion window: once a detach reaches
+  // `rehoming` the flip is done and the local Grove is live, so new capture must
+  // resolve there, not keep landing in the host-Grove buffer the sweep is draining.
+  if (!journal || !isResidencyDivertActive(journal.phase)) return null;
+  const epoch = new Date(0).toISOString();
+  const root = path.resolve(projectRoot);
+  return {
+    grove: {
+      id: journal.divert_grove_id,
+      name: journal.divert_grove_id,
+      slug: journal.divert_grove_id,
+      mode: 'local',
+      created_at: epoch,
+    },
+    project: {
+      project_id: journal.project_id,
+      name: journal.project_name || path.basename(root),
+      root,
+      status: 'active',
+      created_at: epoch,
+      updated_at: epoch,
+    },
+  };
+}
+
+/**
  * Auto-register a project under the machine default Grove when the
  * hook layer fires from a real project root that isn't yet known.
  *
@@ -757,6 +813,14 @@ export function ensureProjectRegistered(
   projectRoot: string,
   mycoHome = resolveMycoHome(),
 ): ResolvedRegisteredProject | null {
+  // Residency-transition divert (Phase F): while a project is mid-move to or
+  // from a host, capture must resolve to the journal's destination tenancy, not
+  // a local Grove row — a dropped event or a re-minted local row here breaks the
+  // migration. This wins over both the local registry row (still present until
+  // it is parked) and a not-yet-written attach ref, so it runs first.
+  const residencyDivert = resolveResidencyDivert(projectRoot);
+  if (residencyDivert) return residencyDivert;
+
   const existing = findProjectByRoot(projectRoot, mycoHome, { includeArchived: true });
   if (existing?.project.status === 'archived') return null;
   if (existing) return existing;

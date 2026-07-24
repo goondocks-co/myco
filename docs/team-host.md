@@ -2,7 +2,7 @@
 
 Team Host turns one teammate's Myco install into your team's shared home. Join it from any other machine, connect your projects, and every teammate's agents draw on the same team storage — search, spores, sessions, plans, and skills — over a direct, encrypted connection between your machines. No cloud account, no third-party service holding your data.
 
-> **Coming from Team Sync?** Team Sync — the earlier Cloudflare-based sync worker — is retired. Move your team to Team Host by having one teammate run a team server (see [Run a team server](#run-a-team-server) below) and everyone else joining it; there's no cloud account to provision this time. Any Team Sync worker you deployed earlier keeps running as it is, without further updates. Your local knowledge was never stored on it, so nothing is at risk either way. Moving a project's existing local history into team storage isn't available yet — for now, only new work syncs once you join.
+> **Coming from Team Sync?** Team Sync — the earlier Cloudflare-based sync worker — is retired. Move your team to Team Host by having one teammate run a team server (see [Run a team server](#run-a-team-server) below) and everyone else joining it; there's no cloud account to provision this time. Any Team Sync worker you deployed earlier keeps running as it is, without further updates. Your local knowledge was never stored on it, so nothing is at risk either way. When you connect a project that already has local history, that history moves into team storage too — see [Connect a project](#connect-a-project).
 
 ## What you get
 
@@ -22,11 +22,23 @@ To disconnect this machine from a host entirely, use **Leave host** on the Team 
 
 ## Connect a project
 
-Joining a host doesn't route any project traffic by itself — each project you want served by the team is attached individually, from the Team page's **Route a project through a Team Host** panel or with `myco attach [path] --host <id>`. You don't supply team storage — the host reports the team storage it serves, and your project routes there automatically.
+Joining a host doesn't route any project traffic by itself — connect each project you want served by the team individually, from the Team page's **Route a project through a Team Host** panel or with `myco attach [path] --host <id>`. You don't supply team storage — the host reports the team storage it serves, and your project routes there automatically. From then on, new work on that project reaches team storage as you go.
 
-Attach only works going forward: a checkout that already has its own local Myco history is refused, so existing project history isn't silently absorbed into the team's. Moving that history into team storage isn't available yet.
+### Connecting a project that has history
 
-`myco detach [path]`, or the **Detach** control next to a connected project on the Team page, routes that project back to local-only. Nothing is deleted — future work on that project just stops reaching team storage.
+If the project already has its own local Myco history, connecting it moves that history to the team — one action, no separate migration step. Myco saves a local backup of the project first, so you always keep your own copy, then hands the project's knowledge to team storage.
+
+The move is honest about what travels: sessions from before you connected keep their knowledge — their titles, summaries, and the spores, plans, and skills drawn from them — while the blow-by-blow detail of those older sessions stays in your local backup. Everything from the moment you connect onward is captured in full.
+
+## Disconnect a project
+
+`myco detach [path]`, or the **Detach** control next to a connected project on the Team page, routes that project back to local-only. Your machine's own contributions come back to you, and the team keeps its copy — disconnecting is a copy-out, not a handover, so nothing the team already learned from the project is lost. Future work on that project stays on your machine until you connect it again.
+
+If the host is on an older version of Myco that can't return your data yet, Myco tells you and lets you disconnect anyway — that stops the project routing to team storage right away, without pulling your contributions back. Update the host, then disconnect again to retrieve them.
+
+## Keeping Myco up to date
+
+When you update Myco across the team, update the host first, then the members. A member that updates ahead of the host keeps working — its captured work waits on that machine and delivers as soon as the host catches up, so nothing is lost — but connecting a project with history, or disconnecting to pull your data back, needs the host on the newer version first.
 
 ## Team settings and the agent key
 

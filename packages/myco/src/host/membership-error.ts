@@ -55,7 +55,30 @@ export type MembershipErrorCode =
    *  written. Distinct Grove concept from `attach_grove_mismatch` above:
    *  that one is about the host's served (hosted) Grove, this one is about
    *  the member's own local Grove — display-only, chosen at attach time. */
-  | 'unknown_local_grove';
+  | 'unknown_local_grove'
+  /** Attach or detach was refused because a residency transition (Phase F) is
+   *  already in flight for this project — a journal exists under the team home.
+   *  Surfaced by `attachCommand`/`detachCommand`; the running transition (or a
+   *  `residency abort`) resolves it, a second start does not. */
+  | 'residency_transition_in_flight'
+  /** A with-history attach cannot proceed because the joined host predates the
+   *  residency protocol (its recorded protocol version is below the minimum
+   *  the row push requires). Surfaced by the residency transition — nothing has
+   *  moved yet; update the host, then retry. */
+  | 'residency_requires_host_update'
+  /** Detach-pull cannot re-materialize the project because its attach ref has no
+   *  `root` (a legacy ref recorded before `root` existed). Surfaced up-front by
+   *  `detachCommand`; a re-attach backfills the root, then detach can pull. */
+  | 'residency_detach_needs_root'
+  /** Detach-pull is unavailable because the joined host predates the residency
+   *  protocol, and the caller did not opt into a plain (no-data) detach. Surfaced
+   *  by `detachCommand` — update the host, or detach without pulling. */
+  | 'residency_pull_unavailable'
+  /** A residency transition can no longer be aborted: an attach whose rows
+   *  already moved to the host (the local copy is gone — detach is the way back),
+   *  or a detach that already flipped to local (`applying`/`rehoming` — let the
+   *  drain finish). Surfaced by the residency-abort route. */
+  | 'residency_abort_too_late';
 
 /** Build an Error carrying a stable membership code alongside its
  *  (CLI-voiced) message. The message still prints verbatim in terminals;

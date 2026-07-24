@@ -297,6 +297,31 @@ export function listPending(limit?: number): OutboxRow[] {
   return rows.map(toOutboxRow);
 }
 
+/**
+ * List pending outbox records for a single project (oldest-first). The
+ * residency drain (`host/residency-drain.ts`) ships one project's queued rows
+ * to its Team Host; the global {@link listPending} would interleave other
+ * projects' rows. Reuses the same pending predicate and row shape.
+ */
+export function listPendingForProject(projectId: string, limit?: number): OutboxRow[] {
+  const db = getDatabase();
+  // The residency backfill enqueues every table under ONE shared timestamp, so
+  // created_at alone leaves equal-timestamp order unspecified by SQLite. The
+  // autoincrement `id` tiebreak preserves enqueue order, and the backfill
+  // enqueues in FK-topological table order (parents before children) — so a
+  // child never ships before its parent within a tick, which would otherwise
+  // wedge the give-up-on-409 drain (parent never re-ordered ahead).
+  const rows = db.prepare(
+    `SELECT ${SELECT_COLUMNS}
+     FROM team_outbox
+     WHERE sent_at IS NULL AND project_id = ?
+     ORDER BY created_at ASC, id ASC
+     LIMIT ?`,
+  ).all(projectId, limit ?? BURST_BATCH_SIZE) as Record<string, unknown>[];
+
+  return rows.map(toOutboxRow);
+}
+
 /** Mark outbox records as sent by setting sent_at. */
 export function markSent(ids: number[], sentAt: number): void {
   if (ids.length === 0) return;
@@ -481,7 +506,7 @@ export function countPendingByTable(): Record<string, number> {
  * `sanitizeSyncPayload` call, and the single-table transaction wrapping so
  * callers can't drift on the payload shape.
  */
-function insertOutboxRowsForUpsert(
+export function insertOutboxRowsForUpsert(
   db: ReturnType<typeof getDatabase>,
   tableName: string,
   rows: ReadonlyArray<Record<string, unknown>>,

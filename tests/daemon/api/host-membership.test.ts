@@ -24,7 +24,9 @@ import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { createGrove } from '@myco/grove/registry.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import { codedMembershipError } from '@myco/host/membership-error.js';
-import { upsertHost, type HostRecord } from '@myco/host/registry.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
+import { getHost, upsertHost, type HostRecord } from '@myco/host/registry.js';
+import { RESIDENCY_MIN_HOST_PROTOCOL } from '@myco/host/residency-journal.js';
 import {
   classifyHostProtocolSkew,
   createHostMembershipAttachHandler,
@@ -319,7 +321,7 @@ describe('POST /api/host-membership/detach', () => {
       detach: (options) => { seen = options; return { projectId: 'proj_x', detachedFromHostId: 'host_abc' }; },
     });
     const res = await handler(req({ project_root: '/checkout' }));
-    expect(seen).toEqual({ projectPath: '/checkout', projectId: undefined });
+    expect(seen).toEqual({ projectPath: '/checkout', projectId: undefined, beginDetachResidency: undefined, allowNoPull: false });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ project_id: 'proj_x', detached_from_host_id: 'host_abc' });
   });
@@ -519,10 +521,11 @@ describe('classifyHostProtocolSkew', () => {
   test('within [HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION] → none', () => {
     expect(classifyHostProtocolSkew(1)).toBe('none');
     expect(classifyHostProtocolSkew(2)).toBe('none');
+    expect(classifyHostProtocolSkew(HOST_PROTOCOL_VERSION)).toBe('none');
   });
 
   test('above HOST_PROTOCOL_VERSION → host_newer (this member needs myco update)', () => {
-    expect(classifyHostProtocolSkew(3)).toBe('host_newer');
+    expect(classifyHostProtocolSkew(HOST_PROTOCOL_VERSION + 1)).toBe('host_newer');
   });
 
   test('below HOST_MIN_COMPAT_VERSION → host_older (that host needs myco update)', () => {
@@ -542,7 +545,7 @@ describe('GET /api/host-membership/health', () => {
     let called = false;
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [],
-      checkReachable: async () => { called = true; return true; },
+      checkReachable: async () => { called = true; return { reachable: true, protocolVersion: null }; },
     });
     const res = await handler(req({}));
     expect(res.status).toBe(200);
@@ -555,7 +558,7 @@ describe('GET /api/host-membership/health', () => {
     const host = makeHost({ proxy_port: undefined });
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
-      checkReachable: async () => { called = true; return true; },
+      checkReachable: async () => { called = true; return { reachable: true, protocolVersion: null }; },
     });
     const res = await handler(req({}));
     const body = res.body as { hosts: { host_id: string; reachable: boolean | null }[] };
@@ -566,12 +569,12 @@ describe('GET /api/host-membership/health', () => {
   test('probes every joined host concurrently and reports protocol_skew + checked_at', async () => {
     const seen: { address: string; port: number }[] = [];
     const hostReachable = makeHost({ overlay_address: '100.64.0.1:7433', proxy_port: 1, protocol_version: 1 });
-    const hostUnreachable = makeHost({ overlay_address: '100.64.0.2:7433', proxy_port: 2, protocol_version: 3 });
+    const hostUnreachable = makeHost({ overlay_address: '100.64.0.2:7433', proxy_port: 2, protocol_version: HOST_PROTOCOL_VERSION + 1 });
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [hostReachable, hostUnreachable],
       checkReachable: async (address, port) => {
         seen.push({ address, port });
-        return address === hostReachable.overlay_address;
+        return { reachable: address === hostReachable.overlay_address, protocolVersion: null };
       },
       now: () => 1_700_000_000_000,
     });
@@ -607,7 +610,7 @@ describe('GET /api/host-membership/health', () => {
     let clock = 1_700_000_000_000;
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
-      checkReachable: async () => { callCount += 1; return true; },
+      checkReachable: async () => { callCount += 1; return { reachable: true, protocolVersion: null }; },
       now: () => clock,
       ttlMs: 15_000,
     });
@@ -628,7 +631,7 @@ describe('GET /api/host-membership/health', () => {
   test('single-flight: two overlapping requests for the same host share ONE in-flight probe', async () => {
     const host = makeHost({ proxy_port: 1 });
     let callCount = 0;
-    const gate = deferred<boolean>();
+    const gate = deferred<{ reachable: boolean; protocolVersion: number | null }>();
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
       checkReachable: async () => { callCount += 1; return gate.promise; },
@@ -640,7 +643,7 @@ describe('GET /api/host-membership/health', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(callCount).toBe(1);
 
-    gate.resolve(true);
+    gate.resolve({ reachable: true, protocolVersion: null });
     const [res1, res2] = await Promise.all([first, second]);
     expect(callCount).toBe(1);
     expect((res1.body as { hosts: { reachable: boolean | null }[] }).hosts[0]!.reachable).toBe(true);
@@ -653,7 +656,7 @@ describe('GET /api/host-membership/health', () => {
     let callCount = 0;
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [hostA, hostB],
-      checkReachable: async () => { callCount += 1; return true; },
+      checkReachable: async () => { callCount += 1; return { reachable: true, protocolVersion: null }; },
     });
 
     await handler(req({}));
@@ -670,6 +673,53 @@ describe('GET /api/host-membership/health', () => {
   test('evictHost is a no-op for a host with nothing cached', () => {
     const handler = createHostMembershipHealthHandler({ readRegistry: () => [] });
     expect(() => handler.evictHost('host_never_probed')).not.toThrow();
+  });
+});
+
+describe('health probe — records a host upgrade so residency gates stop dead-ending (live-rig fix)', () => {
+  let teamHome: string;
+  let savedTeamHome: string | undefined;
+
+  beforeEach(() => {
+    teamHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-protocol-'));
+    savedTeamHome = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_TEAM_HOME = teamHome;
+  });
+  afterEach(() => {
+    if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = savedTeamHome;
+    fs.rmSync(teamHome, { recursive: true, force: true });
+  });
+
+  test('a probe that observes a HIGHER protocol version persists it (monotonic) — the residency gate then passes', async () => {
+    const host = makeHost({ protocol_version: 2, proxy_port: 1 }); // recorded at join = 2
+    upsertHost(host);
+    const handler = createHostMembershipHealthHandler({
+      readRegistry: () => [host],
+      checkReachable: async () => ({ reachable: true, protocolVersion: 3 }), // host has upgraded to 3
+    });
+
+    const res = await handler(req({}));
+
+    // Persisted, so the residency gate (recorded >= RESIDENCY_MIN_HOST_PROTOCOL) now passes.
+    expect(getHost(host.host_id)?.protocol_version).toBe(3);
+    expect(getHost(host.host_id)!.protocol_version).toBeGreaterThanOrEqual(RESIDENCY_MIN_HOST_PROTOCOL);
+    // Skew is classified from the fresh version.
+    const body = res.body as { hosts: { protocol_skew: string }[] };
+    expect(body.hosts[0].protocol_skew).toBe('none');
+  });
+
+  test('a probe that observes a LOWER version never downgrades the record', async () => {
+    const host = makeHost({ protocol_version: 3, proxy_port: 1 });
+    upsertHost(host);
+    const handler = createHostMembershipHealthHandler({
+      readRegistry: () => [host],
+      checkReachable: async () => ({ reachable: true, protocolVersion: 1 }),
+    });
+
+    await handler(req({}));
+
+    expect(getHost(host.host_id)?.protocol_version).toBe(3); // unchanged — a transient low reading never strands the member
   });
 });
 
@@ -718,7 +768,7 @@ describe('Health cache eviction on leave (family c, E-4 W2 Task 7)', () => {
 
     registerHostMembershipRoutes(registrar, {
       readRegistry: () => [hostA, hostB],
-      checkReachable: async () => { callCount += 1; return true; },
+      checkReachable: async () => { callCount += 1; return { reachable: true, protocolVersion: null }; },
       leave: async (hostRef) => ({ removed: true, tailscaledRemoved: true, notes: [`left ${hostRef}`] }),
     });
 
