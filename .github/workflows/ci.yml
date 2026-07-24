@@ -92,6 +92,7 @@ jobs:
           $cleanupFailures = [System.Collections.Generic.List[string]]::new()
           & schtasks.exe /End /TN "$env:MYCO_WINDOWS_NATIVE_TASK_LABEL" 2>$null | Out-Null
           & schtasks.exe /Delete /TN "$env:MYCO_WINDOWS_NATIVE_TASK_LABEL" /F 2>$null | Out-Null
+          $global:LASTEXITCODE = 0
           Start-Sleep -Milliseconds 500
           try {
             $remainingTasks = @(

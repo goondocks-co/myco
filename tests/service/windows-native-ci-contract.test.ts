@@ -84,6 +84,7 @@ describe('Windows native CI contract', () => {
     expect(cleanup?.run).toContain('Contract child processes remained');
     expect(cleanup?.run).toContain('Test-Path -LiteralPath $env:MYCO_WINDOWS_NATIVE_SCRATCH');
     expect(cleanup?.run).toContain('Test-Path -LiteralPath $env:MYCO_WINDOWS_NATIVE_EXE');
+    expect(cleanup?.run).toContain('$global:LASTEXITCODE = 0');
     expect(cleanup?.run).not.toContain('exit 0');
   });
 

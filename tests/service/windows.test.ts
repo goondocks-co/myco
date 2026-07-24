@@ -6,6 +6,7 @@ import {
   WindowsTaskServiceManager,
   type SchtasksRunner,
   type TaskSchedulerState,
+  type WindowsManagerOptions,
 } from '../../packages/myco/src/service/windows';
 import { renderWindowsServiceScript } from '../../packages/myco/src/service/windows-task';
 import type { ServiceSpec } from '../../packages/myco/src/service/types';
@@ -73,6 +74,13 @@ class StubRunner implements SchtasksRunner {
     }
     return { stdout: '', exitCode: 0 };
   }
+}
+
+function makeUnitManager(opts: WindowsManagerOptions): WindowsTaskServiceManager {
+  return new WindowsTaskServiceManager({
+    withExternalMcpContainment: async (continuation) => await continuation(),
+    ...opts,
+  });
 }
 
 describe('renderWindowsServiceScript', () => {
@@ -251,7 +259,7 @@ describe('WindowsTaskServiceManager', () => {
   test('uninstall ends + deletes the task and removes the launcher', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const mgr = makeUnitManager({ runner, scriptDir });
     const spec = makeSpec();
     await mgr.install(spec);
     await mgr.uninstall(spec.label);
@@ -313,7 +321,7 @@ describe('WindowsTaskServiceManager', () => {
   test('uninstall rejects a failed /end and preserves the launcher', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const mgr = makeUnitManager({ runner, scriptDir });
     const spec = makeSpec();
     await mgr.install(spec);
     const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
@@ -331,7 +339,7 @@ describe('WindowsTaskServiceManager', () => {
     const spec = makeSpec();
     runner.taskExists = true;
     runner.taskStates = ['running', 'running', 'ready'];
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir, sleep: async () => {} });
+    const mgr = makeUnitManager({ runner, scriptDir, sleep: async () => {} });
 
     await mgr.uninstall(spec.label);
 
@@ -350,7 +358,7 @@ describe('WindowsTaskServiceManager', () => {
   test('uninstall rejects a failed /delete and preserves the launcher', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const mgr = makeUnitManager({ runner, scriptDir });
     const spec = makeSpec();
     await mgr.install(spec);
     const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
@@ -364,7 +372,7 @@ describe('WindowsTaskServiceManager', () => {
   test('uninstall confirms task absence after /delete before removing the launcher', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir, sleep: async () => {} });
+    const mgr = makeUnitManager({ runner, scriptDir, sleep: async () => {} });
     const spec = makeSpec();
     await mgr.install(spec);
     const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
@@ -395,7 +403,7 @@ describe('WindowsTaskServiceManager', () => {
     const runner = new StubRunner();
     runner.taskExists = true;
     runner.taskState = 'unknown';
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
+    const mgr = makeUnitManager({ runner, scriptDir: tmp('myco-wt-') });
 
     await expect(mgr.uninstall('co.goondocks.myco.unknown'))
       .rejects.toThrow(/unknown Task Scheduler state/i);
@@ -404,7 +412,7 @@ describe('WindowsTaskServiceManager', () => {
   test('uninstall times out while Task Scheduler still reports the task running', async () => {
     const scriptDir = tmp('myco-wt-');
     const runner = new StubRunner();
-    const mgr = new WindowsTaskServiceManager({ runner, scriptDir, sleep: async () => {} });
+    const mgr = makeUnitManager({ runner, scriptDir, sleep: async () => {} });
     const spec = makeSpec();
     await mgr.install(spec);
     const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
