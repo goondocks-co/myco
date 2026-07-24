@@ -356,9 +356,10 @@ async function proveNativeTaskScheduler(
 
   const xml = await runner.run(['/query', '/tn', taskLabel, '/xml']);
   assertCondition(xml.exitCode === 0, 'Task Scheduler XML query failed');
+  const runLevel = xml.stdout.match(/<RunLevel\b[^>]*>([^<]+)<\/RunLevel>/i)?.[1]?.trim();
   assertCondition(
-    /<RunLevel>\s*LeastPrivilege\s*<\/RunLevel>/i.test(xml.stdout),
-    'Task Scheduler task is not limited-rights',
+    runLevel === 'LeastPrivilege',
+    `Task Scheduler task is not limited-rights: ${JSON.stringify(runLevel ?? null)}`,
   );
   assertCondition(
     !/<LogonTrigger\b/i.test(xml.stdout),
