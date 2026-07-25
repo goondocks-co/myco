@@ -169,7 +169,7 @@ describe('abortResidency — the abort matrix', () => {
     expect(abortResidency(projectId, baseDeps())).toEqual({ ok: true });
 
     expect(readResidencyJournal(projectId)).toBeNull();
-    expect(listResidencyStagingTables(projectId)).toEqual([]);
+    expect(listResidencyStagingTables(projectId).state).toBe('absent');
     expect(resolveAttach(projectId)).not.toBeNull(); // still attached — nothing flipped
   });
 
