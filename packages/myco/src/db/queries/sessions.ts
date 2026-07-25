@@ -93,6 +93,11 @@ export interface SessionRow {
   canopy_tokens_saved: number | null;
   canopy_redundant_reads: number | null;
   canopy_map_tool_calls: number;
+  /** 1 when the final mining pass read the transcript; 0 when it did not;
+   *  null when no outcome was recorded (pre-v74 row, or a close that never
+   *  reached the completion chokepoint). The routed-transcript GC prunes
+   *  only on 1. */
+  final_mine_ok: number | null;
 }
 
 /** Updatable fields for `updateSession`. */
@@ -178,6 +183,7 @@ const SESSION_COLUMNS = [
   'canopy_tokens_saved',
   'canopy_redundant_reads',
   'canopy_map_tool_calls',
+  'final_mine_ok',
 ] as const;
 
 const SELECT_COLUMNS = SESSION_COLUMNS.join(', ');
@@ -222,6 +228,7 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
     canopy_tokens_saved: (row.canopy_tokens_saved as number) ?? null,
     canopy_redundant_reads: (row.canopy_redundant_reads as number) ?? null,
     canopy_map_tool_calls: (row.canopy_map_tool_calls as number) ?? 0,
+    final_mine_ok: (row.final_mine_ok as number) ?? null,
   };
 }
 
@@ -550,6 +557,24 @@ export function updateSession(
  *
  * @returns the updated row, or null if the session does not exist.
  */
+/**
+ * Record whether the final mining pass read this session's transcript.
+ *
+ * The routed-transcript cache GC deletes the host's only copy of a routed
+ * session's transcript, and gates that on this flag being 1. Written by the
+ * completion chokepoint immediately before `closeSession`, so a session that
+ * closed without a successful mine keeps its bytes.
+ *
+ * Local-only (see `LOCAL_ONLY_SYNC_COLUMNS`): it describes THIS machine's
+ * mining outcome, and one machine's result must never authorize another
+ * machine's delete.
+ */
+export function setFinalMineOk(id: string, ok: boolean): void {
+  getDatabase().prepare(
+    `UPDATE sessions SET final_mine_ok = ? WHERE id = ?`,
+  ).run(ok ? 1 : 0, id);
+}
+
 export function closeSession(
   id: string,
   endedAt: number,

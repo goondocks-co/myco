@@ -187,10 +187,21 @@ describe('JobRunner deep-sleep hold', () => {
     expect(r.providesHold()).toBeNull();
   });
 
-  it('a throwing hold probe does not throw and does not hold', () => {
+  it('a throwing hold probe does not throw, and holds rather than sleeping on an unknown', () => {
     const r = new JobRunner({ concurrency: 3, logger: silentLogger(), clock: () => 0 });
     r.register({ name: 'x', runIn: ['sleep'], kind: 'drain', drain: { slice: 1 },
       hold: { pending: () => { throw new Error('probe down'); } }, fn: async () => {} });
+    // A probe that cannot answer is not evidence there is nothing to ship. These
+    // probes count un-shipped capture, and sleeping stops the drains, after which
+    // the source file can rotate away — so an unanswerable probe holds awake.
+    expect(r.providesHold()).toBe('x');
+  });
+
+  it('a throwing probe on a hold-exempt job still does not hold', () => {
+    const r = new JobRunner({ concurrency: 3, logger: silentLogger(), clock: () => 0 });
+    r.register({ name: 'x', runIn: ['sleep'], kind: 'drain', drain: { slice: 1 },
+      hold: { pending: () => { throw new Error('probe down'); }, allowDeepSleepHold: false },
+      fn: async () => {} });
     expect(r.providesHold()).toBeNull();
   });
 });

@@ -55,7 +55,8 @@ export const SESSIONS_TABLE = `
     canopy_reads_after_injection   INTEGER,
     canopy_tokens_saved            INTEGER,
     canopy_redundant_reads         INTEGER,
-    canopy_map_tool_calls          INTEGER NOT NULL DEFAULT 0
+    canopy_map_tool_calls          INTEGER NOT NULL DEFAULT 0,
+    final_mine_ok                  INTEGER
   )`;
 
 /**

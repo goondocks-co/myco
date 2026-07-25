@@ -595,6 +595,14 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           // mine source at close — the tree may hold unmined bytes. Keep it
           // forever rather than guess (data preservation over disk).
           if (!session.transcript_path) continue;
+          // Positive proof the final mining pass actually read the transcript.
+          // `completed` alone never carried it: the completion chokepoint closes
+          // a session even when mining throws, and an unreadable transcript
+          // parsed as zero events looked exactly like a mined-empty one. NULL
+          // means no outcome was recorded (pre-v74 row completed by an older
+          // binary, or a close that never reached the chokepoint) — unproven,
+          // so keep the bytes.
+          if (session.final_mine_ok !== 1) continue;
           // Late-append TOCTOU guard (prune-only-when-quiet): the transcript
           // ingest route appends purely by offset and never touches the
           // sessions row, so a reconnecting member's drain backstop can land

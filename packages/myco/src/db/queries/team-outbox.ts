@@ -76,6 +76,11 @@ export const LOCAL_ONLY_OUTBOX_TABLES = new Set<string>([
 export const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
   sessions: [
     'embedded',
+    // Whether THIS machine's final mining pass read the transcript. The routed
+    // transcript lives on the host, so a member's outcome says nothing about
+    // the host's cache and vice versa — syncing it would let one machine's
+    // result authorize another machine's delete.
+    'final_mine_ok',
     'canopy_injections_offered',
     'canopy_injection_total_tokens',
     'canopy_skips_after_injection',
