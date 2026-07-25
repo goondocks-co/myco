@@ -116,6 +116,14 @@ export interface ReconcileResult {
    * onto the parent session).
    */
   skippedReason?: string;
+  /**
+   * Whether this pass actually read the transcript. False when the file could
+   * not be opened, and when a transcript-level rule skipped the pass so the
+   * content was never mined into this session. Callers that authorize deleting
+   * the transcript must require true — an empty mine and an unreadable one are
+   * indistinguishable without it.
+   */
+  readTranscript: boolean;
 }
 
 /** Head-bytes sampled to detect in-place overwrite with same inode + size. */
@@ -328,7 +336,7 @@ export class TranscriptMiner {
     // whose session_meta matches a manifest drop rule is never mined.
     const gate = this.transcriptGate(sessionId, input);
     if (gate.dropReason) {
-      return { reclassified: 0, inserted: 0, errors: [], skippedReason: gate.dropReason };
+      return { reclassified: 0, inserted: 0, errors: [], skippedReason: gate.dropReason, readTranscript: false };
     }
 
     // Sub-agent thread reattribution: mine the child rollout INTO the parent
@@ -345,7 +353,7 @@ export class TranscriptMiner {
     // The parent must already exist — a child mine never materializes it.
     // Checked every call (not memoized) so a late-registering parent unblocks.
     if (reattribute && !getSession(targetSessionId, ALL_PROJECTS_SCOPE)) {
-      return { reclassified: 0, inserted: 0, errors: [], skippedReason: 'subagent-parent-missing' };
+      return { reclassified: 0, inserted: 0, errors: [], skippedReason: 'subagent-parent-missing', readTranscript: false };
     }
 
     // Short-circuit: if we've already reconciled this transcript at its
@@ -367,7 +375,7 @@ export class TranscriptMiner {
         // session doesn't get evicted while other transcripts churn.
         this.parseCache.delete(input.transcriptPath);
         this.parseCache.set(input.transcriptPath, cached);
-        return { reclassified: 0, inserted: 0, errors: [] };
+        return { reclassified: 0, inserted: 0, errors: [], readTranscript: true };
       }
     } catch {
       // statSync failure falls through to parseAllEvents, which handles it.
@@ -375,9 +383,10 @@ export class TranscriptMiner {
 
     // The walker receives the transcript meta so per-prompt
     // `transcript_meta_*` rules fire at mining time exactly as at hook time.
+    const parsed = this.parseAllEvents(input.transcriptPath);
     const { records, droppedText, noMaskableDropRuleFound } = extractUserPromptRecordsWithDrops(
       input.agent,
-      this.parseAllEvents(input.transcriptPath),
+      parsed.events,
       input.transcriptPath,
       gate.meta,
       reattribute ? { subagentReattribution: true } : undefined,
@@ -609,7 +618,7 @@ export class TranscriptMiner {
       });
     }
 
-    return { reclassified, inserted, errors };
+    return { reclassified, inserted, errors, readTranscript: parsed.read };
   }
 
   /**
@@ -714,12 +723,18 @@ export class TranscriptMiner {
     }
   }
 
-  private parseAllEvents(transcriptPath: string): Array<Record<string, unknown>> {
+  /**
+   * Parse the whole transcript. `read` distinguishes "the file was opened and
+   * yielded these events" from "the file could not be read at all" — an empty
+   * array means nothing on its own, and callers that go on to authorize a
+   * delete must not treat an unreadable transcript as a mined-empty one.
+   */
+  private parseAllEvents(transcriptPath: string): { events: Array<Record<string, unknown>>; read: boolean } {
     let stat: fs.Stats;
     try {
       stat = fs.statSync(transcriptPath);
     } catch {
-      return [];
+      return { events: [], read: false };
     }
 
     const cached = this.parseCache.get(transcriptPath);
@@ -750,14 +765,14 @@ export class TranscriptMiner {
         // Reset — reconcile hasn't run against this (possibly rotated) file yet.
         reconciledSize: -1,
       });
-      return events;
+      return { events, read: true };
     }
 
     if (stat.size === cached.offset) {
       // Touch LRU so the entry stays hot while we keep hitting the cache.
       this.parseCache.delete(transcriptPath);
       this.parseCache.set(transcriptPath, cached);
-      return cached.events;
+      return { events: cached.events, read: true };
     }
 
     // Incremental: read bytes added since last parse, up to the last newline.
@@ -766,7 +781,7 @@ export class TranscriptMiner {
     if (newline === -1) {
       this.parseCache.delete(transcriptPath);
       this.parseCache.set(transcriptPath, cached);
-      return cached.events;
+      return { events: cached.events, read: true };
     }
 
     const complete = tail.slice(0, newline + 1);
@@ -780,7 +795,7 @@ export class TranscriptMiner {
       // New bytes appeared — previous reconciledSize is now stale.
       reconciledSize: cached.reconciledSize,
     });
-    return merged;
+    return { events: merged, read: true };
   }
 
   /**
