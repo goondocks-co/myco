@@ -49,6 +49,7 @@ import { createFsPlanDrainStore } from '../capture/plan-drain.js';
 import { createFsReplayStore } from '../capture/event-replay-drain.js';
 import type { DrainHealthCounters } from '../capture/drain-health.js';
 import { defaultDial, parseOverlayAddress } from '../daemon/host-proxy.js';
+import { readDirPresence } from '@myco/utils/presence.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
@@ -408,6 +409,9 @@ async function runDetachTransition(
         return;
       }
       let cursor: string | null = typeof journal.cursors.pull === 'string' && journal.cursors.pull ? journal.cursors.pull : null;
+      // Resumes from the durable count so a re-entered pull keeps accumulating
+      // rather than restarting the tally at zero.
+      let stagedRows = journal.staged_rows ?? 0;
       for (;;) {
         let page: ResidencyPullResponse;
         try { page = await pullTransport(target, { cursor }, deps.machineId); }
@@ -424,13 +428,17 @@ async function runDetachTransition(
         if (!stillPulling || stillPulling.phase !== 'pulling') return;
         // Append THEN advance the cursor — at-least-once; a resumed re-pull of the
         // same page re-appends, which the idempotent apply engine flattens.
-        appendResidencyStagingRows(journal.project_id, page.rows, teamsHome);
+        const appended = appendResidencyStagingRows(journal.project_id, page.rows, teamsHome);
+        // Count only what actually landed. The increment follows the append, so a
+        // crash mid-write leaves a torn line the file carries and this does not —
+        // which is why the apply's check is "at least", not equality.
+        stagedRows += appended;
         if (page.done) {
-          advanceResidencyPhase(journal.project_id, 'pulling', { cursors: { pull: CURSOR_DONE } }, teamsHome);
+          advanceResidencyPhase(journal.project_id, 'pulling', { cursors: { pull: CURSOR_DONE }, staged_rows: stagedRows }, teamsHome);
           break;
         }
         cursor = page.next_cursor;
-        advanceResidencyPhase(journal.project_id, 'pulling', { cursors: { pull: cursor ?? '' } }, teamsHome);
+        advanceResidencyPhase(journal.project_id, 'pulling', { cursors: { pull: cursor ?? '' }, staged_rows: stagedRows }, teamsHome);
         await yieldToLoop();
       }
     }
@@ -470,17 +478,54 @@ async function runDetachTransition(
     // NOT the arbitrary readdirSync order the staging enumerator returns — a child
     // before its parent throws in the immediate-FK transaction and would wedge the
     // retry.
-    const staged = new Set(listResidencyStagingTables(journal.project_id, teamsHome));
+    const listed = listResidencyStagingTables(journal.project_id, teamsHome);
+    if (listed.state === 'unknown') {
+      // The staging directory could not be enumerated. Applying what that
+      // returns and then deleting the tree would destroy the entire pulled
+      // dataset un-applied, so stop and retry on a later tick.
+      recordJournalFailure(journal, listed.error, deps, teamsHome);
+      return;
+    }
+    const staged = new Set(listed.state === 'present' ? listed.value : []);
     const ordered = RESIDENCY_TABLE_ORDER.filter((table) => staged.has(table));
     // An unexpected staged table (outside the allow-listed residency set) applies
     // last; the engine rejects an unknown table, surfacing the drift loudly rather
     // than dropping data silently.
     const extras = [...staged].filter((table) => !RESIDENCY_TABLE_ORDER.includes(table));
+
+    // Read every table BEFORE opening the write transaction: a read that fails
+    // partway through would otherwise apply a prefix of the tables and advance,
+    // and the unread remainder would be deleted with the tree.
+    const pages: Array<{ table: string; rows: Record<string, unknown>[] }> = [];
+    let stagedLinesSeen = 0;
+    for (const table of [...ordered, ...extras]) {
+      const page = readResidencyStagingRows(journal.project_id, table, teamsHome);
+      if (page.state === 'unknown') {
+        recordJournalFailure(journal, page.error, deps, teamsHome);
+        return;
+      }
+      if (page.state === 'absent') continue;
+      stagedLinesSeen += page.value.lines;
+      pages.push({ table, rows: page.value.rows });
+    }
+
+    // The staging files must still hold at least every line the pull recorded
+    // writing. Fewer means the tree was truncated or partly unreadable, and the
+    // apply would silently drop the difference before the tree is deleted.
+    const expected = journal.staged_rows ?? 0;
+    if (stagedLinesSeen < expected) {
+      recordJournalFailure(
+        journal,
+        new Error(`residency staging holds ${stagedLinesSeen} line(s) but the pull recorded ${expected}`),
+        deps,
+        teamsHome,
+      );
+      return;
+    }
+
     deps.withGroveDb(targetGroveId, (db) => {
       db.transaction(() => {
-        for (const table of [...ordered, ...extras]) {
-          applyRows(db, table, readResidencyStagingRows(journal.project_id, table, teamsHome));
-        }
+        for (const page of pages) applyRows(db, page.table, page.rows);
       })();
     });
     // Advance to the terminal sweep. The journal PERSISTS through `rehoming` so a
@@ -499,10 +544,18 @@ async function runDetachTransition(
     // complete — that is what makes the sweep itself crash-resumable (clearing it
     // earlier would orphan any residual buffered events with no journal to drive
     // the resume).
-    rehomeBufferedEvents(
+    const rehomed = rehomeBufferedEvents(
       resolveProjectBufferDir(journal.divert_grove_id, journal.project_id, deps.mycoHome),
       resolveProjectBufferDir(targetGroveId, journal.project_id, deps.mycoHome),
     );
+    if (!rehomed.complete) {
+      // Clearing now would strand these events in a host-Grove buffer directory
+      // that no enumerator visits once the attach ref is gone — silent capture
+      // loss under a "transition complete" log. The journal IS the retry path,
+      // so it has to outlive the failure.
+      recordJournalFailure(journal, rehomed.error, deps, teamsHome);
+      return;
+    }
     try {
       createFsDrainStore().purgeProject(journal.host_id, journal.project_id);
       createFsPlanDrainStore().purgeProject(journal.host_id, journal.project_id);
@@ -523,10 +576,12 @@ async function runDetachTransition(
  *  Grove during the window into the local Grove's buffer dir — a byte-level move
  *  (no re-parse), merging by append on a same-session collision so the local
  *  reconciler dedups by event id. */
-function rehomeBufferedEvents(fromDir: string, toDir: string): void {
-  let files: string[];
-  try { files = fs.readdirSync(fromDir); } catch { return; } // nothing buffered
-  for (const file of files) {
+function rehomeBufferedEvents(fromDir: string, toDir: string): { complete: true } | { complete: false; error: Error } {
+  const listed = readDirPresence(fromDir);
+  if (listed.state === 'absent') return { complete: true }; // nothing buffered
+  if (listed.state === 'unknown') return { complete: false, error: listed.error };
+  for (const entry of listed.value) {
+    const file = entry.name;
     if (!file.endsWith('.jsonl')) continue; // durable capture only; skip .lock / quarantine
     const src = path.join(fromDir, file);
     const dest = path.join(toDir, file);
@@ -538,8 +593,15 @@ function rehomeBufferedEvents(fromDir: string, toDir: string): void {
       } else {
         fs.renameSync(src, dest);
       }
-    } catch { /* skip a file that vanished mid-move; a retry re-home catches the rest */ }
+    } catch (err) {
+      // A file that vanished mid-move is genuinely done; anything else means
+      // these bytes are still in a directory nothing will enumerate again once
+      // the journal is cleared, so the sweep is not complete.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      return { complete: false, error: err as Error };
+    }
   }
+  return { complete: true };
 }
 
 /** Ship a `pushing` journal's outbox rows and sidecars; on full ack, purge and

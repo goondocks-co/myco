@@ -271,8 +271,100 @@ describe('detach drain — round trip', () => {
 
     // Journal + staging cleared.
     expect(readResidencyJournal(projectId)).toBeNull();
-    expect(listResidencyStagingTables(projectId)).toEqual([]);
+    expect(listResidencyStagingTables(projectId).state).toBe('absent');
     expect(countResidencyInFlight()).toBe(0);
+  });
+
+  test('an unreadable staging tree stops the apply — nothing is applied, nothing is cleared', async () => {
+    // The destruction path: on a read failure the staging dir enumerates as
+    // empty, the apply consumes zero rows, and the tree is deleted — taking the
+    // entire pulled dataset with it, under a "transition complete" log.
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    writeHostRecordFixture(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachRef(host, projectId, root, local.id);
+
+    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
+
+    // Stage one page, then stall so the journal stays pre-apply.
+    let call = 0;
+    const stallingPull = async () => {
+      call += 1;
+      if (call === 1) {
+        return { status: 200, rows: [{ table: 'spores', row: { id: 'sp_a', project_id: projectId } }], next_cursor: 'c1', done: false };
+      }
+      return { status: 503, rows: [], next_cursor: null, done: false };
+    };
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: stallingPull as never, resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
+
+    const stagingDir = path.join(teamHome, 'residency', `${projectId}-staging`);
+    expect(fs.existsSync(stagingDir)).toBe(true);
+    fs.chmodSync(stagingDir, 0o000); // deny enumeration
+
+    try {
+      const finishingPull = async () => ({ status: 200, rows: [], next_cursor: null, done: true });
+      const applied: string[] = [];
+      await runResidencyTransitions({
+        ...baseDeps(),
+        pullTransport: finishingPull as never,
+        resolveHostTarget: targetResolver(),
+        applyStagedRows: (_db, table) => { applied.push(table); },
+      });
+
+      expect(applied).toEqual([]); // nothing applied off an unreadable tree
+      expect(readResidencyJournal(projectId)).not.toBeNull(); // the retry path survives
+      expect(fs.existsSync(stagingDir)).toBe(true); // and so does the data
+    } finally {
+      fs.chmodSync(stagingDir, 0o700); // restore so the fixture can clean up
+    }
+  });
+
+  test('a staging tree holding fewer lines than the pull recorded refuses to apply', async () => {
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    writeHostRecordFixture(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachRef(host, projectId, root, local.id);
+
+    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
+
+    // Pull one page, then stop before the apply by refusing the second page.
+    let call = 0;
+    const stallingPull = async () => {
+      call += 1;
+      if (call === 1) {
+        return { status: 200, rows: [{ table: 'spores', row: { id: 'sp_a', project_id: projectId } }], next_cursor: 'c1', done: false };
+      }
+      return { status: 503, rows: [], next_cursor: null, done: false };
+    };
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: stallingPull as never, resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
+
+    const journal = readResidencyJournal(projectId);
+    expect(journal?.phase).toBe('pulling');
+    expect(journal?.staged_rows).toBe(1); // the durable count the apply will check
+
+    // Truncate the staged file behind the drain's back, then let the pull finish.
+    const stagingDir = path.join(teamHome, 'residency', `${projectId}-staging`);
+    fs.writeFileSync(path.join(stagingDir, 'spores.ndjson'), '', 'utf-8');
+
+    const finishingPull = async () => ({ status: 200, rows: [], next_cursor: null, done: true });
+    const applied: string[] = [];
+    await runResidencyTransitions({
+      ...baseDeps(),
+      pullTransport: finishingPull as never,
+      resolveHostTarget: targetResolver(),
+      applyStagedRows: (_db, table) => { applied.push(table); },
+    });
+
+    // Nothing applied, nothing cleared — the journal survives as the retry path.
+    expect(applied).toEqual([]);
+    const after = readResidencyJournal(projectId);
+    expect(after).not.toBeNull();
+    expect(after?.last_error).toContain('staging holds');
+    expect(resolveAttach(projectId)).toBeNull(); // the flip had already run
   });
 
   test('an abort mid-pull stops before the flip: the project stays attached, no local row, staging cleared', async () => {
@@ -297,7 +389,7 @@ describe('detach drain — round trip', () => {
     expect(resolveAttach(projectId)).not.toBeNull(); // still attached — the flip bailed
     expect(findRegisteredProjectById(projectId, home)).toBeNull(); // no local Grove row re-materialized
     expect(readResidencyJournal(projectId)).toBeNull(); // aborted
-    expect(listResidencyStagingTables(projectId)).toEqual([]); // guard stopped re-staging after abort cleared it
+    expect(listResidencyStagingTables(projectId).state).toBe('absent'); // guard stopped re-staging after abort cleared it
   });
 
   test('a failed pull does not advance: the journal stays pulling and the ref survives', async () => {
