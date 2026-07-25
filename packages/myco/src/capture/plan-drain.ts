@@ -54,6 +54,7 @@ import {
   type DrainHealthCounters,
   type FailureTrackedEntry,
 } from './drain-health.js';
+import { readFilePresence, type Presence } from '@myco/utils/presence.js';
 
 /** Stable, filesystem-safe queue key for one plan file (its member-local path).
  *  Whole-file channel → keyed by path (no inode/offset like the transcript id). */
@@ -111,10 +112,13 @@ export type PlanPostTransport = (
   body: PlanChunkRequest,
 ) => Promise<PlanChunkResponse>;
 
-/** The filesystem read seam — read the whole plan file, or null if it is gone.
+/** The filesystem read seam — the whole plan file, its genuine absence, or an
+ *  undetermined read. An undetermined read must never be treated as absence:
+ *  the entry is the only record that this plan still owes the host, and
+ *  dropping it on a transient EACCES/EMFILE loses the plan permanently.
  *  Injectable so the drain's dedup/skip semantics are unit-testable without disk. */
 export interface PlanFileReader {
-  read(planPath: string): string | null;
+  read(planPath: string): Presence<string>;
 }
 
 /** The durable store seam over the machine-scoped queue dir. Default is the
@@ -222,11 +226,7 @@ export function createFsPlanDrainStore(rootDir: string = resolveMemberPlanDrainD
 
 const defaultFileReader: PlanFileReader = {
   read(planPath) {
-    try {
-      return fs.readFileSync(planPath, 'utf-8');
-    } catch {
-      return null;
-    }
+    return readFilePresence(planPath);
   },
 };
 
@@ -482,8 +482,10 @@ export class PlanDrainQueue {
     let n = 0;
     for (const entry of this.store.list()) {
       const content = this.fileReader.read(entry.plan_path);
-      if (content === null) continue; // file gone → inert
-      if (hashContent(content) !== entry.acked_hash) n += 1;
+      if (content.state === 'absent') continue; // file gone → inert
+      // An undetermined read counts as pending: the entry may still owe the
+      // host, and releasing the hold would let the machine sleep on unshipped work.
+      if (content.state === 'unknown' || hashContent(content.value) !== entry.acked_hash) n += 1;
     }
     return n;
   }
@@ -516,11 +518,8 @@ export class PlanDrainQueue {
       for (const entry of this.store.listForHost(hostId)) {
         if (entry.session_id !== sessionId) continue;
         const content = this.fileReader.read(entry.plan_path);
-        if (content === null) {
-          this.store.remove(entry.host_id, entry.session_id, entry.plan_ref);
-          continue;
-        }
-        if (hashContent(content) === entry.acked_hash) {
+        if (content.state === 'unknown') continue; // undetermined — keep the entry for a later tick
+        if (content.state === 'absent' || hashContent(content.value) === entry.acked_hash) {
           this.store.remove(entry.host_id, entry.session_id, entry.plan_ref);
         }
       }
@@ -623,13 +622,25 @@ export class PlanDrainQueue {
    * on this host); the request's TENANCY is taken PER-ENTRY below.
    */
   private async drainEntry(hostTarget: RemoteTarget, entry: PlanDrainEntry): Promise<number> {
-    const content = this.fileReader.read(entry.plan_path);
-    if (content === null) {
+    const read = this.fileReader.read(entry.plan_path);
+    if (read.state === 'absent') {
       // The plan file was removed/moved after the write — its content is
       // unreachable. Remove the inert entry (bounds the store; nothing to ship).
       this.store.remove(entry.host_id, entry.session_id, entry.plan_ref);
       return 0;
     }
+    if (read.state === 'unknown') {
+      this.logger?.warn('capture.plan-drain', 'plan file unreadable — retry next tick', {
+        host_id: entry.host_id,
+        session_id: entry.session_id,
+        error: read.error.message,
+      });
+      // The file may still be there and unshipped; keep the entry and retry.
+      recordDrainFailure(entry, 'unreadable', new Date().toISOString());
+      this.store.put(entry);
+      return 0;
+    }
+    const content = read.value;
     const hash = hashContent(content);
     if (hash === entry.acked_hash) return this.noOpDrained(entry); // unchanged since last ack — no-op
 
@@ -706,11 +717,16 @@ export class PlanDrainQueue {
   health(): Map<string, DrainHealthCounters> {
     const rows = this.store.list().map((entry) => {
       const content = this.fileReader.read(entry.plan_path);
-      const pending = content !== null && hashContent(content) !== entry.acked_hash;
+      // Mirrors pendingCount: an undetermined read stays pending so a failing
+      // entry cannot read as healthy in the surface built to catch it.
+      const pending = content.state === 'unknown'
+        || (content.state === 'present' && hashContent(content.value) !== entry.acked_hash);
       return {
         host_id: entry.host_id,
         pending,
-        pendingUnits: pending && content !== null ? Buffer.byteLength(content, 'utf-8') : undefined,
+        pendingUnits: pending && content.state === 'present'
+          ? Buffer.byteLength(content.value, 'utf-8')
+          : undefined,
         consecutive_failures: entry.consecutive_failures,
         last_error_kind: entry.last_error_kind,
       };
