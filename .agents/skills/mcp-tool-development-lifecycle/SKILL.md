@@ -112,7 +112,7 @@ Each tool carries inline SKILL.md documentation bundled at compile time across a
 
 Implement systematic checks to catch schema-handler-documentation drift across the shared tool-runtime:
 
-1. **Create test file** (`packages/myco/src/tools/definitions.test.ts`) with schema-handler parameter alignment tests.
+1. **Create test file** (`tests/tools/definitions.test.ts`) with schema-handler parameter alignment tests. Test files live under `tests/` — the runner discovers nothing outside it, and `tests/meta/test-suite-integrity.test.ts` fails CI on a test authored anywhere else.
 
 2. **Schema-handler parameter alignment test** — verify all schema parameters are referenced in handler source.
 

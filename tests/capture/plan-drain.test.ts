@@ -30,6 +30,7 @@ import {
   type PlanFileReader,
   type PlanPostTransport,
 } from '@myco/capture/plan-drain';
+import { ABSENT, present, unknown } from '@myco/utils/presence';
 import type { PlanWatchConfig } from '@myco/daemon/plan-capture';
 import type { RemoteTarget } from '@myco/host/routing';
 import { DaemonServer } from '@myco/daemon/server';
@@ -56,14 +57,26 @@ const WATCH: PlanWatchConfig = { watchDirs: ['/plans'], projectRoot: '/', extens
 
 // --- fakes -----------------------------------------------------------------
 
-/** In-memory plan files the {@link PlanFileReader} reads. */
+/** In-memory plan files the {@link PlanFileReader} reads. A path in `unreadable`
+ *  models a file that exists but cannot be read (EACCES/EMFILE) — distinct from
+ *  one that is genuinely gone. */
 function memFiles() {
   const files = new Map<string, string>();
-  const reader: PlanFileReader = { read: (p) => (files.has(p) ? files.get(p)! : null) };
+  const unreadable = new Set<string>();
+  const reader: PlanFileReader = {
+    read: (p) => {
+      if (unreadable.has(p)) {
+        return unknown(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }));
+      }
+      return files.has(p) ? present(files.get(p)!) : ABSENT;
+    },
+  };
   return {
     reader,
     set(p: string, content: string) { files.set(p, content); },
     remove(p: string) { files.delete(p); },
+    makeUnreadable(p: string) { unreadable.add(p); },
+    makeReadable(p: string) { unreadable.delete(p); },
   };
 }
 
@@ -442,6 +455,44 @@ describe('durability discipline', () => {
     await q.flushBeforeForward(t);
     expect(store.get(HOST_A, 's', ref)).toBeNull(); // inert entry removed
     expect(host.calls).toHaveLength(0);
+  });
+
+  test('an UNREADABLE plan file is kept for retry, not dequeued like a deleted one', async () => {
+    const files = memFiles();
+    files.set('/plans/x.md', 'here');
+    const store = memStore();
+    const host = fakeHost();
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
+    const t = target();
+    q.noteCollect(t, planEvent('s', '/plans/x.md'));
+    const ref = derivePlanRef('/plans/x.md');
+
+    files.makeUnreadable('/plans/x.md'); // present on disk, but EACCES right now
+    expect(q.pendingCount()).toBe(1); // still owed → must hold the machine awake
+    await q.flushBeforeForward(t);
+
+    const kept = store.get(HOST_A, 's', ref);
+    expect(kept).not.toBeNull();
+    expect(kept!.last_error_kind).toBe('unreadable');
+    expect(host.calls).toHaveLength(0); // nothing shipped — the content was never read
+
+    // The transient condition clears and the plan ships on a later tick.
+    files.makeReadable('/plans/x.md');
+    await q.flushBeforeForward(t);
+    expect(host.calls).toHaveLength(1);
+    expect(host.calls[0]!.body.content).toBe('here');
+  });
+
+  test('an unreadable entry surfaces as pending in drain health, not as healthy', () => {
+    const files = memFiles();
+    files.set('/plans/x.md', 'here');
+    const store = memStore();
+    const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store, fileReader: files.reader, ...noThrottle });
+    q.noteCollect(target(), planEvent('s', '/plans/x.md'));
+
+    files.makeUnreadable('/plans/x.md');
+
+    expect(q.health().get(HOST_A)?.pendingEntries).toBe(1);
   });
 });
 

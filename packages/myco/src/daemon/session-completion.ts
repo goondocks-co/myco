@@ -24,12 +24,19 @@
  * transcript is a no-op): a mining failure is logged and the close still
  * proceeds, matching the pre-existing `handleUnregister` semantics — a
  * session must never be left a zombie `active` because its transcript
- * could not be read. The GC keeps its own independent conservativeness for
- * the no-source case (a routed session with no stamped `transcript_path`
- * is never pruned — see `daemon/power-jobs.ts` ROUTED_TRANSCRIPT_CACHE_GC).
+ * could not be read.
+ *
+ * Closing anyway is only safe because the outcome is RECORDED. The session
+ * carries `final_mine_ok`, and the routed-transcript cache GC prunes a tree
+ * only when it is 1. So a failed or unattempted mine no longer looks like a
+ * successful one to the job that deletes the host's only copy — the session
+ * still closes, and the bytes are kept. The GC keeps its own independent
+ * conservativeness for the no-source case (a routed session with no stamped
+ * `transcript_path` is never pruned — see `daemon/power-jobs.ts`
+ * ROUTED_TRANSCRIPT_CACHE_GC).
  */
 
-import { closeSession, getSession, type SessionRow } from '@myco/db/queries/sessions.js';
+import { closeSession, getSession, setFinalMineOk, type SessionRow } from '@myco/db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
@@ -43,7 +50,7 @@ export interface SessionCompletionMiner {
   reconcileAndAttributeResponses(
     sessionId: string,
     input: { agent: string; transcriptPath: string },
-  ): unknown;
+  ): { readTranscript: boolean };
 }
 
 export interface SessionCompletionDeps {
@@ -65,13 +72,16 @@ export function completeSessionWithMining(
   endedAt: number,
   deps: SessionCompletionDeps,
 ): SessionRow | null {
+  // Unattempted stays unproven: a session with no mine source never earns the
+  // GC's proof, which is what keeps its tree on disk.
+  let minedOk = false;
   try {
     const ending = getSession(sessionId, ALL_PROJECTS_SCOPE);
     if (ending?.agent && ending.transcript_path) {
-      deps.transcriptMiner.reconcileAndAttributeResponses(sessionId, {
+      minedOk = deps.transcriptMiner.reconcileAndAttributeResponses(sessionId, {
         agent: ending.agent,
         transcriptPath: ending.transcript_path,
-      });
+      }).readTranscript;
     }
   } catch (err) {
     deps.logger?.warn(
@@ -80,5 +90,6 @@ export function completeSessionWithMining(
       { session_id: sessionId, error: err instanceof Error ? err.message : String(err) },
     );
   }
+  setFinalMineOk(sessionId, minedOk);
   return closeSession(sessionId, endedAt);
 }

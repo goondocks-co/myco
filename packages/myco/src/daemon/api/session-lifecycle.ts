@@ -68,7 +68,7 @@ export interface SessionLifecycleDeps {
    * this, a response sitting complete in the transcript is never lifted into
    * `response_summary` — the steering/final-summary capture gap.
    */
-  transcriptMiner: { reconcileAndAttributeResponses: (sessionId: string, input: { agent: string; transcriptPath: string }) => unknown };
+  transcriptMiner: { reconcileAndAttributeResponses: (sessionId: string, input: { agent: string; transcriptPath: string }) => { readTranscript: boolean } };
   server: DaemonServer;
   powerManager: PowerManager;
   machineId: string;

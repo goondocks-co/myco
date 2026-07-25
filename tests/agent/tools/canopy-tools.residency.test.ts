@@ -7,8 +7,8 @@ import { createSchema } from '@myco/db/schema.js';
 import { epochSeconds } from '@myco/constants.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
-import { createCanopyTools } from './canopy-tools.js';
-import type { VaultToolDeps } from './types.js';
+import { createCanopyTools } from '@myco/agent/tools/canopy-tools.js';
+import type { VaultToolDeps } from '@myco/agent/tools/types.js';
 
 /**
  * Task B1 — canopy_describe_next is the second mis-scoping READ. On a host-served

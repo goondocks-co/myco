@@ -19,6 +19,7 @@ import {
 import { type HostRecord } from '@myco/host/registry.js';
 import type { DrainHealthCounters } from '@myco/capture/drain-health.js';
 import { PlanDrainQueue, type PlanDrainStore, type PlanDrainEntry, type PlanFileReader, type PlanPostTransport } from '@myco/capture/plan-drain.js';
+import { ABSENT, present } from '@myco/utils/presence.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 
@@ -163,7 +164,9 @@ describe('GET /api/team-host/drain-health', () => {
     writeHostRecordFixture(host(HOST_A, 'mac-studio'));
     const files = new Map<string, string>();
     files.set('/plans/x.md', '# plan');
-    const fileReader: PlanFileReader = { read: (p) => files.get(p) ?? null };
+    const fileReader: PlanFileReader = {
+      read: (p) => (files.has(p) ? present(files.get(p)!) : ABSENT),
+    };
     const entries = new Map<string, PlanDrainEntry>();
     const store: PlanDrainStore = {
       list: () => [...entries.values()],

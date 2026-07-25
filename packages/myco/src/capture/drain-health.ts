@@ -25,10 +25,12 @@
 /** How a drain attempt failed, distinguishing "the host itself could not be
  *  reached" (transport-level: connection refused, timeout, DNS) from "the
  *  host answered but rejected the attempt" (an unexpected status/response
- *  shape). Both count as a failing entry; only the former counts toward
- *  host-unreachable occurrences — the doctor/status signal an operator most
- *  wants ("is the host down, or is something else wrong?"). */
-export type DrainFailureKind = 'unreachable' | 'rejected';
+ *  shape). `unreadable` is neither remote case: the local source the entry
+ *  points at could not be read, so the drain cannot tell whether the work is
+ *  still owed. All three count as a failing entry; only `unreachable` counts
+ *  toward host-unreachable occurrences — the doctor/status signal an operator
+ *  most wants ("is the host down, or is something else wrong?"). */
+export type DrainFailureKind = 'unreachable' | 'rejected' | 'unreadable';
 
 /** The three fields every drain entry gains. Optional so a pre-existing
  *  persisted entry (no failure fields yet) round-trips as "healthy". */

@@ -20,7 +20,7 @@ import { TABLE_DDLS, FTS_TABLES, SECONDARY_INDEXES, TEAM_DELETE_TRIGGERS } from 
 import { MIGRATIONS } from './migrations.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 73;
+export const SCHEMA_VERSION = 74;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };
@@ -62,6 +62,25 @@ export interface CanopyEntry {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Raised when a database was written by a newer Myco than this binary
+ * understands. The vault is left untouched: an older binary cannot migrate
+ * a newer schema down, and writing to it through the older schema's DDL
+ * corrupts rows whose column types changed.
+ */
+export class SchemaVersionTooNewError extends Error {
+  readonly code = 'schema_version_too_new';
+
+  constructor(readonly foundVersion: number, readonly supportedVersion: number) {
+    super(
+      `schema_version_too_new: this database is at schema v${foundVersion}, but this Myco supports v${supportedVersion}. `
+      + 'It was written by a newer version of Myco. Upgrade Myco to open it, or restore a backup taken before the upgrade. '
+      + 'The database has not been modified.',
+    );
+    this.name = 'SchemaVersionTooNewError';
+  }
+}
 
 function getCurrentVersion(db: Database): number {
   const row = db.prepare(
@@ -110,6 +129,12 @@ function hasSchemaVersionTable(db: Database): boolean {
 export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_ID): void {
   if (hasSchemaVersionTable(db)) {
     const currentVersion = getCurrentVersion(db);
+    // Fail closed on a newer-than-supported vault. Without this the equality
+    // check falls through, no migration matches, and the older binary's DDL is
+    // reapplied over a schema whose column types have already moved on.
+    if (currentVersion > SCHEMA_VERSION) {
+      throw new SchemaVersionTooNewError(currentVersion, SCHEMA_VERSION);
+    }
     if (currentVersion === SCHEMA_VERSION) {
       reapplyCurrentSchemaDdl(db);
       return;

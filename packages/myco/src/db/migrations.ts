@@ -145,6 +145,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 71, migrate: (db) => migrateV70ToV71(db) },
   { version: 72, migrate: (db) => migrateV71ToV72(db) },
   { version: 73, migrate: (db) => migrateV72ToV73(db) },
+  { version: 74, migrate: (db) => migrateV73ToV74(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4659,3 +4660,42 @@ function migrateV65ToV66(db: Database): void {
  */
 // (Team Host's original v67 routed_event_dedup migration was renumbered to v68
 // above — migrateV67ToV68 — after the OKF rebase collision. Leftover removed.)
+
+/**
+ * v73 → v74: add `sessions.final_mine_ok`, the routed-transcript cache GC's
+ * proof that the final mining pass actually read the transcript.
+ *
+ * The GC deletes the host's only copy of a routed session's transcript. Its
+ * gate was `status = 'completed'`, on the stated assumption that completing a
+ * session implies it was fully mined — but the completion chokepoint closes
+ * the session even when mining throws, and a `statSync` failure inside the
+ * miner produced an empty parse that looked like a successful mine of an empty
+ * file. Either way the tree was pruned with its content unread.
+ *
+ * NULL means "no final mining outcome was recorded", which the GC treats as
+ * unproven and refuses to prune on. Existing completed rows are backfilled to 1
+ * so the upgrade does not strand every already-pruneable tree on disk forever;
+ * the new guarantee binds sessions completed from this version onward.
+ *
+ * Additive and nullable, so an older binary reading a v74 vault keeps working.
+ */
+function migrateV73ToV74(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'sessions');
+    if (!cols.has('final_mine_ok')) {
+      db.prepare('ALTER TABLE sessions ADD COLUMN final_mine_ok INTEGER').run();
+      db.prepare(
+        `UPDATE sessions SET final_mine_ok = 1 WHERE status = 'completed' AND final_mine_ok IS NULL`,
+      ).run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(74, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}

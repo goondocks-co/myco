@@ -215,13 +215,28 @@ export class JobRunner {
     void job.fn(ctx).then((outcome) => settle(undefined, outcome), (err) => settle(err));
   }
 
-  /** Name of the first job holding deep-sleep, or null. Defensive: a failing probe never holds. */
+  /**
+   * Name of the first job holding deep-sleep, or null.
+   *
+   * A probe that throws HOLDS. These probes count unshipped capture, so a
+   * probe that cannot answer is not evidence there is nothing to ship — and
+   * sleeping stops the drains, after which the source file can rotate away.
+   * Staying awake on a broken probe costs power; sleeping on one costs data.
+   */
   providesHold(): string | null {
     for (const job of this.jobs) {
       if (!job.hold) continue;
       if ((job.hold.allowDeepSleepHold ?? true) === false) continue;
       let pending = 0;
-      try { pending = job.hold.pending(); } catch { pending = 0; }
+      try {
+        pending = job.hold.pending();
+      } catch (err) {
+        this.opts.logger.warn(LOG_KINDS.POWER_JOB, 'Deep-sleep hold probe failed — holding awake', {
+          job: job.name,
+          error: (err as Error).message,
+        });
+        return job.name;
+      }
       if (pending > 0) return job.name;
     }
     return null;

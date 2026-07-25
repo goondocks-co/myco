@@ -10,9 +10,9 @@ import { insertContentClaim, getActiveContentClaim } from '@myco/db/queries/cont
 import { epochSeconds } from '@myco/constants.js';
 import { assertGroveProjectId, createProjectId, GLOBAL_SCOPE } from '@myco/grove/ids.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
-import { createSkillTools } from './skill-tools.js';
-import { collectSkillWriteIssues } from './skill-write-validator.js';
-import type { VaultToolDeps } from './types.js';
+import { createSkillTools } from '@myco/agent/tools/skill-tools.js';
+import { collectSkillWriteIssues } from '@myco/agent/tools/skill-write-validator.js';
+import type { VaultToolDeps } from '@myco/agent/tools/types.js';
 
 /**
  * Task B1 — the Team Host residency write gate. A run served on the HOST for a

@@ -95,7 +95,7 @@ describe('TranscriptMiner parseCache LRU + short-circuit', () => {
     // idempotent pipeline would still report 0 but we'd pay the DB cost.
     for (let i = 0; i < 5; i++) {
       const r = miner.reconcileBatchKinds(sessionId, { agent: 'claude-code', transcriptPath: tp });
-      expect(r).toEqual({ reclassified: 0, inserted: 0, errors: [] });
+      expect(r).toEqual({ reclassified: 0, inserted: 0, errors: [], readTranscript: true });
     }
   });
 
@@ -119,7 +119,7 @@ describe('TranscriptMiner parseCache LRU + short-circuit', () => {
 
     // And another idempotent pass after the growth settles must short-circuit again.
     const third = miner.reconcileBatchKinds(sessionId, { agent: 'claude-code', transcriptPath: tp });
-    expect(third).toEqual({ reclassified: 0, inserted: 0, errors: [] });
+    expect(third).toEqual({ reclassified: 0, inserted: 0, errors: [], readTranscript: true });
   });
 
   it('does NOT short-circuit after a rotation (inode change)', () => {

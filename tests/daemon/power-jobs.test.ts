@@ -847,7 +847,18 @@ describe('routed-transcript-cache-gc power job', () => {
     id: string,
     status: 'active' | 'completed',
     machineId: string,
-    opts: { transcriptPath?: string | null; startedAt?: number; endedAt?: number } = {},
+    opts: {
+      transcriptPath?: string | null;
+      startedAt?: number;
+      endedAt?: number;
+      /**
+       * The GC's proof that the final mining pass read the transcript. Defaults
+       * to 1 for a completed session — the shape a session that mined
+       * successfully at close has. Pass 0 (mining failed) or null (no outcome
+       * recorded, e.g. a pre-v74 row) to exercise the unproven guard.
+       */
+      finalMineOk?: number | null;
+    } = {},
   ): void {
     const startedAt = opts.startedAt ?? Math.floor(Date.now() / 1000);
     withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
@@ -870,6 +881,12 @@ describe('routed-transcript-cache-gc power job', () => {
           ? `/routed/materialized/${id}.jsonl`
           : opts.transcriptPath,
       });
+      const minedOk = opts.finalMineOk === undefined
+        ? (status === 'completed' ? 1 : null)
+        : opts.finalMineOk;
+      fx.cache.getDatabase(fx.databasePath)
+        .prepare('UPDATE sessions SET final_mine_ok = ? WHERE id = ?')
+        .run(minedOk, id);
     });
   }
 
@@ -1062,7 +1079,7 @@ describe('routed-transcript-cache-gc power job', () => {
       transcriptMiner: {
         reconcileAndAttributeResponses(sessionId: string, input: { agent: string; transcriptPath: string }) {
           minerCalls.push({ sessionId, ...input });
-          return {};
+          return { readTranscript: true }; // the transcript was readable and mined
         },
       },
     }));
@@ -1092,6 +1109,34 @@ describe('routed-transcript-cache-gc power job', () => {
     ageCacheDir('member_eeee5555', 'sess-crashed', QUIET_AGE_MS);
     await pm.find('routed-transcript-cache-gc').fn();
     expect(cacheDirExists('member_eeee5555', 'sess-crashed')).toBe(false);
+  });
+
+  it('never prunes when the final mining pass could not read the transcript', async () => {
+    // The permanent-loss path: the transcript was unreadable at close (EACCES,
+    // fd exhaustion, a lock), so mining returned nothing. Status still flips to
+    // completed — a session must never be stranded active — but the tree holds
+    // the only copy of content that never reached the DB, so it must survive.
+    materializeCacheDir('member_ffff6666', 'sess-unmined');
+    seedSession('sess-unmined', 'completed', 'member_ffff6666', { finalMineOk: 0 });
+    ageCacheDir('member_ffff6666', 'sess-unmined', QUIET_AGE_MS);
+
+    registerPowerJobs(pm as never, buildDeps(fx));
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_ffff6666', 'sess-unmined')).toBe(true);
+  });
+
+  it('never prunes a completed row that predates the mining-proof column', async () => {
+    // A row completed by an older binary carries no outcome at all. Unproven is
+    // not provable, so the bytes stay.
+    materializeCacheDir('member_ffff6666', 'sess-legacy');
+    seedSession('sess-legacy', 'completed', 'member_ffff6666', { finalMineOk: null });
+    ageCacheDir('member_ffff6666', 'sess-legacy', QUIET_AGE_MS);
+
+    registerPowerJobs(pm as never, buildDeps(fx));
+    await pm.find('routed-transcript-cache-gc').fn();
+
+    expect(cacheDirExists('member_ffff6666', 'sess-legacy')).toBe(true);
   });
 });
 
