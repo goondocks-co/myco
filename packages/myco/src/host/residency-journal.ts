@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isGroveEraId } from '../grove/ids.js';
+import { ABSENT, present, readDirPresence, readFilePresence, type Presence } from '@myco/utils/presence.js';
 import { resolveTeamsHome } from '../grove/paths.js';
 
 /** Directory under the machine-global team home that holds residency journals. */
@@ -109,6 +110,19 @@ export interface ResidencyJournal {
    *  when the transition makes forward progress again. */
   last_error?: string;
   last_error_at?: string;
+  /**
+   * Lines written to the staging files so far, counted after each successful
+   * append. The apply reads the staging back and refuses to proceed unless it
+   * sees at least this many lines — without it, a staging directory that could
+   * not be read enumerates as empty, applies zero rows, and is then deleted,
+   * destroying the whole pulled dataset with no error anywhere.
+   *
+   * At-least-once re-appends inflate this and the files together, so the two
+   * stay comparable. A torn trailing line from a crash mid-append is counted in
+   * the file but not here (the increment follows the append), which is why the
+   * check is "at least", not equality.
+   */
+  staged_rows?: number;
 }
 
 /** Fields a caller supplies to open a journal; timestamps are stamped here. */
@@ -259,8 +273,8 @@ export function appendResidencyStagingRows(
   projectId: string,
   rows: ReadonlyArray<{ table: string; row: Record<string, unknown> }>,
   teamsHome: string = resolveTeamsHome(),
-): void {
-  if (!isGroveEraId(projectId, 'project') || rows.length === 0) return;
+): number {
+  if (!isGroveEraId(projectId, 'project') || rows.length === 0) return 0;
   const dir = residencyStagingDir(projectId, teamsHome);
   fs.mkdirSync(dir, { recursive: true });
   const byTable = new Map<string, string[]>();
@@ -270,42 +284,64 @@ export function appendResidencyStagingRows(
     lines.push(JSON.stringify(row));
     byTable.set(table, lines);
   }
+  let written = 0;
   for (const [table, lines] of byTable) {
     fs.appendFileSync(path.join(dir, `${table}.ndjson`), `${lines.join('\n')}\n`, 'utf-8');
+    written += lines.length;
   }
+  return written;
 }
 
-/** Every table with a staged page file (apply order is the caller's concern). */
-export function listResidencyStagingTables(projectId: string, teamsHome: string = resolveTeamsHome()): string[] {
-  try {
-    return fs.readdirSync(residencyStagingDir(projectId, teamsHome))
-      .filter((f) => f.endsWith('.ndjson'))
-      .map((f) => f.slice(0, -'.ndjson'.length));
-  } catch {
-    return [];
-  }
+/**
+ * Every table with a staged page file (apply order is the caller's concern).
+ *
+ * Three-state: an absent directory genuinely means nothing was staged, but an
+ * unreadable one must never enumerate as empty — the caller applies what this
+ * returns and then deletes the directory.
+ */
+export function listResidencyStagingTables(
+  projectId: string,
+  teamsHome: string = resolveTeamsHome(),
+): Presence<string[]> {
+  const dir = readDirPresence(residencyStagingDir(projectId, teamsHome));
+  if (dir.state !== 'present') return dir as Presence<string[]>;
+  return present(
+    dir.value
+      .filter((e) => e.isFile() && e.name.endsWith('.ndjson'))
+      .map((e) => e.name.slice(0, -'.ndjson'.length)),
+  );
 }
 
-/** Read one table's staged rows (skips a torn trailing line rather than throw). */
+/**
+ * Read one table's staged rows.
+ *
+ * `lines` counts every non-empty line the file held, parseable or not, so the
+ * caller can compare against the journal's `staged_rows` and detect a file that
+ * was silently truncated. A torn trailing line from a crash mid-append is
+ * skipped for the rows but still counted here.
+ *
+ * Three-state for the same reason as the enumerator: the rows this returns are
+ * applied and the file is then deleted, so an unreadable file must not read as
+ * an empty one.
+ */
 export function readResidencyStagingRows(
   projectId: string,
   table: string,
   teamsHome: string = resolveTeamsHome(),
-): Record<string, unknown>[] {
-  if (!SAFE_STAGING_TABLE.test(table)) return [];
-  let content: string;
-  try {
-    content = fs.readFileSync(path.join(residencyStagingDir(projectId, teamsHome), `${table}.ndjson`), 'utf-8');
-  } catch {
-    return [];
-  }
+): Presence<{ rows: Record<string, unknown>[]; lines: number }> {
+  if (!SAFE_STAGING_TABLE.test(table)) return ABSENT;
+  const read = readFilePresence(path.join(residencyStagingDir(projectId, teamsHome), `${table}.ndjson`));
+  if (read.state !== 'present') return read as Presence<{ rows: Record<string, unknown>[]; lines: number }>;
+  const content = read.value;
+  let lines = 0;
   const out: Record<string, unknown>[] = [];
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    lines += 1;
     try { out.push(JSON.parse(trimmed) as Record<string, unknown>); } catch { /* skip a torn line */ }
   }
-  return out;
+  return present({ rows: out, lines });
 }
 
 /** Remove a project's staging tree (final detach cleanup). Idempotent. */
