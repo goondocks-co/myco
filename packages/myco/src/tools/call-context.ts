@@ -26,6 +26,7 @@
 
 import path from 'node:path';
 import { ToolError } from './error.js';
+import { assertProjectAdmitsToolWrite } from './lease-admission.js';
 import {
   REQUEST_CONTEXT_HEADERS,
   requireProjectId,
@@ -41,7 +42,6 @@ import {
   groveOwnedByThisDaemon,
   loadGroveRecord,
 } from '@myco/grove/registry.js';
-import { readProjectLease } from '@myco/grove/project-lease.js';
 import {
   resolveGroveDbPath,
   resolveMycoHome,
@@ -95,15 +95,12 @@ function readPivotField(value: unknown, name: string): string | undefined {
  * is not evidence of an unheld lease.
  */
 function refuseLeasedProjectPivot(projectId: GroveProjectId, mycoHome: string): void {
-  const lease = readProjectLease(projectId, mycoHome);
-  if (lease.state === 'absent') return;
-  const holder = lease.state === 'present'
-    ? `${lease.value.owner_op} (${lease.value.reason})`
-    : 'an unreadable lease record';
-  throw new ToolError(
-    'project_lease_held',
-    `Project ${projectId} is mid-operation — held by ${holder}. Retry after the operation completes.`,
-  );
+  // Shares `assertProjectAdmitsToolWrite`'s copy rather than phrasing its
+  // own: one condition (`project_lease_held`) with two different messages
+  // is how a surface drifts. The pivot case is also the stricter one — a
+  // pivot ONTO a leased project is refused for reads too, because the
+  // pivot itself is a deliberate reach into a project mid-move.
+  assertProjectAdmitsToolWrite(projectId, mycoHome);
 }
 
 /**
