@@ -14,7 +14,7 @@ Answers **"is what we captured correct and complete?"** — a different question
 
 - `audit-capture-fidelity <symbiont>` → audit one agent. Start here; most investigations begin with "codex looks wrong".
 - `audit-capture-fidelity --all` → every symbiont in the current project's Grove.
-- `audit-capture-fidelity repair <finding-id>` → the gated repair flow. Read `references/findings.md` for that id first.
+- `audit-capture-fidelity repair <finding-id>` → the gated repair flow (`--repair`, dry-run unless `--apply`). Read `references/findings.md` for that id first; most findings are deliberately not repairable and say why.
 - No argument → audit the current project's Grove across symbionts that have sessions.
 
 ## Why this exists
@@ -103,11 +103,18 @@ Repair is separate from audit and never runs automatically.
 | Re-run audit to prove the finding cleared | none |
 | Harden: root cause → regression gate | **STOP** — the human approves the gate before it is committed |
 
-**Permitted repairs:** backfill NULL `content_hash`; backfill `response_summary` from transcript; recompute derived counters; close a false-terminal session.
+```bash
+bun scripts/capture-audit.ts --grove <db> --repair session-counter-drift          # dry run
+bun scripts/capture-audit.ts --grove <db> --repair session-counter-drift --apply  # writes
+```
+
+**Repairable today:** `session-counter-drift` only — it recomputes a denormalised counter from the rows it summarises, which is derivable with no judgment involved.
+
+**Refused, each with a stated reason** rather than silently ignored: `batch-null-content-hash` (the hash needs an ordinal whose live-path derivation `batches.ts` says is invalid for backfill — a wrong dedup key is worse than a NULL one), `batch-missing-response` and `transcript-never-captured` (both are re-mines, not column updates), `envelope-classified-human` (needs a per-tag origin decision, which belongs in a manifest rule), `batch-orphaned` (the only mechanical fix would be deletion).
 
 **Never, under any circumstances:** `DELETE` anything; rewrite `user_prompt` or captured content; change `sessions.id` or foreign keys; write to a Grove other than the one named on the command line. Data preservation is Myco's core contract — a repair that loses data is worse than the finding it fixed.
 
-Always take a `.bak` of the vault before the first write of a session.
+A `.bak` of the vault is taken automatically before the first write.
 
 ## Hardening — a finding is not closed by repairing rows
 

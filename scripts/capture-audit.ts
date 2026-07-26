@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { runAudit } from '../packages/myco/src/capture/audit/index.js';
+import { repair, runAudit } from '../packages/myco/src/capture/audit/index.js';
 import type { AuditReport, Finding } from '../packages/myco/src/capture/audit/index.js';
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
@@ -123,7 +123,11 @@ function render(report: AuditReport): string {
 const args = parseArgs(process.argv.slice(2));
 
 if (args.help) {
-  console.log('usage: tsx scripts/capture-audit.ts [--grove <myco.db>] [--project <id>] [--symbiont <name>] [--since YYYY-MM-DD] [--json]');
+  console.log(
+    'usage: bun scripts/capture-audit.ts [--grove <myco.db>] [--project <id>] [--symbiont <name>] [--since YYYY-MM-DD] [--json]\n' +
+    '       bun scripts/capture-audit.ts --grove <myco.db> --repair <finding-id> [--apply]\n\n' +
+    'Repair is dry-run unless --apply is passed, and takes a .bak of the vault before writing.',
+  );
   process.exit(0);
 }
 
@@ -131,6 +135,32 @@ const groves = typeof args.grove === 'string' ? [args.grove] : discoverGroves();
 if (groves.length === 0) {
   console.error('No grove database found. Pass --grove <path-to-myco.db>.');
   process.exit(1);
+}
+
+if (typeof args.repair === 'string') {
+  if (groves.length !== 1) {
+    console.error('Repair needs exactly one --grove; refusing to write across groves.');
+    process.exit(1);
+  }
+  const plan = repair({
+    dbPath: groves[0]!,
+    findingId: args.repair,
+    ...(typeof args.project === 'string' ? { projectId: args.project } : {}),
+    apply: args.apply === true,
+  });
+
+  if (!plan.supported) {
+    console.error(`Refusing to repair ${plan.findingId}:\n\n  ${plan.refusal}`);
+    process.exit(1);
+  }
+  console.log(`${plan.findingId}: ${plan.rowCount} row(s) would change`);
+  for (const change of plan.changes.slice(0, 50)) console.log(`  ${change}`);
+  if (plan.changes.length > 50) console.log(`  … and ${plan.changes.length - 50} more`);
+  if (plan.requiresConfirmation && !plan.applied) {
+    console.log('\nOver the confirmation threshold — review the list above before re-running with --apply.');
+  }
+  console.log(plan.applied ? `\nApplied. Backup: ${plan.backupPath}` : '\nDry run — nothing written. Re-run with --apply to write.');
+  process.exit(0);
 }
 
 for (const dbPath of groves) {

@@ -306,7 +306,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "event": "user_prompt",
         "scope": "this_agent",
         "when": {
-          "prompt_starts_with": "# AGENTS.md instructions"
+          "prompt_contains": "# AGENTS.md instructions"
         },
         "action": "drop",
         "reason": "agents-md-context-injection",

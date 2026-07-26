@@ -160,20 +160,23 @@ The audit has **already excluded** the by-design cases: plugin-reported agents, 
 
 ---
 
-## `manifest-rule-never-matched`
+## `envelope-classified-human`
 
-**Means** — a manifest `user_prompt` rule keyed on prompt text matched nothing across the replayed sample. **This is the rot detector** — the `<teammate-message ` → `<agent-message from=` failure exactly.
+**Means** — prompts whose entire text is a single XML envelope are stored with `origin='human'`. An enclosing envelope is runtime-synthesized; a person did not type it. **This is the rot detector** — the `<teammate-message ` → `<agent-message from=` failure exactly.
 
-Only text-keyed rules (`prompt_starts_with`, `prompt_envelope_tag_in`, `prompt_contains`) are replayed. Metadata-keyed rules are excluded because a text replay cannot supply their context.
+Reported per (agent, tag), because each tag is its own gap with its own history. Rolling them together takes the newest date for all of them and reports a closed gap as active.
 
 **Candidates**
-1. The literal was renamed upstream — the rule is dead.
-2. An earlier rule shadows it (first match wins).
-3. The situation simply did not occur in the sample.
-4. The parser already dropped the entries it keys on, so replay never sees them.
+1. The tag has no classify rule and the fail-safe (`prompt_is_enclosing_envelope`) did not catch it either — usually because the stored prompt is not a *single* balanced envelope, e.g. an envelope concatenated with other text.
+2. A rule exists but its literal was renamed upstream.
+3. The rows predate a fix that has already landed.
 
-**Discriminate** — grep recent transcripts for the literal. Absent, with a similar-looking new tag present, is (1) — the high-value case. Present but the rule still not firing is (2); check rule order. Absent with no similar tag is (3), and a bigger `--since` window will confirm.
+**Discriminate** — recency first: LEGACY with a cutoff is (3), and the fix is holding. For ACTIVE, pull the full `user_prompt` and check whether it is *entirely* one balanced envelope. If it is not, look at what else is in the prompt — that is (1), and the real cause is usually a different rule that stopped matching because the runtime prepended something.
 
-**Fix** — for (1), **re-key the rule on a structural signal rather than the new literal**. Replacing one literal with another just resets the same clock; the 2026-07-12 work made this the standing rule — classification is structural, not prefix-brittle.
+Worked example: a codex prompt opened with `<recommended_plugins>` and continued into `# AGENTS.md instructions…`. The AGENTS.md drop rule keyed on `prompt_starts_with`, the marker was no longer at position 0, and 55 context injections were captured as prompts in one day. The envelope finding was the *symptom*; the broken rule was the cause.
 
-**Gate** — a parser/classification test using a real transcript entry of the new shape.
+**Fix** — re-key the rule on a structural signal, or on `prompt_contains` when the marker can move within the text. **Swapping one literal for another just resets the same clock.**
+
+**Gate** — a rule test covering both the old and new shapes, as in `tests/capture/codex-agents-md-injection.test.ts`.
+
+**Why not rule-replay** — an earlier version of this check replayed each declared rule over transcripts and reported the ones that never fired. It was abandoned: envelope rules fire on raw entries during mining, and the parser has already removed the envelopes by the time it produces turns, so every envelope rule looked dead. Measured: `<system-reminder>` appeared raw in 6 of 40 transcripts and in 0 parsed turns. Checking the stored outcome needs no replay and no knowledge of any specific tag.

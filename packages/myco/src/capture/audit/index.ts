@@ -12,6 +12,7 @@ export { checkDrift } from './checks/drift.js';
 export { checkIntegrity } from './checks/integrity.js';
 export { checkReconcile, transcriptCwd } from './checks/reconcile.js';
 export { captureModel, classifyRecency, symbiontContexts } from './context.js';
+export { repair, type RepairOptions, type RepairPlan } from './repair.js';
 
 const SEVERITY_ORDER = { high: 0, medium: 1, low: 2 } as const;
 
@@ -51,9 +52,7 @@ export function runAudit(opts: AuditOptions, closure?: Partial<ClosureInput>): A
     report.findings.push(...reconcileResult.findings);
     report.coverage.push(...reconcileResult.coverage);
 
-    const driftResult = checkDrift(opts, symbionts);
-    report.findings.push(...driftResult.findings);
-    report.coverage.push(...driftResult.coverage);
+    report.findings.push(...checkDrift(db, opts, now));
 
     report.findings.sort(
       (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.count - a.count,

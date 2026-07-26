@@ -9,6 +9,7 @@ import { checkClosure, hookClosingSymbionts } from '@myco/capture/audit/checks/c
 import { checkReconcile, intentionallyDropped } from '@myco/capture/audit/checks/reconcile.js';
 import { captureModel, classifyRecency, symbiontContexts } from '@myco/capture/audit/context.js';
 import { runAudit } from '@myco/capture/audit/index.js';
+import { repair } from '@myco/capture/audit/repair.js';
 import { ACTIVITIES_TABLE, PROMPT_BATCHES_TABLE, SESSIONS_TABLE } from '@myco/db/schema-ddl.js';
 
 const HOUR = 3600;
@@ -262,5 +263,66 @@ describe('runAudit', () => {
     const report = runAudit({ dbPath });
     expect(report.symbionts.find((s) => s.name === 'opencode')?.model).toBe('plugin-reported');
     expect(report.symbionts.find((s) => s.name === 'codex')?.model).toBe('hook-and-mining');
+  });
+});
+
+describe('repair', () => {
+  it('writes nothing without apply, however many rows it found', () => {
+    seedSession('s1', { prompt_count: 9 });
+    seedBatch('b1', 's1');
+
+    const plan = repair({ dbPath, findingId: 'session-counter-drift' });
+
+    expect(plan.rowCount).toBe(1);
+    expect(plan.applied).toBe(false);
+    expect(db.query('SELECT prompt_count c FROM sessions WHERE id = $id').get({ $id: 's1' })).toEqual({ c: 9 });
+  });
+
+  it('recomputes the counter from the rows it summarises when applied', () => {
+    seedSession('s1', { prompt_count: 9 });
+    seedBatch('b1', 's1');
+
+    const plan = repair({ dbPath, findingId: 'session-counter-drift', apply: true });
+
+    expect(plan.applied).toBe(true);
+    expect(db.query('SELECT prompt_count c FROM sessions WHERE id = $id').get({ $id: 's1' })).toEqual({ c: 1 });
+  });
+
+  it('backs the vault up before its first write', () => {
+    seedSession('s1', { prompt_count: 9 });
+    seedBatch('b1', 's1');
+
+    const plan = repair({ dbPath, findingId: 'session-counter-drift', apply: true });
+
+    expect(plan.backupPath).toBe(`${dbPath}.bak`);
+    expect(fs.existsSync(`${dbPath}.bak`)).toBe(true);
+  });
+
+  it('flags a large change set for re-confirmation instead of applying it silently', () => {
+    for (let i = 0; i < 5; i++) {
+      seedSession(`s${i}`, { prompt_count: 9 });
+      seedBatch(`b${i}`, `s${i}`);
+    }
+    const plan = repair({ dbPath, findingId: 'session-counter-drift', confirmThreshold: 2 });
+    expect(plan.requiresConfirmation).toBe(true);
+    expect(plan.applied).toBe(false);
+  });
+
+  it('refuses content_hash backfill rather than writing a wrong dedup key', () => {
+    const plan = repair({ dbPath, findingId: 'batch-null-content-hash', apply: true });
+    expect(plan.supported).toBe(false);
+    expect(plan.refusal).toContain('ordinal');
+  });
+
+  it('refuses to delete orphaned batches, which hold captured work', () => {
+    const plan = repair({ dbPath, findingId: 'batch-orphaned', apply: true });
+    expect(plan.supported).toBe(false);
+    expect(plan.refusal).toContain('forbidden');
+  });
+
+  it('refuses an unknown finding id rather than doing nothing quietly', () => {
+    const plan = repair({ dbPath, findingId: 'not-a-finding', apply: true });
+    expect(plan.supported).toBe(false);
+    expect(plan.refusal).toContain('Unknown finding id');
   });
 });
