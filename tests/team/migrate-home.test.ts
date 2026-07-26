@@ -882,16 +882,28 @@ describe('migrateTeamsHomeIfNeeded', () => {
       writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
       const legacyTeamDir = path.join(legacy, 'teams', TEAM_ID);
 
-      let anchor: string;
-      do {
-        anchor = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-anchor-'));
-        if (!secretStoreKeys(anchor).every((anchorKey) => (
-          secretStoreKeys(legacyTeamDir).every((legacyKey) => anchorKey < legacyKey)
+      // Rejected candidates stay on disk until a winner is found. On Linux,
+      // rm-then-mkdtemp hands the freed inode straight back, which pins the
+      // candidate's `inode:` lock key constant across draws — and when that
+      // key sorts above a legacy key, no draw can ever satisfy the ordering,
+      // so a free-then-redraw loop spins synchronously forever (a blocked
+      // event loop suppresses even the test timeout; the suite watchdog then
+      // kills the whole chunk). A live candidate set forces a fresh inode,
+      // and therefore a genuinely re-rolled key, on every draw.
+      const legacyKeys = secretStoreKeys(legacyTeamDir);
+      const anchorCandidates: string[] = [];
+      let anchor = '';
+      for (let draw = 0; !anchor; draw += 1) {
+        if (draw >= 500) throw new Error('no anchor with lock keys below the legacy keys after 500 draws');
+        if (draw % 25 === 24) await new Promise((resolve) => setImmediate(resolve));
+        const candidate = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-anchor-'));
+        anchorCandidates.push(candidate);
+        if (secretStoreKeys(candidate).every((anchorKey) => (
+          legacyKeys.every((legacyKey) => anchorKey < legacyKey)
         ))) {
-          fs.rmSync(anchor, { recursive: true, force: true });
-          anchor = '';
+          anchor = candidate;
         }
-      } while (!anchor);
+      }
       fs.writeFileSync(path.join(anchor, 'secrets.env'), 'WAITER_VALUE=preserved\n', { mode: 0o600 });
 
       try {
@@ -929,7 +941,9 @@ describe('migrateTeamsHomeIfNeeded', () => {
         expect(canonical).toContain('WAITER_VALUE=preserved');
         expect(fs.realpathSync(path.join(legacy, 'teams'))).toBe(fs.realpathSync(path.join(dest, 'teams')));
       } finally {
-        fs.rmSync(anchor, { recursive: true, force: true });
+        for (const candidate of anchorCandidates) {
+          fs.rmSync(candidate, { recursive: true, force: true });
+        }
       }
     },
     30_000,
