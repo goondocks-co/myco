@@ -170,7 +170,7 @@ function buildDeps(fx: GroveFixture, overrides: Partial<Record<string, unknown>>
           exclude: { default_patterns: [], patterns: [] },
         },
       },
-      embedding: { run_in_deep_sleep: true },
+      embedding: { prevent_deep_sleep: true },
       notifications: {
         enabled: true,
         system_notifications: false,
@@ -242,7 +242,7 @@ describe('database-optimize power job', () => {
             auto_integrity_check_interval_hours: 168,
           },
           cortex: { instructions: { inject_on_session_start: true } },
-          embedding: { run_in_deep_sleep: true },
+          embedding: { prevent_deep_sleep: true },
         },
       }),
     );
@@ -541,7 +541,7 @@ describe('embedding-reconcile power job', () => {
           auto_integrity_check_interval_hours: 168,
         },
         cortex: { instructions: { inject_on_session_start: true } },
-        embedding: { run_in_deep_sleep: false },
+        embedding: { prevent_deep_sleep: false },
       },
     }));
     const job = pm.find('embedding-reconcile');

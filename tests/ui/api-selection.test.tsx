@@ -55,8 +55,15 @@ describe('UI API request context', () => {
     await fetchJson('/groves');
 
     const headers = fetchMock.mock.calls[0][1].headers as Headers | undefined;
-    expect(headers?.get('x-myco-grove-id')).toBeUndefined();
-    expect(headers?.get('x-myco-project-id')).toBeUndefined();
+    expect(headers?.get('x-myco-grove-id')).toBeNull();
+    expect(headers?.get('x-myco-project-id')).toBeNull();
+    expect(headers?.get('x-myco-auth')).toBeNull();
+    // The activity header is deliberately NOT context-scoped. `/logs/stream`
+    // is a context-free path and also the live log poller — the query most
+    // likely to be left running unattended. Omitting the header there would
+    // make it unclassified, unclassified counts as interaction, and the Logs
+    // page alone would hold the daemon awake indefinitely.
+    expect(headers?.get('x-myco-client-activity')).toBe('active');
   });
 
   it('appends project identity to query keys so positional prefix invalidation still matches', () => {

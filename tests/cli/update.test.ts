@@ -364,7 +364,7 @@ describe('myco update', () => {
       embedding: {
         provider: 'ollama',
         model: 'bge-m3',
-        run_in_deep_sleep: false,
+        prevent_deep_sleep: false,
       },
       agent: {
         scheduled_tasks_active_window_days: 3,
@@ -377,11 +377,11 @@ describe('myco update', () => {
     await run(['--project', testDir]);
 
     const projectYaml = fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8');
-    expect(projectYaml).not.toContain('run_in_deep_sleep');
+    expect(projectYaml).not.toContain('prevent_deep_sleep');
     expect(projectYaml).not.toContain('scheduled_tasks_active_window_days');
 
     const groveYaml = fs.readFileSync(path.join(mycoHome, 'groves', groveId, 'grove.yaml'), 'utf-8');
-    expect(groveYaml).toContain('run_in_deep_sleep: false');
+    expect(groveYaml).toContain('prevent_deep_sleep: false');
     expect(groveYaml).toContain('scheduled_tasks_active_window_days: 3');
   });
 

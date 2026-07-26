@@ -1,6 +1,7 @@
 import type { AppearanceValues as AppearanceConfig } from '@myco/config/appearance-values';
 import { withBasePath } from './base-path';
 import { requestContextHeadersFromSelection } from './selection';
+import { readClientActivity } from './client-activity';
 
 const API_BASE = '/api';
 const CONTEXT_FREE_PATHS = [
@@ -141,6 +142,12 @@ function buildHeaders(
     const token = getDaemonAuthToken();
     if (token) headers.set('x-myco-auth', token);
   }
+  // Deliberately OUTSIDE the context-free guard. `/logs/stream` is a
+  // context-free path and is also the live log poller — the one query most
+  // likely to run unattended. Setting this inside the guard would leave it
+  // unclassified, and an unclassified request counts as interaction, so the
+  // Logs page alone would pin the daemon awake forever.
+  headers.set('x-myco-client-activity', readClientActivity());
   if (needsContentType) headers.set('Content-Type', 'application/json');
   if (initHeaders) {
     new Headers(initHeaders).forEach((value, key) => headers.set(key, value));

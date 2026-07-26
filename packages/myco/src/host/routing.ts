@@ -397,6 +397,11 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   { method: 'GET', pattern: '/api/logs', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/log', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/restart', stamp: 'localhost-only', capability: HOST_ADMIN },
+  // Power state describes THIS daemon's own scheduler — which machine is
+  // awake, and what is holding it there. Never serve it to an attached
+  // member: they would read the host's power state and conclude their own
+  // machine was awake. Same reasoning as /ready and the daemon intent routes.
+  { method: 'GET', pattern: '/api/power', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'GET', pattern: '/api/daemon/intent', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/daemon/intent/restart', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'DELETE', pattern: '/api/daemon/intent/restart', stamp: 'localhost-only', capability: HOST_ADMIN },

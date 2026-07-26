@@ -14,7 +14,6 @@ import { SessionRegistry } from './lifecycle.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
 import { readEventId } from '@myco/capture/event-id.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
-import { PowerManager } from './power.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from './request-config.js';
@@ -57,7 +56,6 @@ import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
 import { normalizeAcceptedUserPromptEvent } from '@myco/capture/user-prompt-event.js';
 import { EventDedupCache } from './event-dedup-cache.js';
-import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
 import { primaryProductionRef } from '@myco/release-provenance/config.js';
@@ -75,7 +73,6 @@ const EventBody = z.object({ type: z.string(), session_id: z.string() }).passthr
 export interface EventDispatchDeps {
   registry: SessionRegistry;
   sessionBuffers: Map<string, EventBuffer>;
-  powerManager: PowerManager;
   logger: DaemonLogger;
   machineId: string;
   // Holder so summary_batch_interval is read fresh on each user_prompt event —
@@ -98,9 +95,11 @@ export interface EventDispatchDeps {
     trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
   ) => Promise<void>;
   /**
-   * Per-project power state. user_prompt events on a session count as
-   * activity for that session's project, keeping its scheduler ticking
-   * even when it isn't the foreground project in the web UI.
+   * Per-project power state, retained for scope decisions in this module.
+   * It is no longer fed from here — gating activity on `user_prompt` is the
+   * bug this replaced, since every other event type flowed through the same
+   * handler without counting. Liveness is now recorded once at the request
+   * boundary, so every event type contributes.
    */
   projectStateTracker?: ProjectPowerStateTracker;
   /**
@@ -132,7 +131,6 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
   const {
     registry,
     sessionBuffers,
-    powerManager,
     logger,
     machineId,
     liveConfig,
@@ -494,19 +492,15 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
-      powerManager.recordActivity();
+      // Power activity is no longer recorded here. Gating it on `user_prompt`
+      // is what let the daemon deep-sleep through hours of tool calls: a
+      // prompt is the rarest signal in the system, and every other event type
+      // flowed through this same handler without touching the clock. Liveness
+      // now comes from two sources that cannot be gated on an event type — the
+      // request class at the HTTP door, and an `activities`-recency probe
+      // registered on the PowerManager. Every event reaching this handler
+      // already arrived as a request, so this call site was redundant.
       const requestProjectId = req.requestContext?.projectId;
-      if (
-        deps.projectStateTracker &&
-        requestProjectId &&
-        isGroveEraId(requestProjectId, 'project') &&
-        req.requestContext?.groveId
-      ) {
-        deps.projectStateTracker.recordActivity(
-          req.requestContext.groveId,
-          assertGroveProjectId(requestProjectId),
-        );
-      }
       const promptText = String(event.prompt ?? '');
       // Origin is forwarded by the hook from manifest set_origin rules;
       // toPromptBatchOrigin coerces unknowns to 'human'.
