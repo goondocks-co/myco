@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
+import { acquireProjectLease, releaseProjectLease } from '@myco/grove/project-lease.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
 import {
   completeStaleActiveSessions,
@@ -332,5 +337,81 @@ describe('findDeadSessionIds', () => {
     const ids = findDeadSessionIds([]);
 
     expect(ids).not.toContain('ses_opencode_realwork');
+  });
+});
+
+describe('write admission — the sweep skips projects whose lease is held', () => {
+  const PAUSED_PROJECT = 'proj_' + 'a'.repeat(32);
+  const FREE_PROJECT = 'proj_' + 'b'.repeat(32);
+  let mycoHome: string;
+  const prevMycoHome = process.env.MYCO_HOME;
+
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => {
+    teardownTestDb();
+    if (prevMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = prevMycoHome;
+  });
+  beforeEach(() => {
+    cleanTestDb();
+    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-lease-home-'));
+    process.env.MYCO_HOME = mycoHome;
+  });
+
+  function holdLease(projectId: string) {
+    acquireProjectLease(projectId, 'test-op', 'admission test', mycoHome, testPerUserLockNamespace);
+  }
+
+  function seedProjectSession(id: string, projectId: string, opts: {
+    status?: string; promptCount?: number; startedAt?: number;
+  }) {
+    seedSession(id, opts);
+    getDatabase().prepare('UPDATE sessions SET project_id = ? WHERE id = ?').run(projectId, id);
+  }
+
+  it('does not complete a stale session whose project lease is held; completes it after release', () => {
+    const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
+    seedProjectSession('paused-stale', PAUSED_PROJECT, { status: 'active', startedAt: staleTime });
+    seedProjectSession('free-stale', FREE_PROJECT, { status: 'active', startedAt: staleTime });
+    holdLease(PAUSED_PROJECT);
+
+    expect(completeStaleActiveSessions(noopCompletion)).toBe(1);
+    expect(getSession('paused-stale', ALL_PROJECTS_SCOPE)?.status).toBe('active');
+    expect(getSession('free-stale', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
+
+    releaseProjectLease(PAUSED_PROJECT, 'test-op', mycoHome, testPerUserLockNamespace);
+    expect(completeStaleActiveSessions(noopCompletion)).toBe(1);
+    expect(getSession('paused-stale', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
+  });
+
+  it('does not report a dead session whose project lease is held; reports it after release', () => {
+    seedProjectSession('paused-dead', PAUSED_PROJECT, { status: 'completed', promptCount: 0 });
+    seedProjectSession('free-dead', FREE_PROJECT, { status: 'completed', promptCount: 0 });
+    holdLease(PAUSED_PROJECT);
+
+    expect(findDeadSessionIds([])).toEqual(['free-dead']);
+
+    releaseProjectLease(PAUSED_PROJECT, 'test-op', mycoHome, testPerUserLockNamespace);
+    expect(findDeadSessionIds([]).sort()).toEqual(['free-dead', 'paused-dead']);
+  });
+
+  it('an unreadable lease counts as held, never as unheld', () => {
+    const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
+    seedProjectSession('torn-lease', PAUSED_PROJECT, { status: 'active', startedAt: staleTime });
+    const leasePath = path.join(mycoHome, 'leases', `${PAUSED_PROJECT}.json`);
+    fs.mkdirSync(path.dirname(leasePath), { recursive: true });
+    fs.writeFileSync(leasePath, '{ torn', 'utf-8');
+
+    expect(completeStaleActiveSessions(noopCompletion)).toBe(0);
+    expect(getSession('torn-lease', ALL_PROJECTS_SCOPE)?.status).toBe('active');
+  });
+
+  it('sessions with no project id sweep normally while a lease is held elsewhere', () => {
+    const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
+    seedSession('projectless-stale', { status: 'active', startedAt: staleTime });
+    holdLease(PAUSED_PROJECT);
+
+    expect(completeStaleActiveSessions(noopCompletion)).toBe(1);
+    expect(getSession('projectless-stale', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
   });
 });

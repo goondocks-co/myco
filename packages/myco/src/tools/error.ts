@@ -38,6 +38,14 @@ export type ToolErrorCode =
    * surface the foreign-home reason instead of a generic failure.
    */
   | 'foreign_grove'
+  /**
+   * A pivot targeted a project whose write lease is held (grove move,
+   * residency transition) or whose lease record is unreadable — the
+   * project's data is mid-operation and must not be read or written
+   * through a pivot until the operation completes. Distinct code so
+   * clients can present "retry after the operation finishes".
+   */
+  | 'project_lease_held'
   | 'tool_call_failed';
 
 /**

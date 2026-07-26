@@ -190,27 +190,10 @@ const WRITE_ADMISSION_REGISTRY: Record<string, Classification> = {
 // same stays-honest rule as `ungated` (zero consult calls, else remove).
 // ---------------------------------------------------------------------------
 
-const UNGATED_WRITERS_OUTSIDE_FUNNEL: readonly { file: string; why: string }[] = [
-  {
-    file: 'packages/myco/src/daemon/jobs/session-maintenance.ts',
-    why: 'Work-list SQL selects from sessions grove-wide with NO project predicate; the '
-      + 'sweep completes sessions (driving miner writes) and cascade-deletes dead ones. '
-      + 'Its power-job registration fans out per Grove with no pause-aware filter, so a '
-      + 'project mid-residency-transition is still swept.',
-  },
-  {
-    file: 'packages/myco/src/agent/executor.ts',
-    why: 'A run dispatched before a transition writes agent_runs/turns/reports and task '
-      + 'output straight through it: no admission consult anywhere in the file, and no '
-      + 'abort path to stop an in-flight run.',
-  },
-  {
-    file: 'packages/myco/src/tools/call-context.ts',
-    why: 'The project_id-only pivot swaps the row scope with no registry, attach, '
-      + 'journal, or lease lookup — a tool call re-targets a project an operation is '
-      + 'actively moving.',
-  },
-];
+// Empty as of the Stage C writer fixes — every previously-pinned writer now
+// consults admission and is held by a mechanism pin below instead. New
+// entries require the same review bar as a registry `ungated` entry.
+const UNGATED_WRITERS_OUTSIDE_FUNNEL: readonly { file: string; why: string }[] = [];
 
 // ---------------------------------------------------------------------------
 // Mechanism pins — the consult sites the registry classifications lean on.
@@ -247,6 +230,21 @@ const MECHANISM_PINS: readonly { file: string; pattern: RegExp; what: string }[]
     file: 'packages/myco/src/host/residency-transition.ts',
     pattern: /\bacquireProjectLease\s*\(/,
     what: 'residency transitions acquiring the project write lease',
+  },
+  {
+    file: 'packages/myco/src/daemon/jobs/session-maintenance.ts',
+    pattern: /\bisProjectPaused\s*\(/,
+    what: 'the session sweep skipping projects whose write lease is held',
+  },
+  {
+    file: 'packages/myco/src/tools/call-context.ts',
+    pattern: /\breadProjectLease\s*\(/,
+    what: 'the tool-call project pivot refusing a project whose write lease is held',
+  },
+  {
+    file: 'packages/myco/src/agent/executor.ts',
+    pattern: /\bisProjectPaused\s*\(/,
+    what: 'run dispatch and resume refusing a project whose write lease is held',
   },
 ];
 
