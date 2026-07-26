@@ -85,7 +85,8 @@ import { writePublishedSkillFile, syncPublishedSkillSymlinks } from '@myco/skill
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import type { Dialer, ProxyLogger } from '../host-proxy.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
-import { errorBody } from './error-envelope.js';
+import { errorBody, pausedErrorResponse } from './error-envelope.js';
+import { isProjectPaused } from '@myco/grove/registry.js';
 import { resolveMemberProjectContext } from './member-project-context.js';
 import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
@@ -661,6 +662,33 @@ export function createContentClaimMaterializeHandler(deps: ContentClaimMateriali
       return context;
     }
     const { currentRoot, projectId } = context;
+
+    // Write admission. The project here is BODY-resolved (via
+    // `resolveMemberProjectContext`), not path-resolved, so
+    // `requestContext.projectId` does not identify it and the central
+    // per-project HTTP write gate in `daemon/server.ts` never fires for
+    // this route. Both branches below write project-scoped
+    // `content_claims` rows — the local one directly, the attached one on
+    // the host — so the consult sits ahead of the branch. An unreadable
+    // lease counts as held (G4).
+    try {
+      const pause = isProjectPaused(projectId);
+      if (pause.paused) {
+        return pausedErrorResponse(projectId, {
+          reason: pause.reason,
+          since: pause.since,
+          owner_op: pause.owner_op,
+          grove_id: pause.grove_id,
+        });
+      }
+    } catch {
+      return pausedErrorResponse(projectId, {
+        reason: 'lease record unreadable',
+        since: 0,
+        owner_op: 'unknown',
+        grove_id: null,
+      });
+    }
 
     if (context.source === 'attached') {
       const { attach } = context;

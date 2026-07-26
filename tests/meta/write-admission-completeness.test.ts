@@ -91,6 +91,14 @@ const ADMISSION_CONSULT = new RegExp(
 //                        auto-stale at file granularity — flipping the entry to
 //                        `gated` when they are fixed is a review obligation,
 //                        which is why `ungatedPaths` must cite exact locations.
+//   gated-upstream     — the file itself contains no consult because every one
+//                        of its project-write paths enters through a named
+//                        upstream funnel that consults for it. Verified: the
+//                        NAMED funnel must consult admission (and must carry a
+//                        mechanism pin below). Like `mixed`, "every path really
+//                        does enter through that funnel" is a review
+//                        obligation the scan cannot check — so the funnel must
+//                        be a single narrow entry point, not a convention.
 //   funnel             — a scoping primitive whose admission is its caller's
 //                        obligation. Not independently verifiable; the `why`
 //                        names the obligation.
@@ -107,6 +115,7 @@ const ADMISSION_CONSULT = new RegExp(
 
 type Classification =
   | { kind: 'gated'; consult: string }
+  | { kind: 'gated-upstream'; funnel: string; consult: string }
   | { kind: 'mixed'; consult: string; ungatedPaths: string }
   | { kind: 'funnel'; why: string }
   | { kind: 'no-project-writes'; why: string }
@@ -119,15 +128,14 @@ const WRITE_ADMISSION_REGISTRY: Record<string, Classification> = {
       + 'refusal) before the handler dispatch wraps in withDatabase',
   },
   'packages/myco/src/daemon/main.ts': {
-    kind: 'mixed',
+    kind: 'gated',
     consult: 'pauseAwareShouldVisit passed as shouldVisit to the registered-project '
-      + 'canopy-populate fan-out',
-    ungatedPaths: 'The boot-time stale-run sweeps write agent_runs with scope '
-      + '{kind: \'all\'} — no project filter, no consult: the boot-DB sweep (near '
-      + 'markRunningRunsInterrupted\'s first call) and the cross-Grove forEachGrove '
-      + 'fan-out (jobName mark-stale-running-runs), which runs with no shouldVisitGrove. '
-      + 'A project mid-transition at daemon restart has its agent_runs rows rewritten. '
-      + 'Stage C: thread pause-awareness through both sweeps, then flip this to gated.',
+      + 'canopy-populate fan-out; and leaseHeldProjectIdsForSweep (isProjectPaused over '
+      + 'the sweeps\' candidate project ids) feeding excludeProjectIds to BOTH boot '
+      + 'stale-run sweeps — the boot-DB one and the cross-Grove mark-stale-running-runs '
+      + 'fan-out. Exclusions are derived from the agent_runs rows rather than the Grove '
+      + 'registry because a project mid-residency-transition is deregistered from every '
+      + 'Grove while its lease is held.',
   },
   'packages/myco/src/daemon/task-scheduling.ts': {
     kind: 'gated',
@@ -144,13 +152,16 @@ const WRITE_ADMISSION_REGISTRY: Record<string, Classification> = {
     why: 'countForGrove probes pending-work counts to hold the daemon awake; read-only.',
   },
   'packages/myco/src/daemon/api/maintenance.ts': {
-    kind: 'ungated',
-    why: 'handleReleaseProvenanceReconcile fans out grove-wide (forEachGrove, no '
-      + 'per-project filter) and reconcileReleaseProvenance upserts project-scoped '
-      + 'knowledge_release_state rows for every project in every Grove; the route '
-      + 'carries no project in its path, so the per-project HTTP write gate never '
-      + 'fires — the same action-scope shape as api/embedding.ts. The summary and '
-      + 'pending-count paths in the same file are reads.',
+    kind: 'gated',
+    consult: 'ONE writer, one mechanism. handleReleaseProvenanceReconcile does NOT go '
+      + 'through runScopedAction (it ignores the request and fans out forEachGrove '
+      + 'directly), so it consults isProjectPausedInGrove per project inside its own '
+      + 'loop and skips held projects — safe rather than lossy, since reconcile is '
+      + 'idempotent and re-derivable. Every OTHER path in the file is a read and needs '
+      + 'no gate: handleGroveMaintenance is a per-Grove summary (buildGroveSummary — '
+      + 'file stats, counts, listRegisteredProjects) and does NOT route through '
+      + 'runScopedAction, as an earlier revision of this entry wrongly claimed; '
+      + 'handleSummary and the pending-count paths are likewise reads.',
   },
   'packages/myco/src/daemon/api/database.ts': {
     kind: 'no-project-writes',
@@ -161,20 +172,37 @@ const WRITE_ADMISSION_REGISTRY: Record<string, Classification> = {
     why: 'seeds built-in agent/task definitions on Grove DB open — grove-level rows with no project_id.',
   },
   'packages/myco/src/daemon/reconciliation.ts': {
-    kind: 'ungated',
-    why: 'The buffer reconciler writes sessions/prompt_batches/activities from boot and '
-      + 'drain-triggered passes that never cross the HTTP write gate. Writes land inside '
-      + 'the residency push window and are deleted unshipped by deleteAfterAck.',
+    kind: 'gated',
+    consult: 'isProjectPausedInGrove inside groveScopeForDir — the single chokepoint '
+      + 'every reconciler path already passes through to obtain its DB binding. A held '
+      + 'lease resolves to the DirScope variant `paused`, so the discriminated union '
+      + 'makes the compiler force each consumer to handle it. All three DEFER rather '
+      + 'than discard: reconcileSession returns `deferred` (buffer left byte-intact and '
+      + 'unmarked), runDrainPass contributes no candidates for the dir, and '
+      + 'cleanBufferDirs skips stale-deletion, quarantine AND the quarantine prune.',
   },
   'packages/myco/src/daemon/api/embedding.ts': {
-    kind: 'ungated',
-    why: 'The grove-wide action path resolves its scope from the request body '
-      + '(action-scope), so requestContext.projectId is absent and the per-project '
-      + 'HTTP write gate never fires; embedding reindex/backfill writes project rows.',
+    kind: 'gated-upstream',
+    funnel: 'packages/myco/src/daemon/api/scoped-dispatch.ts',
+    consult: 'All four route handlers dispatch through runScopedAction, whose '
+      + 'checkActionWriteAdmission consults admission before the run callback fires. '
+      + 'This endpoint leaves dataPlane at its `grove-wide` default, which is '
+      + 'load-bearing rather than incidental: the `project` scope arm is accepted but '
+      + 'NOT narrowed — the same Grove-wide callback runs, and clearAllEmbedded / '
+      + 'getUnembedded / the orphan sweeps carry no project predicate, so a '
+      + 'project-scoped REQUEST is a Grove-wide WRITE. Under `grove-wide`, a `project` '
+      + 'scope is admitted by the Grove rule (any leased project in the Grove refuses '
+      + 'it), which is what closes that hole. NOTE the four `handleEmbedding*` '
+      + 'functions exported above the route handlers are test-only and bypass this '
+      + 'funnel by construction — they must not gain a production caller.',
   },
   'packages/myco/src/daemon/api/content-claims-materialize.ts': {
-    kind: 'ungated',
-    why: 'markPublished writes project-scoped content_claims rows with no admission consult.',
+    kind: 'gated',
+    consult: 'isProjectPaused in createContentClaimMaterializeHandler, ahead of the '
+      + 'local/attached branch so both are covered. The consult cannot live at the HTTP '
+      + 'write gate because this route resolves its project from the BODY '
+      + '(resolveMemberProjectContext), not the path, so requestContext.projectId does '
+      + 'not identify it.',
   },
   'packages/myco/src/tools/index.ts': {
     kind: 'ungated',
@@ -245,6 +273,45 @@ const MECHANISM_PINS: readonly { file: string; pattern: RegExp; what: string }[]
     file: 'packages/myco/src/agent/executor.ts',
     pattern: /\bisProjectPaused\s*\(/,
     what: 'run dispatch and resume refusing a project whose write lease is held',
+  },
+  {
+    file: 'packages/myco/src/daemon/api/scoped-dispatch.ts',
+    pattern: /function checkActionWriteAdmission/,
+    what: 'the action-scope funnel gate — the only admission consult for endpoints '
+      + 'whose scope comes from the request body, where the per-project HTTP gate cannot fire',
+  },
+  {
+    file: 'packages/myco/src/daemon/api/scoped-dispatch.ts',
+    pattern: /options\.dataPlane\s*\?\?\s*'grove-wide'/,
+    what: 'the fail-closed dataPlane default — an endpoint that does not declare its '
+      + 'write breadth is admitted under the Grove rule, so a project-scoped request to '
+      + 'a Grove-wide endpoint cannot slip past on the named project alone',
+  },
+  {
+    file: 'packages/myco/src/grove/project-lease.ts',
+    pattern: /export function listWriteBlockedProjectIds/,
+    what: 'the admission-side lease listing that counts UNREADABLE records as held (G4), '
+      + 'unlike listProjectLeases which drops them',
+  },
+  {
+    file: 'packages/myco/src/daemon/reconciliation.ts',
+    pattern: /type RunnableScope = \{ bind:/,
+    what: 'the runnable-vs-refused split in DirScope. Pinning `kind: \'paused\'` alone '
+      + 'was insufficient: it proved the variant was DECLARED, not that anything '
+      + 'branched on it — with the consumers on a `kind === \'scoped\' ? … : …` ternary, '
+      + 'deleting a paused guard compiled clean and ran the pass against the ambient '
+      + 'binding. Only the refusals lacking `bind` makes a dropped guard a type error',
+  },
+  {
+    file: 'packages/myco/src/daemon/main.ts',
+    pattern: /function leaseHeldProjectIdsForSweep/,
+    what: 'the boot stale-run sweeps\' exclusion set, derived from candidate rows rather '
+      + 'than the Grove registry',
+  },
+  {
+    file: 'packages/myco/src/db/queries/runs.ts',
+    pattern: /function appendProjectExclusion/,
+    what: 'the NOT IN guard the boot sweeps\' exclusions are applied through',
   },
 ];
 
@@ -364,6 +431,34 @@ describe('write-admission completeness meta gate (W1)', () => {
       .map(([file]) => file);
     expect(liars.length, `\`gated\`/\`mixed\` classification without an admission consult in the file:\n`
       + `  ${liars.join('\n  ')}\n\nEither restore the consult or reclassify honestly.`).toBe(0);
+  });
+
+  it('every `gated-upstream` entry names a funnel that really consults, and pins it', () => {
+    const pinnedFiles = new Set(MECHANISM_PINS.map((p) => p.file));
+    for (const [file, classification] of Object.entries(WRITE_ADMISSION_REGISTRY)) {
+      if (classification.kind !== 'gated-upstream') continue;
+      const funnel = classification.funnel;
+      expect(fs.existsSync(path.join(REPO_ROOT, funnel)),
+        `${file} is classified gated-upstream but its funnel ${funnel} does not exist.`).toBe(true);
+      expect(consultsAdmission(funnel),
+        `${file} is classified gated-upstream via ${funnel}, but that funnel contains no `
+        + 'admission consult. Either the gate was removed or the classification is a lie.').toBe(true);
+      // The funnel must be pinned too: without a pin, a refactor could move
+      // the consult out of it and only this indirect check would notice.
+      expect(pinnedFiles.has(funnel),
+        `${file} leans on ${funnel} for admission, but ${funnel} has no MECHANISM_PINS entry. `
+        + 'Pin the consult so a refactor cannot silently drop it.').toBe(true);
+    }
+  });
+
+  it('a `gated-upstream` file does NOT also need an in-file consult (classification is distinct)', () => {
+    // Guards against someone "fixing" a gated-upstream entry by flipping it to
+    // `gated`, which the in-file check would then fail — the two kinds are not
+    // interchangeable and this records why.
+    const upstream = Object.entries(WRITE_ADMISSION_REGISTRY)
+      .filter(([, c]) => c.kind === 'gated-upstream')
+      .map(([file]) => file);
+    expect(upstream.length).toBeGreaterThan(0);
   });
 
   it('every `ungated` entry is STILL ungated (ratchet shrinks when a writer is fixed)', () => {

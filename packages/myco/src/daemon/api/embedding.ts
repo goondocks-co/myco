@@ -263,9 +263,16 @@ export function createEmbeddingDetailsHandler(deps: EmbeddingDetailsDeps): Route
   };
 }
 
-// Original single-Grove action handlers — kept exported because other
-// code paths and existing tests import them by name. The new
-// scope-aware route handlers below wrap these.
+// Original single-Grove action handlers. TEST-ONLY as of this writing:
+// `tests/daemon/api/embedding-ops.test.ts` is the sole importer — there are
+// no remaining production call paths, despite what this comment used to
+// claim. The scope-aware route handlers below wrap these.
+//
+// They are exported, take a manager directly, and write — so they are a
+// pre-wired bypass of the write-admission gate in `runScopedAction`. Do NOT
+// call them from production code; route new callers through `dispatch` so
+// admission is consulted. Folding them into the wrappers and testing
+// through the scope-aware surface would remove the bypass entirely.
 
 export async function handleEmbeddingRebuild(
   manager: EmbeddingManager,
@@ -391,9 +398,15 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     return runScopedAction<T>(endpoint, req, inflight, async (scope) => {
       if (scope.kind === 'all-groves') return dispatchAllGroves(run);
       if (scope.kind === 'grove') return [await dispatchSingleGrove(scope.grove_id, run)];
-      // 'project' — embedding actions for spores/plans have project-
-      // scoped namespaces, so 'project' is the narrowed path. The
-      // request runtime is already Grove-bound by the action scope.
+      // 'project' — accepted, but NOT narrowed: the callback below is the
+      // same one the Grove arms run, and the manager's writes
+      // (`clearAllEmbedded`, `getUnembedded`/`markEmbedded`, orphan sweeps)
+      // are Grove-wide with no project predicate. A project-scoped REQUEST
+      // therefore performs a Grove-wide WRITE, which is why this endpoint
+      // leaves `dataPlane` at its 'grove-wide' default so write admission
+      // refuses on ANY leased project in the Grove, not just this one.
+      // Narrowing the data plane is a separate piece of work; until then
+      // this comment must not claim a narrowing that does not exist.
       const runtime = deps.resolveRequestRuntime(req);
       const slug = loadGroveRecord(scope.grove_id, mycoHome)?.slug ?? scope.grove_id;
       return [await wrapPerGroveResult(scope.grove_id, slug, () =>
