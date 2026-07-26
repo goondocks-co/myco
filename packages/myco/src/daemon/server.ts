@@ -177,10 +177,20 @@ export type RequestClass = 'interaction' | 'probe' | 'passive';
 const CLIENT_ACTIVITY_HEADER = 'x-myco-client-activity';
 
 /**
- * Endpoints whose entire contract is "am I alive / am I ready". A request here
- * can never mean work, whatever the caller forgot to declare.
+ * Endpoints whose entire contract is "am I alive / am I ready / how am I
+ * doing". A request here can never mean work, whatever the caller forgot to
+ * declare.
+ *
+ * `/api/power` belongs here for a sharper reason than the other two: it
+ * REPORTS the activity clock, so classifying it as interaction made reading
+ * the power state reset the value being read — every sample returned
+ * `idle_ms: 0`. A monitoring client polling it would also have pinned the
+ * daemon awake indefinitely, which is precisely the failure this whole
+ * mechanism exists to prevent. Found by live smoke; the unit gates missed it
+ * because they exercise the classifier directly and never observe the
+ * endpoint's effect on the thing it measures.
  */
-const PROBE_PATHS: ReadonlySet<string> = new Set(['/health', '/ready']);
+const PROBE_PATHS: ReadonlySet<string> = new Set(['/health', '/ready', '/api/power']);
 
 /**
  * Resolve a request's class from what the client declared.

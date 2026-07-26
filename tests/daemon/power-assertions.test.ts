@@ -286,6 +286,17 @@ describe('request classification', () => {
     }
   });
 
+  it('classifies the power inventory itself as a probe', () => {
+    // Reading the activity clock must not reset it. Live smoke caught this:
+    // every /api/power sample returned idle_ms 0 because the read counted as
+    // interaction and woke the daemon before reporting. A monitoring client
+    // polling it would have held the machine awake forever — the exact bug
+    // class this mechanism exists to remove, reintroduced by its own
+    // observability endpoint.
+    expect(classifyRequest({}, '/api/power')).toBe('probe');
+    expect(classifyRequest({ 'x-myco-client-activity': 'active' }, '/api/power')).toBe('probe');
+  });
+
   it('honours an explicit probe declaration on any path', () => {
     expect(classifyRequest({ 'x-myco-client-activity': 'probe' }, '/api/status'))
       .toBe('probe');
