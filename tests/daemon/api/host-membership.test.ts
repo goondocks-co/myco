@@ -463,7 +463,7 @@ describe('GET /api/host-membership/status', () => {
     const handler = createHostMembershipStatusHandler({ mycoHome: home });
     const res = await handler(req({}, {}));
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ hosts: [], hint: null });
+    expect(res.body).toEqual({ hosts: [], hint: null, overlay_supported: expect.any(Boolean) });
   });
 
   test('every joined host appears with its attach refs, including the resolved local_grove_id (no bearer/secret leaks)', async () => {
@@ -488,6 +488,7 @@ describe('GET /api/host-membership/status', () => {
         }],
       }],
       hint: null,
+      overlay_supported: expect.any(Boolean),
     });
     expect(JSON.stringify(res.body)).not.toContain('bearer');
   });

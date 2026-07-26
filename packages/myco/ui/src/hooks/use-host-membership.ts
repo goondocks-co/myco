@@ -56,6 +56,10 @@ export interface HostMembershipHint {
 export interface HostMembershipStatusResponse {
   hosts: HostMembershipHost[];
   hint: HostMembershipHint | null;
+  /** False when this machine has no overlay client build and cannot join a
+   *  team. Optional so an older daemon (which omits it) reads as capable
+   *  rather than silently disabling the form. */
+  overlay_supported?: boolean;
 }
 
 const HOST_MEMBERSHIP_STATUS_KEY = ['host-membership-status'] as const;

@@ -90,6 +90,10 @@ function AffiliationHintBanner({ hint }: { hint: HostMembershipHint }) {
 
 function JoinHostForm() {
   const join = useJoinHost();
+  const status = useHostMembershipStatus();
+  // Absent on an older daemon — treat as capable so the form is never disabled
+  // by a missing field rather than a real limitation.
+  const overlaySupported = status.data?.overlay_supported !== false;
   const [hostRef, setHostRef] = useState('');
   const [key, setKey] = useState('');
   const [serverUrl, setServerUrl] = useState('');
@@ -97,7 +101,9 @@ function JoinHostForm() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const canSubmit = Boolean(hostRef.trim() && key.trim() && serverUrl.trim() && overlayAddress.trim()) && !join.isPending;
+  const canSubmit = overlaySupported
+    && Boolean(hostRef.trim() && key.trim() && serverUrl.trim() && overlayAddress.trim())
+    && !join.isPending;
 
   const handleJoin = async () => {
     setError(null);
@@ -123,6 +129,13 @@ function JoinHostForm() {
         Enroll this machine with a Team Host using the one-time key and overlay address a host operator shared
         with you. The host id is used exactly as typed — Myco can't verify it until the join completes.
       </p>
+      {!overlaySupported && (
+        <p className="text-xs text-terracotta-text m-0 mb-3">
+          This machine can't join a team yet — Myco's overlay client has no build for this operating system.
+          Everything else in Myco works normally here. Ask your host operator not to spend a one-time key on
+          this machine.
+        </p>
+      )}
       <div className="flex flex-col gap-2 mb-3">
         <label className={labelClass} htmlFor="host-join-id">Host id</label>
         <input id="host-join-id" className={inputClass} value={hostRef} onChange={(e) => setHostRef(e.target.value)} placeholder="host_…" />

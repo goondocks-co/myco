@@ -395,7 +395,13 @@ export function createHostMembershipStatusHandler(deps: HostMembershipRouteDeps 
       }
     }
 
-    return { status: 200, body: { hosts, hint } };
+    // Whether this machine can take part in a team at all. A capability, not a
+    // platform string: the UI needs to know joining will work, and Windows has
+    // no overlay client build, so the Join form must say so up front rather
+    // than fail after the operator has already minted a one-time key.
+    const overlaySupported = process.platform === 'darwin' || process.platform === 'linux';
+
+    return { status: 200, body: { hosts, hint, overlay_supported: overlaySupported } };
   };
 }
 
