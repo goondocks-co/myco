@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
+import { isProjectPaused } from '@myco/grove/registry.js';
 import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
 import { completeSessionWithMining, type SessionCompletionDeps } from '../session-completion.js';
 import { SESSION_TOMBSTONE_SOURCE, pruneSessionTombstones } from '@myco/db/queries/session-tombstones.js';
@@ -27,6 +28,32 @@ import type { Logger } from '../logger.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import { cleanupAfterSessionCascade } from './session-cleanup.js';
 import { LOG_KINDS } from '../../constants/log-kinds.js';
+
+/**
+ * Per-sweep write-admission predicate: skip sessions of projects whose write
+ * lease is held (grove move, residency transition). The sweep completes and
+ * cascade-deletes — writes that would land inside a transition's push window
+ * and be deleted unshipped by its ack. Memoized per project so a sweep costs
+ * one lease read per distinct project; an unreadable lease counts as held
+ * (never admit a writer on a failed read); a null project id is not
+ * project-scoped and sweeps normally.
+ */
+function pausedProjectSkipper(): (projectId: string | null) => boolean {
+  const pausedByProject = new Map<string, boolean>();
+  return (projectId) => {
+    if (!projectId) return false;
+    let paused = pausedByProject.get(projectId);
+    if (paused === undefined) {
+      try {
+        paused = isProjectPaused(projectId).paused;
+      } catch {
+        paused = true;
+      }
+      pausedByProject.set(projectId, paused);
+    }
+    return paused;
+  };
+}
 
 /**
  * Complete active sessions whose last prompt is older than the stale threshold.
@@ -70,8 +97,9 @@ export function completeStaleActiveSessions(
 
   // Select first (rather than a bulk UPDATE) so we have the swept session ids
   // and can close each one's still-open batch in the same pass.
-  const staleIds = db.prepare(
-    `SELECT id FROM sessions
+  const skipPaused = pausedProjectSkipper();
+  const staleIds = (db.prepare(
+    `SELECT id, project_id FROM sessions
       WHERE status = 'active'
         AND COALESCE(
           (SELECT MAX(touch) FROM (
@@ -85,7 +113,9 @@ export function completeStaleActiveSessions(
           )),
           sessions.started_at
         ) < ?`,
-  ).all(cutoff).map((r) => (r as { id: string }).id);
+  ).all(cutoff) as { id: string; project_id: string | null }[])
+    .filter((row) => !skipPaused(row.project_id))
+    .map((row) => row.id);
 
   if (staleIds.length === 0) return 0;
 
@@ -135,13 +165,14 @@ export function findDeadSessionIds(registeredSessionIds: string[]): string[] {
     : [DEAD_SESSION_MAX_PROMPTS, ...registeredSessionIds];
 
   const rows = db.prepare(
-    `SELECT s.id FROM sessions s
+    `SELECT s.id, s.project_id FROM sessions s
      WHERE ${countPredicate}
        AND s.status != 'active'
        ${excludePlaceholders}`,
-  ).all(...params) as { id: string }[];
+  ).all(...params) as { id: string; project_id: string | null }[];
 
-  return rows.map((r) => r.id);
+  const skipPaused = pausedProjectSkipper();
+  return rows.filter((row) => !skipPaused(row.project_id)).map((row) => row.id);
 }
 
 export interface SessionMaintenanceDeps {
