@@ -32,7 +32,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { resolveGroveBackupDir } from '@myco/backup/location.js';
 import { listBackups } from '@myco/backup/engine.js';
-import { listRegisteredProjects as listRegisteredProjectsForGrove } from '@myco/grove/registry.js';
+import { listRegisteredProjects as listRegisteredProjectsForGrove, isProjectPausedInGrove } from '@myco/grove/registry.js';
 import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
 import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';
 import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-metadata.js';
@@ -448,6 +448,39 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
         const projects = listRegisteredProjectsForGrove(scope.grove.id, mycoHome);
         for (const project of projects) {
           const projectId = project.project_id as GroveProjectId;
+          // Write admission: this route carries no project in its path, so
+          // the central per-project HTTP write gate never fires for it, and
+          // `reconcileReleaseProvenance` upserts project-scoped
+          // `knowledge_release_state` rows. An unreadable lease counts as
+          // held (G4). Skipping is safe rather than lossy — reconcile is
+          // idempotent and re-derivable, so the next pass after the lease
+          // releases produces the same result.
+          let leaseHeld: boolean;
+          try {
+            leaseHeld = isProjectPausedInGrove(scope.grove.id, projectId).paused;
+          } catch {
+            leaseHeld = true;
+          }
+          if (leaseHeld) {
+            deps.logger.info(LOG_KINDS.RELEASE_PROVENANCE_RECONCILE, 'Skipping release-provenance reconcile — project write lease held', {
+              grove_id: scope.grove.id,
+              project_id: projectId,
+            });
+            // Report the skip in the response rather than omitting the
+            // project: a 200 that silently drops a project reads as "it was
+            // reconciled". `error` carries the reason so the operator can
+            // see the project was deliberately not visited.
+            results.push({
+              grove_id: scope.grove.id,
+              project_id: projectId,
+              reconciled: 0,
+              scanned: 0,
+              unchanged: 0,
+              failed: 0,
+              error: 'skipped: project write lease held (the project is being moved)',
+            });
+            continue;
+          }
           try {
             const projectVaultDir = resolveProjectVaultDir(project.root);
             // A Team Host owns this project's Grove row but the working tree

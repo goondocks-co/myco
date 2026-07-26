@@ -18,6 +18,7 @@ import {
 import { bufferDirCurrentRegistration, bufferDirIdentity } from '@myco/capture/buffer-location.js';
 import { openDatabase, withDatabase, type Database } from '@myco/db/client.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
+import { isProjectPausedInGrove, type ProjectPauseStatus } from '@myco/grove/registry.js';
 import {
   listBatchesBySession,
   getLatestBatch,
@@ -275,23 +276,73 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     return db;
   }
 
+  /**
+   * The two runnable outcomes carry `bind`; the two refusals do not. That
+   * asymmetry is the gate, not a convenience: every consumer runs its body
+   * through `scope.bind(fn)`, so deleting a `paused` (or `unavailable`)
+   * guard makes `.bind` a type error rather than silently falling into an
+   * unscoped else-arm. A ternary on `kind === 'scoped'` would compile fine
+   * with the guard gone and replay a leased project's buffer against the
+   * ambient binding — the anchor-vault bug this file already fights.
+   */
+  type RunnableScope = { bind: <T>(fn: () => T) => T };
+
   type DirScope =
-    | { kind: 'unscoped' }
-    | { kind: 'scoped'; db: Database }
-    | { kind: 'unavailable'; groveId: string };
+    | ({ kind: 'unscoped' } & RunnableScope)
+    | ({ kind: 'scoped'; db: Database } & RunnableScope)
+    | { kind: 'unavailable'; groveId: string }
+    | { kind: 'paused'; groveId: string; projectId: string; reason: string; ownerOp: string; since: number };
 
   /**
    * The DB binding a buffer dir's work must run under. Grove-shaped dir →
    * that Grove's DB ('scoped'), or 'unavailable' when the Grove DB does
    * not exist. Non-Grove-shaped dir (legacy/test layouts) → 'unscoped':
    * run against the ambient `getDatabase()` binding.
+   *
+   * A buffer dir IS a project — `~/.myco/groves/<groveId>/projects/<projectId>/buffer/`
+   * — so write admission is resolved here, at the one chokepoint every
+   * reconciler code path already passes through to obtain its binding.
+   * A project whose write lease is held resolves to 'paused', which carries
+   * no `bind` and so cannot be run: a consumer that drops its guard fails
+   * to compile rather than falling through to the ambient binding.
+   *
+   * The consumers' obligation is DEFER, never DISCARD: a paused project's
+   * buffer must be left byte-intact and unmarked so the pass after the
+   * lease releases still replays it. Reconciliation writes sessions,
+   * prompt_batches and activities into the source Grove — during a
+   * residency push window those rows are deleted unshipped by
+   * `deleteAfterAck`, so a write admitted here is capture loss. Discarding
+   * the buffer instead would be the same loss by a shorter route.
+   *
+   * An unreadable lease counts as held (Write Admission G4): a torn record
+   * keeps the reconciler out rather than opening the gate.
    */
   function groveScopeForDir(dir: string): DirScope {
+    const runUnscoped: RunnableScope = { bind: (fn) => fn() };
     const identity = bufferDirIdentity(dir);
-    if (!identity) return { kind: 'unscoped' };
+    if (!identity) return { kind: 'unscoped', ...runUnscoped };
+    let pause: ProjectPauseStatus;
+    try {
+      pause = isProjectPausedInGrove(identity.groveId, identity.projectId);
+    } catch {
+      pause = { paused: true, reason: 'lease record unreadable', since: 0, owner_op: 'unknown', grove_id: identity.groveId };
+    }
+    if (pause.paused) {
+      // owner_op/since ride along so the daemon log names WHICH operation
+      // holds the lease — without them an operator sees a project stop
+      // reconciling with no way to tell what to wait for.
+      return {
+        kind: 'paused',
+        groveId: identity.groveId,
+        projectId: identity.projectId,
+        reason: pause.reason,
+        ownerOp: pause.owner_op,
+        since: pause.since,
+      };
+    }
     const db = (resolveGroveDb ?? defaultResolveGroveDb)(identity.groveId);
     if (!db) return { kind: 'unavailable', groveId: identity.groveId };
-    return { kind: 'scoped', db };
+    return { kind: 'scoped', db, bind: (fn) => withDatabase(db, fn) };
   }
 
   // Sessions whose idle buffer contained unparseable lines that were
@@ -885,6 +936,21 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     // already bound the request's Grove DB; rebinding resolves the same
     // shared handle (cache hit), so nesting is a no-op.
     const scope = groveScopeForDir(located.dir);
+    if (scope.kind === 'paused') {
+      // DEFER, never discard: returning without marking the session
+      // converged leaves the buffer byte-intact and eligible, so the pass
+      // after the lease releases replays every event.
+      logger.info(LOG_KINDS.LIFECYCLE_RECONCILE, 'Deferring reconciliation — project write lease held', {
+        session_id: sessionId,
+        buffer_dir: located.dir,
+        grove_id: scope.groveId,
+        project_id: scope.projectId,
+        reason: scope.reason,
+        owner_op: scope.ownerOp,
+        since: scope.since,
+      });
+      return 'deferred';
+    }
     if (scope.kind === 'unavailable') {
       logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Skipping reconciliation — Grove DB for buffer dir unavailable', {
         session_id: sessionId,
@@ -893,9 +959,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
       });
       return 'deferred';
     }
-    return scope.kind === 'scoped'
-      ? withDatabase(scope.db, () => reconcileLocatedSession(sessionId, located))
-      : reconcileLocatedSession(sessionId, located);
+    return scope.bind(() => reconcileLocatedSession(sessionId, located));
   }
 
   /** The per-session pass body; runs inside the owning Grove's DB scope. */
@@ -1148,8 +1212,23 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     let totalCleaned = 0;
     let totalPruned = 0;
     for (const dir of dirs) {
-      totalPruned += pruneQuarantinedBuffers(dir, TOMBSTONE_RETENTION_MS);
       const scope = groveScopeForDir(dir);
+      if (scope.kind === 'paused') {
+        // Every act in this loop DESTROYS buffer content — stale-buffer
+        // deletion, quarantine moves, and quarantine pruning alike. All of
+        // it is deferred while the lease is held, including the prune:
+        // deferring retention costs one cycle, and a residency transition
+        // must not lose a buffer it may still need to replay or ship.
+        logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Deferring buffer cleanup — project write lease held', {
+          buffer_dir: dir,
+          grove_id: scope.groveId,
+          project_id: scope.projectId,
+          reason: scope.reason,
+          owner_op: scope.ownerOp,
+        });
+        continue;
+      }
+      totalPruned += pruneQuarantinedBuffers(dir, TOMBSTONE_RETENTION_MS);
       if (scope.kind === 'unavailable') continue;
       const run = () => cleanStaleBuffers(dir, {
         maxAgeMs: STALE_BUFFER_MAX_AGE_MS,
@@ -1169,7 +1248,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
           },
         },
       });
-      totalCleaned += scope.kind === 'scoped' ? withDatabase(scope.db, run) : run();
+      totalCleaned += scope.bind(run);
     }
     if (totalCleaned > 0 || totalPruned > 0) {
       logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Buffer cleanup complete', {
@@ -1233,10 +1312,29 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     // session. Without rotation, ≥cap undrainable diverging buffers at
     // the front of the scan would starve everything behind them until
     // quarantine; with it, every candidate is reached within two passes.
-    interface DrainCandidate { dir: string; sessionId: string; key: string; scope: DirScope }
+    // `RunnableScope`, not `DirScope`: a paused or unavailable dir is
+    // filtered out below and never becomes a candidate, so the stored scope
+    // is always runnable. Typing it that way is what lets the drain body
+    // call `scope.bind(...)` — and keeps a future edit that admits a
+    // refused dir from compiling.
+    interface DrainCandidate { dir: string; sessionId: string; key: string; scope: RunnableScope }
     const candidates: DrainCandidate[] = [];
     for (const dir of dirs) {
       const scope = groveScopeForDir(dir);
+      if (scope.kind === 'paused') {
+        // Contributing no candidates from this dir defers the whole
+        // project: no convergence attempt, no cap slot, no backoff, and
+        // (because `cleanBufferDirs` re-resolves the same scope below) no
+        // retention either. The buffers stay exactly as they are.
+        logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Drain pass deferring dir — project write lease held', {
+          buffer_dir: dir,
+          grove_id: scope.groveId,
+          project_id: scope.projectId,
+          reason: scope.reason,
+          owner_op: scope.ownerOp,
+        });
+        continue;
+      }
       if (scope.kind === 'unavailable') {
         logger.warn(LOG_KINDS.CAPTURE_BUFFER, 'Drain pass skipping dir — Grove DB unavailable', {
           buffer_dir: dir,
@@ -1287,7 +1385,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
           if (!isDrainQuiescent(sessionId, identity)) return 'quiescence-skip';
           return reconcileSession(sessionId);
         };
-        outcome = scope.kind === 'scoped' ? withDatabase(scope.db, drainOne) : drainOne();
+        outcome = scope.bind(drainOne);
       } catch (err) {
         outcome = 'thrown';
         thrownError = String(err);

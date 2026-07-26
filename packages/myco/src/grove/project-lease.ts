@@ -42,7 +42,7 @@ import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
-import { ABSENT, readFilePresence, type Presence } from '@myco/utils/presence.js';
+import { ABSENT, readFilePresence, readDirPresence, type Presence } from '@myco/utils/presence.js';
 
 /** Directory under the Myco home holding one lease file per project. */
 export const LEASES_DIRNAME = 'leases';
@@ -251,6 +251,39 @@ export function forceReleaseProjectLease(
     atomicWriteFileSync(leasePath(projectId, mycoHome), `${JSON.stringify(released, null, 2)}\n`);
     return true;
   });
+}
+
+/**
+ * Project ids that write admission must treat as leased: every project
+ * with a present lease PLUS every project whose lease record could not be
+ * read.
+ *
+ * Distinct from `listProjectLeases`, which drops unreadable records
+ * because its callers render lease details and have nothing to show for a
+ * torn file. Admission cannot drop them — unreadable is not unheld (G4),
+ * and a torn record here would silently admit a grove-wide writer into
+ * the project an operation is actively moving.
+ */
+export function listWriteBlockedProjectIds(mycoHome = resolveMycoHome()): string[] {
+  const dir = resolveLeasesDir(mycoHome);
+  const entries = readDirPresence(dir);
+  // An ABSENT dir genuinely means no lease was ever taken. An UNDETERMINED
+  // read (EACCES, EMFILE, EIO) does not — returning [] there would report
+  // "nothing is leased" while a transition holds a lease we simply could
+  // not see, admitting a grove-wide writer into the project being moved.
+  // Throwing matches `isProjectPaused`'s contract for the same fault, so
+  // callers fail closed through their existing catch.
+  if (entries.state === 'unknown') throw entries.error;
+  if (entries.state === 'absent') return [];
+  const out: string[] = [];
+  for (const entry of entries.value) {
+    const name = entry.name;
+    if (!name.endsWith('.json')) continue;
+    const projectId = name.slice(0, -'.json'.length);
+    const lease = readProjectLease(projectId, mycoHome);
+    if (lease.state === 'present' || lease.state === 'unknown') out.push(projectId);
+  }
+  return out;
 }
 
 /** Every project currently holding a lease. Absent dir → none. */

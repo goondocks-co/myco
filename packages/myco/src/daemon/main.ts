@@ -161,7 +161,7 @@ import {
   ProjectPowerStateTracker,
   readProjectActivitySeed,
 } from './project-power-state.js';
-import { pauseAwareShouldVisit } from '../grove/registry.js';
+import { pauseAwareShouldVisit, isProjectPaused } from '../grove/registry.js';
 import { resumeOrphanedPauses } from './startup-pauses.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
@@ -171,7 +171,7 @@ import { createDigestRevisionHandlers } from './api/digest-revisions.js';
 import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
 import { logEntryToInsert } from './log-entry-insert.js';
-import { markRunningRunsInterrupted, sweepStaleSupersededRuns } from '../db/queries/runs.js';
+import { markRunningRunsInterrupted, sweepStaleSupersededRuns, listStaleSweepProjectIds } from '../db/queries/runs.js';
 import {
   POWER_IDLE_THRESHOLD_MS,
   POWER_SLEEP_THRESHOLD_MS,
@@ -222,7 +222,7 @@ import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
-import { type GroveProjectId } from '../grove/ids.js';
+import { type GroveProjectId, type ProjectScope } from '../grove/ids.js';
 import { rowProjectIdFromRequestContext, requireProjectId, type MycoRequestContext } from '../grove/request-context.js';
 import {
   daemonStateMtimeMs,
@@ -653,6 +653,53 @@ function scheduleShutdownWithAttribution(callerLabel: string, logger: DaemonLogg
 }
 
 /**
+ * Write admission for the boot stale-run sweeps: the project ids among
+ * the sweeps' candidate rows whose write lease is held, to be excluded
+ * from the UPDATE.
+ *
+ * The sweeps rewrite `agent_runs` grove-wide with no project filter, so a
+ * project mid-residency-transition at daemon restart would have its rows
+ * rewritten inside the push window and deleted unshipped by
+ * `deleteAfterAck`. Must run inside the Grove DB binding being swept.
+ *
+ * An unreadable lease counts as held (Write Admission G4) — a torn record
+ * excludes the project rather than admitting the sweep.
+ *
+ * KNOWN GAP, stated rather than implied: unlike the other admission sites in
+ * this batch, exclusion here is ABANDONMENT, not deferral. These two sweeps
+ * run only at boot — there is no timer and no re-run — so an excluded
+ * project's `running` rows are not re-swept when the lease releases; they
+ * stay `running` until the next daemon restart, and are never marked
+ * `resumable`, so that work is dropped rather than resumed. Dispatch is NOT
+ * wedged (`getRunningRunForTask` treats a stale row as stale and the
+ * executor proceeds), so the visible symptom is a run stuck at "running" in
+ * the UI. The release-provenance reconcile's "skipping is safe because the
+ * next pass re-derives it" argument does NOT transfer here, which is why it
+ * is written out instead of assumed. Closing it needs a re-sweep on lease
+ * release; tracked with the W4 stranded-lease work rather than bolted on
+ * here.
+ */
+function leaseHeldProjectIdsForSweep(scope: ProjectScope, logger: DaemonLogger): string[] {
+  const held: string[] = [];
+  for (const projectId of listStaleSweepProjectIds(scope)) {
+    let paused: boolean;
+    try {
+      paused = isProjectPaused(projectId).paused;
+    } catch {
+      paused = true;
+    }
+    if (paused) held.push(projectId);
+  }
+  if (held.length > 0) {
+    logger.info(LOG_KINDS.AGENT_RUN, 'Stale-run sweep excluding projects whose write lease is held', {
+      excluded: held.length,
+      project_ids: held.join(','),
+    });
+  }
+  return held;
+}
+
+/**
  * Fan out canopy initial-populate across every registered project on
  * boot. Cold projects (no recent activity) defer to their next
  * SessionStart's delta scan so idle Groves don't pay a full-scan cost
@@ -980,7 +1027,8 @@ export async function main(): Promise<void> {
   // Boot-DB sweep only — the Grove fan-out for any other registered
   // Groves runs after `runtimeCache` is built (see "interrupt stale runs
   // across registered Groves" below).
-  const interruptedRuns = markRunningRunsInterrupted('Daemon restarted before the run completed', { kind: 'all' });
+  const bootSweepExclusions = leaseHeldProjectIdsForSweep({ kind: 'all' }, logger);
+  const interruptedRuns = markRunningRunsInterrupted('Daemon restarted before the run completed', { kind: 'all' }, bootSweepExclusions);
   if (interruptedRuns > 0) {
     logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
       count: interruptedRuns,
@@ -992,7 +1040,7 @@ export async function main(): Promise<void> {
   // upgrading onto this release can still hold stale resumable rows a
   // completed equivalent run already superseded. Safe on every boot — a
   // fully-swept vault matches zero rows.
-  const supersededRuns = sweepStaleSupersededRuns({ kind: 'all' });
+  const supersededRuns = sweepStaleSupersededRuns({ kind: 'all' }, bootSweepExclusions);
   if (supersededRuns > 0) {
     logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale resumable runs as superseded on boot', {
       count: supersededRuns,
@@ -2695,14 +2743,15 @@ export async function main(): Promise<void> {
         logger,
         ({ grove }) => {
           if (grove.id === dataPaths.requestContext.groveId) return;
-          const count = markStale('Daemon restarted before the run completed', { kind: 'all' });
+          const exclusions = leaseHeldProjectIdsForSweep({ kind: 'all' }, logger);
+          const count = markStale('Daemon restarted before the run completed', { kind: 'all' }, exclusions);
           if (count > 0) {
             logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
               count,
               grove_id: grove.id,
             });
           }
-          const supersededCount = sweepStale({ kind: 'all' });
+          const supersededCount = sweepStale({ kind: 'all' }, exclusions);
           if (supersededCount > 0) {
             logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale resumable runs as superseded on boot', {
               count: supersededCount,

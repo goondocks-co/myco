@@ -836,11 +836,55 @@ export function hasNewerCompletedEquivalentRun(
  * executor.ts). `COALESCE(F.started_at, 0)` only guards a pathological
  * NULL. Safe to run on every boot: a fully-swept vault matches zero rows.
  */
-export function sweepStaleSupersededRuns(scope: ProjectScope): number {
+/**
+ * Append a `project_id NOT IN (…)` guard for the boot sweeps' write
+ * admission. Project-less rows (`project_id IS NULL`) are never excluded —
+ * they are grove-level and no project lease governs them.
+ */
+function appendProjectExclusion(
+  conditions: string[],
+  params: unknown[],
+  excludeProjectIds: readonly string[],
+  qualifier = '',
+): void {
+  if (excludeProjectIds.length === 0) return;
+  const column = qualifier ? `${qualifier}.project_id` : 'project_id';
+  const placeholders = excludeProjectIds.map(() => '?').join(', ');
+  conditions.push(`(${column} IS NULL OR ${column} NOT IN (${placeholders}))`);
+  params.push(...excludeProjectIds);
+}
+
+/**
+ * Distinct project ids among the rows the boot stale-run sweeps would
+ * touch. The caller filters these through write admission and feeds the
+ * held ones back as `excludeProjectIds`.
+ *
+ * Read from the ROWS rather than from the Grove registry deliberately: a
+ * project mid-residency-transition is deregistered from every Grove while
+ * its lease is held (Write Admission §2 — the lease outlives
+ * deregistration), so a registry enumeration would miss precisely the
+ * project the sweeps must not write.
+ */
+export function listStaleSweepProjectIds(scope: ProjectScope): string[] {
+  const db = getDatabase();
+  const conditions = [`(status = ? OR (resumable = 1 AND status = ?))`, 'project_id IS NOT NULL'];
+  const params: unknown[] = [STATUS_RUNNING, STATUS_FAILED];
+  appendProjectCondition(conditions, params, scope);
+  const rows = db.prepare(
+    `SELECT DISTINCT project_id FROM agent_runs WHERE ${conditions.join(' AND ')}`,
+  ).all(...params) as { project_id: string }[];
+  return rows.map((row) => row.project_id);
+}
+
+export function sweepStaleSupersededRuns(
+  scope: ProjectScope,
+  excludeProjectIds: readonly string[] = [],
+): number {
   const db = getDatabase();
   const outerConditions: string[] = [];
   const outerParams: unknown[] = [];
   appendProjectCondition(outerConditions, outerParams, scope, 'F');
+  appendProjectExclusion(outerConditions, outerParams, excludeProjectIds, 'F');
   const outerScopeClause = outerConditions.length > 0 ? `AND ${outerConditions.join(' AND ')}` : '';
 
   const info = db.prepare(
@@ -861,15 +905,25 @@ export function sweepStaleSupersededRuns(scope: ProjectScope): number {
            AND C.dry_run = F.dry_run
            AND C.completed_at > COALESCE(F.started_at, 0)
        )`,
-  ).run(RESUME_STATUS_SUPERSEDED, STATUS_FAILED, STATUS_COMPLETED, ...outerParams);
+    // Bind order follows PLACEHOLDER order, not argument grouping: the
+    // outer scope/exclusion clause is spliced ahead of the EXISTS
+    // subquery, so its params must precede STATUS_COMPLETED. Latent until
+    // now only because the sole caller passed `{kind: 'all'}` with no
+    // exclusions, which renders both clauses empty.
+  ).run(RESUME_STATUS_SUPERSEDED, STATUS_FAILED, ...outerParams, STATUS_COMPLETED);
   return info.changes;
 }
 
-export function markRunningRunsInterrupted(message: string, scope: ProjectScope): number {
+export function markRunningRunsInterrupted(
+  message: string,
+  scope: ProjectScope,
+  excludeProjectIds: readonly string[] = [],
+): number {
   const db = getDatabase();
   const conditions = ['status = ?'];
   const params: unknown[] = [STATUS_RUNNING];
   appendProjectCondition(conditions, params, scope);
+  appendProjectExclusion(conditions, params, excludeProjectIds);
   const info = db.prepare(
     `UPDATE agent_runs
      SET status = ?,

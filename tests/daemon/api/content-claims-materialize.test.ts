@@ -36,6 +36,7 @@ import { assertGroveProjectId, createProjectId, projectScope, type GroveProjectI
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+import { acquireProjectLease } from '@myco/grove/project-lease.js';
 
 const noopProxyLogger = { warn(): void {}, error(): void {} };
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -288,6 +289,44 @@ describe('content claim materialize — local project', () => {
     const res = await handler()(req('cclaim_does_not_exist', projectRoot));
     expect(res.status).toBe(409);
     expect((res.body as { error: { code: string } }).error.code).toBe('claim_not_active');
+  });
+
+  // --- Project write admission -------------------------------------------
+  // This route resolves its project from the BODY (`project_root` →
+  // resolveMemberProjectContext), not from the request path, so
+  // requestContext.projectId does not identify it and the central
+  // per-project HTTP write gate never fires here. The consult sits in the
+  // handler, ahead of the local/attached branch.
+
+  test('a held project write lease -> 409 project_paused, nothing written', async () => {
+    const { claimId, name } = seed();
+    acquireProjectLease(projectId, 'residency-detach', 'leaving the team', mycoHome, testPerUserLockNamespace);
+
+    const res = await handler()(req(claimId, projectRoot));
+
+    expect(res.status).toBe(409);
+    const body = res.body as { error: { code: string }; paused: { owner_op: string } };
+    expect(body.error.code).toBe('project_paused');
+    expect(body.paused.owner_op).toBe('residency-detach');
+    expect(fs.existsSync(path.join(projectRoot, CANONICAL_PROJECT_SKILLS_DIR, name))).toBe(false);
+    // The claim is untouched — a refused materialize is not a consumed claim.
+    const db = cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
+    withDatabase(db, () => {
+      expect(getContentClaimById(claimId, projectScope(projectId as GroveProjectId))!.state).toBe('active');
+    });
+  });
+
+  test('an unreadable lease record -> 409, never treated as unheld', async () => {
+    const { claimId, name } = seed();
+    const leasePath = path.join(mycoHome, 'leases', `${projectId}.json`);
+    fs.mkdirSync(path.dirname(leasePath), { recursive: true });
+    fs.writeFileSync(leasePath, '{ torn', 'utf-8');
+
+    const res = await handler()(req(claimId, projectRoot));
+
+    expect(res.status).toBe(409);
+    expect((res.body as { error: { code: string } }).error.code).toBe('project_paused');
+    expect(fs.existsSync(path.join(projectRoot, CANONICAL_PROJECT_SKILLS_DIR, name))).toBe(false);
   });
 
   test('current project root does not match the registered root -> loud root_mismatch, nothing written', async () => {

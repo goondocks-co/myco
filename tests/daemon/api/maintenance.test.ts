@@ -19,6 +19,7 @@ import type { RouteRequest } from '@myco/daemon/router.js';
 import { withDatabase } from '@myco/db/client.js';
 import { upsertReleaseState } from '@myco/db/queries/release-provenance.js';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+import { acquireProjectLease } from '@myco/grove/project-lease.js';
 
 function makeLogger(workDir: string): DaemonLogger {
   return new DaemonLogger(path.join(workDir, 'logs'), { level: 'error' });
@@ -380,6 +381,78 @@ describe('maintenance API', () => {
       const body = response.body as { grove: { id: string }; project_count: number };
       expect(body.grove.id).toBe(grove.id);
       expect(body.project_count).toBe(1);
+      cache.closeAll();
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // handleReleaseProvenanceReconcile — project write admission
+  //
+  // This route carries no project in its path, so the central per-project
+  // HTTP write gate never fires; `reconcileReleaseProvenance` upserts
+  // project-scoped `knowledge_release_state` rows for every project in
+  // every Grove. The consult therefore lives in the per-project loop.
+  // ---------------------------------------------------------------------
+
+  describe('handleReleaseProvenanceReconcile — write admission', () => {
+    const HELD = 'proj_11111111111111111111111111111111';
+    const FREE = 'proj_22222222222222222222222222222222';
+
+    interface ReconcileRow { project_id: string; error?: string }
+    function rows(body: unknown): ReconcileRow[] {
+      return (body as { results: ReconcileRow[] }).results;
+    }
+    function visitedProjectIds(body: unknown): string[] {
+      // A skipped project still appears, carrying an error explaining why —
+      // a 200 that silently omitted it would read as "reconciled".
+      return rows(body).filter((r) => !r.error?.startsWith('skipped:')).map((r) => r.project_id);
+    }
+    function skippedProjectIds(body: unknown): string[] {
+      return rows(body).filter((r) => r.error?.startsWith('skipped:')).map((r) => r.project_id);
+    }
+
+    it('visits every project when no lease is held (the gate is not always-on)', async () => {
+      const grove = createGroveWithDb('Alpha');
+      registerProject(grove, HELD, 'held');
+      registerProject(grove, FREE, 'free');
+      const { cache, handlers } = makeHandlers();
+
+      const response = await handlers.handleReleaseProvenanceReconcile(emptyRequest({}));
+
+      expect(visitedProjectIds(response.body).sort()).toEqual([HELD, FREE].sort());
+      expect(skippedProjectIds(response.body)).toEqual([]);
+      cache.closeAll();
+    });
+
+    it('skips a project whose write lease is held, and visits the others', async () => {
+      const grove = createGroveWithDb('Alpha');
+      registerProject(grove, HELD, 'held');
+      registerProject(grove, FREE, 'free');
+      acquireProjectLease(HELD, 'residency-detach', 'leaving the team', mycoHome, testPerUserLockNamespace);
+      const { cache, handlers } = makeHandlers();
+
+      const response = await handlers.handleReleaseProvenanceReconcile(emptyRequest({}));
+
+      expect(visitedProjectIds(response.body)).toEqual([FREE]);
+      // Reported, not silently dropped.
+      expect(skippedProjectIds(response.body)).toEqual([HELD]);
+      expect(rows(response.body).find((r) => r.project_id === HELD)!.error).toContain('being moved');
+      cache.closeAll();
+    });
+
+    it('skips on an unreadable lease record — a torn read is never "unheld"', async () => {
+      const grove = createGroveWithDb('Alpha');
+      registerProject(grove, HELD, 'held');
+      registerProject(grove, FREE, 'free');
+      const leasePath = path.join(mycoHome, 'leases', `${HELD}.json`);
+      fs.mkdirSync(path.dirname(leasePath), { recursive: true });
+      fs.writeFileSync(leasePath, '{ torn', 'utf-8');
+      const { cache, handlers } = makeHandlers();
+
+      const response = await handlers.handleReleaseProvenanceReconcile(emptyRequest({}));
+
+      expect(visitedProjectIds(response.body)).toEqual([FREE]);
+      expect(skippedProjectIds(response.body)).toEqual([HELD]);
       cache.closeAll();
     });
   });
