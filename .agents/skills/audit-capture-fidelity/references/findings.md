@@ -24,7 +24,9 @@ The discriminating observation is the part that matters. Candidates usually look
 
 ## `batch-missing-response`
 
-**Means** — a non-active batch whose `response_summary` is empty. The user's prompt was captured; the assistant's reply was not.
+**Means** — a non-active, **human-origin** batch whose `response_summary` is empty. A person typed a prompt and the assistant's reply was never attached.
+
+Non-human origins are excluded deliberately. A runtime-injected envelope does not form a conversational turn, so it usually carries no response — around three quarters of system-origin batches have none, against roughly seven percent of human ones. Counting them together buries the real signal under by-design behavior that grows with every injected notification, which is how an unscoped version of this check reported ~2,380 rows where 491 were real.
 
 **Candidates**
 1. The Stop hook never fired (the fragile point — see `stop-hook-fragility`).
@@ -32,7 +34,9 @@ The discriminating observation is the part that matters. Candidates usually look
 3. Transcript mining never ran for the session, or ran before the reply was flushed.
 4. The agent genuinely produced no response (interrupted turn).
 
-**Discriminate** — check `sessions.final_mine_ok` for the owning session, then look for the session's buffer file. `final_mine_ok = 0` points at (3). A buffer file still on disk points at (2). Neither, with the hook installed, points at (1). Cross-check one transcript by hand: if the reply is absent from the transcript too, it is (4) and not a defect.
+**Discriminate** — check the origin split first; if the count is dominated by non-human origins the check is miscounting rather than capture failing. Then check `sessions.final_mine_ok` for the owning session and look for the session's buffer file. `final_mine_ok = 0` points at (3). A buffer file still on disk points at (2). Neither, with the hook installed, points at (1). Cross-check one transcript by hand: if the reply is absent from the transcript too, it is (4) and not a defect.
+
+Position also discriminates: a batch that is the last in its session lost its reply to an interrupted or unclosed turn, while a mid-session batch did not.
 
 **Fix** — (1) repair hook wiring; (2) buffer convergence; (3) re-mine the session; (4) nothing.
 
