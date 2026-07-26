@@ -41,6 +41,7 @@ import {
   groveOwnedByThisDaemon,
   loadGroveRecord,
 } from '@myco/grove/registry.js';
+import { readProjectLease } from '@myco/grove/project-lease.js';
 import {
   resolveGroveDbPath,
   resolveMycoHome,
@@ -85,6 +86,27 @@ function readPivotField(value: unknown, name: string): string | undefined {
 }
 
 /**
+ * Refuse a pivot into a project whose write lease is held. A pivot
+ * re-targets subsequent reads and writes at a project a long-running
+ * operation (grove move, residency transition) may be actively moving —
+ * its rows are mid-flight on both sides of the transfer, so neither
+ * direction is safe until the operation completes. An unreadable lease
+ * record refuses for the same reason an absent one admits: a failed read
+ * is not evidence of an unheld lease.
+ */
+function refuseLeasedProjectPivot(projectId: GroveProjectId, mycoHome: string): void {
+  const lease = readProjectLease(projectId, mycoHome);
+  if (lease.state === 'absent') return;
+  const holder = lease.state === 'present'
+    ? `${lease.value.owner_op} (${lease.value.reason})`
+    : 'an unreadable lease record';
+  throw new ToolError(
+    'project_lease_held',
+    `Project ${projectId} is mid-operation — held by ${holder}. Retry after the operation completes.`,
+  );
+}
+
+/**
  * Compute the effective context for a single tool call.
  *
  * `mycoHome` is injected for testability; production callers omit it
@@ -118,9 +140,11 @@ export function resolveCallContext(
       // passes through to the handler unchanged.
       return baseContext;
     }
+    const target = assertGroveProjectId(projectId);
+    refuseLeasedProjectPivot(target, options.mycoHome ?? resolveMycoHome());
     return {
       ...baseContext,
-      projectId: assertGroveProjectId(projectId),
+      projectId: target,
       source: 'explicit',
     };
   }
@@ -160,14 +184,19 @@ export function resolveCallContext(
       throw new ToolError('invalid_input', `Project ${projectId} is not registered in Grove ${grove.id}`);
     }
     resolvedProjectId = assertGroveProjectId(projectId);
+    refuseLeasedProjectPivot(resolvedProjectId, mycoHome);
     resolvedProjectRoot = path.resolve(registered.project.root);
   } else {
     // grove_id only: keep the base context's project id (the agent is
     // saying "look at the same project but in a different Grove DB").
     // If that project isn't registered in the target Grove, we still
     // pivot the database — row-scope filters will simply return zero
-    // matches, which is the honest answer.
+    // matches, which is the honest answer. The retained project still
+    // gets the lease consult: a grove move mid-push has this project's
+    // rows in flight into exactly the kind of target DB this pivot
+    // re-aims at.
     resolvedProjectId = requireProjectId(baseContext, 'caller tenancy');
+    refuseLeasedProjectPivot(resolvedProjectId, mycoHome);
     resolvedProjectRoot = baseContext.projectRoot;
   }
 
