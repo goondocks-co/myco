@@ -191,7 +191,7 @@ import { PowerManager } from './power.js';
 import { JobRunner } from './job-runner.js';
 import { EventLoopLagProbe } from './event-loop-lag.js';
 import { InflightRunRegistry } from './inflight-runs.js';
-import { registerPowerJobs } from './power-jobs.js';
+import { registerPowerJobs, makeAgentLivenessSource } from './power-jobs.js';
 import { startSelfReconcileLoop } from './self-reconcile-wiring.js';
 import { createDaemonStateAuthority } from './daemon-state-authority.js';
 import {
@@ -222,7 +222,12 @@ import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
-import { type GroveProjectId, type ProjectScope } from '../grove/ids.js';
+import {
+  type GroveProjectId,
+  type ProjectScope,
+  isGroveEraId,
+  assertGroveProjectId,
+} from '../grove/ids.js';
 import { rowProjectIdFromRequestContext, requireProjectId, type MycoRequestContext } from '../grove/request-context.js';
 import {
   daemonStateMtimeMs,
@@ -1339,6 +1344,9 @@ export async function main(): Promise<void> {
       : runtimeCache.getDatabase(databasePath),
     logger,
     mycoHome,
+    onRequest: (requestClass) => {
+      if (requestClass === 'interaction') powerManager.wake();
+    },
   });
 
   // Team Host: the MEMBER-side transcript-content drain (capture-push C1). Ships
@@ -1405,10 +1413,32 @@ export async function main(): Promise<void> {
     runtimeCache,
     hostServe,
     hostProxyDeps: captureProxyDeps,
-    // Don't record activity on every HTTP request — UI polling (every 3-10s)
-    // would prevent the PowerManager from ever reaching 'idle' state, blocking
-    // all idle-only scheduled tasks (skill-survey, skill-generate, skill-evolve).
-    // Activity is recorded on meaningful events below (session register, prompt capture, etc.).
+    // The daemon's single wake edge. This was deliberately left unwired, on
+    // the reasoning that recording activity for every HTTP request would let
+    // UI polling hold the PowerManager out of 'idle' and starve the idle-only
+    // scheduled tasks. That diagnosis was correct; the conclusion — record
+    // activity on prompts instead — is what let the daemon deep-sleep through
+    // hours of agent tool calls, because a prompt is the rarest signal in the
+    // system.
+    //
+    // Both halves are addressed now. Clients declare whether a request means
+    // someone is actually doing something (`RequestClass`), so idle polling
+    // and liveness probes no longer count. And waking only advances the
+    // activity clock: natural decay still carries the daemon through 'idle'
+    // and 'sleep' during lulls, so the idle-only tasks keep their windows.
+    // What the liveness assertion prevents is the full stop of deep sleep,
+    // nothing shallower.
+    onRequest: (requestClass) => {
+      if (requestClass === 'interaction') powerManager.wake();
+    },
+    // Per-project liveness. Same class gate as the global edge, applied once
+    // the request's owning Grove and project are known.
+    onRequestContext: (requestContext, requestClass) => {
+      if (requestClass !== 'interaction') return;
+      const { groveId, projectId } = requestContext;
+      if (!groveId || !projectId || !isGroveEraId(projectId, 'project')) return;
+      projectStateTracker.recordActivity(groveId, assertGroveProjectId(projectId));
+    },
   });
 
   // The daemon serves the dashboard UI and must stay running regardless of
@@ -1543,7 +1573,7 @@ export async function main(): Promise<void> {
   // runner becomes visible to SessionStart triggers.
   const sessionLifecycleDeps = {
     registry, sessionBuffers, reconciler, stopProcessor, transcriptMiner,
-    server, powerManager, machineId, logger, liveConfig, vaultDir: bootstrapVaultDir,
+    server, machineId, logger, liveConfig, vaultDir: bootstrapVaultDir,
     projectStateTracker,
   };
   const sessionLifecycle = createSessionLifecycleHandlers(sessionLifecycleDeps);
@@ -1563,7 +1593,6 @@ export async function main(): Promise<void> {
   const eventDispatcher = createEventDispatcher({
     registry,
     sessionBuffers,
-    powerManager,
     logger,
     machineId,
     liveConfig,
@@ -1963,6 +1992,32 @@ export async function main(): Promise<void> {
 
   server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req, logger));
   server.registerRoute('GET', '/api/git/status', handleGetGitStatus);
+  // Power inventory: current state, what is holding it there, and the last
+  // transition. Answers "why didn't my daemon sleep" and "why did it sleep
+  // while I was working" without reading logs out of the anchor DB.
+  server.registerRoute('GET', '/api/power', async () => {
+    const report = powerManager.report();
+    return {
+      body: {
+        state: report.state,
+        idle_ms: report.idleMs,
+        last_transition: report.lastTransition && {
+          from: report.lastTransition.from,
+          to: report.lastTransition.to,
+          at: new Date(report.lastTransition.atMs).toISOString(),
+          idle_ms: report.lastTransition.idleMs,
+        },
+        assertions: report.assertions.map((a) => ({
+          source: a.source,
+          name: a.name,
+          max_depth: a.maxDepth,
+          min_depth: a.minDepth ?? null,
+          reason: a.reason ?? null,
+          expires_at: a.expiresAt ? new Date(a.expiresAt).toISOString() : null,
+        })),
+      },
+    };
+  });
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir: bootstrapVaultDir, progressTracker }, req.body));
 
   // Intent surface: read + write the per-section intent files behind
@@ -2591,6 +2646,19 @@ export async function main(): Promise<void> {
       await transcriptDrain.drainAll();
     },
   });
+
+  // Agent liveness. Registered as a PowerManager assertion rather than a job
+  // hold because it answers a different question than every `hold.pending`
+  // below: those ask "is there queued work to flush", this asks "is an agent
+  // mid-turn". Capture writes are synchronous, so an agent running tool calls
+  // for hours produces no queue depth and every hold correctly reports zero —
+  // which is precisely how the daemon used to deep-sleep through active work.
+  powerManager.registerAssertionSource(makeAgentLivenessSource({
+    cache: runtimeCache,
+    logger,
+    daemonStateDir: daemonService.stateDir,
+    mycoHome,
+  }));
 
   // Team Host plan-content companion-push backstop (capture-push §5.5, C7). The
   // sibling of the transcript drain for whole-file plan content: the throttled

@@ -103,7 +103,26 @@ export interface DaemonServerConfig {
   daemonStateAuthority?: DaemonStateAuthority;
   uiDir?: string;
   uiDevProxyTarget?: string;
-  onRequest?: () => void;
+  /**
+   * Fired once per served request with the request's declared class. This is
+   * the daemon's single wake edge: deep sleep stops the tick timer, so no
+   * pull-based assertion source can revive it and something has to push.
+   *
+   * Left unwired for a long time on the reasoning that "UI polling every
+   * 3-10s would prevent the PowerManager from ever reaching 'idle'". That
+   * diagnosis was right and the conclusion too broad — the fix is for clients
+   * to declare whether a request represents someone actually doing something,
+   * not for the daemon to ignore requests entirely. See {@link RequestClass}.
+   */
+  onRequest?: (requestClass: RequestClass) => void;
+  /**
+   * Fired once per routed request, after the owning Grove and project have
+   * been resolved. The per-project power state needs the tenancy that
+   * {@link onRequest} cannot see, and this is the single site where it is
+   * known — so per-project liveness stays one hook rather than one call per
+   * route.
+   */
+  onRequestContext?: (requestContext: MycoRequestContext, requestClass: RequestClass) => void;
   /**
    * Shared bounded LRU for per-Grove DB handles + embedding runtime.
    * If omitted, the server creates a private cache; pass an externally
@@ -137,6 +156,75 @@ export type RawRouteHandler = (
 type ShutdownRequestContinuation = () => void | Promise<void>;
 type ShutdownRequestHandler = () => Promise<ShutdownRequestContinuation>;
 
+/**
+ * What a request represents, for power purposes.
+ *
+ * - `interaction` — a human or an agent is doing something. Advances the
+ *   activity clock and wakes a deep-sleeping daemon.
+ * - `probe` — a liveness or readiness check: "are you alive?", "can you serve
+ *   yet?". Evidence that the daemon is up, never evidence of work. The
+ *   Kubernetes distinction, and the reason a resident MCP bridge polling
+ *   `/health` every 5s cannot pin the machine awake.
+ * - `passive` — a client that is present but idle, e.g. a dashboard tab left
+ *   open on a desk. Served normally; asserts nothing.
+ *
+ * Only `interaction` touches the power state. `probe` and `passive` differ
+ * solely in how they are reported.
+ */
+export type RequestClass = 'interaction' | 'probe' | 'passive';
+
+/** Header by which a client declares its own activity state. */
+const CLIENT_ACTIVITY_HEADER = 'x-myco-client-activity';
+
+/**
+ * Endpoints whose entire contract is "am I alive / am I ready / how am I
+ * doing". A request here can never mean work, whatever the caller forgot to
+ * declare.
+ *
+ * `/api/power` belongs here for a sharper reason than the other two: it
+ * REPORTS the activity clock, so classifying it as interaction made reading
+ * the power state reset the value being read — every sample returned
+ * `idle_ms: 0`. A monitoring client polling it would also have pinned the
+ * daemon awake indefinitely, which is precisely the failure this whole
+ * mechanism exists to prevent. Found by live smoke; the unit gates missed it
+ * because they exercise the classifier directly and never observe the
+ * endpoint's effect on the thing it measures.
+ */
+const PROBE_PATHS: ReadonlySet<string> = new Set(['/health', '/ready', '/api/power']);
+
+/**
+ * Resolve a request's class from what the client declared.
+ *
+ * Fail-open: an unclassified request counts as `interaction`. The two error
+ * directions are not symmetric — a stray poller treated as interaction keeps
+ * the daemon awake, which is visible in the power inventory as a named holder,
+ * whereas a real client treated as passive loses liveness silently. Silent
+ * loss is the failure this mechanism exists to remove.
+ *
+ * `/health` and `/ready` are unconditionally probes. That is not a route
+ * exemption smuggled back in: liveness and readiness are those endpoints'
+ * entire contract, they can never signify work, and the backstop means a
+ * client that forgets to stamp its keep-alive still degrades to correct
+ * behaviour.
+ *
+ * Pure and exported so the classification contract can be tested directly,
+ * without standing up an HTTP server.
+ */
+export function classifyRequest(
+  headers: http.IncomingHttpHeaders,
+  pathname: string,
+): RequestClass {
+  if (PROBE_PATHS.has(pathname)) return 'probe';
+  const declared = headers[CLIENT_ACTIVITY_HEADER];
+  const value = Array.isArray(declared) ? declared[0] : declared;
+  if (value === undefined) return 'interaction';
+  if (value === 'probe') return 'probe';
+  // The UI reports its own PowerProvider state. Only `active` means a human is
+  // actually touching the page; idle/hidden/deep_sleep is a tab left open,
+  // which must not hold the machine awake.
+  return value === 'active' ? 'interaction' : 'passive';
+}
+
 export class DaemonServer {
   port = 0;
   readonly version: string;
@@ -167,7 +255,8 @@ export class DaemonServer {
   private logger: DaemonLogger;
   private router = new Router();
   private rawRoutes = new Map<string, RawRouteHandler>();
-  private onRequest: (() => void) | null;
+  private onRequest: ((requestClass: RequestClass) => void) | null;
+  private onRequestContext: ((requestContext: MycoRequestContext, requestClass: RequestClass) => void) | null;
   /**
    * Cooperative-shutdown trigger. Wired late (after the graceful-shutdown
    * closure is built in main.ts) via {@link onShutdownRequest}; a POST to
@@ -212,6 +301,7 @@ export class DaemonServer {
     this.uiDir = config.uiDir ?? null;
     this.uiDevProxyTarget = config.uiDevProxyTarget ?? null;
     this.onRequest = config.onRequest ?? null;
+    this.onRequestContext = config.onRequestContext ?? null;
     this.runtimeCache = config.runtimeCache ?? new GroveRuntimeCache();
     this.ownsRuntimeCache = config.runtimeCache === undefined;
     this.hostServe = config.hostServe ?? null;
@@ -679,7 +769,7 @@ export class DaemonServer {
         res.end(JSON.stringify({ error: rejection.error }));
         return;
       }
-      this.onRequest?.();
+      this.onRequest?.(classifyRequest(req.headers, pathname));
       try {
         await rawHandler(req, res);
       } catch (error) {
@@ -716,7 +806,7 @@ export class DaemonServer {
         return;
       }
 
-      this.onRequest?.();
+      this.onRequest?.(classifyRequest(req.headers, pathname));
       const versionHeader = { 'X-Myco-Api-Version': this.version };
       try {
         // Team Host HOST-side overlay backstop: a request that arrived on this
@@ -872,6 +962,13 @@ export class DaemonServer {
             res.end(JSON.stringify(response.body));
             return;
           }
+        }
+        // Per-project counterpart of the global wake edge. The `onRequest`
+        // seam fires before routing and so is context-free; this is the one
+        // place the owning Grove and project are resolved, which is why the
+        // per-project signal does not need touching at every call site.
+        if (this.onRequestContext) {
+          this.onRequestContext(requestContext, classifyRequest(req.headers, pathname));
         }
         const invokeHandler = () => match.handler({
           body,

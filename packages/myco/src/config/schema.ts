@@ -29,7 +29,7 @@ const EmbeddingProviderBaseSchema = z.object({
    * Recommended for projects with large embedding backlogs so the queue keeps
    * draining when the machine sits idle long enough to deep-sleep.
    */
-  run_in_deep_sleep: z.boolean().default(true),
+  prevent_deep_sleep: z.boolean().default(true),
 });
 const EmbeddingProviderSchema = EmbeddingProviderBaseSchema;
 
@@ -657,8 +657,8 @@ const GroveDaemonSchema = z.object({
 });
 const GroveEmbeddingSchema = z.object({
   /** Keep the embedding-reconcile loop running while the Grove sleeps. */
-  run_in_deep_sleep: z.boolean().default(true),
-  ...EmbeddingProviderBaseSchema.omit({ run_in_deep_sleep: true }).shape,
+  prevent_deep_sleep: z.boolean().default(true),
+  ...EmbeddingProviderBaseSchema.omit({ prevent_deep_sleep: true }).shape,
 });
 const GroveAgentSchema = rejectLegacyRuntimeKey(z.object({
   /**
@@ -783,7 +783,7 @@ export const GROVE_TIER_FIELDS: ReadonlyArray<readonly string[]> = [
   ['daemon', 'stale_session_threshold_ms'],
   ['backup'],
   ['maintenance'],
-  ['embedding', 'run_in_deep_sleep'],
+  ['embedding', 'prevent_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
   ['agent', 'run_retention_days'],
   ['appearance'],
@@ -804,7 +804,7 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['maintenance'],
   ['update'],
   ['team'],
-  ['embedding', 'run_in_deep_sleep'],
+  ['embedding', 'prevent_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
   ['agent', 'run_retention_days'],
   ['appearance'],

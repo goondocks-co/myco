@@ -46,7 +46,7 @@ const groveConfig: Record<string, unknown> = {
     auto_integrity_check_interval_hours: 168,
   },
   backup: { dir: '', auto_interval_hours: 24, retention: { keep_daily: 7, keep_weekly: 4 } },
-  embedding: { run_in_deep_sleep: false },
+  embedding: { prevent_deep_sleep: false },
   release_provenance: { reconcile_interval_minutes: 15 },
 };
 

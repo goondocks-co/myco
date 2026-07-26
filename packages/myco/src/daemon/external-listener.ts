@@ -66,7 +66,7 @@ import { readSecrets } from '../config/secrets.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../constants.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
-import { applyDaemonHttpServerLimits, DAEMON_HTTP_LISTEN_BACKLOG, gracefullyCloseHttpServer } from './server.js';
+import { applyDaemonHttpServerLimits, DAEMON_HTTP_LISTEN_BACKLOG, gracefullyCloseHttpServer, classifyRequest, type RequestClass } from './server.js';
 import type { Logger } from './logger.js';
 import type { FunnelOffRunner } from './external-mcp-containment.js';
 
@@ -104,6 +104,14 @@ export interface ExternalMcpListenerDeps {
    *  `new DaemonClient(vaultDir)`, exactly matching the loopback `/mcp`
    *  handler's default (`mcp/http.ts`). Tests inject a stub. */
   client?: DaemonClient;
+  /**
+   * Fired once per authenticated request with its class, so external MCP
+   * traffic counts as liveness. This listener runs its own `http.Server` and
+   * never passes through `DaemonServer.handleRequest`, so it needs its own
+   * edge; without one, an external agent's entire working day is invisible to
+   * the power state.
+   */
+  onRequest?: (requestClass: RequestClass) => void;
 }
 
 /**
@@ -266,6 +274,17 @@ export class ExternalMcpListener {
     // docstring; fail closed rather than dispatch. Checked BEFORE tenancy
     // resolution — the served Grove id is the default this listener derives
     // tenancy from, so there is nothing to resolve without it.
+    // Wake edge for the external MCP surface, which stands up its own HTTP
+    // server and so never reaches `DaemonServer`'s seam. An external agent
+    // working all day through this surface would otherwise generate no
+    // liveness signal at all — the same class of gap this whole mechanism
+    // exists to close.
+    //
+    // Deliberately AFTER the token gate: this listener is reachable from the
+    // public Funnel URL, and waking the daemon on unauthenticated traffic
+    // would hand any internet scanner a way to hold the machine awake.
+    this.deps.onRequest?.(classifyRequest(req.headers, pathname));
+
     const hostServe = this.deps.hostServe;
     if (!hostServe?.servedGroveId) {
       writeJson(res, 503, { error: 'host_serve_unavailable' });

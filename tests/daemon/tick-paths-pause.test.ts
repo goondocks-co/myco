@@ -136,7 +136,7 @@ function buildDeps(fx: Fixture, configOverrides: Record<string, unknown> = {}): 
           exclude: { default_patterns: [], patterns: [] },
         },
       },
-      embedding: { run_in_deep_sleep: true },
+      embedding: { prevent_deep_sleep: true },
       ...configOverrides,
     },
   };

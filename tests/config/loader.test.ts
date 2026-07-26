@@ -260,7 +260,7 @@ okf:
     saveConfig(tmpDir, config);
 
     const written = fs.readFileSync(path.join(tmpDir, 'myco.yaml'), 'utf-8');
-    expect(written).not.toContain('run_in_deep_sleep');
+    expect(written).not.toContain('prevent_deep_sleep');
     expect(written).not.toContain('scheduled_tasks_active_window_days');
   });
 });

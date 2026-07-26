@@ -80,7 +80,7 @@ describe('GroveEmbeddingSchema', () => {
   test('accepts provider configuration fields', () => {
     const parsed = GroveConfigSchema.parse({
       embedding: {
-        run_in_deep_sleep: false,
+        prevent_deep_sleep: false,
         provider: 'ollama',
         model: 'nomic-embed-text',
         base_url: 'http://localhost:11434',
@@ -89,12 +89,12 @@ describe('GroveEmbeddingSchema', () => {
     expect(parsed.embedding.provider).toBe('ollama');
     expect(parsed.embedding.model).toBe('nomic-embed-text');
     expect(parsed.embedding.base_url).toBe('http://localhost:11434');
-    expect(parsed.embedding.run_in_deep_sleep).toBe(false);
+    expect(parsed.embedding.prevent_deep_sleep).toBe(false);
   });
 
-  test('defaults preserve existing run_in_deep_sleep default', () => {
+  test('defaults preserve existing prevent_deep_sleep default', () => {
     const parsed = GroveConfigSchema.parse({});
-    expect(parsed.embedding.run_in_deep_sleep).toBe(true);
+    expect(parsed.embedding.prevent_deep_sleep).toBe(true);
   });
 
   test('rejects malformed base_url', () => {
@@ -241,7 +241,7 @@ describe('PROJECT_TIER_LEGACY_FIELDS', () => {
     expect(stringified).toContain('maintenance');
     expect(stringified).toContain('update');
     expect(stringified).toContain('team');
-    expect(stringified).toContain('embedding.run_in_deep_sleep');
+    expect(stringified).toContain('embedding.prevent_deep_sleep');
     expect(stringified).toContain('agent.scheduled_tasks_active_window_days');
     expect(stringified).toContain('appearance');
   });

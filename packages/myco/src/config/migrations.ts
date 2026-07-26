@@ -516,6 +516,29 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 11,
+    name: 'rename-embedding-run-in-deep-sleep-to-prevent-deep-sleep',
+    // Pure rename. The old name promised execution in deep sleep, which the
+    // daemon has never done — no power job and no scheduled task declares
+    // `deep_sleep` in `runIn`. What the flag actually does is hold the daemon
+    // OUT of deep sleep while embedding work is queued, so the queue keeps
+    // draining at the sleep tick. Renamed so the config surface states the
+    // mechanism instead of contradicting it.
+    //
+    // Key-relocation, not a seeder: fires only when the old key is present,
+    // so it never expands a sparse local.yaml. Applies at both the project
+    // and Grove tier, which each carry their own `embedding` block.
+    migrate(doc: Record<string, unknown>): void {
+      const embedding = doc.embedding as Record<string, unknown> | undefined;
+      if (!embedding) return;
+      if (!('run_in_deep_sleep' in embedding)) return;
+      if (!('prevent_deep_sleep' in embedding)) {
+        embedding.prevent_deep_sleep = embedding.run_in_deep_sleep;
+      }
+      delete embedding.run_in_deep_sleep;
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */

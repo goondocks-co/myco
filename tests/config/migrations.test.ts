@@ -219,8 +219,8 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
 });
 
 describe('CURRENT_MIGRATION_VERSION', () => {
-  it('is 10', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(10);
+  it('is 11', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(11);
   });
 });
 
@@ -321,14 +321,14 @@ describe('Migration v5: seed-settings-notification-domain-default', () => {
 });
 
 describe('runMigrations', () => {
-  it('runs v3 through v10 when config_version is 2', () => {
+  it('runs v3 through v11 when config_version is 2', () => {
     const doc: Record<string, unknown> = {
       config_version: 2,
       agent: { auto_run: true, interval_seconds: 300 },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(10);
+    expect(doc.config_version).toBe(11);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
@@ -343,19 +343,19 @@ describe('runMigrations', () => {
     });
   });
 
-  it('runs v4 onward when config_version is 3 (target v10)', () => {
+  it('runs v4 onward when config_version is 3 (target v11)', () => {
     const doc: Record<string, unknown> = {
       config_version: 3,
       agent: { provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(10);
+    expect(doc.config_version).toBe(11);
     const agent = doc.agent as Record<string, unknown>;
     expect((agent.provider as Record<string, unknown>).type).toBe('anthropic');
   });
 
-  it('runs v5 onward when config_version is 4 (target v10)', () => {
+  it('runs v5 onward when config_version is 4 (target v11)', () => {
     const doc: Record<string, unknown> = {
       config_version: 4,
       notifications: {
@@ -364,7 +364,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(10);
+    expect(doc.config_version).toBe(11);
 
     const notifications = doc.notifications as Record<string, unknown>;
     const domains = notifications.domains as Record<string, Record<string, unknown>>;
@@ -374,48 +374,48 @@ describe('runMigrations', () => {
     });
   });
 
-  it('runs v6 through v10 when config_version is 5', () => {
+  it('runs v6 through v11 when config_version is 5', () => {
     const doc: Record<string, unknown> = {
       config_version: 5,
       agent: { tasks: { 'full-intelligence': { model: 'claude-sonnet-4-6' } } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(10);
+    expect(doc.config_version).toBe(11);
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     expect(tasks['full-intelligence']).toBeUndefined();
     expect(tasks['vault-evolve']).toEqual({ model: 'claude-sonnet-4-6' });
   });
 
-  it('runs v7 through v10 when config_version is 6', () => {
+  it('runs v7 through v11 when config_version is 6', () => {
     const doc: Record<string, unknown> = {
       config_version: 6,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(10);
+    expect(doc.config_version).toBe(11);
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBe(true);
     expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
   });
 
-  it('runs v9 and v10 when config_version is 8', () => {
+  it('runs v9 through v11 when config_version is 8', () => {
     const doc: Record<string, unknown> = {
       config_version: 8,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(10);
+    expect(doc.config_version).toBe(11);
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBe(true);
     expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
   });
 
-  it('skips all migrations when config_version is already 10', () => {
+  it('skips all migrations when config_version is already 11', () => {
     const doc: Record<string, unknown> = {
-      config_version: 10,
+      config_version: 11,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
@@ -466,7 +466,7 @@ describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => 
   it('is a no-op when canopy.exclude is missing', () => {
     const doc: Record<string, unknown> = { config_version: 6 };
     expect(() => runMigrations(doc, '/tmp')).not.toThrow();
-    expect(doc.config_version).toBe(10);
+    expect(doc.config_version).toBe(11);
   });
 });
 
@@ -694,5 +694,42 @@ describe('runMigrations on local.yaml: appliesToLocal flag', () => {
     const cortex = doc.cortex as Record<string, Record<string, unknown>>;
     expect(cortex.instructions).toEqual({ inject_on_session_start: false });
     expect(cortex.spores).toEqual({ max_per_prompt: 1 });
+  });
+});
+
+describe('v11 — embedding.run_in_deep_sleep → prevent_deep_sleep', () => {
+  it('carries the old value over and drops the old key', () => {
+    const doc: Record<string, unknown> = {
+      embedding: { provider: 'ollama', run_in_deep_sleep: false },
+    };
+    runMigrations(doc, '/tmp', undefined, 'project');
+    const embedding = doc.embedding as Record<string, unknown>;
+    expect(embedding.prevent_deep_sleep).toBe(false);
+    expect('run_in_deep_sleep' in embedding).toBe(false);
+    expect(embedding.provider).toBe('ollama');
+  });
+
+  it('does not invent the key on a doc that never had it', () => {
+    // Key-relocation, not a seeder: a sparse local.yaml must stay sparse.
+    const doc: Record<string, unknown> = { embedding: { provider: 'ollama' } };
+    runMigrations(doc, '/tmp', undefined, 'local');
+    const embedding = doc.embedding as Record<string, unknown>;
+    expect('prevent_deep_sleep' in embedding).toBe(false);
+  });
+
+  it('leaves an already-migrated doc alone', () => {
+    const doc: Record<string, unknown> = {
+      embedding: { prevent_deep_sleep: true, run_in_deep_sleep: false },
+    };
+    runMigrations(doc, '/tmp', undefined, 'project');
+    const embedding = doc.embedding as Record<string, unknown>;
+    expect(embedding.prevent_deep_sleep).toBe(true);
+    expect('run_in_deep_sleep' in embedding).toBe(false);
+  });
+
+  it('is a no-op when there is no embedding block at all', () => {
+    const doc: Record<string, unknown> = { cortex: {} };
+    expect(() => runMigrations(doc, '/tmp', undefined, 'project')).not.toThrow();
+    expect(doc.embedding).toBeUndefined();
   });
 });

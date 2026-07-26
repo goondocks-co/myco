@@ -9,8 +9,8 @@ function runV10(doc: Record<string, unknown>) {
 }
 
 describe('v10 seed canopy.enabled from inject_on_pre_tool_use', () => {
-  it('bumps CURRENT_MIGRATION_VERSION to 10', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(10);
+  it('bumps CURRENT_MIGRATION_VERSION to 11', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(11);
   });
   it('seeds enabled=false when inject_on_pre_tool_use is false and enabled absent', () => {
     const doc = runV10({ cortex: { canopy: { inject_on_pre_tool_use: false } } });

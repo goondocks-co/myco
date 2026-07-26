@@ -14,6 +14,16 @@ export interface ProjectActivitySeedRow {
  * Used as the single source of truth for the project-recency signal —
  * `isProjectActive`, the projects-activity API, and the project-power-state
  * seed all derive their gates from this primitive.
+ *
+ * `activities` is in the union deliberately. Without it, a restart during a
+ * long agentic turn seeds from the last *prompt*, which can be hours stale,
+ * and collapses a demonstrably live project straight to `deep_sleep`.
+ *
+ * The project is taken as `COALESCE(activities.project_id, sessions.project_id)`
+ * because `activities.project_id` is nullable: rows predating that column's
+ * backfill carry NULL, and filtering them out would silently reintroduce the
+ * very staleness this union exists to prevent. All three sources are epoch
+ * seconds.
  */
 export function getProjectActivitySeconds(
   db: Database,
@@ -24,8 +34,13 @@ export function getProjectActivitySeconds(
        SELECT MAX(created_at) AS t FROM sessions WHERE project_id = ?
        UNION ALL
        SELECT MAX(created_at) AS t FROM prompt_batches WHERE project_id = ?
+       UNION ALL
+       SELECT MAX(a.timestamp) AS t
+         FROM activities a
+         LEFT JOIN sessions s ON s.id = a.session_id
+        WHERE COALESCE(a.project_id, s.project_id) = ?
      )`,
-  ).get(projectId, projectId) as { last_seconds: number | null } | undefined;
+  ).get(projectId, projectId, projectId) as { last_seconds: number | null } | undefined;
   return row?.last_seconds ?? null;
 }
 
@@ -46,6 +61,13 @@ export function getAllProjectActivitySeconds(db: Database): ProjectActivitySeedR
        FROM prompt_batches
        WHERE project_id IS NOT NULL
        GROUP BY project_id
+       UNION ALL
+       SELECT COALESCE(a.project_id, s.project_id) AS project_id,
+              MAX(a.timestamp) AS last_seconds
+         FROM activities a
+         LEFT JOIN sessions s ON s.id = a.session_id
+        WHERE COALESCE(a.project_id, s.project_id) IS NOT NULL
+        GROUP BY COALESCE(a.project_id, s.project_id)
      )
      GROUP BY project_id`,
   ).all() as Array<{ project_id: string | null; last_seconds: number | null }>;
@@ -56,6 +78,27 @@ export function getAllProjectActivitySeconds(db: Database): ProjectActivitySeedR
     out.push({ project_id: row.project_id, last_seconds: row.last_seconds });
   }
   return out;
+}
+
+/**
+ * Whether any tool activity landed in this Grove at or after `sinceSeconds`.
+ *
+ * This is the daemon's agent-liveness signal. `activities` is the only table
+ * that ticks continuously through a long agentic turn — one prompt can hold a
+ * single `prompt_batches` row open for hours while tool calls and subagent
+ * traffic keep landing here — so it is the only honest answer to "is an agent
+ * working right now". Deriving that from prompts instead is what let the
+ * daemon deep-sleep through active work.
+ *
+ * Liveness, not volume: an indexed existence check against
+ * `idx_activities_timestamp`, never a count over what can be hundreds of
+ * thousands of rows. `timestamp` is epoch seconds, matching `epochSeconds()`.
+ */
+export function hasActivitySince(db: Database, sinceSeconds: number): boolean {
+  const row = db.prepare(
+    `SELECT 1 AS present FROM activities WHERE timestamp >= ? LIMIT 1`,
+  ).get(sinceSeconds) as { present: number } | undefined;
+  return row !== undefined;
 }
 
 export interface LastTaskRunRow {

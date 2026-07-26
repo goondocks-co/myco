@@ -39,6 +39,8 @@ import {
   CONTENT_CLAIM_RETENTION_MS,
   ROUTED_EVENT_DEDUP_RETENTION_MS,
   ROUTED_TRANSCRIPT_GC_QUIESCENCE_MS,
+  POWER_DEEP_SLEEP_THRESHOLD_MS,
+  MS_PER_SECOND,
   epochSeconds,
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -58,7 +60,9 @@ import {
   listRegisteredProjects,
 } from '@myco/grove/registry.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
-import { withDatabase } from '@myco/db/client.js';
+import { withDatabase, getDatabase } from '@myco/db/client.js';
+import { hasActivitySince } from '@myco/db/queries/project-activity.js';
+import type { AssertionSource } from './power.js';
 import { makeGrovePendingProbe } from './grove-pending-probe.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from './grove-runtime-cache.js';
 import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
@@ -239,6 +243,56 @@ function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
   });
 }
 
+/**
+ * Agent-liveness source: asserts `sleep` depth while any Grove has seen tool
+ * activity inside the freshness window.
+ *
+ * A PowerManager assertion rather than a job hold, because the two answer
+ * different questions. A hold asks "is there queued work to flush?" — an
+ * agent hammering tool calls produces no queue depth, since capture writes
+ * are synchronous, so every hold correctly reports zero while the agent is
+ * plainly busy. This asks "is an agent mid-turn?" and reads the only table
+ * that keeps ticking through a long turn.
+ *
+ * `maxDepth: 'sleep'`, never `'active'`: the assertion's whole job is to
+ * prevent the full stop of deep sleep. Pinning `active` would starve the
+ * twelve jobs that only run in `idle`/`sleep` — retention, backup, DB
+ * optimize and integrity check, and both upgrade jobs — for the entire
+ * length of a long agentic run. Natural decay still moves the daemon through
+ * `idle` and `sleep` during the lulls every long run has.
+ *
+ * Reuses the multi-Grove probe so it inherits the same TTL cache,
+ * first-positive short-circuit, and per-Grove error isolation as the drains.
+ */
+export function makeAgentLivenessSource(
+  deps: Pick<PowerJobDeps, 'cache' | 'logger' | 'daemonStateDir' | 'mycoHome'>,
+  windowMs: number = POWER_DEEP_SLEEP_THRESHOLD_MS,
+): AssertionSource {
+  const windowSeconds = Math.floor(windowMs / MS_PER_SECOND);
+  const probe = makeGrovePendingProbe({
+    cache: deps.cache,
+    logger: deps.logger,
+    daemonStateDir: deps.daemonStateDir,
+    mycoHome: deps.mycoHome,
+    logKind: LOG_KINDS.POWER_STATE,
+    // Runs inside the helper's `withDatabase`, so `getDatabase()` resolves
+    // to the Grove being walked.
+    countForGrove: () =>
+      hasActivitySince(getDatabase(), epochSeconds() - windowSeconds) ? 1 : 0,
+  });
+
+  return {
+    name: 'liveness',
+    probe: () => (probe() > 0
+      ? [{
+          name: 'agent-session',
+          maxDepth: 'sleep',
+          reason: `tool activity within ${windowSeconds}s`,
+        }]
+      : []),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -375,7 +429,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       // on config save. Equivalent to the old preventsDeepSleep gate:
       // toggle off → 0 → no hold; else hold iff there is pending work.
       pending: () =>
-        liveConfig.current.embedding.run_in_deep_sleep === false ? 0 : totalPendingProbe(),
+        liveConfig.current.embedding.prevent_deep_sleep === false ? 0 : totalPendingProbe(),
     },
     fn: async (ctx) => {
       let processed = 0, remaining = 0;
