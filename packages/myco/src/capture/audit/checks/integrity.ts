@@ -39,20 +39,26 @@ export function checkIntegrity(db: Database, opts: AuditOptions, now: number): F
   );
 
   // Empty response_summary means the assistant side of the turn never landed.
+  // Scoped to human-origin batches. A runtime-injected envelope does not form
+  // a conversational turn, so it usually carries no assistant response —
+  // three quarters of system-origin batches have none, against roughly seven
+  // percent of human ones. Counting them together buries the real signal under
+  // by-design behavior that grows with every injected notification.
   add(
     {
       id: 'batch-missing-response',
       layer: 'pipeline',
       severity: 'medium',
-      title: 'Prompt batches with no response_summary',
+      title: 'Human prompt batches with no response_summary',
       detail:
-        'The user prompt was captured but the assistant response was not. Points at a Stop hook that did not fire or a mine that did not run.',
+        'A person typed a prompt and the assistant response was never attached. Points at a Stop hook that did not fire or a mine that did not run. Non-human origins are excluded: an injected envelope having no response is normal.',
     },
     `SELECT COUNT(*) n, MIN(b.created_at) first_seen, MAX(b.created_at) last_seen,
             GROUP_CONCAT(b.id) samples
      FROM prompt_batches b
      WHERE (b.response_summary IS NULL OR b.response_summary = '')
-       AND b.status != 'active'${batch.sql}`,
+       AND b.status != 'active'
+       AND b.origin = 'human'${batch.sql}`,
     batch.params,
   );
 
@@ -62,14 +68,15 @@ export function checkIntegrity(db: Database, opts: AuditOptions, now: number): F
       id: 'batch-zero-activities',
       layer: 'pipeline',
       severity: 'low',
-      title: 'Completed prompt batches with zero activities',
+      title: 'Completed human prompt batches with zero activities',
       detail:
-        'A finished turn that recorded no tool activity. Legitimate for pure-conversation turns, so treat as a signal only when it clusters on one symbiont.',
+        'A finished turn that recorded no tool activity. Legitimate for pure-conversation turns, so treat as a signal only when it clusters on one symbiont. Non-human origins are excluded: an injected envelope rarely drives tool use.',
     },
     `SELECT COUNT(*) n, MIN(b.created_at) first_seen, MAX(b.created_at) last_seen,
             GROUP_CONCAT(b.id) samples
      FROM prompt_batches b
-     WHERE b.status != 'active' AND b.activity_count = 0${batch.sql}`,
+     WHERE b.status != 'active' AND b.activity_count = 0
+       AND b.origin = 'human'${batch.sql}`,
     batch.params,
   );
 

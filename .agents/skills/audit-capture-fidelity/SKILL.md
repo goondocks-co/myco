@@ -10,6 +10,31 @@ argument-hint: "[symbiont] | --all | repair <finding-id>"
 
 Answers **"is what we captured correct and complete?"** — a different question from `debug-capture`, which answers "why did capture stop?". Use that skill when data stopped arriving; use this one when data is arriving but you doubt it.
 
+## The rule that governs everything below
+
+**A check that cannot discriminate must not report.**
+
+Myco does several things two legitimate ways. Every one of them looks like a defect to a check that only knows one mode, and reporting a working-as-designed mode as data loss is worse than reporting nothing: it burns the reader's trust in every other finding, and it sends someone to "fix" behavior that is correct.
+
+This has been the single largest source of wrong findings in this tool's history — five occurrences across five separate checks, listed below. Each was caught only after being written, and several after being shipped.
+
+So when a check cannot tell the modes apart, it does not guess and it does not pick the pessimistic reading. It reports a coverage gap naming what it could not determine.
+
+| Axis | Mode A | Mode B | The wrong conclusion |
+|---|---|---|---|
+| Capture model | hook + transcript mining | **plugin-reported** (pi, opencode, cline) | "NULL transcript_path = data loss" |
+| Session closure | exit hook (claude-code, cursor, copilot) | **stale sweep** (codex, windsurf, antigravity, pi, opencode, cline) | "session stuck active" |
+| Sub-agent threads | own session | **reattributed to the parent** | "child transcript has no session row" |
+| Manifest drop rules | captured | **deliberately dropped** (`codex exec`, ephemeral sub-invocations) | "transcript on disk was never captured" |
+| Prompt origin | human turn | **runtime-injected envelope** | "missing response / no tool activity" |
+
+Two more modes are not in the table because they belong to the sweep rather than to capture: a project holding an active **write lease** is deliberately not swept and must not be written to, and a session inside the stale threshold is simply **still active**.
+
+Before adding or trusting a check, ask what its second mode is. If the answer is "there isn't one", say why.
+
+**A corollary for growth.** Non-human traffic scales with tooling, not with usage — one injected notification per background job. A check spanning both origins therefore trends upward on its own and reads as a worsening leak. Scope to the population whose behavior you are actually judging, then read the trend.
+
+
 ## Routing
 
 - `audit-capture-fidelity <symbiont>` → audit one agent. Start here; most investigations begin with "codex looks wrong".
@@ -32,21 +57,6 @@ Findings name which comparison produced them, because the fixes are unrelated:
 | `drift` | raw transcript vs. package policy | the agent changed; our manifest/parser no longer matches it | manifest rule or parser |
 | `pipeline` | package policy vs. vault rows | we knew to capture it and didn't | hooks, daemon, mining |
 | `integrity` | vault vs. itself | invariants violated inside the database | writer path |
-
-## STOP — the by-design traps
-
-**Myco has several places where two behaviors are both correct. A naive audit reports the second as a bug.** Three of the four below were written into an earlier draft of this work as findings before being caught. Do not "fix" any of these:
-
-| Axis | Mode A | Mode B | The wrong conclusion |
-|---|---|---|---|
-| Capture model | hook + transcript mining | **plugin-reported** (pi, opencode, cline) | "NULL transcript_path = data loss" |
-| Session closure | exit hook (claude-code, cursor, copilot) | **stale sweep** (codex, windsurf, antigravity, pi, opencode, cline) | "session stuck active" |
-| Sub-agent threads | own session | **reattributed to the parent** | "child transcript has no session row" |
-| Manifest drop rules | captured | **deliberately dropped** (`codex exec`, ephemeral sub-invocations) | "transcript on disk was never captured" |
-
-The audit encodes all four. If you find yourself adding a check, confirm it can tell the modes apart — and if it cannot, make it report a coverage gap instead of a finding. **A check that cannot discriminate must not report.**
-
-Corollary: for pi, opencode and cline, an empty `transcript_path` is correct. `opencode/plugin.ts` says so directly: *"Opencode has no on-disk transcript for Myco to mine."*
 
 ## Running it
 
@@ -134,10 +144,11 @@ If you cannot name the gate, you have not finished the finding.
 
 Checks live in `packages/myco/src/capture/audit/`, not in this skill. Logic belongs in the package where `npm test` covers it — a script inside a skill directory cannot have a regression gate, which would contradict the rule above.
 
-Two constraints when adding a check:
+Three constraints when adding a check:
 
-1. **Never re-implement capture policy.** Import the real parsers, `TranscriptMiner`, `evaluateUserPromptRules`, `evaluateSessionCaptureRules`, `resolveSubagentThread`. The package is the only source of truth for what should be captured; the audit only compares. A check that forms its own opinion will disagree with production and manufacture findings.
-2. **Declare, don't hardcode.** Agent-specific paths belong in `capture.transcriptDiscovery` in the manifest. No agent-specific path may appear in the audit module or in this skill.
+1. **Name its second mode before writing it.** Per the opening rule, a check that cannot tell two legitimate behaviors apart reports a coverage gap, never a finding. Every wrong finding this tool has produced came from skipping this step.
+2. **Never re-implement capture policy.** Import the real parsers, `TranscriptMiner`, `evaluateUserPromptRules`, `evaluateSessionCaptureRules`, `resolveSubagentThread`. The package is the only source of truth for what should be captured; the audit only compares. A check that forms its own opinion will disagree with production and manufacture findings.
+3. **Declare, don't hardcode.** Agent-specific paths belong in `capture.transcriptDiscovery` in the manifest. No agent-specific path may appear in the audit module or in this skill.
 
 ## Related skills
 
