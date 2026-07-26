@@ -28,6 +28,11 @@ hookFields:
   toolInput: tool_input
   toolOutput: tool_response
 capture:
+  # One directory per session, holding an events log.
+  transcriptDiscovery:
+    roots: ["~/.copilot/session-state"]
+    patterns:
+      - "{sessionId}/events.jsonl"
   planDirs: []
 # Hook surface (https://docs.github.com/en/copilot/reference/hooks-reference)
 #

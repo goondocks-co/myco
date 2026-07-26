@@ -1,5 +1,6 @@
 import type { SymbiontAdapter, TranscriptTurn } from './adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
+import { findTranscriptFor } from './transcript-discovery.js';
 
 /**
  * GitHub Copilot — one symbiont covers two surfaces of the same agent
@@ -45,9 +46,7 @@ export const copilotAdapter: SymbiontAdapter = {
     toolOutput: 'tool_output',
   },
 
-  // Copilot (both surfaces) doesn't have a predictable transcript directory —
-  // hooks provide the path via the payload's `transcript_path` field.
-  findTranscript: () => null,
+  findTranscript: (sessionId) => findTranscriptFor('copilot', sessionId),
 
   parseTurns: (content) => parseCopilotEventLog(content),
 };

@@ -1,0 +1,142 @@
+import type { Database } from 'bun:sqlite';
+
+import { isEnclosingEnvelope } from '../../../hooks/capture-rules.js';
+import { classifyRecency, scopeClause } from '../context.js';
+import type { AuditOptions, Finding } from '../types.js';
+
+/**
+ * Detects machine-generated envelopes stored with a human origin.
+ *
+ * A prompt whose entire text is one enclosing envelope was synthesized by the
+ * runtime, so `origin='human'` on such a row means its classification rule did
+ * not match. Envelope membership is decided by `isEnclosingEnvelope`, the same
+ * predicate backing the manifests' `prompt_is_enclosing_envelope` fail-safe, so
+ * this check and capture agree on what an envelope is.
+ *
+ * The check reads stored rows rather than replaying rules over transcripts.
+ * Envelope rules match raw transcript entries during mining, and a parser emits
+ * turns with those entries already removed, so a replay cannot observe them.
+ */
+
+/** Leading tag name, used to group findings. Presentation only. */
+const ENVELOPE_HEAD = /^<([a-zA-Z][a-zA-Z0-9_-]*)(?=[\s>/])/;
+
+function envelopeTag(prompt: string): string | null {
+  return ENVELOPE_HEAD.exec(prompt.trimStart())?.[1] ?? null;
+}
+
+/**
+ * True when the prompt opens with a CLOSED envelope and continues into further
+ * content.
+ *
+ * Requiring the closing tag is what separates a runtime prefixing a complete
+ * envelope onto other content from a person opening a message with markup —
+ * `<div> renders wrong` never closes its tag.
+ */
+function hasClosedLeadingEnvelope(prompt: string, tag: string): boolean {
+  const text = prompt.trimStart();
+  const close = `</${tag}>`;
+  const at = text.indexOf(close);
+  if (at < 0) return false;
+  return text.slice(at + close.length).trim().length > 0;
+}
+
+export function checkDrift(db: Database, opts: AuditOptions, now: number): Finding[] {
+  const scope = scopeClause('b', opts.projectId, opts.since);
+
+  // GLOB narrows to prompts opening with a tag; envelope membership is decided
+  // in code because SQLite has no regex.
+  let rows: Array<{ id: string; agent: string | null; user_prompt: string; created_at: number }>;
+  try {
+    rows = db
+      .query(
+        `SELECT b.id, s.agent agent, b.user_prompt, b.created_at
+           FROM prompt_batches b
+           LEFT JOIN sessions s ON s.id = b.session_id
+          WHERE b.origin = 'human'
+            AND b.user_prompt IS NOT NULL
+            AND trim(b.user_prompt) GLOB '<[a-zA-Z]*'${scope.sql}`,
+      )
+      .all(scope.params) as never;
+  } catch {
+    return [];
+  }
+
+  // Grouped per (agent, tag, shape): each tag has its own history, and a shared
+  // group carries the newest date across all of them.
+  //
+  // `whole` is a prompt that is nothing but an envelope, which the manifests'
+  // fail-safe covers. `leading` opens with one and continues into other
+  // content, which the fail-safe does not match — the shape a runtime produces
+  // when it prefixes an envelope onto content it already injected, and the
+  // shape that displaces the marker a `prompt_starts_with` rule matches.
+  const groups = new Map<
+    string,
+    {
+      agent: string;
+      tag: string;
+      shape: 'whole' | 'leading';
+      n: number;
+      ids: string[];
+      first: number;
+      last: number;
+    }
+  >();
+
+  for (const row of rows) {
+    const tag = envelopeTag(row.user_prompt);
+    if (!tag) continue;
+    let shape: 'whole' | 'leading';
+    if (isEnclosingEnvelope(row.user_prompt)) shape = 'whole';
+    else if (hasClosedLeadingEnvelope(row.user_prompt, tag)) shape = 'leading';
+    else continue; // an unclosed opening tag is prose, not an envelope
+    const agent = row.agent ?? 'unknown';
+    if (opts.symbiont && agent !== opts.symbiont) continue;
+
+    const key = `${agent} ${tag} ${shape}`;
+    const entry = groups.get(key) ?? {
+      agent,
+      tag,
+      shape,
+      n: 0,
+      ids: [] as string[],
+      first: row.created_at,
+      last: row.created_at,
+    };
+    entry.n += 1;
+    if (entry.ids.length < 5) entry.ids.push(row.id);
+    entry.first = Math.min(entry.first, row.created_at);
+    entry.last = Math.max(entry.last, row.created_at);
+    groups.set(key, entry);
+  }
+
+  return [...groups.values()]
+    .sort((a, b) => b.n - a.n)
+    .map((entry) => ({
+      id: entry.shape === 'whole' ? 'envelope-classified-human' : 'envelope-prefixed-prompt-classified-human',
+      layer: 'drift' as const,
+      severity: 'medium' as const,
+      title:
+        entry.shape === 'whole'
+          ? `${entry.agent}: <${entry.tag}> envelopes stored as human prompts`
+          : `${entry.agent}: prompts opening with <${entry.tag}> stored as human`,
+      detail:
+        entry.shape === 'whole'
+          ? `${entry.n} prompt(s) whose entire text is a <${entry.tag}> envelope carry origin='human'. ` +
+            'An enclosing envelope is runtime-synthesized, not typed by a person. ' +
+            'Each manifest declares a `prompt_is_enclosing_envelope` fail-safe covering any envelope without a specific rule, so a leak means these rows predate that rule or a rule that should have matched no longer does. ' +
+            'LEGACY means the gap is closed and the rows are backlog; ACTIVE means classification is leaking now. ' +
+            'A replacement rule keyed on a structural signal survives an upstream rename; one keyed on a new literal does not.'
+          : `${entry.n} prompt(s) open with a <${entry.tag}> envelope and continue into other content, carrying origin='human'. ` +
+            'The whole-prompt fail-safe does not cover this shape, so nothing catches it generically. ' +
+            'A runtime prefixing an envelope onto content it already injected produces exactly this, and it breaks any rule anchored with `prompt_starts_with` — the marker such a rule matches is no longer at the start. ' +
+            'Read one row in full: if the text after the envelope is machine-generated, find the rule that should have matched it and re-key it so the prefix cannot displace the marker. ' +
+            'The envelope is closed before the remaining content, so this is a runtime prefix rather than someone opening a message with markup.',
+      count: entry.n,
+      ...(entry.agent === 'unknown' ? {} : { symbiont: entry.agent }),
+      firstSeen: entry.first,
+      lastSeen: entry.last,
+      recency: classifyRecency(entry.last, now),
+      samples: entry.ids,
+    }));
+}

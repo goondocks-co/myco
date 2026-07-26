@@ -11,6 +11,16 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
+  # Rollout files are date-sharded: sessions/YYYY/MM/DD/rollout-<ts>-<sessionId>.jsonl
+  transcriptDiscovery:
+    roots: ["~/.codex/sessions"]
+    patterns:
+      - "*/*/*/rollout-*-{sessionId}.jsonl"
+    # The session_meta first line carries cwd under its payload.
+    transcriptCwdPath: "payload.cwd"
+    # Both the timestamp and the id are dash-delimited, so the boundary between
+    # `*` and `{sessionId}` is only recoverable from the id's shape.
+    sessionIdPattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
   planDirs: []
   planTags:
     # Codex Plan Mode emits the approved plan as assistant text wrapped in
@@ -136,6 +146,22 @@ capture:
         prompt_starts_with: "# AGENTS.md instructions"
       action: drop
       reason: agents-md-context-injection
+
+    # The same injection when Codex prefixes it with a `<recommended_plugins>`
+    # envelope, which moves the marker off position 0.
+    #
+    # Both conditions are required. `drop` discards the message outright, so a
+    # bare substring match would destroy any real prompt quoting this marker;
+    # requiring the envelope as well confines the rule to the injection. A
+    # change to the envelope stops this rule matching, leaving the injection
+    # captured as noise rather than destroying user content.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [recommended_plugins]
+        prompt_contains: "# AGENTS.md instructions"
+      action: drop
+      reason: agents-md-context-injection-enveloped
 
     # Codex sub-agent completion notifications.
     #

@@ -10,6 +10,13 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
+  # Two layouts are in use: a flat `.txt` and a per-session directory holding
+  # `.jsonl`. Order is significant — a session with both resolves to `.txt`.
+  transcriptDiscovery:
+    roots: ["~/.cursor/projects"]
+    patterns:
+      - "*/agent-transcripts/{sessionId}.txt"
+      - "*/agent-transcripts/{sessionId}/{sessionId}.jsonl"
   planDirs:
     # Cursor's plan output lands in ~/.cursor/plans/ (global), not project-local.
     # Watch both: home for agent-written plans, project-local for any committed plans.

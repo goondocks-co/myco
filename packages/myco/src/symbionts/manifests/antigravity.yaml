@@ -31,6 +31,14 @@ hookFields:
   toolName: toolCall.name
   toolInput: toolCall.args
 capture:
+  # One brain dir per conversation, under whichever surface produced it.
+  transcriptDiscovery:
+    roots:
+      - "~/.gemini/antigravity-cli"
+      - "~/.gemini/antigravity"
+      - "~/.gemini/antigravity-ide"
+    patterns:
+      - "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl"
   planDirs:
     # Antigravity workspace plans land here; user-global plan dir TBD during
     # dogfood. Mirrors the pattern other symbionts use until verified.

@@ -2,6 +2,7 @@ import type { SymbiontAdapter } from './adapter.js';
 import type { TranscriptTurn, TranscriptImage } from './adapter.js';
 import { mimeTypeForExtension, parseJsonlTurns } from './adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
+import { findTranscriptFor } from './transcript-discovery.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -44,25 +45,7 @@ export const cursorAdapter: SymbiontAdapter = {
     toolOutput: 'tool_output',
   },
 
-  findTranscript(sessionId: string): string | null {
-    try {
-      for (const project of fs.readdirSync(CURSOR_PROJECTS, { withFileTypes: true })) {
-        if (!project.isDirectory()) continue;
-        const transcriptsDir = path.join(CURSOR_PROJECTS, project.name, 'agent-transcripts');
-        // Try .txt (older Cursor) then .jsonl inside session directory (newer Cursor)
-        for (const candidate of [
-          path.join(transcriptsDir, `${sessionId}.txt`),
-          path.join(transcriptsDir, sessionId, `${sessionId}.jsonl`),
-        ]) {
-          try {
-            fs.accessSync(candidate);
-            return candidate;
-          } catch { /* not here */ }
-        }
-      }
-    } catch { /* projects dir doesn't exist */ }
-    return null;
-  },
+  findTranscript: (sessionId) => findTranscriptFor('cursor', sessionId),
 
   parseTurns(content: string): TranscriptTurn[] {
     // Detect format: JSONL (starts with '{') or plain text (starts with 'user:')
