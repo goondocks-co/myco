@@ -52,13 +52,27 @@ export function checkClosure(
   const thresholdSecs = Math.floor(input.staleThresholdMs / 1000);
   const scope = scopeClause('s', opts.projectId, opts.since);
 
+  // Staleness is INACTIVITY, not age. A session running longer than the
+  // threshold is perfectly normal; one with no prompt or activity in that
+  // window is not. This mirrors `session-maintenance.ts` exactly — including
+  // the fallback to sessions.started_at when a session has neither — so the
+  // audit agrees with the sweep about which sessions the sweep should take.
   const rows = db
     .query(
       `SELECT s.agent agent, COUNT(*) n, MIN(s.started_at) first_seen, MAX(s.started_at) last_seen,
               GROUP_CONCAT(s.id) samples
        FROM sessions s
        WHERE s.status = 'active'
-         AND COALESCE(s.started_at, s.created_at) < $cutoff${scope.sql}
+         AND COALESCE(
+           (SELECT MAX(touch) FROM (
+             SELECT MAX(pb.started_at) AS touch
+               FROM prompt_batches pb WHERE pb.session_id = s.id
+             UNION ALL
+             SELECT MAX(a.timestamp) AS touch
+               FROM activities a WHERE a.session_id = s.id
+           )),
+           s.started_at
+         ) < $cutoff${scope.sql}
        GROUP BY s.agent`,
     )
     .all({ ...scope.params, $cutoff: now - thresholdSecs }) as Array<{

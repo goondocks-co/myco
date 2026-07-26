@@ -9,7 +9,7 @@ import { checkClosure, hookClosingSymbionts } from '@myco/capture/audit/checks/c
 import { checkReconcile, intentionallyDropped } from '@myco/capture/audit/checks/reconcile.js';
 import { captureModel, classifyRecency, symbiontContexts } from '@myco/capture/audit/context.js';
 import { runAudit } from '@myco/capture/audit/index.js';
-import { PROMPT_BATCHES_TABLE, SESSIONS_TABLE } from '@myco/db/schema-ddl.js';
+import { ACTIVITIES_TABLE, PROMPT_BATCHES_TABLE, SESSIONS_TABLE } from '@myco/db/schema-ddl.js';
 
 const HOUR = 3600;
 const DAY = 24 * HOUR;
@@ -48,12 +48,13 @@ function seedBatch(id: string, sessionId: string, over: Partial<Record<string, u
     activity_count: 1,
     content_hash: 'hash',
     response_summary: 'done',
+    started_at: NOW - DAY,
     created_at: NOW - DAY,
     ...over,
   };
   db.query(
-    `INSERT INTO prompt_batches (id, session_id, project_id, kind, origin, status, activity_count, content_hash, response_summary, created_at)
-     VALUES ($id, $session_id, $project_id, $kind, $origin, $status, $activity_count, $content_hash, $response_summary, $created_at)`,
+    `INSERT INTO prompt_batches (id, session_id, project_id, kind, origin, status, activity_count, content_hash, response_summary, started_at, created_at)
+     VALUES ($id, $session_id, $project_id, $kind, $origin, $status, $activity_count, $content_hash, $response_summary, $started_at, $created_at)`,
   ).run(Object.fromEntries(Object.entries(row).map(([k, v]) => [`$${k}`, v as never])));
 }
 
@@ -63,6 +64,7 @@ beforeEach(() => {
   db = new Database(dbPath);
   db.run(SESSIONS_TABLE);
   db.run(PROMPT_BATCHES_TABLE);
+  db.run(ACTIVITIES_TABLE);
 });
 
 afterEach(() => {
@@ -141,8 +143,20 @@ describe('session closure', () => {
     expect(findings).toEqual([]);
   });
 
+  it('leaves a long-running session alone while it is still active', () => {
+    // Staleness is inactivity, not age. An earlier version keyed on
+    // started_at and flagged every session older than the threshold —
+    // including the live session doing the auditing.
+    seedSession('s1', { agent: 'claude-code', status: 'active', started_at: NOW - 30 * HOUR });
+    seedBatch('b1', 's1', { started_at: NOW - 60 });
+
+    const { findings } = checkClosure(db, { dbPath }, NOW, { staleThresholdMs });
+    expect(findings).toEqual([]);
+  });
+
   it('blames the exit hook for an agent that closes via one', () => {
     seedSession('s1', { agent: 'claude-code', status: 'active', started_at: NOW - 5 * HOUR });
+    seedBatch('b1', 's1', { started_at: NOW - 4 * HOUR });
     const { findings } = checkClosure(db, { dbPath }, NOW, { staleThresholdMs });
     expect(findings[0]?.id).toBe('closure-exit-hook-missed');
   });
