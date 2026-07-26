@@ -876,32 +876,42 @@ describe('migrateTeamsHomeIfNeeded', () => {
   it.skipIf(process.platform === 'win32')(
     'revalidates a waiter that computed the legacy identity before redirect publication',
     async () => {
-      legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
       dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
       process.env.MYCO_TEAM_HOME = dest;
-      writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
-      const legacyTeamDir = path.join(legacy, 'teams', TEAM_ID);
 
-      // Rejected candidates stay on disk until a winner is found. On Linux,
-      // rm-then-mkdtemp hands the freed inode straight back, which pins the
-      // candidate's `inode:` lock key constant across draws — and when that
-      // key sorts above a legacy key, no draw can ever satisfy the ordering,
-      // so a free-then-redraw loop spins synchronously forever (a blocked
-      // event loop suppresses even the test timeout; the suite watchdog then
-      // kills the whole chunk). A live candidate set forces a fresh inode,
-      // and therefore a genuinely re-rolled key, on every draw.
-      const legacyKeys = secretStoreKeys(legacyTeamDir);
+      // The anchor's keys must ALL sort below ALL of the legacy team dir's
+      // keys, and every key is a sha256 of a filesystem identity — so this
+      // is rejection sampling, and BOTH sides must re-roll. Anchor-only
+      // redraws have a heavy tail: a legacy dir whose smallest key is small
+      // makes a winning anchor astronomically rare (a 0.02-of-keyspace
+      // minimum needs ~1/0.02³ ≈ 10⁵ draws), so after a bounded anchor
+      // budget the legacy dir is re-rolled too, which collapses the tail.
+      // Rejected anchor candidates stay on disk until a winner is found: on
+      // Linux, rm-then-mkdtemp hands the freed inode straight back, which
+      // pins the candidate's `inode:` lock key constant across draws — the
+      // free-then-redraw shape of this loop wedged CI as a silent
+      // synchronous spin (a blocked event loop suppresses even the test
+      // timeout). The periodic yield keeps any future pathology failing
+      // visibly at the test timeout instead of wedging the chunk.
       const anchorCandidates: string[] = [];
       let anchor = '';
-      for (let draw = 0; !anchor; draw += 1) {
-        if (draw >= 500) throw new Error('no anchor with lock keys below the legacy keys after 500 draws');
-        if (draw % 25 === 24) await new Promise((resolve) => setImmediate(resolve));
-        const candidate = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-anchor-'));
-        anchorCandidates.push(candidate);
-        if (secretStoreKeys(candidate).every((anchorKey) => (
-          legacyKeys.every((legacyKey) => anchorKey < legacyKey)
-        ))) {
-          anchor = candidate;
+      let legacyTeamDir = '';
+      for (let epoch = 0; !anchor; epoch += 1) {
+        if (epoch >= 30) throw new Error('no anchor/legacy lock-key ordering found after 30 legacy re-rolls');
+        if (legacy) fs.rmSync(legacy, { recursive: true, force: true });
+        legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+        writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+        legacyTeamDir = path.join(legacy, 'teams', TEAM_ID);
+        const legacyKeys = secretStoreKeys(legacyTeamDir);
+        for (let draw = 0; draw < 300 && !anchor; draw += 1) {
+          if (draw % 50 === 49) await new Promise((resolve) => setImmediate(resolve));
+          const candidate = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-anchor-'));
+          anchorCandidates.push(candidate);
+          if (secretStoreKeys(candidate).every((anchorKey) => (
+            legacyKeys.every((legacyKey) => anchorKey < legacyKey)
+          ))) {
+            anchor = candidate;
+          }
         }
       }
       fs.writeFileSync(path.join(anchor, 'secrets.env'), 'WAITER_VALUE=preserved\n', { mode: 0o600 });
