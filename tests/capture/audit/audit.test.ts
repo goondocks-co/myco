@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { checkIntegrity } from '@myco/capture/audit/checks/integrity.js';
 import { checkClosure, hookClosingSymbionts } from '@myco/capture/audit/checks/closure.js';
-import { checkReconcile, intentionallyDropped } from '@myco/capture/audit/checks/reconcile.js';
+import { attributeByPathSlug, checkReconcile, intentionallyDropped } from '@myco/capture/audit/checks/reconcile.js';
 import { captureModel, classifyRecency, symbiontContexts } from '@myco/capture/audit/context.js';
 import { runAudit } from '@myco/capture/audit/index.js';
 import { repair } from '@myco/capture/audit/repair.js';
@@ -324,5 +324,30 @@ describe('repair', () => {
     const plan = repair({ dbPath, findingId: 'not-a-finding', apply: true });
     expect(plan.supported).toBe(false);
     expect(plan.refusal).toContain('Unknown finding id');
+  });
+});
+
+describe('path-slug attribution', () => {
+  const roots = ['/Users/chris/Repos/myco', '/Users/chris/Repos/myco-team'];
+
+  it('recovers the project from a bare slug segment (Cursor)', () => {
+    const p = '/Users/chris/.cursor/projects/Users-chris-Repos-myco/agent-transcripts/abc/abc.jsonl';
+    expect(attributeByPathSlug(p, roots)).toBe('/Users/chris/Repos/myco');
+  });
+
+  it('recovers it from a leading-dash slug segment (Claude Code)', () => {
+    const p = '/Users/chris/.claude/projects/-Users-chris-Repos-myco/abc.jsonl';
+    expect(attributeByPathSlug(p, roots)).toBe('/Users/chris/Repos/myco');
+  });
+
+  it('does not let a shorter root claim a longer project name', () => {
+    // A substring test would match `myco` inside `myco-team`.
+    const p = '/Users/chris/.cursor/projects/Users-chris-Repos-myco-team/agent-transcripts/x/x.jsonl';
+    expect(attributeByPathSlug(p, roots)).toBe('/Users/chris/Repos/myco-team');
+  });
+
+  it('returns null for a path belonging to no known project', () => {
+    const p = '/Users/chris/.cursor/projects/Users-chris-Repos-other/agent-transcripts/x/x.jsonl';
+    expect(attributeByPathSlug(p, roots)).toBeNull();
   });
 });

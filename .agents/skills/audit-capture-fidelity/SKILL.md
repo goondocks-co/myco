@@ -77,7 +77,9 @@ Three sections, in priority order.
 
 The audit reports the cutoff date but never claims which release caused it. Attributing a cutoff to a shipped fix is your judgment, not the tool's.
 
-**2. NOT COVERED.** Read this before treating anything as clean. It lists every place the audit deliberately did not look or could not conclude — a symbiont whose transcripts carry no working directory, an enumeration that hit its cap, a plugin-reported agent with nothing to reconcile. **An audit that silently skips a symbiont reads as a clean bill of health for it, which is worse than saying nothing.**
+**2. NOT COVERED.** Read this before treating anything as clean. It lists every place the audit deliberately did not look or could not conclude — an enumeration that hit its cap, a plugin-reported agent with nothing to reconcile, transcripts that could not be tied to any project this Grove tracks. **An audit that silently skips a symbiont reads as a clean bill of health for it, which is worse than saying nothing.**
+
+Project attribution uses the working directory a transcript records, falling back to matching a slugified project root against the transcript's own path. Agents that do neither leave their orphans unattributed, and the count is reported rather than assumed to belong to the audited project.
 
 **3. Findings.** Severity-ordered. Each carries a stable id — look it up in `references/findings.md`.
 

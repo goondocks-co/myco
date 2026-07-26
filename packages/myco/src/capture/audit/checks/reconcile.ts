@@ -60,6 +60,30 @@ export function intentionallyDropped(agent: string, filePath: string): boolean {
   }
 }
 
+/**
+ * Attribute a transcript to a project from its own path.
+ *
+ * Agents that record no working directory inside the transcript often encode
+ * it in the directory layout instead — Cursor stores under a
+ * `Users-chris-Repos-myco` slug, Claude Code under `-Users-chris-Repos-myco`.
+ * Matching a slugified project root against whole path segments recovers the
+ * project without knowing any agent's convention, so it needs no per-agent
+ * code and works for any agent that happens to slug its paths.
+ *
+ * Whole-segment matching matters: a substring test would let `/repo/app`
+ * claim transcripts belonging to `/repo/app-server`.
+ */
+export function attributeByPathSlug(filePath: string, projectRoots: Iterable<string>): string | null {
+  const segments = new Set(filePath.split('/').filter(Boolean));
+  for (const root of projectRoots) {
+    const slug = root.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+/, '');
+    if (!slug) continue;
+    // Both bare and leading-dash conventions are in use.
+    if (segments.has(slug) || segments.has(`-${slug}`)) return root;
+  }
+  return null;
+}
+
 /** The working directory a transcript records, if its manifest declares where. */
 export function transcriptCwd(filePath: string, cwdPath: string): string | null {
   let handle: number;
@@ -147,19 +171,6 @@ export function checkReconcile(
     const orphans = onDisk.filter((t) => !known.has(t.sessionId));
     if (orphans.length === 0) continue;
 
-    // Without a declared cwd path a transcript cannot be tied to a project, and
-    // most transcripts on this machine belong to other projects entirely.
-    // Reporting them against the audited project would be noise, so they are
-    // declared uncovered instead.
-    if (!discovery.transcriptCwdPath) {
-      coverage.push({
-        symbiont: symbiont.name,
-        scope: 'transcript reconciliation',
-        reason: `${orphans.length} transcript(s) have no session row, but ${symbiont.name} records no working directory, so they cannot be attributed to a project. Declare capture.transcriptDiscovery.transcriptCwdPath to make these reportable.`,
-      });
-      continue;
-    }
-
     const attributed: string[] = [];
     let unattributable = 0;
     let deliberate = 0;
@@ -169,12 +180,17 @@ export function checkReconcile(
         deliberate += 1;
         continue;
       }
-      const cwd = transcriptCwd(orphan.filePath, discovery.transcriptCwdPath);
-      if (!cwd) {
+      // Recorded cwd is the strongest signal; the path slug recovers projects
+      // for agents that record none.
+      const cwd = discovery.transcriptCwdPath
+        ? transcriptCwd(orphan.filePath, discovery.transcriptCwdPath)
+        : null;
+      const root = cwd ?? attributeByPathSlug(orphan.filePath, projectRoots.keys());
+      if (!root) {
         unattributable += 1;
         continue;
       }
-      const projectId = projectRoots.get(cwd);
+      const projectId = projectRoots.get(root);
       if (!projectId) continue; // belongs to a project this grove does not track
       if (opts.projectId && projectId !== opts.projectId) continue;
       attributed.push(orphan.sessionId);

@@ -12,7 +12,7 @@
 
 ## Limitations
 
-- **No project attribution inside the transcript.** The project is only in the containing directory name (`Users-chris-Repos-<name>`), which the audit does not currently parse, so orphan transcripts are reported as a coverage gap rather than a finding. Wiring this up would make cursor orphans reportable.
+- **No project attribution inside the transcript.** The project is encoded in the containing directory name instead (`Users-chris-Repos-<name>`), which the audit recovers by matching a slugified project root against whole path segments. Transcripts stored under a project this Grove does not track stay unattributed, which is correct.
 
 ## Hand-verification
 
