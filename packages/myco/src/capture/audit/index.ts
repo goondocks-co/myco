@@ -1,3 +1,4 @@
+import { STALE_SESSION_THRESHOLD_MS } from '../../constants.js';
 import { LOG_KINDS } from '../../constants/log-kinds.js';
 import { openReadonly } from '../../db/client.js';
 import { symbiontContexts } from './context.js';
@@ -65,16 +66,13 @@ export function runAudit(opts: AuditOptions, closure?: Partial<ClosureInput>): A
 
     report.findings.push(...checkIntegrity(db, opts, now));
 
-    // `closure-sweep-missed` and `closure-sweep-not-running` are the same rows
-    // separated by one question: did the sweep actually run? Nothing records a
-    // per-run timestamp, but session-maintenance logs whenever it completes or
-    // prunes anything, so the newest such entry is a lower bound on when it
-    // last ran. That settles the positive case; when nothing has been logged
-    // the check still declines to guess.
+    // Distinguishing a sweep that ran and missed sessions from one that never
+    // ran requires its last run time. No per-run timestamp is recorded, so the
+    // newest session-maintenance log entry serves as a lower bound.
     const resolvedSweepAt = closure?.lastSweepAt ?? lastSweepFromLog(db);
 
     const closureResult = checkClosure(db, opts, now, {
-      staleThresholdMs: closure?.staleThresholdMs ?? 60 * 60 * 1000,
+      staleThresholdMs: closure?.staleThresholdMs ?? STALE_SESSION_THRESHOLD_MS,
       ...(resolvedSweepAt !== undefined ? { lastSweepAt: resolvedSweepAt } : {}),
     });
     report.findings.push(...closureResult.findings);

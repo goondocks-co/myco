@@ -124,7 +124,7 @@ const args = parseArgs(process.argv.slice(2));
 
 if (args.help) {
   console.log(
-    'usage: bun scripts/capture-audit.ts [--grove <myco.db>] [--project <id>] [--symbiont <name>] [--since YYYY-MM-DD] [--json]\n' +
+    'usage: bun scripts/capture-audit.ts [--grove <myco.db>] [--project <id>] [--symbiont <name>] [--since YYYY-MM-DD] [--stale-threshold-ms N] [--json]\n' +
     '       bun scripts/capture-audit.ts --grove <myco.db> --repair <finding-id> [--apply]\n\n' +
     'Repair is dry-run unless --apply is passed, and takes a .bak of the vault before writing.',
   );
@@ -171,7 +171,9 @@ for (const dbPath of groves) {
     ...(typeof args.since === 'string'
       ? { since: Math.floor(new Date(args.since).getTime() / 1000) }
       : {}),
-  });
+  }, typeof args['stale-threshold-ms'] === 'string'
+    ? { staleThresholdMs: Number(args['stale-threshold-ms']) }
+    : undefined);
   console.log(args.json ? JSON.stringify(report, null, 2) : render(report));
   if (groves.length > 1) console.log('\n' + '='.repeat(72) + '\n');
 }

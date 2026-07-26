@@ -10,9 +10,8 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
-  # Older Cursor wrote a flat .txt; newer nests a per-session dir with .jsonl.
-  # Both remain resolvable. Order is .txt-first to preserve the resolution
-  # precedence the adapter used before this moved into the manifest.
+  # Two layouts are in use: a flat `.txt` and a per-session directory holding
+  # `.jsonl`. Order is significant — a session with both resolves to `.txt`.
   transcriptDiscovery:
     roots: ["~/.cursor/projects"]
     patterns:

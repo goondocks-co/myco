@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { checkIntegrity } from '@myco/capture/audit/checks/integrity.js';
 import { checkClosure, hookClosingSymbionts } from '@myco/capture/audit/checks/closure.js';
+import { checkDrift } from '@myco/capture/audit/checks/drift.js';
 import { attributeByPathSlug, checkReconcile, intentionallyDropped } from '@myco/capture/audit/checks/reconcile.js';
 import { captureModel, classifyRecency, symbiontContexts } from '@myco/capture/audit/context.js';
 import { runAudit } from '@myco/capture/audit/index.js';
@@ -43,8 +44,10 @@ function seedBatch(id: string, sessionId: string, over: Partial<Record<string, u
     id,
     session_id: sessionId,
     project_id: 'proj_test',
+    prompt_number: 1,
     kind: 'initial',
     origin: 'human',
+    user_prompt: 'do the thing',
     status: 'completed',
     activity_count: 1,
     content_hash: 'hash',
@@ -54,8 +57,8 @@ function seedBatch(id: string, sessionId: string, over: Partial<Record<string, u
     ...over,
   };
   db.query(
-    `INSERT INTO prompt_batches (id, session_id, project_id, kind, origin, status, activity_count, content_hash, response_summary, started_at, created_at)
-     VALUES ($id, $session_id, $project_id, $kind, $origin, $status, $activity_count, $content_hash, $response_summary, $started_at, $created_at)`,
+    `INSERT INTO prompt_batches (id, session_id, project_id, prompt_number, kind, origin, user_prompt, status, activity_count, content_hash, response_summary, started_at, created_at)
+     VALUES ($id, $session_id, $project_id, $prompt_number, $kind, $origin, $user_prompt, $status, $activity_count, $content_hash, $response_summary, $started_at, $created_at)`,
   ).run(Object.fromEntries(Object.entries(row).map(([k, v]) => [`$${k}`, v as never])));
 }
 
@@ -92,10 +95,22 @@ describe('integrity checks', () => {
 
   it('reports counter drift between a session and its batches', () => {
     seedSession('s1', { prompt_count: 5 });
-    seedBatch('b1', 's1');
+    seedBatch('b1', 's1', { prompt_number: 1 });
 
     const drift = checkIntegrity(db, { dbPath }, NOW).find((f) => f.id === 'session-counter-drift');
     expect(drift?.count).toBe(1);
+  });
+
+  it('does not call a legitimate prompt_number gap drift', () => {
+    // prompt_count caches MAX(prompt_number), not a row count — reserved
+    // numbers and stranded batches leave real gaps. A count-based comparison
+    // reported all 95 gapped sessions in the dogfood vault as drifted.
+    seedSession('s1', { prompt_count: 5 });
+    seedBatch('b1', 's1', { prompt_number: 1 });
+    seedBatch('b2', 's1', { prompt_number: 5 });
+
+    const drift = checkIntegrity(db, { dbPath }, NOW).find((f) => f.id === 'session-counter-drift');
+    expect(drift).toBeUndefined();
   });
 
   it('scopes to a project so one project cannot report another project rows', () => {
@@ -278,14 +293,40 @@ describe('repair', () => {
     expect(db.query('SELECT prompt_count c FROM sessions WHERE id = $id').get({ $id: 's1' })).toEqual({ c: 9 });
   });
 
-  it('recomputes the counter from the rows it summarises when applied', () => {
+  it('recomputes the counter as MAX(prompt_number), the value its writers cache', () => {
     seedSession('s1', { prompt_count: 9 });
-    seedBatch('b1', 's1');
+    seedBatch('b1', 's1', { prompt_number: 1 });
+    seedBatch('b2', 's1', { prompt_number: 5 });
 
     const plan = repair({ dbPath, findingId: 'session-counter-drift', apply: true });
 
     expect(plan.applied).toBe(true);
-    expect(db.query('SELECT prompt_count c FROM sessions WHERE id = $id').get({ $id: 's1' })).toEqual({ c: 1 });
+    // 5, not 2 — writing a row count here would clobber a correct value on
+    // every session whose prompt_number has a gap.
+    expect(db.query('SELECT prompt_count c FROM sessions WHERE id = $id').get({ $id: 's1' })).toEqual({ c: 5 });
+  });
+
+  it('leaves a gapped-but-correct session untouched', () => {
+    seedSession('s1', { prompt_count: 5 });
+    seedBatch('b1', 's1', { prompt_number: 1 });
+    seedBatch('b2', 's1', { prompt_number: 5 });
+
+    const plan = repair({ dbPath, findingId: 'session-counter-drift', apply: true });
+
+    expect(plan.rowCount).toBe(0);
+    expect(db.query('SELECT prompt_count c FROM sessions WHERE id = $id').get({ $id: 's1' })).toEqual({ c: 5 });
+  });
+
+  it('refuses to apply a change set over the threshold without acknowledgement', () => {
+    for (let i = 0; i < 5; i++) {
+      seedSession(`g${i}`, { prompt_count: 9 });
+      seedBatch(`gb${i}`, `g${i}`, { prompt_number: 1 });
+    }
+    const plan = repair({ dbPath, findingId: 'session-counter-drift', apply: true, confirmThreshold: 2 });
+
+    expect(plan.applied).toBe(false);
+    expect(plan.refusal).toContain('confirmation threshold');
+    expect(db.query('SELECT prompt_count c FROM sessions WHERE id = $id').get({ $id: 'g0' })).toEqual({ c: 9 });
   });
 
   it('backs the vault up before its first write', () => {
@@ -349,5 +390,55 @@ describe('path-slug attribution', () => {
   it('returns null for a path belonging to no known project', () => {
     const p = '/Users/chris/.cursor/projects/Users-chris-Repos-other/agent-transcripts/x/x.jsonl';
     expect(attributeByPathSlug(p, roots)).toBeNull();
+  });
+});
+
+describe('envelope drift', () => {
+  it('flags a whole-prompt envelope stored with a human origin', () => {
+    seedSession('s1', { agent: 'claude-code', prompt_count: 1 });
+    seedBatch('b1', 's1', { user_prompt: '<agent-message from="rev">report body</agent-message>' });
+
+    const findings = checkDrift(db, { dbPath }, NOW);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.id).toBe('envelope-classified-human');
+    expect(findings[0]?.title).toContain('<agent-message>');
+  });
+
+  it('leaves a human prompt that merely starts with a tag alone', () => {
+    // Envelope membership is whole-prompt, matching the manifests' fail-safe.
+    // A prefix test would flag anyone asking about markup.
+    seedSession('s1', { agent: 'claude-code', prompt_count: 1 });
+    seedBatch('b1', 's1', { user_prompt: '<div> renders wrong, can you look at the CSS?' });
+
+    expect(checkDrift(db, { dbPath }, NOW)).toEqual([]);
+  });
+
+  it('ignores prompts already carrying a non-human origin', () => {
+    seedSession('s1', { agent: 'claude-code', prompt_count: 1 });
+    seedBatch('b1', 's1', {
+      origin: 'agent_dispatch',
+      user_prompt: '<agent-message from="rev">report</agent-message>',
+    });
+
+    expect(checkDrift(db, { dbPath }, NOW)).toEqual([]);
+  });
+
+  it('dates each tag separately so a closed gap is not aged by an open one', () => {
+    seedSession('s1', { agent: 'claude-code', prompt_count: 2 });
+    seedBatch('old', 's1', {
+      user_prompt: '<teammate-message id="a">x</teammate-message>',
+      created_at: NOW - 200 * DAY,
+    });
+    seedBatch('new', 's1', {
+      prompt_number: 2,
+      user_prompt: '<agent-message from="b">y</agent-message>',
+      created_at: NOW - HOUR,
+    });
+
+    const byTag = Object.fromEntries(
+      checkDrift(db, { dbPath }, NOW).map((f) => [f.title.match(/<([^>]+)>/)?.[1], f.recency]),
+    );
+    expect(byTag['teammate-message']).toBe('legacy');
+    expect(byTag['agent-message']).toBe('active');
   });
 });

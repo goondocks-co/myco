@@ -6,18 +6,15 @@ import { manifestTranscriptDiscovery } from '../../symbionts/transcript-discover
 import type { CaptureModel, Finding, Recency, SymbiontContext } from './types.js';
 
 /**
- * Myco captures through two models, and conflating them is the single largest
- * source of false findings.
+ * Which capture model an agent uses.
  *
  * Hook-and-mining agents register events and have their transcripts mined.
- * Plugin-reported agents (pi, opencode, cline) run a Myco plugin that posts
- * complete events straight to the daemon — `opencode/plugin.ts` states it
- * outright: "Opencode has no on-disk transcript for Myco to mine." For those,
- * a NULL `transcript_path` is correct, and any transcript-shaped check must
- * skip them rather than report them as loss.
+ * Plugin-reported agents run an in-agent Myco plugin that posts complete
+ * events to the daemon and leave no transcript, so a NULL `transcript_path` is
+ * correct for them and transcript-shaped checks must skip them.
  *
- * The discriminator is adapter registration, which is the live runtime truth,
- * rather than a second declaration that could drift from it.
+ * Adapter registration is the discriminator: mining happens exactly when an
+ * adapter resolves.
  */
 export function captureModel(name: string, registry = new SymbiontRegistry()): CaptureModel {
   return registry.getAdapter(name) ? 'hook-and-mining' : 'plugin-reported';

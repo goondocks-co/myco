@@ -156,10 +156,12 @@ export type MatchExpression = z.infer<typeof MatchExpressionSchema>;
  * block is the disk-side counterpart — the same role `planDirs` plays for
  * plans — letting a reader enumerate transcripts the hooks never reported.
  *
- * The `layout` discriminator exists because the shapes differ structurally,
- * not cosmetically: some agents write one file per session, some a directory
- * per session with a fixed entry file inside, and some fan a session out
- * across one file per message with no single transcript at all.
+ * One template language covers every layout in use: a per-session file under a
+ * project slug, a date-sharded rollout name, a per-session directory with the
+ * transcript inside. Expressing all of them as path patterns rather than
+ * discrete layout kinds keeps a single resolver serving both directions —
+ * substitute `{sessionId}` to look one up, capture it to enumerate them all —
+ * so lookup and enumeration cannot drift apart.
  */
 const TranscriptDiscoverySchema = z.object({
   /**

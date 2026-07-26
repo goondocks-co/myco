@@ -82,12 +82,17 @@ export function checkIntegrity(db: Database, opts: AuditOptions, now: number): F
       severity: 'medium',
       title: 'Sessions whose prompt_count disagrees with their batches',
       detail:
-        'sessions.prompt_count is denormalised. Drift means some write path inserted batches without updating it.',
+        'sessions.prompt_count caches MAX(prompt_number), not a row count — both writers in batches.ts derive it that way so the cache stays correct when a caller fills a gap. Drift means some write path inserted batches without bumping it.',
     },
+    // MAX(prompt_number), NOT COUNT(*). prompt_number is legitimately
+    // non-contiguous (reserved numbers, stranded batches), so a count-based
+    // comparison reports every gap as drift.
     `SELECT COUNT(*) n, MIN(s.created_at) first_seen, MAX(s.created_at) last_seen,
             GROUP_CONCAT(s.id) samples
      FROM sessions s
-     WHERE s.prompt_count != (SELECT COUNT(*) FROM prompt_batches pb WHERE pb.session_id = s.id)${session.sql}`,
+     WHERE s.prompt_count != COALESCE(
+       (SELECT MAX(pb.prompt_number) FROM prompt_batches pb WHERE pb.session_id = s.id), 0
+     )${session.sql}`,
     session.params,
   );
 

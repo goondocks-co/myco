@@ -1,18 +1,16 @@
 import type { Database } from 'bun:sqlite';
 
+import { isProjectPaused } from '@myco/grove/registry.js';
+
 import { BUNDLED_TEMPLATES } from '../../../symbionts/templates.generated.js';
 import { classifyRecency, scopeClause } from '../context.js';
 import type { AuditOptions, CoverageGap, Finding } from '../types.js';
 
 /**
- * Session closure is two-mode BY DESIGN, and treating the second mode as a bug
- * is a mistake this project has already made once: the 2026-06-10 bug hunt
- * flagged "codex/antigravity/pi/opencode/windsurf only complete via the stale
- * sweep" as a defect class, and the 2026-06-12 ruling established it was always
- * intentional.
- *
- * So "session is still active" is never a finding on its own. What matters is
- * whether the closure path that *should* have run, did.
+ * Session closure has two legitimate modes: agents registering a SessionEnd
+ * hook close at exit, and the rest close via the stale sweep. An open session
+ * is therefore never a finding on its own — only a closure path that should
+ * have run and did not.
  */
 
 /** Agents that close a session from an exit hook rather than waiting on the sweep. */
@@ -52,14 +50,14 @@ export function checkClosure(
   const thresholdSecs = Math.floor(input.staleThresholdMs / 1000);
   const scope = scopeClause('s', opts.projectId, opts.since);
 
-  // Staleness is INACTIVITY, not age. A session running longer than the
-  // threshold is perfectly normal; one with no prompt or activity in that
-  // window is not. This mirrors `session-maintenance.ts` exactly — including
-  // the fallback to sessions.started_at when a session has neither — so the
-  // audit agrees with the sweep about which sessions the sweep should take.
+  // Staleness is inactivity, not age: the newest of the last prompt and the
+  // last activity, falling back to started_at when a session has neither.
+  // Matches the predicate in `session-maintenance.ts`, so this selects the
+  // same sessions the sweep selects.
   const rows = db
     .query(
-      `SELECT s.agent agent, COUNT(*) n, MIN(s.started_at) first_seen, MAX(s.started_at) last_seen,
+      `SELECT s.agent agent, s.project_id project_id, COUNT(*) n,
+              MIN(s.started_at) first_seen, MAX(s.started_at) last_seen,
               GROUP_CONCAT(s.id) samples
        FROM sessions s
        WHERE s.status = 'active'
@@ -73,18 +71,38 @@ export function checkClosure(
            )),
            s.started_at
          ) < $cutoff${scope.sql}
-       GROUP BY s.agent`,
+       GROUP BY s.agent, s.project_id`,
     )
     .all({ ...scope.params, $cutoff: now - thresholdSecs }) as Array<{
     agent: string;
+    project_id: string | null;
     n: number;
     first_seen: number | null;
     last_seen: number | null;
     samples: string | null;
   }>;
 
+  // The sweep skips projects holding an active write lease, so their sessions
+  // remaining open is expected. A read failure is treated as paused, matching
+  // the sweep's fail-closed admission.
+  const paused = new Map<string, boolean>();
+  const isPaused = (projectId: string | null): boolean => {
+    if (!projectId) return false;
+    let value = paused.get(projectId);
+    if (value === undefined) {
+      try {
+        value = isProjectPaused(projectId).paused;
+      } catch {
+        value = true;
+      }
+      paused.set(projectId, value);
+    }
+    return value;
+  };
+
   for (const row of rows) {
     if (opts.symbiont && row.agent !== opts.symbiont) continue;
+    if (isPaused(row.project_id)) continue;
     const samples = (row.samples ?? '').split(',').filter(Boolean).slice(0, 5);
     const isHookClosing = hookClosing.has(row.agent);
 

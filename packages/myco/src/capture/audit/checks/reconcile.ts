@@ -8,12 +8,11 @@ import { classifyRecency } from '../context.js';
 import type { AuditOptions, CoverageGap, Finding, SymbiontContext } from '../types.js';
 
 /**
- * Reverse sweep: transcripts on disk with no session row at all.
+ * Reverse sweep: transcripts on disk with no session row.
  *
- * Hooks can only report a transcript that they fired for, so forward-only
- * checking is blind to whole-session loss by construction — if the hook never
- * ran, nothing in the vault points at the file. This is the direction that
- * finds it.
+ * A hook reports only transcripts it fired for, so a session whose hooks never
+ * ran leaves nothing in the vault pointing at its file. Enumerating disk is the
+ * only direction that surfaces those.
  */
 
 const MAX_HEADER_LINES = 40;
@@ -28,20 +27,14 @@ function readDotPath(source: unknown, dotPath: string): string | null {
 }
 
 /**
- * True when this transcript is one Myco deliberately does not give a session
- * row of its own.
+ * True when a transcript is one that correctly has no session row of its own.
  *
- * Two distinct reasons, both correct, and both indistinguishable from loss if
- * you only look at the database:
+ * Covers sub-agent threads, whose turns are mined onto the parent session, and
+ * transcripts a manifest drop rule excludes. Both are indistinguishable from
+ * loss in the database alone.
  *
- *  1. A sub-agent thread. Its turns are mined and reattributed to the PARENT
- *     session, so the content is captured even though the child transcript has
- *     no row. Sub-agents are the same session, not a child session.
- *  2. A manifest drop rule — `codex exec` runs, ephemeral sub-invocations.
- *
- * This mirrors `TranscriptMiner.transcriptGate`'s order exactly (sub-agent
- * resolution first, drop rules second) and calls the same helpers, so the
- * audit cannot disagree with what capture actually did.
+ * Sub-agent resolution runs before the drop rules, matching the order in
+ * `TranscriptMiner.transcriptGate`, and calls the same helpers.
  */
 export function intentionallyDropped(agent: string, filePath: string): boolean {
   try {
@@ -63,15 +56,13 @@ export function intentionallyDropped(agent: string, filePath: string): boolean {
 /**
  * Attribute a transcript to a project from its own path.
  *
- * Agents that record no working directory inside the transcript often encode
- * it in the directory layout instead — Cursor stores under a
- * `Users-chris-Repos-myco` slug, Claude Code under `-Users-chris-Repos-myco`.
- * Matching a slugified project root against whole path segments recovers the
- * project without knowing any agent's convention, so it needs no per-agent
- * code and works for any agent that happens to slug its paths.
+ * Agents that record no working directory may encode the project in the
+ * directory layout, as a slug of its absolute path with or without a leading
+ * separator. Matching a slugified project root against whole path segments
+ * covers both conventions without per-agent knowledge.
  *
- * Whole-segment matching matters: a substring test would let `/repo/app`
- * claim transcripts belonging to `/repo/app-server`.
+ * Matching requires a whole segment: `/repo/app` must not claim transcripts
+ * under `/repo/app-server`.
  */
 export function attributeByPathSlug(filePath: string, projectRoots: Iterable<string>): string | null {
   const segments = new Set(filePath.split('/').filter(Boolean));
@@ -172,16 +163,20 @@ export function checkReconcile(
     if (orphans.length === 0) continue;
 
     const attributed: string[] = [];
+    // Orphans carry no database timestamp, so recency comes from the
+    // transcript's own mtime.
+    let firstSeen: number | undefined;
+    let lastSeen: number | undefined;
     let unattributable = 0;
     let deliberate = 0;
     for (const orphan of orphans) {
-      // A transcript the manifest refuses to register is absent by design.
+      // Transcripts the manifest excludes are expected to have no row.
       if (intentionallyDropped(symbiont.name, orphan.filePath)) {
         deliberate += 1;
         continue;
       }
-      // Recorded cwd is the strongest signal; the path slug recovers projects
-      // for agents that record none.
+      // Recorded cwd where the manifest declares one; the path slug covers
+      // agents that record none.
       const cwd = discovery.transcriptCwdPath
         ? transcriptCwd(orphan.filePath, discovery.transcriptCwdPath)
         : null;
@@ -194,6 +189,13 @@ export function checkReconcile(
       if (!projectId) continue; // belongs to a project this grove does not track
       if (opts.projectId && projectId !== opts.projectId) continue;
       attributed.push(orphan.sessionId);
+      try {
+        const modified = Math.floor(fs.statSync(orphan.filePath).mtimeMs / 1000);
+        firstSeen = firstSeen === undefined ? modified : Math.min(firstSeen, modified);
+        lastSeen = lastSeen === undefined ? modified : Math.max(lastSeen, modified);
+      } catch {
+        // Unreadable mtime just leaves recency unknown for this batch.
+      }
     }
 
     if (deliberate > 0) {
@@ -222,7 +224,9 @@ export function checkReconcile(
           'These sessions belong to a project this grove tracks, yet nothing in the vault references them — capture never ran for them at all. Check hook installation and the daemon claim for this agent.',
         count: attributed.length,
         symbiont: symbiont.name,
-        recency: classifyRecency(now, now),
+        ...(firstSeen !== undefined ? { firstSeen } : {}),
+        ...(lastSeen !== undefined ? { lastSeen } : {}),
+        recency: classifyRecency(lastSeen, now),
         samples: attributed.slice(0, 5),
       });
     }

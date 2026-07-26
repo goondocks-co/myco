@@ -40,4 +40,23 @@ describe('codex AGENTS.md context injection', () => {
     });
     expect(decision.action).toBe('pass');
   });
+
+  it('keeps a human prompt that quotes the marker mid-sentence', () => {
+    // The reason the enveloped rule requires BOTH conditions. A bare substring
+    // match paired with `drop` would discard this entirely, and a drop is
+    // unrecoverable — only proven noise may be dropped.
+    const decision = evaluateUserPromptRules('codex', {
+      prompt: 'why does the rule key on "# AGENTS.md instructions" instead of a tag?',
+      transcriptPath: '/tmp/rollout.jsonl',
+    });
+    expect(decision.action).toBe('pass');
+  });
+
+  it('keeps an envelope-prefixed prompt that does NOT carry the marker', () => {
+    const decision = evaluateUserPromptRules('codex', {
+      prompt: '<recommended_plugins>\nplugin list\n</recommended_plugins>\nplease review this',
+      transcriptPath: '/tmp/rollout.jsonl',
+    });
+    expect(decision.action).not.toBe('drop');
+  });
 });

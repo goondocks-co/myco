@@ -28,9 +28,7 @@ hookFields:
   toolInput: tool_input
   toolOutput: tool_response
 capture:
-  # Verified 2026-07-26: Copilot DOES have a predictable transcript layout —
-  # a per-session directory holding an events log. The adapter previously
-  # returned null here on the assumption that it did not.
+  # One directory per session, holding an events log.
   transcriptDiscovery:
     roots: ["~/.copilot/session-state"]
     patterns:

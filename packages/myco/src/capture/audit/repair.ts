@@ -24,6 +24,14 @@ export interface RepairOptions {
   apply?: boolean;
   /** Above this many rows the caller must confirm again before applying. */
   confirmThreshold?: number;
+  /**
+   * Explicit acknowledgement of a change set larger than `confirmThreshold`.
+   *
+   * `apply` alone is not enough for a large repair: the point of the threshold
+   * is that the operator has seen the itemised rows, and a flag they set before
+   * ever running the dry run proves nothing.
+   */
+  acknowledgeLargeChange?: boolean;
 }
 
 export interface RepairPlan {
@@ -60,7 +68,13 @@ const REFUSALS: Record<string, string> = {
     'Refused by design. These batches hold captured user work whose session row is missing; the only mechanical "fix" would be deletion, which is forbidden. Re-parent deliberately or escalate.',
 };
 
-/** Recompute denormalised session counters from the rows they summarise. */
+/**
+ * Recompute `sessions.prompt_count` as `MAX(prompt_number)`, the derivation the
+ * writers in `db/queries/batches.ts` use.
+ *
+ * `prompt_number` is legitimately non-contiguous, so a row count and this
+ * derivation disagree on any session with a gap.
+ */
 function planCounterRecompute(
   db: ReturnType<typeof openDatabase>,
   projectId?: string,
@@ -70,9 +84,11 @@ function planCounterRecompute(
   return db
     .query(
       `SELECT s.id id, s.prompt_count AS "from",
-              (SELECT COUNT(*) FROM prompt_batches pb WHERE pb.session_id = s.id) AS "to"
+              COALESCE((SELECT MAX(pb.prompt_number) FROM prompt_batches pb WHERE pb.session_id = s.id), 0) AS "to"
          FROM sessions s
-        WHERE s.prompt_count != (SELECT COUNT(*) FROM prompt_batches pb WHERE pb.session_id = s.id)${scope}`,
+        WHERE s.prompt_count != COALESCE(
+          (SELECT MAX(pb.prompt_number) FROM prompt_batches pb WHERE pb.session_id = s.id), 0
+        )${scope}`,
     )
     .all(params) as Array<{ id: string; from: number; to: number }>;
 }
@@ -117,6 +133,12 @@ export function repair(opts: RepairOptions): RepairPlan {
     };
 
     if (!opts.apply || rows.length === 0) return plan;
+
+    // Enforced here so the limit applies to every caller, not only the CLI.
+    if (plan.requiresConfirmation && !opts.acknowledgeLargeChange) {
+      plan.refusal = `${rows.length} rows exceeds the ${threshold}-row confirmation threshold. Review the itemised changes above, then re-run with acknowledgeLargeChange to apply.`;
+      return plan;
+    }
 
     const backupPath = `${opts.dbPath}.bak`;
     if (!fs.existsSync(backupPath)) fs.copyFileSync(opts.dbPath, backupPath);

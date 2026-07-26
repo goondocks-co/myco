@@ -1,9 +1,6 @@
 import type { SymbiontAdapter, TranscriptTurn } from './adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
 import { findTranscriptFor } from './transcript-discovery.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 
 /** Windsurf JSONL entry type field values. */
 const USER_INPUT_TYPE = 'user_input';

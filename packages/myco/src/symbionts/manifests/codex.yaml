@@ -143,17 +143,25 @@ capture:
     - event: user_prompt
       scope: this_agent
       when:
-        # `prompt_starts_with` here until 2026-07: Codex began prefixing the
-        # injection with a `<recommended_plugins>…</recommended_plugins>`
-        # envelope, so the marker stopped being at position 0 and the rule
-        # silently stopped firing. 55 injections landed as captured prompts in
-        # a single day before the fidelity audit surfaced it.
-        #
-        # `prompt_contains` keys on the marker wherever the runtime puts it,
-        # so reordering or prepending another envelope cannot break it again.
-        prompt_contains: "# AGENTS.md instructions"
+        prompt_starts_with: "# AGENTS.md instructions"
       action: drop
       reason: agents-md-context-injection
+
+    # The same injection when Codex prefixes it with a `<recommended_plugins>`
+    # envelope, which moves the marker off position 0.
+    #
+    # Both conditions are required. `drop` discards the message outright, so a
+    # bare substring match would destroy any real prompt quoting this marker;
+    # requiring the envelope as well confines the rule to the injection. A
+    # change to the envelope stops this rule matching, leaving the injection
+    # captured as noise rather than destroying user content.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [recommended_plugins]
+        prompt_contains: "# AGENTS.md instructions"
+      action: drop
+      reason: agents-md-context-injection-enveloped
 
     # Codex sub-agent completion notifications.
     #

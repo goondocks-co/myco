@@ -8,11 +8,9 @@ import type { TranscriptDiscovery } from './manifest-schema.js';
 /**
  * Manifest-driven transcript location.
  *
- * Every agent's on-disk layout used to live as a hand-rolled `findTranscript`
- * in its adapter, which put agent-specific paths in code and gave enumeration
- * no home at all. Both directions now derive from one `transcriptDiscovery`
- * template set in the manifest, so a layout change is a manifest edit and the
- * lookup and enumeration paths cannot disagree about where transcripts live.
+ * Lookup and enumeration both derive from one `transcriptDiscovery` template
+ * set, so a layout change is a manifest edit and the two directions resolve
+ * against the same declaration.
  */
 
 const SESSION_ID_TOKEN = '{sessionId}';
@@ -207,8 +205,13 @@ export function enumerateTranscripts(
   const seen = new Map<string, DiscoveredTranscript>();
   for (const pattern of discovery.patterns) {
     for (const root of discovery.roots) {
+      // One budget shared across every (pattern, root) pair, so the returned
+      // count never exceeds `limit` and `length >= limit` means truncation.
+      const remaining = limit - seen.size;
+      if (remaining <= 0) return [...seen.values()];
+
       const found: DiscoveredTranscript[] = [];
-      walk(expandRoot(root), patternSegments(pattern, null, idPattern), 0, null, found, limit);
+      walk(expandRoot(root), patternSegments(pattern, null, idPattern), 0, null, found, remaining);
       // Earlier patterns win, matching resolveTranscriptPath's precedence.
       for (const item of found) if (!seen.has(item.sessionId)) seen.set(item.sessionId, item);
     }
