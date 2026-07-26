@@ -25,7 +25,12 @@ export interface PausedInfo {
   reason: string;
   since: number;
   owner_op: string;
-  grove_id: string;
+  /**
+   * The Grove the paused project sits in, or null when it is registered
+   * nowhere — the pause is held on the PROJECT, and an operation that moves a
+   * project between registries deregisters it for part of the window.
+   */
+  grove_id: string | null;
 }
 
 export interface PausedErrorBody extends ErrorBody {
