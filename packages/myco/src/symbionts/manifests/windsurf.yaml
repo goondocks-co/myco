@@ -18,6 +18,11 @@ hookFields:
   toolInput: tool_info
   prompt: tool_info.user_prompt
 capture:
+  # Windsurf stores transcripts flat, keyed by trajectory id.
+  transcriptDiscovery:
+    roots: ["~/.windsurf/transcripts"]
+    patterns:
+      - "{sessionId}.jsonl"
   planDirs:
     - ~/.windsurf/plans/
 registration:

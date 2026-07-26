@@ -1,9 +1,6 @@
 import type { SymbiontAdapter } from './adapter.js';
-import { findJsonlInSubdirs, parseJsonlTurns } from './adapter.js';
-import path from 'node:path';
-import os from 'node:os';
-
-const TRANSCRIPT_BASE = path.join(os.homedir(), '.claude', 'projects');
+import { parseJsonlTurns } from './adapter.js';
+import { findTranscriptFor } from './transcript-discovery.js';
 
 export const claudeCodeAdapter: SymbiontAdapter = {
   name: 'claude-code',
@@ -19,7 +16,7 @@ export const claudeCodeAdapter: SymbiontAdapter = {
     toolOutput: 'tool_output',
   },
 
-  findTranscript: (sessionId) => findJsonlInSubdirs(TRANSCRIPT_BASE, sessionId),
+  findTranscript: (sessionId) => findTranscriptFor('claude-code', sessionId),
 
   parseTurns: (content) => parseJsonlTurns(content, {
     roleField: 'type',
