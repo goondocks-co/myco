@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 
+import { isProjectPaused } from '@myco/grove/registry.js';
+
 import { openDatabase } from '../../db/client.js';
 
 /**
@@ -78,19 +80,19 @@ const REFUSALS: Record<string, string> = {
 function planCounterRecompute(
   db: ReturnType<typeof openDatabase>,
   projectId?: string,
-): Array<{ id: string; from: number; to: number }> {
+): Array<{ id: string; project_id: string | null; from: number; to: number }> {
   const scope = projectId ? ' AND s.project_id = $projectId' : '';
   const params = projectId ? { $projectId: projectId } : {};
   return db
     .query(
-      `SELECT s.id id, s.prompt_count AS "from",
+      `SELECT s.id id, s.project_id project_id, s.prompt_count AS "from",
               COALESCE((SELECT MAX(pb.prompt_number) FROM prompt_batches pb WHERE pb.session_id = s.id), 0) AS "to"
          FROM sessions s
         WHERE s.prompt_count != COALESCE(
           (SELECT MAX(pb.prompt_number) FROM prompt_batches pb WHERE pb.session_id = s.id), 0
         )${scope}`,
     )
-    .all(params) as Array<{ id: string; from: number; to: number }>;
+    .all(params) as Array<{ id: string; project_id: string | null; from: number; to: number }>;
 }
 
 export function repair(opts: RepairOptions): RepairPlan {
@@ -133,6 +135,24 @@ export function repair(opts: RepairOptions): RepairPlan {
     };
 
     if (!opts.apply || rows.length === 0) return plan;
+
+    // Project write admission (guarantee W1). A project holding an active write
+    // lease is mid residency transition or Grove move, and durable state
+    // written into the source Grove during that window is deleted unshipped.
+    // Fails closed: an unreadable admission state blocks the write.
+    const blocked = new Set<string>();
+    for (const row of rows) {
+      if (!row.project_id) continue;
+      try {
+        if (isProjectPaused(row.project_id).paused) blocked.add(row.project_id);
+      } catch {
+        blocked.add(row.project_id);
+      }
+    }
+    if (blocked.size > 0) {
+      plan.refusal = `Write admission denied for project(s) ${[...blocked].join(', ')}. A project under an active write lease is mid-transition, and writes into the source Grove during that window are discarded. Re-run once the transition completes.`;
+      return plan;
+    }
 
     // Enforced here so the limit applies to every caller, not only the CLI.
     if (plan.requiresConfirmation && !opts.acknowledgeLargeChange) {

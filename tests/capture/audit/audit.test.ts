@@ -361,6 +361,49 @@ describe('repair', () => {
     expect(plan.refusal).toContain('forbidden');
   });
 
+  it('refuses to write into a project holding an active write lease', () => {
+    // Guarantee W1: a leased project is mid residency transition or Grove move,
+    // and durable state written into the source Grove during that window is
+    // deleted unshipped.
+    const leasedProject = `proj_${'a'.repeat(32)}`;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'repair-admission-'));
+    const previousHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = home;
+    try {
+      fs.mkdirSync(path.join(home, 'leases'), { recursive: true });
+      fs.writeFileSync(
+        path.join(home, 'leases', `${leasedProject}.json`),
+        JSON.stringify({
+          project_id: leasedProject,
+          owner_op: 'grove-move',
+          reason: 'residency transition',
+          since: NOW,
+          generation: 1,
+          released_at: null,
+        }),
+      );
+
+      db.query(
+        `INSERT INTO sessions (id, agent, project_id, project_root, started_at, status, prompt_count, created_at)
+         VALUES ('leased','claude-code',$p,'/repo/leased',$t,'completed',9,$t)`,
+      ).run({ $p: leasedProject, $t: NOW - DAY });
+      db.query(
+        `INSERT INTO prompt_batches (id, session_id, project_id, prompt_number, kind, origin, status, created_at)
+         VALUES ('lb1','leased',$p,1,'initial','human','completed',$t)`,
+      ).run({ $p: leasedProject, $t: NOW - DAY });
+
+      const plan = repair({ dbPath, findingId: 'session-counter-drift', apply: true });
+
+      expect(plan.applied).toBe(false);
+      expect(plan.refusal).toContain('Write admission denied');
+      expect(db.query(`SELECT prompt_count c FROM sessions WHERE id = 'leased'`).get()).toEqual({ c: 9 });
+    } finally {
+      if (previousHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousHome;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('refuses an unknown finding id rather than doing nothing quietly', () => {
     const plan = repair({ dbPath, findingId: 'not-a-finding', apply: true });
     expect(plan.supported).toBe(false);
