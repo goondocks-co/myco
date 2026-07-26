@@ -14,6 +14,7 @@ import {
   pauseProject,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
+import { createProjectId } from '@myco/grove/ids.js';
 import type { DaemonLogger } from '@myco/daemon/logger.js';
 
 function fakeLogger(): DaemonLogger {
@@ -27,9 +28,13 @@ function fakeLogger(): DaemonLogger {
 
 describe('resumeOrphanedPauses', () => {
   let home: string;
+let PROJECT_A: string;
+let PROJECT_B: string;
   let previousHome: string | undefined;
 
   beforeEach(() => {
+  PROJECT_A = createProjectId();
+  PROJECT_B = createProjectId();
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-startup-pause-'));
     previousHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = home;
@@ -46,11 +51,11 @@ describe('resumeOrphanedPauses', () => {
   it('force-resumes a pause older than the staleness threshold', () => {
     const grove = createGrove('Test', home);
     registerProjectInGrove(grove.id, {
-      projectId: 'proj_aaaa',
+      projectId: PROJECT_A,
       projectName: 'A',
       projectRoot: '/tmp/a',
     }, home);
-    pauseProject(grove.id, 'proj_aaaa', 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
 
     // Advance the clock past the staleness window.
     const futureMs = Date.now() + (ORPHAN_PAUSE_STALENESS_SECONDS + 60) * 1000;
@@ -62,17 +67,17 @@ describe('resumeOrphanedPauses', () => {
     expect(result.scanned).toBe(1);
     expect(result.resumed).toBe(1);
     expect(result.preserved).toBe(0);
-    expect(isProjectPaused('proj_aaaa', home).paused).toBe(false);
+    expect(isProjectPaused(PROJECT_A, home).paused).toBe(false);
   });
 
   it('preserves a pause younger than the staleness threshold', () => {
     const grove = createGrove('Test', home);
     registerProjectInGrove(grove.id, {
-      projectId: 'proj_aaaa',
+      projectId: PROJECT_A,
       projectName: 'A',
       projectRoot: '/tmp/a',
     }, home);
-    pauseProject(grove.id, 'proj_aaaa', 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
 
     const result = resumeOrphanedPauses(fakeLogger(), {
       now: () => Date.now() + 30 * 1000,
@@ -82,7 +87,7 @@ describe('resumeOrphanedPauses', () => {
     expect(result.scanned).toBe(1);
     expect(result.resumed).toBe(0);
     expect(result.preserved).toBe(1);
-    const status = isProjectPaused('proj_aaaa', home);
+    const status = isProjectPaused(PROJECT_A, home);
     expect(status.paused).toBe(true);
     if (!status.paused) throw new Error('unreachable');
     expect(status.owner_op).toBe('op-1');
@@ -92,17 +97,17 @@ describe('resumeOrphanedPauses', () => {
     const groveA = createGrove('Alpha', home);
     const groveB = createGrove('Beta', home);
     registerProjectInGrove(groveA.id, {
-      projectId: 'proj_aaaa',
+      projectId: PROJECT_A,
       projectName: 'A',
       projectRoot: '/tmp/a',
     }, home);
     registerProjectInGrove(groveB.id, {
-      projectId: 'proj_bbbb',
+      projectId: PROJECT_B,
       projectName: 'B',
       projectRoot: '/tmp/b',
     }, home);
-    pauseProject(groveA.id, 'proj_aaaa', 'grove-move', 'op-1', home);
-    // proj_bbbb is unpaused.
+    pauseProject(groveA.id, PROJECT_A, 'grove-move', 'op-1', home);
+    // PROJECT_B is unpaused.
 
     const futureMs = Date.now() + (ORPHAN_PAUSE_STALENESS_SECONDS + 60) * 1000;
     const result = resumeOrphanedPauses(fakeLogger(), {
@@ -112,6 +117,6 @@ describe('resumeOrphanedPauses', () => {
 
     expect(result.scanned).toBe(2);
     expect(result.resumed).toBe(1);
-    expect(isProjectPaused('proj_aaaa', home).paused).toBe(false);
+    expect(isProjectPaused(PROJECT_A, home).paused).toBe(false);
   });
 });
