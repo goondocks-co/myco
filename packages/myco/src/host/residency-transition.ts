@@ -26,6 +26,11 @@ import { countPendingForProjects, dropPendingForProjects } from '../db/queries/t
 import { slugifyGroveName, projectScope, type GroveProjectId } from '../grove/ids.js';
 import { deregisterProjectInGrove, registerProjectInGrove, resolveDefaultGrove } from '../grove/registry.js';
 import { findRegisteredProjectById } from '../grove/registry-resolve.js';
+import {
+  acquireProjectLease,
+  forceReleaseProjectLease,
+  ProjectLeaseHeldError,
+} from '../grove/project-lease.js';
 import type { DaemonLogger } from '../daemon/logger.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import type {
@@ -82,6 +87,50 @@ export interface ResidencyDaemonDeps {
  * refusal clears the journal (nothing has moved yet) and rethrows the coded
  * error for the caller to surface.
  */
+/** Lease owner ids. Distinct per direction so a stuck lease names what took it. */
+export const RESIDENCY_ATTACH_OP = 'residency-attach';
+export const RESIDENCY_DETACH_OP = 'residency-detach';
+
+/**
+ * Take the project write lease for a residency transition.
+ *
+ * A lease already held by a DIFFERENT operation (a `grove move`, or the other
+ * residency direction) means the project is mid-flight somewhere else, and
+ * starting here would race it. Refuse with a coded error rather than proceed —
+ * nothing durable has happened yet at this point, so refusing is free.
+ *
+ * Re-acquiring as the same owner is idempotent, which is what lets a
+ * crash-resumed transition re-enter without tripping over its own lease.
+ */
+function acquireResidencyLease(
+  projectId: string,
+  ownerOp: string,
+  reason: string,
+  deps: ResidencyDaemonDeps,
+): void {
+  try {
+    acquireProjectLease(projectId, ownerOp, reason, deps.mycoHome);
+  } catch (err) {
+    if (err instanceof ProjectLeaseHeldError) {
+      throw codedMembershipError(
+        'project_write_lease_held',
+        `Cannot start: ${projectId} is already being moved by ${err.holder.owner_op} `
+        + `(${err.holder.reason}). Wait for that to finish, or cancel it first.`,
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Release the lease at the end of a transition. Force-released rather than
+ * owner-matched: the terminal sweep may run in a later process than the one
+ * that acquired, and by this point the transition is over either way.
+ */
+export function releaseResidencyLease(projectId: string, mycoHome?: string): void {
+  forceReleaseProjectLease(projectId, mycoHome);
+}
+
 export function beginAttachResidency(
   ctx: ResidencyAttachContext,
   deps: ResidencyDaemonDeps,
@@ -98,6 +147,15 @@ export function beginAttachResidency(
 
   const local = findRegisteredProjectById(ctx.projectId, deps.mycoHome);
   const projectName = local?.project.name ?? path.basename(path.resolve(ctx.root));
+
+  // Step 0 — take the write lease BEFORE anything durable happens. Every gate
+  // that keeps other writers out of this project keys on the lease, so it has
+  // to be held before the backfill snapshot is taken: a row written into the
+  // source Grove after the snapshot is deleted by `deleteAfterAck` without ever
+  // being shipped. Acquired directly rather than through `pauseProject`,
+  // because parking deregisters the project and `pauseProject` requires a
+  // registered row.
+  acquireResidencyLease(ctx.projectId, RESIDENCY_ATTACH_OP, 'attaching to a Team Host', deps);
 
   // Step 1 — the journal is the first durable act; every later step is
   // idempotent and resumable from it.
@@ -297,6 +355,8 @@ export function abortResidency(projectId: string, deps: ResidencyDaemonDeps): { 
       backup_ref: journal.backup_ref,
     });
     clearResidencyJournal(projectId);
+    // The transition is over — writers may proceed against this project again.
+    releaseResidencyLease(projectId, deps.mycoHome);
     // Kick a pass so any OTHER in-flight transition resumes promptly.
     deps.kickResidencyDrain?.();
     return { ok: true };
@@ -305,6 +365,7 @@ export function abortResidency(projectId: string, deps: ResidencyDaemonDeps): { 
   if (journal.phase === 'pulling') {
     clearResidencyJournal(projectId);
     clearResidencyStaging(projectId);
+    releaseResidencyLease(projectId, deps.mycoHome);
     deps.logger?.info(LOG_KINDS.RESIDENCY_ABORT, 'residency detach aborted before flip — still attached', {
       project_id: projectId,
     });
@@ -351,6 +412,8 @@ export function beginDetachResidency(ctx: ResidencyDetachContext, deps: Residenc
       + 'Grove first, then detach.',
     );
   }
+
+  acquireResidencyLease(ctx.projectId, RESIDENCY_DETACH_OP, 'detaching from a Team Host', deps);
 
   // project_name: the attach-era journal is gone and the AttachRef carries no
   // name, so basename(root) is the honest fallback (see the T4 report flag).

@@ -78,7 +78,10 @@ export type MembershipErrorCode =
    *  already moved to the host (the local copy is gone — detach is the way back),
    *  or a detach that already flipped to local (`applying`/`rehoming` — let the
    *  drain finish). Surfaced by the residency-abort route. */
-  | 'residency_abort_too_late';
+  | 'residency_abort_too_late'
+  /** Another operation holds this project's write lease (a move, or the other
+   *  residency direction). Nothing durable has happened; retry once it ends. */
+  | 'project_write_lease_held';
 
 /** Build an Error carrying a stable membership code alongside its
  *  (CLI-voiced) message. The message still prints verbatim in terminals;

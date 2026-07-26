@@ -58,7 +58,7 @@ import { detachProject, getHostMembershipSnapshot } from './registry.js';
 import { nativePerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { registerProjectInGrove } from '../grove/registry.js';
 import type { RemoteTarget } from './routing.js';
-import { completeAttachParking, type ResidencyDaemonDeps } from './residency-transition.js';
+import { completeAttachParking, releaseResidencyLease, type ResidencyDaemonDeps } from './residency-transition.js';
 import {
   ROUTED_RESIDENCY_ROWS_PATH,
   ROUTED_RESIDENCY_PULL_PATH,
@@ -347,6 +347,9 @@ export async function runResidencyTransitions(deps: ResidencyDrainDeps): Promise
     if (journal.phase === 'done') {
       clearResidencyJournal(journal.project_id, teamsHome);
       clearResidencyStaging(journal.project_id, teamsHome);
+      // A crash between the terminal clear and the release would otherwise
+      // strand the lease, locking every writer out of the project forever.
+      releaseResidencyLease(journal.project_id, deps.mycoHome);
       continue;
     }
     try {
@@ -565,6 +568,8 @@ async function runDetachTransition(
     advanceResidencyPhase(journal.project_id, 'done', {}, teamsHome);
     clearResidencyJournal(journal.project_id, teamsHome);
     clearResidencyStaging(journal.project_id, teamsHome);
+    // Last act: the project is fully home, so writers may proceed again.
+    releaseResidencyLease(journal.project_id, deps.mycoHome);
 
     deps.logger?.info(LOG_KINDS.RESIDENCY_COMPLETE, 'residency detach transition complete', {
       project_id: journal.project_id, host_id: journal.host_id,
@@ -780,6 +785,9 @@ function deleteAfterAck(journal: ResidencyJournal, deps: ResidencyDrainDeps): vo
   });
   advanceResidencyPhase(journal.project_id, 'done', {}, deps.teamsHome);
   clearResidencyJournal(journal.project_id, deps.teamsHome);
+  // Last act: the rows are on the host and the local copy is gone, so the
+  // project is no longer mid-flight and writers may proceed again.
+  releaseResidencyLease(journal.project_id, deps.mycoHome);
   deps.withGroveDb(journal.source_grove_id, () => pruneOld());
 }
 
