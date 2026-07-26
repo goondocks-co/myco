@@ -13,6 +13,8 @@ Parse out:
 - **Source session** (id)
 - **Source checkout** (cwd, branch, HEAD, dirty summary)
 - **Referenced plans** (ids, titles, roles, statuses)
+- **Decisions closed** (settled decisions with pointers; may be absent in older blocks)
+- **Done definition** (where it lives; may be absent in older blocks)
 - **Suggested skills** (names, required/optional, reasons, fallbacks)
 - **Evidence anchors** (files, commands/tests, spores, sessions, retrieve hints)
 - **Resume queries** (targeted `myco_search` queries)
@@ -35,6 +37,18 @@ Before mutating any plan status:
 3. Read every referenced plan with
    `myco_plans({"op":"get","id":"<plan-id>"})`. Skim title, status, tags, and
    current next steps. The digest carries intention; the plans carry state.
+4. **Staleness cross-check.** Compare the handoff's Generated timestamp with
+   the work plan's own sections. A plan updated after the handoff was
+   generated may have advanced past the digest — if a plan section records
+   the digest's resume point as already done, the plan is the newer truth:
+   recompute the resume point from the plan's most recent sections and say
+   so in the landing summary. Never execute a digest resume point that a
+   plan section records as complete.
+5. **Precedence.** The digest is an index, not a source. Where it disagrees
+   with a referenced spec or plan, the spec/plan wins. Where code disagrees
+   with a spec, look for the failing gate — and if no gate exists for that
+   property, writing it is part of the work; do not re-derive design from
+   the digest's retelling.
 
 ## 3. Load skills and Cortex guidance
 
@@ -82,10 +96,13 @@ Skip this for a narrow, well-scoped resume.
 ## 6. Summarize the landing and resume
 
 Tell the user, in a few lines: where the prior session left off (from the
-digest), source checkout/freshness result, which referenced plans you read,
-which plan(s) you marked `in_progress`, which skills/Cortex guidance you loaded
-or skipped, any targeted context pulled, and the concrete next step you're about
-to take. Then continue the work.
+digest), source checkout/freshness result — including whether the plan had
+advanced past the digest and, if so, the recomputed resume point — which
+referenced plans you read, which decisions arrived closed (so the user can
+see they will not be re-litigated), which plan(s) you marked `in_progress`,
+which skills/Cortex guidance you loaded or skipped, any targeted context
+pulled, and the concrete next step you're about to take. Then continue the
+work.
 
 ## CLI fallback (no MCP)
 

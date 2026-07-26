@@ -45,6 +45,25 @@ on **intention**, the part Myco doesn't already store:
 - **Evidence anchors** — files, commands/tests, spores, sessions, search result
   ids, retrieve hints, or runtime proof that would be expensive to rediscover.
 
+**The digest is an index, not a source.** Intention that must survive a chain
+of handoffs belongs in durable artifacts — specs, plan sections, decision
+records, merged gates — and the digest points at them. State the precedence
+rule in the digest itself: where the digest disagrees with a referenced spec
+or plan, the spec/plan wins. A digest that restates design instead of pointing
+at its record is how intention drifts across handoffs: each retelling mutates
+a little, and nothing can detect the drift.
+
+**Decisions closed.** Fill the block's `Decisions closed` field with one line
+per settled decision, each pointing at its durable record. Chained handoffs
+lose architecture precisely here — a later session re-derives a decided
+question from a compressed retelling and lands somewhere else. Naming the
+decision AND its record makes re-litigation detectable instead of silent.
+
+**Done definition.** For a workstream that spans sessions, name where the
+definition-of-done lives. If none exists, write `none yet — defining it is the
+first resume task`: without one, every receiving session inherits an
+open-ended mandate and the work refines indefinitely.
+
 **Defer to the plan.** State, next-steps, and open-questions usually already live
 in the plan — do not duplicate them in the digest. Carry them in the digest
 **only** when you are creating a *new dedicated handoff plan* (there is no work
@@ -94,11 +113,23 @@ Before saving, run this freshness check:
 
 - Replace any existing handoff block; never append a second one.
 - Remove obsolete next steps and stale evidence.
+- The resume point must reflect the plan's LATEST sections — a block that
+  says "do X" while a plan section records X as done sends the receiver
+  backwards.
 - Verify referenced plans are not `completed` or `abandoned` unless included as
   historical context.
+- If this handoff supersedes a handoff living on a DIFFERENT plan, replace
+  that older block with a one-line consumed marker pointing at this plan,
+  so a future session reading the old plan is forwarded instead of resumed
+  into stale state.
 - Strip secrets, keys, and PII.
 - Reject generic progress-summary prose that lacks decisions, gotchas, or
   evidence anchors.
+
+**Refresh discipline.** Re-run PREPARE at every major checkpoint — a merge, a
+landed decision, a direction change — not only at session end. Replacement is
+idempotent, so refreshing costs one save; a stale block costs a receiving
+session resuming into work that already happened.
 
 ### 5a. Append/replace onto an existing plan (idempotent)
 

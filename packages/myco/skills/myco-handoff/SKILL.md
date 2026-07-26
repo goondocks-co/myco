@@ -46,6 +46,8 @@ block — a plan never accumulates stale handoffs):
 - **Source session:** <session-id>
 - **Source checkout:** <cwd>; branch <branch>; HEAD <short-sha>; dirty <yes/no + summary>
 - **Referenced plans:** <plan-id> (<title>; role: work/spec/context; status: <status>)
+- **Decisions closed:** <one line per settled decision the receiver must not re-litigate, each with a pointer to its durable record; or "none">
+- **Done definition:** <where the definition-of-done lives, or "none yet — defining it is the first resume task">
 - **Suggested skills:** myco (required; why: <reason>; fallback: <path/tool>), <skill> (optional; why: <reason>; fallback: <path/tool>)
 - **Evidence anchors:** <files, commands/tests, spores, sessions, search result ids, retrieve hints>
 - **Resume queries:** <targeted myco_search queries, or "none">
