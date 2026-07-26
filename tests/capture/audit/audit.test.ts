@@ -423,6 +423,25 @@ describe('envelope drift', () => {
     expect(checkDrift(db, { dbPath }, NOW)).toEqual([]);
   });
 
+  it('flags a closed envelope followed by more content — the runtime-prefix shape', () => {
+    // The shape that displaces a marker a `prompt_starts_with` rule matches.
+    seedSession('s1', { agent: 'codex', prompt_count: 1 });
+    seedBatch('b1', 's1', {
+      user_prompt: '<recommended_plugins>list</recommended_plugins>\n# AGENTS.md instructions for /repo',
+    });
+
+    const findings = checkDrift(db, { dbPath }, NOW);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.id).toBe('envelope-prefixed-prompt-classified-human');
+  });
+
+  it('ignores an unclosed opening tag, which is prose not an envelope', () => {
+    seedSession('s1', { agent: 'claude-code', prompt_count: 1 });
+    seedBatch('b1', 's1', { user_prompt: '<section> is not closing properly, any idea why?' });
+
+    expect(checkDrift(db, { dbPath }, NOW)).toEqual([]);
+  });
+
   it('dates each tag separately so a closed gap is not aged by an open one', () => {
     seedSession('s1', { agent: 'claude-code', prompt_count: 2 });
     seedBatch('old', 's1', {

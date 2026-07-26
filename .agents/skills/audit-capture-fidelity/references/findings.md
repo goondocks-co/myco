@@ -179,4 +179,26 @@ Worked example: a codex prompt opened with `<recommended_plugins>` and continued
 
 **Gate** — a rule test covering both the old and new shapes, as in `tests/capture/codex-agents-md-injection.test.ts`.
 
+---
+
+## `envelope-prefixed-prompt-classified-human`
+
+**Means** — a prompt that opens with a *closed* envelope and then continues into other content, stored as `origin='human'`. The whole-prompt fail-safe does not cover this shape, so nothing catches it generically.
+
+The closing tag is the discriminator: a runtime prefixing a complete envelope onto content it already injected produces `<tag>…</tag>rest`, whereas a person opening a message with markup (`<div> renders wrong`) never closes it. Unclosed leading tags are treated as prose and not reported.
+
+**Candidates**
+1. A runtime began prefixing an envelope onto an existing injection, displacing the marker that a `prompt_starts_with` rule matched. The rule is intact and matches nothing.
+2. The content after the envelope is genuinely a person's, pasted after machine output.
+
+**Discriminate** — read one row in full. If the text after the envelope is machine-generated, it is (1); find the rule that should have matched that text and check whether it is anchored to the start of the prompt.
+
+Worked example: a codex prompt opened `<recommended_plugins>…</recommended_plugins>` and continued into `# AGENTS.md instructions…`. The AGENTS.md drop rule keyed on `prompt_starts_with`, so it stopped firing and 55 injections were captured as prompts in one day.
+
+**Fix** — re-key so a prefix cannot displace the marker. **Widening to a bare `prompt_contains` while the action is still `drop` is not safe**: a substring match would discard any real prompt quoting the marker, and a drop is unrecoverable. Pair the marker with the envelope, or switch the action to `classify`.
+
+**Gate** — a rule test covering the prefixed and unprefixed shapes, plus a human prompt that quotes the marker.
+
+---
+
 **Why not rule-replay** — an earlier version of this check replayed each declared rule over transcripts and reported the ones that never fired. It was abandoned: envelope rules fire on raw entries during mining, and the parser has already removed the envelopes by the time it produces turns, so every envelope rule looked dead. Measured: `<system-reminder>` appeared raw in 6 of 40 transcripts and in 0 parsed turns. Checking the stored outcome needs no replay and no knowledge of any specific tag.
