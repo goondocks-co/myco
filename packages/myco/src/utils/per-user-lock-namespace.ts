@@ -22,7 +22,8 @@ export type PerUserLockNamespaceName =
   | 'host-membership'
   | 'host-operations'
   | 'legacy-team-home'
-  | 'external-mcp-activation';
+  | 'external-mcp-activation'
+  | 'project-lease';
 
 const perUserLockNamespaceBrand: unique symbol = Symbol('PerUserLockNamespace');
 
