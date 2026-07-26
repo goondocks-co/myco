@@ -880,6 +880,7 @@ export class DaemonServer {
           pathname: match.pathname,
           headers: req.headers,
           requestContext,
+          isOverlay: isOverlayRequest(req),
         });
         const requestDb = this.databaseForRequestContext(requestContext);
         const result = requestDb

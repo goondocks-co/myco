@@ -12,6 +12,12 @@ Team Host turns one teammate's Myco install into your team's shared home. Join i
 - A read-only endpoint lets tools that aren't Myco members — hosted agents, automations — query team storage too.
 - Team storage is the sole copy for anything routed through it, so a serve install backs it up automatically.
 
+## Before you start
+
+Team Host runs on **macOS and Linux**, for hosts and members alike. Windows can't take part yet — not as a host and not as a member — because the overlay client Myco provisions has no Windows build. Everything else in Myco works normally on Windows; it's team membership specifically that's unavailable.
+
+On **macOS**, Myco needs [Homebrew](https://brew.sh) to install the overlay client, on hosts and members both. The open-source overlay client ships through Homebrew on macOS and nowhere else, so `myco join` and `myco install --serve` will stop and tell you if it's missing. On Linux there's no such requirement — Myco downloads and verifies the client itself.
+
 ## Join a team
 
 Open the dashboard (`myco open`) and go to the **Team** page. Under **Join a Team Host**, enter the host id, one-time key, server URL, and overlay address a host operator shared with you, then submit. Myco enrolls this machine, and the join form confirms whether the host is reachable yet.
@@ -87,7 +93,7 @@ The simplest path is at install time:
 curl -fsSL https://myco.sh/install.sh | sh -s -- --serve --server-url https://your-host:8080
 ```
 
-`--serve` requires `--server-url` — the address teammates will dial to reach this host. It designates this machine's default project storage as what it serves for the team, and prints a ready-to-paste `myco join …` command for your first teammate. This installer flag is available on macOS and Linux; Windows hosts aren't supported yet.
+`--serve` requires `--server-url` — the address teammates will dial to reach this host. It designates this machine's default project storage as what it serves for the team, and prints a ready-to-paste `myco join …` command for your first teammate. This installer flag is available on macOS and Linux (see [Before you start](#before-you-start)).
 
 Already installed? `myco host enable --server-url <url>` does the same enrollment on an existing install. It provisions and starts the overlay networking services this machine needs to serve a team, and requires root — expect a sudo prompt. From there:
 

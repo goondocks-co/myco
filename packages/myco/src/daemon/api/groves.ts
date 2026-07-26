@@ -32,7 +32,7 @@ import {
 } from '@myco/grove/project-lifecycle.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import { ProjectGroveMissingError, resolveProjectTenancy } from '@myco/grove/project-tenancy.js';
-import type { RouteHandler } from '@myco/daemon/router.js';
+import type { RouteHandler, RouteRequest } from '@myco/daemon/router.js';
 import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
@@ -151,6 +151,37 @@ export function servedGroveScopeForDaemon(): ServedGroveScope {
   return { groveIds: null };
 }
 
+/**
+ * Narrow a daemon-wide scope to what THIS request is allowed to see.
+ *
+ * The operator at their own dashboard sees every Grove on the machine — that is
+ * the whole point of the local view. A member reaching the same route across the
+ * overlay must see only the Grove its request resolved to, which the served-Grove
+ * refusal has already pinned to the one Grove this host serves.
+ *
+ * The gate above these handlers stamps ROUTES; it cannot constrain what a
+ * handler reads. Without this narrowing, a route that enumerates independently
+ * of `requestContext` hands a remote member every Grove on the machine and every
+ * project's absolute checkout path — including projects never shared with anyone.
+ */
+export function scopeForRequest(daemonScope: ServedGroveScope, req: RouteRequest): ServedGroveScope {
+  if (!req.isOverlay) return daemonScope;
+  const groveId = req.requestContext?.groveId;
+  // An overlay request with no resolved Grove gets nothing rather than everything.
+  return { groveIds: groveId ? [groveId] : [] };
+}
+
+/**
+ * The same narrowing for the cross-Grove fan-outs, as a `forEachGrove`
+ * `shouldVisitGrove` predicate. Returns undefined for a local request so the
+ * operator's own machine-wide views are unchanged.
+ */
+export function overlayGroveFilter(req: RouteRequest): ((grove: { id: string }) => boolean) | undefined {
+  if (!req.isOverlay) return undefined;
+  const groveId = req.requestContext?.groveId;
+  return (grove) => Boolean(groveId) && grove.id === groveId;
+}
+
 /** Structural logger seam — mirrors `session-completion.ts`'s
  *  `SessionCompletionDeps.logger`: a narrow shape so tests can pass a plain
  *  recording fake without constructing a real `DaemonLogger`. */
@@ -163,7 +194,7 @@ export function createListGrovesHandler(
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): RouteHandler {
   return async (req) => ({
-    body: listGroveSummaries(scope, {
+    body: listGroveSummaries(scopeForRequest(scope, req), {
       includeArchived: req.query.include_archived === 'true',
     }, logger, lockNamespace),
   });
@@ -177,7 +208,7 @@ export function createListGroveProjectsHandler(
 ): RouteHandler {
   return async (req) => {
     const groveId = req.params.id;
-    const summaries = listGroveSummaries(scope, {}, logger, lockNamespace);
+    const summaries = listGroveSummaries(scopeForRequest(scope, req), {}, logger, lockNamespace);
     const grove = summaries.groves.find((row) => row.id === groveId || row.slug === groveId);
     if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
     const includes = parseTenancyInclude(req.query.include);

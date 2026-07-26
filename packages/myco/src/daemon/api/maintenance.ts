@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import type { Database } from 'bun:sqlite';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import { overlayGroveFilter } from './groves.js';
 import type { Logger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
@@ -349,7 +350,7 @@ function computeFlags(
 export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
-  async function handleSummary(_req: RouteRequest): Promise<RouteResponse> {
+  async function handleSummary(req: RouteRequest): Promise<RouteResponse> {
     const groves: GroveMaintenanceSummary[] = [];
     await forEachGrove(
       deps.cache,
@@ -374,6 +375,9 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
         jobName: 'maintenance-summary',
         parallel: true,
         lockNamespace: deps.lockNamespace,
+        // A member across the overlay sees only the Grove its request resolved
+        // to; the operator on localhost still sees the whole machine.
+        shouldVisitGrove: overlayGroveFilter(req),
       },
     );
 

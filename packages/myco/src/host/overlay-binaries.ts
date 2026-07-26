@@ -85,8 +85,10 @@ export function resolveOverlayTarget(
 ): OverlayTarget {
   if (platform !== 'darwin' && platform !== 'linux') {
     throw new Error(
-      `Team Host is only supported on macOS and Linux; this machine reports "${platform}". `
-      + 'Windows hosts are not supported in v1.',
+      `Team Host needs macOS or Linux; this machine reports "${platform}". `
+      + 'Windows cannot host a team OR join one as a member yet — the overlay '
+      + 'client Myco provisions has no Windows build. Everything else in Myco '
+      + 'works normally on Windows.',
     );
   }
   const overlayArch: OverlayArch | null =
@@ -188,9 +190,17 @@ async function provisionTailscaleDarwin(
     log('installing tailscale via Homebrew (open-source, headless variant)…');
     const install = await runner.run(brewBin, ['install', '--formula', 'tailscale']);
     if (install.exitCode !== 0) {
+      // Exit 127 is spawn-ENOENT: brew itself is absent, which is a different
+      // problem from a formula that failed to build. Leading with the install
+      // output in that case buries the actual cause.
+      const brewMissing = install.exitCode === 127;
       throw new Error(
-        `brew install --formula tailscale failed (exit ${install.exitCode}): ${install.stdout.trim()}. `
-        + 'Install Homebrew and the tailscale formula, then re-run.',
+        brewMissing
+          ? 'Team Host on macOS needs Homebrew, which was not found. Myco installs the '
+            + 'open-source overlay client through it — that client ships via Homebrew on macOS '
+            + 'and nowhere else. Install Homebrew (https://brew.sh) and re-run.'
+          : `brew install --formula tailscale failed (exit ${install.exitCode}): ${install.stdout.trim()}. `
+            + 'Resolve the Homebrew error above, then re-run.',
       );
     }
   }

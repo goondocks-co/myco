@@ -1,4 +1,5 @@
 import type { RouteRequest, RouteResponse } from '../router.js';
+import { overlayGroveFilter } from './groves.js';
 import type { Logger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
@@ -87,7 +88,7 @@ function buildProjectRow(
 export function createProjectsActivityHandler(deps: ProjectsActivityHandlersDeps) {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
-  return async function handleProjectsActivity(_req: RouteRequest): Promise<RouteResponse> {
+  return async function handleProjectsActivity(req: RouteRequest): Promise<RouteResponse> {
     const config = deps.liveConfig.current;
     const activeWindowDays = config.agent.cold_project_threshold_days ?? 14;
     const activeWindowSeconds = activeWindowDays * SECONDS_PER_DAY;
@@ -152,6 +153,9 @@ export function createProjectsActivityHandler(deps: ProjectsActivityHandlersDeps
         jobName: 'projects-activity',
         parallel: true,
         lockNamespace: deps.lockNamespace,
+        // A member across the overlay sees only the Grove its request resolved
+        // to; the operator on localhost still sees the whole machine.
+        shouldVisitGrove: overlayGroveFilter(req),
       },
     );
 

@@ -8,6 +8,16 @@ export interface RouteRequest {
   pathname: string;
   headers?: IncomingHttpHeaders;
   requestContext?: MycoRequestContext;
+  /**
+   * True when the request arrived on the overlay listener rather than
+   * localhost — a remote member, not the operator at their own dashboard.
+   *
+   * Route stamps classify what a route IS; they cannot constrain what a handler
+   * READS. A handler that enumerates or selects data independently of
+   * `requestContext` needs this to narrow itself, because the stamp gate above
+   * it has already let the request through.
+   */
+  isOverlay?: boolean;
 }
 
 export interface RouteResponse {

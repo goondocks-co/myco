@@ -39,8 +39,15 @@ describe('resolveOverlayTarget', () => {
   });
 
   it('refuses Windows and unsupported arches with a clear message', () => {
-    expect(() => resolveOverlayTarget('win32', 'x64')).toThrow(/only supported on macOS and Linux/);
+    expect(() => resolveOverlayTarget('win32', 'x64')).toThrow(/needs macOS or Linux/);
     expect(() => resolveOverlayTarget('linux', 'ia32' as NodeJS.Architecture)).toThrow(/Unsupported CPU architecture/);
+  });
+
+  it('tells a Windows user that MEMBERSHIP is unavailable, not just hosting', () => {
+    // The old wording said "Windows hosts are not supported", which reads as a
+    // host-only limitation to someone who is trying to JOIN — the exact user
+    // the same guard also refuses.
+    expect(() => resolveOverlayTarget('win32', 'x64')).toThrow(/join one as a member/);
   });
 
   it('pins the headscale asset names + urls to the four platforms', () => {
