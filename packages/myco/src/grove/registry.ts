@@ -6,6 +6,12 @@ import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { isPlainTable } from '@myco/utils/is-plain-table.js';
 import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 import { createGroveId, createProjectId, isGroveEraId } from './ids.js';
+import {
+  acquireProjectLease,
+  forceReleaseProjectLease,
+  readProjectLease,
+  releaseProjectLease,
+} from './project-lease.js';
 import { assertSafeProjectRoot, isSafeProjectRoot } from '../vault/resolve.js';
 import {
   pathsEquivalent,
@@ -72,7 +78,19 @@ export interface PauseInfo {
 
 export type ProjectPauseStatus =
   | { paused: false }
-  | { paused: true; reason: string; since: number; owner_op: string; grove_id: string };
+  | {
+    paused: true;
+    reason: string;
+    since: number;
+    owner_op: string;
+    /**
+     * The Grove the paused project is registered in, or null when it is
+     * registered nowhere. The pause is held on the PROJECT, and an operation
+     * that moves a project between registries deregisters it for part of the
+     * window — which is exactly the case the lease exists to cover.
+     */
+    grove_id: string | null;
+  };
 
 export interface RegisterProjectInput {
   projectId: string;
@@ -930,46 +948,17 @@ export function pauseProject(
   ownerOp: string,
   mycoHome = resolveMycoHome(),
 ): void {
-  const grove = loadGroveRecord(groveId, mycoHome);
-  if (!grove) throw new Error(`Unknown Grove: ${groveId}`);
-  if (!reason.trim()) throw new Error('pauseProject requires a non-empty reason');
-  if (!ownerOp.trim()) throw new Error('pauseProject requires a non-empty owner_op');
-
-  const projectsPath = resolveGroveProjectsPath(grove.id, mycoHome);
-  const projectsDoc = readToml(projectsPath);
-  const projects = isPlainTable(projectsDoc.projects)
-    ? projectsDoc.projects as Record<string, unknown>
-    : {};
-  const entry = isPlainTable(projects[projectId])
-    ? { ...(projects[projectId] as Record<string, unknown>) }
-    : null;
-  if (!entry) {
+  // groveId no longer selects storage — the lease is held on the PROJECT, so it
+  // survives the deregistration a move or a residency transition performs
+  // partway through. It is still validated, and the project must still be
+  // registered here, because this API's callers pause a project they have
+  // registered and a typo should fail loudly. An operation that deliberately
+  // holds a lease across deregistration calls `acquireProjectLease` directly.
+  if (!loadGroveRecord(groveId, mycoHome)) throw new Error(`Unknown Grove: ${groveId}`);
+  if (!getRegisteredProjectInGrove(groveId, projectId, mycoHome)) {
     throw new Error(`Project ${projectId} is not registered in Grove ${groveId}`);
   }
-
-  const existingPause = readPauseBlock(entry);
-  if (existingPause && existingPause.owner_op !== ownerOp) {
-    throw new Error(
-      `Project ${projectId} is already paused by ${existingPause.owner_op} `
-      + `(reason=${existingPause.reason}); cannot re-pause as ${ownerOp}`,
-    );
-  }
-
-  // Refresh `since` for retries with the same owner so `forceResume`
-  // staleness windows reflect the most recent attempt.
-  const since = Math.floor(Date.now() / 1000);
-
-  entry.paused = {
-    since,
-    reason,
-    owner_op: ownerOp,
-  } as unknown as TomlTableWithoutBigInt;
-
-  projectsDoc.projects = {
-    ...projects,
-    [projectId]: entry as unknown as TomlTableWithoutBigInt,
-  } as unknown as TomlTableWithoutBigInt;
-  writeToml(projectsPath, projectsDoc);
+  acquireProjectLease(projectId, ownerOp, reason, mycoHome);
 }
 
 /**
@@ -982,34 +971,8 @@ export function resumeProject(
   ownerOp: string,
   mycoHome = resolveMycoHome(),
 ): void {
-  const grove = loadGroveRecord(groveId, mycoHome);
-  if (!grove) throw new Error(`Unknown Grove: ${groveId}`);
-
-  const projectsPath = resolveGroveProjectsPath(grove.id, mycoHome);
-  const projectsDoc = readToml(projectsPath);
-  const projects = isPlainTable(projectsDoc.projects)
-    ? projectsDoc.projects as Record<string, unknown>
-    : {};
-  const entry = isPlainTable(projects[projectId])
-    ? { ...(projects[projectId] as Record<string, unknown>) }
-    : null;
-  if (!entry) return;
-
-  const existingPause = readPauseBlock(entry);
-  if (!existingPause) return;
-  if (existingPause.owner_op !== ownerOp) {
-    throw new Error(
-      `Project ${projectId} is paused by ${existingPause.owner_op}; `
-      + `cannot resume as ${ownerOp}`,
-    );
-  }
-
-  delete entry.paused;
-  projectsDoc.projects = {
-    ...projects,
-    [projectId]: entry as unknown as TomlTableWithoutBigInt,
-  } as unknown as TomlTableWithoutBigInt;
-  writeToml(projectsPath, projectsDoc);
+  if (!loadGroveRecord(groveId, mycoHome)) throw new Error(`Unknown Grove: ${groveId}`);
+  releaseProjectLease(projectId, ownerOp, mycoHome);
 }
 
 /**
@@ -1024,26 +987,8 @@ export function forceResumeProject(
   projectId: string,
   mycoHome = resolveMycoHome(),
 ): void {
-  const grove = loadGroveRecord(groveId, mycoHome);
-  if (!grove) throw new Error(`Unknown Grove: ${groveId}`);
-
-  const projectsPath = resolveGroveProjectsPath(grove.id, mycoHome);
-  const projectsDoc = readToml(projectsPath);
-  const projects = isPlainTable(projectsDoc.projects)
-    ? projectsDoc.projects as Record<string, unknown>
-    : {};
-  const entry = isPlainTable(projects[projectId])
-    ? { ...(projects[projectId] as Record<string, unknown>) }
-    : null;
-  if (!entry) return;
-
-  if (!readPauseBlock(entry)) return;
-  delete entry.paused;
-  projectsDoc.projects = {
-    ...projects,
-    [projectId]: entry as unknown as TomlTableWithoutBigInt,
-  } as unknown as TomlTableWithoutBigInt;
-  writeToml(projectsPath, projectsDoc);
+  if (!loadGroveRecord(groveId, mycoHome)) throw new Error(`Unknown Grove: ${groveId}`);
+  forceReleaseProjectLease(projectId, mycoHome);
 }
 
 /**
@@ -1056,14 +1001,45 @@ export function isProjectPaused(
   projectId: string,
   mycoHome = resolveMycoHome(),
 ): ProjectPauseStatus {
-  // Scans every Grove: during a move, the project is registered in both
-  // source and target for a brief window. Returning at first-hit would let
-  // an alphabetically-first unpaused Grove mask a paused entry elsewhere.
+  // The lease is the authority. One read, keyed by project id — no Grove scan,
+  // and it stays correct while the project is registered in two Groves (mid
+  // move) or in none (mid residency transition).
+  const lease = readProjectLease(projectId, mycoHome);
+  if (lease.state === 'unknown') {
+    // An unreadable lease is not an absent one. Reporting "not paused" here
+    // would admit writers to a project an operation is actively moving.
+    throw lease.error;
+  }
+  if (lease.state === 'present') {
+    return {
+      paused: true,
+      reason: lease.value.reason,
+      since: lease.value.since,
+      owner_op: lease.value.owner_op,
+      grove_id: findGroveHoldingProject(projectId, mycoHome),
+    };
+  }
+
+  // Rollout fallback: a pause written into a projects.toml row by the previous
+  // binary. Still honored so an upgrade mid-move does not drop the guard.
+  // Removable a release after the lease ships.
   for (const grove of listGroves(mycoHome)) {
-    const status = isProjectPausedInGrove(grove.id, projectId, mycoHome);
+    const status = legacyInRowPause(grove.id, projectId, mycoHome);
     if (status.paused) return status;
   }
   return { paused: false };
+}
+
+/** Which Grove currently registers this project, or null when none does. */
+function findGroveHoldingProject(projectId: string, mycoHome: string): string | null {
+  for (const grove of listGroves(mycoHome)) {
+    const projectsDoc = readToml(resolveGroveProjectsPath(grove.id, mycoHome));
+    const projects = isPlainTable(projectsDoc.projects)
+      ? projectsDoc.projects as Record<string, unknown>
+      : {};
+    if (isPlainTable(projects[projectId])) return grove.id;
+  }
+  return null;
 }
 
 /**
@@ -1071,10 +1047,38 @@ export function isProjectPaused(
  * already knows the Grove (e.g. scope iteration) — skips the M×N
  * cross-Grove scan.
  */
+/**
+ * Per-Grove pause lookup, retained for its callers' signatures.
+ *
+ * `groveId` is vestigial: the lease is held on the project, not on its row in
+ * one Grove's registry, so the answer no longer depends on which Grove asks.
+ * Kept rather than removed so the sixteen call sites stay untouched; it still
+ * scopes the legacy in-row fallback below.
+ */
 export function isProjectPausedInGrove(
   groveId: string,
   projectId: string,
   mycoHome = resolveMycoHome(),
+): ProjectPauseStatus {
+  const lease = readProjectLease(projectId, mycoHome);
+  if (lease.state === 'unknown') throw lease.error;
+  if (lease.state === 'present') {
+    return {
+      paused: true,
+      reason: lease.value.reason,
+      since: lease.value.since,
+      owner_op: lease.value.owner_op,
+      grove_id: findGroveHoldingProject(projectId, mycoHome),
+    };
+  }
+  return legacyInRowPause(groveId, projectId, mycoHome);
+}
+
+/** The pre-lease storage: a `paused` block inside the project's registry row. */
+function legacyInRowPause(
+  groveId: string,
+  projectId: string,
+  mycoHome: string,
 ): ProjectPauseStatus {
   const projectsDoc = readToml(resolveGroveProjectsPath(groveId, mycoHome));
   const projects = isPlainTable(projectsDoc.projects)
