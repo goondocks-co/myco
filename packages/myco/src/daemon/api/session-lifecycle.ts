@@ -15,7 +15,6 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { SessionRegistry } from '../lifecycle.js';
 import type { DaemonLogger } from '../logger.js';
 import type { DaemonServer } from '../server.js';
-import type { PowerManager } from '../power.js';
 import type { EventBuffer } from '@myco/capture/buffer.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from '../request-config.js';
@@ -28,7 +27,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { CanopyJobsRegistry } from '../jobs/canopy-scan.js';
-import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
+import { assertGroveProjectId } from '@myco/grove/ids.js';
 import type { ProjectPowerStateTracker } from '../project-power-state.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
 import { primaryProductionRef } from '@myco/release-provenance/config.js';
@@ -70,7 +69,6 @@ export interface SessionLifecycleDeps {
    */
   transcriptMiner: { reconcileAndAttributeResponses: (sessionId: string, input: { agent: string; transcriptPath: string }) => { readTranscript: boolean } };
   server: DaemonServer;
-  powerManager: PowerManager;
   machineId: string;
   logger: DaemonLogger;
   // Holder so notify() consults the current merged config — a user toggling
@@ -87,11 +85,10 @@ export interface SessionLifecycleDeps {
    */
   canopyRegistry?: CanopyJobsRegistry;
   /**
-   * Per-project power state. SessionStart counts as activity for the
-   * request's project, lifting it back to `active` if it had drifted
-   * to `idle`/`sleep`/`deep_sleep`. The global PowerManager still
-   * receives `recordActivity()` so Grove-level housekeeping ticks
-   * stay responsive too.
+   * Per-project power state, still consulted by handlers here for scope
+   * decisions. It is no longer *fed* from this module: liveness is recorded
+   * once at the request boundary, where the owning Grove and project are
+   * resolved, so tool-use and subagent traffic count as much as SessionStart.
    */
   projectStateTracker?: ProjectPowerStateTracker;
 }
@@ -108,7 +105,6 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     stopProcessor,
     transcriptMiner,
     server,
-    powerManager,
     machineId,
     logger,
     liveConfig,
@@ -121,26 +117,11 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
 
   /** POST /sessions/register */
   async function handleRegister(req: RouteRequest): Promise<RouteResponse> {
-    powerManager.recordActivity();
-    // Per-project activity: SessionStart counts as foreground attention
-    // on this project. The global recordActivity above keeps the
-    // PowerManager's tick loop responsive; the per-project tracker keeps
-    // *this* project's state machine warm so its scheduled tasks fire.
-    {
-      const ctxProjectId = req.requestContext?.projectId;
-      const ctxGroveId = req.requestContext?.groveId;
-      if (
-        deps.projectStateTracker &&
-        ctxProjectId &&
-        isGroveEraId(ctxProjectId, 'project') &&
-        ctxGroveId
-      ) {
-        deps.projectStateTracker.recordActivity(
-          ctxGroveId,
-          assertGroveProjectId(ctxProjectId),
-        );
-      }
-    }
+    // Power activity is no longer recorded here. SessionStart arrives as an
+    // HTTP request like everything else, so the wake edge at the door and the
+    // per-project hook at request-context resolution both already cover it —
+    // and unlike this call site, they also cover the tool-use and subagent
+    // traffic that makes up the rest of a session.
     const { session_id, agent, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
     const projectId = rowProjectIdFromRequestContext(req.requestContext);

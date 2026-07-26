@@ -255,7 +255,7 @@ const EMBEDDING_UPDATE_KEYS: ReadonlySet<keyof EmbeddingProviderConfig> = new Se
   'provider',
   'model',
   'base_url',
-  'run_in_deep_sleep',
+  'prevent_deep_sleep',
 ]);
 
 /**

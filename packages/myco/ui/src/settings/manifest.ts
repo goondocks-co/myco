@@ -291,7 +291,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
         customRender: 'card-owns',
       },
       {
-        key: 'embedding.run_in_deep_sleep',
+        key: 'embedding.prevent_deep_sleep',
         label: 'Keep embedding while deep-sleeping',
         scope: 'grove',
         kind: 'toggle',

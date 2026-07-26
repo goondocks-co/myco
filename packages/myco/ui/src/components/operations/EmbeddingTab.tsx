@@ -408,7 +408,7 @@ export function EmbeddingTab() {
       </Surface>
 
       {/* Reconcile Policy moved to Grove Settings → Embedding
-          (`run_in_deep_sleep`). Maintenance is action-only now;
+          (`prevent_deep_sleep`). Maintenance is action-only now;
           settings live with their categorical siblings. */}
 
       {/* Action toolbar — always Grove-wide. The action handlers

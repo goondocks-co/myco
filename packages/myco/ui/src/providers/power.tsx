@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { setClientActivity, pingDaemonAwake } from '../lib/client-activity';
 
 export type PowerState = 'active' | 'idle' | 'deep_sleep' | 'hidden';
 
@@ -41,6 +42,25 @@ const PowerContext = createContext<PowerContextValue | undefined>(undefined);
 
 export function PowerProvider({ children }: { children: ReactNode }) {
   const [powerState, setPowerState] = useState<PowerState>('active');
+  const previousStateRef = useRef<PowerState>('active');
+
+  // Publish to the fetch layer, which is a plain module and cannot use hooks.
+  //
+  // On the idle→active edge, also ping the daemon directly. Coming back means
+  // it may be deep-asleep with its tick timer stopped, and nothing pull-based
+  // can revive it; this one request carries the `active` class and wakes it
+  // immediately, rather than waiting for whichever poll happens to fire next.
+  // Deliberately a bare fetch and not a react-query refetch: this provider
+  // sits above the QueryClientProvider in some trees and is rendered without
+  // one in tests, so it must not depend on a query client existing.
+  useEffect(() => {
+    setClientActivity(powerState);
+    const previous = previousStateRef.current;
+    previousStateRef.current = powerState;
+    if (powerState === 'active' && previous !== 'active') {
+      void pingDaemonAwake();
+    }
+  }, [powerState]);
 
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deepSleepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
