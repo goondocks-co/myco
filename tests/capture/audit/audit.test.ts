@@ -85,6 +85,34 @@ describe('integrity checks', () => {
     expect(ids).toContain('batch-null-content-hash');
   });
 
+  it('does not count an injected envelope as a missing response', () => {
+    // A runtime-injected envelope is not a conversational turn; roughly three
+    // quarters of system-origin batches legitimately carry no response, so
+    // counting them buries the human signal.
+    seedSession('s1', { prompt_count: 1 });
+    seedBatch('b1', 's1', { origin: 'system', response_summary: null });
+    seedBatch('b2', 's1', { prompt_number: 2, origin: 'agent_dispatch', response_summary: null });
+
+    const ids = checkIntegrity(db, { dbPath }, NOW).map((f) => f.id);
+    expect(ids).not.toContain('batch-missing-response');
+  });
+
+  it('reports a human prompt whose response never landed', () => {
+    seedSession('s1', { prompt_count: 1 });
+    seedBatch('b1', 's1', { origin: 'human', response_summary: null });
+
+    const finding = checkIntegrity(db, { dbPath }, NOW).find((f) => f.id === 'batch-missing-response');
+    expect(finding?.count).toBe(1);
+  });
+
+  it('does not count an injected envelope as a zero-activity turn', () => {
+    seedSession('s1', { prompt_count: 1 });
+    seedBatch('b1', 's1', { origin: 'system', activity_count: 0 });
+
+    const ids = checkIntegrity(db, { dbPath }, NOW).map((f) => f.id);
+    expect(ids).not.toContain('batch-zero-activities');
+  });
+
   it('does not report an active batch for a missing response — the turn is still running', () => {
     seedSession('s1', { prompt_count: 1 });
     seedBatch('b1', 's1', { status: 'active', response_summary: null });
