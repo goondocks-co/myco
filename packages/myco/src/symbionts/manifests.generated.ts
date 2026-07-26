@@ -30,7 +30,17 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ".agents/plugins/myco/plans/"
       ],
       "planTags": [],
-      "rules": []
+      "rules": [],
+      "transcriptDiscovery": {
+        "roots": [
+          "~/.gemini/antigravity-cli",
+          "~/.gemini/antigravity",
+          "~/.gemini/antigravity-ide"
+        ],
+        "patterns": [
+          "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl"
+        ]
+      }
     },
     "registration": {
       "hooksTarget": ".agents/plugins/myco/hooks.json",
@@ -281,6 +291,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           }
         ],
         "interruptMarker": "[Request interrupted by user for tool use]"
+      },
+      "transcriptDiscovery": {
+        "roots": [
+          "~/.claude/projects"
+        ],
+        "patterns": [
+          "*/{sessionId}.jsonl"
+        ],
+        "transcriptCwdPath": "cwd"
       }
     },
     "registration": {
@@ -659,6 +678,16 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "interruptMarker": "<turn_aborted>"
       },
+      "transcriptDiscovery": {
+        "roots": [
+          "~/.codex/sessions"
+        ],
+        "patterns": [
+          "*/*/*/rollout-*-{sessionId}.jsonl"
+        ],
+        "sessionIdPattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        "transcriptCwdPath": "payload.cwd"
+      },
       "subagentParentPath": "source.subagent.thread_spawn.parent_thread_id",
       "subagentThreadIdPath": "id",
       "subagentLabelPath": "source.subagent.thread_spawn"
@@ -769,7 +798,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capture": {
       "planDirs": [],
       "planTags": [],
-      "rules": []
+      "rules": [],
+      "transcriptDiscovery": {
+        "roots": [
+          "~/.copilot/session-state"
+        ],
+        "patterns": [
+          "{sessionId}/events.jsonl"
+        ]
+      }
     },
     "registration": {
       "hooksTarget": ".github/hooks/myco-hooks.json",
@@ -1043,7 +1080,16 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           },
           "trim": true
         }
-      ]
+      ],
+      "transcriptDiscovery": {
+        "roots": [
+          "~/.cursor/projects"
+        ],
+        "patterns": [
+          "*/agent-transcripts/{sessionId}.txt",
+          "*/agent-transcripts/{sessionId}/{sessionId}.jsonl"
+        ]
+      }
     },
     "registration": {
       "hooksTarget": ".cursor/hooks.json",
@@ -1346,7 +1392,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.windsurf/plans/"
       ],
       "planTags": [],
-      "rules": []
+      "rules": [],
+      "transcriptDiscovery": {
+        "roots": [
+          "~/.windsurf/transcripts"
+        ],
+        "patterns": [
+          "{sessionId}.jsonl"
+        ]
+      }
     },
     "registration": {
       "hooksTarget": ".windsurf/hooks.json",

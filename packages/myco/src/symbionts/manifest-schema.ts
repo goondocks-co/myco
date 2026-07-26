@@ -148,11 +148,71 @@ export type ResetBoundary = z.infer<typeof ResetBoundarySchema>;
 export type CapturePrompts = z.infer<typeof CapturePromptsSchema>;
 export type MatchExpression = z.infer<typeof MatchExpressionSchema>;
 
+/**
+ * How this agent lays its transcripts out on disk.
+ *
+ * `hookFields.transcriptPath` only names the hook-payload field carrying a
+ * path, so a transcript is discoverable only once a hook fires for it. This
+ * block is the disk-side counterpart — the same role `planDirs` plays for
+ * plans — letting a reader enumerate transcripts the hooks never reported.
+ *
+ * The `layout` discriminator exists because the shapes differ structurally,
+ * not cosmetically: some agents write one file per session, some a directory
+ * per session with a fixed entry file inside, and some fan a session out
+ * across one file per message with no single transcript at all.
+ */
+const TranscriptDiscoverySchema = z.object({
+  /**
+   * Directory roots to search, `~` expanded. More than one when an agent
+   * splits transcripts across surfaces (Antigravity's cli/ide/default).
+   */
+  roots: z.array(z.string()).min(1),
+  /**
+   * Path templates relative to each root, tried in order; first match wins.
+   *
+   * Two placeholders, which is all six agents' layouts need:
+   *   `{sessionId}` — the session id, wherever it appears in the path
+   *   `*`           — exactly one path segment (project slug, date shard)
+   *
+   * The same template serves both directions: substitute `{sessionId}` to
+   * look a known session up, or turn it into a capture group to enumerate
+   * every transcript on disk. Keeping one template for both is what stops
+   * the lookup and enumeration paths from drifting apart.
+   */
+  patterns: z.array(z.string()).min(1),
+  /**
+   * Regex fragment constraining what `{sessionId}` may match, default
+   * `[^/]+`. Required whenever a `*` sits next to `{sessionId}` with only a
+   * separator between them, because the split is otherwise ambiguous: in
+   * `rollout-*-{sessionId}.jsonl` no greediness rule recovers the right
+   * boundary from `rollout-2025-11-23T08-39-26-<uuid>.jsonl` — both halves
+   * are dash-delimited. Declaring the id's shape resolves it exactly.
+   */
+  sessionIdPattern: z.string().optional(),
+  /**
+   * Dot-path to the working directory recorded inside the transcript, used to
+   * attribute a transcript found on disk to a project.
+   *
+   * Absent means this agent's transcripts carry no project hint. A reader must
+   * then treat its orphan transcripts as unattributable and report the reduced
+   * coverage, rather than assuming they belong to the project being audited.
+   */
+  transcriptCwdPath: z.string().optional(),
+});
+
+export type TranscriptDiscovery = z.infer<typeof TranscriptDiscoverySchema>;
+
 const CaptureManifestSchema = z.object({
   planDirs: z.array(z.string()).default([]),
   planTags: z.array(z.string()).default([]),
   rules: z.array(CaptureRuleSchema).default([]),
   prompts: CapturePromptsSchema.optional(),
+  /**
+   * Absent means this agent's on-disk layout is undeclared: readers fall back
+   * to whatever `sessions.transcript_path` recorded and must report the
+   * reduced coverage rather than treating the result as complete.
+   */
+  transcriptDiscovery: TranscriptDiscoverySchema.optional(),
   /**
    * Dot-path (relative to the transcript's session_meta payload, the same
    * object `transcript_meta_field_exists` reads) to the sub-agent's PARENT

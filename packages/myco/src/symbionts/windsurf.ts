@@ -1,10 +1,9 @@
 import type { SymbiontAdapter, TranscriptTurn } from './adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
+import { findTranscriptFor } from './transcript-discovery.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-
-const TRANSCRIPT_DIR = path.join(os.homedir(), '.windsurf', 'transcripts');
 
 /** Windsurf JSONL entry type field values. */
 const USER_INPUT_TYPE = 'user_input';
@@ -25,14 +24,7 @@ export const windsurfAdapter: SymbiontAdapter = {
     toolOutput: 'tool_output',
   },
 
-  findTranscript(sessionId: string): string | null {
-    // Windsurf stores transcripts directly by trajectory ID
-    const candidate = path.join(TRANSCRIPT_DIR, `${sessionId}.jsonl`);
-    try {
-      fs.accessSync(candidate);
-      return candidate;
-    } catch { return null; }
-  },
+  findTranscript: (sessionId) => findTranscriptFor('windsurf', sessionId),
 
   parseTurns(content: string): TranscriptTurn[] {
     return parseWindsurfJsonl(content);

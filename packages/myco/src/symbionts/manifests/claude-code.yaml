@@ -11,6 +11,13 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
+  # Transcript layout on disk. `<project-slug>/<sessionId>.jsonl`.
+  transcriptDiscovery:
+    roots: ["~/.claude/projects"]
+    patterns:
+      - "*/{sessionId}.jsonl"
+    # Entries carry the session's working directory at top level.
+    transcriptCwdPath: "cwd"
   planDirs:
     # Claude Code's plan mode writes to ~/.claude/plans/ (global), not the project-local
     # .claude/plans/. We watch both: home for plan-mode output, project-local for any
