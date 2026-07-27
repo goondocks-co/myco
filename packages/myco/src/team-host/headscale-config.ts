@@ -108,6 +108,13 @@ database:
 # self-hosted DERP node is a single point of failure. This means Team Host is
 # self-hosted for the CONTROL plane but not vendor-independent for the relay
 # fallback path. Direct WireGuard (the >90% common case) touches no vendor infra.
+#
+# \`urls\` MUST stay non-empty. headscale 0.29.2 refuses to boot on an empty DERP
+# map ("initial DERPMap is empty, Headscale requires at least one entry"), and
+# the failure is vicious rather than loud: \`tailscale up\` then hangs FOREVER
+# against a control plane that never came up, so it reads as a hang, not an
+# error. A future "remove the vendor dependency" edit that empties this will
+# take the overlay down. Pinned by tests/cli/host-headscale-config.test.ts.
 derp:
   server:
     enabled: false
@@ -117,7 +124,13 @@ derp:
   update_frequency: 24h
 
 disable_check_updates: true
-ephemeral_node_inactivity_timeout: ${ephemeral}
+
+# headscale 0.29.2 REMOVED \`ephemeral_node_inactivity_timeout\` in favour of this
+# nested key. The old one did not error — it warned and was silently ignored, so
+# the timeout Myco believed it was setting was never applied.
+node:
+  ephemeral:
+    inactivity_timeout: ${ephemeral}
 
 dns:
   magic_dns: false
