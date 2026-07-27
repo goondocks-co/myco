@@ -78,6 +78,8 @@ export interface AuditOptions {
   since?: number;
   /** Max transcripts enumerated per symbiont. */
   transcriptLimit?: number;
+  /** Override the task-definitions directory harness session ids derive from. */
+  harnessTasksDir?: string;
 }
 
 export interface AuditReport {
