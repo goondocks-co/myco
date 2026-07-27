@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 const acquire = (owner: string, reason = 'moving') =>
-  acquireProjectLease(projectId, owner, reason, home, testPerUserLockNamespace);
+  acquireProjectLease(projectId, owner, reason, null, home, testPerUserLockNamespace);
 
 describe('project write lease', () => {
   test('an unleased project reads as absent', () => {
@@ -126,7 +126,7 @@ describe('project write lease', () => {
   test('listProjectLeases reports held leases and omits released ones', () => {
     const other = createProjectId();
     acquire('grove-move');
-    acquireProjectLease(other, 'residency-attach', 'detaching', home, testPerUserLockNamespace);
+    acquireProjectLease(other, 'residency-attach', 'detaching', null, home, testPerUserLockNamespace);
     releaseProjectLease(other, 'residency-attach', home, testPerUserLockNamespace);
 
     const held = listProjectLeases(home);
@@ -134,7 +134,7 @@ describe('project write lease', () => {
   });
 
   test('rejects a non-grove-era project id rather than writing a stray path', () => {
-    expect(() => acquireProjectLease('../escape', 'grove-move', 'x', home, testPerUserLockNamespace))
+    expect(() => acquireProjectLease('../escape', 'grove-move', 'x', null, home, testPerUserLockNamespace))
       .toThrow(/grove project id/);
   });
 });

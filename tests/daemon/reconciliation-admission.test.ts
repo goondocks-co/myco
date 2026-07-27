@@ -84,7 +84,7 @@ describe('buffer reconciliation — write admission defers, never discards', () 
   }
 
   function holdLease(): void {
-    acquireProjectLease(PROJECT, 'residency-detach', 'leaving the team', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(PROJECT, 'residency-detach', 'leaving the team', null, mycoHome, testPerUserLockNamespace);
   }
 
   function promptEvent(prompt: string) {

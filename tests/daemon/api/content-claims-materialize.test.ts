@@ -300,7 +300,7 @@ describe('content claim materialize — local project', () => {
 
   test('a held project write lease -> 409 project_paused, nothing written', async () => {
     const { claimId, name } = seed();
-    acquireProjectLease(projectId, 'residency-detach', 'leaving the team', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(projectId, 'residency-detach', 'leaving the team', null, mycoHome, testPerUserLockNamespace);
 
     const res = await handler()(req(claimId, projectRoot));
 

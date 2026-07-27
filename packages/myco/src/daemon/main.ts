@@ -163,7 +163,6 @@ import {
   readProjectActivitySeed,
 } from './project-power-state.js';
 import { pauseAwareShouldVisit, isProjectPaused } from '../grove/registry.js';
-import { resumeOrphanedPauses } from './startup-pauses.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
@@ -2846,24 +2845,14 @@ export async function main(): Promise<void> {
     }
   })();
 
-  // Sweep orphaned per-project pauses before any worker loops start.
-  // A pause older than the staleness threshold is by definition abandoned —
-  // the previous daemon held the lock and died without resuming. See
-  // startup-pauses.ts for the carve-out + remove-when condition.
-  try {
-    const sweep = resumeOrphanedPauses(logger);
-    if (sweep.resumed > 0 || sweep.preserved > 0) {
-      logger.info(LOG_KINDS.DAEMON_START, 'Orphan pause sweep complete', {
-        scanned: sweep.scanned,
-        resumed: sweep.resumed,
-        preserved: sweep.preserved,
-      });
-    }
-  } catch (err) {
-    logger.warn(LOG_KINDS.DAEMON_START, 'Orphan pause sweep failed', {
-      error: errorMessage(err),
-    });
-  }
+  // No orphan-pause sweep here any more (write-admission W4). A lease is now
+  // held only while its holder is alive OR its operation is unfinished, both
+  // evaluated when the lease is READ, so an abandoned one resolves as free the
+  // moment anyone asks — there is nothing to sweep. The sweeper it replaced
+  // enumerated `listGroves` → `listRegisteredProjects`, which structurally
+  // could not see a project mid-residency-transition (deregistered from every
+  // Grove while its lease is held) — precisely the one that could strand.
+  // `forceResumeProject` remains as the operator escape hatch.
 
   // Greenfield rebind: when a *variant-less* daemon booted without a vault
   // (phantom bootstrap), poll the Grove registry every 5s. The first

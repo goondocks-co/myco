@@ -90,7 +90,7 @@ describe('tool front door — project write admission', () => {
   }
 
   function holdLease(op = OWNER_OP): void {
-    acquireProjectLease(PROJECT, op, 'detaching from a Team Host', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(PROJECT, op, 'detaching from a Team Host', null, mycoHome, testPerUserLockNamespace);
   }
 
   async function callExpectingRefusal(name: string, args: unknown) {

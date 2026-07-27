@@ -47,7 +47,7 @@ describe('resolveCallContext — project write lease at the pivot', () => {
   });
 
   it('refuses a same-Grove project pivot while the target lease is held, admits after release', () => {
-    acquireProjectLease(TARGET_PROJECT, 'residency-attach', 'moving to host', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(TARGET_PROJECT, 'residency-attach', 'moving to host', null, mycoHome, testPerUserLockNamespace);
 
     let thrown: unknown;
     try {
@@ -72,7 +72,7 @@ describe('resolveCallContext — project write lease at the pivot', () => {
   });
 
   it('a released lease record (retained for its generation) admits the pivot', () => {
-    acquireProjectLease(TARGET_PROJECT, 'grove-move', 'moving', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(TARGET_PROJECT, 'grove-move', 'moving', null, mycoHome, testPerUserLockNamespace);
     releaseProjectLease(TARGET_PROJECT, 'grove-move', mycoHome, testPerUserLockNamespace);
 
     const pivoted = resolveCallContext(baseContext(mycoHome), { projectId: TARGET_PROJECT }, { mycoHome });
@@ -106,7 +106,7 @@ describe('resolveCallContext — project write lease at the pivot', () => {
     // rows. The retained project must get the same consult a supplied one
     // does.
     const grove = createGrove('pivot-target', mycoHome);
-    acquireProjectLease(BASE_PROJECT, 'grove-move', 'moving this project', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(BASE_PROJECT, 'grove-move', 'moving this project', null, mycoHome, testPerUserLockNamespace);
 
     let thrown: unknown;
     try {
