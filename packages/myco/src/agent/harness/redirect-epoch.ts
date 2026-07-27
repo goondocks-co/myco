@@ -50,6 +50,23 @@ export function writeHarnessRedirectEpoch(dir: string, now = Date.now()): void {
 }
 
 /**
+ * Create the redirect directory and stamp its epoch.
+ *
+ * Called at daemon startup: redirection applies to every harness run the
+ * process will start, so boot is the boundary, and waiting for the first run
+ * would leave readers unable to date anything until then.
+ */
+export function stampHarnessRedirectEpoch(mycoHome = resolveMycoHome(), now = Date.now()): void {
+  const dir = harnessSessionDir(mycoHome);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    return; // unwritable home: readers fall back to treating all as ambiguous
+  }
+  writeHarnessRedirectEpoch(dir, now);
+}
+
+/**
  * Epoch in seconds, or undefined when redirection has not yet run on this
  * machine. Undefined means no transcript can be dated relative to it.
  */
