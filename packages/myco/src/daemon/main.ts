@@ -29,6 +29,7 @@ import { EventBuffer } from '../capture/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
 import { runGlobalBootstrap, shouldRunGlobalBootstrap } from '../cli/bootstrap.js';
 import { resolveMycoHome, resolveGroveDbPath, resolveProjectVaultDir } from '../grove/paths.js';
+import { stampHarnessRedirectEpoch } from '@myco/agent/harness/redirect-epoch.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
@@ -763,6 +764,15 @@ export async function main(): Promise<void> {
   const processGuards = installProcessGuards();
 
   const mycoHome = resolveMycoHome();
+
+  // Stamp the harness redirect epoch at boot rather than on first harness use.
+  // Redirection is in effect for every harness run this process will start, so
+  // boot is the moment after which a transcript in the user's session tree
+  // cannot be an agent run. Deferring the stamp to the first run leaves a
+  // window — as long as the gap to the next scheduled task — in which
+  // redirection is active but nothing can be dated against it.
+  stampHarnessRedirectEpoch(mycoHome);
+
   const daemonService = resolveDaemonServiceState(mycoHome, {
     env: process.env,
   });
