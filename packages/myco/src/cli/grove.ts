@@ -13,6 +13,7 @@ import {
   type ResolvedRegisteredProject,
 } from '@myco/grove/registry.js';
 import { moveProjectBetweenGroves } from '@myco/grove/move.js';
+import { forceReleaseProjectLease } from '@myco/grove/project-lease.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import {
   resolveMycoHome,
@@ -227,10 +228,35 @@ export async function run(args: string[]): Promise<void> {
       throw new Error('force-resume-project is a recovery command. Pass --force to confirm.');
     }
     const found = findProjectByRef(projectRef, mycoHome);
-    if (!found) throw new Error(`Project not found: ${projectRef}`);
-    forceResumeProject(found.grove.id, found.project.project_id, mycoHome);
+    if (found) {
+      forceResumeProject(found.grove.id, found.project.project_id, mycoHome);
+      console.log(
+        `Force-resumed project ${found.project.name} in Grove ${found.grove.name} (${found.grove.slug})`,
+      );
+      return;
+    }
+    // Not registered in any Grove — which is the state this command exists
+    // for. A project mid-residency-transition is deregistered from every
+    // Grove for the whole window, so resolving through the registry cannot
+    // reach exactly the project most likely to need recovering. The lease is
+    // keyed by project id precisely so it outlives that deregistration; its
+    // recovery has to be keyed the same way, or the escape hatch inherits
+    // the blind spot that made a sweeper unable to see a stranded lease.
+    //
+    // A slug or name is only resolvable through the registry, so an
+    // unregistered project can only be addressed by id.
+    if (!PROJECT_ID_RE.test(projectRef)) {
+      throw new Error(
+        `Project not found: ${projectRef}. A project being moved between Groves is `
+        + 'registered in none of them, so it cannot be found by name or slug — pass its '
+        + 'project id (proj_<32 hex>) instead.',
+      );
+    }
+    const released = forceReleaseProjectLease(projectRef.toLowerCase(), mycoHome);
     console.log(
-      `Force-resumed project ${found.project.name} in Grove ${found.grove.name} (${found.grove.slug})`,
+      released
+        ? `Force-resumed project ${projectRef} (registered in no Grove — it was mid-move).`
+        : `Project ${projectRef} held no lease; nothing to resume.`,
     );
     return;
   }

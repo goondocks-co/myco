@@ -53,7 +53,7 @@ describe('residency write lease', () => {
     // Parking deregisters the project. A lease stored inside that row would
     // vanish exactly when it is most needed; this one is keyed by project id.
     const grove = createGrove('Local', home);
-    acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', home, testPerUserLockNamespace);
+    acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', null, home, testPerUserLockNamespace);
 
     // Simulate parking: the project is registered nowhere at all.
     expect(fs.existsSync(path.join(home, 'groves', grove.id))).toBe(true);
@@ -65,32 +65,32 @@ describe('residency write lease', () => {
   });
 
   test('a second operation cannot take a project already mid-transition', () => {
-    acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', home, testPerUserLockNamespace);
+    acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', null, home, testPerUserLockNamespace);
 
     expect(() =>
-      acquireProjectLease(projectId, 'grove-move', 'moving', home, testPerUserLockNamespace),
+      acquireProjectLease(projectId, 'grove-move', 'moving', null, home, testPerUserLockNamespace),
     ).toThrow(/project_lease_held/);
 
     expect(() =>
-      acquireProjectLease(projectId, RESIDENCY_DETACH_OP, 'detaching', home, testPerUserLockNamespace),
+      acquireProjectLease(projectId, RESIDENCY_DETACH_OP, 'detaching', null, home, testPerUserLockNamespace),
     ).toThrow(/project_lease_held/);
   });
 
   test('a crash-resumed transition can re-acquire its own lease', () => {
-    const first = acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', home, testPerUserLockNamespace);
+    const first = acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', null, home, testPerUserLockNamespace);
     // The drain re-enters after a restart and must not trip over its own lease.
-    const resumed = acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', home, testPerUserLockNamespace);
+    const resumed = acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', null, home, testPerUserLockNamespace);
     expect(resumed.owner_op).toBe(RESIDENCY_ATTACH_OP);
     expect(resumed.generation).toBeGreaterThan(first.generation);
   });
 
   test('releasing frees the project for the opposite direction', () => {
-    acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', home, testPerUserLockNamespace);
+    acquireProjectLease(projectId, RESIDENCY_ATTACH_OP, 'attaching', null, home, testPerUserLockNamespace);
     releaseProjectLease(projectId, RESIDENCY_ATTACH_OP, home, testPerUserLockNamespace);
 
     expect(readProjectLease(projectId, home).state).toBe('absent');
     expect(() =>
-      acquireProjectLease(projectId, RESIDENCY_DETACH_OP, 'detaching', home, testPerUserLockNamespace),
+      acquireProjectLease(projectId, RESIDENCY_DETACH_OP, 'detaching', null, home, testPerUserLockNamespace),
     ).not.toThrow();
   });
 });

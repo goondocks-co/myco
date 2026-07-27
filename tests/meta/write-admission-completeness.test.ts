@@ -543,7 +543,7 @@ describe('write-admission matcher self-test', () => {
     expect(ADMISSION_CONSULT.test('const p = isProjectPausedInGrove(scope.grove.id, scope.projectId, mycoHome);')).toBe(true);
     expect(ADMISSION_CONSULT.test('shouldVisit: pauseAwareShouldVisit(mycoHome),')).toBe(true);
     expect(ADMISSION_CONSULT.test('pauseProject(projectId, owner, reason);')).toBe(true);
-    expect(ADMISSION_CONSULT.test('const lease = acquireProjectLease(projectId, op, reason);')).toBe(true);
+    expect(ADMISSION_CONSULT.test('const lease = acquireProjectLease(projectId, op, reason, null);')).toBe(true);
     expect(ADMISSION_CONSULT.test('const held = readProjectLease(projectId);')).toBe(true);
   });
 

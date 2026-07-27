@@ -65,7 +65,7 @@ describe('runScopedAction — project write admission', () => {
   }
 
   function holdLease(op = 'residency-detach'): void {
-    acquireProjectLease(PROJECT, op, 'leaving the team', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(PROJECT, op, 'leaving the team', null, mycoHome, testPerUserLockNamespace);
   }
 
   function tearLeaseRecord(): void {

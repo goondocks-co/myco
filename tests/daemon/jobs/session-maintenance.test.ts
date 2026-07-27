@@ -359,7 +359,7 @@ describe('write admission — the sweep skips projects whose lease is held', () 
   });
 
   function holdLease(projectId: string) {
-    acquireProjectLease(projectId, 'test-op', 'admission test', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(projectId, 'test-op', 'admission test', null, mycoHome, testPerUserLockNamespace);
   }
 
   function seedProjectSession(id: string, projectId: string, opts: {

@@ -98,7 +98,7 @@ describe('tool front door — never migrates a project mid-move', () => {
 
   it('refuses a READ that would migrate a leased project, and leaves the version untouched', async () => {
     seedStaleVault();
-    acquireProjectLease(PROJECT, 'residency-detach', 'detaching', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(PROJECT, 'residency-detach', 'detaching', null, mycoHome, testPerUserLockNamespace);
 
     let thrown: unknown;
     try {
@@ -135,7 +135,7 @@ describe('tool front door — never migrates a project mid-move', () => {
     const seeded = openDatabase(dbPath);
     createSchema(seeded, 'test_machine');
     seeded.close();
-    acquireProjectLease(PROJECT, 'residency-detach', 'detaching', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(PROJECT, 'residency-detach', 'detaching', null, mycoHome, testPerUserLockNamespace);
 
     let thrown: unknown;
     try {

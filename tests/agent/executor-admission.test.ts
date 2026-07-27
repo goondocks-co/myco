@@ -58,7 +58,7 @@ describe('runAgent — write admission before the first durable act', () => {
   }
 
   it('refuses dispatch while the project lease is held, with no run row created', async () => {
-    acquireProjectLease(PROJECT, 'residency-detach', 'leaving the team', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(PROJECT, 'residency-detach', 'leaving the team', null, mycoHome, testPerUserLockNamespace);
 
     const result = await runAgent(vaultDir, { requestContext: requestContext() });
 
@@ -70,7 +70,7 @@ describe('runAgent — write admission before the first durable act', () => {
   });
 
   it('refuses resume through the same entry while the lease is held', async () => {
-    acquireProjectLease(PROJECT, 'grove-move', 'moving grove', mycoHome, testPerUserLockNamespace);
+    acquireProjectLease(PROJECT, 'grove-move', 'moving grove', null, mycoHome, testPerUserLockNamespace);
 
     const result = await runAgent(vaultDir, {
       requestContext: requestContext(),

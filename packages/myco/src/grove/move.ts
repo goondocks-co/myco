@@ -212,7 +212,18 @@ export function moveProjectBetweenGroves(
   // that case, but the pause's purpose (gating writes against the
   // source registry entry) is already met by the entry being absent.
   if (sourceEntry) {
-    pauseProject(sourceGroveId, projectId, 'grove-move', moveOpId, mycoHome);
+    // The marker is this move's crash-resumable record — a resumed move
+    // finds it and continues — so it is what keeps the project blocked if
+    // this process dies mid-move. The move deletes it on completion, which
+    // is what lets the lease resolve as free.
+    pauseProject(
+      sourceGroveId,
+      projectId,
+      'grove-move',
+      moveOpId,
+      { kind: 'move-marker', path: markerPath },
+      mycoHome,
+    );
   }
 
   const sourceDbPath = resolveGroveDbPath(sourceGroveId, mycoHome);

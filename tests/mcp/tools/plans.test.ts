@@ -251,7 +251,7 @@ describe('myco_plans op: list / get (in-process)', () => {
     const previousHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = leaseHome;
     try {
-      acquireProjectLease(PROJECT, 'residency-detach', 'detaching', leaseHome, testPerUserLockNamespace);
+      acquireProjectLease(PROJECT, 'residency-detach', 'detaching', null, leaseHome, testPerUserLockNamespace);
 
       const plan = await handleMycoPlans({ op: 'get', id: 'leased-plan' }, mockClient(), readerContext);
 

@@ -132,6 +132,18 @@ function residencyDir(teamsHome: string = resolveTeamsHome()): string {
   return path.join(teamsHome, RESIDENCY_DIRNAME);
 }
 
+/**
+ * Absolute path of a project's residency journal.
+ *
+ * Exported so a transition can hand it to the project write lease as its
+ * crash-resumable evidence (write-admission W4): the lease reads the file as
+ * DATA rather than importing this module, which keeps `grove/` from
+ * depending on `host/`.
+ */
+export function residencyJournalPath(projectId: string, teamsHome: string = resolveTeamsHome()): string {
+  return journalPath(projectId, teamsHome);
+}
+
 function journalPath(projectId: string, teamsHome: string = resolveTeamsHome()): string {
   return path.join(residencyDir(teamsHome), `${projectId}.json`);
 }

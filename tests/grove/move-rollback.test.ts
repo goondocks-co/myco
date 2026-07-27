@@ -118,7 +118,7 @@ describe('move failure rollback and pause release', () => {
     fs.mkdirSync(migrationDir, { recursive: true });
     const snapshotPath = path.join(migrationDir, 'fake-snapshot.sql');
     fs.writeFileSync(snapshotPath, '-- Myco backup: machine_id=test, created_at=1\n', 'utf-8');
-    pauseProject(source.id, projectId, 'grove-move', moveOpId, mycoHome);
+    pauseProject(source.id, projectId, 'grove-move', moveOpId, null, mycoHome);
     fs.writeFileSync(
       path.join(migrationDir, `${moveOpId}.json`),
       JSON.stringify({
@@ -288,7 +288,7 @@ describe('move failure rollback and pause release', () => {
     fs.mkdirSync(migrationDir, { recursive: true });
     const snapshotPath = path.join(migrationDir, 'fake-snapshot.sql');
     fs.writeFileSync(snapshotPath, '-- Myco backup: machine_id=test, created_at=1\n', 'utf-8');
-    pauseProject(source.id, projectId, 'grove-move', moveOpId, mycoHome);
+    pauseProject(source.id, projectId, 'grove-move', moveOpId, null, mycoHome);
     fs.writeFileSync(
       path.join(migrationDir, `${moveOpId}.json`),
       JSON.stringify({

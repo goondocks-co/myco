@@ -6,6 +6,7 @@ import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { isPlainTable } from '@myco/utils/is-plain-table.js';
 import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 import { createGroveId, createProjectId, isGroveEraId } from './ids.js';
+import { type LeaseEvidence } from './lease-evidence.js';
 import {
   acquireProjectLease,
   forceReleaseProjectLease,
@@ -946,6 +947,14 @@ export function pauseProject(
   projectId: string,
   reason: string,
   ownerOp: string,
+  /**
+   * The operation's own crash-resumable record, or `null` when it keeps none
+   * and holder-liveness alone should govern the lease (W4). Required rather
+   * than defaulted so a new lease-taking caller has to answer the question:
+   * defaulting to `null` would silently give a crash-resumable operation the
+   * wrong lifetime, freeing its project the moment the process died.
+   */
+  evidence: LeaseEvidence | null,
   mycoHome = resolveMycoHome(),
 ): void {
   // groveId no longer selects storage — the lease is held on the PROJECT, so it
@@ -958,7 +967,7 @@ export function pauseProject(
   if (!getRegisteredProjectInGrove(groveId, projectId, mycoHome)) {
     throw new Error(`Project ${projectId} is not registered in Grove ${groveId}`);
   }
-  acquireProjectLease(projectId, ownerOp, reason, mycoHome);
+  acquireProjectLease(projectId, ownerOp, reason, evidence, mycoHome);
 }
 
 /**
@@ -977,7 +986,8 @@ export function resumeProject(
 
 /**
  * Force-resume a project, bypassing the owner_op check. Used by the
- * startup health sweep to clear orphan pauses.
+ * operator escape hatch (`myco grove force-resume-project`) to clear a lease
+ * that derived held-ness cannot resolve.
  *
  * No-op when the project isn't registered (consistent with
  * `resumeProject`'s no-op-on-unpaused behavior).

@@ -106,7 +106,7 @@ describe('scheduler skips paused projects', () => {
   }
 
   it('skips a paused project on the next tick', async () => {
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
 
     const visited: GroveProjectId[] = [];
     const { jobs } = buildScheduledJobs([makeTask('vault-evolve')], makeContext(visited));

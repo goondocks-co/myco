@@ -51,6 +51,7 @@ import {
   type ResidencyDirection,
   type ResidencyJournal,
   type ResidencyPhase,
+  residencyJournalPath,
 } from './residency-journal.js';
 import {
   nativePerUserLockNamespace,
@@ -109,7 +110,16 @@ function acquireResidencyLease(
   deps: ResidencyDaemonDeps,
 ): void {
   try {
-    acquireProjectLease(projectId, ownerOp, reason, deps.mycoHome);
+    // The journal is this transition's crash-resumable record: it outlives
+    // the process by design, so a crash must keep the project blocked until
+    // the resume finishes rather than freeing it the moment the daemon dies.
+    acquireProjectLease(
+      projectId,
+      ownerOp,
+      reason,
+      { kind: 'residency-journal', path: residencyJournalPath(projectId) },
+      deps.mycoHome,
+    );
   } catch (err) {
     if (err instanceof ProjectLeaseHeldError) {
       throw codedMembershipError(
@@ -185,7 +195,18 @@ export function beginAttachResidency(
     // backup/park/attach steps run only after it passes. Clear the journal so a
     // corrected retry starts clean; any other failure leaves the journal for the
     // drain to resume.
-    if (isProtocolRefusal(err)) clearResidencyJournal(ctx.projectId);
+    //
+    // The LEASE must be released with it. Clearing the journal alone deletes
+    // the evidence while the holder is still alive, so the lease reads held on
+    // the liveness half and stays that way for the daemon's lifetime — the
+    // project silently refuses every write after a "host needs update"
+    // message, with the transition long since abandoned. Every other exit from
+    // this function either releases the lease (abort) or leaves a live journal
+    // for the drain to finish; this was the one path that did neither.
+    if (isProtocolRefusal(err)) {
+      clearResidencyJournal(ctx.projectId);
+      releaseResidencyLease(ctx.projectId, deps.mycoHome);
+    }
     throw err;
   }
 
