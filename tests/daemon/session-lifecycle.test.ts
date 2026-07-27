@@ -86,3 +86,13 @@ describe('ensureSessionRowExists — tombstone gate', () => {
     expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).not.toBeNull();
   });
 });
+
+describe('transcript path resolution', () => {
+  it('is exported so any session-creating path can enrich a row', async () => {
+    // Capture learns a transcript's location from the hook payload. An agent
+    // that omits the field leaves the column null and mining never runs, even
+    // though the manifest declares where that agent keeps transcripts.
+    const mod = await import('@myco/daemon/session-lifecycle.js');
+    expect(typeof mod.ensureTranscriptPath).toBe('function');
+  });
+});

@@ -113,6 +113,18 @@ export function checkReconcile(
   const findings: Finding[] = [];
   const coverage: CoverageGap[] = [];
 
+  // Absent on vaults predating the table; an empty set degrades to the prior
+  // behavior rather than failing the run.
+  let tombstoned = new Set<string>();
+  try {
+    tombstoned = new Set(
+      (db.query(`SELECT session_id FROM session_tombstones`).all() as Array<{ session_id: string }>)
+        .map((r) => r.session_id),
+    );
+  } catch {
+    tombstoned = new Set<string>();
+  }
+
   const projectRoots = new Map<string, string>();
   for (const row of db
     .query(`SELECT DISTINCT project_id, project_root FROM sessions WHERE project_root IS NOT NULL`)
@@ -159,7 +171,11 @@ export function checkReconcile(
       }>).map((r) => r.id),
     );
 
-    const orphans = onDisk.filter((t) => !known.has(t.sessionId));
+    // A tombstoned session was captured and then deliberately deleted. Myco
+    // never removes the agent's own transcript, so the file outlives the row;
+    // reporting it as never-captured tells the reader to recover data they
+    // chose to remove. Every session-creating path gates on this same table.
+    const orphans = onDisk.filter((t) => !known.has(t.sessionId) && !tombstoned.has(t.sessionId));
     if (orphans.length === 0) continue;
 
     const attributed: string[] = [];

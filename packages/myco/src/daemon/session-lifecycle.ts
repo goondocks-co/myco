@@ -70,8 +70,9 @@
 import type { Logger } from './logger.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { epochSeconds, DEFAULT_SYMBIONT_NAME } from '@myco/constants.js';
-import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
+import { upsertSession, getSession, updateSession } from '@myco/db/queries/sessions.js';
 import { hasSessionTombstone } from '@myco/db/queries/session-tombstones.js';
+import { findTranscriptFor } from '@myco/symbionts/transcript-discovery.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import type { SessionRegistry } from './lifecycle.js';
 
@@ -137,6 +138,59 @@ export interface EnsureSessionParams {
  * Throws on DB failure after logging — callers should let the throw
  * propagate so the HTTP layer returns 500 rather than fabricating success.
  */
+/**
+ * Sessions this process has already attempted a transcript lookup for.
+ *
+ * The lookup walks a bounded set of manifest-declared paths, but it is disk
+ * I/O on an event path, and a session that legitimately has no transcript
+ * (plugin-reported agents) would otherwise repeat it on every event.
+ */
+const transcriptLookupAttempted = new Set<string>();
+
+/**
+ * Fill in `sessions.transcript_path` when the hook payload did not carry one.
+ *
+ * Capture learns a transcript's location from the hook payload field named by
+ * `hookFields.transcriptPath`. An agent that omits it leaves the row with no
+ * path, and mining — which reads the column — never runs for that session.
+ * The manifest also declares where that agent keeps transcripts, so the path
+ * is recoverable from the session id alone.
+ *
+ * Resolution is attempted once per session per process, and only for a row
+ * that has no path. An agent that stores no transcript resolves to null and is
+ * not retried.
+ */
+export function ensureTranscriptPath(params: {
+  sessionId: string;
+  agent: string;
+  logger: Logger;
+}): void {
+  if (transcriptLookupAttempted.has(params.sessionId)) return;
+  transcriptLookupAttempted.add(params.sessionId);
+
+  try {
+    const existing = getSession(params.sessionId, ALL_PROJECTS_SCOPE);
+    if (!existing || existing.transcript_path) return;
+
+    const resolved = findTranscriptFor(params.agent, params.sessionId);
+    if (!resolved) return;
+
+    updateSession(params.sessionId, { transcript_path: resolved }, ALL_PROJECTS_SCOPE);
+    params.logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'resolved transcript path from manifest discovery', {
+      session_id: params.sessionId,
+      agent: params.agent,
+      transcript_path: resolved,
+    });
+  } catch (err) {
+    // Best-effort enrichment: capture proceeds without a path exactly as before.
+    params.logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'transcript path resolution failed', {
+      session_id: params.sessionId,
+      agent: params.agent,
+      error: (err as Error).message,
+    });
+  }
+}
+
 export function ensureSession(params: EnsureSessionParams): void {
   const startedEpoch = params.startedAt
     ? Math.floor(new Date(params.startedAt).getTime() / 1000)
@@ -168,6 +222,8 @@ export function ensureSession(params: EnsureSessionParams): void {
   params.registry.register(params.sessionId, {
     started_at: params.startedAt ?? new Date().toISOString(),
   });
+
+  ensureTranscriptPath({ sessionId: params.sessionId, agent: params.agent, logger: params.logger });
 }
 
 export interface EnsureSessionRowExistsParams {
