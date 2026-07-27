@@ -15,6 +15,7 @@ import { HarnessExecutionError, type HarnessErrorKind } from './types.js';
 import { isConnectionError } from './classify-error.js';
 import { HARNESS_CLAUDE_SDK } from '@myco/agent/types.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
+import { writeHarnessRedirectEpoch } from './redirect-epoch.js';
 import {
   createMaterializedVaultToolServer,
   createScopedVaultToolServer,
@@ -418,6 +419,7 @@ function pickClaudeSetup(input: HarnessExecuteInput): HarnessScopeSetup {
 function getAgentSessionConfigDir(): string {
   const dir = path.join(resolveMycoHome(), 'agent-sessions');
   fs.mkdirSync(dir, { recursive: true });
+  writeHarnessRedirectEpoch(dir);
   return dir;
 }
 

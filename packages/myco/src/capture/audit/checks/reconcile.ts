@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import type { Database } from 'bun:sqlite';
 
+import { readHarnessRedirectEpoch } from '../../../agent/harness/redirect-epoch.js';
 import { evaluateSessionCaptureRules, resolveSubagentThread } from '../../../hooks/capture-rules.js';
 import { readTranscriptMeta } from '../../../hooks/transcript-meta.js';
 import { manifestTranscriptDiscovery, enumerateTranscripts } from '../../../symbionts/transcript-discovery.js';
 import { classifyRecency } from '../context.js';
+import { harnessSessionIds } from '../harness-sessions.js';
 import type { AuditOptions, CoverageGap, Finding, SymbiontContext } from '../types.js';
 
 /**
@@ -16,6 +18,17 @@ import type { AuditOptions, CoverageGap, Finding, SymbiontContext } from '../typ
  */
 
 const MAX_HEADER_LINES = 40;
+
+/** Task definitions, the source of the phase names harness ids derive from. */
+const DEFAULT_TASKS_DIR = new URL('../../../agent/definitions/tasks', import.meta.url).pathname;
+
+function modifiedAt(filePath: string): number {
+  try {
+    return Math.floor(fs.statSync(filePath).mtimeMs / 1000);
+  } catch {
+    return Number.MAX_SAFE_INTEGER; // unreadable mtime must not silence a finding
+  }
+}
 
 function readDotPath(source: unknown, dotPath: string): string | null {
   let current: unknown = source;
@@ -125,6 +138,11 @@ export function checkReconcile(
     tombstoned = new Set<string>();
   }
 
+  // Myco's own agent runs are recomputable from agent_runs, and everything
+  // written before redirection is undatable against it.
+  const harnessIds = harnessSessionIds(db, opts.harnessTasksDir ?? DEFAULT_TASKS_DIR);
+  const redirectEpoch = readHarnessRedirectEpoch();
+
   const projectRoots = new Map<string, string>();
   for (const row of db
     .query(`SELECT DISTINCT project_id, project_root FROM sessions WHERE project_root IS NOT NULL`)
@@ -179,6 +197,8 @@ export function checkReconcile(
     if (orphans.length === 0) continue;
 
     const attributed: string[] = [];
+    let harnessRuns = 0;
+    let predatingRedirect = 0;
     // Orphans carry no database timestamp, so recency comes from the
     // transcript's own mtime.
     let firstSeen: number | undefined;
@@ -186,6 +206,23 @@ export function checkReconcile(
     let unattributable = 0;
     let deliberate = 0;
     for (const orphan of orphans) {
+      // Ordered cheapest-first: an id set lookup, then one stat, and only then
+      // the checks that read a transcript header. The bulk of a mature
+      // machine's backlog exits here without any file being opened.
+
+      // Myco's own agent runs, identified exactly rather than by content.
+      if (harnessIds.has(orphan.sessionId)) {
+        harnessRuns += 1;
+        continue;
+      }
+
+      // Written before the harness stopped using this directory, so it cannot
+      // be told apart from an agent run.
+      if (redirectEpoch !== undefined && modifiedAt(orphan.filePath) < redirectEpoch) {
+        predatingRedirect += 1;
+        continue;
+      }
+
       // Transcripts the manifest excludes are expected to have no row.
       if (intentionallyDropped(symbiont.name, orphan.filePath)) {
         deliberate += 1;
@@ -212,6 +249,22 @@ export function checkReconcile(
       } catch {
         // Unreadable mtime just leaves recency unknown for this batch.
       }
+    }
+
+    if (harnessRuns > 0) {
+      coverage.push({
+        symbiont: symbiont.name,
+        scope: 'transcript reconciliation',
+        reason: `${harnessRuns} transcript(s) are Myco's own agent-harness runs, identified from agent_runs. Absent from sessions by design.`,
+      });
+    }
+
+    if (predatingRedirect > 0) {
+      coverage.push({
+        symbiont: symbiont.name,
+        scope: 'transcript reconciliation',
+        reason: `${predatingRedirect} transcript(s) predate harness transcript redirection and cannot be told apart from agent runs, so they are neither reported as loss nor claimed as captured. Transcripts written after redirection are attributed normally.`,
+      });
     }
 
     if (deliberate > 0) {
