@@ -1,4 +1,4 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
 
 # `make build` runs the fast unit-test profile + build. Integration / smoke
 # tests are deliberately excluded from the inner dev loop — they pair real
@@ -6,15 +6,21 @@
 # per run AND flakes under parallel load. The full sweep still runs in CI
 # on every PR; locally, use `make build-all` only when you specifically
 # need pre-release confidence.
+# The Makefile exists for dogfooding — production installs come from the
+# install script — so a build that leaves the running daemon on old bits is
+# not a useful outcome. `build` therefore deploys and restarts. Use
+# `build-only` to compile without touching the running daemon.
 build:
 	$(MAKE) check-fast
 	npm run build
+	@$(MAKE) --no-print-directory dev-refresh
 
 # Legacy / explicit full sweep: lint + every test bucket including
 # integration + smoke. Use before tagging a release; CI always runs this.
 build-all:
 	$(MAKE) check-all
 	npm run build
+	@$(MAKE) --no-print-directory dev-refresh
 
 # Alias retained for backward compatibility with existing automation.
 build-fast: build
@@ -135,6 +141,45 @@ process.stdout.write(process.platform === 'darwin' ? 'darwin-' + (process.arch =
 process.platform === 'linux' ? 'linux-' + (process.arch === 'arm64' ? 'arm64' : 'x64') : \
 'windows-x64')")
 
+# Copy the freshly-built host binary into the standalone dev location and
+# refresh the wrapper. This is the part that must run after EVERY build; the
+# one-time setup (runtime pins, subsystem claim, symbiont refresh) lives in
+# `dev-link` and is deliberately not repeated here.
+#
+# rm -f before cp: a running dev daemon may hold this path open. cp would
+# rewrite the same inode (ETXTBSY on Linux / corrupt live text pages on
+# macOS); removing first gives the new binary a fresh inode.
+dev-install:
+	@mkdir -p $(HOME)/.myco-dev/bin $(HOME)/.local/bin
+	@rm -f $(HOME)/.myco-dev/bin/myco
+	@cp $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco
+	@chmod +x $(HOME)/.myco-dev/bin/myco
+	@rm -f $(HOME)/.local/bin/myco-dev
+	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "$$HOME/.myco-dev/bin/myco" "$$@"\n' > $(HOME)/.local/bin/myco-dev
+	@chmod +x $(HOME)/.local/bin/myco-dev
+
+# Deploy + restart, but only when this machine is already set up for dogfood.
+# A machine that has never run `dev-link` has nothing to deploy into, so this
+# is a silent no-op there rather than an error.
+dev-refresh:
+	@# A worktree build must not replace the dogfood binary. The dogfood daemon
+	@# is pinned to the root checkout, and a worktree's binary disappears when
+	@# the worktree is removed — leaving the daemon pointed at nothing. Worktree
+	@# dogfooding has its own opt-in path (`dev-link-worktree`).
+	@if [ "$$(git rev-parse --git-dir 2>/dev/null)" != "$$(git rev-parse --git-common-dir 2>/dev/null)" ]; then \
+		echo "· worktree build — not replacing the dogfood binary (use 'make dev-link-worktree' to dogfood from here)"; \
+	elif [ -x "$(HOME)/.myco-dev/bin/myco" ]; then \
+		$(MAKE) --no-print-directory dev-install; \
+		if "$(HOME)/.local/bin/myco-dev" restart >/dev/null 2>&1; then \
+			echo "✓ deployed to $(HOME)/.myco-dev/bin/myco → dev daemon restarted"; \
+		else \
+			echo "⚠ deployed to $(HOME)/.myco-dev/bin/myco, but 'myco-dev restart' did not confirm healthy."; \
+			echo "  verify with: myco-dev service status"; \
+		fi; \
+	else \
+		echo "· no dogfood install on this machine — skipping deploy (run 'make dev-link' to set one up)"; \
+	fi
+
 dev-build:
 	@# myco is now a Bun-compiled binary. Steps in order:
 	@#   1. build libsqlite3 for the host target (cached after first run)
@@ -162,20 +207,9 @@ dev-link: dev-build
 	@# node_modules tree (e.g. the Claude Code CLI the harness shells out to)
 	@# worked in dev and broke only in prod. A standalone dev binary closes that
 	@# blindspot so dogfood exercises the production topology.
-	@mkdir -p $(HOME)/.myco-dev/bin
-	@# rm -f before cp: a running dev daemon may hold this path open. cp would
-	@# rewrite the same inode (ETXTBSY on Linux / corrupt live text pages on
-	@# macOS); removing first gives the new binary a fresh inode.
-	@rm -f $(HOME)/.myco-dev/bin/myco
-	@cp $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco
-	@chmod +x $(HOME)/.myco-dev/bin/myco
-	@# myco-dev wraps the standalone binary: sets MYCO_HOME=~/.myco-dev and
-	@# MYCO_CLAIMS_HOME=~/.myco, then execs it.
-	@# rm -f first, then write a fresh wrapper script — never append to or follow
-	@# an existing file here (an older install may have left a symlink at this path).
-	@rm -f $(HOME)/.local/bin/myco-dev
-	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "$$HOME/.myco-dev/bin/myco" "$$@"\n' > $(HOME)/.local/bin/myco-dev
-	@chmod +x $(HOME)/.local/bin/myco-dev
+	@# The binary copy + wrapper live in `dev-install` so every build can reuse
+	@# them without repeating the one-time setup below.
+	@$(MAKE) --no-print-directory dev-install
 	@ln -sf $(PWD)/packages/myco/bin/myco-run $(HOME)/.local/bin/myco-run
 	@chmod +x $(HOME)/.local/bin/myco-run
 	@# Write the absolute path of the dev binary to the project-scope

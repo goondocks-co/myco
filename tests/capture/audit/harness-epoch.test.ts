@@ -8,6 +8,7 @@ import { harnessSessionIds } from '@myco/capture/audit/harness-sessions.js';
 import {
   readHarnessRedirectEpoch,
   writeHarnessRedirectEpoch,
+  stampHarnessRedirectEpoch,
   harnessSessionDir,
 } from '@myco/agent/harness/redirect-epoch.js';
 import { phaseSessionId } from '@myco/agent/wave-computation.js';
@@ -81,6 +82,20 @@ describe('harness redirect epoch', () => {
     const dir = harnessSessionDir(home);
     fs.mkdirSync(dir, { recursive: true });
     writeHarnessRedirectEpoch(dir, 1_785_000_000_000);
+    expect(readHarnessRedirectEpoch(home)).toBe(1_785_000_000);
+  });
+
+  it('stamps at boot without waiting for a harness run', () => {
+    // Redirection applies to every run the process will start, so boot is the
+    // boundary. Deferring to the first run leaves a window in which
+    // redirection is active but nothing can be dated against it.
+    stampHarnessRedirectEpoch(home, 1_785_000_000_000);
+    expect(readHarnessRedirectEpoch(home)).toBe(1_785_000_000);
+  });
+
+  it('keeps the original boundary across daemon restarts', () => {
+    stampHarnessRedirectEpoch(home, 1_785_000_000_000);
+    stampHarnessRedirectEpoch(home, 1_999_000_000_000);
     expect(readHarnessRedirectEpoch(home)).toBe(1_785_000_000);
   });
 
