@@ -13,6 +13,7 @@
 
 import { insertGraphEdge, listGraphEdges } from './graph-edges.js';
 import { ALL_PROJECTS_SCOPE, type GroveProjectId } from '@myco/grove/ids.js';
+import { readProjectLease } from '@myco/grove/project-lease.js';
 import {
   EDGE_TYPE_FROM_SESSION,
   EDGE_TYPE_EXTRACTED_FROM,
@@ -138,6 +139,32 @@ export function recordPlanSessionTouch(
 ): void {
   if (!callingSessionId) return;
   if (callingSessionId === plan.session_id) return;
+
+  // Project write admission. This is a WRITE hiding behind a read: the tool
+  // surface classifies `myco_plans op:'get'` as a read (correctly — an agent
+  // mid-transition must still be able to read plans, and that is the
+  // `myco-handoff receive` flow), but the retrieval records lineage, and
+  // `graph_edges` is in GROVE_PROJECT_SCOPED_TABLES. Written during a
+  // residency push it would be deleted unshipped by `deleteAfterAck`.
+  //
+  // Gated HERE rather than at the tool call, for two reasons: this is the
+  // only place that knows which project is actually being written —
+  // `plan.project_id` can differ from the request's project under a
+  // Grove-scoped context — and gating here covers every caller rather than
+  // the two that exist today.
+  //
+  // Skipping costs a derived lineage edge, never user-authored content, and
+  // the function is best-effort by contract (every error below is already
+  // swallowed), so callers tolerate its absence.
+  // A null project_id is a grove-level row that `deleteAfterAck`'s
+  // `WHERE project_id = ?` never matches, so no project lease governs it.
+  if (plan.project_id !== null) {
+    try {
+      if (readProjectLease(plan.project_id).state !== 'absent') return;
+    } catch {
+      return; // unreadable lease counts as held (G4) — skip the touch
+    }
+  }
 
   try {
     const alreadyLinked = listGraphEdges({

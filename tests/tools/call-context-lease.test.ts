@@ -58,7 +58,12 @@ describe('resolveCallContext — project write lease at the pivot', () => {
     expect(isToolError(thrown)).toBe(true);
     if (isToolError(thrown)) {
       expect(thrown.code).toBe('project_lease_held');
-      expect(thrown.message).toContain('residency-attach');
+      // The refusal still identifies WHICH move, but in user vocabulary:
+      // the pivot now shares the front door's copy so one condition cannot
+      // carry two different messages. `residency-attach` is a mechanism
+      // name and must not reach an agent-facing string.
+      expect(thrown.message).toContain('joining a team');
+      expect(thrown.message).not.toContain('residency-attach');
     }
 
     releaseProjectLease(TARGET_PROJECT, 'residency-attach', mycoHome, testPerUserLockNamespace);

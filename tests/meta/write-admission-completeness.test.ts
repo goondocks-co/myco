@@ -74,7 +74,11 @@ const WITH_DATABASE_CALL = /\bwithDatabase\s*\(/;
  */
 const ADMISSION_CONSULT = new RegExp(
   '\\b(?:isProjectPaused|isProjectPausedInGrove|pauseAwareShouldVisit'
-  + '|pauseProject|acquireProjectLease|readProjectLease)\\s*\\(',
+  + '|pauseProject|acquireProjectLease|readProjectLease'
+  // The tool surface's consult. It wraps readProjectLease rather than
+  // calling the pause API directly, so the raw-name list above cannot see
+  // it — and a `gated` tools file would read as a liar without this.
+  + '|assertProjectAdmitsToolWrite)\\s*\\(',
 );
 
 // ---------------------------------------------------------------------------
@@ -106,7 +110,7 @@ const ADMISSION_CONSULT = new RegExp(
 //                        row writes (reads, probes, grove-level-only rows).
 //                        Declared with the evidence in `why`; reclassify if the
 //                        file gains a project-scoped write.
-//   ungated            — RATCHET. A known writer that bypasses admission.
+//   ungated            — RATCHET, currently EMPTY. A known writer that bypasses admission.
 //                        Verified STILL ungated: the file must contain zero
 //                        consult calls. Once fixed, the stays-honest check
 //                        fails and the entry must be removed (or flipped to
@@ -205,10 +209,25 @@ const WRITE_ADMISSION_REGISTRY: Record<string, Classification> = {
       + 'not identify it.',
   },
   'packages/myco/src/tools/index.ts': {
-    kind: 'ungated',
-    why: 'The out-of-daemon front door (myco tool call) opens the Grove DB read-write '
-      + 'and runs the migration chain with no ownership, pause, or residency check. '
-      + 'Write-admission phase 6: it must read the lease and refuse, as the HTTP path does.',
+    kind: 'gated',
+    consult: 'assertProjectAdmitsToolWrite in callTool, consulted on the EFFECTIVE context '
+      + '(after effectiveContextFor) so it covers a pivoted call as well as the base one. '
+      + 'This gate is load-bearing for a non-obvious reason: `/mcp` is a RAW route, and '
+      + 'DaemonServer.handleRequest dispatches raw routes and RETURNS before the central '
+      + 'per-project pause gate — so every tool call (CLI, MCP, overlay) reaches the shared '
+      + 'handlers without ever crossing it. NOTE the older framing "the out-of-daemon front '
+      + 'door" is stale: decision-14e572a3 made `myco tool call` a thin MCP client of the '
+      + 'local daemon, so these calls run INSIDE the daemon. '
+      + 'Gated per (tool, op) rather than per tool: myco_plans and myco_spores are '
+      + 'write-capable as a whole while most of their ops are reads, and refusing the tool '
+      + 'would blind an agent to its own plans and spores for the length of a transition '
+      + 'with no safety gain. Reads are deliberately admitted, matching the HTTP gate. '
+      + 'The (tool, op) table is held complete against the schema enums by '
+      + 'tests/meta/tool-op-classification.test.ts, and isMutatingToolCall fails closed on '
+      + 'an unknown tool or op. runWithRequestDatabase additionally refuses to run the '
+      + 'migration chain against a leased project, but that branch is NOT what makes this '
+      + 'file safe — it is unreachable from either production wiring (both pass '
+      + 'resolveDatabase) and guards only a re-added out-of-daemon caller.',
   },
 };
 
@@ -266,9 +285,18 @@ const MECHANISM_PINS: readonly { file: string; pattern: RegExp; what: string }[]
   },
   {
     file: 'packages/myco/src/tools/call-context.ts',
-    pattern: /\breadProjectLease\s*\(/,
-    what: 'the tool-call project pivot refusing a project whose write lease is held',
+    pattern: /\bassertProjectAdmitsToolWrite\s*\(/,
+    what: 'the tool-call project pivot refusing a project whose write lease is held. '
+      + 'It delegates to the shared tool-surface helper rather than reading the lease '
+      + 'itself, so one condition cannot grow two different refusal messages',
   },
+  {
+    file: 'packages/myco/src/tools/lease-admission.ts',
+    pattern: /export function assertProjectAdmitsToolWrite/,
+    what: 'the tool-surface admission consult itself — the single refusal shared by the '
+      + 'front door and the pivot',
+  },
+
   {
     file: 'packages/myco/src/agent/executor.ts',
     pattern: /\bisProjectPaused\s*\(/,

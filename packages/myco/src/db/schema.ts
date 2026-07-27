@@ -112,6 +112,27 @@ function hasSchemaVersionTable(db: Database): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * True when `createSchema` would run at least one migration (or build the
+ * schema from scratch) against this database.
+ *
+ * Read-only: it inspects the recorded version without touching it. For
+ * callers that must decide whether migrating is safe RIGHT NOW rather than
+ * simply whether it is needed — `tools/index.ts` refuses to migrate a Grove
+ * whose project is mid-residency-move, because altering tables under an
+ * in-flight push is a data hazard. That caller is currently reachable only
+ * when `MycoTools` is built without a `resolveDatabase` resolver, which no
+ * production wiring does today.
+ *
+ * Note `createSchema` is NOT a no-op when the version already matches — it
+ * reapplies the current DDL — so "no pending migration" means "no data
+ * transformation", not "no writes at all".
+ */
+export function isSchemaMigrationPending(db: Database): boolean {
+  if (!hasSchemaVersionTable(db)) return true;
+  return getCurrentVersion(db) < SCHEMA_VERSION;
+}
+
+/**
  * Create all database tables, indexes, and record the schema version.
  *
  * Fully idempotent -- safe to call on every startup. Uses `IF NOT EXISTS`

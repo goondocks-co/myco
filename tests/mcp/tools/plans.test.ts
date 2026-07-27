@@ -13,6 +13,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { handleMycoPlans } from '@myco/tools/plans.js';
+import { acquireProjectLease } from '@myco/grove/project-lease.js';
+import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 import { DaemonServer } from '@myco/daemon/server.js';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
@@ -215,6 +217,87 @@ describe('myco_plans op: list / get (in-process)', () => {
 
     const edges = listGraphEdges({ sourceId: created.id, scope: ALL_PROJECTS_SCOPE });
     expect(edges.some((e) => e.target_id === 'reader-session' && e.type === 'PLAN_REFERENCED')).toBe(true);
+  });
+
+  it('does NOT record the lineage edge while the plan\'s project write lease is held', async () => {
+    // Regression: `op:get` is classified a READ for write admission (an agent
+    // mid-transition must keep reading plans — this is the handoff-receive
+    // flow), but the retrieval records lineage into `graph_edges`, which is
+    // project-scoped. Written during a residency push it would be deleted
+    // unshipped by `deleteAfterAck`, so the touch consults admission itself.
+    //
+    // The plan is seeded with an explicit project_id rather than saved
+    // through the tool: a null-project row is one `deleteAfterAck` never
+    // matches, so a plan without one would make this test vacuous.
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: 1700000000 });
+    seedSession('creator-session');
+    seedSession('reader-session');
+    const PROJECT = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const GROVE = 'grove_' + 'c'.repeat(32);
+    seedPlan({
+      id: 'leased-plan',
+      logical_key: 'session:creator-session:key:leased',
+      content: '# P',
+      session_id: 'creator-session',
+      project_id: PROJECT,
+    });
+    const readerContext = makeTestRequestContext({
+      sessionId: 'reader-session',
+      groveId: GROVE,
+      projectId: PROJECT,
+    });
+
+    const leaseHome = fs.mkdtempSync(path.join(os.tmpdir(), 'plans-lease-'));
+    const previousHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = leaseHome;
+    try {
+      acquireProjectLease(PROJECT, 'residency-detach', 'detaching', leaseHome, testPerUserLockNamespace);
+
+      const plan = await handleMycoPlans({ op: 'get', id: 'leased-plan' }, mockClient(), readerContext);
+
+      // The READ still succeeds — that is the point of admitting it.
+      expect(plan).toBeTruthy();
+      // But the lineage write did not happen.
+      const edges = listGraphEdges({ sourceId: 'leased-plan', scope: ALL_PROJECTS_SCOPE });
+      expect(edges.some((e) => e.target_id === 'reader-session')).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousHome;
+      fs.rmSync(leaseHome, { recursive: true, force: true });
+    }
+  });
+
+  it('DOES record the same edge when that project is not leased (the gate is conditional)', async () => {
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: 1700000000 });
+    seedSession('creator-session');
+    seedSession('reader-session');
+    const PROJECT = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const GROVE = 'grove_' + 'c'.repeat(32);
+    seedPlan({
+      id: 'free-plan',
+      logical_key: 'session:creator-session:key:free',
+      content: '# P',
+      session_id: 'creator-session',
+      project_id: PROJECT,
+    });
+
+    const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'plans-nolease-'));
+    const previousHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = emptyHome;
+    try {
+      await handleMycoPlans(
+        { op: 'get', id: 'free-plan' },
+        mockClient(),
+        makeTestRequestContext({ sessionId: 'reader-session', groveId: GROVE, projectId: PROJECT }),
+      );
+
+      const edges = listGraphEdges({ sourceId: 'free-plan', scope: ALL_PROJECTS_SCOPE });
+      expect(edges.some((e) => e.target_id === 'reader-session' && e.type === 'PLAN_REFERENCED')).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousHome;
+      fs.rmSync(emptyHome, { recursive: true, force: true });
+    }
   });
 
   it('does NOT record an edge when the creating session does op:get', async () => {

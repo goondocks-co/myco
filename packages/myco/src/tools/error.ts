@@ -39,11 +39,14 @@ export type ToolErrorCode =
    */
   | 'foreign_grove'
   /**
-   * A pivot targeted a project whose write lease is held (grove move,
-   * residency transition) or whose lease record is unreadable — the
-   * project's data is mid-operation and must not be read or written
-   * through a pivot until the operation completes. Distinct code so
-   * clients can present "retry after the operation finishes".
+   * A project whose write lease is held (grove move, residency transition),
+   * or whose lease record is unreadable, must not be written until the
+   * operation completes. Covers a mutating tool call on the base context AND
+   * a pivot onto such a project — the pivot is the stricter case, refused
+   * even for reads, because a pivot is a deliberate reach into a project
+   * mid-move. Distinct code so clients can present "retry after the
+   * operation finishes"; carries `retryable` on `data` so an agent can tell
+   * a transient refusal from a permanent one.
    */
   | 'project_lease_held'
   | 'tool_call_failed';
@@ -64,12 +67,26 @@ export type ToolErrorCode =
  * original code without a bespoke non-MCP fallback route.
  */
 export class ToolError extends Error {
-  public readonly data: { code: ToolErrorCode };
+  public readonly data: { code: ToolErrorCode; retryable?: boolean };
 
-  constructor(public readonly code: ToolErrorCode, message: string) {
+  /**
+   * `retryable` marks a refusal that will clear on its own, so an agent can
+   * hold its content and try again rather than treating the failure as
+   * permanent and discarding the work. Omitted where retryability is
+   * unknown; the router-side twin carries the same signal as
+   * `RefusalPayload.retryable` (`host/routing.ts`), and this surface was the
+   * one left without it.
+   */
+  constructor(
+    public readonly code: ToolErrorCode,
+    message: string,
+    options: { retryable?: boolean } = {},
+  ) {
     super(message);
     this.name = 'ToolError';
-    this.data = { code };
+    this.data = options.retryable === undefined
+      ? { code }
+      : { code, retryable: options.retryable };
   }
 }
 

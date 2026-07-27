@@ -18,6 +18,7 @@
 import { ToolError } from '../tools/error.js';
 import type { MycoTools } from '../tools/index.js';
 import type { ToolDefinition } from '../tools/definitions.js';
+import { effectiveOp } from '../tools/op-resolution.js';
 
 /** The ONLY (tool, op) pairs that exist on the external surface. Fails closed:
  *  anything not listed here does not exist externally. Mirrors the worker's
@@ -31,27 +32,11 @@ export const EXTERNAL_TOOL_ALLOWLIST: Record<string, ReadonlySet<string>> = {
   myco_spores:   new Set(['list', 'get']),
 };
 
-/** Every tool schema below defaults `op` to `'list'` except `myco_cortex`
- *  (defaults to `'digest'`) — the SAME defaults `tools/definitions.ts`
- *  documents, so an omitted `op` is judged exactly as the real handler would
- *  interpret it. */
-const DEFAULT_OP: Record<string, string> = {
-  myco_cortex: 'digest',
-};
-
-function normalizeArgs(args: unknown): Record<string, unknown> {
-  if (args && typeof args === 'object' && !Array.isArray(args)) return args as Record<string, unknown>;
-  return {};
-}
-
-/** Extracts the effective op a call would run under, applying the same
- *  per-tool default the real tool schema uses when `op` is omitted. */
-function effectiveOp(toolName: string, args: unknown): string {
-  const input = normalizeArgs(args);
-  const raw = input.op;
-  if (typeof raw === 'string' && raw.length > 0) return raw;
-  return DEFAULT_OP[toolName] ?? 'list';
-}
+// Op resolution lives in `tools/op-resolution.ts` so this allowlist and
+// project write admission judge a call's op identically. The local copy this
+// replaced omitted `myco_agent`'s 'runs' default — harmless here only because
+// `myco_agent` has no allowlist entry, so `isAllowedExternalCall` returns
+// false before ever resolving an op. Behavior on this surface is unchanged.
 
 /** True when `(toolName, op resolved from args)` is on the external
  *  allowlist. `myco_search` has no `op` concept — its wildcard entry admits

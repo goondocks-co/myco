@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import type { Database } from '@myco/db/client.js';
-import { ToolError } from './error.js';
+import { ToolError, isToolError } from './error.js';
+import { isMutatingToolCall, assertProjectAdmitsToolWrite } from './lease-admission.js';
 import { isCallerTenancy, requireProjectId, type MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   readPivot,
@@ -11,6 +12,7 @@ import {
   type CallContextConstraint,
 } from './call-context.js';
 import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
+import { resolveMycoHome } from '@myco/grove/paths.js';
 import {
   TOOL_AGENT,
   TOOL_CORTEX,
@@ -40,6 +42,12 @@ export interface MycoToolsOptions {
    */
   resolveDatabase?: (databasePath: string) => Database;
   callContextConstraint?: CallContextConstraint;
+  /**
+   * Myco home for the project write-admission lease read. Injected for
+   * testability; production callers omit it and let `resolveMycoHome()`
+   * find it from env/config, matching `resolveCallContext`'s convention.
+   */
+  mycoHome?: string;
 }
 
 interface JsonSchemaProperty {
@@ -182,6 +190,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       }
       return withDatabase(db, fn);
     }
+    const { isSchemaMigrationPending } = await import('@myco/db/schema.js');
     let db: Database;
     try {
       // Residual front-door hazard: outside the daemon (CLI `myco tool
@@ -190,9 +199,46 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       // gated (resolveCallContext throws `foreign_grove`). Gating the base
       // context is tracked in the RC-5 remediation plan.
       db = openDatabase(context.databasePath);
+    } catch {
+      throw new ToolError('tool_call_failed', 'Vault database is not available');
+    }
+    // Refuse to MIGRATE a project that is mid-move, even for a read: the
+    // op-level gate above admits reads because reading is harmless during a
+    // transition, whereas running the migration chain alters tables under an
+    // in-flight push.
+    //
+    // Reachability, stated honestly rather than implied: this branch runs
+    // only when a caller builds `MycoTools` WITHOUT `resolveDatabase`, and
+    // neither production wiring does — `mcp/http.ts` and
+    // `daemon/external-listener.ts` both pass one, and the CLI is an MCP
+    // client of `/mcp` rather than an in-process caller
+    // (decision-14e572a3). So this guard is currently unreachable in
+    // production and is NOT what makes the tool surface safe; the gate in
+    // `callTool` is. It exists so that if an out-of-daemon caller is ever
+    // re-added, it cannot migrate a leased project on its first call.
+    //
+    // Ordered so the cheap local version probe runs first: the lease read
+    // costs nothing unless a migration is actually pending.
+    try {
+      if (context.projectId && isSchemaMigrationPending(db)) {
+        assertProjectAdmitsToolWrite(context.projectId, options.mycoHome ?? resolveMycoHome());
+      }
+    } catch (err) {
+      db.close();
+      // Only the admission refusal travels as itself. A raw probe failure
+      // (corrupt file, SQLITE_BUSY past the timeout) must still surface as
+      // `tool_call_failed`: that exact code is what the Canopy dispatchers
+      // key on to degrade to an empty map instead of erroring, and before
+      // this branch existed the same statement threw from inside
+      // createSchema's catch and got that conversion.
+      if (isToolError(err)) throw err;
+      throw new ToolError('tool_call_failed', 'Vault database is not available');
+    }
+    try {
       // Real machine id (not the 'local' default) so the v52 conversion runs.
       createSchema(db, getMachineId());
     } catch {
+      db.close();
       throw new ToolError('tool_call_failed', 'Vault database is not available');
     }
     try {
@@ -410,6 +456,10 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   function effectiveContextFor(base: MycoRequestContext, _name: string, input: ToolInput): MycoRequestContext {
     return resolveCallContext(base, readPivot(input), {
       constraint: options.callContextConstraint,
+      // Same lease store the front-door gate reads. Without this the pivot's
+      // own admission check resolved MYCO_HOME independently, so a single
+      // call could consult two different stores whenever a home is injected.
+      ...(options.mycoHome === undefined ? {} : { mycoHome: options.mycoHome }),
     });
   }
 
@@ -432,6 +482,27 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       validateInput(definition, input);
       const start = Date.now();
       const context = effectiveContextFor(base, name, input);
+
+      // Project write admission (write-admission phase 6). `/mcp` is a RAW
+      // route: `DaemonServer.handleRequest` dispatches raw routes and
+      // returns before the central per-project pause gate, so EVERY tool
+      // call — CLI, MCP, overlay — arrives here having never crossed it. A
+      // mutating call into a leased project would write into the source
+      // Grove during a residency push and be deleted unshipped by
+      // `deleteAfterAck`.
+      //
+      // Consulted on the EFFECTIVE context, after `effectiveContextFor`, so
+      // it covers a call pivoted onto another project as well as the base
+      // one. (`resolveCallContext` already refuses an explicit pivot onto a
+      // leased project; this is the same answer for the un-pivoted case,
+      // which that check never saw.)
+      //
+      // Reads are admitted: an agent mid-transition can still search, read
+      // its plans and spores, and pull Cortex context.
+      if (context.projectId && isMutatingToolCall(name, input)) {
+        assertProjectAdmitsToolWrite(context.projectId, options.mycoHome ?? resolveMycoHome());
+      }
+
       // Pivot fields are dispatcher-only; strip them so handlers can't
       // accidentally forward them as URL query params or row filters.
       const handlerInput = stripPivotFields(input);
