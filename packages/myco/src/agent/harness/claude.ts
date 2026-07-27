@@ -14,6 +14,7 @@ import type {
 import { HarnessExecutionError, type HarnessErrorKind } from './types.js';
 import { isConnectionError } from './classify-error.js';
 import { HARNESS_CLAUDE_SDK } from '@myco/agent/types.js';
+import { resolveMycoHome } from '@myco/grove/paths.js';
 import {
   createMaterializedVaultToolServer,
   createScopedVaultToolServer,
@@ -398,6 +399,28 @@ function pickClaudeSetup(input: HarnessExecuteInput): HarnessScopeSetup {
   };
 }
 
+/**
+ * Session directory for harness-spawned Claude CLI runs.
+ *
+ * The CLI persists every session it runs under `CLAUDE_CONFIG_DIR`, defaulting
+ * to `~/.claude` — the same tree a developer's own sessions occupy, and the
+ * tree `claude-code.yaml` declares as its transcript discovery root. Left
+ * there, agent runs are indistinguishable on disk from a person's work: they
+ * carry no origin marker, and anything reading that directory attributes them
+ * to the project the agent happened to run in.
+ *
+ * Pointing the CLI at a directory outside that root keeps harness transcripts
+ * off the discovery surface entirely, so no reader needs to classify them.
+ *
+ * Lives under MYCO_HOME rather than a temp dir because `persistSession` uses
+ * this store for cross-phase resume, which must survive a daemon restart.
+ */
+function getAgentSessionConfigDir(): string {
+  const dir = path.join(resolveMycoHome(), 'agent-sessions');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function prepareClaudeRun(setup: HarnessScopeSetup): PreparedClaudeRun {
   const toolServer = buildToolServer({ toolSurface: setup.toolSurface });
   const baseEnv = buildPhaseEnv(setup.provider);
@@ -409,6 +432,9 @@ function prepareClaudeRun(setup: HarnessScopeSetup): PreparedClaudeRun {
     // overridden the cache dir themselves.
     CLAUDE_CODE_PLUGIN_CACHE_DIR:
       process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
+    // Keep agent-run transcripts out of the user's session tree — see
+    // `getAgentSessionConfigDir()`.
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? getAgentSessionConfigDir(),
   };
   const claudeCodeExecutable = resolveClaudeCodeExecutable();
   if (!claudeCodeExecutable) {
