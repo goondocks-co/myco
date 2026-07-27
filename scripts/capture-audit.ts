@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { repair, runAudit } from '../packages/myco/src/capture/audit/index.js';
+import { resolveRuntimeHome } from '../packages/myco/src/daemon/update-checker.js';
 import type { AuditReport, Finding } from '../packages/myco/src/capture/audit/index.js';
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
@@ -33,6 +34,25 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
     }
   }
   return out;
+}
+
+/**
+ * Apply the project's runtime home pin before anything reads MYCO_HOME.
+ *
+ * Launchers (`myco`, `myco-run`, the `myco-dev` wrapper) resolve
+ * `.myco/runtime.home` and export MYCO_HOME before exec, so everything
+ * downstream sees the right install. A script invoked directly skips that
+ * layer, so without this it reads the default `~/.myco` while auditing a
+ * Grove that belongs to a pinned dev home — reporting on one installation
+ * while analysing another.
+ *
+ * `resolveRuntimeHome` is the same layered, trust-checked reader the daemon
+ * uses; an explicit MYCO_HOME still wins, exactly as it does for a launcher.
+ */
+function applyRuntimeHomePin(): void {
+  if (process.env.MYCO_HOME?.trim()) return;
+  const pinned = resolveRuntimeHome(path.join(process.cwd(), '.myco'));
+  if (pinned) process.env.MYCO_HOME = pinned;
 }
 
 /** Groves live under <MYCO_HOME>/groves/<groveId>/myco.db. */
@@ -119,6 +139,8 @@ function render(report: AuditReport): string {
   }
   return lines.join('\n');
 }
+
+applyRuntimeHomePin();
 
 const args = parseArgs(process.argv.slice(2));
 
