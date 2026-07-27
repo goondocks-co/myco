@@ -43,6 +43,8 @@ import {
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
 import { ABSENT, readFilePresence, readDirPresence, type Presence } from '@myco/utils/presence.js';
+import { currentHolder, isHolderAlive, type LeaseHolder } from './holder-identity.js';
+import { isOperationUnfinished, type LeaseEvidence } from './lease-evidence.js';
 
 /** Directory under the Myco home holding one lease file per project. */
 export const LEASES_DIRNAME = 'leases';
@@ -53,7 +55,12 @@ export interface ProjectLease {
   owner_op: string;
   /** Operator-facing explanation, surfaced by refusals and by doctor. */
   reason: string;
-  /** Epoch seconds of the most recent acquisition, for staleness sweeps. */
+  /**
+   * Epoch seconds of the most recent acquisition. Operator-facing only —
+   * held-ness is derived from `holder` and `evidence` (W4), never from age.
+   * It previously drove a staleness sweeper; nothing reads it to decide
+   * whether a lease is held any more.
+   */
   since: number;
   /**
    * Monotonically increasing per project, never reused — including across a
@@ -66,6 +73,18 @@ export interface ProjectLease {
   generation: number;
   /** Epoch seconds when the holder released, or null while held. */
   released_at: number | null;
+  /**
+   * The process that took the lease (W4). Present on every lease this binary
+   * writes; a record without it is malformed rather than legacy, because the
+   * lease store landed after the last release and no shipped binary has ever
+   * written one.
+   */
+  holder: LeaseHolder;
+  /**
+   * Pointer to the operation's own crash-resumable record, or `null` when the
+   * operation keeps none and is governed by holder-liveness alone.
+   */
+  evidence: LeaseEvidence | null;
 }
 
 export class ProjectLeaseHeldError extends Error {
@@ -105,6 +124,20 @@ export function leasesDirExists(mycoHome = resolveMycoHome()): boolean {
   return fs.existsSync(resolveLeasesDir(mycoHome));
 }
 
+function isValidHolder(holder: unknown): holder is LeaseHolder {
+  if (typeof holder !== 'object' || holder === null) return false;
+  const h = holder as Record<string, unknown>;
+  return typeof h.pid === 'number' && Number.isFinite(h.pid)
+    && typeof h.boot_id === 'string' && h.boot_id.length > 0;
+}
+
+function isValidEvidence(evidence: unknown): evidence is LeaseEvidence {
+  if (typeof evidence !== 'object' || evidence === null) return false;
+  const e = evidence as Record<string, unknown>;
+  return (e.kind === 'residency-journal' || e.kind === 'move-marker')
+    && typeof e.path === 'string' && e.path.length > 0;
+}
+
 function parseLease(raw: string): ProjectLease | null {
   try {
     const doc = JSON.parse(raw) as Partial<ProjectLease>;
@@ -114,6 +147,15 @@ function parseLease(raw: string): ProjectLease | null {
       || typeof doc.since !== 'number'
       || typeof doc.generation !== 'number'
       || !(doc.released_at === null || typeof doc.released_at === 'number')) return null;
+    // `holder` and `evidence` are validated too, and a bad shape returns null
+    // (→ the `unknown` presence, which every consumer treats as held). Without
+    // this, a partially-shaped holder such as `{}` or `{pid}` yields an
+    // undefined `boot_id`, `Math.abs(NaN) <= tolerance` is false, the holder
+    // reads DEAD, and a null-evidence lease is silently FREED — the opposite
+    // of the fail-closed posture this module documents, reached without any
+    // torn write.
+    if (!isValidHolder(doc.holder)) return null;
+    if (!(doc.evidence === null || isValidEvidence(doc.evidence))) return null;
     return doc as ProjectLease;
   } catch {
     return null;
@@ -152,7 +194,46 @@ export function readProjectLease(
   if (record.state !== 'present') return record;
   // A released record is retained only to carry the generation forward; it is
   // not a held lease. An unreadable one stays `unknown` so writers stay out.
-  return record.value.released_at === null ? record : ABSENT;
+  if (record.value.released_at !== null) return ABSENT;
+  return isStillHeld(record.value) ? record : ABSENT;
+}
+
+/**
+ * Is this un-released record STILL held? (write-admission W4.)
+ *
+ * Held-ness is derived, never simply stored. A record on disk says an
+ * operation once took the lease; it cannot say whether that is still true,
+ * and the pre-W4 design had no way to ask — leaving age as the only signal
+ * and a sweeper as the only recovery. A sweeper enumerates, and a project
+ * mid-residency-transition is deregistered from every Grove, so the one
+ * project that could strand was the one the sweeper could not see.
+ *
+ * The rule: **held iff the holder is alive OR the operation is unfinished.**
+ * Both are facts, checked at read time, so nothing has to find a stranded
+ * lease in order to free it — a dead holder with a terminal (or absent)
+ * operation record is self-evidently not holding, at the moment anyone asks.
+ *
+ * Each half covers the other's blind spot. Holder-liveness alone would free a
+ * project whose transition crashed but is still resumable, because the
+ * journal outlives the process by design. Operation-evidence alone would
+ * never free an operation that keeps no record.
+ *
+ * A record with no `holder` cannot be evaluated, so it is treated as HELD —
+ * the same fail-closed posture G4 takes for an unreadable record, and for the
+ * same reason: inability to prove a lease free is not proof that it is.
+ *
+ * This costs nothing in production. The lease store landed three weeks after
+ * the last release, so no shipped binary has ever written a lease record at
+ * all, let alone one without a holder; the only way to hold one is a
+ * development vault that ran an intermediate build of this workstream. That
+ * case has an operator escape hatch (`forceResumeProject`) and does not
+ * justify the alternative, which is a rule that silently frees any lease it
+ * cannot parse.
+ */
+function isStillHeld(lease: ProjectLease): boolean {
+  if (!lease.holder) return true;
+  if (isHolderAlive(lease.holder)) return true;
+  return lease.evidence !== null && isOperationUnfinished(lease.evidence);
 }
 
 /**
@@ -168,6 +249,7 @@ export function acquireProjectLease(
   projectId: string,
   ownerOp: string,
   reason: string,
+  evidence: LeaseEvidence | null,
   mycoHome = resolveMycoHome(),
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): ProjectLease {
@@ -186,7 +268,15 @@ export function acquireProjectLease(
     const record = readLeaseRecord(projectId, mycoHome);
     if (record.state === 'unknown') throw record.error;
     const prior = record.state === 'present' ? record.value : null;
-    if (prior && prior.released_at === null && prior.owner_op !== ownerOp) {
+    // Conflict is judged by the SAME predicate every reader uses. Testing
+    // `released_at === null` here instead would leave two definitions of
+    // "held": a lease whose holder died and whose operation finished reads
+    // FREE to every consumer, appears in no listing, and would still refuse
+    // acquisition here — permanently, now that nothing sweeps abandoned
+    // records. That is two records of one fact needing a reconciler, which
+    // is the shape this whole change exists to remove; it must not be
+    // reintroduced one function away from the fix.
+    if (prior && prior.released_at === null && isStillHeld(prior) && prior.owner_op !== ownerOp) {
       throw new ProjectLeaseHeldError(projectId, prior);
     }
     const next: ProjectLease = {
@@ -196,6 +286,11 @@ export function acquireProjectLease(
       since: Math.floor(Date.now() / 1000),
       generation: (prior?.generation ?? 0) + 1,
       released_at: null,
+      // Re-stamped on every acquisition, including a crash-resumed
+      // re-entry by the same owner (G2): the resuming process is a
+      // different one, and the record must name whoever holds it NOW.
+      holder: currentHolder(),
+      evidence,
     };
     atomicWriteFileSync(leasePath(projectId, mycoHome), `${JSON.stringify(next, null, 2)}\n`);
     return next;
@@ -232,7 +327,8 @@ export function releaseProjectLease(
 
 /**
  * Drop a lease regardless of holder — the operator escape hatch, and what the
- * startup sweeper uses on a lease left behind by a crashed process. The
+ * operator escape hatch uses on a lease left behind by a crashed process
+ * that derived held-ness cannot resolve (a record it cannot parse). The
  * generation is NOT reset: a forced release still has to fence any writer that
  * was admitted under the released lease.
  */
@@ -259,8 +355,9 @@ export function forceReleaseProjectLease(
  * read.
  *
  * Distinct from `listProjectLeases`, which drops unreadable records
- * because its callers render lease details and have nothing to show for a
- * torn file. Admission cannot drop them — unreadable is not unheld (G4),
+ * because a display caller has nothing to show for a torn file. (It has no
+ * production consumer today — the admission path uses
+ * `listWriteBlockedProjectIds`.) Admission cannot drop them — unreadable is not unheld (G4),
  * and a torn record here would silently admit a grove-wide writer into
  * the project an operation is actively moving.
  */

@@ -428,7 +428,7 @@ describe('maintenance API', () => {
       const grove = createGroveWithDb('Alpha');
       registerProject(grove, HELD, 'held');
       registerProject(grove, FREE, 'free');
-      acquireProjectLease(HELD, 'residency-detach', 'leaving the team', mycoHome, testPerUserLockNamespace);
+      acquireProjectLease(HELD, 'residency-detach', 'leaving the team', null, mycoHome, testPerUserLockNamespace);
       const { cache, handlers } = makeHandlers();
 
       const response = await handlers.handleReleaseProvenanceReconcile(emptyRequest({}));

@@ -16,6 +16,9 @@ import {
   setDefaultGrove,
 } from '@myco/grove/registry.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
+import { acquireProjectLease } from '@myco/grove/project-lease.js';
+import { findProjectByRef } from '@myco/cli/grove.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { createProjectId } from '@myco/grove/ids.js';
 import { vi } from '../helpers/vi-shim.js';
 import { run } from '@myco/cli/grove.js';
@@ -313,7 +316,7 @@ describe('myco grove CLI', () => {
       projectName: 'Stuck',
       projectRoot,
     }, home);
-    pauseProject(grove.id, projectId, 'grove-move', 'op-stuck-1', home);
+    pauseProject(grove.id, projectId, 'grove-move', 'op-stuck-1', null, home);
     expect(isProjectPaused(projectId, home).paused).toBe(true);
 
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -321,6 +324,33 @@ describe('myco grove CLI', () => {
     expect(isProjectPaused(projectId, home).paused).toBe(false);
     expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('Force-resumed project Stuck');
     log.mockRestore();
+  });
+
+  it('grove force-resume-project recovers a project registered in NO Grove', async () => {
+    // The case the hatch exists for, and the one it could not reach: a
+    // project mid-residency-transition is deregistered from every Grove for
+    // the whole window, so resolving through the registry misses exactly the
+    // project most likely to need recovering — the same structural blind spot
+    // that made the old sweeper unable to see a stranded lease.
+    const projectId = createProjectId();
+    acquireProjectLease(projectId, 'residency-detach', 'detaching', null, home, testPerUserLockNamespace);
+    expect(isProjectPaused(projectId, home).paused).toBe(true);
+    // Premise: it is registered nowhere.
+    expect(findProjectByRef(projectId, home)).toBeNull();
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await run(['force-resume-project', projectId, '--force']);
+
+    expect(isProjectPaused(projectId, home).paused).toBe(false);
+    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('registered in no Grove');
+    log.mockRestore();
+  });
+
+  it('grove force-resume-project says a name cannot address an unregistered project', async () => {
+    // A slug or name is only resolvable through the registry, so the error
+    // has to point at the id form rather than just "not found".
+    await expect(run(['force-resume-project', 'some-project-name', '--force']))
+      .rejects.toThrow(/pass its project id/i);
   });
 
   it('grove force-resume-project refuses without --force', async () => {

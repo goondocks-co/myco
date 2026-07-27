@@ -104,7 +104,7 @@ describe('pause enforcement at write paths', () => {
   }
 
   it('returns 409 with project_paused envelope when the project is paused', async () => {
-    pauseProject(groveId, projectId, 'grove-move', 'op-1');
+    pauseProject(groveId, projectId, 'grove-move', 'op-1', null);
 
     const res = await fetch(`http://127.0.0.1:${server.port}/api/test-write`, {
       method: 'POST',
@@ -136,7 +136,7 @@ describe('pause enforcement at write paths', () => {
   });
 
   it('allows writes again after resume', async () => {
-    pauseProject(groveId, projectId, 'grove-move', 'op-1');
+    pauseProject(groveId, projectId, 'grove-move', 'op-1', null);
     resumeProject(groveId, projectId, 'op-1');
 
     const res = await fetch(`http://127.0.0.1:${server.port}/api/test-write`, {
@@ -148,7 +148,7 @@ describe('pause enforcement at write paths', () => {
   });
 
   it('does not block reads on a paused project', async () => {
-    pauseProject(groveId, projectId, 'grove-move', 'op-1');
+    pauseProject(groveId, projectId, 'grove-move', 'op-1', null);
 
     const res = await fetch(`http://127.0.0.1:${server.port}/api/test-read`, {
       headers: buildHeaders(),
@@ -157,7 +157,7 @@ describe('pause enforcement at write paths', () => {
   });
 
   it('lets the move POST through a grove-move pause for the SAME project (crash-orphaned move retry)', async () => {
-    pauseProject(groveId, projectId, 'grove-move', `grove-move-${projectId}-123`);
+    pauseProject(groveId, projectId, 'grove-move', `grove-move-${projectId}-123`, null);
 
     const res = await fetch(
       `http://127.0.0.1:${server.port}/api/groves/${groveId}/projects/${projectId}`,
@@ -169,7 +169,7 @@ describe('pause enforcement at write paths', () => {
   });
 
   it('still 409s the move POST when the URL names a DIFFERENT project than the paused one', async () => {
-    pauseProject(groveId, projectId, 'grove-move', `grove-move-${projectId}-123`);
+    pauseProject(groveId, projectId, 'grove-move', `grove-move-${projectId}-123`, null);
 
     // Context headers carry the paused project; the URL names another.
     const otherProjectId = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -183,7 +183,7 @@ describe('pause enforcement at write paths', () => {
   });
 
   it('still 409s the archive sibling route during a grove-move pause', async () => {
-    pauseProject(groveId, projectId, 'grove-move', `grove-move-${projectId}-123`);
+    pauseProject(groveId, projectId, 'grove-move', `grove-move-${projectId}-123`, null);
 
     const res = await fetch(
       `http://127.0.0.1:${server.port}/api/groves/${groveId}/projects/${projectId}/archive`,
@@ -193,7 +193,7 @@ describe('pause enforcement at write paths', () => {
   });
 
   it('still 409s the move POST when the pause belongs to a different owner-op class', async () => {
-    pauseProject(groveId, projectId, 'vacuum', 'vacuum-op-1');
+    pauseProject(groveId, projectId, 'vacuum', 'vacuum-op-1', null);
 
     const res = await fetch(
       `http://127.0.0.1:${server.port}/api/groves/${groveId}/projects/${projectId}`,

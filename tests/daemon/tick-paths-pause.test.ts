@@ -204,7 +204,7 @@ describe('STAGING_GC honors the project pause primitive', () => {
     fs.utimesSync(path.resolve(stagingRoot(vaultPaused), 'p-stale'), old, old);
     fs.utimesSync(path.resolve(stagingRoot(vaultLive), 'l-stale'), old, old);
 
-    pauseProject(fx.grove.id, PROJECT_PAUSED, 'grove-move', 'op-1', fx.mycoHome);
+    pauseProject(fx.grove.id, PROJECT_PAUSED, 'grove-move', 'op-1', null, fx.mycoHome);
 
     registerPowerJobs(pm as never, buildDeps(fx));
     await pm.find('staging-gc').fn();
@@ -252,7 +252,7 @@ describe('canopy-background-scan honors the project pause primitive', () => {
 
   it('skips a paused project on the dispatch tick', async () => {
     setupTwoProjects(fx);
-    pauseProject(fx.grove.id, PROJECT_PAUSED, 'grove-move', 'op-1', fx.mycoHome);
+    pauseProject(fx.grove.id, PROJECT_PAUSED, 'grove-move', 'op-1', null, fx.mycoHome);
 
     registerPowerJobs(pm as never, buildDeps(fx));
     await pm.find('canopy-background-scan').fn();
@@ -302,7 +302,7 @@ describe('runInitialCanopyPopulateAcrossProjects honors the project pause primit
 
   it('skips a paused project at startup populate', async () => {
     setupTwoProjects(fx);
-    pauseProject(fx.grove.id, PROJECT_PAUSED, 'grove-move', 'op-1', fx.mycoHome);
+    pauseProject(fx.grove.id, PROJECT_PAUSED, 'grove-move', 'op-1', null, fx.mycoHome);
 
     const visited: string[] = [];
     await runInitialCanopyPopulateAcrossProjects(

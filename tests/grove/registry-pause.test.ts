@@ -49,7 +49,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/tmp/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
 
     const status = isProjectPaused(PROJECT_A, home);
     expect(status.paused).toBe(true);
@@ -71,12 +71,12 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/tmp/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
     const first = isProjectPaused(PROJECT_A, home);
     if (!first.paused) throw new Error('expected paused');
     await new Promise((resolve) => setTimeout(resolve, 1100));
 
-    expect(() => pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home)).not.toThrow();
+    expect(() => pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home)).not.toThrow();
     const second = isProjectPaused(PROJECT_A, home);
     if (!second.paused) throw new Error('expected paused');
     expect(second.since).toBeGreaterThanOrEqual(first.since);
@@ -90,16 +90,16 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/tmp/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
     expect(() =>
-      pauseProject(grove.id, PROJECT_A, 'vacuum', 'op-2', home),
+      pauseProject(grove.id, PROJECT_A, 'vacuum', 'op-2', null, home),
     ).toThrow(/op-1/);
   });
 
   it('throws when called for an unregistered project', () => {
     const grove = createGrove('Test', home);
     expect(() =>
-      pauseProject(grove.id, createProjectId(), 'grove-move', 'op-1', home),
+      pauseProject(grove.id, createProjectId(), 'grove-move', 'op-1', null, home),
     ).toThrow(/not registered/);
   });
 
@@ -111,7 +111,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/tmp/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
     resumeProject(grove.id, PROJECT_A, 'op-1', home);
 
     expect(isProjectPaused(PROJECT_A, home).paused).toBe(false);
@@ -126,7 +126,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/tmp/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
     expect(() => resumeProject(grove.id, PROJECT_A, 'op-2', home)).toThrow(/op-1/);
   });
 
@@ -161,7 +161,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/tmp/b',
     }, home);
 
-    pauseProject(groveB.id, PROJECT_B, 'grove-move', 'op-2', home);
+    pauseProject(groveB.id, PROJECT_B, 'grove-move', 'op-2', null, home);
 
     const status = isProjectPaused(PROJECT_B, home);
     expect(status.paused).toBe(true);
@@ -177,7 +177,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/tmp/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
     expect(() =>
       forceResumeProject(grove.id, PROJECT_A, home),
     ).not.toThrow();
@@ -192,7 +192,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/tmp/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
     clearGroveRegistryCaches();
 
     const status = isProjectPaused(PROJECT_A, home);
@@ -224,7 +224,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/tmp/demo',
     }, home);
 
-    pauseProject(target.id, PROJECT_A, 'grove-move', 'op-move', home);
+    pauseProject(target.id, PROJECT_A, 'grove-move', 'op-move', null, home);
 
     const status = isProjectPaused(PROJECT_A, home);
     expect(status.paused).toBe(true);

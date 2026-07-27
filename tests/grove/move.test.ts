@@ -823,7 +823,7 @@ describe('moveProjectBetweenGroves', () => {
     const migrationDir = path.join(vaultDir, 'migration');
     fs.mkdirSync(migrationDir, { recursive: true });
     const markerPath = path.join(migrationDir, `${moveOpId}.json`);
-    pauseProject(source.id, projectId, 'grove-move', moveOpId, mycoHome);
+    pauseProject(source.id, projectId, 'grove-move', moveOpId, null, mycoHome);
     fs.writeFileSync(
       markerPath,
       JSON.stringify({
@@ -885,7 +885,7 @@ describe('moveProjectBetweenGroves', () => {
       projectName: 'Demo',
       projectRoot,
     }, mycoHome);
-    pauseProject(source.id, projectId, 'grove-move', 'op-mid-flight', mycoHome);
+    pauseProject(source.id, projectId, 'grove-move', 'op-mid-flight', null, mycoHome);
     const status = isProjectPaused(projectId, mycoHome);
     expect(status.paused).toBe(true);
     if (!status.paused) throw new Error('unreachable');
