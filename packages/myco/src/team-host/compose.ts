@@ -9,7 +9,7 @@
  * network, no sudo, and no real TTY.
  */
 import { resolveGroveDir, resolveMycoHome } from '@myco/grove/paths.js';
-import { resolveGlobalDaemonPort } from '@myco/daemon/service-state.js';
+import { formatOverlayAuthority } from '@myco/daemon/host-serve.js';
 import { writeSecret } from '@myco/config/secrets.js';
 import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
@@ -172,8 +172,12 @@ export async function hostEnableAndEmitJoin(
   }
 
   const key = await mintSetupKey({ expiration: options.setupKeyExpiration }, { runner: deps.runner });
-  const port = resolveGlobalDaemonPort(mycoHome);
-  const joinCommand = `myco join ${enable.hostId} --key ${key} --server-url ${enable.serverUrl} --overlay-address ${enable.overlayAddress}:${port}`;
+  // The OVERLAY port, not the daemon's canonical port. These differ since the
+  // coexistence move to userspace networking, and emitting the daemon port
+  // here handed every member an address that cannot answer — the first
+  // enrollment dial fails outright.
+  const joinCommand = `myco join ${enable.hostId} --key ${key} --server-url ${enable.serverUrl} `
+    + `--overlay-address ${formatOverlayAuthority(enable.overlayAddress, enable.overlayPort)}`;
   return { enable, joinCommand, teamAgentKeyMasked };
 }
 

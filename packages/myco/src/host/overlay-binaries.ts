@@ -62,7 +62,7 @@ export interface BinaryFetcher {
 
 export interface CommandRunner {
   /** Run `command args`, resolving with combined output + exit code (never rejects on non-zero). */
-  run(command: string, args: string[], opts?: { input?: string }): Promise<{ stdout: string; exitCode: number }>;
+  run(command: string, args: string[], opts?: { input?: string; timeoutMs?: number }): Promise<{ stdout: string; exitCode: number }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -368,17 +368,56 @@ export const realFetcher: BinaryFetcher = {
  * NEVER rejects on a non-zero exit — the exit code is returned so callers decide
  * what a failure means. A spawn error (ENOENT) resolves as exit 127 so a missing
  * binary reads as a normal failure, not an unhandled rejection.
+ *
+ * ALWAYS SETTLES. Non-rejection is not enough: a child that never exits (a
+ * wedged tailscaled, a command waiting on input that never comes) would leave
+ * the promise pending forever, and callers on the daemon's boot path await it.
+ * `COMMAND_RUNNER_TIMEOUT_MS` kills the child and resolves as a failure so a
+ * hung external binary can never wedge a caller.
  */
+/**
+ * Default ceiling for an overlay command. GENEROUS on purpose: this runner also
+ * carries `brew install --formula tailscale` and a tarball extraction, which
+ * legitimately take minutes on a cold machine — a short blanket bound would
+ * fail `host enable` on exactly the fresh box it exists to set up. Its job is
+ * to guarantee the promise SETTLES, not to enforce responsiveness.
+ *
+ * Callers on a latency-sensitive path pass their own, much shorter, `timeoutMs`
+ * — see {@link OVERLAY_COMMAND_TIMEOUT_MS}.
+ */
+export const COMMAND_RUNNER_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Ceiling for the overlay-forward commands (`serve status`, `serve --tcp … off`).
+ * Short because they run on the daemon's boot and shutdown paths, they are local
+ * control-socket operations that are either fast or broken, and a hang there
+ * stalls the daemon. Mirrors the funnel runner's own 10s bound.
+ */
+export const OVERLAY_COMMAND_TIMEOUT_MS = 10_000;
+
 export const realCommandRunner: CommandRunner = {
-  run(command: string, args: string[], opts?: { input?: string }): Promise<{ stdout: string; exitCode: number }> {
+  run(command: string, args: string[], opts?: { input?: string; timeoutMs?: number }): Promise<{ stdout: string; exitCode: number }> {
+    const timeoutMs = opts?.timeoutMs ?? COMMAND_RUNNER_TIMEOUT_MS;
     return new Promise((resolve) => {
       const child = spawn(command, args, { stdio: [opts?.input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
+      let settled = false;
+      const finish = (result: { stdout: string; exitCode: number }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        finish({ stdout: `${command} timed out after ${timeoutMs}ms`, exitCode: 124 });
+      }, timeoutMs);
+      timer.unref?.();
       child.stdout?.on('data', (b: Buffer) => out.push(b));
       child.stderr?.on('data', (b: Buffer) => err.push(b));
-      child.on('error', (e: Error) => resolve({ stdout: String(e.message), exitCode: 127 }));
-      child.on('close', (code) => resolve({
+      child.on('error', (e: Error) => finish({ stdout: String(e.message), exitCode: 127 }));
+      child.on('close', (code) => finish({
         stdout: Buffer.concat(out).toString('utf8') + Buffer.concat(err).toString('utf8'),
         exitCode: code ?? 0,
       }));

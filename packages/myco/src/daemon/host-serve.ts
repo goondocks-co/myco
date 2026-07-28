@@ -54,16 +54,23 @@ import { missingKeyReason } from '../agent/harness/provider-health.js';
 /** The resolved host-serve enablement passed to `DaemonServer`. `null` means
  *  host serving is OFF and no second listener binds. */
 export interface HostServeRuntime {
-  /** The overlay interface IP the second listener binds. Never a wildcard. */
+  /**
+   * The host's overlay identity — the 100.64/10 address members DIAL. NOT a
+   * bind address: since the coexistence move to userspace networking there is
+   * no TUN interface to bind, so the listener binds loopback and a
+   * `tailscale serve --tcp` forward bridges the overlay to it. Still
+   * load-bearing as the advertised address and the Host-header comparand.
+   */
   overlayAddress: string;
   /**
-   * Port the overlay listener binds. Omitted in production — the listener binds
-   * the daemon's canonical port on the overlay IP (that is the port enrollment
-   * records in the member's `overlay_address`). Tests set it to an ephemeral
-   * port so a fixture that binds the overlay listener on `127.0.0.1` does not
-   * collide with the loopback listener on the same IP+port.
+   * The port the overlay listener binds on loopback AND that the serve forward
+   * exposes overlay-side. REQUIRED — {@link resolveHostServeConfig} refuses to
+   * serve without it. It is deliberately not optional-with-a-fallback: falling
+   * back to the daemon's canonical port makes the overlay listener collide with
+   * the loopback listener, whose EADDRINUSE is swallowed into a single warn
+   * while `/api/host-serve/status` keeps reporting `serving: true`.
    */
-  overlayPort?: number;
+  overlayPort: number;
   /** The host bearer every overlay request must present (`Authorization: Bearer`). */
   bearer: string;
   /** The host's control-plane id (`myco-team` `HostState.host_id`), surfaced from
@@ -119,12 +126,19 @@ export function isOverlayRequest(req: http.IncomingMessage): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * True when `address` is a non-empty host the overlay listener may bind. Rejects
- * every wildcard / any-interface form: the overlay listener MUST bind exactly the
- * host's overlay IP so it is never reachable on the LAN or public internet. A
- * bind on `0.0.0.0`/`::` would defeat the whole transport-boundary model (spec §9:
- * "MUST bind the overlay interface only"). Also rejects an embedded scheme —
- * `server.listen` takes a bare host, not a URL.
+ * True when `address` is a non-empty host this machine may ADVERTISE as its
+ * overlay identity. Despite the historical name it no longer gates a bind: the
+ * listener binds loopback (`OVERLAY_BIND_ADDRESS`), because userspace
+ * networking creates no TUN and the 100.64 address is not bindable here at
+ * all. It still gates what goes on the wire, and `isOverlayHost` compares
+ * incoming Host headers against it, so the wildcard/scheme rejections below
+ * remain load-bearing. Rejects every wildcard / any-interface form: a host that
+ * advertised `0.0.0.0`/`::` would tell members to dial an address that is not an
+ * identity, and would defeat the transport-boundary model that §9 originally
+ * expressed as "MUST bind the overlay interface only" — restated by the
+ * coexistence amendment as "never a wildcard or non-loopback bind, and the only
+ * network path in is the overlay". Also rejects an embedded scheme, since this
+ * is a bare host, not a URL.
  */
 export function isBindableOverlayAddress(address: string | null | undefined): boolean {
   if (!address) return false;
@@ -138,14 +152,13 @@ export function isBindableOverlayAddress(address: string | null | undefined): bo
 
 /**
  * True when `address` is within the overlay's private address space — the
- * Tailscale/Headscale CGNAT range 100.64.0.0/10 (IPv4). The overlay listener must
- * bind an overlay-interface address ONLY (spec §9): a LAN (192.168/16, 10/8) or
- * public IP is never a valid overlay bind target, even though the OS would only
- * actually bind a locally-assigned one. This is the stricter, config-boundary
- * assertion (enforced in {@link resolveHostServeConfig}, where the untrusted
- * config value enters) — distinct from {@link isBindableOverlayAddress}, which is
- * the permissive bind-time wildcard guard (a hermetic fixture must be able to bind
- * a loopback address, since a test cannot attach a real 100.64/10 TUN interface).
+ * Tailscale/Headscale CGNAT range 100.64.0.0/10 (IPv4). A host advertises an
+ * overlay-space address ONLY: a LAN (192.168/16, 10/8) or public IP is never a
+ * valid overlay identity. This is the stricter, config-boundary assertion
+ * (enforced in {@link resolveHostServeConfig}, where the untrusted config value
+ * enters) — distinct from {@link isBindableOverlayAddress}, which is the
+ * permissive wildcard/shape guard a hermetic fixture can satisfy with a
+ * loopback address.
  *
  * IPv4-only by design of record (the overlay-design + spike consistently describe
  * "100.x IPs"). If Task 2.1 ever records the Tailscale IPv6 ULA address instead,
@@ -221,6 +234,11 @@ interface HostServeLogger {
  * designation is NOT dangling — it still resolves; the dispatch filter
  * (Task 2) is what makes an undesignated host serve nothing.
  */
+/** True for a port number the overlay listener may bind. */
+export function isValidOverlayPort(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
 export function resolveHostServeConfig(options: {
   machineConfig: MachineConfig;
   mycoHome?: string;
@@ -236,6 +254,21 @@ export function resolveHostServeConfig(options: {
       LOG_KINDS.HOST_SERVE,
       'Team Host serve is enabled but overlay_address is absent or not a 100.64/10 (CGNAT) overlay address — host serving stays off',
       { overlay_address: address ?? null },
+    );
+    return null;
+  }
+
+  // Fail CLOSED on a missing/invalid port rather than falling back to the
+  // daemon's canonical port: that fallback binds the overlay listener at the
+  // address the loopback listener already holds, and the resulting EADDRINUSE
+  // is swallowed into one warn while status still reports `serving: true`.
+  const overlayPort = hostServe.overlay_port;
+  if (!isValidOverlayPort(overlayPort)) {
+    options.logger?.warn(
+      LOG_KINDS.HOST_SERVE,
+      'Team Host serve is enabled but overlay_port is absent or out of range — host serving stays off. '
+      + 'Re-run `myco host enable` to allocate and persist one.',
+      { overlay_port: overlayPort ?? null },
     );
     return null;
   }
@@ -276,6 +309,7 @@ export function resolveHostServeConfig(options: {
     );
     return {
       overlayAddress: (address as string).trim(),
+      overlayPort,
       bearer,
       hostId: hostServe.host_id ?? undefined,
       label: hostServe.label ?? undefined,
@@ -682,6 +716,20 @@ export interface HostEnrollmentPayload {
 }
 
 /**
+ * THE one producer of the `<overlay-ip>:<port>` authority members dial.
+ *
+ * Every surface that tells someone which address to reach this host on goes
+ * through here — the enrollment payload, the emitted `myco join` command, the
+ * CLI status/enable printouts, and the host-serve status API. Before this
+ * existed each derived its own, and several composed the DAEMON's canonical
+ * port instead of the overlay port, which silently handed members an address
+ * that cannot answer.
+ */
+export function formatOverlayAuthority(overlayAddress: string, overlayPort: number): string {
+  return `${overlayAddress}:${overlayPort}`;
+}
+
+/**
  * Build the enrollment response from the resolved host-serve runtime + the actual
  * bound overlay port (`server.overlayPort`, known only after listen). The bearer is
  * `runtime.bearer` — the exact value {@link resolveHostServeBearer} minted/read at
@@ -691,7 +739,7 @@ export function buildHostEnrollmentPayload(runtime: HostServeRuntime, overlayPor
   return {
     host_id: runtime.hostId ?? '',
     label: runtime.label ?? '',
-    overlay_address: `${runtime.overlayAddress}:${overlayPort}`,
+    overlay_address: formatOverlayAuthority(runtime.overlayAddress, overlayPort),
     protocol_version: HOST_PROTOCOL_VERSION,
     bearer: runtime.bearer,
     served_grove_id: runtime.servedGroveId ?? null,

@@ -263,6 +263,12 @@ describe('hostEnable designation wiring', () => {
       brewBinDirs: [brewDir],
       systemCtx: { launchDaemonsDir, stagingDir: path.join(os.tmpdir(), 'myco-designation-staging') },
       resolveOverlayIp: async () => ips[Math.min(call++, ips.length - 1)],
+      // The fake ServiceManager installs no real tailscaled, so its control
+      // socket never appears; skip the bounded wait.
+      hostTailscaledSocketPath: path.join(os.tmpdir(), 'myco-designation-ts', 'host.sock'),
+      hostTailscaledStateDir: path.join(os.tmpdir(), 'myco-designation-ts', 'state'),
+      waitForSocket: async () => true,
+      overlayPort: 41443,
       resolveNodeId: async () => 'node-9',
       verifyOverlayListener: async () => true,
       logger: () => {},
