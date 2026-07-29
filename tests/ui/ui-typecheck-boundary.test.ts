@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import ts from 'typescript';
+import ts from 'typescript-v6';
 
 const ROOT = path.join(__dirname, '../..');
 const UI_ROOT = path.join(ROOT, 'packages/myco/ui');
