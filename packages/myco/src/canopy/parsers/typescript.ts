@@ -1,4 +1,4 @@
-import ts from 'typescript';
+import ts from 'typescript-v6';
 import type { CanopyParser, CanopyParserInput, CanopyParserOutput } from '../types.js';
 
 const TOP_COMMENT_MAX = 240;
