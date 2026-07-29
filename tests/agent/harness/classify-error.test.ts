@@ -1,6 +1,11 @@
 // tests/agent/harness/classify-error.test.ts
 import { describe, expect, test } from 'bun:test';
-import { isConnectionError, isCapHitMessage } from '@myco/agent/harness/classify-error.js';
+import {
+  isConnectionError,
+  isCapHitMessage,
+  isAuthErrorMessage,
+  buildHarnessAuthGuidance,
+} from '@myco/agent/harness/classify-error.js';
 
 describe('isConnectionError', () => {
   test.each([
@@ -34,5 +39,38 @@ describe('isCapHitMessage', () => {
   test('matches max-turns wording', () => {
     expect(isCapHitMessage('Max turns (5) exceeded')).toBe(true);
     expect(isCapHitMessage('Was there a typo in the url or port?')).toBe(false);
+  });
+});
+
+describe('isAuthErrorMessage', () => {
+  test.each([
+    // The CLI's no-credentials wording, exactly as the SDK relays it.
+    'Claude Code returned an error result: Not logged in · Please run /login',
+    // Expired/revoked headless token (observed CLI 2.1.220 wording).
+    'Failed to authenticate. API Error: 401 OAuth access token is invalid.',
+    'OAuth token expired',
+    'Invalid API key · Please run /login',
+    'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+  ])('classifies "%s" as an auth error', (msg) => {
+    expect(isAuthErrorMessage(msg)).toBe(true);
+  });
+
+  test.each([
+    'Was there a typo in the url or port?',
+    'Reached maximum number of turns (5)',
+    'sink_response_unparseable',
+    'connect ECONNREFUSED 127.0.0.1:1234',
+  ])('does not classify "%s" as auth', (msg) => {
+    expect(isAuthErrorMessage(msg)).toBe(false);
+  });
+});
+
+describe('buildHarnessAuthGuidance', () => {
+  test('keeps the original error and names the headless remediation', () => {
+    const guidance = buildHarnessAuthGuidance('Not logged in · Please run /login', '/home/u/.myco/secrets.env');
+    expect(guidance).toContain('Not logged in · Please run /login');
+    expect(guidance).toContain('claude setup-token');
+    expect(guidance).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(guidance).toContain('/home/u/.myco/secrets.env');
   });
 });

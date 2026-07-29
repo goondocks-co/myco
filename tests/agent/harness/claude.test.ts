@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { consumeClaudeMessageStream } from '@myco/agent/harness/claude.js';
+import { consumeClaudeMessageStream, ClaudeSdkHarness } from '@myco/agent/harness/claude.js';
+import { HarnessExecutionError } from '@myco/agent/harness/types.js';
+import { buildHarnessAuthGuidance } from '@myco/agent/harness/classify-error.js';
 import { analyzeRuntimeTokenBudget } from '@myco/agent/run-accounting.js';
 
 /**
@@ -176,6 +178,86 @@ describe('consumeClaudeMessageStream request usage entries', () => {
 
     const { usage } = await consumeClaudeMessageStream(streamOf(messages), { localProvider: true });
     expect(usage.costUsd).toBe(0);
+  });
+});
+
+describe('consumeClaudeMessageStream auth-error classification', () => {
+  /** Stream that yields the given messages, then throws — the shape of a
+   *  CLI failure part-way through (or, with no messages, before turn 1). */
+  async function* failingStream(messages: SDKMessage[], err: Error): AsyncIterable<SDKMessage> {
+    for (const message of messages) {
+      yield message;
+    }
+    throw err;
+  }
+
+  test('pre-first-turn "Not logged in" (zero usage) is wrapped with kind auth and headless remediation, not rethrown bare', async () => {
+    const cliError = new Error('Claude Code returned an error result: Not logged in · Please run /login');
+
+    expect.assertions(5);
+    try {
+      await consumeClaudeMessageStream(failingStream([], cliError), { localProvider: false });
+    } catch (err) {
+      expect(err).toBeInstanceOf(HarnessExecutionError);
+      const wrapped = err as HarnessExecutionError;
+      expect(wrapped.telemetry.kind).toBe('auth');
+      expect(wrapped.message).toContain('claude setup-token');
+      expect(wrapped.message).toContain('Not logged in');
+      expect(wrapped.cause).toBe(cliError);
+    }
+  });
+
+  test('auth error after usage-bearing turns still classifies as auth, not other', async () => {
+    const messages: SDKMessage[] = [
+      assistantMessage({ input_tokens: 100, output_tokens: 50 }),
+    ];
+    const cliError = new Error('Failed to authenticate. API Error: 401 OAuth access token is invalid.');
+
+    expect.assertions(2);
+    try {
+      await consumeClaudeMessageStream(failingStream(messages, cliError), { localProvider: false });
+    } catch (err) {
+      expect(err).toBeInstanceOf(HarnessExecutionError);
+      expect((err as HarnessExecutionError).telemetry.kind).toBe('auth');
+    }
+  });
+
+  test('non-auth connection error keeps its existing connection classification', async () => {
+    // Usage-bearing wrap only happens once a terminal result message has
+    // populated the counters — a bare assistant message leaves them at zero
+    // and the error rethrows unwrapped (pre-existing behavior).
+    const messages: SDKMessage[] = [
+      assistantMessage({ input_tokens: 100, output_tokens: 50 }),
+      resultMessage({
+        numTurns: 1,
+        totalCostUsd: 0.01,
+        usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      }),
+    ];
+
+    expect.assertions(1);
+    try {
+      await consumeClaudeMessageStream(
+        failingStream(messages, new Error('connect ECONNREFUSED 127.0.0.1:443')),
+        { localProvider: false },
+      );
+    } catch (err) {
+      expect((err as HarnessExecutionError).telemetry.kind).toBe('connection');
+    }
+  });
+
+  test('classifyError never misreads a wrapped auth error as a session-resume failure despite the guidance wording', () => {
+    // The guidance text mentions the isolated "session directory" — the bare
+    // /session/i resume pattern would match it and send phase-loop into a
+    // futile retry-without-session. The authoritative telemetry.kind check
+    // must win over text matching.
+    const harness = new ClaudeSdkHarness();
+    const authErr = new HarnessExecutionError(
+      buildHarnessAuthGuidance('Not logged in · Please run /login', '/home/u/.myco/secrets.env'),
+      { usage: {}, kind: 'auth' },
+    );
+    expect(harness.classifyError(authErr, { attemptedResume: true })).toBe('unknown');
+    expect(harness.classifyError(authErr)).toBe('unknown');
   });
 });
 

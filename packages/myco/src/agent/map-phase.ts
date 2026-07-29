@@ -236,11 +236,14 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
       // Connection-class failure: the provider endpoint was never reached (or
       // dropped mid-request), so this item was not evaluated. Don't count it as
       // a content failure, and open the circuit — grinding the remaining items
-      // against a dead endpoint is futile. The `isConnectionError(reason)`
-      // message-fallback is a best-effort net for adapters that don't set
-      // `telemetry.kind`; per-item timeouts are deliberately excluded above.
+      // against a dead endpoint is futile. Auth failures ('auth') halt the
+      // same way: the run's credential state cannot change mid-batch, so
+      // every remaining item would fail identically. The
+      // `isConnectionError(reason)` message-fallback is a best-effort net for
+      // adapters that don't set `telemetry.kind`; per-item timeouts are
+      // deliberately excluded above.
       const kind = err instanceof HarnessExecutionError ? err.telemetry?.kind : undefined;
-      if (!perItemTimedOut && (kind === 'connection' || isConnectionError(reason))) {
+      if (!perItemTimedOut && (kind === 'connection' || kind === 'auth' || isConnectionError(reason))) {
         result.unavailable += 1;
         result.providerUnavailable = true;
         logger?.info('agent.map.item-unavailable', `Map phase "${phase.name}" item hit provider outage — circuit open, halting batch`, {
