@@ -7,14 +7,16 @@ import {
   buildOverlayServiceSpec,
   checkRootAvailable,
   installSystemService,
-  installTailscaledDaemon,
   isSystemServiceInstalled,
   systemUnitPath,
   uninstallSystemService,
   HEADSCALE_SERVICE_LABEL,
   type SystemServiceContext,
 } from '@myco/team-host/system-service.js';
+import * as systemServiceModule from '@myco/team-host/system-service.js';
 import type { CommandRunner } from '@myco/team-host/binaries.js';
+
+const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 
 /** A runner that records argv and, for `sudo install`/`sudo rm`, performs the fs effect
  *  so isSystemServiceInstalled() reflects reality. Everything else exits 0. */
@@ -122,10 +124,26 @@ describe('system-service supervisor', () => {
     expect(res.detail).toMatch(/root privileges are required/);
   });
 
-  it('installs tailscaled via the native install-system-daemon on macOS', async () => {
-    const { runner, calls } = fakeSudoRunner();
-    const ctx: SystemServiceContext = { runner, platform: 'darwin' };
-    await installTailscaledDaemon(ctx, '/opt/homebrew/bin/tailscaled');
-    expect(calls.some((c) => c.join(' ') === 'sudo /opt/homebrew/bin/tailscaled install-system-daemon')).toBe(true);
+  it('supervises NO tailscaled at all — that moved to the unprivileged user domain', async () => {
+    // This module used to install tailscaled via the vendor's own
+    // `install-system-daemon`, which creates (and on teardown REMOVES) the
+    // root com.tailscale.tailscaled LaunchDaemon — indistinguishable from
+    // managing the user's genuine Tailscale. Coexistence C1/C2 moved host
+    // tailscaled to a user-domain userspace service on private paths
+    // (`team-host/overlay.ts`, `buildHostTailscaledSpec`). The property worth
+    // guarding is that this root-domain module never grows it back.
+    // Comment-stripped, so the header docstring EXPLAINING why the vendor
+    // installer is gone does not read as the code being back.
+    const source = fs.readFileSync(
+      path.join(REPO_ROOT, 'packages/myco/src/team-host/system-service.ts'),
+      'utf-8',
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((line) => (line.indexOf('//') === -1 ? line : line.slice(0, line.indexOf('//'))))
+      .join('\n');
+    expect(source).not.toContain('install-system-daemon');
+    expect(Object.keys(systemServiceModule)).not.toContain('installTailscaledDaemon');
+    expect(Object.keys(systemServiceModule)).not.toContain('uninstallTailscaledDaemon');
   });
 });

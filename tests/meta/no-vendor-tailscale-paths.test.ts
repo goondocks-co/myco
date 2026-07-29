@@ -61,20 +61,88 @@ function forbiddenMatches(line: string): string[] {
 // Allowlist — RATCHET, shrink-only. The host overlay's known vendor pins.
 // ---------------------------------------------------------------------------
 
-const ALLOWLIST: readonly { file: string; why: string }[] = [
+// EMPTY, and it must stay that way. Both former entries — the host's root
+// tailscaled on vendor paths (`team-host/overlay.ts`) and the vendor macOS
+// label default (`team-host/system-service.ts`) — came off when C1/C2 moved
+// the host onto the member's unprivileged userspace private-path pattern.
+// Emptying this list IS the mechanical completion signal for C1/C2.
+const ALLOWLIST: readonly { file: string; why: string }[] = [];
+
+// ---------------------------------------------------------------------------
+// Unsocketed-invocation rule (coexistence spec §7.1)
+//
+// A `tailscale` invocation with no `--socket` reaches whatever daemon is
+// ambient — on a machine with vendor Tailscale installed, the VENDOR daemon.
+// That is how `host enable` came to read the vendor tailnet's address, skip
+// the join entirely, and persist a vendor address as its own overlay address.
+//
+// The forbidden-path regexes above structurally CANNOT see this class: they
+// match vendor paths and labels, and the matcher self-test below deliberately
+// asserts a bare `tailscale` binary name is NOT flagged. So the rule is its
+// own scan: every tailscale invocation goes through `host/tailscale-cli.ts`,
+// which cannot be constructed without a socket.
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches a SPAWN whose command is the tailscale CLI — either the bare name
+ * (`execFileAsync('tailscale', …)`) or a resolved-binary identifier
+ * (`runner.run(bins.tailscaleBin, …)`). The identifier form is the one that
+ * matters: the real `host enable` defect spawned `bins.tailscaleBin` with no
+ * `--socket`, so a matcher keyed only on the string literal would have passed
+ * against the broken code — testing something other than the property.
+ * `tailscaled` (the daemon, supervised via a ServiceSpec) is deliberately not
+ * matched: the `Bin\b` boundary excludes `tailscaledBin`.
+ *
+ * Matched against a WHITESPACE-COLLAPSED window, not a single line. The real
+ * `tailscale up` defect was written across lines —
+ * `runner.run('sudo', [\n  bins.tailscaleBin, 'up',` — so a per-line scan saw
+ * neither `run(` next to the binary nor the binary next to `run(`, and missed
+ * one of the two defects this rule cites.
+ */
+const TAILSCALE_INVOCATION =
+  /\b(?:run|runCommand|execFile|execFileAsync|spawn|spawnSync)\s*\([^)]{0,200}?(?:['"`]tailscale['"`]|[\w$.]*[Tt]ailscaleBin\b)/;
+
+/**
+ * Spawning HELPERS that take a binary path as a parameter, so the spawn itself
+ * is `run(bin, …)` and invisible to {@link TAILSCALE_INVOCATION}. Matched at the
+ * CALL SITE instead, where the tailscale binary is named.
+ *
+ * KNOWN LIMIT, stated rather than implied: this gate cannot statically prove
+ * "no unsocketed invocation" through arbitrary indirection — it catches direct
+ * spawns and the helpers named here. A new spawning helper must be added to
+ * this list. That is a real gap, and the durable fix is content-addressed
+ * provisioning (removing the only helper that needs it); until then the gap is
+ * bounded by this list rather than unbounded.
+ */
+const TAILSCALE_VIA_HELPER = /\bprobeVersion\s*\([^)]*[Tt]ailscaleBin\b/;
+
+const INVOCATION_ALLOWLIST: readonly { file: string; why: string }[] = [
   {
-    file: 'packages/myco/src/team-host/overlay.ts',
-    why: 'The host installs tailscaled as a root daemon pointed at the vendor state '
-      + 'file and vendor socket, and names the vendor macOS label. Coexistence spec '
-      + 'C1/C2: adopt the member overlay\'s userspace private-path pattern (own '
-      + 'socket, own statedir, own label, --tun=userspace-networking).',
+    file: 'packages/myco/src/host/overlay-binaries.ts',
+    why: 'probeVersion() spawns `<bin> version` on a freshly-provisioned binary. It is '
+      + 'UNSOCKETED by necessity — at provisioning time no Myco tailscaled is running, so '
+      + 'there is no socket to point at (a genuine chicken-and-egg). Benign ONLY because '
+      + '`version` reads no daemon state; it is the one tailscale subcommand that is '
+      + 'socket-independent. Do NOT widen this entry to any subcommand that queries or '
+      + 'mutates daemon state — those reach the ambient (possibly vendor) daemon. The '
+      + 'durable fix is content-addressed provisioning, which removes the probe entirely.',
   },
   {
-    file: 'packages/myco/src/team-host/system-service.ts',
-    why: 'Defaults its daemon label parameter to the vendor com.tailscale.tailscaled. '
-      + 'Goes away with the C1 host move to a Myco-owned label.',
+    file: 'packages/myco/src/daemon/external-listener.ts',
+    why: 'The external-MCP Funnel containment runner. DELIBERATE and NOT a defect: '
+      + 'Tailscale Funnel is a Tailscale-cloud feature headscale does not implement '
+      + '(it serves no cert endpoint — the same reason HTTPS `serve` 501s against it), '
+      + 'so external MCP inherently rides the operator\'s OWN vendor tailnet. Pointing '
+      + 'this at a Myco socket would break the feature outright. Reached only when '
+      + 'external MCP is actually configured (the `requiresContainment` guard in '
+      + 'daemon/external-mcp-containment.ts), never on a clean machine.',
   },
 ];
+
+const INVOCATION_ALLOWLISTED_FILES = new Set(INVOCATION_ALLOWLIST.map((e) => e.file));
+
+/** The module that owns socketed invocation — exempt by definition. */
+const TAILSCALE_CLI_MODULE = 'packages/myco/src/host/tailscale-cli.ts';
 
 const ALLOWLISTED_FILES = new Set(ALLOWLIST.map((entry) => entry.file));
 
@@ -130,6 +198,12 @@ interface Violation {
   text: string;
 }
 
+/** Collapse a line and its successors into one window so a spawn split across
+ *  lines is still seen as one call. */
+function invocationWindow(lines: string[], index: number): string {
+  return lines.slice(index, index + 4).join(' ').replace(/\s+/g, ' ');
+}
+
 function scanSource(): Violation[] {
   const violations: Violation[] = [];
   for (const absPath of listSourceFiles(SRC_ROOT)) {
@@ -183,6 +257,44 @@ describe('no-vendor-tailscale-paths meta gate (X4)', () => {
     }
   });
 
+  it('no source file spawns the tailscale CLI outside host/tailscale-cli.ts', () => {
+    const offenders: { file: string; line: number; text: string }[] = [];
+    for (const absPath of listSourceFiles(SRC_ROOT)) {
+      const rel = relPosix(absPath);
+      if (rel === TAILSCALE_CLI_MODULE || INVOCATION_ALLOWLISTED_FILES.has(rel)) continue;
+      const code = stripComments(fs.readFileSync(absPath, 'utf8'));
+      const lines = code.split('\n');
+      lines.forEach((line, i) => {
+        const window = invocationWindow(lines, i);
+        if (TAILSCALE_INVOCATION.test(window) || TAILSCALE_VIA_HELPER.test(window)) {
+          offenders.push({ file: rel, line: i + 1, text: line.trim() });
+        }
+      });
+    }
+    const detail = offenders.map((o) => `  ${o.file}:${o.line}  ${o.text}`).join('\n');
+    expect(offenders.length, `tailscale CLI spawned outside the socketed chokepoint:\n${detail}\n\n`
+      + 'An unsocketed `tailscale` call reaches the AMBIENT daemon — the vendor one on a '
+      + 'coexistence box. Route it through `createTailscaleCli({runner, tailscaleBin, socketPath})` '
+      + '(packages/myco/src/host/tailscale-cli.ts), which cannot be built without a socket. '
+      + 'Do NOT add an INVOCATION_ALLOWLIST entry unless the call MUST target the operator\'s '
+      + 'own vendor tailnet (today: only external-MCP Funnel, which headscale cannot serve).').toBe(0);
+  });
+
+  it('every invocation-allowlisted file still spawns tailscale (ratchet stays honest)', () => {
+    for (const entry of INVOCATION_ALLOWLIST) {
+      const abs = path.join(REPO_ROOT, entry.file);
+      expect(fs.existsSync(abs), `invocation-allowlisted file is missing: ${entry.file}`).toBe(true);
+      const code = stripComments(fs.readFileSync(abs, 'utf8'));
+      const codeLines = code.split('\n');
+      const stillInvokes = codeLines.some((_l, i) => {
+        const window = invocationWindow(codeLines, i);
+        return TAILSCALE_INVOCATION.test(window) || TAILSCALE_VIA_HELPER.test(window);
+      });
+      expect(stillInvokes, `stale invocation-allowlist entry — ${entry.file} no longer spawns the `
+        + 'tailscale CLI; remove it from INVOCATION_ALLOWLIST so the gate re-tightens').toBe(true);
+    }
+  });
+
   it('the member overlay is NOT allowlisted (it is the compliant reference pattern)', () => {
     expect(ALLOWLISTED_FILES.has('packages/myco/src/host/member-overlay.ts')).toBe(false);
     const violations = scanSource().filter(
@@ -232,6 +344,45 @@ describe('no-vendor-tailscale-paths matcher self-test', () => {
   it('does NOT flag the tailscaled binary name itself', () => {
     expect(forbiddenMatches("spawn(tailscaledBinary, ['--verbose=1'])")).toEqual([]);
     expect(forbiddenMatches("const proc = 'tailscaled';")).toEqual([]);
+  });
+
+  it('flags a bare-name tailscale CLI spawn', () => {
+    expect(TAILSCALE_INVOCATION.test("await execFileAsync('tailscale', args, {")).toBe(true);
+    expect(TAILSCALE_INVOCATION.test('spawn("tailscale", ["status"])')).toBe(true);
+  });
+
+  it('flags a MULTI-LINE spawn — the shape of the real `tailscale up` defect', () => {
+    // Written across lines in the original, so a per-line scan missed it
+    // entirely even though this rule's own header cites it as a motivating
+    // defect. Scanned as a collapsed window instead.
+    const lines = ["    const up = await runner.run('sudo', [", "      bins.tailscaleBin, 'up',", "      '--login-server', url,", '    ]);'];
+    expect(TAILSCALE_INVOCATION.test(lines.join(' ').replace(/\s+/g, ' '))).toBe(true);
+    // And each line ALONE is invisible — which is exactly why the window exists.
+    expect(lines.every((l) => !TAILSCALE_INVOCATION.test(l))).toBe(true);
+  });
+
+  it('flags a RESOLVED-BINARY spawn — the shape of the real host-enable defect', () => {
+    // This is the case a literal-only matcher misses. `host enable` shipped
+    // exactly these two lines with no --socket, reading the VENDOR tailnet.
+    expect(TAILSCALE_INVOCATION.test("const res = await runner.run(tailscaleBin, ['ip', '-4']);")).toBe(true);
+    expect(TAILSCALE_INVOCATION.test('await runner.run(bins.tailscaleBin, [')).toBe(true);
+    expect(TAILSCALE_INVOCATION.test('runner.run(tailscale.tailscaleBin, [')).toBe(true);
+  });
+
+  it('flags a tailscale binary passed into a spawning HELPER (probeVersion)', () => {
+    // The direct-spawn matcher cannot see this: probeVersion spawns
+    // `run(bin, args)`, so the binary is only named at the call site.
+    expect(TAILSCALE_VIA_HELPER.test("await probeVersion(opts.runner, located.tailscaleBin, ['version'], PIN);")).toBe(true);
+    expect(TAILSCALE_VIA_HELPER.test('probeVersion(runner, bins.tailscaledBin, [])')).toBe(false);
+  });
+
+  it('does NOT flag tailscaled supervision or non-spawn plumbing', () => {
+    // `tailscaled` is the DAEMON, supervised via a ServiceSpec, not the CLI.
+    expect(TAILSCALE_INVOCATION.test("spawn('tailscaled', ['--tun=userspace-networking'])")).toBe(false);
+    expect(TAILSCALE_INVOCATION.test('await runner.run(bins.tailscaledBin, [')).toBe(false);
+    // Passing the binary as DATA into the chokepoint is the sanctioned shape.
+    expect(TAILSCALE_INVOCATION.test('createTailscaleCli({ runner, tailscaleBin, socketPath })')).toBe(false);
+    expect(TAILSCALE_INVOCATION.test('const memberIp = await resolveIp(runner, tailscale.tailscaleBin, socketPath);')).toBe(false);
   });
 
   it('stripComments blanks a commented vendor path so it cannot false-positive', () => {

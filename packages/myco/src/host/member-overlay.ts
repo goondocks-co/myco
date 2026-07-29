@@ -82,6 +82,7 @@ import {
   withHostOperationLock,
   type HostOperationLease,
 } from './operation-lock.js';
+import { createTailscaleCli } from './tailscale-cli.js';
 import { withLoopbackPortReleaseProof } from './loopback-port-proof.js';
 import { assertValidSecretEntry, InvalidSecretValueError } from '@myco/config/secrets.js';
 import {
@@ -731,8 +732,7 @@ async function joinHostLocked(
         undefined,
         lockNamespace,
       );
-      const up = await runner.run(tailscale.tailscaleBin, [
-        '--socket', socketPath,
+      const up = await createTailscaleCli({ runner, tailscaleBin: tailscale.tailscaleBin, socketPath }).run([
         'up',
         '--login-server', options.serverUrl.trim(),
         '--auth-key', options.key,
@@ -1066,10 +1066,7 @@ export async function defaultResolveMemberOverlayIp(
   tailscaleBin: string,
   socketPath: string,
 ): Promise<string | null> {
-  const res = await runner.run(tailscaleBin, ['--socket', socketPath, 'ip', '-4']);
-  if (res.exitCode !== 0) return null;
-  const line = res.stdout.split('\n').map((l) => l.trim()).find(Boolean);
-  return line && isOverlayRangeAddress(line) ? line : null;
+  return await createTailscaleCli({ runner, tailscaleBin, socketPath }).overlayIp();
 }
 
 /**
@@ -1165,7 +1162,7 @@ function splitOverlayAddress(overlayAddress: string): { host: string; port: numb
  * (a hashed per-host tag); this catches a bad INJECTED override loudly at the call
  * site.
  */
-function assertSocketPathFits(socketPath: string, platform: NodeJS.Platform): void {
+export function assertSocketPathFits(socketPath: string, platform: NodeJS.Platform): void {
   const limit = platform === 'darwin' ? 104 : 108;
   const bytes = Buffer.byteLength(socketPath);
   if (bytes >= limit) {

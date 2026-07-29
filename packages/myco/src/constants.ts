@@ -773,6 +773,16 @@ export const ENROLLMENT_RETRY_BACKOFFS_MS = [2000, 4000] as const;
 export const MEMBER_OVERLAY_PROXY_PORT_BASE = 41080;
 
 /**
+ * Base for THIS machine's host-serve overlay port — the loopback port the
+ * daemon's overlay listener binds and tailscaled's `serve --tcp` forward
+ * targets. Deliberately disjoint from {@link MEMBER_OVERLAY_PROXY_PORT_BASE}
+ * so a box that both serves and joins does not collide by default; allocation
+ * additionally consults the member registry (`allocateHostServeOverlayPort`),
+ * because "disjoint base" is a convenience, not the guarantee.
+ */
+export const HOST_SERVE_OVERLAY_PORT_BASE = 41443;
+
+/**
  * Member→host proxy timeouts (the host-proxy forwarder, `daemon/host-proxy.ts`).
  * These bound the INNER overlay hop and must stay shorter than the local
  * caller's own end-to-end timeout (`DAEMON_CLIENT_TIMEOUT_MS`) for the buffered

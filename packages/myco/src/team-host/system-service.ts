@@ -145,58 +145,6 @@ export async function uninstallSystemService(ctx: SystemServiceContext, label: s
 }
 
 // ---------------------------------------------------------------------------
-// tailscaled — native install-system-daemon (macOS), rendered unit (Linux)
-// ---------------------------------------------------------------------------
-
-/**
- * Supervise tailscaled as a root system daemon.
- *
- * macOS: `sudo tailscaled install-system-daemon` — Tailscale's own headless
- * installer, spike-proven to create the root `/Library/LaunchDaemons/
- * com.tailscale.tailscaled.plist` with NO GUI/Network-Extension prompt on macOS
- * 26. Preferred over a hand-rolled plist because it wires tailscaled's socket +
- * state dirs the way tailscale expects.
- *
- * Linux: the downloaded static binary has no native installer, so we render a
- * system unit via the shared renderer (same discipline as headscale).
- */
-export async function installTailscaledDaemon(
-  ctx: SystemServiceContext,
-  tailscaledBin: string,
-  linuxSpec?: ServiceSpec,
-): Promise<void> {
-  const platform = ctxPlatform(ctx);
-  if (platform === 'darwin') {
-    await sudo(ctx, [tailscaledBin, 'install-system-daemon'], 'tailscaled install-system-daemon');
-    return;
-  }
-  if (platform === 'linux') {
-    if (!linuxSpec) throw new Error('installTailscaledDaemon on Linux requires a ServiceSpec for the tailscaled unit.');
-    await installSystemService(ctx, linuxSpec);
-    return;
-  }
-  throw new Error(`tailscaled supervision is not supported on ${platform}.`);
-}
-
-/** Tear down tailscaled supervision. Idempotent. */
-export async function uninstallTailscaledDaemon(
-  ctx: SystemServiceContext,
-  tailscaledBin: string,
-  label = 'com.tailscale.tailscaled',
-): Promise<void> {
-  const platform = ctxPlatform(ctx);
-  if (platform === 'darwin') {
-    await ctx.runner.run('sudo', [tailscaledBin, 'uninstall-system-daemon']);
-    return;
-  }
-  if (platform === 'linux') {
-    await uninstallSystemService(ctx, label);
-    return;
-  }
-  throw new Error(`tailscaled supervision is not supported on ${platform}.`);
-}
-
-// ---------------------------------------------------------------------------
 // ServiceSpec builder for a supervised overlay binary
 // ---------------------------------------------------------------------------
 

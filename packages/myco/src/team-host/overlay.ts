@@ -2,8 +2,7 @@
  * `myco host enable` / `host disable` orchestration.
  *
  * Stands up (or tears down) the OSS overlay — Headscale control plane + Tailscale
- * data plane — as SUPERVISED root services and wires the local daemon to serve
- * over it. Every side effect runs behind an injectable seam ({@link HostEnableDeps})
+ * data plane — and wires the local daemon to serve over it. Every side effect runs behind an injectable seam ({@link HostEnableDeps})
  * so the whole flow unit-tests with no network, no sudo, and no real service
  * install; the true validation is the LIVE checklist in the task report.
  *
@@ -13,9 +12,17 @@
  * key mint + join. So a crash between any two steps is recovered by simply
  * re-running `host enable`.
  *
- * ROOT is required and surfaced (never smuggled): the flow reports the sudo
- * requirement up front and each privileged step shells `sudo` through the runner
- * seam, surfacing (not swallowing) a failure.
+ * PRIVILEGE, precisely (Overlay Coexistence spec C1/C2): tailscaled runs
+ * UNPRIVILEGED — a user-domain service in userspace-networking mode on its own
+ * private socket and statedir, adopting the member overlay's proven shape. Root
+ * is still required for ONE named reason: headscale is supervised as a SYSTEM
+ * service so the control plane survives reboot-before-login, and its admin
+ * socket is root-owned (key minting, node listing). Root is surfaced up front,
+ * never smuggled, and each privileged step shells `sudo` through the runner seam.
+ *
+ * Note the honest limit on that justification: the Myco daemon itself is
+ * user-domain, and nothing here enables systemd lingering, so a host is not
+ * actually reachable before login regardless of headscale's domain.
  */
 import os from 'node:os';
 import fs from 'node:fs';
@@ -23,7 +30,16 @@ import path from 'node:path';
 
 import { createHostId } from '@myco/grove/ids.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
-import { resolveHostControlDir, resolveMycoHome } from '@myco/grove/paths.js';
+import {
+  resolveHostControlDir,
+  resolveHostTailscaledSocketPath,
+  resolveHostTailscaledStateDir,
+  resolveMycoHome,
+} from '@myco/grove/paths.js';
+import { assertSocketPathFits } from '@myco/host/member-overlay.js';
+import { allocateHostServeOverlayPort } from '@myco/host/registry.js';
+import { createTailscaleCli, type TailscaleCli } from '@myco/host/tailscale-cli.js';
+import { readServeTcpForwards, readServeTcpPorts, retireOverlayForward } from '@myco/daemon/overlay-forward.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { createGrove, ensureDefaultGrove, loadGroveRecord, resolveDefaultGrove } from '@myco/grove/registry.js';
 import { seedGroveBackupDefaults } from '@myco/backup/service.js';
@@ -37,6 +53,7 @@ import {
   type BinaryFetcher,
   type CommandRunner,
 } from './binaries.js';
+import type { ServiceSpec } from '@myco/service/types.js';
 import { headscaleLayout, mintPreauthKey, renderHeadscaleConfig } from './headscale-config.js';
 import { realRunner } from './run.js';
 import { restartDaemonForHostServe, writeHostServeConfig } from './daemon-apply.js';
@@ -45,16 +62,34 @@ import {
   buildOverlayServiceSpec,
   checkRootAvailable,
   installSystemService,
-  installTailscaledDaemon,
   isSystemServiceInstalled,
   uninstallSystemService,
-  uninstallTailscaledDaemon,
   HEADSCALE_SERVICE_LABEL,
   type SystemServiceContext,
 } from './system-service.js';
 
-const TAILSCALED_MACOS_LABEL = 'com.tailscale.tailscaled';
-const TAILSCALED_LINUX_LABEL = 'co.goondocks.myco-tailscaled';
+/**
+ * THIS machine's host-role userspace-tailscaled service label — Myco-owned on
+ * every platform (Overlay Coexistence spec C1). Distinct from the member's
+ * per-host `co.goondocks.myco-member-tailscaled.<tag>`, so a box that both
+ * serves and joins runs both without either supervisor seeing the other.
+ *
+ * The vendor macOS label this file used to name (`com.tailscale.tailscaled`) is
+ * GONE, along with the root daemon that used it: pointing Myco's supervisor at
+ * the vendor label meant two supervisors fighting over one state file and one
+ * socket, and a Myco teardown that could uninstall the user's own Tailscale.
+ */
+const HOST_TAILSCALED_LABEL = 'co.goondocks.myco-host-tailscaled';
+
+/**
+ * The label of the LEGACY root tailscaled unit this host used to install on
+ * Linux. Retained for teardown ONLY — `host disable` still removes it so an
+ * upgraded pre-C1 rig converges. Safe to touch because the label was always
+ * Myco-owned; the vendor's STATE files are deliberately left alone, since
+ * deleting `/var/lib/tailscale` is indistinguishable from deleting a genuine
+ * vendor install's.
+ */
+const LEGACY_TAILSCALED_LINUX_LABEL = 'co.goondocks.myco-tailscaled';
 
 export interface HostEnableOptions {
   /** REQUIRED — the address members dial to reach the control plane (e.g. `https://host.example:8080`). */
@@ -94,7 +129,15 @@ export interface HostEnableDeps {
   systemCtx?: Partial<SystemServiceContext>;
   brewBinDirs?: string[];
   /** Resolve the host's assigned 100.64/10 overlay IP from tailscale. */
-  resolveOverlayIp?: (runner: CommandRunner, tailscaleBin: string) => Promise<string | null>;
+  resolveOverlayIp?: (cli: TailscaleCli) => Promise<string | null>;
+  /** Override THIS machine's host tailscaled socket path (tests inject a short temp path). */
+  hostTailscaledSocketPath?: string;
+  /** Override THIS machine's host tailscaled statedir (tests inject a temp dir). */
+  hostTailscaledStateDir?: string;
+  /** Wait for the freshly-installed tailscaled to bind its control socket. */
+  waitForSocket?: (socketPath: string) => Promise<boolean>;
+  /** Pin the overlay listener port (tests); production allocates it. */
+  overlayPort?: number;
   /** Resolve the headscale node id for the host node (best-effort). */
   resolveNodeId?: (runner: CommandRunner, headscaleBin: string, configPath: string, hostname: string) => Promise<string | undefined>;
   /** Best-effort probe that the daemon overlay listener came up. Never fatal. */
@@ -105,6 +148,8 @@ export interface HostEnableDeps {
 export interface HostEnableResult {
   hostId: string;
   overlayAddress: string;
+  /** The port members dial — `overlayAddress:overlayPort` is the full address. */
+  overlayPort: number;
   serverUrl: string;
   headscaleVersion: string;
   tailscaleVersion: string;
@@ -233,6 +278,56 @@ export function resolveServedGroveDesignation(
   return { groveId: ensureDefaultGrove(mycoHome).id };
 }
 
+/** How long to wait for a freshly-installed host tailscaled to bind its control
+ *  socket before failing loudly. Mirrors the member's own start-up race budget. */
+export const HOST_TAILSCALED_SOCKET_TIMEOUT_MS = 5000;
+
+/**
+ * Build the {@link ServiceSpec} for THIS machine's host-role tailscaled — an
+ * unprivileged user-domain service, mirroring `buildMemberTailscaledSpec`.
+ * `--tun=userspace-networking` (no kernel TUN, no privilege, no route claim), a
+ * private `--socket`, a private `--statedir`, and a Myco-owned label.
+ *
+ * No `--outbound-http-proxy-listen`: unlike a member, the host only ACCEPTS
+ * overlay connections — it never dials one.
+ */
+export function buildHostTailscaledSpec(input: {
+  executable: string;
+  socketPath: string;
+  stateDir: string;
+  workingDir: string;
+  logDir: string;
+}): ServiceSpec {
+  return {
+    label: HOST_TAILSCALED_LABEL,
+    variant: 'prod',
+    executable: input.executable,
+    args: [
+      '--tun=userspace-networking',
+      `--socket=${input.socketPath}`,
+      `--statedir=${input.stateDir}`,
+    ],
+    workingDir: input.workingDir,
+    env: {},
+    stdoutPath: path.join(input.logDir, `${HOST_TAILSCALED_LABEL}.out.log`),
+    stderrPath: path.join(input.logDir, `${HOST_TAILSCALED_LABEL}.err.log`),
+    runAtLoad: true,
+    keepAlive: true,
+    throttleSeconds: 10,
+  };
+}
+
+/** Poll for the host tailscaled socket to appear, bounded by
+ *  {@link HOST_TAILSCALED_SOCKET_TIMEOUT_MS}. */
+async function defaultWaitForHostSocket(socketPath: string): Promise<boolean> {
+  const deadline = Date.now() + HOST_TAILSCALED_SOCKET_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(socketPath)) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return fs.existsSync(socketPath);
+}
+
 // ---------------------------------------------------------------------------
 // enable
 // ---------------------------------------------------------------------------
@@ -258,7 +353,7 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     log(`NOTE: ${root.detail}`);
     notes.push(root.detail);
   } else {
-    log('root: sudo available for system-service install.');
+    log('root: sudo available for the headscale system-service install (tailscaled runs unprivileged).');
   }
 
   // 1. Provision binaries (idempotent — re-verifies in place).
@@ -294,30 +389,70 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     log('headscale supervised as a root service.');
   }
 
-  // 4. Supervise tailscaled as a ROOT daemon.
-  const tailscaledInstalled = platform === 'darwin'
-    ? fs.existsSync(path.join(ctx.launchDaemonsDir ?? '/Library/LaunchDaemons', `${TAILSCALED_MACOS_LABEL}.plist`))
-    : isSystemServiceInstalled({ ...ctx }, TAILSCALED_LINUX_LABEL);
-  if (tailscaledInstalled) {
-    log('tailscaled daemon already installed — skipping.');
+  // 4. Supervise tailscaled as an UNPRIVILEGED user-domain service on its own
+  //    private socket + statedir (coexistence C1/C2). No sudo, no TUN, no
+  //    vendor path — the member overlay's proven shape, not a second design.
+  const serviceManager = deps.serviceManager ?? getServiceManager({ platform });
+  const tailscaledSocket = deps.hostTailscaledSocketPath ?? resolveHostTailscaledSocketPath();
+  const tailscaledStateDir = deps.hostTailscaledStateDir ?? resolveHostTailscaledStateDir();
+  assertSocketPathFits(tailscaledSocket, platform);
+  fs.mkdirSync(tailscaledStateDir, { recursive: true });
+  if (await serviceManager.inspect(HOST_TAILSCALED_LABEL)) {
+    log('host tailscaled already supervised — skipping.');
   } else {
-    const linuxSpec = platform === 'linux'
-      ? buildOverlayServiceSpec({
-        label: TAILSCALED_LINUX_LABEL,
-        executable: bins.tailscaledBin,
-        args: ['--state', '/var/lib/tailscale/tailscaled.state', '--socket', '/var/run/tailscale/tailscaled.sock'],
-        workingDir: layout.stateDir,
-        logDir: path.join(layout.stateDir, 'logs'),
-      })
-      : undefined;
-    await installTailscaledDaemon(ctx, bins.tailscaledBin, linuxSpec);
-    log('tailscaled supervised as a root daemon.');
+    await serviceManager.install(buildHostTailscaledSpec({
+      executable: bins.tailscaledBin,
+      socketPath: tailscaledSocket,
+      stateDir: tailscaledStateDir,
+      workingDir: layout.stateDir,
+      logDir: path.join(layout.stateDir, 'logs'),
+    }));
+    log(`host tailscaled supervised unprivileged as ${HOST_TAILSCALED_LABEL} (userspace, ${tailscaledSocket}).`);
   }
+  const tailscaleCli = createTailscaleCli({
+    runner,
+    tailscaleBin: bins.tailscaleBin,
+    socketPath: tailscaledSocket,
+  });
+  // A freshly-installed agent needs a moment to bind its socket before any
+  // `tailscale` call can reach it — the same start→up race the member already
+  // pays for (`member-overlay.ts`), and on a reboot it is the LIKELY ordering.
+  const socketReady = await (deps.waitForSocket ?? defaultWaitForHostSocket)(tailscaledSocket);
+  if (!socketReady) {
+    throw new Error(
+      `host tailscaled did not bind its control socket at ${tailscaledSocket} within `
+      + `${HOST_TAILSCALED_SOCKET_TIMEOUT_MS}ms. Check the service logs under ${path.join(layout.stateDir, 'logs')} and re-run \`myco host enable\`.`,
+    );
+  }
+
+  // Reconcile stale forwards BEFORE joining — but never the live one.
+  //
+  //    The serve config is durable across tailscaled restarts, so a forward
+  //    that survived a failed `host disable` is resurrected the instant
+  //    tailscaled starts here. Retiring ALL of them, though, cuts the forward
+  //    of a daemon that is currently serving — and `host enable` is documented
+  //    as re-runnable to converge, so that is the ordinary case, not an exotic
+  //    one. It would also report success: the listener probe hits
+  //    `127.0.0.1:P`, which the still-running daemon still holds.
+  //
+  //    So allocate the port FIRST (idempotent) and drop only the others.
+  const overlayPort = deps.overlayPort ?? allocateHostServeOverlayPort(mycoHome);
+  await (async () => {
+    try {
+      for (const stale of await readServeTcpForwards(tailscaleCli)) {
+        if (stale.port === overlayPort) continue;
+        await retireOverlayForward(tailscaleCli, stale.port);
+        log(`retired a stale overlay forward on port ${stale.port} from a previous run.`);
+      }
+    } catch (err) {
+      notes.push(`could not check for stale overlay forwards: ${(err as Error).message}`);
+    }
+  })();
 
   // 5. Join the host node — but only if it isn't already on the tailnet
   //    (idempotent: a re-run with an already-used one-time key would fail).
-  const resolveIp = deps.resolveOverlayIp ?? defaultResolveOverlayIp;
-  let overlayAddress = await resolveIp(runner, bins.tailscaleBin);
+  const resolveIp = deps.resolveOverlayIp ?? ((cli: TailscaleCli) => cli.overlayIp());
+  let overlayAddress = await resolveIp(tailscaleCli);
   if (overlayAddress) {
     log(`host node already on the overlay at ${overlayAddress} — skipping join.`);
   } else {
@@ -329,8 +464,9 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
       expiration: options.keyExpiration ?? '1h',
       runner,
     });
-    const up = await runner.run('sudo', [
-      bins.tailscaleBin, 'up',
+    // Unprivileged: the private socket is user-owned, so `up` needs no sudo.
+    const up = await tailscaleCli.run([
+      'up',
       '--login-server', options.serverUrl.trim(),
       '--auth-key', key,
       '--hostname', hostname,
@@ -338,7 +474,7 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     if (up.exitCode !== 0) {
       throw new Error(`\`tailscale up\` failed (exit ${up.exitCode}): ${up.stdout.trim()}`);
     }
-    overlayAddress = await resolveIp(runner, bins.tailscaleBin);
+    overlayAddress = await resolveIp(tailscaleCli);
   }
 
   if (!overlayAddress || !isOverlayRangeAddress(overlayAddress)) {
@@ -368,7 +504,18 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
 
   const existingState = readHostState();
   const hostId = existingState?.host_id ?? createHostId();
-  writeHostServeConfig({ enabled: true, overlayAddress, hostId, label: hostname, servedGroveId: designation.groveId }, mycoHome);
+  // `overlayPort` was allocated before the forward reconcile above — from the
+  // ONE allocator that owns this machine's loopback ports, so a later
+  // `myco join` on this box cannot hand a member the port we serve on.
+  // Idempotent: a re-run keeps the port members already recorded.
+  writeHostServeConfig({
+    enabled: true,
+    overlayAddress,
+    overlayPort,
+    hostId,
+    label: hostname,
+    servedGroveId: designation.groveId,
+  }, mycoHome);
   // Only clear a create-fresh marker once the designation it points at is
   // actually durable — see `clearDesignationIntent`'s ordering contract.
   clearDesignationIntent(controlDir);
@@ -381,7 +528,15 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   }
   const restart = await restartDaemonForHostServe(mycoHome, deps.serviceManager ?? getServiceManager());
   log(restart.detail);
-  if (!restart.restarted) notes.push(restart.detail);
+  if (!restart.restarted) {
+    // Load-bearing, not informational: the daemon wires the inbound forward
+    // only when it binds. If it did not restart, nothing re-wires, and this
+    // host stays unreachable to members until it does.
+    const warning = `${restart.detail} The overlay forward is wired when the daemon binds, so this host `
+      + 'is NOT reachable by members until the daemon restarts. Restart it, then re-run `myco host enable`.';
+    log(`WARNING: ${warning}`);
+    notes.push(warning);
+  }
 
   // 7. Resolve node id (best-effort) + record host state.
   const nodeId = deps.resolveNodeId
@@ -413,6 +568,7 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   return {
     hostId,
     overlayAddress,
+    overlayPort,
     serverUrl: options.serverUrl.trim(),
     headscaleVersion: bins.headscaleVersion,
     tailscaleVersion: bins.tailscaleVersion,
@@ -452,7 +608,30 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
     try { await run(); } catch (err) { errors.push(`${label}: ${(err as Error).message}`); }
   };
 
-  // 1. Clear host_serve FIRST and restart, so the daemon stops serving before the
+  // 0. Retire the inbound forward FIRST — before the config clear, and by
+  //    ENUMERATION rather than by the configured port.
+  //
+  //    Reading the port from config and retiring later cannot converge: the
+  //    clear nulls `overlay_port`, so if the retire then fails, every retry
+  //    sees null, skips the retire entirely, uninstalls tailscaled and drops
+  //    the recorded binary path — leaving a durable forward that no code path
+  //    can ever remove. Enumerating asks tailscaled what actually exists, so a
+  //    retry converges and a forward from an EARLIER port is caught too.
+  if (state?.tailscale_bin) {
+    await step('retire overlay forwards', async () => {
+      const cli = createTailscaleCli({
+        runner,
+        tailscaleBin: state.tailscale_bin,
+        socketPath: deps.hostTailscaledSocketPath ?? resolveHostTailscaledSocketPath(),
+      });
+      for (const port of await readServeTcpPorts(cli)) {
+        await retireOverlayForward(cli, port);
+        log(`retired the overlay forward on port ${port}.`);
+      }
+    });
+  }
+
+  // 1. Clear host_serve and restart, so the daemon stops serving before the
   //    overlay is torn out from under it.
   let daemonRestarted = false;
   await step('clear host_serve config', async () => {
@@ -467,7 +646,15 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
   // 2. Tear down tailscaled.
   const tailscaledBin = state?.tailscaled_bin ?? 'tailscaled';
   await step('uninstall tailscaled', async () => {
-    await uninstallTailscaledDaemon(ctx, tailscaledBin, TAILSCALED_LINUX_LABEL);
+    await (deps.serviceManager ?? getServiceManager({ platform })).uninstall(HOST_TAILSCALED_LABEL);
+    // Converge an upgraded pre-C1 rig: the legacy ROOT unit was Myco-labeled,
+    // so removing it is safe. Its vendor-path STATE is deliberately left alone
+    // — deleting /var/lib/tailscale is indistinguishable from deleting a
+    // genuine vendor install's state.
+    if (platform === 'linux' && isSystemServiceInstalled(ctx, LEGACY_TAILSCALED_LINUX_LABEL)) {
+      await uninstallSystemService(ctx, LEGACY_TAILSCALED_LINUX_LABEL);
+      log('removed the legacy root tailscaled unit from a pre-coexistence install.');
+    }
   });
 
   // 3. Tear down headscale.
@@ -495,13 +682,6 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
 // Default seams
 // ---------------------------------------------------------------------------
 
-/** `tailscale ip -4` → the first line, iff it is a 100.64/10 address. */
-export async function defaultResolveOverlayIp(runner: CommandRunner, tailscaleBin: string): Promise<string | null> {
-  const res = await runner.run(tailscaleBin, ['ip', '-4']);
-  if (res.exitCode !== 0) return null;
-  const line = res.stdout.split('\n').map((l) => l.trim()).find(Boolean);
-  return line && isOverlayRangeAddress(line) ? line : null;
-}
 
 /** `headscale nodes list --output json` → the id of the node matching `hostname`.
  *  The admin socket is root-owned, so the call is sudo'd (same as key minting). */
@@ -529,11 +709,17 @@ async function defaultResolveNodeId(
  * connection error means it isn't up yet. Never throws — the live checklist is
  * the authoritative verification.
  */
-async function defaultVerifyOverlayListener(address: string, mycoHome: string): Promise<boolean> {
+async function defaultVerifyOverlayListener(_address: string, mycoHome: string): Promise<boolean> {
   try {
-    const statePath = path.join(mycoHome, 'service', 'daemon.json');
-    const port = (JSON.parse(fs.readFileSync(statePath, 'utf-8')) as { port?: number }).port;
+    // LOOPBACK, and the OVERLAY port — not the overlay address and not the
+    // daemon's canonical port. Post-C1 there is no TUN, so the host has no
+    // route to its own 100.64 address (measured: the dial times out), and the
+    // listener binds `127.0.0.1:overlay_port`. Probing the old pair reported
+    // every healthy host as unconfirmed. End-to-end overlay reachability is a
+    // member-side fact (X1–X3), not something the host can self-check.
+    const port = loadMachineConfig(mycoHome).daemon.host_serve.overlay_port;
     if (!port) return false;
+    const address = '127.0.0.1';
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 1500);
     try {
@@ -553,5 +739,5 @@ function sanitizeHostname(name: string): string {
   return clean || 'myco-host';
 }
 
-/** Expose the tailscaled system-daemon labels for callers/tests. */
-export { TAILSCALED_MACOS_LABEL, TAILSCALED_LINUX_LABEL };
+/** Expose the tailscaled service labels for callers/tests. */
+export { HOST_TAILSCALED_LABEL, LEGACY_TAILSCALED_LINUX_LABEL };

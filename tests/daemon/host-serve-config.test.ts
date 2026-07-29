@@ -15,6 +15,7 @@ import {
   isOverlayRangeAddress,
   resolveHostServeBearer as resolveHostServeBearerWith,
   resolveHostServeConfig as resolveHostServeConfigWith,
+  formatOverlayAuthority,
 } from '@myco/daemon/host-serve';
 import { MachineConfigSchema, type MachineConfig } from '@myco/config/schema';
 import { readSecrets } from '@myco/config/secrets';
@@ -36,10 +37,16 @@ const resolveHostServeConfig = (
 function machineConfig(hostServe?: {
   enabled?: boolean;
   overlay_address?: string | null;
+  overlay_port?: number | null;
   served_grove_id?: string | null;
 }): MachineConfig {
+  // Default a valid overlay_port so each test states only what it is about;
+  // the port's own fail-closed behaviour has dedicated tests below.
+  const withPort = hostServe
+    ? { overlay_port: 41443, ...hostServe }
+    : undefined;
   return MachineConfigSchema.parse(
-    hostServe ? { daemon: { host_serve: hostServe } } : {},
+    withPort ? { daemon: { host_serve: withPort } } : {},
   );
 }
 
@@ -253,6 +260,51 @@ describe('resolveHostServeConfig', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0].kind).toBe(LOG_KINDS.HOST_SERVE);
     expect(warnings[0].message).toMatch(/served_grove_id/);
+  });
+
+  // --- overlay_port, coexistence amendment §8 -------------------------------
+
+  test('enabled with NO overlay_port → null, one warning (never falls back to the daemon port)', () => {
+    const rt = resolveHostServeConfig({
+      machineConfig: machineConfig({ enabled: true, overlay_address: '100.64.0.7', overlay_port: null }),
+      mycoHome: home,
+      logger,
+    });
+
+    // The fallback this replaces (`?? this.port`) bound the overlay listener at
+    // the address the loopback listener already holds; the resulting EADDRINUSE
+    // was swallowed into one warn while status still reported `serving: true`.
+    expect(rt).toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].kind).toBe(LOG_KINDS.HOST_SERVE);
+    expect(warnings[0].message).toMatch(/overlay_port is absent or out of range/);
+  });
+
+  test('an out-of-range overlay_port on disk is refused, not coerced', () => {
+    // Hand-edited config bypasses the schema's range check, so the resolver
+    // must refuse independently rather than trusting upstream validation.
+    const base = machineConfig({ enabled: true, overlay_address: '100.64.0.7' });
+    const tampered = {
+      ...base,
+      daemon: { ...base.daemon, host_serve: { ...base.daemon.host_serve, overlay_port: 0 } },
+    } as MachineConfig;
+
+    expect(resolveHostServeConfig({ machineConfig: tampered, mycoHome: home, logger })).toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].message).toMatch(/overlay_port is absent or out of range/);
+  });
+
+  test('a valid overlay_port surfaces on the runtime and composes the advertised authority', () => {
+    const rt = resolveHostServeConfig({
+      machineConfig: machineConfig({ enabled: true, overlay_address: '100.64.0.7', overlay_port: 41443 }),
+      mycoHome: home,
+      logger,
+    });
+    expect(rt).not.toBeNull();
+    expect(rt!.overlayPort).toBe(41443);
+    // The ONE producer every advertising surface goes through.
+    expect(formatOverlayAuthority(rt!.overlayAddress, rt!.overlayPort)).toBe('100.64.0.7:41443');
+    expect(warnings).toHaveLength(0);
   });
 });
 

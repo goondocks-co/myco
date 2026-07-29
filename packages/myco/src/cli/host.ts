@@ -15,6 +15,8 @@
 import { hostDisable, hostEnable, type HostEnableOptions, type HostEnableResult } from '../team-host/overlay.js';
 import { mintSetupKey } from '../team-host/control-plane.js';
 import { readHostState } from '../team-host/state.js';
+import { loadMachineConfig } from '../config/loader.js';
+import { formatOverlayAuthority } from '../daemon/host-serve.js';
 import {
   hostEnableAndEmitJoin,
   resolveTeamKeyProviderFlag,
@@ -30,7 +32,7 @@ function flagMap(args: string[]): Map<string, string> {
 function printEnableResult(result: HostEnableResult): void {
   console.log('\nTeam Host enabled.');
   console.log(`  Host ID:       ${result.hostId}`);
-  console.log(`  Overlay IP:    ${result.overlayAddress}`);
+  console.log(`  Overlay:       ${formatOverlayAuthority(result.overlayAddress, result.overlayPort)}  (what members dial)`);
   console.log(`  Control plane: ${result.serverUrl}`);
   console.log(`  Team storage:  ${result.servedGroveId}`);
   console.log(`  headscale:     v${result.headscaleVersion}`);
@@ -52,9 +54,11 @@ Commands:
   rotate-key [--expiration <dur>]        Mint a fresh one-time key to hand a joining team member.
 
 enable turns THIS machine into a Team Host: it provisions the pinned overlay
-networking binaries, supervises them as root services (they survive reboot),
-joins this host to the overlay, and wires the local daemon to serve your team
-over it. Root is required — you may be prompted for your sudo password.
+networking binaries, joins this host to the overlay, and wires the local daemon
+to serve your team over it. The networking stack runs unprivileged and entirely
+in its own space, so it neither sees nor disturbs a Tailscale you already have
+installed. Sudo is needed for one step only — installing the control plane as a
+system service — so you may be prompted for your password.
 --server-url is the address teammates dial to reach this host.
 
 --designate-default --emit-join is the --serve installer flag's composite path:
@@ -151,7 +155,12 @@ export async function runHostCommand(args: string[]): Promise<void> {
     }
     console.log(`Host ID:       ${state.host_id}`);
     console.log(`Enabled:       ${state.enabled_at}`);
-    console.log(`Overlay IP:    ${state.overlay_address}`);
+    // Read the port from machine config: HostState records the address only,
+    // and an operator who cannot see the port cannot hand out a join command.
+    const servePort = loadMachineConfig().daemon.host_serve.overlay_port;
+    console.log(`Overlay:       ${servePort !== null
+      ? formatOverlayAuthority(state.overlay_address, servePort)
+      : `${state.overlay_address} (no overlay port persisted — re-run \`myco host enable\`)`}`);
     console.log(`Control plane: ${state.server_url}`);
     console.log(`headscale:     v${state.headscale_version}`);
     console.log(`tailscale:     v${state.tailscale_version}`);
@@ -164,7 +173,13 @@ export async function runHostCommand(args: string[]): Promise<void> {
     const key = await mintSetupKey({ expiration: flags.get('expiration') });
     console.log('One-time setup key (hand this to the joiner — it works once):');
     console.log(`\n  ${key}\n`);
-    console.log('The joiner runs:  myco join <host> --key <key> --server-url <headscale-url> --overlay-address <host-100.64-ip:port>');
+    const state = readHostState();
+    const servePort = loadMachineConfig().daemon.host_serve.overlay_port;
+    const authority = state && servePort !== null
+      ? formatOverlayAuthority(state.overlay_address, servePort)
+      : '<host-100.64-ip:port>';
+    console.log(`The joiner runs:  myco join ${state?.host_id ?? '<host>'} --key <key> `
+      + `--server-url ${state?.server_url ?? '<headscale-url>'} --overlay-address ${authority}`);
     return;
   }
 

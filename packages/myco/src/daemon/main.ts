@@ -2939,6 +2939,17 @@ export async function main(): Promise<void> {
       clearInterval(phantomRebindWatcher);
       phantomRebindWatcher = null;
     }
+    // RETIRE THE OVERLAY FORWARD FIRST, before anything that can block.
+    //
+    // The forward is out-of-process, durable exposure: it keeps delivering
+    // member requests — bearer tokens included — to whatever holds the port.
+    // The retire in `server.stop()` sits behind an UNBOUNDED wait for stop
+    // processing plus a 30s agent-run drain, while launchd's default
+    // ExitTimeOut is 20s — so on any host busy enough to matter, SIGKILL
+    // arrives first and the retire never runs. Doing it here makes the common
+    // case correct; `server.stop()` keeps its retire as an idempotent backstop.
+    await server.retireOverlayExposure();
+
     // Wait for any active stop processing to finish before shutting down
     const activeStopProcessing = stopProcessor.getActiveProcessing();
     if (activeStopProcessing) {

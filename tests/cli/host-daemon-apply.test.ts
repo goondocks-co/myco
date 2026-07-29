@@ -61,12 +61,13 @@ describe('writeHostServeConfig', () => {
   });
 
   it('writes daemon.host_serve to the machine tier with a 100.64 IP that satisfies Task 2.3', () => {
-    writeHostServeConfig({ enabled: true, overlayAddress: '100.64.0.7' }, process.env.MYCO_HOME);
+    writeHostServeConfig({ enabled: true, overlayAddress: '100.64.0.7', overlayPort: 41443 }, process.env.MYCO_HOME);
 
     const machine = loadMachineConfig(process.env.MYCO_HOME);
     expect(machine.daemon.host_serve).toEqual({
       enabled: true,
       overlay_address: '100.64.0.7',
+      overlay_port: 41443,
       host_id: null,
       label: null,
       served_grove_id: null,
@@ -84,9 +85,9 @@ describe('writeHostServeConfig', () => {
   });
 
   it('REFUSES to enable with a non-CGNAT address (would be rejected downstream)', () => {
-    expect(() => writeHostServeConfig({ enabled: true, overlayAddress: '192.168.1.9' }, process.env.MYCO_HOME))
+    expect(() => writeHostServeConfig({ enabled: true, overlayAddress: '192.168.1.9', overlayPort: 41443 }, process.env.MYCO_HOME))
       .toThrow(/not a\s+100\.64\.0\.0\/10/);
-    expect(() => writeHostServeConfig({ enabled: true, overlayAddress: '10.0.0.4' }, process.env.MYCO_HOME))
+    expect(() => writeHostServeConfig({ enabled: true, overlayAddress: '10.0.0.4', overlayPort: 41443 }, process.env.MYCO_HOME))
       .toThrow(/CGNAT/);
     // Nothing was written.
     const machine = loadMachineConfig(process.env.MYCO_HOME);
@@ -94,12 +95,13 @@ describe('writeHostServeConfig', () => {
   });
 
   it('clears host_serve on disable (enabled:false, address null → resolves off)', () => {
-    writeHostServeConfig({ enabled: true, overlayAddress: '100.64.0.7' }, process.env.MYCO_HOME);
+    writeHostServeConfig({ enabled: true, overlayAddress: '100.64.0.7', overlayPort: 41443 }, process.env.MYCO_HOME);
     writeHostServeConfig({ enabled: false, overlayAddress: null }, process.env.MYCO_HOME);
     const machine = loadMachineConfig(process.env.MYCO_HOME);
     expect(machine.daemon.host_serve).toEqual({
       enabled: false,
       overlay_address: null,
+      overlay_port: null,
       host_id: null,
       label: null,
       served_grove_id: null,
@@ -109,7 +111,7 @@ describe('writeHostServeConfig', () => {
 
   it('disable CLEARS served_grove_id (spec §8 — a stale designation must not survive disable → re-enable)', () => {
     writeHostServeConfig(
-      { enabled: true, overlayAddress: '100.64.0.7', servedGroveId: 'grove_' + '0'.repeat(32) },
+      { enabled: true, overlayAddress: '100.64.0.7', overlayPort: 41443, servedGroveId: 'grove_' + '0'.repeat(32) },
       process.env.MYCO_HOME,
     );
     let machine = loadMachineConfig(process.env.MYCO_HOME);

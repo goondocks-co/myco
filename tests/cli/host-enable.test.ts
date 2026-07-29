@@ -4,13 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { hostDisable, hostEnable, type HostEnableDeps } from '@myco/team-host/overlay.js';
+import { hostDisable, hostEnable, HOST_TAILSCALED_LABEL, type HostEnableDeps } from '@myco/team-host/overlay.js';
 import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '@myco/team-host/binaries.js';
 import { HEADSCALE_SERVICE_LABEL } from '@myco/team-host/system-service.js';
 import { readHostState } from '@myco/team-host/state.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
-import type { ServiceManager, ServiceStatus, InstallResult } from '@myco/service/types.js';
+import type { ServiceManager, ServiceStatus, InstallResult, ServiceSpec } from '@myco/service/types.js';
 
 const sha256 = (b: Uint8Array) => crypto.createHash('sha256').update(b).digest('hex');
 const bytes = (s: string) => new TextEncoder().encode(s);
@@ -28,13 +28,37 @@ function fetcher(): BinaryFetcher {
 
 /** Records argv; performs the fs effects a real sudo install/rm + tailscaled
  *  install-system-daemon would, so idempotency checks reflect reality. */
-function overlayRunner(launchDaemonsDir: string): { runner: CommandRunner; calls: string[][] } {
+function overlayRunner(launchDaemonsDir: string): { runner: CommandRunner; calls: string[][]; servePorts: Set<number> } {
   const calls: string[][] = [];
+  // Models tailscaled's persisted serve config, so teardown-by-ENUMERATION
+  // (`serve status --json` → retire each) is exercised for real.
+  const servePorts = new Set<number>();
   const tailscaledPlist = path.join(launchDaemonsDir, 'com.tailscale.tailscaled.plist');
   const runner: CommandRunner = {
     async run(command, args) {
       calls.push([command, ...args]);
       const joined = [command, ...args].join(' ');
+      if (args.includes('serve')) {
+        const tcpFlag = args.find((a) => a.startsWith('--tcp='));
+        const port = tcpFlag ? Number(tcpFlag.slice('--tcp='.length)) : NaN;
+        if (args.includes('status')) {
+          return {
+            stdout: servePorts.size === 0 ? '{}' : JSON.stringify({
+              TCP: Object.fromEntries([...servePorts].map((p) => [String(p), { TCPForward: `127.0.0.1:${p}` }])),
+            }),
+            exitCode: 0,
+          };
+        }
+        if (args.includes('off')) {
+          if (!servePorts.has(port)) {
+            return { stdout: 'error: failed to remove TCP serve: serve config does not exist', exitCode: 1 };
+          }
+          servePorts.delete(port);
+          return { stdout: '', exitCode: 0 };
+        }
+        servePorts.add(port);
+        return { stdout: '', exitCode: 0 };
+      }
       if (command === 'brew' && args[0] === 'list') return { stdout: 'tailscale', exitCode: 0 };
       if (args[0] === 'version') {
         return command.endsWith('headscale')
@@ -55,22 +79,33 @@ function overlayRunner(launchDaemonsDir: string): { runner: CommandRunner; calls
       return { stdout: '', exitCode: 0 };
     },
   };
-  return { runner, calls };
+  return { runner, calls, servePorts };
 }
 
-function fakeManager(): { manager: ServiceManager; restarts: string[] } {
+function fakeManager(): {
+  manager: ServiceManager;
+  restarts: string[];
+  installs: ServiceSpec[];
+  uninstalls: string[];
+} {
   const restarts: string[] = [];
+  const installs: ServiceSpec[] = [];
+  const uninstalls: string[] = [];
   const manager: ServiceManager = {
     supported: true, platformName: 'launchd',
     isInstalled: async () => true,
     inspect: async () => null,
-    install: async (): Promise<InstallResult> => ({ changed: false, supervisorReloaded: false }),
-    uninstall: async () => {}, start: async () => {}, stop: async () => {},
+    install: async (spec): Promise<InstallResult> => {
+      installs.push(spec);
+      return { changed: false, supervisorReloaded: false };
+    },
+    uninstall: async (label) => { uninstalls.push(label); },
+    start: async () => {}, stop: async () => {},
     restart: async (l) => { restarts.push(l); },
     restartShellCommand: (l) => l,
     status: async (): Promise<ServiceStatus> => ({ installed: true, running: true, pid: 1, lastExitCode: null, unitPath: null }),
   };
-  return { manager, restarts };
+  return { manager, restarts, installs, uninstalls };
 }
 
 describe('hostEnable / hostDisable orchestration', () => {
@@ -99,9 +134,13 @@ describe('hostEnable / hostDisable orchestration', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  function deps(overrides: Partial<HostEnableDeps> = {}): { deps: HostEnableDeps; calls: string[][]; restarts: string[] } {
-    const { runner, calls } = overlayRunner(launchDaemonsDir);
-    const { manager, restarts } = fakeManager();
+  function deps(overrides: Partial<HostEnableDeps> = {}): {
+    deps: HostEnableDeps; calls: string[][]; restarts: string[];
+    installs: ServiceSpec[]; uninstalls: string[];
+    servePorts: Set<number>;
+  } {
+    const { runner, calls, servePorts } = overlayRunner(launchDaemonsDir);
+    const { manager, restarts, installs, uninstalls } = fakeManager();
     const base: HostEnableDeps = {
       fetcher: fetcher(),
       runner,
@@ -110,19 +149,25 @@ describe('hostEnable / hostDisable orchestration', () => {
       serviceManager: manager,
       brewBinDirs: [brewDir],
       systemCtx: { launchDaemonsDir, stagingDir: path.join(tmp, 'staging') },
+      // The fake ServiceManager installs no real tailscaled, so nothing ever
+      // binds the control socket. Short-circuit the wait; the socket-race
+      // behaviour itself is covered by its own test below.
+      hostTailscaledSocketPath: path.join(tmp, 'ts', 'host.sock'),
+      hostTailscaledStateDir: path.join(tmp, 'ts', 'state'),
+      waitForSocket: async () => true,
       resolveNodeId: async () => 'node-9',
       verifyOverlayListener: async () => true,
       logger: () => {},
       ...overrides,
     };
-    return { deps: base, calls, restarts };
+    return { deps: base, calls, restarts, installs, uninstalls, servePorts };
   }
 
   it('stands up the overlay end-to-end: services, join, host_serve wired, state recorded', async () => {
     // Not joined yet, then joined after `tailscale up`.
     const ips = [null as string | null, '100.64.0.5'];
     let call = 0;
-    const { deps: d, calls, restarts } = deps({ resolveOverlayIp: async () => ips[Math.min(call++, ips.length - 1)] });
+    const { deps: d, calls, restarts, installs } = deps({ resolveOverlayIp: async () => ips[Math.min(call++, ips.length - 1)] });
 
     const result = await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
 
@@ -133,12 +178,23 @@ describe('hostEnable / hostDisable orchestration', () => {
 
     // headscale supervised as a root LaunchDaemon.
     expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(true);
-    // tailscaled supervised via the native installer.
-    expect(calls.some((c) => c.join(' ').includes('install-system-daemon'))).toBe(true);
-    // Joined with the pinned flag shape (spike 0.1b: --auth-key, hyphenated).
+    // tailscaled is supervised UNPRIVILEGED in the user domain — never via the
+    // vendor's native system-daemon installer (coexistence C1/C2).
+    expect(calls.some((c) => c.join(' ').includes('install-system-daemon'))).toBe(false);
+    expect(installs.some((spec) => spec.label === HOST_TAILSCALED_LABEL)).toBe(true);
+    const tsSpec = installs.find((spec) => spec.label === HOST_TAILSCALED_LABEL)!;
+    expect(tsSpec.args).toEqual([
+      '--tun=userspace-networking',
+      `--socket=${path.join(tmp, 'ts', 'host.sock')}`,
+      `--statedir=${path.join(tmp, 'ts', 'state')}`,
+    ]);
+    // Joined against THIS instance's private socket, with NO sudo — the
+    // unsocketed form read the vendor tailnet and skipped the join entirely.
     const up = calls.find((c) => c.includes('up'))!;
-    expect(up).toEqual(['sudo', path.join(brewDir, 'tailscale'), 'up',
+    expect(up).toEqual([path.join(brewDir, 'tailscale'),
+      '--socket', path.join(tmp, 'ts', 'host.sock'), 'up',
       '--login-server', 'https://host.example:8080', '--auth-key', 'onetimekeyvalue123', '--hostname', 'testhost']);
+    expect(up).not.toContain('sudo');
 
     // The headscale admin socket is root-owned — the key-mint calls (users
     // create/list, preauthkeys create) all route through sudo.
@@ -206,7 +262,7 @@ describe('hostEnable / hostDisable orchestration', () => {
     await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
     expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(true);
 
-    const { deps: dd, calls } = deps();
+    const { deps: dd, calls, uninstalls } = deps();
     const result = await hostDisable(dd);
 
     expect(result.cleared).toBe(true);
@@ -216,12 +272,15 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(machine.daemon.host_serve).toEqual({
       enabled: false,
       overlay_address: null,
+      overlay_port: null,
       host_id: null,
       label: null,
       served_grove_id: null,
     });
-    // Both services torn down.
-    expect(calls.some((c) => c.join(' ').includes('uninstall-system-daemon'))).toBe(true);
+    // Both services torn down — but NEVER via the vendor's own uninstaller,
+    // which is byte-identical to removing the user's genuine Tailscale.
+    expect(calls.some((c) => c.join(' ').includes('uninstall-system-daemon'))).toBe(false);
+    expect(uninstalls).toContain(HOST_TAILSCALED_LABEL);
     expect(calls.some((c) => c.includes('bootout'))).toBe(true);
     expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(false);
     // State removed.
@@ -246,5 +305,67 @@ describe('hostEnable / hostDisable orchestration', () => {
     const result = await hostDisable(dd);
     expect(result.cleared).toBe(true);
     expect(readHostState()).toBeNull();
+  });
+  it('retires forwards by ENUMERATION, before the config clear, so a retry converges', async () => {
+    const ips = [null as string | null, '100.64.0.5'];
+    let i = 0;
+    const { deps: d } = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
+
+    const { deps: dd, calls, servePorts } = deps();
+    // A forward exists on a port that is NOT the currently-configured one —
+    // the shape a previous life leaves behind. Reading the port from config
+    // would miss it entirely.
+    servePorts.add(41999);
+    await hostDisable(dd);
+
+    const offs = calls.filter((c) => c.includes('off') && c.some((a) => a.startsWith('--tcp=')));
+    expect(offs.length, `no \`serve --tcp=<port> off\` in:\n${calls.map((c) => c.join(' ')).join('\n')}`)
+      .toBeGreaterThan(0);
+    expect(offs.some((c) => c.join(' ').includes('--tcp=41999'))).toBe(true);
+    // Socketed at THIS instance, never the ambient daemon.
+    expect(offs[0]!).toContain('--socket');
+    expect([...servePorts]).toEqual([]);
+  });
+});
+
+describe('Windows stays explicitly unsupported', () => {
+  it('hostEnable throws before touching the service manager', async () => {
+    // Deleting `installTailscaledDaemon` removed the SECOND Windows guard (its
+    // own `throw`), and the ServiceManager that replaced it DOES support win32
+    // (WindowsTaskServiceManager) — it would happily install a scheduled task.
+    // `resolveOverlayTarget` is now the only thing standing between a Windows
+    // box and a half-configured overlay, so assert it fires first.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-win-'));
+    const installs: ServiceSpec[] = [];
+    const manager: ServiceManager = {
+      supported: true, platformName: 'windows-task',
+      isInstalled: async () => false,
+      inspect: async () => null,
+      install: async (spec): Promise<InstallResult> => {
+        installs.push(spec);
+        return { changed: true, supervisorReloaded: false };
+      },
+      uninstall: async () => {}, start: async () => {}, stop: async () => {},
+      restart: async () => {},
+      restartShellCommand: (l) => l,
+      status: async (): Promise<ServiceStatus> => ({ installed: false, running: false, pid: null, lastExitCode: null, unitPath: null }),
+    };
+
+    await expect(hostEnable(
+      { serverUrl: 'https://host.example:8080', hostname: 'wintest' },
+      {
+        platform: 'win32',
+        arch: 'x64',
+        serviceManager: manager,
+        fetcher: fetcher(),
+        logger: () => {},
+        systemCtx: { stagingDir: tmpDir },
+      },
+    )).rejects.toThrow();
+
+    // Nothing was installed on the way to that throw.
+    expect(installs).toHaveLength(0);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });
