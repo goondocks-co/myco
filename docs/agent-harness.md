@@ -81,13 +81,15 @@ Background runs spawn the Claude Code CLI in an isolated session directory (`$MY
 claude setup-token   # prints a long-lived token (Pro/Max subscription auth)
 ```
 
-Add the token to `$MYCO_HOME/secrets.env` (`~/.myco/secrets.env` by default):
+Then paste the token under **Settings → Myco Agent → Claude subscription** (Connect). Headless alternative: add it to `$MYCO_HOME/secrets.env` (`~/.myco/secrets.env` by default) yourself:
 
 ```
 CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
 ```
 
-The daemon loads `secrets.env` into the environment and passes the token to every Anthropic-provider run; local-provider runs deliberately never see it. `myco doctor` verifies this under the **Intelligence** check, and a run that fails to authenticate reports this same remediation in its error.
+The daemon loads `secrets.env` into the environment and passes the token to every Anthropic-provider run; local-provider runs deliberately never see it. `myco doctor` verifies this under the **Intelligence** check; a run that fails to authenticate reports the same remediation in its error and raises a notification that deep-links to the Settings card.
+
+One wrinkle to know: a token saved through Settings takes effect immediately, but if you later HAND-edit `secrets.env` for a key the UI has previously written, restart the daemon — the layered-secrets loader protects externally-set env values from file overrides.
 
 ### Per-task overrides
 

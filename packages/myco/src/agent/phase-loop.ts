@@ -613,6 +613,7 @@ export async function executePhase(
       costData,
       sessionRef: telemetry?.sessionRef,
       capHit,
+      errorKind: telemetry?.kind,
       allowedMaxTurns: phase.maxTurns,
       // Carry over any metadata the phase emitted before the failure —
       // a phase may have committed selectedTier before throwing on a
@@ -875,6 +876,7 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       usage: telemetry?.usage,
       sessionRef: telemetry?.sessionRef,
       capHit,
+      errorKind: telemetry?.kind,
       allowedMaxTurns: phase.maxTurns,
     });
   }
