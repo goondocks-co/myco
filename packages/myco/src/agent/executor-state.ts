@@ -161,6 +161,7 @@ export function buildPhaseResult(input: {
   sessionRef?: string;
   sessionData?: unknown;
   capHit?: boolean;
+  errorKind?: PhaseResult['errorKind'];
   allowedMaxTurns?: number;
   metadata?: Record<string, unknown>;
   semanticCheckBlocked?: boolean;
@@ -169,7 +170,7 @@ export function buildPhaseResult(input: {
   const {
     name, status, summary, usage, costData,
     turnsUsed, tokensUsed, costUsd, costSource,
-    sessionRef, sessionData, capHit, allowedMaxTurns, metadata, semanticCheckBlocked,
+    sessionRef, sessionData, capHit, errorKind, allowedMaxTurns, metadata, semanticCheckBlocked,
     postConditionFailed,
   } = input;
   return {
@@ -183,6 +184,7 @@ export function buildPhaseResult(input: {
     ...(sessionRef ? { sessionRef } : {}),
     ...(sessionData !== undefined ? { sessionData } : {}),
     ...(capHit === true ? { capHit: true } : {}),
+    ...(errorKind !== undefined ? { errorKind } : {}),
     ...(semanticCheckBlocked === true ? { semanticCheckBlocked: true } : {}),
     ...(postConditionFailed === true ? { postConditionFailed: true } : {}),
     ...(allowedMaxTurns !== undefined ? { allowedMaxTurns } : {}),

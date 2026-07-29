@@ -32,6 +32,24 @@ export function harnessSessionDir(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, HARNESS_SESSION_DIRNAME);
 }
 
+/** Filename Claude Code reads as its file-backed credential inside a config dir. */
+const CLAUDE_CREDENTIALS_FILENAME = '.credentials.json';
+
+/**
+ * Whether the redirect dir holds its own Claude credentials — the manual
+ * per-machine provisioning path (a login performed into this config dir, or
+ * a copied credential file). One of the three auth evidence sources for
+ * harness runs; the doctor Intelligence check and the provider-secrets API
+ * both consume THIS probe so their answers cannot drift.
+ */
+export function agentSessionsCredentialsExist(mycoHome = resolveMycoHome()): boolean {
+  try {
+    return fs.existsSync(path.join(harnessSessionDir(mycoHome), CLAUDE_CREDENTIALS_FILENAME));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Stamp the epoch once, on first creation. Never rewritten — a later stamp
  * would move the boundary forward and reclassify already-separable

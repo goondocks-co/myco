@@ -33,6 +33,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { notify } from '@myco/notifications/notify.js';
 import { agentRunNotificationLink } from '@myco/notifications/links.js';
+import { buildAuthRequiredNotification, isAuthRequiredFailure } from '@myco/notifications/auth-required.js';
 import { HARNESS_HEALTH_TASK_NAME, notifyHarnessHealthFindings } from '@myco/notifications/harness-health-consumer.js';
 import { buildPhaseAudit } from '@myco/services/phase-audit.js';
 import { ExecutionOverrideBody } from './schemas/execution-overrides.js';
@@ -362,17 +363,25 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
           ? { projectId: req.requestContext.projectId }
           : undefined;
         if (result.status === 'failed') {
-          notify(runVaultDir, {
-            domain: 'agents',
-            type: 'agent.task.failure',
-            title: `Task failed: ${taskName}`,
-            message: result.error ?? 'Unknown error',
-            link: agentRunNotificationLink(result.runId),
-            metadata: { taskName: task ?? null, runId: result.runId },
-          }, mycoConfig, notificationOptions);
+          // Auth failures are a machine-wide condition, not a per-run event:
+          // one daemon-scoped actionable notification pointing at the
+          // Settings card, deduped across concurrent failing runs.
+          if (isAuthRequiredFailure(result)) {
+            notify(runVaultDir, buildAuthRequiredNotification(task ?? null, result.runId), mycoConfig, { scope: 'daemon' });
+          } else {
+            notify(runVaultDir, {
+              domain: 'agents',
+              type: 'agent.task.failure',
+              title: `Task failed: ${taskName}`,
+              message: result.error ?? 'Unknown error',
+              link: agentRunNotificationLink(result.runId),
+              metadata: { taskName: task ?? null, runId: result.runId },
+            }, mycoConfig, notificationOptions);
+          }
           logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run failed', {
             runId: result.runId,
             error: result.error ?? 'No error message',
+            ...(result.errorKind ? { errorKind: result.errorKind } : {}),
             phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
           });
         } else {
@@ -611,6 +620,14 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
           provider: result.provider,
           model: result.model,
         });
+
+        // Manual resume has no generic failure notification (the operator
+        // is watching the run detail), but an auth failure still needs the
+        // machine-wide pointer at Settings — resuming cannot succeed until
+        // the credential exists.
+        if (isAuthRequiredFailure(result)) {
+          notify(runVaultDir, buildAuthRequiredNotification(run.task ?? null, result.runId), undefined, { scope: 'daemon' });
+        }
 
         if (result.status === 'completed' && run.task === HARNESS_HEALTH_TASK_NAME) {
           notifyHarnessHealthFindings({

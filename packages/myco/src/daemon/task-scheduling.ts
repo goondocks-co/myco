@@ -42,6 +42,7 @@ import { loadLayeredSecrets } from '@myco/config/secrets.js';
 import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { notify } from '@myco/notifications/notify.js';
 import { agentRunNotificationLink } from '@myco/notifications/links.js';
+import { buildAuthRequiredNotification, isAuthRequiredFailure } from '@myco/notifications/auth-required.js';
 import { HARNESS_HEALTH_TASK_NAME, notifyHarnessHealthFindings } from '@myco/notifications/harness-health-consumer.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
@@ -293,7 +294,7 @@ export async function gateScheduledDispatch(
 }
 
 export interface ScheduledRunOutcomeInput {
-  result: Pick<AgentRunResult, 'runId' | 'status' | 'error'>;
+  result: Pick<AgentRunResult, 'runId' | 'status' | 'error' | 'errorKind'>;
   taskName: string;
   projectVaultDir: string;
   projectId: GroveProjectId;
@@ -312,14 +313,22 @@ export async function notifyScheduledRunOutcome(input: ScheduledRunOutcomeInput)
   const { result, taskName, projectVaultDir, projectId, config, logger } = input;
 
   if (result.status === 'failed') {
-    notify(projectVaultDir, {
-      domain: 'agents',
-      type: 'agent.task.failure',
-      title: `Task failed: ${taskName}`,
-      message: result.error ?? 'Unknown error',
-      link: agentRunNotificationLink(result.runId),
-      metadata: { taskName, runId: result.runId },
-    }, config, { projectId });
+    // Auth failures route to the machine-wide actionable notification
+    // (Settings deep link, daemon scope) instead of a per-project failure —
+    // the condition is shared by every Anthropic-provider run on this
+    // machine, and notify()'s dedup collapses concurrent emitters.
+    if (isAuthRequiredFailure(result)) {
+      notify(projectVaultDir, buildAuthRequiredNotification(taskName, result.runId), config, { scope: 'daemon' });
+    } else {
+      notify(projectVaultDir, {
+        domain: 'agents',
+        type: 'agent.task.failure',
+        title: `Task failed: ${taskName}`,
+        message: result.error ?? 'Unknown error',
+        link: agentRunNotificationLink(result.runId),
+        metadata: { taskName, runId: result.runId },
+      }, config, { projectId });
+    }
   } else if (result.status === 'completed') {
     notify(projectVaultDir, {
       domain: 'agents',
@@ -674,6 +683,14 @@ export async function registerScheduledTasks(
           status: resumed.status,
           runId: resumed.runId,
         });
+        // Scheduled resume outcomes are deliberately log-only (the fresh-run
+        // path already notified when the run first failed) — EXCEPT auth,
+        // where the actionable Settings pointer must fire even if the
+        // original failure predates errorKind threading or its notification
+        // aged out of the panel. Daemon scope + dedup keep this to one row.
+        if (isAuthRequiredFailure(resumed)) {
+          notify(projectVaultDir, buildAuthRequiredNotification(taskName, resumed.runId), config, { scope: 'daemon' });
+        }
         return;
       }
       // 'exhausted' or 'superseded' — fall through to a fresh run in the

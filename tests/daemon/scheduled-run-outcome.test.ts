@@ -133,6 +133,45 @@ describe('notifyScheduledRunOutcome — scheduled dispatch seam', () => {
     expect(types).not.toContain('agent.harness-health.findings');
   });
 
+  it('routes an auth-kind failure to agent.auth.required (daemon scope, Settings link) instead of the generic failure', async () => {
+    await notifyScheduledRunOutcome({
+      result: { runId: 'auth-failed-run', status: 'failed', error: 'Not logged in', errorKind: 'auth' },
+      taskName: 'title-summary',
+      projectVaultDir: VAULT_DIR,
+      projectId: TEST_PROJECT_SCOPE_ID,
+      config: loadMergedConfig(VAULT_DIR),
+      logger: stubLogger,
+    });
+
+    const types = notificationTypes();
+    expect(types).toContain('agent.auth.required');
+    expect(types).not.toContain('agent.task.failure');
+    const row = getDatabase().prepare(
+      'SELECT project_id, link, message FROM notifications WHERE type = ?',
+    ).get('agent.auth.required') as { project_id: string | null; link: string; message: string } | undefined;
+    // Machine-wide condition — daemon scope, not a per-project row.
+    expect(row?.project_id).toBeNull();
+    // Deep link targets the Settings card that holds the token field.
+    expect(row?.link).toContain('/settings');
+    expect(row?.link).toContain('configSection=');
+    expect(row?.message).toContain('claude setup-token');
+  });
+
+  it('a non-auth failure kind still emits the generic task failure', async () => {
+    await notifyScheduledRunOutcome({
+      result: { runId: 'conn-failed-run', status: 'failed', error: 'ECONNREFUSED', errorKind: 'connection' },
+      taskName: 'title-summary',
+      projectVaultDir: VAULT_DIR,
+      projectId: TEST_PROJECT_SCOPE_ID,
+      config: loadMergedConfig(VAULT_DIR),
+      logger: stubLogger,
+    });
+
+    const types = notificationTypes();
+    expect(types).toContain('agent.task.failure');
+    expect(types).not.toContain('agent.auth.required');
+  });
+
   it('does not emit the findings notification for a failed harness-health run', async () => {
     insertRun({
       id: 'hh-sched-failed',
