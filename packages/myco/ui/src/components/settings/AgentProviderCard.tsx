@@ -45,12 +45,14 @@ const REMOTE_SECRET_LABELS: Record<AgentSecretProvider, string> = {
   anthropic: 'Anthropic API Key',
 };
 
-// Anthropic is keyed only in TEAM mode — the served grove's team key (`PUT
-// /api/team/secrets/anthropic`, already wired through `useSaveProviderSecret`/
-// `useDeleteProviderSecret`'s team-target branch). In project mode anthropic
-// resolves through CLI subscription auth, so `isTeam` gates it: the card must
-// stay byte-identical for project mode, where this key-entry section has
-// never applied to anthropic and still must not.
+// Anthropic carries TWO distinct credentials depending on mode, so the
+// generic key row keeps its team-only gate. TEAM mode: the served grove's
+// API key (`PUT /api/team/secrets/anthropic`, via the hooks' team-target
+// branch) — rendered by the generic row below. PROJECT mode: the machine-
+// scoped Claude subscription token (`claude setup-token` →
+// `/providers/secrets/anthropic`) — rendered by the dedicated Claude
+// subscription row, which never appears in team mode precisely because the
+// shared hooks would route its write to the team endpoint.
 function isSecretProvider(type: ProviderDraft['type'], isTeam: boolean): type is AgentSecretProvider {
   if (type === 'openai' || type === 'openrouter') return true;
   return isTeam && type === 'anthropic';
@@ -98,11 +100,22 @@ export function AgentProviderCard() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const secretProvider = isSecretProvider(draft.type, isTeam) ? draft.type : null;
   const activeSecret = secretProvider ? providerSecretsData?.secrets[secretProvider] : undefined;
+  // Machine-mode anthropic credential: the Claude subscription token
+  // (`claude setup-token`), stored machine-scoped via /providers/secrets.
+  // Never rendered in team mode — there the anthropic secret is the served
+  // grove's API key handled by the generic row above, and the shared save/
+  // delete hooks route ALL writes to /team/secrets when a team target is
+  // active, which would misfile this token.
+  const [subscriptionTokenInput, setSubscriptionTokenInput] = useState('');
+  const claudeSubscription = !isTeam && draft.type === 'anthropic'
+    ? providerSecretsData?.secrets.anthropic
+    : undefined;
+  const showClaudeSubscriptionRow = !isTeam && draft.type === 'anthropic';
   const resolvedAgentBaseUrl = draft.baseUrl || defaultBaseUrlForProvider(draft.type, draft.localBackend);
   const modelsQuery = useModels(draft.type || null, resolvedAgentBaseUrl || undefined, 'llm', draft.localBackend || null);
   const reasoningModels = modelsQuery.data?.models ?? providers.find((info) => info.type === draft.type)?.models ?? [];
   const supportsReasoningMap = draft.type !== '';
-  useEffect(() => { setApiKeyInput(''); }, [draft.type]);
+  useEffect(() => { setApiKeyInput(''); setSubscriptionTokenInput(''); }, [draft.type]);
 
   // Grove-wide default reasoning tier. Tracked separately from the provider
   // draft (it lives at `agent.reasoningLevel`, not inside `agent.provider`),
@@ -215,6 +228,17 @@ export function AgentProviderCard() {
       },
     });
   }, [agentTestMutation, deleteProviderSecret, secretProvider]);
+
+  const handleConnectSubscription = useCallback(() => {
+    if (subscriptionTokenInput.trim() === '') return;
+    saveProviderSecret.mutate({ provider: 'anthropic', apiKey: subscriptionTokenInput.trim() }, {
+      onSuccess: () => setSubscriptionTokenInput(''),
+    });
+  }, [saveProviderSecret, subscriptionTokenInput]);
+
+  const handleClearSubscription = useCallback(() => {
+    deleteProviderSecret.mutate({ provider: 'anthropic' });
+  }, [deleteProviderSecret]);
 
   const handleTestConnection = useCallback(() => {
     if (draft.type === '') return;
@@ -366,6 +390,53 @@ export function AgentProviderCard() {
               {activeSecret?.configured
                 ? `${activeSecret.maskedValue} from ${activeSecret.source === 'env' ? 'environment' : `${activeSecret.source} secrets`}`
                 : 'Key is required for model discovery and connection tests.'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {showClaudeSubscriptionRow && (
+        <div className="space-y-2 rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest p-3">
+          <div className="space-y-1">
+            <label className="font-sans text-xs text-on-surface-variant">Claude subscription</label>
+            <p className="font-sans text-xs text-on-surface-variant">
+              Background tasks run on your Claude subscription. Run <code>claude setup-token</code> in
+              your terminal and paste the result — one time per machine.
+            </p>
+            <Input
+              type="password"
+              value={subscriptionTokenInput}
+              onChange={(e) => setSubscriptionTokenInput(e.target.value)}
+              placeholder={claudeSubscription?.configured ? 'Replace saved token' : 'Paste token'}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleConnectSubscription}
+              disabled={saveProviderSecret.isPending || subscriptionTokenInput.trim() === ''}
+            >
+              {claudeSubscription?.configured ? 'Update' : 'Connect'}
+            </Button>
+            {claudeSubscription?.configured && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleClearSubscription}
+                disabled={deleteProviderSecret.isPending}
+              >
+                Clear
+              </Button>
+            )}
+            <span className="font-sans text-xs text-on-surface-variant break-all">
+              {claudeSubscription?.configured
+                ? `Connected — ${claudeSubscription.maskedValue}${claudeSubscription.source === 'env' ? ' (from environment)' : ''}`
+                : claudeSubscription?.fallbackEvidence === 'agent-sessions'
+                  ? 'Working via machine-local credentials — connect a token for the durable path.'
+                  : 'Not connected — background tasks can’t run until you connect.'}
             </span>
           </div>
         </div>

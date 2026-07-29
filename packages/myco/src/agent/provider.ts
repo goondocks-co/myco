@@ -1,4 +1,5 @@
 import type { ProviderConfig } from './types.js';
+import { CLAUDE_CODE_OAUTH_TOKEN_ENV } from '@myco/providers/env.js';
 
 // ---------------------------------------------------------------------------
 // Named constants — env var names and default values
@@ -12,7 +13,7 @@ const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
 // Local providers blank it — like ANTHROPIC_API_KEY above — so the
 // user's subscription token never rides along into a run pointed at a
 // local endpoint.
-const ENV_CLAUDE_CODE_OAUTH_TOKEN = 'CLAUDE_CODE_OAUTH_TOKEN';
+const ENV_CLAUDE_CODE_OAUTH_TOKEN = CLAUDE_CODE_OAUTH_TOKEN_ENV;
 const ENV_OLLAMA_NUM_CTX = 'OLLAMA_NUM_CTX';
 export const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 export const DEFAULT_LMSTUDIO_URL = 'http://localhost:1234';

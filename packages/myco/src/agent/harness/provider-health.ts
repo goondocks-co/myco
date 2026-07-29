@@ -2,7 +2,11 @@
 import type { ProviderConfig, ProviderType } from '@myco/agent/types.js';
 import { OllamaBackend } from '@myco/intelligence/ollama.js';
 import { LmStudioBackend } from '@myco/intelligence/lm-studio.js';
-import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
+import {
+  CLAUDE_CODE_OAUTH_TOKEN_ENV,
+  OPENAI_API_KEY_ENV,
+  OPENROUTER_API_KEY_ENV,
+} from '@myco/providers/env.js';
 
 const AVAILABILITY_TTL_MS = 5_000;
 
@@ -33,10 +37,16 @@ export interface ProviderAvailability {
 // spec §5's key-exfil invariant: only these three types ever read a real
 // secret out of the env). Env var names mirror the resolvers each harness
 // actually reads at call time (`agent/harness/openai.ts`'s
-// PROVIDER_CLIENT_CONFIG_RESOLVERS, `agent/provider.ts`'s ANTHROPIC_API_KEY)
-// so this check can never drift from what a dispatch would actually use.
+// PROVIDER_CLIENT_CONFIG_RESOLVERS; for anthropic, the spawned Claude CLI
+// honors either ANTHROPIC_API_KEY or the headless subscription token) so
+// this check can never drift from what a dispatch would actually use.
+//
+// ORDER IS LOAD-BEARING for anthropic: team-host compose
+// (`team-host/compose.ts`) uses entry [0] as the env name a team key is
+// stored under — keep ANTHROPIC_API_KEY first; the subscription token is
+// dispatch evidence, never a team-key name.
 export const KEYED_CLOUD_PROVIDER_ENV: Partial<Record<ProviderType, string[]>> = {
-  anthropic: ['ANTHROPIC_API_KEY'],
+  anthropic: ['ANTHROPIC_API_KEY', CLAUDE_CODE_OAUTH_TOKEN_ENV],
   openai: [OPENAI_API_KEY_ENV, 'OPENAI_API_KEY'],
   openrouter: [OPENROUTER_API_KEY_ENV],
 };

@@ -8,13 +8,16 @@ const TEAM_PROVIDER_SECRETS_QUERY_KEY = ['team-provider-secrets'] as const;
 const PROVIDERS_QUERY_KEY = ['providers'] as const;
 const MODELS_QUERY_KEY = ['models'] as const;
 
-// 'anthropic' is a keyed cloud provider only in TEAM mode (a served grove's
-// team key, `PUT /api/team/secrets/anthropic` — `daemon/api/team-config.ts`).
-// In project mode anthropic uses subscription auth and is never a valid
-// secret provider there (`daemon/api/provider-secrets.ts` never returns or
-// accepts it); `AgentProviderCard` gates the anthropic key-entry UI behind
-// `useIsTeamConfigTarget()` so this widened type never surfaces a field
-// outside team mode.
+// 'anthropic' names a DIFFERENT credential per mode. TEAM mode: the served
+// grove's API key (`PUT /api/team/secrets/anthropic` —
+// `daemon/api/team-config.ts`), entered via the generic key row that
+// `AgentProviderCard` gates behind `useIsTeamConfigTarget()`. PROJECT mode:
+// the machine-scoped Claude subscription token for background runs
+// (`claude setup-token` → `/providers/secrets/anthropic` —
+// `daemon/api/provider-secrets.ts`), entered via the card's dedicated
+// Claude subscription row, which never renders in team mode because the
+// mutations below route every write to the team endpoint when a team
+// target is active.
 export type SecretProvider = 'openai' | 'openrouter' | 'github' | 'anthropic';
 export type SecretScope = 'machine' | 'project';
 /** `'team'` — a masked value echoed by a team-write secret write (Task 8).
@@ -32,6 +35,9 @@ export interface ProviderSecretInfo {
   sourceScope: SecretScope | null;
   defaultScope: SecretScope;
   availableScopes: SecretScope[];
+  /** Anthropic only: 'agent-sessions' when background runs work via
+   *  machine-local credentials rather than a connected token. */
+  fallbackEvidence?: 'agent-sessions' | null;
 }
 
 export interface ProviderSecretsResponse {

@@ -181,6 +181,14 @@ export interface PhaseResult {
    */
   capHit?: boolean;
   /**
+   * Adapter classification of the failure (`HarnessExecutionError.
+   * telemetry.kind`), preserved so the run-level failure can carry it —
+   * without this, a phased run flattens the harness error into a plain
+   * "Required phase failed" Error and the kind (e.g. `'auth'`, which
+   * drives the auth-required notification) is lost at the executor.
+   */
+  errorKind?: HarnessErrorKind;
+  /**
    * Turn budget the SDK was asked to enforce (the value of
    * `maxTurns` after orchestrator directives + overrides have been
    * applied). Populated alongside `capHit` so the auditor can compare
@@ -384,6 +392,14 @@ export interface ProviderConfig {
   /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
   contextLength?: number;
 }
+
+/**
+ * Classification of a harness execution failure, set by the adapter at the
+ * throw site where the SDK's error type/wording is authoritative. Defined
+ * here (not harness/types.ts) because `PhaseResult.errorKind` carries it —
+ * harness/types.ts re-exports it for its own consumers.
+ */
+export type HarnessErrorKind = 'max-turns' | 'connection' | 'auth' | 'other';
 
 export interface RuntimeUsage {
   requests?: number;
@@ -735,6 +751,15 @@ export interface AgentRunResult {
   costSource?: CostSource;
   costData?: CostResolution;
   error?: string;
+  /**
+   * Adapter classification of a failed run's cause — from the raw
+   * `HarnessExecutionError` when the harness error propagated whole
+   * (single-query / pre-phase crashes), or from the failed phase's
+   * `PhaseResult.errorKind` when the phased path flattened it into a
+   * "Required phase failed" Error. `'auth'` routes failure notifications
+   * to `agent.auth.required` instead of the generic task failure.
+   */
+  errorKind?: HarnessErrorKind;
   phases?: PhaseResult[];
   harness?: HarnessId;
   provider?: ProviderType;

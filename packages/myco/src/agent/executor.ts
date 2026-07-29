@@ -771,10 +771,18 @@ export async function runAgent(
     }
     const failedAt = epochSeconds();
 
+    // Run-level failure classification: the raw harness error when it
+    // propagated whole; otherwise the failed phase's own classification
+    // (the required-phase throw above flattens HarnessExecutionError into
+    // a plain Error, but PhaseResult.errorKind preserved the kind).
+    const runErrorKind = (err instanceof HarnessExecutionError ? err.telemetry.kind : undefined)
+      ?? phaseResults?.find((phase) => phase.status === 'failed' && phase.errorKind)?.errorKind;
+
     options?.logger?.error('agent.run.failed', `Run ${runId} failed`, {
       runId,
       taskName: config.taskName,
       error: errorMessage,
+      ...(runErrorKind ? { errorKind: runErrorKind } : {}),
     });
 
     // Captured before the inner try block shadows `usage`/`costData` with
@@ -884,6 +892,7 @@ export async function runAgent(
       runId,
       status: STATUS_FAILED,
       error: errorMessage,
+      ...(runErrorKind ? { errorKind: runErrorKind } : {}),
       harness: harnessId,
       provider: effectiveProvider?.type,
       model: effectiveModel,

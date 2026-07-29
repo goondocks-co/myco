@@ -694,12 +694,6 @@ export async function checkCaptureFlow(
   }
 }
 
-/** Filename Claude Code reads as its file-backed credential inside a config dir. */
-const CLAUDE_CREDENTIALS_FILENAME = '.credentials.json';
-
-/** The headless credential env var for harness Claude CLI runs. */
-const CLAUDE_OAUTH_TOKEN_KEY = 'CLAUDE_CODE_OAUTH_TOKEN';
-
 /**
  * Auth evidence for harness Claude CLI runs. Background runs spawn the CLI
  * under the isolated agent-sessions CLAUDE_CONFIG_DIR (transcript
@@ -708,30 +702,31 @@ const CLAUDE_OAUTH_TOKEN_KEY = 'CLAUDE_CODE_OAUTH_TOKEN';
  * machine" is NOT evidence that background runs can authenticate. Evidence
  * is one of: the headless token in the environment or machine secrets.env
  * (`claude setup-token`), or credentials provisioned inside the
- * agent-sessions dir itself.
+ * agent-sessions dir itself (probe shared with the provider-secrets API).
  */
 export async function checkClaudeHeadlessAuth(label: string): Promise<DoctorCheck> {
   const name = 'Intelligence';
-  if (process.env[CLAUDE_OAUTH_TOKEN_KEY]) {
-    return { name, status: 'ok', detail: `${label} (${CLAUDE_OAUTH_TOKEN_KEY} in env)`, fixable: false };
+  const { CLAUDE_CODE_OAUTH_TOKEN_ENV } = await import('../providers/env.js');
+  if (process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV]) {
+    return { name, status: 'ok', detail: `${label} (${CLAUDE_CODE_OAUTH_TOKEN_ENV} in env)`, fixable: false };
   }
   const mycoHome = resolveMycoHome();
   try {
     const { readSecrets } = await import('../config/secrets.js');
-    if (readSecrets(mycoHome)[CLAUDE_OAUTH_TOKEN_KEY]) {
-      return { name, status: 'ok', detail: `${label} (${CLAUDE_OAUTH_TOKEN_KEY} in secrets.env)`, fixable: false };
+    if (readSecrets(mycoHome)[CLAUDE_CODE_OAUTH_TOKEN_ENV]) {
+      return { name, status: 'ok', detail: `${label} (${CLAUDE_CODE_OAUTH_TOKEN_ENV} in secrets.env)`, fixable: false };
     }
   } catch {
     /* unreadable secrets store counts as absent — fall through */
   }
-  const { harnessSessionDir } = await import('../agent/harness/redirect-epoch.js');
-  if (fs.existsSync(path.join(harnessSessionDir(mycoHome), CLAUDE_CREDENTIALS_FILENAME))) {
+  const { agentSessionsCredentialsExist } = await import('../agent/harness/redirect-epoch.js');
+  if (agentSessionsCredentialsExist(mycoHome)) {
     return { name, status: 'ok', detail: `${label} (agent-sessions credentials)`, fixable: false };
   }
   return {
     name,
     status: 'fail',
-    detail: `${label} — background agent runs cannot authenticate: they use an isolated Claude session directory that does not share your interactive login. Run \`claude setup-token\` and add ${CLAUDE_OAUTH_TOKEN_KEY}=<token> to ${path.join(mycoHome, 'secrets.env')}`,
+    detail: `${label} — background agent runs cannot authenticate: they use an isolated Claude session directory that does not share your interactive login. Connect your Claude subscription under Settings → Myco Agent (run \`claude setup-token\` and paste the result), or add ${CLAUDE_CODE_OAUTH_TOKEN_ENV}=<token> to ${path.join(mycoHome, 'secrets.env')}`,
     fixable: false,
   };
 }

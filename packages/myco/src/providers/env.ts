@@ -19,3 +19,11 @@ export const OPENAI_API_KEY_ENV = 'MYCO_OPENAI_API_KEY';
 
 /** Environment variable for OpenRouter API key stored in machine secrets. */
 export const OPENROUTER_API_KEY_ENV = 'MYCO_OPENROUTER_API_KEY';
+
+/**
+ * Environment variable for the Claude Code headless OAuth token (from
+ * `claude setup-token`) stored in machine secrets. Unlike the MYCO_-prefixed
+ * keys above, the name is Claude Code's own contract: the spawned CLI reads
+ * exactly this variable, so Myco stores and injects it verbatim.
+ */
+export const CLAUDE_CODE_OAUTH_TOKEN_ENV = 'CLAUDE_CODE_OAUTH_TOKEN';

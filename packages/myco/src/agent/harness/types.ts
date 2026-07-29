@@ -1,6 +1,6 @@
 import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
-import type { ProviderConfig, RunLogger, HarnessId, RuntimeUsage, ReasoningLevel } from '@myco/agent/types.js';
+import type { ProviderConfig, RunLogger, HarnessId, RuntimeUsage, ReasoningLevel, HarnessErrorKind } from '@myco/agent/types.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { HarnessHooks, HarnessHookContext } from './hooks.js';
 
@@ -262,8 +262,11 @@ export interface HarnessScopeRunInput {
  * tool execution failures, etc.). Cost-audit tooling counts `capHit`
  * separately from generic failures, so this classification matters at
  * the phase checkpoint level.
+ *
+ * Defined in `agent/types.ts` (PhaseResult.errorKind carries it up the
+ * phased path); re-exported here for the harness-side consumers.
  */
-export type HarnessErrorKind = 'max-turns' | 'connection' | 'auth' | 'other';
+export type { HarnessErrorKind };
 
 export interface HarnessErrorTelemetry {
   usage: RuntimeUsage;

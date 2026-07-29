@@ -5,7 +5,12 @@ import {
 } from '@myco/config/secrets.js';
 import { normalizeRawSecretInput } from '@myco/daemon/api/secret-input.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
-import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
+import {
+  CLAUDE_CODE_OAUTH_TOKEN_ENV,
+  OPENAI_API_KEY_ENV,
+  OPENROUTER_API_KEY_ENV,
+} from '@myco/providers/env.js';
+import { agentSessionsCredentialsExist } from '@myco/agent/harness/redirect-epoch.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import { GITHUB_TOKEN_ENV } from '../../release-provenance/github.js';
 import {
@@ -16,7 +21,7 @@ import {
 const SECRET_PREVIEW_PREFIX_CHARS = 8;
 const SECRET_PREVIEW_SUFFIX_CHARS = 4;
 
-type SecretProvider = 'openai' | 'openrouter' | 'github';
+type SecretProvider = 'openai' | 'openrouter' | 'github' | 'anthropic';
 // These are machine-level keys stored in `~/.myco/secrets.env`. The only scope
 // is 'machine'; the legacy 'project' scope was removed — project-level provider
 // secrets were migrated to grove/team scope (which live in their own stores and
@@ -34,6 +39,13 @@ interface SecretInfo {
   sourceScope: SecretScope | null;
   defaultScope: SecretScope;
   availableScopes: SecretScope[];
+  /**
+   * Anthropic only: 'agent-sessions' when no token is configured but the
+   * harness config dir holds its own provisioned credentials (probe shared
+   * with doctor's Intelligence check) — runs work today, but on a
+   * machine-local credential the UI should present as temporary.
+   */
+  fallbackEvidence?: 'agent-sessions' | null;
 }
 
 interface SecretDefinition {
@@ -62,10 +74,21 @@ const SECRET_DEFINITIONS: Record<SecretProvider, SecretDefinition> = {
     availableScopes: ['machine'],
     readScopes: ['machine'],
   },
+  // The Claude Code headless OAuth token for harness runs (`claude
+  // setup-token`). Machine-scoped like the rest: one subscription per dev
+  // machine. Distinct from team mode's anthropic secret, which is the served
+  // grove's ANTHROPIC_API_KEY and lives in the grove store via
+  // `/api/team/secrets/anthropic` — different credential, different route.
+  anthropic: {
+    envKey: CLAUDE_CODE_OAUTH_TOKEN_ENV,
+    defaultScope: 'machine',
+    availableScopes: ['machine'],
+    readScopes: ['machine'],
+  },
 };
 
 function isSecretProvider(value: string): value is SecretProvider {
-  return value === 'openai' || value === 'openrouter' || value === 'github';
+  return value === 'openai' || value === 'openrouter' || value === 'github' || value === 'anthropic';
 }
 
 function maskSecret(secret: string): string {
@@ -94,6 +117,12 @@ function buildSecretInfo(provider: SecretProvider): SecretInfo {
     sourceScope: stored?.scope ?? null,
     defaultScope: definition.defaultScope,
     availableScopes: definition.availableScopes,
+    ...(provider === 'anthropic'
+      ? {
+          fallbackEvidence:
+            !effectiveValue && agentSessionsCredentialsExist() ? ('agent-sessions' as const) : null,
+        }
+      : {}),
   };
 }
 
@@ -113,6 +142,7 @@ export async function handleGetProviderSecrets(_req?: RouteRequest): Promise<Rou
         openai: buildSecretInfo('openai'),
         openrouter: buildSecretInfo('openrouter'),
         github: buildSecretInfo('github'),
+        anthropic: buildSecretInfo('anthropic'),
       },
     },
   };
@@ -126,7 +156,7 @@ export async function handlePutProviderSecret(
   const body = req.body as { api_key?: unknown; secret?: unknown; scope?: SecretScope } | undefined;
 
   if (!provider || !isSecretProvider(provider)) {
-    return { status: 400, body: { error: 'provider must be one of: openai, openrouter, github' } };
+    return { status: 400, body: { error: 'provider must be one of: openai, openrouter, github, anthropic' } };
   }
   const raw = body?.secret ?? body?.api_key;
   const envKey = SECRET_DEFINITIONS[provider].envKey;
@@ -159,7 +189,7 @@ export async function handleDeleteProviderSecret(
 ): Promise<RouteResponse> {
   const provider = req.params.provider;
   if (!provider || !isSecretProvider(provider)) {
-    return { status: 400, body: { error: 'provider must be one of: openai, openrouter, github' } };
+    return { status: 400, body: { error: 'provider must be one of: openai, openrouter, github, anthropic' } };
   }
 
   const requestedScope = req.query.scope;
