@@ -20,6 +20,7 @@ import type { ProviderConfig } from '@myco/agent/types.js';
 const ENV_ANTHROPIC_BASE_URL = 'ANTHROPIC_BASE_URL';
 const ENV_ANTHROPIC_AUTH_TOKEN = 'ANTHROPIC_AUTH_TOKEN';
 const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
+const ENV_CLAUDE_CODE_OAUTH_TOKEN = 'CLAUDE_CODE_OAUTH_TOKEN';
 const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 const DEFAULT_LMSTUDIO_URL = 'http://localhost:1234';
 const OLLAMA_AUTH_TOKEN = 'ollama';
@@ -48,6 +49,7 @@ describe('getProviderEnvVars', () => {
       [ENV_ANTHROPIC_BASE_URL]: DEFAULT_OLLAMA_URL,
       [ENV_ANTHROPIC_AUTH_TOKEN]: OLLAMA_AUTH_TOKEN,
       [ENV_ANTHROPIC_API_KEY]: '',
+      [ENV_CLAUDE_CODE_OAUTH_TOKEN]: '',
     });
   });
 
@@ -67,6 +69,7 @@ describe('getProviderEnvVars', () => {
       [ENV_ANTHROPIC_BASE_URL]: DEFAULT_LMSTUDIO_URL,
       [ENV_ANTHROPIC_AUTH_TOKEN]: LMSTUDIO_AUTH_TOKEN,
       [ENV_ANTHROPIC_API_KEY]: '',
+      [ENV_CLAUDE_CODE_OAUTH_TOKEN]: '',
     });
   });
 
@@ -93,6 +96,23 @@ describe('getProviderEnvVars', () => {
     const vars = getProviderEnvVars(provider);
 
     expect(vars).toEqual({});
+  });
+
+  it('blanks the headless Claude token for local providers so a machine-level subscription token never reaches a local endpoint run', () => {
+    vi.stubEnv(ENV_CLAUDE_CODE_OAUTH_TOKEN, 'sk-ant-oat01-test');
+
+    const ollamaEnv = buildPhaseEnv({ type: 'ollama' });
+    expect(ollamaEnv[ENV_CLAUDE_CODE_OAUTH_TOKEN]).toBe('');
+
+    const lmstudioEnv = buildPhaseEnv({ type: 'lmstudio' });
+    expect(lmstudioEnv[ENV_CLAUDE_CODE_OAUTH_TOKEN]).toBe('');
+  });
+
+  it('passes the headless Claude token through untouched for the anthropic provider and the unset default', () => {
+    vi.stubEnv(ENV_CLAUDE_CODE_OAUTH_TOKEN, 'sk-ant-oat01-test');
+
+    expect(buildPhaseEnv({ type: 'anthropic' })[ENV_CLAUDE_CODE_OAUTH_TOKEN]).toBe('sk-ant-oat01-test');
+    expect(buildPhaseEnv(undefined)[ENV_CLAUDE_CODE_OAUTH_TOKEN]).toBe('sk-ant-oat01-test');
   });
 
   it('returns empty object for unknown provider type', () => {

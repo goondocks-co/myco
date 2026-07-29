@@ -7,6 +7,12 @@ import type { ProviderConfig } from './types.js';
 const ENV_ANTHROPIC_BASE_URL = 'ANTHROPIC_BASE_URL';
 const ENV_ANTHROPIC_AUTH_TOKEN = 'ANTHROPIC_AUTH_TOKEN';
 const ENV_ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY';
+// The machine-level headless credential for harness Claude CLI runs
+// (loaded into process.env from secrets.env by loadLayeredSecrets).
+// Local providers blank it — like ANTHROPIC_API_KEY above — so the
+// user's subscription token never rides along into a run pointed at a
+// local endpoint.
+const ENV_CLAUDE_CODE_OAUTH_TOKEN = 'CLAUDE_CODE_OAUTH_TOKEN';
 const ENV_OLLAMA_NUM_CTX = 'OLLAMA_NUM_CTX';
 export const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 export const DEFAULT_LMSTUDIO_URL = 'http://localhost:1234';
@@ -69,6 +75,7 @@ export function getProviderEnvVars(provider: ProviderConfig): Record<string, str
         [ENV_ANTHROPIC_BASE_URL]: provider.baseUrl ?? DEFAULT_OLLAMA_URL,
         [ENV_ANTHROPIC_AUTH_TOKEN]: OLLAMA_AUTH_TOKEN,
         [ENV_ANTHROPIC_API_KEY]: '',
+        [ENV_CLAUDE_CODE_OAUTH_TOKEN]: '',
         ...(provider.contextLength ? { [ENV_OLLAMA_NUM_CTX]: String(provider.contextLength) } : {}),
       };
     case 'lmstudio':
@@ -76,6 +83,7 @@ export function getProviderEnvVars(provider: ProviderConfig): Record<string, str
         [ENV_ANTHROPIC_BASE_URL]: provider.baseUrl ?? DEFAULT_LMSTUDIO_URL,
         [ENV_ANTHROPIC_AUTH_TOKEN]: provider.apiKey ?? LMSTUDIO_AUTH_TOKEN,
         [ENV_ANTHROPIC_API_KEY]: '',
+        [ENV_CLAUDE_CODE_OAUTH_TOKEN]: '',
       };
     case 'openai':
       // Remote providers: baseUrl is hardcoded so the daemon's API key
