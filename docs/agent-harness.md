@@ -71,7 +71,23 @@ agent:
     model: claude-sonnet-4-6
 ```
 
-That's it. Every task will use Claude Sonnet via the Anthropic API (or your Claude Code OAuth if you have it).
+That's it. Every task will use Claude Sonnet via the Anthropic API. See [Authentication](#authentication-anthropic) for the one-time credential setup background runs need.
+
+### Authentication (anthropic)
+
+Background runs spawn the Claude Code CLI in an isolated session directory (`$MYCO_HOME/agent-sessions`) so agent transcripts never mix with your own sessions. The CLI scopes login state to that directory — **your interactive `claude` login does not carry over**. Provision a headless credential once per machine:
+
+```bash
+claude setup-token   # prints a long-lived token (Pro/Max subscription auth)
+```
+
+Add the token to `$MYCO_HOME/secrets.env` (`~/.myco/secrets.env` by default):
+
+```
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+```
+
+The daemon loads `secrets.env` into the environment and passes the token to every Anthropic-provider run; local-provider runs deliberately never see it. `myco doctor` verifies this under the **Intelligence** check, and a run that fails to authenticate reports this same remediation in its error.
 
 ### Per-task overrides
 
@@ -94,7 +110,7 @@ agent:
 
 | Provider | Type string | Notes |
 |----------|-------------|-------|
-| Anthropic | `anthropic` | Uses your Claude Code OAuth or `ANTHROPIC_API_KEY` |
+| Anthropic | `anthropic` | Needs `CLAUDE_CODE_OAUTH_TOKEN` in `secrets.env` (see [Authentication](#authentication-anthropic)) or `ANTHROPIC_API_KEY` |
 | Ollama | `ollama` | Local models; specify `base_url` if not on the default port |
 | LM Studio | `lmstudio` | Local models via OpenAI-compatible API |
 

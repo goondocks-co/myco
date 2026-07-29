@@ -254,12 +254,16 @@ export interface HarnessScopeRunInput {
  * `'max-turns'` means the configured maxTurns budget was the binding
  * constraint; `'connection'` covers network and provider connectivity
  * errors (dropped connections, refused connections, DNS failures);
+ * `'auth'` means the spawned CLI could not authenticate (no headless
+ * credential in the isolated agent-sessions config dir, or an expired/
+ * revoked token) — map-phase opens its circuit on it exactly like
+ * `'connection'`, because every remaining item would fail the same way;
  * `'other'` is the residual for everything else (unparseable output,
  * tool execution failures, etc.). Cost-audit tooling counts `capHit`
  * separately from generic failures, so this classification matters at
  * the phase checkpoint level.
  */
-export type HarnessErrorKind = 'max-turns' | 'connection' | 'other';
+export type HarnessErrorKind = 'max-turns' | 'connection' | 'auth' | 'other';
 
 export interface HarnessErrorTelemetry {
   usage: RuntimeUsage;

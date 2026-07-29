@@ -12,7 +12,7 @@ import type {
   HarnessScopeSetup,
 } from './types.js';
 import { HarnessExecutionError, type HarnessErrorKind } from './types.js';
-import { isConnectionError } from './classify-error.js';
+import { isConnectionError, isAuthErrorMessage, buildHarnessAuthGuidance } from './classify-error.js';
 import { HARNESS_CLAUDE_SDK } from '@myco/agent/types.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { writeHarnessRedirectEpoch } from './redirect-epoch.js';
@@ -212,8 +212,26 @@ export async function consumeClaudeMessageStream(
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   } catch (err) {
+    const rawMessage = errorMessage(err);
+    // Auth failures happen before the first turn (usage is all zeros), so
+    // they would fall through to the bare rethrow below and surface as the
+    // CLI's "run /login" — advice that cannot work for a harness run, whose
+    // isolated CLAUDE_CONFIG_DIR never sees the interactive login. Wrap
+    // them unconditionally with the headless remediation and kind 'auth' so
+    // map-phase halts its batch instead of failing every item identically.
+    if (isAuthErrorMessage(rawMessage)) {
+      throw new HarnessExecutionError(
+        buildHarnessAuthGuidance(rawMessage, path.join(resolveMycoHome(), 'secrets.env')),
+        {
+          usage: buildUsage(),
+          ...(options.sessionRef ? { sessionRef: options.sessionRef } : {}),
+          kind: 'auth',
+        },
+        { cause: err },
+      );
+    }
     if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
-      const message = errorMessage(err);
+      const message = rawMessage;
       // The Claude SDK throws with the literal message
       // "Reached maximum number of turns (N)" when maxTurns is binding.
       // Classify here so phase-loop doesn't have to regex the message.
@@ -312,6 +330,13 @@ export class ClaudeSdkHarness implements AgentHarness {
   }
 
   classifyError(error: unknown, context?: { attemptedResume?: boolean }) {
+    // Authoritative kind first: the auth wrap's guidance text mentions the
+    // isolated "session directory", which the bare /session/i pattern below
+    // would misread as a resume failure — sending phase-loop into a futile
+    // retry-without-session against the same unauthenticated environment.
+    if (error instanceof HarnessExecutionError && error.telemetry.kind === 'auth') {
+      return 'unknown' as const;
+    }
     const message = errorMessage(error);
     if (
       context?.attemptedResume
