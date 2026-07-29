@@ -20,7 +20,7 @@
  * atomically persists the host-serve leaf without replacing sibling state.
  */
 import { updateTierConfigRaw } from '@myco/config/loader.js';
-import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
+import { isOverlayRangeAddress, isValidOverlayPort } from '@myco/daemon/host-serve.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { getServiceManager } from '@myco/service/manager.js';
 import { serviceLabel } from '@myco/service/labels.js';
@@ -30,6 +30,13 @@ export interface HostServeApply {
   enabled: boolean;
   /** The host's 100.64/10 overlay IP when enabling; null clears it (disable). */
   overlayAddress: string | null;
+  /**
+   * The overlay listener's loopback port / serve-forward port. REQUIRED when
+   * enabling — the daemon refuses to serve without it. This write replaces the
+   * whole `host_serve` leaf, so a field omitted here is DESTROYED; that is why
+   * it is listed explicitly rather than left to merge.
+   */
+  overlayPort?: number | null;
   /** Host identity mirrored into `host_serve` for the enrollment endpoint. */
   hostId?: string | null;
   label?: string | null;
@@ -43,10 +50,16 @@ export interface HostServeApply {
  * listener's downstream bind gate.
  */
 export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = resolveMycoHome()): void {
+  if (apply.enabled && !isValidOverlayPort(apply.overlayPort)) {
+    throw new Error(
+      `Refusing to enable host-serve: overlay_port ${JSON.stringify(apply.overlayPort ?? null)} is not a `
+      + 'valid port. Without it the daemon fails closed and never binds the overlay listener.',
+    );
+  }
   if (apply.enabled && !isOverlayRangeAddress(apply.overlayAddress)) {
     throw new Error(
       `Refusing to enable host-serve: overlay_address ${JSON.stringify(apply.overlayAddress)} is not a `
-      + '100.64.0.0/10 (CGNAT) overlay IP. The daemon overlay listener would refuse to bind it.',
+      + '100.64.0.0/10 (CGNAT) overlay IP. Members would have no address to dial.',
     );
   }
   updateTierConfigRaw({ kind: 'machine' }, (raw) => {
@@ -59,6 +72,7 @@ export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = r
       host_serve: {
         enabled: apply.enabled,
         overlay_address: apply.enabled ? apply.overlayAddress : null,
+        overlay_port: apply.enabled ? (apply.overlayPort ?? null) : null,
         host_id: apply.enabled ? (apply.hostId ?? null) : null,
         label: apply.enabled ? (apply.label ?? null) : null,
         served_grove_id: apply.enabled ? (apply.servedGroveId ?? null) : null,

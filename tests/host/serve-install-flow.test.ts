@@ -192,6 +192,12 @@ describe('hostEnableAndEmitJoin', () => {
         brewBinDirs: [brewDir],
         systemCtx: { launchDaemonsDir, stagingDir: path.join(os.tmpdir(), 'myco-serve-flow-staging') },
         resolveOverlayIp: async () => ips[Math.min(call++, ips.length - 1)],
+        // No real tailscaled is installed by the fake ServiceManager, so its
+        // control socket never appears; skip the bounded wait.
+        hostTailscaledSocketPath: path.join(os.tmpdir(), 'myco-serve-flow-ts', 'host.sock'),
+        hostTailscaledStateDir: path.join(os.tmpdir(), 'myco-serve-flow-ts', 'state'),
+        waitForSocket: async () => true,
+        overlayPort: 41443,
         resolveNodeId: async () => 'node-9',
         verifyOverlayListener: async () => true,
         logger: () => {},

@@ -38,6 +38,7 @@ import { resolveMycoHome } from '../../grove/paths.js';
 import { loadGroveRecord } from '../../grove/registry.js';
 import { countHostedProjects } from '../../host/hosted-projects.js';
 import {
+  formatOverlayAuthority,
   resolveExternalMcpCoherence,
   resolveServedGroveBackupHealth,
   resolveServedGroveDesignationHealth,
@@ -84,6 +85,8 @@ interface HostServeStatusBody {
    *  — the member-attached projects this host has admitted via registration-on-
    *  ingest (E-4 W2 T1). Zero when undesignated/dangling (no served grove). */
   hosted_project_count: number;
+  /** The full `<overlay-ip>:<port>` authority members dial — not a bare IP.
+   *  Composed by the one producer (`formatOverlayAuthority`). */
   overlay_address: string;
   host_id: string | null;
   label: string | null;
@@ -160,7 +163,7 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
       served_grove_id: servedGroveId,
       served_grove_name: servedGroveName,
       hosted_project_count: servedGroveId ? countHostedProjects(servedGroveId, mycoHome) : 0,
-      overlay_address: runtime.overlayAddress,
+      overlay_address: formatOverlayAuthority(runtime.overlayAddress, runtime.overlayPort),
       host_id: runtime.hostId ?? null,
       label: runtime.label ?? null,
       external_mcp: {

@@ -128,9 +128,11 @@ Commands:
   rotate-key [--expiration <dur>]        Mint a fresh one-time key to hand a joining team member.
 
 enable turns THIS machine into a Team Host: it provisions the pinned overlay
-networking binaries, supervises them as root services (they survive reboot),
-joins this host to the overlay, and wires the local daemon to serve your team
-over it. Root is required — you may be prompted for your sudo password.
+networking binaries, joins this host to the overlay, and wires the local daemon
+to serve your team over it. The networking stack runs unprivileged and entirely
+in its own space, so it neither sees nor disturbs a Tailscale you already have
+installed. Sudo is needed for one step only — installing the control plane as a
+system service — so you may be prompted for your password.
 --server-url is the address teammates dial to reach this host.
 
 disable stops serving your team. status prints whether this machine is
@@ -236,8 +238,9 @@ async function main(): Promise<void> {
   if (cmd === 'attach') return (await import('./cli/attach.js')).runAttach(args, resolveVaultDir());
   if (cmd === 'detach') return (await import('./cli/attach.js')).runDetach(args, resolveVaultDir());
 
-  // Team Host operator orchestration — provisions root services and writes
-  // machine-tier config, not a project vault, so like `join`/`attach` it sits
+  // Team Host operator orchestration — provisions the overlay stack (control
+  // plane as a root system service; the networking daemon unprivileged) and
+  // writes machine-tier config, not a project vault, so like `join`/`attach` it sits
   // above the myco.yaml gate and works from any cwd.
   if (cmd === 'host') return (await import('./cli/host.js')).runHostCommand(args);
 

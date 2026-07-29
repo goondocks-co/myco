@@ -211,6 +211,136 @@ export async function checkServedGroveDesignation(mycoHome?: string): Promise<Do
 }
 
 /**
+ * The overlay forward — the ONLY network path to the daemon's overlay
+ * listener since the coexistence move to userspace networking (spec §8.3).
+ *
+ * WHY THIS CHECK EXISTS: before C1 the listener bound the 100.64 TUN address,
+ * so a successful bind was itself evidence that the overlay was up. Now the
+ * listener binds loopback — which always succeeds, even with tailscaled dead
+ * or uninstalled — and reachability depends on a SECOND piece of state living
+ * inside tailscaled: the `serve --tcp` forward. That state can be absent while
+ * everything else reports healthy, so a host can advertise an address no
+ * member can reach, with nothing failing. This is the replacement evidence.
+ *
+ * Machine-global. Reports in BOTH directions: whether a serving host is
+ * reachable, and — the direction that actually leaks — whether a forward
+ * exists for a port this machine does not hold.
+ */
+export async function checkOverlayForward(mycoHome?: string): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { readHostState } = await import('../team-host/state.js');
+  const { resolveHostTailscaledSocketPath } = await import('../grove/paths.js');
+  const { createTailscaleCli } = await import('../host/tailscale-cli.js');
+  const { realCommandRunner } = await import('../host/overlay-binaries.js');
+  const { readServeTcpPorts, isPortHeld } = await import('../daemon/overlay-forward.js');
+
+  const hostServe = loadMachineConfig(mycoHome).daemon.host_serve;
+  const state = readHostState();
+
+  // NOT-SERVING IS THE DANGEROUS DIRECTION, so it cannot be an early return.
+  // A forward aimed at a port nothing holds keeps delivering member requests —
+  // bearer tokens included — to whatever binds that port next. Returning null
+  // here reported "healthy" for exactly the states that produce one.
+  if (!hostServe.enabled) {
+    if (!state?.tailscale_bin) return null;
+    let strayPorts: number[];
+    try {
+      strayPorts = await readServeTcpPorts(createTailscaleCli({
+        runner: realCommandRunner,
+        tailscaleBin: state.tailscale_bin,
+        socketPath: resolveHostTailscaledSocketPath(),
+      }));
+    } catch {
+      return null; // tailscaled is gone; nothing can be forwarding
+    }
+    // Only an UNHELD port is a leak. A held one belongs to something — another
+    // daemon on this machine, a member proxy — and claiming otherwise would be
+    // asserting a fact this check never verified.
+    const heldFlags = await Promise.all(strayPorts.map((p) => isPortHeld(p)));
+    const unheld = strayPorts.filter((_p, i) => !heldFlags[i]);
+    if (unheld.length === 0) return null;
+    return {
+      name: 'Team Host',
+      status: 'warn',
+      detail:
+        `Team Host serving is OFF, but the overlay still forwards ${unheld.join(', ')} to this machine `
+        + 'with nothing listening on those ports — so anything that binds one receives team traffic. '
+        + 'Run `myco host disable` to clear them.',
+      fixable: false,
+    };
+  }
+
+  const port = hostServe.overlay_port;
+  if (port === null) {
+    return {
+      name: 'Team Host',
+      status: 'warn',
+      detail:
+        'Team Host serving is enabled but no overlay port is recorded, so the daemon fails closed and '
+        + 'never binds the overlay listener. Re-run `myco host enable` to allocate one.',
+      fixable: false,
+    };
+  }
+
+  if (!state?.tailscale_bin) {
+    return {
+      name: 'Team Host',
+      status: 'warn',
+      detail:
+        'Team Host serving is enabled but there is no recorded overlay state on this machine, so the '
+        + 'inbound forward cannot be verified. Re-run `myco host enable`.',
+      fixable: false,
+    };
+  }
+
+  let ports: number[];
+  try {
+    ports = await readServeTcpPorts(createTailscaleCli({
+      runner: realCommandRunner,
+      tailscaleBin: state.tailscale_bin,
+      socketPath: resolveHostTailscaledSocketPath(),
+    }));
+  } catch (err) {
+    return {
+      name: 'Team Host',
+      status: 'warn',
+      detail:
+        'Could not read the overlay forward from the host networking service '
+        + `(${(err as Error).message}). Members cannot reach this host while it is down — `
+        + 'check the service, then re-run `myco host enable`.',
+      fixable: false,
+    };
+  }
+
+  // A stray forward BESIDE the right one is still a live channel to an unheld
+  // port, so "the right one exists" is not sufficient.
+  const strayCandidates = ports.filter((p) => p !== port);
+  const strayHeld = await Promise.all(strayCandidates.map((p) => isPortHeld(p)));
+  const strayUnheld = strayCandidates.filter((_p, i) => !strayHeld[i]);
+  if (ports.includes(port)) {
+    if (strayUnheld.length === 0) return null;
+    return {
+      name: 'Team Host',
+      status: 'warn',
+      detail:
+        `The overlay forwards ${strayUnheld.join(', ')} in addition to the port this host serves (${port}), `
+        + 'with nothing listening on the extra port(s) — so anything that binds one receives team traffic. '
+        + 'Re-run `myco host enable` to reconcile.',
+      fixable: false,
+    };
+  }
+  return {
+    name: 'Team Host',
+    status: 'warn',
+    detail:
+      `The overlay listener is bound on port ${port}, but no inbound forward points at it`
+      + (ports.length > 0 ? ` (found ${ports.join(', ')} instead)` : '')
+      + '. This host is advertising an address no member can reach. Re-run `myco host enable` to restore it.',
+    fixable: false,
+  };
+}
+
+/**
  * Served-grove backup staleness — surfaces a served Grove with no successful
  * backup within its configured interval (server-mode design spec §8: "the
  * served grove is the sole copy of all attached-project team knowledge …
@@ -1021,6 +1151,8 @@ export async function runChecks(
   checks.push(...await checkResidencyTransitions());
   const servedGroveDesignation = await checkServedGroveDesignation();
   if (servedGroveDesignation) checks.push(servedGroveDesignation);
+  const overlayForward = await checkOverlayForward();
+  if (overlayForward) checks.push(overlayForward);
   const servedGroveBackupStaleness = await checkServedGroveBackupStaleness();
   if (servedGroveBackupStaleness) checks.push(servedGroveBackupStaleness);
   const servedGroveKeyHealth = await checkServedGroveKeyHealth(undefined, lockNamespace);

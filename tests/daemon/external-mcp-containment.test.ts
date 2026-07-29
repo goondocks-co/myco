@@ -818,6 +818,7 @@ describe('ExternalMcpContainmentAuthority', () => {
     writeHostServeConfig({
       enabled: true,
       overlayAddress: '100.64.0.10',
+      overlayPort: 41443,
     }, fixture.home);
     const offCalls: number[] = [];
     const authority = new ExternalMcpContainmentAuthority({

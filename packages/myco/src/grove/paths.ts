@@ -419,6 +419,38 @@ export function resolveMemberTailscaledSocketPath(hostId: string): string {
   return path.join('/tmp', `myco-td-${uid}-${tag}.sock`);
 }
 
+/**
+ * THIS machine's host-role userspace-tailscaled `--statedir` (Overlay
+ * Coexistence spec C1). Under the host control dir — and, critically, NOT the
+ * vendor's `/var/lib/tailscale`. One per machine: a box serves at most one
+ * Grove.
+ *
+ * NOTE: `host disable` does NOT currently remove this directory; it removes
+ * only headscale's state dir. Removing it is specified as follow-on work
+ * (spec §15) precisely because keeping it pairs a fresh control plane with a
+ * stale node identity. The security consequence — a durable `serve --tcp`
+ * forward surviving in here — is already handled: `hostDisable` retires the
+ * forward explicitly before uninstalling the service.
+ */
+export function resolveHostTailscaledStateDir(): string {
+  return path.join(resolveHostControlDir(), 'tailscaled-state');
+}
+
+/**
+ * THIS machine's host-role userspace-tailscaled `--socket`. HOME-anchored and
+ * short for the same macOS `AF_UNIX` `sun_path` reason as the member's
+ * ({@link resolveMemberTailscaledSocketPath}) — and it shares that directory
+ * without colliding, because member sockets are named by a 10-hex
+ * {@link memberHostTag} and this one is the literal `host`. A machine that both
+ * serves and joins therefore runs both, each on its own socket.
+ */
+export function resolveHostTailscaledSocketPath(): string {
+  const preferred = path.join(resolveHomeDir(), '.myco-ts', 'host.sock');
+  if (Buffer.byteLength(preferred) < 100) return preferred;
+  const uid = process.getuid?.() ?? 0;
+  return path.join('/tmp', `myco-td-${uid}-host.sock`);
+}
+
 export function resolveGroveMetadataPath(groveId: string, mycoHome = resolveMycoHome()): string {
   return path.join(resolveGroveDir(groveId, mycoHome), GROVE_METADATA_FILENAME);
 }

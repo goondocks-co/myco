@@ -86,7 +86,8 @@ describe('GET /api/host-serve/status', () => {
     }, home);
 
     const runtime: HostServeRuntime = {
-      overlayAddress: '100.64.0.1:7433',
+      overlayAddress: '100.64.0.1',
+      overlayPort: 7433,
       bearer: 'test-host-serve-bearer',
       hostId: 'host_abc',
       label: 'Mac Studio',
@@ -119,7 +120,8 @@ describe('GET /api/host-serve/status', () => {
     }, home);
 
     // Zero to start.
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1:7433', bearer: 'b', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
+      overlayPort: 7433, bearer: 'b', servedGroveId: grove.id };
     const before = await createHostServeStatusHandler({ hostServe: runtime, mycoHome: home })(req());
     expect((before.body as { hosted_project_count: number }).hosted_project_count).toBe(0);
 
@@ -148,7 +150,8 @@ describe('GET /api/host-serve/status', () => {
       daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: null } },
     }, home);
 
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1:7433', bearer: 'b' };
+    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
+      overlayPort: 7433, bearer: 'b' };
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home });
     const res = await handler(req());
     const body = res.body as { served_grove_id: string | null; served_grove_name: string | null; health: { designation: string } };
@@ -169,7 +172,8 @@ describe('GET /api/host-serve/status', () => {
     // resolved at boot, when the grove presumably still existed — it can
     // legitimately diverge from the on-disk classifier's fresh read, which is
     // exactly the scenario this route exists to surface.
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1:7433', bearer: 'b', servedGroveId: danglingGroveId };
+    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
+      overlayPort: 7433, bearer: 'b', servedGroveId: danglingGroveId };
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home });
     const res = await handler(req());
     const body = res.body as { served_grove_id: string; served_grove_name: string | null; health: { designation: string } };
@@ -185,7 +189,8 @@ describe('GET /api/host-serve/status', () => {
       ...machine,
       daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id } },
     }, home);
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1:7433', bearer: 'b', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
+      overlayPort: 7433, bearer: 'b', servedGroveId: grove.id };
 
     const boundHandler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home, externalMcp: { listener: { isBound: true } } });
     const boundRes = await boundHandler(req());
@@ -207,7 +212,8 @@ describe('GET /api/host-serve/status', () => {
       ...machine,
       daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id } },
     }, home);
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1:7433', bearer: '   ', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
+      overlayPort: 7433, bearer: '   ', servedGroveId: grove.id };
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home });
     const res = await handler(req());
     expect((res.body as { bearer_present: boolean }).bearer_present).toBe(false);
@@ -236,7 +242,8 @@ describe('GET /api/host-serve/status', () => {
     writeSecret(home, HOST_EXTERNAL_MCP_TOKEN_SECRET, TOKEN_SENTINEL);
 
     const runtime: HostServeRuntime = {
-      overlayAddress: '100.64.0.1:7433', bearer: BEARER_SENTINEL, servedGroveId: grove.id,
+      overlayAddress: '100.64.0.1',
+      overlayPort: 7433, bearer: BEARER_SENTINEL, servedGroveId: grove.id,
     };
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home });
     const res = await handler(req());
@@ -277,7 +284,8 @@ describe('GET /api/host-serve/status', () => {
     const ISOLATION_SENTINEL = 'sk-test-isolation-guard';
     writeSecret(resolveGroveDir(grove.id, home), 'ANTHROPIC_API_KEY', ISOLATION_SENTINEL);
 
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1:7433', bearer: 'b', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
+      overlayPort: 7433, bearer: 'b', servedGroveId: grove.id };
     let clock = 1_700_000_000_000;
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home, now: () => clock, ttlMs: 15_000 });
 
@@ -311,7 +319,8 @@ describe('GET /api/host-serve/status', () => {
       daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id } },
     }, home);
 
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1:7433', bearer: 'b', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
+      overlayPort: 7433, bearer: 'b', servedGroveId: grove.id };
     let loadCount = 0;
     let clock = 1_700_000_000_000;
     const handler = createHostServeStatusHandler({

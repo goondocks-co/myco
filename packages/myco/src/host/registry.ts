@@ -20,8 +20,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
+import { loadMachineConfig } from '@myco/config/loader.js';
+
 import {
   HOST_BEARER_SECRET,
+  HOST_SERVE_OVERLAY_PORT_BASE,
   MEMBER_OVERLAY_PROXY_PORT_BASE,
 } from '@myco/constants.js';
 import {
@@ -787,6 +790,61 @@ function assertClaimMatchesIntent(
  * A retry adopts the exact durable generation and claim token until the
  * enrollment is committed or retired.
  */
+/**
+ * THIS machine's `daemon.host_serve.overlay_port` for `mycoHome`, or null when
+ * it is not serving / has none. The home is threaded rather than ambient: this
+ * repo deliberately runs a dogfood daemon beside prod under two MYCO_HOMEs, so
+ * reading the ambient home would consult the WRONG config — breaking
+ * idempotency (a re-run adopts the other home's port) and allowing a collision
+ * with the port that home already serves. Never throws: an unreadable or malformed machine config
+ * must not break member enrollment, and the worst case of returning null is
+ * the pre-existing behaviour (the two namespaces not seeing each other).
+ */
+function readHostServeOverlayPort(mycoHome?: string): number | null {
+  try {
+    const port = loadMachineConfig(mycoHome).daemon.host_serve.overlay_port;
+    return isValidProxyPort(port) ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Allocate THIS machine's host-serve overlay port — the loopback port the
+ * daemon's overlay listener binds and the `serve --tcp` forward targets.
+ *
+ * Lives HERE, beside {@link reserveHostProxyPort}, deliberately: one module
+ * owns the machine's loopback-port namespace. A second, independent allocator
+ * elsewhere is the two-records-one-fact shape that produced the stranded-lease
+ * class — each allocator would be blind to the other's ports.
+ *
+ * Idempotent: an existing valid `overlay_port` is returned unchanged, so a
+ * re-run of `host enable` keeps serving on the port members already recorded.
+ */
+export function allocateHostServeOverlayPort(
+  mycoHome?: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): number {
+  return withHostRegistryTransaction(lockNamespace, () => {
+    const existing = readHostServeOverlayPort(mycoHome);
+    if (existing !== null) return existing;
+
+    const used = new Set<number>();
+    for (const record of readHostRegistryUnlocked()) {
+      if (isValidProxyPort(record.proxy_port)) used.add(record.proxy_port);
+    }
+    for (const claim of readHostProxyPortClaimsUnlocked()) {
+      if (isValidProxyPort(claim.proxy_port)) used.add(claim.proxy_port);
+    }
+    let port = HOST_SERVE_OVERLAY_PORT_BASE;
+    while (used.has(port)) port += 1;
+    if (!isValidProxyPort(port)) {
+      throw new Error('No host-serve overlay port is available.');
+    }
+    return port;
+  });
+}
+
 export function reserveHostProxyPort(
   hostId: string,
   preferredPort?: number,
@@ -897,6 +955,12 @@ export function reserveHostProxyPort(
     for (const claim of readHostProxyPortClaimsUnlocked()) {
       if (claim.host_id !== hostId) notePortOwner(claim.proxy_port, claim.host_id);
     }
+    // THIS machine's own host-serve overlay port, when it also serves. That
+    // port lives in machine config, not the host registry, so without this the
+    // two loopback-port namespaces cannot see each other and a `myco join` on a
+    // serving box can hand a member the exact port the host already serves on.
+    const servedOverlayPort = readHostServeOverlayPort();
+    if (servedOverlayPort !== null) notePortOwner(servedOverlayPort, 'host-serve');
     const usedByOtherHosts = new Set(portOwners.keys());
 
     let proxyPort: number;
