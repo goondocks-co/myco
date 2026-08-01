@@ -10,7 +10,7 @@ prompt: >-
   The first phase prepares deterministic vault context.
 isDefault: false
 reasoningLevel: default
-maxTurns: 112
+maxTurns: 120
 timeoutSeconds: 4200
 schedule:
   enabled: true
@@ -490,6 +490,21 @@ phases:
       restating their content. The assistant message outside tool calls
       MUST be ≤ 6 lines (counts per action). Durable detail goes through
       `vault_skill_survey_reconciliation_plan`, not the narrative.
+
+      ## Terminal call is mandatory
+
+      This phase MUST end with a stored
+      vault_skill_survey_reconciliation_plan call — the phase
+      postcondition fails the entire run if the state was not written by
+      THIS run. There is no valid path that ends in prose:
+      - Bundle handoff unusable → submit a cleanup-only plan (no Create).
+      - Nothing actionable and no cleanup targets → submit a plan whose
+        reviewed candidates are all Keep/Blocked with brief rationale.
+      - Plan rejected by validation → revise and resubmit; do not stop
+        after a rejection.
+      Budget your turns for it: reserve at least 4 turns for the plan
+      call and possible revisions, and STOP once the tool confirms the
+      stored plan — do not re-verify afterwards.
     purpose: >-
       Writes reconciliation plan state via vault_skill_survey_reconciliation_plan
       for persist-decisions to apply. vault_skill_candidates and
@@ -501,7 +516,7 @@ phases:
       - vault_skill_candidates
       - vault_skill_records
       - vault_skill_survey_reconciliation_plan
-    maxTurns: 22
+    maxTurns: 30
     required: true
     postCondition: skill-survey-reconcile-queue
     dependsOn:

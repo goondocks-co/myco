@@ -146,6 +146,70 @@ const skillWriteFailureCounts = new Map<string, Map<string, number>>();
 /** Consecutive-failure cap per skill per run before deferral triggers. */
 const SKILL_WRITE_FAILURE_CAP = 3;
 
+/**
+ * Property keys the skill lifecycle writes as pure bookkeeping — assessment
+ * timestamps, classification labels, generation watermarks, and content
+ * fingerprints that cannot damage skill content. The union of the sets the
+ * `vault_skill_records` properties schema and the skill-evolve assess
+ * phase's authored purpose document — the live verification run 4c7d7571
+ * failed precisely because this set was first built from the tool schema
+ * docstring alone and missed `last_assessed_generation` and
+ * `file_fingerprints`, which the assess prompt also writes.
+ */
+export const SKILL_RECORD_BOOKKEEPING_KEYS: ReadonlySet<string> = new Set([
+  'last_assessed_at',
+  'knowledge_watermark',
+  'last_verified_at',
+  'last_classification',
+  'last_assessed_generation',
+  'file_fingerprints',
+]);
+
+/** Key-aware bookkeeping value shapes: `file_fingerprints` is a flat
+ *  path→hash map; every other bookkeeping key holds a primitive. */
+function isBookkeepingValue(key: string, value: unknown): boolean {
+  if (key === 'file_fingerprints') {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+    return Object.values(value as Record<string, unknown>).every(
+      (entry) => typeof entry === 'string' || typeof entry === 'number',
+    );
+  }
+  return typeof value === 'number' || typeof value === 'string';
+}
+
+/**
+ * True for a `vault_skill_records` update that is provably bookkeeping-only:
+ * no status/generation/source_ids/description mutation, and a `properties`
+ * payload whose keys all fall in SKILL_RECORD_BOOKKEEPING_KEYS with
+ * bookkeeping-shaped values. Such calls skip the semantic-check classifier
+ * (see MycoToolDefinition.nonDestructiveCall) — a per-call model judgment
+ * passed one and blocked two IDENTICAL watermark updates in the same phase
+ * (run 9638588f), which is exactly the nondeterminism a deterministic
+ * predicate exists to remove. Anything outside the provable shape falls
+ * through to classification.
+ */
+export function isBookkeepingSkillRecordUpdate(args: Record<string, unknown>): boolean {
+  if (args.action !== 'update') return false;
+  if (
+    args.status !== undefined
+    || args.generation !== undefined
+    || args.source_ids !== undefined
+    || args.description !== undefined
+  ) return false;
+  if (typeof args.properties !== 'string') return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(args.properties);
+  } catch {
+    return false;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  return entries.every(([key, value]) =>
+    SKILL_RECORD_BOOKKEEPING_KEYS.has(key) && isBookkeepingValue(key, value));
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -1686,6 +1750,11 @@ export function createSkillTools(deps: VaultToolDeps) {
     // call on this multi-action tool is never classified. See
     // MycoToolDefinition.destructiveActions in tools/types.ts.
     destructiveActions: ['update', 'delete'],
+    // Bookkeeping watermark updates are provably harmless from their args
+    // alone — the classifier must never sit in judgment of them (it passed
+    // one and blocked two IDENTICAL updates in run 9638588f, failing the
+    // whole skill-evolve run). See isBookkeepingSkillRecordUpdate.
+    nonDestructiveCall: isBookkeepingSkillRecordUpdate,
   };
 
   const vaultScanSkillContamination = tool(

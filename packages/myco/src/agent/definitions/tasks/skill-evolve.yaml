@@ -299,7 +299,8 @@ phases:
          notes.
       3. Final assistant text <= 4 lines, no narrative walkthrough.
     purpose: >-
-      Writes STALE/MERGE/NARROW classification updates to vault_skill_records
+      Writes classification updates (CURRENT, STALE, MERGE, or NARROW — every
+      assessed skill gets one, healthy skills included) to vault_skill_records
       properties (last_assessed_at, knowledge_watermark, last_classification,
       last_assessed_generation, file_fingerprints) for assessed skills.
       vault_skill_candidates is read-only triage input in this phase — it is

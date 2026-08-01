@@ -48,6 +48,25 @@ export interface MycoToolDefinition<TInput = any> {
    */
   destructiveActions?: string[];
   /**
+   * Deterministic args-shape narrowing for calls where `action` alone is
+   * too coarse: return true when THIS call is provably non-destructive and
+   * must skip the semantic-check classifier entirely. Evaluated by
+   * `wrapToolWithSemanticCheck` after the `destructiveActions` narrowing.
+   *
+   * Exists because the classifier is a per-call model judgment and
+   * therefore nondeterministic on identical inputs: skill-evolve's assess
+   * phase made three identical bookkeeping `vault_skill_records` updates
+   * (watermark timestamps only) and the classifier passed one and blocked
+   * two, failing the run (run 9638588f, 2026-08-01). Writes whose
+   * harmlessness is decidable from their arguments belong to a
+   * deterministic predicate in tool code, not to a model.
+   *
+   * Must be pure and never throw; the caller treats a thrown predicate as
+   * `false` (the call proceeds to classification — fail toward checking,
+   * never toward bypass).
+   */
+  nonDestructiveCall?: (args: Record<string, unknown>) => boolean;
+  /**
    * Deterministic argument normalization applied by `createVaultTools()`
    * as the OUTERMOST wrapper — before audit-event recording, dry-run
    * write-intent capture, the semantic-check classifier, and the real

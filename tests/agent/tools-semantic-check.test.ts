@@ -381,6 +381,55 @@ describe('semantic write check', () => {
     expect(classifyArgs.toolArgs).toMatchObject({ action: 'delete' });
   });
 
+  it('skips the classifier for bookkeeping-only vault_skill_records updates (nonDestructiveCall args-shape narrowing)', async () => {
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      projectRoot: tmpDir,
+      vaultDir,
+      semanticCheckEnabled: true,
+      harnessId: 'claude-sdk',
+      model: 'claude-haiku-4-5-20251001',
+      classifierReasoningLevel: 'low',
+      phasePurpose: { name: 'assess', promptExcerpt: 'Assess skills and persist watermarks.' },
+    });
+
+    const records = findTool(tools, 'vault_skill_records');
+    // The exact shape from run 9638588f, where the classifier passed one
+    // and blocked two identical calls: watermark-only properties merge.
+    await records.handler({
+      action: 'update',
+      id: 'nonexistent',
+      properties: '{"last_assessed_at": 1785552074, "knowledge_watermark": 1785552074, "last_classification": "CURRENT"}',
+    }, undefined);
+
+    expect(mockClassify).not.toHaveBeenCalled();
+  });
+
+  it('still classifies a vault_skill_records update that carries content-bearing fields alongside bookkeeping', async () => {
+    mockClassify.mockImplementation(async () => ({ verdict: 'ok' as const, reason: null }));
+
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      projectRoot: tmpDir,
+      vaultDir,
+      semanticCheckEnabled: true,
+      harnessId: 'claude-sdk',
+      model: 'claude-haiku-4-5-20251001',
+      classifierReasoningLevel: 'low',
+      phasePurpose: { name: 'assess', promptExcerpt: 'Assess skills and persist watermarks.' },
+    });
+
+    const records = findTool(tools, 'vault_skill_records');
+    await records.handler({
+      action: 'update',
+      id: 'nonexistent',
+      status: 'retired',
+      properties: '{"last_assessed_at": 1785552074}',
+    }, undefined);
+
+    expect(mockClassify).toHaveBeenCalledTimes(1);
+  });
+
   it('never invokes the classifier when the feature is disabled (default)', async () => {
     const batch = seedBatch();
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
