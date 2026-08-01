@@ -4657,5 +4657,69 @@ describe('vault skill tools', () => {
       expect(res.error).toContain('Invalid skill name');
       expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills'))).toBe(false);
     });
+
+    it('GATE: full agent skill lifecycle (create → evolve → edit → delete) leaves .agents/skills byte-identical', async () => {
+      // The gate that fails if anyone reintroduces an agent-path disk write —
+      // including a new call site that bypasses the removed publish wrappers.
+      function snapshotTree(root: string): Array<[string, string]> {
+        if (!fs.existsSync(root)) return [];
+        const out: Array<[string, string]> = [];
+        const walk = (dir: string): void => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) walk(full);
+            else out.push([path.relative(root, full), fs.readFileSync(full, 'utf-8')]);
+          }
+        };
+        walk(root);
+        return out;
+      }
+
+      // Seed a materialized skill dir to prove even existing files are untouched.
+      const seededDir = path.join(tmpDir, '.agents', 'skills', 'seeded');
+      fs.mkdirSync(seededDir, { recursive: true });
+      fs.writeFileSync(path.join(seededDir, 'SKILL.md'), 'seeded content', 'utf-8');
+      const before = snapshotTree(path.join(tmpDir, '.agents', 'skills'));
+
+      const writeTool = findTool(tools, 'vault_write_skill');
+      const created = parseResult(await writeTool.handler(
+        {
+          name: 'gate-lifecycle',
+          display_name: 'Gate Lifecycle',
+          description: 'Full lifecycle must never touch the project tree',
+          content: validSkillContent('gate-lifecycle', '# Gate\n\ngen one line.'),
+        },
+        undefined,
+      )) as { id?: string; error?: string };
+      expect(created.error).toBeUndefined();
+
+      const evolved = parseResult(await writeTool.handler(
+        {
+          name: 'gate-lifecycle',
+          display_name: 'Gate Lifecycle',
+          description: 'Full lifecycle must never touch the project tree',
+          content: validSkillContent('gate-lifecycle', '# Gate\n\ngen two line.'),
+        },
+        undefined,
+      )) as { generation?: number; error?: string };
+      expect(evolved.error).toBeUndefined();
+      expect(evolved.generation).toBe(2);
+
+      const editTool = findTool(tools, 'vault_edit_skill');
+      const edited = parseResult(await editTool.handler(
+        { name: 'gate-lifecycle', edits: [{ old_string: 'gen two line.', new_string: 'gen three line.' }] },
+        undefined,
+      )) as { generation?: number; error?: string };
+      expect(edited.error).toBeUndefined();
+
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const deleted = parseResult(await recordsTool.handler(
+        { action: 'delete', id: created.id },
+        undefined,
+      )) as { deleted?: boolean };
+      expect(deleted.deleted).toBe(true);
+
+      expect(snapshotTree(path.join(tmpDir, '.agents', 'skills'))).toEqual(before);
+    });
   });
 });
