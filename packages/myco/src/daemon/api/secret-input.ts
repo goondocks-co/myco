@@ -31,8 +31,25 @@ export function normalizeRawSecretInput(
 ): NormalizedSecretInput {
   if (typeof raw !== 'string') return { ok: false, response: missingResponse };
 
+  // Strip HORIZONTAL whitespace (spaces/tabs) everywhere, not just the
+  // ends. No credential this normalizer handles (API keys, PATs, OAuth
+  // tokens, team keys) legitimately contains spaces — but a token copied
+  // from a soft-wrapped terminal arrives with spaces at the wrap columns.
+  // Verified live: a wrapped `claude setup-token` paste stored four
+  // interior spaces, and every harness run failed 401 while Settings and
+  // doctor showed green. Repairing at this boundary (the single choke
+  // point for machine and team secret writes) makes that paste shape
+  // impossible to store broken.
+  //
+  // Line-structure characters (\n, \r) are deliberately NOT repaired:
+  // they are the secrets.env injection alphabet ("valid\nINJECTED=owned"),
+  // and the validation below must keep rejecting them outright — an
+  // attack-shaped input gets an error, never a silent rewrite.
+  const value = raw.replace(/[ \t]+/g, '');
+  if (!value) return { ok: false, response: missingResponse };
+
   try {
-    assertValidSecretEntry(envKey, raw);
+    assertValidSecretEntry(envKey, value);
   } catch (error) {
     if (error instanceof InvalidSecretValueError) {
       return {
@@ -46,8 +63,5 @@ export function normalizeRawSecretInput(
     throw error;
   }
 
-  const value = raw.trim();
-  return value
-    ? { ok: true, value }
-    : { ok: false, response: missingResponse };
+  return { ok: true, value };
 }
