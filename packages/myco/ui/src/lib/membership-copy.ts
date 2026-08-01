@@ -189,7 +189,8 @@ export const ATTACH_CONFIRM_LABEL = 'Connect to team';
 /** Detach confirmation (D-F-4). */
 export const DETACH_CONFIRM_TITLE = 'Disconnect this project?';
 export const DETACH_CONFIRM_COPY =
-  'Disconnect this project. Everything your machine contributed comes back; the team keeps its copy.';
+  "Disconnect this project. The project's knowledge, as of this moment, comes back to this machine "
+  + '(saved as a backup too); the team keeps its copy.';
 export const DETACH_CONFIRM_LABEL = 'Disconnect';
 
 /** Second-stage detach copy when the host refused with
@@ -214,8 +215,12 @@ export function residencyProgressHeadline(direction: ResidencyDirection | undefi
 const RESIDENCY_PHASE_LABELS: Record<ResidencyPhase, string> = {
   parking: 'backing up',
   pushing: 'moving',
+  // Retired pre-hybrid detach phases — renderable for a stale journal from an
+  // older build, never produced by this version.
   pulling: 'retrieving',
   applying: 'restoring',
+  fetching: 'retrieving',
+  restoring: 'restoring',
   rehoming: 'finishing',
 };
 

@@ -1,24 +1,31 @@
 /**
- * Residency detach-pull, member side (Phase F T4). Covers the detachCommand
- * with-pull path + its refusals, the full drain round trip (pull → staging →
- * flip → re-materialize → apply → re-home → purge → done), crash-resume, the
- * allow_no_pull fallback, post-flip freshness, staging cleanup, and that
- * suppression-divert stays active through the window.
+ * Residency detach, member side — the HYBRID delivery (artifact fetch →
+ * restore → flip → re-home → goodbye). Covers the detachCommand begin path +
+ * its refusals, the full drain round trip against a REAL artifact (built by
+ * the real backup engine, digest-verified), transfer-contract refusals
+ * (digest mismatch, host errors), crash-resume at the restoring phase, the
+ * retired-phase refusal, abort-before-flip, goodbye durability (marker retry),
+ * suppression-divert through the window, and the failure-honesty surfaces
+ * (fresh-phase stamps, stall notification) carried over from the pre-hybrid
+ * drain.
  *
- * The pull server, host-target resolver, and apply engine are injected seams, so
- * the member discipline is exercised without a real host or the shared engine.
+ * The artifact server and goodbye sink are injected seams; the restore runs
+ * through the REAL backup engine into the ambient test DB.
  */
 import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { stringify } from 'smol-toml';
+import { Database as BunDatabase } from 'bun:sqlite';
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase, type Database } from '@myco/db/client.js';
 import { clearProjectManifestCache } from '@myco/config/project-manifest.js';
-import { createGroveId, createHostId, createProjectId, type GroveProjectId } from '@myco/grove/ids.js';
+import { createSchema } from '@myco/db/schema.js';
+import { createGroveId, createHostId, createProjectId, assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 import { resolveProjectBufferDir, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
   clearGroveRegistryCaches,
@@ -35,8 +42,6 @@ import {
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { abortResidency, beginDetachResidency, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import {
-  appendResidencyStagingRows,
-  listResidencyStagingTables,
   readResidencyJournal,
   startResidencyJournal,
   writeResidencyJournal,
@@ -44,13 +49,13 @@ import {
 import {
   countResidencyInFlight,
   runResidencyTransitions,
-  type ApplyStagedRows,
-  type ResidencyPullResponse,
-  type ResidencyPullTransport,
+  type DetachArtifactClient,
+  type DetachGoodbyeTransport,
   type ResolveResidencyTarget,
 } from '@myco/host/residency-drain.js';
+import { neutralizeArtifactLineage } from '@myco/host/routed-residency-detach.js';
+import { DETACH_ARTIFACT_TABLES, createBackup, projectScope } from '@myco/backup/engine.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
-import { applyResidencyRows } from '@myco/db/queries/residency-apply.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const { attachProject, resolveAttach } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -103,22 +108,67 @@ function targetResolver(protocol = 3): ResolveResidencyTarget {
   });
 }
 
-/** A pull server that returns the given pages in order, then done. */
-function pagingPull(pages: { table: string; row: Record<string, unknown> }[][]): {
-  transport: ResidencyPullTransport;
-  calls: (string | null)[];
-} {
-  const calls: (string | null)[] = [];
-  let idx = 0;
-  const transport: ResidencyPullTransport = async (_target, body): Promise<ResidencyPullResponse> => {
-    calls.push(body.cursor);
-    const rows = pages[idx] ?? [];
-    const done = idx >= pages.length - 1;
-    const next_cursor = done ? null : `c${idx + 1}`;
-    idx += 1;
-    return { status: 200, rows, next_cursor, done };
+/** Build a REAL detach artifact (via the real backup engine) from rows seeded
+ *  into a throwaway source DB, and serve it through the prepare/chunk client
+ *  seam. `tamperArtifact` mutates the content BEFORE hashing (digest still
+ *  matches — for restore-failure tests); `tamperSha` breaks the advertised
+ *  digest (for transfer-contract tests). `chunkBytes` forces multi-chunk
+ *  transfers. */
+function artifactServer(
+  projectId: string,
+  seed: (db: BunDatabase) => void,
+  opts: { tamperArtifact?: (a: string) => string; tamperSha?: string; chunkBytes?: number; prepareStatus?: number } = {},
+): { client: DetachArtifactClient; prepares: number; chunks: number[] } {
+  const state = { artifact: null as string | null, sha: '', size: 0 };
+  const tracker = { client: undefined as unknown as DetachArtifactClient, prepares: 0, chunks: [] as number[] };
+  const build = (): void => {
+    const src = new BunDatabase(':memory:');
+    createSchema(src, 'host');
+    src.run('PRAGMA foreign_keys = OFF');
+    seed(src);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-artifact-srv-'));
+    try {
+      const dump = createBackup(src, dir, 'host-machine', projectScope(assertGroveProjectId(projectId)), 'detach', DETACH_ARTIFACT_TABLES);
+      let artifact = neutralizeArtifactLineage(fs.readFileSync(dump, 'utf-8'));
+      if (opts.tamperArtifact) artifact = opts.tamperArtifact(artifact);
+      state.artifact = artifact;
+      state.sha = opts.tamperSha ?? createHash('sha256').update(artifact, 'utf-8').digest('hex');
+      state.size = Buffer.byteLength(artifact, 'utf-8');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   };
-  return { transport, calls };
+  tracker.client = {
+    prepare: async () => {
+      tracker.prepares += 1;
+      if (opts.prepareStatus && opts.prepareStatus !== 200) {
+        return { status: opts.prepareStatus, ready: false, sha256: null, size: null };
+      }
+      if (state.artifact === null) build();
+      return { status: 200, ready: true, sha256: state.sha, size: state.size };
+    },
+    chunk: async (_t, _m, offset, sha256) => {
+      tracker.chunks.push(offset);
+      if (state.artifact === null || sha256 !== state.sha) {
+        return { status: 200, chunk: null, next_offset: null, restart: true };
+      }
+      const bytes = Buffer.from(state.artifact, 'utf-8');
+      const len = Math.min(opts.chunkBytes ?? bytes.length, bytes.length - offset);
+      const next = offset + len < bytes.length ? offset + len : null;
+      return { status: 200, chunk: bytes.subarray(offset, offset + len), next_offset: next, restart: false };
+    },
+  };
+  return tracker;
+}
+
+function goodbyeSink(status = 200): { transport: DetachGoodbyeTransport; calls: number[]; setStatus: (s: number) => void } {
+  const calls: number[] = [];
+  let current = status;
+  return {
+    transport: async () => { calls.push(current); return { status: current }; },
+    calls,
+    setStatus: (s: number) => { current = s; },
+  };
 }
 
 /** Attach a project to `host` (records the ref, no local row). */
@@ -127,14 +177,30 @@ function attachRef(host: HostRecord, projectId: string, root: string, localGrove
   attachProject(host.host_id, ref, home);
 }
 
-/** Seed a diverted capture buffer file under the host Grove (as the hook would
- *  during the window) so the re-home step has something to move. */
 function seedDivertedBuffer(host: HostRecord, projectId: string, sessionId: string): string {
   const dir = resolveProjectBufferDir(host.served_grove_id!, projectId, home);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${sessionId}.jsonl`);
   fs.writeFileSync(file, '{"event":"x"}\n', 'utf-8');
   return file;
+}
+
+function seedSessionRow(db: BunDatabase, id: string, projectId: string, machineId: string): void {
+  db.prepare(
+    `INSERT INTO sessions (id, agent, project_id, started_at, status, created_at, machine_id)
+     VALUES (?, 'claude', ?, 1, 'active', 1, ?)`,
+  ).run(id, projectId, machineId);
+}
+
+function seedSporeRow(db: BunDatabase, id: string, projectId: string, machineId: string): void {
+  db.prepare(
+    `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, machine_id)
+     VALUES (?, ?, 'myco-agent', 'decision', 'from-host', 1, ?)`,
+  ).run(id, projectId, machineId);
+}
+
+function localCount(table: string, id: string): number {
+  return (getDatabase().prepare(`SELECT COUNT(*) c FROM ${table} WHERE id = ?`).get(id) as { c: number }).c;
 }
 
 beforeAll(() => { setupTestDb(); });
@@ -161,31 +227,36 @@ afterEach(() => {
   clearProjectManifestCache();
 });
 
-describe('detachCommand — pull path validation', () => {
-  test('with the daemon capability + a ready host, writes a pulling journal and returns "pull started" (ref not yet flipped)', () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
+/** Begin a detach via the real command; returns ids + local grove. */
+function beginDetach(): { projectId: string; localId: string; host: HostRecord; root: string } {
+  const local = createGrove('Local', home);
+  const host = makeHost(3);
+  writeHostRecordFixture(host);
+  const projectId = createProjectId();
+  const root = makeCheckout(projectId);
+  attachRef(host, projectId, root, local.id);
+  detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
+  return { projectId, localId: local.id, host, root };
+}
 
-    const result = detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
+// ---------------------------------------------------------------------------
+// (1) Begin path + refusals
+// ---------------------------------------------------------------------------
 
-    expect(result.detachedFromHostId).toBe(host.host_id);
+describe('detachCommand — begin path validation', () => {
+  test('with the daemon capability + a ready host, opens a fetching journal (ref not yet flipped)', () => {
+    const { projectId, localId } = beginDetach();
     const journal = readResidencyJournal(projectId);
     expect(journal?.direction).toBe('detach');
-    expect(journal?.phase).toBe('pulling');
-    expect(journal?.target_grove_id).toBe(local.id);
-    // The ref is still present — the drain flips it once the pull completes.
-    expect(resolveAttach(projectId)).not.toBeNull();
+    expect(journal?.phase).toBe('fetching');
+    expect(journal?.target_grove_id).toBe(localId);
+    expect(resolveAttach(projectId)).not.toBeNull(); // the drain flips later
   });
 
   test('a rootless legacy ref refuses up-front with residency_detach_needs_root', () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
     const projectId = createProjectId();
-    // Seed a ref with NO root (a pre-root legacy record).
     writeHostRecordFixture({ ...host, projects: [{ grove_id: host.served_grove_id!, project_id: projectId, local_grove_id: local.id }] });
     const root = makeCheckout(projectId);
 
@@ -200,7 +271,7 @@ describe('detachCommand — pull path validation', () => {
 
   test('a host below the residency protocol refuses with residency_pull_unavailable (ref untouched)', () => {
     const local = createGrove('Local', home);
-    const host = makeHost(2); // predates the pull
+    const host = makeHost(2);
     writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
@@ -216,7 +287,7 @@ describe('detachCommand — pull path validation', () => {
     expect(readResidencyJournal(projectId)).toBeNull();
   });
 
-  test('allow_no_pull against an old host runs a plain detach: ref removed, no journal, no pull', () => {
+  test('allow_no_pull against an old host runs a plain detach: ref removed, no journal', () => {
     createGrove('Local', home);
     const host = makeHost(2);
     writeHostRecordFixture(host);
@@ -225,504 +296,318 @@ describe('detachCommand — pull path validation', () => {
     attachRef(host, projectId, root, createGroveId());
 
     const result = detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach, allowNoPull: true });
-
     expect(result.detachedFromHostId).toBe(host.host_id);
-    expect(resolveAttach(projectId)).toBeNull(); // plain flip happened
-    expect(readResidencyJournal(projectId)).toBeNull(); // no transition
+    expect(resolveAttach(projectId)).toBeNull();
+    expect(readResidencyJournal(projectId)).toBeNull();
   });
 });
 
-describe('detach drain — round trip', () => {
-  test('pulls pages to staging, flips, re-materializes, applies, re-homes buffered events, purges, and finishes', async () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
-    const bufferFile = seedDivertedBuffer(host, projectId, 'sess_div');
+// ---------------------------------------------------------------------------
+// (2) The hybrid round trip
+// ---------------------------------------------------------------------------
 
-    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
+describe('detach drain — hybrid round trip', () => {
+  test('fetches the artifact, restores, flips, re-homes, says goodbye, and finishes', async () => {
+    const { projectId, localId, host } = beginDetach();
+    const bufferFile = seedDivertedBuffer(host, projectId, 'sess_div');
     expect(countResidencyInFlight()).toBe(1);
 
-    const { transport, calls } = pagingPull([
-      [{ table: 'spores', row: { id: 'sp_pull', project_id: projectId } }],
-      [{ table: 'sessions', row: { id: 'sess_pull', project_id: projectId } }],
-    ]);
-    const applied: { table: string; ids: unknown[] }[] = [];
-    const applyStagedRows: ApplyStagedRows = (_db, table, rows) => applied.push({ table, ids: rows.map((r) => r.id) });
+    const server = artifactServer(projectId, (db) => {
+      seedSessionRow(db, 's_team', projectId, 'member-b'); // another member's session — the WHOLE project comes back
+      seedSporeRow(db, 'sp_team', projectId, 'host-machine');
+    });
+    const goodbye = goodbyeSink();
 
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows });
-
-    // Pull resumed page-by-page from the journal cursor.
-    expect(calls).toEqual([null, 'c1']);
-    // Apply saw both staged tables in FK-topological order (sessions before
-    // spores per RESIDENCY_TABLE_ORDER) — NOT the readdirSync/pull order.
-    expect(applied.map((a) => a.table)).toEqual(['sessions', 'spores']);
-    expect(applied.find((a) => a.table === 'spores')?.ids).toEqual(['sp_pull']);
-
-    // Flip: ref removed, local Grove row re-materialized.
-    expect(resolveAttach(projectId)).toBeNull();
-    const reMaterialized = findRegisteredProjectById(projectId, home);
-    expect(reMaterialized?.grove.id).toBe(local.id);
-
-    // Re-home: the diverted buffer file moved to the local Grove buffer dir.
-    expect(fs.existsSync(bufferFile)).toBe(false);
-    expect(fs.existsSync(path.join(resolveProjectBufferDir(local.id, projectId, home), 'sess_div.jsonl'))).toBe(true);
-
-    // Journal + staging cleared.
-    expect(readResidencyJournal(projectId)).toBeNull();
-    expect(listResidencyStagingTables(projectId).state).toBe('absent');
-    expect(countResidencyInFlight()).toBe(0);
-  });
-
-  test('an unreadable staging tree stops the apply — nothing is applied, nothing is cleared', async () => {
-    // The destruction path: on a read failure the staging dir enumerates as
-    // empty, the apply consumes zero rows, and the tree is deleted — taking the
-    // entire pulled dataset with it, under a "transition complete" log.
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
-
-    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
-
-    // Stage one page, then stall so the journal stays pre-apply.
-    let call = 0;
-    const stallingPull = async () => {
-      call += 1;
-      if (call === 1) {
-        return { status: 200, rows: [{ table: 'spores', row: { id: 'sp_a', project_id: projectId } }], next_cursor: 'c1', done: false };
-      }
-      return { status: 503, rows: [], next_cursor: null, done: false };
-    };
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: stallingPull as never, resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
-
-    const stagingDir = path.join(teamHome, 'residency', `${projectId}-staging`);
-    expect(fs.existsSync(stagingDir)).toBe(true);
-    fs.chmodSync(stagingDir, 0o000); // deny enumeration
-
-    try {
-      const finishingPull = async () => ({ status: 200, rows: [], next_cursor: null, done: true });
-      const applied: string[] = [];
-      await runResidencyTransitions({
-        ...baseDeps(),
-        pullTransport: finishingPull as never,
-        resolveHostTarget: targetResolver(),
-        applyStagedRows: (_db, table) => { applied.push(table); },
-      });
-
-      expect(applied).toEqual([]); // nothing applied off an unreadable tree
-      expect(readResidencyJournal(projectId)).not.toBeNull(); // the retry path survives
-      expect(fs.existsSync(stagingDir)).toBe(true); // and so does the data
-    } finally {
-      fs.chmodSync(stagingDir, 0o700); // restore so the fixture can clean up
-    }
-  });
-
-  test('a staging tree holding fewer lines than the pull recorded refuses to apply', async () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
-
-    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
-
-    // Pull one page, then stop before the apply by refusing the second page.
-    let call = 0;
-    const stallingPull = async () => {
-      call += 1;
-      if (call === 1) {
-        return { status: 200, rows: [{ table: 'spores', row: { id: 'sp_a', project_id: projectId } }], next_cursor: 'c1', done: false };
-      }
-      return { status: 503, rows: [], next_cursor: null, done: false };
-    };
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: stallingPull as never, resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
-
-    const journal = readResidencyJournal(projectId);
-    expect(journal?.phase).toBe('pulling');
-    expect(journal?.staged_rows).toBe(1); // the durable count the apply will check
-
-    // Truncate the staged file behind the drain's back, then let the pull finish.
-    const stagingDir = path.join(teamHome, 'residency', `${projectId}-staging`);
-    fs.writeFileSync(path.join(stagingDir, 'spores.ndjson'), '', 'utf-8');
-
-    const finishingPull = async () => ({ status: 200, rows: [], next_cursor: null, done: true });
-    const applied: string[] = [];
     await runResidencyTransitions({
       ...baseDeps(),
-      pullTransport: finishingPull as never,
+      detachArtifactClient: server.client,
+      detachGoodbyeTransport: goodbye.transport,
       resolveHostTarget: targetResolver(),
-      applyStagedRows: (_db, table) => { applied.push(table); },
     });
 
-    // Nothing applied, nothing cleared — the journal survives as the retry path.
-    expect(applied).toEqual([]);
-    const after = readResidencyJournal(projectId);
-    expect(after).not.toBeNull();
-    expect(after?.last_error).toContain('staging holds');
-    expect(resolveAttach(projectId)).toBeNull(); // the flip had already run
-  });
-
-  test('an abort mid-pull stops before the flip: the project stays attached, no local row, staging cleared', async () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
-    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
-    const deps = baseDeps();
-
-    // A concurrent Cancel fires during the pull await — clears journal + staging,
-    // leaves the ref attached (nothing flipped).
-    const racingPull: ResidencyPullTransport = async () => {
-      abortResidency(projectId, deps);
-      return { status: 200, rows: [{ table: 'spores', row: { id: 'sp1', project_id: projectId } }], next_cursor: null, done: true };
-    };
-
-    await runResidencyTransitions({ ...deps, pullTransport: racingPull, resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
-
-    expect(resolveAttach(projectId)).not.toBeNull(); // still attached — the flip bailed
-    expect(findRegisteredProjectById(projectId, home)).toBeNull(); // no local Grove row re-materialized
-    expect(readResidencyJournal(projectId)).toBeNull(); // aborted
-    expect(listResidencyStagingTables(projectId).state).toBe('absent'); // guard stopped re-staging after abort cleared it
-  });
-
-  test('a failed pull does not advance: the journal stays pulling and the ref survives', async () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
-    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
-
-    const failing: ResidencyPullTransport = async () => ({ status: 503, rows: [], next_cursor: null, done: false });
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: failing, resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
-
-    expect(readResidencyJournal(projectId)?.phase).toBe('pulling');
-    expect(resolveAttach(projectId)).not.toBeNull(); // never flipped
-  });
-});
-
-describe('detach drain — crash-resume + freshness', () => {
-  test('resumes an applying journal idempotently (re-materialize converges, re-apply is safe)', async () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    // Simulate a crash AFTER the pull completed but before apply: journal in
-    // `pulling` with the pull already done, ref still attached, staging present.
-    writeHostRecordFixture(host);
-    attachRef(host, projectId, root, local.id);
-    startResidencyJournal({
-      direction: 'detach', phase: 'pulling', host_id: host.host_id, project_id: projectId,
-      divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: local.id,
-      project_name: 'demo', root, backup_ref: null, cursors: { pull: 'done' },
-    });
-    // Staged rows are present (the pull completed before the crash).
-    appendResidencyStagingRows(projectId, [{ table: 'spores', row: { id: 'sp_staged', project_id: projectId } }]);
-
-    let applyCount = 0;
-    const run = () => runResidencyTransitions({
-      ...baseDeps(),
-      pullTransport: async () => ({ status: 200, rows: [], next_cursor: null, done: true }),
-      resolveHostTarget: targetResolver(),
-      applyStagedRows: () => { applyCount += 1; },
-    });
-
-    await run();
-    // A redundant second tick must not error even though the journal is gone.
-    await run();
-
+    // Restored: the team's knowledge landed locally, whatever machine wrote it.
+    expect(localCount('sessions', 's_team')).toBe(1);
+    expect(localCount('spores', 'sp_team')).toBe(1);
+    // Flip: ref removed, local Grove row re-materialized.
     expect(resolveAttach(projectId)).toBeNull();
-    expect(findRegisteredProjectById(projectId, home)?.grove.id).toBe(local.id);
-    expect(readResidencyJournal(projectId)).toBeNull();
-    expect(applyCount).toBe(1); // only the first tick had a live journal to apply
-  });
-
-  test('crash mid-sweep (journal in rehoming) resumes and finishes the re-home — zero orphaned files', async () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    // Post-flip state: journal left in `rehoming` by a crash before the sweep
-    // completed, with a diverted buffer file still under the host Grove.
-    const bufferFile = seedDivertedBuffer(host, projectId, 'sess_orphan');
-    startResidencyJournal({
-      direction: 'detach', phase: 'rehoming', host_id: host.host_id, project_id: projectId,
-      divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: local.id,
-      project_name: 'demo', root, backup_ref: null, cursors: { pull: 'done' },
-    });
-
-    await runResidencyTransitions({ ...baseDeps(), resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
-
-    // The residual buffered file was re-homed; nothing orphaned; journal cleared.
+    expect(findRegisteredProjectById(projectId, home)?.grove.id).toBe(localId);
+    // Re-home: the diverted buffer file moved to the local Grove buffer dir.
     expect(fs.existsSync(bufferFile)).toBe(false);
-    expect(fs.existsSync(path.join(resolveProjectBufferDir(local.id, projectId, home), 'sess_orphan.jsonl'))).toBe(true);
+    expect(fs.existsSync(path.join(resolveProjectBufferDir(localId, projectId, home), 'sess_div.jsonl'))).toBe(true);
+    // Goodbye delivered once; journal cleared; nothing in flight.
+    expect(goodbye.calls).toHaveLength(1);
     expect(readResidencyJournal(projectId)).toBeNull();
     expect(countResidencyInFlight()).toBe(0);
   });
 
-  test('integration: the real shared apply engine lands pulled rows into the local Grove (production seam)', async () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
-    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
-
-    const { transport } = pagingPull([[{
-      table: 'spores',
-      row: { id: 'sp_new', project_id: projectId, agent_id: 'user', observation_type: 'note', content: 'from-host', created_at: 1, updated_at: 1, machine_id: 'local' },
-    }]]);
-
-    // The exact production wiring from main.ts — the real engine, one transaction.
-    const applyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[], projectId: string) => { applyResidencyRows(db, table, rows, { expectedProjectId: projectId }, {}); };
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows });
-
-    const landed = getDatabase().prepare(`SELECT content FROM spores WHERE id = 'sp_new'`).get() as { content: string } | undefined;
-    expect(landed?.content).toBe('from-host');
-    expect(readResidencyJournal(projectId)).toBeNull(); // completed
+  test('the artifact survives as a real backup in the target grove backup dir', async () => {
+    const { projectId, localId } = beginDetach();
+    const server = artifactServer(projectId, (db) => { seedSporeRow(db, 'sp1', projectId, 'm'); });
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(),
+    });
+    const backupDir = path.join(home, 'groves', localId, 'backups');
+    const artifacts = fs.existsSync(backupDir) ? fs.readdirSync(backupDir).filter((f) => f.includes('__detach-')) : [];
+    expect(artifacts.length).toBe(1);
   });
 
-  test('apply orders staged tables FK-topologically through the real engine (parents before children, one transaction)', async () => {
-    const local = createGrove('Local', home);
-    const host = makeHost();
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
-    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
-
-    // A page with CHILDREN before their PARENTS: prompt_batches.session_id →
-    // sessions and entity_mentions.entity_id → entities. Applied in readdirSync
-    // order (alphabetical: entities, entity_mentions, prompt_batches, sessions)
-    // prompt_batches would insert before sessions and the FK transaction would
-    // roll back and wedge. RESIDENCY_TABLE_ORDER must fix it.
-    const { transport } = pagingPull([[
-      { table: 'entity_mentions', row: { project_id: projectId, entity_id: 'ent_r', note_id: 'sess_r', note_type: 'session', agent_id: 'user', machine_id: 'local' } },
-      { table: 'prompt_batches', row: { id: 'pbatch_r', project_id: projectId, session_id: 'sess_r', created_at: 1, machine_id: 'local' } },
-      { table: 'entities', row: { id: 'ent_r', project_id: projectId, agent_id: 'user', type: 'file', name: 'n', first_seen: 1, last_seen: 1, machine_id: 'local' } },
-      { table: 'sessions', row: { id: 'sess_r', project_id: projectId, agent: 'claude-code', started_at: 1, created_at: 1, machine_id: 'local' } },
-    ]]);
-
-    const applyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[], projectId: string) => { applyResidencyRows(db, table, rows, { expectedProjectId: projectId }, {}); };
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows });
-
-    // Both FK-children landed → their parents were applied first (else the whole
-    // immediate-FK transaction would have thrown and left the journal stuck).
-    expect(getDatabase().prepare(`SELECT id FROM prompt_batches WHERE id = 'pbatch_r'`).get()).toBeTruthy();
-    expect(getDatabase().prepare(`SELECT entity_id FROM entity_mentions WHERE entity_id = 'ent_r'`).get()).toBeTruthy();
-    expect(readResidencyJournal(projectId)).toBeNull(); // completed, not wedged
-  });
-
-  test('post-flip freshness: a newer local row survives the apply of an older host snapshot', async () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
-
-    // A newer local row already in the DB (post-flip live capture). FK off so the
-    // seed needs no agents row.
+  test('an existing newer local row survives the restore of an older team snapshot (local wins)', async () => {
+    const { projectId } = beginDetach();
     const db = getDatabase();
     db.run('PRAGMA foreign_keys = OFF');
-    db.prepare(
-      `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, updated_at, machine_id)
-       VALUES ('sp_x', ?, 'user', 'note', 'local-new', 1, 200, 'local')`,
-    ).run(projectId);
-    db.run('PRAGMA foreign_keys = ON');
+    try {
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, machine_id)
+         VALUES ('sp_live', ?, 'myco-agent', 'decision', 'fresh-local', 1, 'local')`,
+      ).run(projectId);
+    } finally { db.run('PRAGMA foreign_keys = ON'); }
 
-    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
-
-    // Pull an OLDER snapshot of the same row from the host.
-    const { transport } = pagingPull([[{
-      table: 'spores',
-      row: { id: 'sp_x', project_id: projectId, agent_id: 'user', observation_type: 'note', content: 'host-old', created_at: 1, updated_at: 100, machine_id: 'local' },
-    }]]);
-
-    // A faithful if-newer-by-updated_at apply (the shared engine's rule for spores).
-    const ifNewer: ApplyStagedRows = (db, table, rows) => {
-      for (const row of rows) {
-        const existing = db.prepare(`SELECT updated_at FROM ${table} WHERE id = ?`).get(row.id) as { updated_at: number | null } | undefined;
-        if (existing && Number(row.updated_at ?? 0) <= Number(existing.updated_at ?? 0)) continue;
-        db.prepare(`UPDATE ${table} SET content = ?, updated_at = ? WHERE id = ?`).run(row.content, Number(row.updated_at ?? 0), row.id);
-      }
-    };
-
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows: ifNewer });
-
-    const survived = getDatabase().prepare(`SELECT content, updated_at FROM spores WHERE id = 'sp_x'`).get() as { content: string; updated_at: number };
-    expect(survived.content).toBe('local-new'); // the newer local row won
-    expect(survived.updated_at).toBe(200);
+    const server = artifactServer(projectId, (db) => {
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, machine_id)
+         VALUES ('sp_live', ?, 'myco-agent', 'decision', 'stale-host-copy', 1, 'member-b')`,
+      ).run(projectId);
+    });
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(),
+    });
+    const content = (getDatabase().prepare(`SELECT content FROM spores WHERE id = 'sp_live'`).get() as { content: string }).content;
+    expect(content).toBe('fresh-local'); // INSERT OR IGNORE — existing rows win
   });
 });
 
-describe('detach — suppression during the window', () => {
-  test('a live detach journal diverts capture to the host Grove (events buffer there, re-homed at the end)', () => {
-    const host = makeHost(3);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    startResidencyJournal({
-      direction: 'detach', phase: 'pulling', host_id: host.host_id, project_id: projectId,
-      divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: createGroveId(),
-      project_name: 'demo', root, backup_ref: null, cursors: {},
+// ---------------------------------------------------------------------------
+// (3) Transfer contract + failure honesty
+// ---------------------------------------------------------------------------
+
+describe('detach drain — transfer contract + failure honesty', () => {
+  test('a digest mismatch is refused whole — journal stays fetching, then a clean fetch converges', async () => {
+    const { projectId } = beginDetach();
+    const bad = artifactServer(projectId, (db) => { seedSporeRow(db, 'sp1', projectId, 'm'); }, { tamperSha: 'f'.repeat(64) });
+    const goodbye = goodbyeSink();
+
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: bad.client,
+      detachGoodbyeTransport: goodbye.transport, resolveHostTarget: targetResolver(),
     });
-
-    const resolved = ensureProjectRegistered(root, home, testPerUserLockNamespace);
-    expect(resolved?.grove.id).toBe(host.served_grove_id);
-    expect(resolved?.project.project_id).toBe(projectId);
-  });
-
-  test('a rehoming journal does NOT divert — new capture resolves to the (re-materialized) local Grove', () => {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    // Post-flip: the local Grove row is live again; the journal is in the terminal
-    // sweep. Divert must be OFF so a fresh hook lands locally, not in the host buffer.
-    registerProjectInGrove(local.id, { projectId, projectName: 'demo', projectRoot: root }, home);
-    clearGroveRegistryCaches();
-    startResidencyJournal({
-      direction: 'detach', phase: 'rehoming', host_id: host.host_id, project_id: projectId,
-      divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: local.id,
-      project_name: 'demo', root, backup_ref: null, cursors: { pull: 'done' },
-    });
-
-    const resolved = ensureProjectRegistered(root, home, testPerUserLockNamespace);
-    expect(resolved?.grove.id).toBe(local.id); // local, not the host divert grove
-    expect(resolved?.grove.id).not.toBe(host.served_grove_id);
-  });
-});
-
-describe('detach drain — failure honesty (phase, stamps, stall surface)', () => {
-  /** Drive a detach to the point where the pull is complete and the flip +
-   *  apply are next: begun via the real command, one staged page. */
-  function beginPulledDetach(): { projectId: string; localId: string } {
-    const local = createGrove('Local', home);
-    const host = makeHost(3);
-    writeHostRecordFixture(host);
-    const projectId = createProjectId();
-    const root = makeCheckout(projectId);
-    attachRef(host, projectId, root, local.id);
-    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
-    return { projectId, localId: local.id };
-  }
-
-  test('a crash AFTER the flip keeps the durable phase at applying — a stale pass snapshot can never regress it to pulling', async () => {
-    const { projectId } = beginPulledDetach();
-    const { transport } = pagingPull([[{ table: 'spores', row: { id: 'sp_1', project_id: projectId } }]]);
-
-    // The apply throws OUT of runDetachTransition (a SQLITE_BUSY shape), so the
-    // failure is recorded by the OUTER pass catch — which holds the journal as
-    // it looked at pass start: `pulling`. The durable journal has moved through
-    // the flip to `applying` in between.
-    const crash: ApplyStagedRows = () => { throw new Error('database is locked'); };
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows: crash });
-
     const journal = readResidencyJournal(projectId);
-    expect(journal?.phase).toBe('applying'); // NOT 'pulling' — the flip's durable record must stand
-    expect(journal?.last_error).toContain('database is locked');
-    // The flip itself happened: the attach ref is gone.
-    expect(resolveAttach(projectId)).toBeNull();
+    expect(journal?.phase).toBe('fetching');
+    expect(journal?.last_error).toContain('digest');
+    expect(localCount('spores', 'sp1')).toBe(0); // nothing durable happened
+    expect(resolveAttach(projectId)).not.toBeNull();
 
-    // And the retry converges: next tick applies and finishes.
-    const applied: string[] = [];
-    const collect: ApplyStagedRows = (_db, table) => { applied.push(table); };
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows: collect });
-    expect(applied).toContain('spores');
+    const good = artifactServer(projectId, (db) => { seedSporeRow(db, 'sp1', projectId, 'm'); });
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: good.client,
+      detachGoodbyeTransport: goodbye.transport, resolveHostTarget: targetResolver(),
+    });
+    expect(localCount('spores', 'sp1')).toBe(1);
     expect(readResidencyJournal(projectId)).toBeNull();
+  });
+
+  test('a host error stays in fetching with a stamped failure', async () => {
+    const { projectId } = beginDetach();
+    const failing = artifactServer(projectId, () => {}, { prepareStatus: 500 }).client;
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: failing,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(),
+    });
+    const journal = readResidencyJournal(projectId);
+    expect(journal?.phase).toBe('fetching');
+    expect(journal?.last_error).toContain('500');
   });
 
   test('a host below the residency protocol stamps last_error instead of skipping silently', async () => {
-    const { projectId } = beginPulledDetach();
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: pagingPull([]).transport, resolveHostTarget: targetResolver(2) });
+    const { projectId } = beginDetach();
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: artifactServer(projectId, () => {}).client,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(2),
+    });
     const journal = readResidencyJournal(projectId);
-    expect(journal?.phase).toBe('pulling'); // untouched — retry when the host updates
+    expect(journal?.phase).toBe('fetching');
     expect(journal?.last_error).toContain('below the residency protocol');
   });
 
   test('a missing host record stamps last_error instead of skipping silently', async () => {
-    const { projectId } = beginPulledDetach();
-    const gone: ResolveResidencyTarget = () => undefined as never;
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: pagingPull([]).transport, resolveHostTarget: gone });
+    const { projectId } = beginDetach();
+    const gone: ResolveResidencyTarget = () => null;
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: artifactServer(projectId, () => {}).client,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: gone,
+    });
+    expect(readResidencyJournal(projectId)?.last_error).toContain('host record');
+  });
+
+  test('a failed restore keeps the durable phase at restoring — never regressed to fetching', async () => {
+    const { projectId } = beginDetach();
+    const server = artifactServer(projectId, (db) => { seedSporeRow(db, 'sp1', projectId, 'm'); });
+    const goodbye = goodbyeSink();
+
+    const broken = artifactServer(projectId, (db) => { seedSporeRow(db, 'sp1', projectId, 'm'); },
+      { tamperArtifact: (a) => a + '\nINSERT INTO no_such_table (x) VALUES (1);\n' });
+    await runResidencyTransitions({
+      ...baseDeps(),
+      detachArtifactClient: broken.client,
+      detachGoodbyeTransport: goodbye.transport,
+      resolveHostTarget: targetResolver(),
+    });
     const journal = readResidencyJournal(projectId);
-    expect(journal?.phase).toBe('pulling');
-    expect(journal?.last_error).toContain('host record');
+    expect(journal?.phase).toBe('restoring'); // NOT fetching — the artifact landed; the restore is what failed
+    expect(journal?.last_error).toBeTruthy();
+    expect(localCount('spores', 'sp1')).toBe(0); // atomic restore: nothing partial
+
+    // Repair the artifact file in place; the retry converges from `restoring`.
+    const artifactPath = readResidencyJournal(projectId)!.backup_ref!;
+    fs.writeFileSync(artifactPath, fs.readFileSync(artifactPath, 'utf-8').replace(/\nINSERT INTO no_such_table[^\n]*\n/, '\n'), 'utf-8');
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: goodbye.transport, resolveHostTarget: targetResolver(),
+    });
+    expect(localCount('spores', 'sp1')).toBe(1);
+    expect(readResidencyJournal(projectId)).toBeNull();
   });
 
-  test('an old, currently-failing transition raises the stall surface exactly once per interval — and a young one never does', async () => {
-    const { projectId } = beginPulledDetach();
-    const failing: ResidencyPullTransport = async () => ({ status: 500, rows: [], next_cursor: null, done: false });
-    const stalls: { projectId: string; ms: number }[] = [];
-    const notify = (journal: { project_id: string }, ms: number) =>
-      { stalls.push({ projectId: journal.project_id, ms }); };
-
-    // Young transition + fresh failure: the age gate must hold — a large
-    // first pull failing early is not a stall.
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: failing, resolveHostTarget: targetResolver(), notifyStalledTransition: notify });
-    const stamped = readResidencyJournal(projectId);
-    expect(stamped?.last_error).toContain('500');
-    expect(stalls).toHaveLength(0);
-
-    // Age the transition past the stall threshold, keeping it failing.
-    writeResidencyJournal({ ...stamped!, created_at: new Date(Date.now() - 40 * 60 * 1000).toISOString() });
-
-    // The stall check runs AFTER this pass's own failed attempt, against the
-    // stamp the pass just wrote — so it fires regardless of drain cadence.
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: failing, resolveHostTarget: targetResolver(), notifyStalledTransition: notify });
-    expect(stalls).toHaveLength(1);
-    expect(stalls[0]!.projectId).toBe(projectId);
-    expect(stalls[0]!.ms).toBeGreaterThanOrEqual(30 * 60 * 1000);
-
-    // Still stalled on the next tick — but inside the re-notify interval, so silent.
-    await runResidencyTransitions({ ...baseDeps(), pullTransport: failing, resolveHostTarget: targetResolver(), notifyStalledTransition: notify });
-    expect(stalls).toHaveLength(1);
+  test('a lost artifact at restoring goes BACK to fetching rather than wedging', async () => {
+    const { projectId } = beginDetach();
+    const journal = readResidencyJournal(projectId)!;
+    writeResidencyJournal({ ...journal, phase: 'restoring', backup_ref: '/nowhere/gone.sql' });
+    const server = artifactServer(projectId, (db) => { seedSporeRow(db, 'sp2', projectId, 'm'); });
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(),
+    });
+    // First pass re-routes to fetching; a second pass completes the round trip.
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(),
+    });
+    expect(localCount('spores', 'sp2')).toBe(1);
+    expect(readResidencyJournal(projectId)).toBeNull();
   });
+});
 
-  test('an old transition whose attempt did NOT fail this pass stays silent — a stale stamp is not a stall', async () => {
-    // A journal shape the drain no-ops (attach direction in a non-attach
-    // phase): the pass makes no attempt and writes no stamp, so the only
-    // failure evidence is the OLD stamp — the freshness gate must reject it.
+// ---------------------------------------------------------------------------
+// (4) Retired phases + abort
+// ---------------------------------------------------------------------------
+
+describe('detach drain — retired phases + abort', () => {
+  test('a pulling journal from an older build is refused with guidance, never progressed', async () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
     writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
-    registerProjectInGrove(local.id, { projectId, projectName: 'demo', projectRoot: root }, home);
-    clearGroveRegistryCaches();
     startResidencyJournal({
-      direction: 'attach', phase: 'pulling', host_id: host.host_id, project_id: projectId,
-      divert_grove_id: host.served_grove_id!, source_grove_id: local.id,
+      direction: 'detach', phase: 'pulling', host_id: host.host_id, project_id: projectId,
+      divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: local.id,
       project_name: 'demo', root, backup_ref: null, cursors: {},
     });
-    const journal = readResidencyJournal(projectId)!;
-    writeResidencyJournal({
-      ...journal,
-      created_at: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
-      last_error: 'old failure',
-      last_error_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-    });
-
-    const stalls: unknown[] = [];
     await runResidencyTransitions({
-      ...baseDeps(),
-      pullTransport: pagingPull([]).transport,
-      resolveHostTarget: targetResolver(),
-      notifyStalledTransition: (j) => { stalls.push(j); },
+      ...baseDeps(), detachArtifactClient: artifactServer(projectId, () => {}).client,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(),
     });
-    expect(stalls).toHaveLength(0);
+    const journal = readResidencyJournal(projectId);
+    expect(journal?.phase).toBe('pulling'); // untouched
+    expect(journal?.last_error).toContain('older version');
+    // The user's way out still works: abort accepts the retired phase.
+    expect(abortResidency(projectId, baseDeps())).toEqual({ ok: true });
   });
 
-  test('a failed re-home preserves the journal in rehoming — the buffered events keep their retry path', async () => {
+  test('an abort mid-fetching stops before the flip: still attached, no local row', async () => {
+    const { projectId } = beginDetach();
+    expect(abortResidency(projectId, baseDeps())).toEqual({ ok: true });
+    expect(readResidencyJournal(projectId)).toBeNull();
+    expect(resolveAttach(projectId)).not.toBeNull();
+    expect(findRegisteredProjectById(projectId, home)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (5) Goodbye durability
+// ---------------------------------------------------------------------------
+
+describe('detach drain — goodbye durability', () => {
+  test('an unreachable host never blocks completion; the goodbye retries from a durable marker', async () => {
+    const { projectId } = beginDetach();
+    const server = artifactServer(projectId, (db) => { seedSporeRow(db, 'sp1', projectId, 'm'); });
+    const goodbye = goodbyeSink(200);
+
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: async () => { throw new Error('unreachable'); },
+      resolveHostTarget: targetResolver(),
+    });
+    // The detach itself completed — data local, journal gone, nothing held.
+    expect(localCount('spores', 'sp1')).toBe(1);
+    expect(readResidencyJournal(projectId)).toBeNull();
+    // The marker survives for the pass-level retry…
+    const dir = path.join(teamHome, 'residency');
+    expect(fs.readdirSync(dir).some((f) => f === `goodbye-${projectId}.json`)).toBe(true);
+
+    // …and a later pass with a reachable host consumes it.
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: goodbye.transport, resolveHostTarget: targetResolver(),
+    });
+    expect(goodbye.calls.length).toBeGreaterThanOrEqual(1);
+    expect(fs.readdirSync(dir).some((f) => f === `goodbye-${projectId}.json`)).toBe(false);
+  });
+
+  test('an unresolved membership KEEPS the marker; positive host absence drops it', async () => {
+    const { projectId, host } = beginDetach();
+    const server = artifactServer(projectId, (db) => { seedSporeRow(db, 'sp1', projectId, 'm'); });
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: async () => { throw new Error('unreachable'); },
+      resolveHostTarget: targetResolver(),
+    });
+    const dir = path.join(teamHome, 'residency');
+    const markerName = `goodbye-${projectId}.json`;
+    expect(fs.readdirSync(dir)).toContain(markerName);
+
+    // Membership unresolved (target null) but the host's durable dir exists —
+    // e.g. a mid-rotation snapshot. The marker must survive.
+    const hostDir = path.join(teamHome, 'hosts', host.host_id);
+    fs.mkdirSync(hostDir, { recursive: true });
+    const gone: ResolveResidencyTarget = () => null;
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: gone,
+    });
+    expect(fs.readdirSync(dir)).toContain(markerName);
+
+    // Positive absence (the user left the host; its dir is gone) drops it.
+    fs.rmSync(hostDir, { recursive: true, force: true });
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: server.client,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: gone,
+    });
+    expect(fs.readdirSync(dir)).not.toContain(markerName);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (6) Suppression through the window
+// ---------------------------------------------------------------------------
+
+describe('detach — suppression during the window', () => {
+  test('a live fetching journal diverts capture to the host Grove', () => {
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    startResidencyJournal({
+      direction: 'detach', phase: 'fetching', host_id: host.host_id, project_id: projectId,
+      divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: local.id,
+      project_name: 'demo', root, backup_ref: null, cursors: {},
+    });
+    const resolved = ensureProjectRegistered(root, home, testPerUserLockNamespace);
+    expect(resolved?.grove.id).toBe(host.served_grove_id);
+  });
+
+  test('a rehoming journal does NOT divert — new capture resolves local', () => {
     const local = createGrove('Local', home);
     const host = makeHost(3);
     const projectId = createProjectId();
@@ -732,22 +617,46 @@ describe('detach drain — failure honesty (phase, stamps, stall surface)', () =
     startResidencyJournal({
       direction: 'detach', phase: 'rehoming', host_id: host.host_id, project_id: projectId,
       divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: local.id,
-      project_name: 'demo', root, backup_ref: null, cursors: { pull: 'done' },
+      project_name: 'demo', root, backup_ref: null, cursors: {},
     });
-    // Seed a buffered file, then deny enumeration of the divert buffer dir —
-    // an undetermined read must NOT count as "nothing buffered".
-    const fromDir = resolveProjectBufferDir(host.served_grove_id!, projectId, home);
-    fs.mkdirSync(fromDir, { recursive: true });
-    fs.writeFileSync(path.join(fromDir, 'sess_x.jsonl'), '{"event":"x"}\n', 'utf-8');
-    fs.chmodSync(fromDir, 0o000); // deny enumeration
-    try {
-      await runResidencyTransitions({ ...baseDeps(), pullTransport: pagingPull([]).transport, resolveHostTarget: targetResolver() });
-    } finally {
-      fs.chmodSync(fromDir, 0o700); // restore so the fixture can clean up
-    }
+    const resolved = ensureProjectRegistered(root, home, testPerUserLockNamespace);
+    expect(resolved?.grove.id).toBe(local.id);
+  });
+});
 
-    const journal = readResidencyJournal(projectId);
-    expect(journal?.phase).toBe('rehoming'); // NOT cleared — the journal is the retry path
-    expect(journal?.last_error).toBeTruthy();
+// ---------------------------------------------------------------------------
+// (7) Stall surface (carried from the pre-hybrid drain)
+// ---------------------------------------------------------------------------
+
+describe('detach drain — stall surface', () => {
+  test('an old, currently-failing transition raises the stall surface once per interval — a young one never does', async () => {
+    const { projectId } = beginDetach();
+    const failing = artifactServer(projectId, () => {}, { prepareStatus: 500 }).client;
+    const stalls: string[] = [];
+    const notify = (journal: { project_id: string }) => { stalls.push(journal.project_id); };
+
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: failing,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(),
+      notifyStalledTransition: notify,
+    });
+    expect(stalls).toHaveLength(0); // young + failing → silent (age gate)
+
+    const stamped = readResidencyJournal(projectId)!;
+    writeResidencyJournal({ ...stamped, created_at: new Date(Date.now() - 40 * 60 * 1000).toISOString() });
+
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: failing,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(),
+      notifyStalledTransition: notify,
+    });
+    expect(stalls).toEqual([projectId]);
+
+    await runResidencyTransitions({
+      ...baseDeps(), detachArtifactClient: failing,
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(),
+      notifyStalledTransition: notify,
+    });
+    expect(stalls).toEqual([projectId]); // inside the re-notify interval
   });
 });

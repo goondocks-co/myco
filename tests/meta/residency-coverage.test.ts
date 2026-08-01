@@ -21,7 +21,7 @@ import path from 'node:path';
 import { Database } from 'bun:sqlite';
 
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
-import { BACKUP_TABLES, createBackup, restoreBackup, projectScope } from '@myco/backup/engine.js';
+import { BACKUP_TABLES, DETACH_ARTIFACT_TABLES, createBackup, restoreBackup, projectScope } from '@myco/backup/engine.js';
 import { RESIDENCY_TABLE_ORDER } from '@myco/db/queries/residency-apply.js';
 import { createSchema } from '@myco/db/schema.js';
 
@@ -66,7 +66,7 @@ describe('residency per-direction coverage (R2/R5)', () => {
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-coverage-'));
     try {
-      const dump = createBackup(source, dir, 'machine_test', projectScope(PROJ), 'coverage');
+      const dump = createBackup(source, dir, 'machine_test', projectScope(PROJ), 'coverage', DETACH_ARTIFACT_TABLES);
 
       const target = new Database(':memory:');
       createSchema(target, 'local');

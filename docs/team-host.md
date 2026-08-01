@@ -38,13 +38,13 @@ The move is honest about what travels: sessions from before you connected keep t
 
 ## Disconnect a project
 
-`myco detach [path]`, or the **Detach** control next to a connected project on the Team page, routes that project back to local-only. Your machine's own contributions come back to you, and the team keeps its copy — disconnecting is a copy-out, not a handover, so nothing the team already learned from the project is lost. Future work on that project stays on your machine until you connect it again.
+`myco detach [path]`, or the **Detach** control next to a connected project on the Team page, brings that project back to local-only. The project's knowledge — everything the team has learned in it, as of the moment you disconnect — comes back to this machine, and a backup copy of it is saved alongside your other backups. The team keeps its copy too: disconnecting is a copy-out, not a handover, so nothing the team already learned from the project is lost. The move finishes in the background (watch the Team page); new work goes local once it lands.
 
 If the host is on an older version of Myco that can't return your data yet, Myco tells you and lets you disconnect anyway — that stops the project routing to team storage right away, without pulling your contributions back. Update the host, then disconnect again to retrieve them.
 
 ## Keeping Myco up to date
 
-When you update Myco across the team, update the host first, then the members. A member that updates ahead of the host keeps working — its captured work waits on that machine and delivers as soon as the host catches up, so nothing is lost — but connecting a project with history, or disconnecting to pull your data back, needs the host on the newer version first.
+Finish (or cancel) any in-flight project move before updating either machine — a move started on an older version can't be continued by a newer one; it will ask you to cancel and start it again. When you update Myco across the team, update the host first, then the members. A member that updates ahead of the host keeps working — its captured work waits on that machine and delivers as soon as the host catches up, so nothing is lost — but connecting a project with history, or disconnecting to pull your data back, needs the host on the newer version first.
 
 ## Team settings and the agent key
 

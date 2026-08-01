@@ -380,7 +380,7 @@ describe('Joined hosts list', () => {
     // dialog's own Disconnect is pressed.
     fireEvent.click(screen.getByRole('button', { name: /detach proj_x/i }));
     expect(detachMutateAsync).not.toHaveBeenCalled();
-    expect(screen.getByText(/Everything your machine contributed comes back/)).toBeInTheDocument();
+    expect(screen.getByText(/knowledge, as of this moment, comes back/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     await waitFor(() => expect(detachMutateAsync).toHaveBeenCalledWith({ project_root: '/checkout', project_id: 'proj_x' }));

@@ -100,7 +100,7 @@ describe('myco attach / myco detach (daemon API fallback)', () => {
       endpoint: '/api/host-membership/detach',
       body: { project_root: path.resolve('/checkout'), project_id: undefined },
     });
-    expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Detached proj_x from Team Host host_abc'))).toBe(true);
+    expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Disconnect started for proj_x (from Team Host host_abc)'))).toBe(true);
   });
 
   it('detach on an unattached project reports "nothing to detach" without exiting non-zero', async () => {

@@ -318,7 +318,12 @@ export type ResidencyDirection = 'attach' | 'detach';
 
 /** Coarse step a residency round trip is on (wire order roughly matches this
  *  order per direction). Rendered as a friendly label in the UI, never raw. */
-export type ResidencyPhase = 'parking' | 'pushing' | 'pulling' | 'applying' | 'rehoming';
+export type ResidencyPhase = 'parking' | 'pushing' | 'pulling' | 'applying' | 'fetching' | 'restoring' | 'rehoming';
+
+/** Mirror of the daemon's ABORTABLE_RESIDENCY_PHASES (residency-journal.ts) —
+ *  pinned equal by tests/ui/host-tab-abortable-parity.test.ts so the Cancel
+ *  control can never offer a cancel the daemon refuses. */
+export const ABORTABLE_RESIDENCY_PHASES: ReadonlySet<string> = new Set(['parking', 'pushing', 'fetching', 'pulling']);
 
 /**
  * `GET /api/host-membership/residency-status?project_id=…` (localhost member
