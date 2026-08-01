@@ -90,14 +90,17 @@ export function requireGenerationReadyCandidate(
 
 export function emitSkillNotification(
   vaultDir: string | undefined,
-  kind: 'created' | 'evolved',
+  kind: 'created' | 'evolved' | 'retired',
   opts: { name: string; display_name: string; description: string; recordId: string; generation: number },
 ): void {
+  const message = kind === 'retired'
+    ? `${opts.display_name} was retired — its file remains in your project; remove it with a commit when ready.`
+    : opts.description.slice(0, 120);
   notify(vaultDir, {
     domain: 'skills',
-    type: kind === 'created' ? 'skill.created' : 'skill.evolved',
+    type: `skill.${kind}`,
     title: `Skill ${kind}: ${opts.display_name}`,
-    message: opts.description.slice(0, 120),
+    message,
     link: `/skills?skill=${encodeURIComponent(opts.name)}`,
     metadata: { skillId: opts.recordId, name: opts.name, generation: opts.generation },
   });
