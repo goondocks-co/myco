@@ -94,4 +94,10 @@ export function isOperationUnfinished(evidence: LeaseEvidence): boolean {
  * `tests/grove/project-lease-liveness.test.ts` so the two cannot drift apart
  * silently.
  */
-const MOVE_TERMINAL_PHASES: ReadonlySet<string> = new Set(['completed', 'failed']);
+// `cleaned` is terminal IN EFFECT: by then the target is registered, the
+// source deregistered, identity rewritten, and source rows deleted — all that
+// remains is a symmetry no-op resume and the marker stamp. Treating it as
+// non-terminal left a SIGKILL in that two-line window holding the lease
+// forever with no reachable resume (both entrypoints derive the source from
+// the now-flipped registration and refuse a same-Grove move).
+export const MOVE_TERMINAL_PHASES: ReadonlySet<string> = new Set(['cleaned', 'completed', 'failed']);

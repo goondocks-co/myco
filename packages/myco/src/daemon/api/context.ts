@@ -300,12 +300,17 @@ export function createSubagentContextHandler(deps: ContextDeps) {
         return { body: { text: '' } };
       }
       const text = composed.text;
-      const projectId = rowProjectIdFromRequestContext(req.requestContext);
 
+      // Injection bookkeeping binds the CALLER's project identity (same
+      // convention as the session-start handler above), not the first-gen
+      // row-helper mapping that folds legacy contexts to NULL — session rows
+      // are stamped with the caller's project id, and the session-ownership
+      // guard in injection-records refuses a writer whose id disagrees with
+      // the session's owner.
       try {
         ensureSessionRowExists({
           sessionId: session_id,
-          projectId: typeof projectId === 'string' ? projectId : null,
+          projectId: requestProjectId,
           projectRoot: req.requestContext?.projectRoot ?? null,
           machineId: req.requestContext?.machineId ?? 'local',
           logger,
@@ -316,7 +321,7 @@ export function createSubagentContextHandler(deps: ContextDeps) {
       const discriminator = subagentDiscriminator(agent_id, agent_type);
       const { suppress } = await recordInjectionAndShouldSuppress({
         sessionId: session_id,
-        projectId: typeof projectId === 'string' ? projectId : null,
+        projectId: requestProjectId,
         injectionType: 'subagent',
         discriminator,
         trigger: {
@@ -389,7 +394,6 @@ export function createResumeContextHandler(deps: ContextDeps) {
   return async function handleResumeContext(req: RouteRequest): Promise<RouteResponse> {
     const { session_id, parent_session_id, branch } = ResumeContextBody.parse(req.body);
     const { logger } = deps;
-    const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const scope = projectScopeFromRequestContext(req.requestContext);
 
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Resume context query', {
@@ -475,7 +479,12 @@ export function createPromptContextHandler(deps: ContextDeps) {
     // Resolve the embedding manager for the caller's grove (per-request).
     const embeddingManager = deps.resolveEmbeddingManager(req.requestContext);
     const config = resolveTenantConfig(req.requestContext, liveConfig.current, { logger });
+    // READ filtering keeps the first-gen row-helper mapping (legacy context →
+    // NULL project rows); injection-bookkeeping WRITES bind the caller's
+    // project identity so they agree with session-row stamping and pass the
+    // session-ownership guard in injection-records.
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    const writerProjectId = req.requestContext?.projectId ?? null;
     const scope = projectScopeFromRequestContext(req.requestContext);
 
     // Coarse master gate at the handler boundary. Suppresses spore search and
@@ -499,7 +508,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
       enabled: config.cortex.plans.inject_intent_nudge_on_prompt_submit,
       prompt,
       sessionId: session_id,
-      projectId: typeof projectId === 'string' ? projectId : null,
+      projectId: writerProjectId,
     });
     const respond = (sporeText: string): RouteResponse => ({
       body: { text: [sporeText, nudgeText].filter(Boolean).join('\n\n') },
@@ -630,7 +639,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
     if (text && session_id) {
       const { suppress } = await recordInjectionAndShouldSuppress({
         sessionId: session_id,
-        projectId: typeof projectId === 'string' ? projectId : null,
+        projectId: writerProjectId,
         injectionType: 'spores',
         discriminator: hashPromptDiscriminator(prompt),
         trigger: {

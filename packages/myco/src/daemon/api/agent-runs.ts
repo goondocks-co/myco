@@ -42,7 +42,8 @@ import { serializeRun } from './run-serializer.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
-import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
+import { mutationScopeFromRequestContext,
+  projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 
@@ -546,7 +547,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
   /** POST /api/agent/runs/:id/resume — resume a failed/interrupted run. */
   async function handleResumeRun(req: RouteRequest): Promise<RouteResponse> {
-    const scope = projectScopeFromRequestContext(req.requestContext);
+    const scope = mutationScopeFromRequestContext(req.requestContext);
+    if (scope === null) {
+      return { status: 400, body: { error: 'A write must name one project — this request resolved a Grove but no project.' } };
+    }
     const run = getRun(req.params.id, scope);
     if (!run) {
       return { status: 404, body: { error: 'Run not found' } };

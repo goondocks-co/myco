@@ -881,6 +881,23 @@ export function rowProjectIdFromRequestContext(
  * caused unintended cross-project leaks for any handler whose request
  * arrived without context (P2 #35).
  */
+/**
+ * The MUTATION sibling of {@link projectScopeFromRequestContext}. A write must
+ * bind to ONE project (or to the legacy NULL-project rows via GLOBAL): the
+ * grove-only widening that lets the external listener READ across its served
+ * Grove must never widen a WRITE — an `all`-scope mutation would reach other
+ * projects' rows in the Grove while the central pause gate (conditioned on a
+ * present projectId) never ran at all. Returns null for that case; the
+ * handler refuses with a missing-project-context 400 instead of proceeding
+ * unscoped.
+ */
+export function mutationScopeFromRequestContext(
+  context: MycoRequestContext | undefined,
+): ProjectScope | null {
+  const scope = projectScopeFromRequestContext(context);
+  return scope.kind === 'all' ? null : scope;
+}
+
 export function projectScopeFromRequestContext(
   context: MycoRequestContext | undefined,
 ): ProjectScope {

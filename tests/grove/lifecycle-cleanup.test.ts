@@ -31,7 +31,9 @@ import {
   clearGroveRegistryCaches,
   createGrove,
   listRegisteredProjects,
+  pauseProject,
   registerProjectInGrove,
+  resumeProject,
 } from '@myco/grove/registry.js';
 import { createProjectId } from '@myco/grove/ids.js';
 import {
@@ -146,6 +148,34 @@ describe('project lifecycle cleanup', () => {
     expect(listRegisteredProjects(grove.id, mycoHome)).toEqual([]);
     expect(listRegisteredProjects(grove.id, mycoHome, { includeArchived: true })[0]?.status)
       .toBe('archived');
+  });
+
+  it('archive REFUSES while a move holds the write lease — it would remove the vault mid-move', () => {
+    const { grove, projectId } = registerProjectWithVault();
+    pauseProject(grove.id, projectId, 'moving to a Team Host', 'residency-attach', null, mycoHome);
+    try {
+      expect(() => archiveProject(grove.id, projectId, mycoHome)).toThrow(/cannot be archived while a team move/);
+      expect(listRegisteredProjects(grove.id, mycoHome).some((p) => p.project_id === projectId)).toBe(true);
+    } finally {
+      resumeProject(grove.id, projectId, 'residency-attach', mycoHome);
+    }
+  });
+
+  it('permanent delete REFUSES while a move holds the project write lease (admission inside the operation)', () => {
+    const { grove, projectId } = registerProjectWithVault();
+    // The delete route's param is `:id`, so the central HTTP write gate never
+    // binds this project — the consult must live inside the operation.
+    pauseProject(grove.id, projectId, 'moving to a Team Host', 'residency-attach', null, mycoHome);
+    try {
+      expect(() => deleteProjectPermanently(grove.id, projectId, mycoHome)).toThrow(/cannot be deleted while a team move/);
+      // Nothing was destroyed by the refusal.
+      expect(listRegisteredProjects(grove.id, mycoHome).some((p) => p.project_id === projectId)).toBe(true);
+    } finally {
+      resumeProject(grove.id, projectId, 'residency-attach', mycoHome);
+    }
+    // Lease released → the delete proceeds normally.
+    const result = deleteProjectPermanently(grove.id, projectId, mycoHome);
+    expect(result.project_id).toBe(projectId);
   });
 
   it('permanent delete removes the project-local vault after deregistration', () => {

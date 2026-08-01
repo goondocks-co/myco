@@ -29,6 +29,7 @@ import {
   archiveProject,
   deleteProjectPermanently,
   unarchiveProject,
+  LifecycleLeaseHeldError,
 } from '@myco/grove/project-lifecycle.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import { ProjectGroveMissingError, resolveProjectTenancy } from '@myco/grove/project-tenancy.js';
@@ -37,7 +38,7 @@ import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
-import { errorBody } from './error-envelope.js';
+import { errorBody, pausedErrorResponse } from './error-envelope.js';
 
 export interface GroveProjectSummary {
   project_id: string;
@@ -448,6 +449,9 @@ export function createDeleteProjectHandler(_daemonStateDir: string): RouteHandle
     try {
       return { body: { ok: true, delete: deleteProjectPermanently(groveId, projectId) } };
     } catch (err) {
+      if (err instanceof LifecycleLeaseHeldError) {
+        return pausedErrorResponse(projectId, { ...err.pause, owner_op: err.pause.owner_op ?? 'unknown' });
+      }
       return { status: 500, body: errorBody('project_delete_failed', (err as Error).message) };
     }
   };
@@ -472,6 +476,9 @@ function projectLifecycle(
       : unarchiveProject(groveId, projectId);
     return { body: { ok: true, project: result } };
   } catch (err) {
+    if (err instanceof LifecycleLeaseHeldError) {
+      return pausedErrorResponse(projectId, { ...err.pause, owner_op: err.pause.owner_op ?? 'unknown' });
+    }
     return { status: 500, body: errorBody(`project_${action}_failed`, (err as Error).message) };
   }
 }

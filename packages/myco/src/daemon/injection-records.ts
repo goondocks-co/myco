@@ -82,10 +82,35 @@ export function buildInjectionContentHash(
  * Does NOT bump `session.tool_count` — injections are bookkeeping, not
  * agent tool usage.
  */
+/** The owning project of a session row, or null when the session has no row
+ *  yet (SessionStart ordering) or no project tag (legacy). */
+function getSessionProjectId(sessionId: string): string | null {
+  const row = getDatabase().prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null } | undefined;
+  return row?.project_id ?? null;
+}
+
 export async function recordInjectionActivity(
   options: RecordInjectionOptions,
 ): Promise<RecordInjectionResult> {
   const { sessionId, projectId, injectionType, discriminator, trigger, fetchContent } = options;
+
+  // The session id comes from the REQUEST BODY, not the URL or context — so
+  // before any write attaches to it, the session must belong to the project
+  // the request's context named. Without this, a caller could land activity
+  // rows on (and bump the batch counters of) ANOTHER project's session in
+  // the same Grove DB, past a pause gate that only checked the context's own
+  // project. A mismatch is a silent no-op, not an error: injection is
+  // best-effort bookkeeping and the context text itself still returns.
+  // Applies regardless of whether the CALLER's context names a project: a
+  // grove-only or global caller may never bookkeep a project-owned session
+  // either (owner set, caller project absent → refuse). An owner of null is
+  // legitimate-unknown (SessionStart ordering / legacy untagged) and passes.
+  {
+    const owner = getSessionProjectId(sessionId);
+    if (owner !== null && owner !== projectId) {
+      return { injected: false, reason: 'no_batch' };
+    }
+  }
 
   // Cortex injection fires during SessionStart, BEFORE any
   // UserPromptSubmit. For single-shot SessionStart symbionts
