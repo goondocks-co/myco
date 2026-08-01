@@ -58,6 +58,7 @@ Each daemon subsystem has a distinct failure signature:
 | **Self-mutation discipline** | Daemon corrupts its own state during normal operations; daemon.json becomes invalid after restart |
 | **Daemon restart/reconciliation** | PID conflicts, EPERM errors, MCP bridge indefinite reconnect loops |
 | **Daemon startup ordering** | "Database is locked" errors during startup due to FTS rebuild before port-claim |
+| **Scheduler task-config resolution** | Task stays disabled after grove tier config flips it on, or a grove config change never reaches a running task; config was compiled once at registration instead of per-tick/per-project |
 
 ---
 
@@ -78,6 +79,14 @@ runner.register({
 ```
 
 Also verify `runIn` includes all power states where the job should fire — a job registered only for `['active']` won't run in `'idle'` or `'sleep'` states.
+
+### Scheduler — Task Config Not Grove-Scoped (Stale Bootstrap Memo)
+
+**Problem:** The daemon scheduler compiled task schedules once using the daemon bootstrap config object at registration time. Any task whose YAML default was `enabled: false` was never compiled into the schedule, so later enabling it via a project's grove tier config had no effect — the task simply never re-registered. A related variant used a single-slot config memo to cache the grove config load at registration, so subsequent changes to grove tier config (e.g. re-enabling a task) never propagated between ticks.
+
+**Trace:** Confirm the task's schedule was compiled once at daemon boot rather than being re-resolved per project/tick. Check for any single-slot cache/memo of grove config sitting between the scheduler and `loadMergedConfig()`.
+
+**Fix pattern:** Schedule config must come only from the task YAML plus the current project's grove tier config, resolved per iteration — not memoized once at registration. Do not keep a bootstrap/no-context config path as a fallback; production scheduling always has project iteration context.
 
 ### SQLite FK Cascade — Wrong Deletion Order
 
@@ -356,6 +365,7 @@ When daemon.json exists but daemon won't start, check these four sources in orde
 | "Database is locked" during startup | FTS rebuild before port-claim allows orphan operations | Move port-claim check before expensive database operations |
 | Multiple startup attempts with resource conflicts | Startup ordering allows collision between instances | Use coordination locks and resource conflict detection before expensive operations |
 | daemon.json deleted during restart | Third-contender race in concurrent startup | Use DaemonStateAuthority.deleteIfOwnedBy() with ownerPid guard |
+| Task stays disabled/stale after grove tier config change | Scheduler compiled config once at registration (bootstrap config or single-slot memo) instead of per-tick | Resolve schedule config from task YAML + current project's grove tier config on each iteration; remove memoization |
 | Cortex injection silently stops working | cortex.enabled: false override in machine-local config | Inspect the machine-local local.yaml (gitignored) in the project's .myco/ directory before touching code — this override is only logged at debug level |
 | Headless daemon can't resolve/auth the Claude Code CLI on a serving box (ssh/nohup, Parallels VM) | Daemon inherits a bare PATH missing `~/.local/bin`, and/or runs without an unlocked login keychain session so CLI credential lookups fail | Ensure the daemon's spawn environment sources the login shell PATH (or sets it explicitly) and that the headless session has an unlocked keychain before the CLI is invoked |
 | MCP client sees stalled/mismatched responses across the CLI, stdio bridge, or an SDK client | Response envelope wasn't echoing the request id | Fix at the shared envelope layer (the single choke point all MCP clients pass through) rather than patching each call site |
