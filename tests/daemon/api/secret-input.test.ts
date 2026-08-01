@@ -29,7 +29,7 @@ describe('secret API input normalization', () => {
       .toEqual({ ok: true, value: 'secret-value' });
   });
 
-  test.each([undefined, null, 42, ''])(
+  test.each([undefined, null, 42, '', '   \t  '])(
     'returns the caller-provided missing response for %p',
     (raw) => {
       expect(normalizeRawSecretInput('API_TOKEN', raw, MISSING_RESPONSE))
@@ -37,11 +37,29 @@ describe('secret API input normalization', () => {
     },
   );
 
+  // Spaces/tabs are paste artifacts, never credential content — a token
+  // copied from a soft-wrapped terminal carries spaces at the wrap columns
+  // (live incident: a wrapped `claude setup-token` paste stored 4 interior
+  // spaces; every harness run 401'd while Settings showed Connected). The
+  // normalizer repairs horizontal whitespace rather than rejecting it.
   test.each([
-    ['API_TOKEN', ' secret-value '],
+    [' secret-value ', 'secret-value'],
+    ['sk-ant-oat01-abc def', 'sk-ant-oat01-abcdef'],
+    ['sk-ant-oat01-ab cd\t ef', 'sk-ant-oat01-abcdef'],
+  ])('strips horizontal whitespace from %p before storing', (raw, expected) => {
+    expect(normalizeRawSecretInput('API_TOKEN', raw, MISSING_RESPONSE))
+      .toEqual({ ok: true, value: expected });
+  });
+
+  // Line-structure characters are the secrets.env injection alphabet and
+  // must stay REJECTED, never silently repaired — "valid\nINJECTED=owned"
+  // is an attack shape, not a paste artifact.
+  test.each([
     ['API_TOKEN', 'secret\nvalue'],
+    ['API_TOKEN', 'valid\nINJECTED=owned'],
+    ['API_TOKEN', 'secret\rvalue'],
     ['not-portable!', 'secret-value'],
-  ])('surfaces invalid secret input for key %s', (envKey, raw) => {
+  ])('surfaces invalid secret input for key %s value %p', (envKey, raw) => {
     expect(normalizeRawSecretInput(envKey, raw, MISSING_RESPONSE)).toMatchObject({
       ok: false,
       response: {
