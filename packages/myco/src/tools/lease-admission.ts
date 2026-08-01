@@ -187,6 +187,14 @@ export function assertProjectAdmitsToolWrite(projectId: string, mycoHome: string
     );
   }
   if (!status.paused) return;
+  // The refused content exists ONLY in the caller's context window — there is
+  // no buffer or spool behind this gate (the capture path has one; the tool
+  // path deliberately does not, scope resolution rev 2.1). One operator-
+  // visible line per refusal keeps the loss observable instead of silent.
+  console.warn(
+    `[tool-admission] refused a mutating tool write into ${projectId} (lease held by ${status.owner_op ?? 'unknown'}) — `
+    + 'the caller was told to keep the content and retry after the move completes',
+  );
   // A held lease clears when the move ends, so retrying is worthwhile.
   throw new ToolError(
     'project_lease_held',

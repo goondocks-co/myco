@@ -48,8 +48,7 @@ import {
   type HostMembershipHost,
   type HostMembershipHint,
   type HostMembershipProjectRef,
-  type ResidencyStatus,
-} from '../../hooks/use-host-membership';
+  type ResidencyStatus, ABORTABLE_RESIDENCY_PHASES } from '../../hooks/use-host-membership';
 
 const inputClass =
   'rounded-md border border-[var(--ghost-border)] bg-surface-container px-3 py-1.5 text-xs text-on-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/40';
@@ -210,7 +209,9 @@ function ResidencyProgress({ status, projectId }: { status: ResidencyStatus; pro
   const pending = residencyPendingDetail(status.rows_pending);
   // Past the flip (the member ref is already gone) abort is refused; don't
   // offer it. Keyed on phase so it holds whether the row is present or not.
-  const cancelable = status.phase !== 'applying' && status.phase !== 'rehoming';
+  // Cancel exists only for the phases the daemon's abort route accepts — an
+  // ALLOWLIST, so a future phase defaults to not-cancelable here too.
+  const cancelable = status.phase !== undefined && ABORTABLE_RESIDENCY_PHASES.has(status.phase);
 
   const handleCancel = async () => {
     if (!window.confirm(CANCEL_MOVE_CONFIRM_COPY)) return;

@@ -40,6 +40,16 @@ export const BACKUP_TABLES = [
   'team_members',
 ] as const;
 
+/**
+ * The table set for a DETACH artifact — the project's whole knowledge, and
+ * nothing else. `team_members` is excluded: it is the HOST's machine roster,
+ * and a project-scoped dump carries it in full (grove-scoped tables take no
+ * project WHERE), so including it would hand every departing member the
+ * host's membership records.
+ */
+export const DETACH_ARTIFACT_TABLES: readonly string[] =
+  BACKUP_TABLES.filter((t) => t !== 'team_members');
+
 /** File extension for backup dumps. */
 const BACKUP_EXTENSION = '.sql';
 
@@ -169,6 +179,7 @@ export function createBackup(
   machineId: string,
   scope: ProjectScope = ALL_PROJECTS_SCOPE,
   projectSlug?: string,
+  tables: readonly string[] = BACKUP_TABLES,
 ): string {
   fs.mkdirSync(backupDir, { recursive: true });
 
@@ -191,7 +202,7 @@ export function createBackup(
   if (sourceGroveId) lines.push(`-- grove_id: ${sourceGroveId}`);
   lines.push('');
 
-  for (const table of BACKUP_TABLES) {
+  for (const table of tables) {
     const useScope = clause.sql !== '' && PROJECT_SCOPED_BACKUP_TABLES.has(table);
     const sql = `SELECT * FROM ${table}${useScope ? clause.sql : ''}`;
     const rows = useScope
@@ -669,6 +680,12 @@ export class BackupGroveMismatchError extends Error {
  * Uses `INSERT OR IGNORE` — existing records are skipped, new records
  * are inserted.
  *
+ * The whole dump runs in ONE transaction (atomic — a mid-dump failure lands
+ * nothing), which holds the target DB's write lock for the duration: writers
+ * to EVERY project in that Grove stall until the restore finishes. That is
+ * the deliberate cost of atomicity; on a large artifact expect a multi-second
+ * Grove-wide write pause.
+ *
  * Grove lineage gate: an archive whose header records a `grove_id`
  * different from the target DB's Grove is refused (see
  * BackupGroveMismatchError). Same-Grove restores — including the
@@ -701,7 +718,22 @@ export function restoreBackup(
   db.run('PRAGMA foreign_keys = OFF');
   try {
     if (hasSqlStatements(content)) {
-      db.exec(content);
+      // One transaction around the whole dump (R7): SQLite auto-commits each
+      // statement otherwise, so a mid-dump failure — schema mismatch, full
+      // disk — would leave a partially-restored project visible to concurrent
+      // readers. With the wrap the restore is atomic AND idempotent: it lands
+      // whole or not at all, and a retry converges via INSERT OR IGNORE.
+      db.exec('BEGIN');
+      try {
+        db.exec(content);
+        db.exec('COMMIT');
+      } catch (err) {
+        // SQLite may have auto-rolled-back already (SQLITE_FULL does) — an
+        // unguarded ROLLBACK would then throw "no transaction is active" and
+        // MASK the real error the operator needs (e.g. disk full).
+        try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+        throw err;
+      }
     }
   } finally {
     db.run('PRAGMA foreign_keys = ON');

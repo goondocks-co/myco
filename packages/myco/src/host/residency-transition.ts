@@ -52,6 +52,7 @@ import {
   type ResidencyJournal,
   type ResidencyPhase,
   residencyJournalPath,
+  ABORTABLE_RESIDENCY_PHASES,
 } from './residency-journal.js';
 import {
   nativePerUserLockNamespace,
@@ -343,10 +344,11 @@ export function residencyStatus(projectId: string, deps: ResidencyDaemonDeps): R
  *    one was recorded, and clear the queued push. The safety backup stays on
  *    disk; its ref is logged. Released content claims stay released (TTL
  *    semantics — the holder re-claims on next use).
- *  - DETACH (pulling): the flip hasn't happened, the project is still attached
- *    and nothing local changed — drop the pull journal + staged pages.
- *  - DETACH (applying/rehoming): the flip already happened; refuse
- *    `residency_abort_too_late` and let the drain finish.
+ *  - DETACH (fetching, or the retired pulling): the flip hasn't happened, the
+ *    project is still attached and nothing local changed — drop the journal.
+ *  - DETACH (restoring/rehoming, or the retired applying): the restore and
+ *    flip run inside one drain step, so from here the transition finishes on
+ *    its own; refuse `residency_abort_too_late`.
  * A finished/absent transition refuses `residency_abort_too_late` — for attach
  * the rows already live on the host (detach is the way back).
  */
@@ -383,7 +385,10 @@ export function abortResidency(projectId: string, deps: ResidencyDaemonDeps): { 
     return { ok: true };
   }
 
-  if (journal.phase === 'pulling') {
+  if (ABORTABLE_RESIDENCY_PHASES.has(journal.phase)) {
+    // `fetching` (hybrid) and the retired `pulling` are both strictly pre-flip:
+    // the project is still attached and nothing local has changed. A fetched
+    // artifact file, if any, is just a backup copy — harmless to leave.
     clearResidencyJournal(projectId);
     clearResidencyStaging(projectId);
     releaseResidencyLease(projectId, deps.mycoHome);
@@ -402,13 +407,13 @@ export function abortResidency(projectId: string, deps: ResidencyDaemonDeps): { 
 }
 
 /**
- * Start a detach-pull transition. Pure orchestration over the journal: validate
- * the ref carries a root (the re-materialize anchor) and resolve the local Grove
- * to land in, then open the journal in `pulling`. The pull, flip, re-materialize,
- * and apply all run in the drain — this returns "pull started" like the attach
- * begin. Suppression-divert is active from the moment the journal exists, so
- * capture during the window buffers under the host Grove and is re-homed at the
- * end.
+ * Start a hybrid-detach transition. Pure orchestration over the journal:
+ * validate the ref carries a root (the re-materialize anchor) and resolve the
+ * local Grove to land in, then open the journal in `fetching`. The artifact
+ * fetch, restore, flip, and re-home all run in the drain — this returns
+ * "detach started" like the attach begin. Suppression-divert is active from
+ * the moment the journal exists, so capture during the window buffers under
+ * the host Grove and is re-homed at the end.
  */
 export function beginDetachResidency(ctx: ResidencyDetachContext, deps: ResidencyDaemonDeps): DetachResult {
   if (!ctx.ref.root) {
@@ -441,7 +446,7 @@ export function beginDetachResidency(ctx: ResidencyDetachContext, deps: Residenc
   const root = path.resolve(ctx.ref.root);
   startResidencyJournal({
     direction: 'detach',
-    phase: 'pulling',
+    phase: 'fetching',
     host_id: ctx.hostId,
     project_id: ctx.projectId,
     divert_grove_id: divertGroveId,

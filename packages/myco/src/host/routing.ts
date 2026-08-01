@@ -56,7 +56,7 @@ import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
-import { ROUTED_RESIDENCY_PULL_PATH, ROUTED_RESIDENCY_ROWS_PATH } from './residency-journal.js';
+import { ROUTED_DETACH_ARTIFACT_PATH, ROUTED_DETACH_COMPLETE_PATH, ROUTED_RESIDENCY_ROWS_PATH } from './residency-journal.js';
 
 /** The scope-map stamp a route carries. See the module docstring. */
 export type RouteStamp = 'serve' | 'collect' | 'degrade' | 'config-lock' | 'config-carve' | 'team-write' | 'localhost-only';
@@ -299,7 +299,11 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   // residency transport family in one place and lets the registration-on-ingest
   // seam harmlessly ensure the project row resolves. The route's own side effects
   // (claim release, stub deregister) are the collector contract for this leg.
-  { method: 'POST', pattern: ROUTED_RESIDENCY_PULL_PATH, stamp: 'collect', capability: COLLECTION },
+  // 410 tombstone for the RETIRED page-pull detach (guidance for old members
+  // mid-detach) — stamped so the completeness gate sees no silent fall-through.
+  { method: 'POST', pattern: '/routed-capture/residency-pull', stamp: 'collect', capability: COLLECTION },
+  { method: 'POST', pattern: ROUTED_DETACH_ARTIFACT_PATH, stamp: 'collect', capability: COLLECTION },
+  { method: 'POST', pattern: ROUTED_DETACH_COMPLETE_PATH, stamp: 'collect', capability: COLLECTION },
 
   // --- degrade: Code intelligence (Canopy) OFF for hosted projects v1 (§1c, §2) ---
   { method: 'POST', pattern: '/canopy/inject', stamp: 'degrade', capability: CANOPY },

@@ -38,7 +38,8 @@ export const ROUTED_RESIDENCY_ROWS_PATH = '/routed-capture/residency-rows';
  * POSTs to it, and the host pull route (T3, `host/routed-residency.ts`) mounts
  * the same string.
  */
-export const ROUTED_RESIDENCY_PULL_PATH = '/routed-capture/residency-pull';
+export const ROUTED_DETACH_ARTIFACT_PATH = '/routed-capture/residency-detach-artifact';
+export const ROUTED_DETACH_COMPLETE_PATH = '/routed-capture/residency-detach-complete';
 
 /**
  * Minimum host protocol version a with-history residency transition requires.
@@ -64,7 +65,21 @@ export type ResidencyDirection = 'attach' | 'detach';
  * {@link isResidencyDivertActive}) so no new event lands in the host-Grove
  * buffer after the flip.
  */
-export type ResidencyPhase = 'parking' | 'pushing' | 'pulling' | 'applying' | 'rehoming' | 'done';
+/** `pulling`/`applying` are RETIRED phases of the pre-hybrid page-pull detach.
+ *  They are kept in the type (and in the divert-active set) so a journal
+ *  written by an older dev build keeps routing capture correctly — but the
+ *  drain refuses to PROGRESS them, telling the user to cancel and restart the
+ *  move. No released binary ever wrote them. */
+export type ResidencyPhase = 'parking' | 'pushing' | 'pulling' | 'applying' | 'fetching' | 'restoring' | 'rehoming' | 'done';
+
+/** The phases an abort may cancel — strictly pre-flip on both directions.
+ *  The daemon's abort route AND the Team page's Cancel control both read this
+ *  (the UI mirrors it in `use-host-membership.ts`, pinned by a parity test),
+ *  so a future phase defaults to NOT-cancelable everywhere at once. */
+export const ABORTABLE_RESIDENCY_PHASES: ReadonlySet<string> = new Set(['parking', 'pushing', 'fetching', 'pulling']);
+
+/** The retired pre-hybrid detach phases (see {@link ResidencyPhase}). */
+export const RETIRED_RESIDENCY_PHASES: ReadonlySet<ResidencyPhase> = new Set(['pulling', 'applying'] as const);
 
 /**
  * True while capture must DIVERT to the journal's destination tenancy — the
@@ -74,7 +89,8 @@ export type ResidencyPhase = 'parking' | 'pushing' | 'pulling' | 'applying' | 'r
  * sweep can drive its own crash-resume without re-diverting new events.
  */
 export function isResidencyDivertActive(phase: ResidencyPhase): boolean {
-  return phase === 'parking' || phase === 'pushing' || phase === 'pulling' || phase === 'applying';
+  return phase === 'parking' || phase === 'pushing' || phase === 'pulling' || phase === 'applying'
+    || phase === 'fetching' || phase === 'restoring';
 }
 
 export interface ResidencyJournal {
@@ -97,9 +113,16 @@ export interface ResidencyJournal {
    *  persisted so a crash-resumed park recreates the ref with the same choice.
    *  Display-only; absent falls back to the machine default at read time. */
   local_grove_id?: string;
-  /** Absolute path of the project-scoped safety backup, once taken. */
+  /** Absolute path of the project-scoped safety backup, once taken. For a
+   *  hybrid detach this is the fetched artifact once assembled + verified. */
   backup_ref: string | null;
-  /** Per-stream resume tokens (sidecar page keys); `'done'` marks a stream drained. */
+  /** Hybrid detach transfer resume state: the whole-artifact sha the durable
+   *  offset belongs to, and how many bytes of it are already on disk. Cleared
+   *  (undefined) when a restart resets the transfer. */
+  artifact_sha256?: string;
+  artifact_offset?: number;
+  /** Per-stream resume tokens (attach sidecar page keys); `'done'` marks a
+   *  stream drained. Retired detach journals may carry a legacy `pull` key. */
   cursors: Record<string, string | number>;
   created_at: string;
   updated_at: string;
@@ -110,18 +133,8 @@ export interface ResidencyJournal {
    *  when the transition makes forward progress again. */
   last_error?: string;
   last_error_at?: string;
-  /**
-   * Lines written to the staging files so far, counted after each successful
-   * append. The apply reads the staging back and refuses to proceed unless it
-   * sees at least this many lines — without it, a staging directory that could
-   * not be read enumerates as empty, applies zero rows, and is then deleted,
-   * destroying the whole pulled dataset with no error anywhere.
-   *
-   * At-least-once re-appends inflate this and the files together, so the two
-   * stay comparable. A torn trailing line from a crash mid-append is counted in
-   * the file but not here (the increment follows the append), which is why the
-   * check is "at least", not equality.
-   */
+  /** LEGACY (retired page-pull detach): the staged-line tally an old journal
+   *  may still carry. Never written by the hybrid; read by nothing. */
   staged_rows?: number;
 }
 
@@ -315,84 +328,6 @@ const SAFE_STAGING_TABLE = /^[a-z_][a-z0-9_]*$/;
 
 function residencyStagingDir(projectId: string, teamsHome: string = resolveTeamsHome()): string {
   return path.join(residencyDir(teamsHome), `${projectId}-staging`);
-}
-
-/** Append a pulled page (`{table, row}` items) to the per-table NDJSON files.
- *  Append-then-advance-cursor is at-least-once; a resumed re-pull re-appends a
- *  page, and the idempotent apply engine makes the duplicate a no-op. */
-export function appendResidencyStagingRows(
-  projectId: string,
-  rows: ReadonlyArray<{ table: string; row: Record<string, unknown> }>,
-  teamsHome: string = resolveTeamsHome(),
-): number {
-  if (!isGroveEraId(projectId, 'project') || rows.length === 0) return 0;
-  const dir = residencyStagingDir(projectId, teamsHome);
-  fs.mkdirSync(dir, { recursive: true });
-  const byTable = new Map<string, string[]>();
-  for (const { table, row } of rows) {
-    if (!SAFE_STAGING_TABLE.test(table)) continue;
-    const lines = byTable.get(table) ?? [];
-    lines.push(JSON.stringify(row));
-    byTable.set(table, lines);
-  }
-  let written = 0;
-  for (const [table, lines] of byTable) {
-    fs.appendFileSync(path.join(dir, `${table}.ndjson`), `${lines.join('\n')}\n`, 'utf-8');
-    written += lines.length;
-  }
-  return written;
-}
-
-/**
- * Every table with a staged page file (apply order is the caller's concern).
- *
- * Three-state: an absent directory genuinely means nothing was staged, but an
- * unreadable one must never enumerate as empty — the caller applies what this
- * returns and then deletes the directory.
- */
-export function listResidencyStagingTables(
-  projectId: string,
-  teamsHome: string = resolveTeamsHome(),
-): Presence<string[]> {
-  const dir = readDirPresence(residencyStagingDir(projectId, teamsHome));
-  if (dir.state !== 'present') return dir as Presence<string[]>;
-  return present(
-    dir.value
-      .filter((e) => e.isFile() && e.name.endsWith('.ndjson'))
-      .map((e) => e.name.slice(0, -'.ndjson'.length)),
-  );
-}
-
-/**
- * Read one table's staged rows.
- *
- * `lines` counts every non-empty line the file held, parseable or not, so the
- * caller can compare against the journal's `staged_rows` and detect a file that
- * was silently truncated. A torn trailing line from a crash mid-append is
- * skipped for the rows but still counted here.
- *
- * Three-state for the same reason as the enumerator: the rows this returns are
- * applied and the file is then deleted, so an unreadable file must not read as
- * an empty one.
- */
-export function readResidencyStagingRows(
-  projectId: string,
-  table: string,
-  teamsHome: string = resolveTeamsHome(),
-): Presence<{ rows: Record<string, unknown>[]; lines: number }> {
-  if (!SAFE_STAGING_TABLE.test(table)) return ABSENT;
-  const read = readFilePresence(path.join(residencyStagingDir(projectId, teamsHome), `${table}.ndjson`));
-  if (read.state !== 'present') return read as Presence<{ rows: Record<string, unknown>[]; lines: number }>;
-  const content = read.value;
-  let lines = 0;
-  const out: Record<string, unknown>[] = [];
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    lines += 1;
-    try { out.push(JSON.parse(trimmed) as Record<string, unknown>); } catch { /* skip a torn line */ }
-  }
-  return present({ rows: out, lines });
 }
 
 /** Remove a project's staging tree (final detach cleanup). Idempotent. */

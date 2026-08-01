@@ -14,6 +14,7 @@ import { insertSpore } from '@myco/db/queries/spores.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import {
   BACKUP_TABLES,
+  DETACH_ARTIFACT_TABLES,
   createBackup,
   listBackups,
   previewRestoreContents,
@@ -377,5 +378,59 @@ describe('backup engine', () => {
         result.tables.reduce((sum, t) => sum + t.existing, 0),
       );
     });
+  });
+});
+
+describe('restore atomicity (R7) + detach artifact set', () => {
+  let tmpDir: string;
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); tmpDir = makeTmpBackupDir(); });
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('a mid-dump failure lands ZERO rows — never a partially-restored project (R7)', () => {
+    seedAgent();
+    seedSession('s1', LOCAL_MACHINE);
+    seedSpore('sp1', 's1', LOCAL_MACHINE);
+    seedSpore('sp2', 's1', LOCAL_MACHINE);
+    const dump = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+
+    // Corrupt the dump midway: valid inserts, then a statement that throws.
+    const content = fs.readFileSync(dump, 'utf-8');
+    fs.writeFileSync(dump, content + '\nINSERT INTO no_such_table (x) VALUES (1);\n', 'utf-8');
+
+    cleanTestDb(); // fresh empty target
+    expect(() => restoreBackup(getDatabase(), dump)).toThrow();
+    // The valid prefix must have rolled back with the failure.
+    const count = (t: string) => (getDatabase().prepare(`SELECT COUNT(*) c FROM ${t}`).get() as { c: number }).c;
+    expect(count('spores')).toBe(0);
+    expect(count('sessions')).toBe(0);
+  });
+
+  it('restore is idempotent — a second identical restore adds nothing (R6)', () => {
+    seedAgent();
+    seedSession('s1', LOCAL_MACHINE);
+    seedSpore('sp1', 's1', LOCAL_MACHINE);
+    const dump = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+    cleanTestDb();
+    const first = restoreBackup(getDatabase(), dump);
+    const second = restoreBackup(getDatabase(), dump);
+    expect(first.total_restored).toBeGreaterThan(0);
+    expect(second.total_restored).toBe(0);
+    expect(second.total_skipped).toBeGreaterThan(0);
+  });
+
+  it('a detach artifact carries the project and NEVER the host roster', () => {
+    seedAgent();
+    seedSession('s1', LOCAL_MACHINE);
+    seedSpore('sp1', 's1', LOCAL_MACHINE);
+    getDatabase().prepare(
+      `INSERT INTO team_members (id, "user", machine_id) VALUES ('tm1', 'host-operator', 'host_roster_row')`,
+    ).run();
+
+    const dump = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE, undefined, undefined, DETACH_ARTIFACT_TABLES);
+    const content = fs.readFileSync(dump, 'utf-8');
+    expect(content).toContain('INSERT OR IGNORE INTO spores');
+    expect(content).not.toContain('team_members');
   });
 });
