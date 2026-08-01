@@ -80,6 +80,7 @@ export async function runDetach(args: string[], vaultDir: string): Promise<void>
     console.log(`Project ${body.project_id} is not attached to any host — nothing to detach.`);
     return;
   }
-  console.log(`Detached ${body.project_id} from Team Host ${body.detached_from_host_id}.`);
-  console.log('  Future requests for this project go back to local-only.');
+  console.log(`Disconnect started for ${body.project_id} (from Team Host ${body.detached_from_host_id}).`);
+  console.log("  The project's knowledge is coming back in the background; new work goes local once it lands.");
+  console.log('  Watch progress on the Team page.');
 }

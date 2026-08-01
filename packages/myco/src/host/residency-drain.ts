@@ -7,11 +7,13 @@
  * after the host acknowledges the FULL push — deletes the project's local rows
  * (the backup is the safety copy) and clears the journal.
  *
- * DETACH: pulls a `pulling` journal's project rows back into per-table NDJSON
- * staging page by page, then flips (remove the attach ref, re-materialize the
- * local Grove row) → `applying`, applies the staged rows into the local Grove DB
- * via the shared apply engine, re-homes any events buffered under the host Grove
- * during the window, purges the host drain stores, and clears the journal.
+ * DETACH (hybrid): `fetching` prepares + downloads the host's digest-verified
+ * project artifact in resumable chunks and saves it as a real backup;
+ * `restoring` restores it into the target Grove (atomic, idempotent) and THEN
+ * flips (remove the attach ref, re-materialize the local Grove row);
+ * `rehoming` re-homes events buffered under the host Grove during the window,
+ * purges the member-side drain stores, sends the goodbye (durable marker
+ * retry), and clears the journal.
  *
  * Discipline mirrors the other member drains (`capture/plan-drain.ts`): at-
  * least-once with host-side idempotency, a failed POST logs (throttled) and
@@ -20,6 +22,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import {
   HOST_PROTOCOL_HEADER,
@@ -53,7 +56,10 @@ import { readDirPresence } from '@myco/utils/presence.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
-import { resolveProjectBufferDir } from '../grove/paths.js';
+import { memberHostTag, resolveHostDir, resolveProjectBufferDir } from '../grove/paths.js';
+import { stampArtifactLineage } from './routed-residency-detach.js';
+import { restoreBackup } from '../backup/engine.js';
+import { resolveGroveBackupDir } from '../backup/location.js';
 import { detachProject, getHostMembershipSnapshot } from './registry.js';
 import { nativePerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { registerProjectInGrove } from '../grove/registry.js';
@@ -61,17 +67,17 @@ import type { RemoteTarget } from './routing.js';
 import { completeAttachParking, releaseResidencyLease, type ResidencyDaemonDeps } from './residency-transition.js';
 import {
   ROUTED_RESIDENCY_ROWS_PATH,
-  ROUTED_RESIDENCY_PULL_PATH,
+  ROUTED_DETACH_ARTIFACT_PATH,
+  ROUTED_DETACH_COMPLETE_PATH,
   RESIDENCY_MIN_HOST_PROTOCOL,
+  RETIRED_RESIDENCY_PHASES,
+  residencyJournalPath,
   advanceResidencyPhase,
-  appendResidencyStagingRows,
   clearResidencyFailure,
   clearResidencyJournal,
   clearResidencyStaging,
   listResidencyJournals,
-  listResidencyStagingTables,
   readResidencyJournal,
-  readResidencyStagingRows,
   stampResidencyFailure,
   type ResidencyJournal,
 } from './residency-journal.js';
@@ -154,42 +160,46 @@ export type ResolveResidencyTarget = (
   projectId: string,
 ) => RemoteTarget | null;
 
-/** One pulled page of the detach transfer. */
-export interface ResidencyPullResponse {
+/** The prepare half of the artifact protocol: report (or start) the host-side
+ *  one-time build. `ready:false` is PROGRESS (the member re-polls next tick),
+ *  never a failure. */
+export interface DetachArtifactPrepareResponse {
   status: number;
-  rows: { table: string; row: Record<string, unknown> }[];
-  next_cursor: string | null;
-  done: boolean;
+  ready: boolean;
+  sha256: string | null;
+  size: number | null;
+  message?: string;
 }
 
-/** The pull transport seam — reads one page of the machine's rows from the host. */
-export type ResidencyPullTransport = (
-  target: RemoteTarget,
-  body: { cursor: string | null },
-  machineId: string,
-) => Promise<ResidencyPullResponse>;
+/** One positional chunk of the prepared artifact. `restart` means the host no
+ *  longer serves the sha the member is resuming (restart/TTL/rebuild) — reset
+ *  the durable offset and re-prepare. */
+export interface DetachArtifactChunkResponse {
+  status: number;
+  chunk: Buffer | null;
+  next_offset: number | null;
+  restart: boolean;
+}
 
-/**
- * Apply staged detach rows into the local Grove DB. Wraps the SHARED apply
- * engine (`db/queries/residency-apply.ts` `applyResidencyRows`, extracted by T3)
- * so both directions use identical per-table rules with no duplication. MUST run
- * inside a transaction — the caller wraps it. Injected so the drain stays
- * testable and decoupled from the engine's extraction timing.
- */
-export type ApplyStagedRows = (
-  db: Database,
-  table: string,
-  rows: Record<string, unknown>[],
-  /** The project the staged rows belong to — the engine's tenancy scope. */
-  projectId: string,
-) => void;
+/** The artifact transport seam — prepare + positional chunk reads. */
+export interface DetachArtifactClient {
+  prepare: (target: RemoteTarget, machineId: string) => Promise<DetachArtifactPrepareResponse>;
+  chunk: (target: RemoteTarget, machineId: string, offset: number, sha256: string) => Promise<DetachArtifactChunkResponse>;
+}
+
+/** The goodbye transport seam — tells the host the detach landed locally so it
+ *  runs its idempotent side effects (claims release, transcript prune,
+ *  stub-deregister). */
+export type DetachGoodbyeTransport = (
+  target: RemoteTarget,
+  machineId: string,
+) => Promise<{ status: number }>;
 
 export interface ResidencyDrainDeps extends ResidencyDaemonDeps {
   transport?: ResidencyPostTransport;
-  pullTransport?: ResidencyPullTransport;
+  detachArtifactClient?: DetachArtifactClient;
+  detachGoodbyeTransport?: DetachGoodbyeTransport;
   resolveHostTarget?: ResolveResidencyTarget;
-  /** Apply staged detach rows into the local Grove DB (the shared engine). */
-  applyStagedRows?: ApplyStagedRows;
   teamsHome?: string;
   /**
    * Operator-visible surface for a transition that keeps failing while holding
@@ -276,13 +286,14 @@ const defaultResolveResidencyTarget = (
   };
 };
 
-/**
- * Production pull transport: POST the resume cursor to the host's residency-pull
- * route and read one page. Same dial + tenancy-header shape as the push (grove =
- * the HOST's served Grove, project, THIS machine); parses `{rows, next_cursor,
- * done}`.
- */
-export const defaultResidencyPullTransport: ResidencyPullTransport = async (target, body, machineId) => {
+/** Shared dial for the artifact protocol's small JSON exchanges. */
+async function dialDetachRoute<T>(
+  target: RemoteTarget,
+  machineId: string,
+  routePath: string,
+  body: Record<string, unknown>,
+  parse: (parsed: Record<string, unknown>, status: number) => T,
+): Promise<T> {
   const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const payload = Buffer.from(JSON.stringify(body), 'utf-8');
   const headers = {
@@ -295,13 +306,11 @@ export const defaultResidencyPullTransport: ResidencyPullTransport = async (targ
     [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
     [REQUEST_CONTEXT_HEADERS.machineId]: machineId,
   };
-  const req = await defaultDial(target, { method: 'POST', path: ROUTED_RESIDENCY_PULL_PATH, headers });
-
-  return new Promise<ResidencyPullResponse>((resolve, reject) => {
+  const req = await defaultDial(target, { method: 'POST', path: routePath, headers });
+  return new Promise<T>((resolve, reject) => {
     let settled = false;
     const fail = (err: Error) => { if (!settled) { settled = true; req.destroy(); reject(err); } };
     const headersTimer = setTimeout(() => fail(new Error('headers_timeout')), HOST_PROXY_HEADERS_TIMEOUT_MS);
-
     req.on('response', (res) => {
       clearTimeout(headersTimer);
       const bodyTimer = setTimeout(() => fail(new Error('body_timeout')), HOST_PROXY_BODY_TIMEOUT_MS);
@@ -311,15 +320,64 @@ export const defaultResidencyPullTransport: ResidencyPullTransport = async (targ
         clearTimeout(bodyTimer);
         if (settled) return;
         settled = true;
-        let parsed: { rows?: unknown; next_cursor?: unknown; done?: unknown } = {};
-        try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf-8')); } catch { /* non-JSON body */ }
-        resolve({
-          status: res.statusCode ?? 0,
-          rows: Array.isArray(parsed.rows) ? (parsed.rows as ResidencyPullResponse['rows']) : [],
-          next_cursor: typeof parsed.next_cursor === 'string' ? parsed.next_cursor : null,
-          done: parsed.done === true,
-        });
+        let parsed: Record<string, unknown> = {};
+        try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as Record<string, unknown>; } catch { /* non-JSON body */ }
+        resolve(parse(parsed, res.statusCode ?? 0));
       });
+      res.on('error', fail);
+    });
+    req.on('error', fail);
+    req.end(payload);
+  });
+}
+
+/**
+ * Production artifact client. Each exchange is small (prepare status, or one
+ * ~2 MB chunk), so the ordinary proxy timeouts hold regardless of project
+ * size — the transfer is bounded per REQUEST, resumable per OFFSET.
+ */
+export const defaultDetachArtifactClient: DetachArtifactClient = {
+  prepare: (target, machineId) =>
+    dialDetachRoute(target, machineId, ROUTED_DETACH_ARTIFACT_PATH, { op: 'prepare' }, (parsed, status) => ({
+      status,
+      ready: parsed.ready === true,
+      sha256: typeof parsed.sha256 === 'string' ? parsed.sha256 : null,
+      size: typeof parsed.size === 'number' ? parsed.size : null,
+      message: typeof parsed.message === 'string' ? parsed.message : undefined,
+    })),
+  chunk: (target, machineId, offset, sha256) =>
+    dialDetachRoute(target, machineId, ROUTED_DETACH_ARTIFACT_PATH, { op: 'chunk', offset, sha256 }, (parsed, status) => ({
+      status,
+      chunk: typeof parsed.chunk === 'string' ? Buffer.from(parsed.chunk, 'base64') : null,
+      next_offset: typeof parsed.next_offset === 'number' ? parsed.next_offset : null,
+      restart: parsed.restart === true,
+    })),
+};
+
+/** Production goodbye transport: POST the host's detach-complete route. */
+export const defaultDetachGoodbyeTransport: DetachGoodbyeTransport = async (target, machineId) => {
+  const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
+  const payload = Buffer.from('{}', 'utf-8');
+  const headers = {
+    host: `${overlayHost}:${port}`,
+    authorization: `Bearer ${target.bearer}`,
+    'content-type': 'application/json',
+    'content-length': String(payload.length),
+    [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
+    [REQUEST_CONTEXT_HEADERS.projectId]: String(target.projectId),
+    [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
+    [REQUEST_CONTEXT_HEADERS.machineId]: machineId,
+  };
+  const req = await defaultDial(target, { method: 'POST', path: ROUTED_DETACH_COMPLETE_PATH, headers });
+
+  return new Promise<{ status: number }>((resolve, reject) => {
+    let settled = false;
+    const fail = (err: Error) => { if (!settled) { settled = true; req.destroy(); reject(err); } };
+    const headersTimer = setTimeout(() => fail(new Error('headers_timeout')), HOST_PROXY_HEADERS_TIMEOUT_MS);
+    req.on('response', (res) => {
+      clearTimeout(headersTimer);
+      res.resume();
+      res.on('end', () => { if (!settled) { settled = true; resolve({ status: res.statusCode ?? 0 }); } });
       res.on('error', fail);
     });
     req.on('error', fail);
@@ -394,7 +452,8 @@ export function residencyHealthByHost(teamsHome?: string): Map<string, DrainHeal
  */
 export async function runResidencyTransitions(deps: ResidencyDrainDeps): Promise<{ processed: number }> {
   const transport = deps.transport ?? defaultResidencyTransport;
-  const pullTransport = deps.pullTransport ?? defaultResidencyPullTransport;
+  const artifactClient = deps.detachArtifactClient ?? defaultDetachArtifactClient;
+  const goodbyeTransport = deps.detachGoodbyeTransport ?? defaultDetachGoodbyeTransport;
   const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const resolveTarget = deps.resolveHostTarget
     ?? ((hostId, groveId, projectId) =>
@@ -422,7 +481,7 @@ export async function runResidencyTransitions(deps: ResidencyDrainDeps): Promise
           processed += 1;
         }
       } else {
-        await runDetachTransition(journal, deps, pullTransport, resolveTarget, teamsHome);
+        await runDetachTransition(journal, deps, artifactClient, goodbyeTransport, resolveTarget, teamsHome);
         processed += 1;
       }
     } catch (err) {
@@ -431,180 +490,188 @@ export async function runResidencyTransitions(deps: ResidencyDrainDeps): Promise
     notifyIfStalledAfterAttempt(journal.project_id, deps, teamsHome);
   }
 
+  try {
+    await retryPendingGoodbyes(deps, goodbyeTransport, resolveTarget, teamsHome);
+  } catch (err) {
+    deps.logger?.warn(LOG_KINDS.RESIDENCY_COMPLETE, 'goodbye retry pass failed — will retry next tick', {
+      error: (err as Error).message,
+    });
+  }
+
   return { processed };
 }
 
 /**
- * Carry a detach journal forward. `pulling`: pull remaining pages into staging
- * (resume-exact from the journal cursor), then flip — remove the attach ref and
- * re-materialize the local Grove row (both idempotent, so a crash between them
- * heals) — and advance to `applying`. `applying`: apply the staged rows via the
- * shared engine (double-apply is a no-op under its freshness rules), re-home the
- * events buffered under the host Grove during the window, purge the host drain
- * stores, and finish.
+ * Carry a detach journal forward through the hybrid phases. `fetching`: fetch
+ * the digest-verified project artifact from the host and save it as a real
+ * backup in the TARGET grove's backup dir — the user's durable copy, pruned by
+ * ordinary retention. `restoring`: restore the artifact into the target grove
+ * (atomic + idempotent), THEN flip — remove the attach ref and re-materialize
+ * the local Grove row (both idempotent, so a crash between them heals) — and
+ * advance to `rehoming`; restore-before-flip means a read never meets an
+ * empty just-flipped project. `rehoming`: re-home the events buffered under
+ * the host Grove during the window, purge the member-side drain stores, send
+ * the goodbye (a durable marker retries it when the host is unreachable —
+ * host bookkeeping never holds the local project's write lease), and finish.
+ * Retired `pulling`/`applying` journals (older dev builds only; no release
+ * ever wrote them) are refused with guidance, never progressed.
  */
 async function runDetachTransition(
   journal: ResidencyJournal,
   deps: ResidencyDrainDeps,
-  pullTransport: ResidencyPullTransport,
+  artifactClient: DetachArtifactClient,
+  goodbyeTransport: DetachGoodbyeTransport,
   resolveTarget: ResolveResidencyTarget,
   teamsHome: string | undefined,
 ): Promise<void> {
   const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const targetGroveId = journal.target_grove_id;
   if (!targetGroveId) {
-    // A detach journal always carries its re-materialize target; a missing one is
-    // a corrupt journal, not something a retry fixes.
     recordJournalFailure(journal, new Error('detach journal has no target_grove_id'), deps, teamsHome);
     return;
   }
 
-  if (journal.phase === 'pulling') {
-    if (journal.cursors.pull !== CURSOR_DONE) {
-      const target = resolveTarget(journal.host_id, journal.divert_grove_id, journal.project_id);
-      if (!target) {
-        // Not a transient miss: the record only leaves the registry with the
-        // membership. Stamp it so the health/stall surfaces can see the hold
-        // instead of the journal spinning silently forever.
-        stampResidencyFailure(journal.project_id, `host record for ${journal.host_id} is missing — the move cannot proceed`, teamsHome);
-        return;
+  if (RETIRED_RESIDENCY_PHASES.has(journal.phase)) {
+    stampResidencyFailure(
+      journal.project_id,
+      'this move was started by an older version of Myco and cannot continue — cancel it and start the move again',
+      teamsHome,
+    );
+    return;
+  }
+
+  if (journal.phase === 'fetching') {
+    const target = resolveTarget(journal.host_id, journal.divert_grove_id, journal.project_id);
+    if (!target) {
+      stampResidencyFailure(journal.project_id, `host record for ${journal.host_id} is missing — the move cannot proceed`, teamsHome);
+      return;
+    }
+    if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {
+      stampResidencyFailure(
+        journal.project_id,
+        `host is below the residency protocol (${target.host.protocol_version} < ${RESIDENCY_MIN_HOST_PROTOCOL}) — waiting for the host to update`,
+        teamsHome,
+      );
+      if (shouldLogOncePerInterval(`residency.proto.${journal.project_id}`, FAILURE_LOG_INTERVAL_MS, Date.now())) {
+        deps.logger?.warn(LOG_KINDS.RESIDENCY_DETACH_PULL, 'host below residency protocol — artifact fetch skipped', {
+          project_id: journal.project_id, host_id: journal.host_id, host_protocol: target.host.protocol_version,
+        });
       }
-      if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {
-        stampResidencyFailure(
-          journal.project_id,
-          `host is below the residency protocol (${target.host.protocol_version} < ${RESIDENCY_MIN_HOST_PROTOCOL}) — waiting for the host to update`,
-          teamsHome,
-        );
-        if (shouldLogOncePerInterval(`residency.proto.${journal.project_id}`, FAILURE_LOG_INTERVAL_MS, Date.now())) {
-          deps.logger?.warn(LOG_KINDS.RESIDENCY_DETACH_PULL, 'host below residency protocol — pull skipped', {
-            project_id: journal.project_id, host_id: journal.host_id, host_protocol: target.host.protocol_version,
-          });
-        }
-        return;
-      }
-      let cursor: string | null = typeof journal.cursors.pull === 'string' && journal.cursors.pull ? journal.cursors.pull : null;
-      // Resumes from the durable count so a re-entered pull keeps accumulating
-      // rather than restarting the tally at zero.
-      let stagedRows = journal.staged_rows ?? 0;
-      for (;;) {
-        let page: ResidencyPullResponse;
-        try { page = await pullTransport(target, { cursor }, deps.machineId); }
-        catch (err) { recordJournalFailure(journal, err, deps, teamsHome); return; }
-        if (page.status !== 200) {
-          recordJournalFailure(journal, new Error(`host returned ${page.status}`), deps, teamsHome);
-          return;
-        }
-        // Re-confirm after the network await: a concurrent abort (synchronous,
-        // from the localhost route) may have cleared this journal + staging while
-        // we were pulling. Stop, so we don't stage into — or flip — a transition
-        // that no longer exists.
-        const stillPulling = readResidencyJournal(journal.project_id, teamsHome);
-        if (!stillPulling || stillPulling.phase !== 'pulling') return;
-        // Append THEN advance the cursor — at-least-once; a resumed re-pull of the
-        // same page re-appends, which the idempotent apply engine flattens.
-        const appended = appendResidencyStagingRows(journal.project_id, page.rows, teamsHome);
-        // Count only what actually landed. The increment follows the append, so a
-        // crash mid-write leaves a torn line the file carries and this does not —
-        // which is why the apply's check is "at least", not equality.
-        stagedRows += appended;
-        if (page.done) {
-          advanceResidencyPhase(journal.project_id, 'pulling', { cursors: { pull: CURSOR_DONE }, staged_rows: stagedRows }, teamsHome);
-          break;
-        }
-        cursor = page.next_cursor;
-        advanceResidencyPhase(journal.project_id, 'pulling', { cursors: { pull: cursor ?? '' }, staged_rows: stagedRows }, teamsHome);
-        await yieldToLoop();
-      }
+      return;
     }
 
-    // Re-confirm at the TOP of this synchronous critical section before the
-    // irreversible flip: a concurrent abort during the pull awaits may have
-    // cleared the journal (leaving the project attached, unchanged). Since both
-    // this section and the abort are synchronous, this read is race-free — bail
-    // unless the journal still exists and is still pulling.
-    const beforeFlip = readResidencyJournal(journal.project_id, teamsHome);
-    if (!beforeFlip || beforeFlip.phase !== 'pulling') return;
+    let prep: DetachArtifactPrepareResponse;
+    try { prep = await artifactClient.prepare(target, deps.machineId); }
+    catch (err) { recordJournalFailure(journal, err, deps, teamsHome); return; }
+    if (prep.status !== 200) {
+      recordJournalFailure(journal, new Error(prep.message ?? `host returned ${prep.status} preparing the detach artifact`), deps, teamsHome);
+      return;
+    }
+    if (!prep.ready || !prep.sha256 || typeof prep.size !== 'number') {
+      // Building is PROGRESS: clear any stale failure so the stall surface
+      // doesn't misread an actively-preparing host, and poll next tick.
+      clearResidencyFailure(journal.project_id, teamsHome);
+      return;
+    }
 
-    // Flip: the journal already records target_grove_id + root (written at begin),
-    // so a crash between these two steps re-drives idempotently next tick.
+    // Durable resume: the partial download and its offset survive crashes and
+    // ticks. A sha change on the host (restart/TTL/rebuild) resets both.
+    const partialPath = path.join(residencyDirFor(teamsHome), `artifact-${journal.project_id}.partial`);
+    let offset = journal.artifact_sha256 === prep.sha256 && typeof journal.artifact_offset === 'number'
+      ? journal.artifact_offset
+      : 0;
+    if (offset === 0) {
+      fs.mkdirSync(path.dirname(partialPath), { recursive: true });
+      fs.writeFileSync(partialPath, '');
+      advanceResidencyPhase(journal.project_id, 'fetching', { artifact_sha256: prep.sha256, artifact_offset: 0 }, teamsHome);
+    } else if (!fs.existsSync(partialPath) || fs.statSync(partialPath).size !== offset) {
+      // The partial no longer matches the durable offset — start this
+      // transfer over rather than assembling a corrupt artifact.
+      offset = 0;
+      fs.mkdirSync(path.dirname(partialPath), { recursive: true });
+      fs.writeFileSync(partialPath, '');
+      advanceResidencyPhase(journal.project_id, 'fetching', { artifact_sha256: prep.sha256, artifact_offset: 0 }, teamsHome);
+    }
+
+    for (;;) {
+      let piece: DetachArtifactChunkResponse;
+      try { piece = await artifactClient.chunk(target, deps.machineId, offset, prep.sha256); }
+      catch (err) { recordJournalFailure(journal, err, deps, teamsHome); return; }
+      if (piece.restart) {
+        fs.rmSync(partialPath, { force: true });
+        advanceResidencyPhase(journal.project_id, 'fetching', { artifact_sha256: undefined, artifact_offset: undefined }, teamsHome);
+        return; // re-prepare next tick
+      }
+      if (piece.status !== 200 || !piece.chunk) {
+        recordJournalFailure(journal, new Error(`host returned ${piece.status} for artifact chunk at ${offset}`), deps, teamsHome);
+        return; // resume from the durable offset next tick
+      }
+      // Abort re-check across the network await: bail before any further
+      // durable step if the journal is gone or moved on.
+      const live = readResidencyJournal(journal.project_id, teamsHome);
+      if (!live || live.phase !== 'fetching') { return; }
+      fs.appendFileSync(partialPath, piece.chunk);
+      offset += piece.chunk.length;
+      advanceResidencyPhase(journal.project_id, 'fetching', { artifact_offset: offset }, teamsHome);
+      if (piece.next_offset === null) break;
+      await yieldToLoop();
+    }
+
+    // The transfer contract: whole-file digest (and size) must match before
+    // ANYTHING durable happens beyond the resumable partial. A torn assembly
+    // is refused whole and restarted — there is no partial-apply window.
+    const assembled = fs.readFileSync(partialPath, 'utf-8');
+    const digest = createHash('sha256').update(assembled, 'utf-8').digest('hex');
+    if (digest !== prep.sha256 || Buffer.byteLength(assembled, 'utf-8') !== prep.size) {
+      fs.rmSync(partialPath, { force: true });
+      advanceResidencyPhase(journal.project_id, 'fetching', { artifact_sha256: undefined, artifact_offset: undefined }, teamsHome);
+      recordJournalFailure(journal, new Error('detach artifact failed digest verification — refetching'), deps, teamsHome);
+      return;
+    }
+
+    // Stamp the MEMBER's target grove lineage so the saved artifact is a
+    // first-class backup the cross-Grove restore gate keeps protecting.
+    const stamped = stampArtifactLineage(assembled, targetGroveId);
+    const backupDir = resolveGroveBackupDir(targetGroveId, { mycoHome: deps.mycoHome });
+    fs.mkdirSync(backupDir, { recursive: true });
+    const artifactPath = path.join(backupDir, `${deps.machineId}__detach-${memberHostTag(journal.host_id)}__${epochSeconds()}.sql`);
+    fs.writeFileSync(artifactPath, stamped, 'utf-8');
+    fs.rmSync(partialPath, { force: true });
+
+    // Re-confirm after the awaits: a concurrent abort (synchronous, on the
+    // localhost route) may have cleared this journal. The artifact file is
+    // just a backup copy — harmless to leave behind on a bail.
+    const still = readResidencyJournal(journal.project_id, teamsHome);
+    if (!still || still.phase !== 'fetching') return;
+    advanceResidencyPhase(journal.project_id, 'restoring', { backup_ref: artifactPath }, teamsHome);
+    const refreshed = readResidencyJournal(journal.project_id, teamsHome);
+    if (!refreshed) return;
+    journal = refreshed;
+  }
+
+  if (journal.phase === 'restoring') {
+    const artifactPath = journal.backup_ref;
+    if (!artifactPath || !fs.existsSync(artifactPath)) {
+      // Artifact gone before the restore (manual cleanup, disk loss). Nothing
+      // has flipped — go fetch a fresh one rather than wedging here.
+      advanceResidencyPhase(journal.project_id, 'fetching', { backup_ref: null }, teamsHome);
+      return;
+    }
+    try {
+      deps.withGroveDb(targetGroveId, (db) => { restoreBackup(db, artifactPath); });
+    } catch (err) {
+      recordJournalFailure(journal, err, deps, teamsHome);
+      return;
+    }
+    // Flip AFTER the restore lands: routing goes local only once the history
+    // is already there. Both steps are idempotent; a crash between them
+    // re-drives cleanly next tick.
     detachProject(journal.host_id, journal.project_id, lockNamespace);
     registerProjectInGrove(targetGroveId, {
       projectId: journal.project_id,
       projectName: journal.project_name,
       projectRoot: journal.root,
     }, deps.mycoHome);
-    advanceResidencyPhase(journal.project_id, 'applying', {}, teamsHome);
-    const refreshed = readResidencyJournal(journal.project_id, teamsHome);
-    if (!refreshed) return;
-    journal = refreshed;
-  }
-
-  if (journal.phase === 'applying') {
-    const applyRows = deps.applyStagedRows;
-    if (!applyRows) {
-      recordJournalFailure(journal, new Error('residency apply engine not wired'), deps, teamsHome);
-      return;
-    }
-    // (6) apply staged pages into the local Grove DB via the shared engine, one
-    // transaction. Post-flip live capture already in the DB wins over older host
-    // snapshots — the engine's if-newer / insert-only rules guarantee it. Tables
-    // apply in the engine's canonical FK-topological order (RESIDENCY_TABLE_ORDER),
-    // NOT the arbitrary readdirSync order the staging enumerator returns — a child
-    // before its parent throws in the immediate-FK transaction and would wedge the
-    // retry.
-    const listed = listResidencyStagingTables(journal.project_id, teamsHome);
-    if (listed.state === 'unknown') {
-      // The staging directory could not be enumerated. Applying what that
-      // returns and then deleting the tree would destroy the entire pulled
-      // dataset un-applied, so stop and retry on a later tick.
-      recordJournalFailure(journal, listed.error, deps, teamsHome);
-      return;
-    }
-    const staged = new Set(listed.state === 'present' ? listed.value : []);
-    const ordered = RESIDENCY_TABLE_ORDER.filter((table) => staged.has(table));
-    // An unexpected staged table (outside the allow-listed residency set) applies
-    // last; the engine rejects an unknown table, surfacing the drift loudly rather
-    // than dropping data silently.
-    const extras = [...staged].filter((table) => !RESIDENCY_TABLE_ORDER.includes(table));
-
-    // Read every table BEFORE opening the write transaction: a read that fails
-    // partway through would otherwise apply a prefix of the tables and advance,
-    // and the unread remainder would be deleted with the tree.
-    const pages: Array<{ table: string; rows: Record<string, unknown>[] }> = [];
-    let stagedLinesSeen = 0;
-    for (const table of [...ordered, ...extras]) {
-      const page = readResidencyStagingRows(journal.project_id, table, teamsHome);
-      if (page.state === 'unknown') {
-        recordJournalFailure(journal, page.error, deps, teamsHome);
-        return;
-      }
-      if (page.state === 'absent') continue;
-      stagedLinesSeen += page.value.lines;
-      pages.push({ table, rows: page.value.rows });
-    }
-
-    // The staging files must still hold at least every line the pull recorded
-    // writing. Fewer means the tree was truncated or partly unreadable, and the
-    // apply would silently drop the difference before the tree is deleted.
-    const expected = journal.staged_rows ?? 0;
-    if (stagedLinesSeen < expected) {
-      recordJournalFailure(
-        journal,
-        new Error(`residency staging holds ${stagedLinesSeen} line(s) but the pull recorded ${expected}`),
-        deps,
-        teamsHome,
-      );
-      return;
-    }
-
-    deps.withGroveDb(targetGroveId, (db) => {
-      db.transaction(() => {
-        for (const page of pages) applyRows(db, page.table, page.rows, journal.project_id);
-      })();
-    });
-    // Advance to the terminal sweep. The journal PERSISTS through `rehoming` so a
-    // crash mid-sweep resumes it, and divert is now OFF (rehoming ∉ divert-active)
-    // so no new event lands in the host-Grove buffer after the flip.
     advanceResidencyPhase(journal.project_id, 'rehoming', {}, teamsHome);
     const swept = readResidencyJournal(journal.project_id, teamsHome);
     if (!swept) return;
@@ -612,21 +679,20 @@ async function runDetachTransition(
   }
 
   if (journal.phase === 'rehoming') {
-    // (7) re-home the events diverted under the host Grove during the window into
-    // the local buffer, and (8) purge the host drain stores. Both idempotent, so
-    // a crash mid-sweep re-runs cleanly. The journal is cleared ONLY after they
-    // complete — that is what makes the sweep itself crash-resumable (clearing it
-    // earlier would orphan any residual buffered events with no journal to drive
-    // the resume).
+    // (7) re-home the events diverted under the host Grove during the window
+    // into the local buffer, and (8) purge the member-side host drain stores.
+    // Known residual (same class as the retired pull): a capture that resolved
+    // the host buffer path before the divert flipped off but writes after this
+    // scan leaves bytes no enumerator revisits once the journal clears —
+    // part of the documented as-of-disconnect loss window.
+    // Both idempotent; the journal is cleared ONLY after they complete (an
+    // earlier clear would orphan residual buffered events with no journal to
+    // drive the resume).
     const rehomed = rehomeBufferedEvents(
       resolveProjectBufferDir(journal.divert_grove_id, journal.project_id, deps.mycoHome),
       resolveProjectBufferDir(targetGroveId, journal.project_id, deps.mycoHome),
     );
     if (!rehomed.complete) {
-      // Clearing now would strand these events in a host-Grove buffer directory
-      // that no enumerator visits once the attach ref is gone — silent capture
-      // loss under a "transition complete" log. The journal IS the retry path,
-      // so it has to outlive the failure.
       recordJournalFailure(journal, rehomed.error, deps, teamsHome);
       return;
     }
@@ -636,6 +702,21 @@ async function runDetachTransition(
       createFsReplayStore().purgeProject(journal.host_id, journal.project_id);
     } catch { /* best-effort machine-scoped cleanup */ }
 
+    // The goodbye: the host releases the departing machine's claims, prunes
+    // its transcript trees, and stub-deregisters when this was the last
+    // member. Best-effort NOW; on failure a durable marker retries it on
+    // later passes — the project's write lease is fully local from here and
+    // must not wait on host reachability for bookkeeping.
+    let goodbyeOk = false;
+    const target = resolveTarget(journal.host_id, journal.divert_grove_id, journal.project_id);
+    if (target) {
+      try { goodbyeOk = (await goodbyeTransport(target, deps.machineId)).status === 200; }
+      catch { /* marker below */ }
+    }
+    if (!goodbyeOk) {
+      writeGoodbyeMarker(journal.host_id, journal.divert_grove_id, journal.project_id, teamsHome);
+    }
+
     advanceResidencyPhase(journal.project_id, 'done', {}, teamsHome);
     clearResidencyJournal(journal.project_id, teamsHome);
     clearResidencyStaging(journal.project_id, teamsHome);
@@ -643,8 +724,65 @@ async function runDetachTransition(
     releaseResidencyLease(journal.project_id, deps.mycoHome);
 
     deps.logger?.info(LOG_KINDS.RESIDENCY_COMPLETE, 'residency detach transition complete', {
-      project_id: journal.project_id, host_id: journal.host_id,
+      project_id: journal.project_id, host_id: journal.host_id, artifact: journal.backup_ref,
     });
+  }
+}
+
+/** The residency dir (journals, goodbye markers, transfer partials). */
+function residencyDirFor(teamsHome: string | undefined): string {
+  return path.dirname(residencyJournalPath('proj_00000000000000000000000000000000', teamsHome));
+}
+
+/** Durable goodbye marker — `goodbye-<project>.json` beside the journals. The
+ *  pass-level retry consumes it; listResidencyJournals skips it (no `phase`). */
+function goodbyeMarkerPath(projectId: string, teamsHome: string | undefined): string {
+  return path.join(residencyDirFor(teamsHome), `goodbye-${projectId}.json`);
+}
+
+function writeGoodbyeMarker(hostId: string, groveId: string, projectId: string, teamsHome: string | undefined): void {
+  const filePath = goodbyeMarkerPath(projectId, teamsHome);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify({ host_id: hostId, grove_id: groveId, project_id: projectId }), 'utf-8');
+}
+
+/** Retry pending goodbyes for completed detaches. A marker whose host record is
+ *  gone (the user left the host) is dropped — there is nobody to notify. */
+async function retryPendingGoodbyes(
+  deps: ResidencyDrainDeps,
+  goodbyeTransport: DetachGoodbyeTransport,
+  resolveTarget: ResolveResidencyTarget,
+  teamsHome: string | undefined,
+): Promise<void> {
+  const dir = path.dirname(residencyJournalPath('proj_00000000000000000000000000000000', teamsHome));
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith('goodbye-') || !entry.name.endsWith('.json')) continue;
+    const filePath = path.join(dir, entry.name);
+    let marker: { host_id?: unknown; grove_id?: unknown; project_id?: unknown } = {};
+    try { marker = JSON.parse(fs.readFileSync(filePath, 'utf-8')); } catch { fs.rmSync(filePath, { force: true }); continue; }
+    if (typeof marker.host_id !== 'string' || typeof marker.grove_id !== 'string' || typeof marker.project_id !== 'string') {
+      fs.rmSync(filePath, { force: true });
+      continue;
+    }
+    try {
+      const target = resolveTarget(marker.host_id, marker.grove_id, marker.project_id);
+      if (!target) {
+        // Null is NOT proof the membership is gone — a mid-rotation snapshot
+        // resolves null too. Drop the marker only on positive absence of the
+        // host's durable directory (leave removes it); otherwise keep it.
+        if (!fs.existsSync(resolveHostDir(marker.host_id))) {
+          fs.rmSync(filePath, { force: true });
+        } else if (shouldLogOncePerInterval(`residency.goodbye_unresolved:${marker.project_id}`, FAILURE_LOG_INTERVAL_MS, Date.now())) {
+          deps.logger?.warn(LOG_KINDS.RESIDENCY_COMPLETE, 'goodbye pending — host membership unresolved, keeping the marker', {
+            project_id: marker.project_id, host_id: marker.host_id,
+          });
+        }
+        continue;
+      }
+      if ((await goodbyeTransport(target, deps.machineId)).status === 200) fs.rmSync(filePath, { force: true });
+    } catch { /* keep the marker; retry next pass */ }
   }
 }
 

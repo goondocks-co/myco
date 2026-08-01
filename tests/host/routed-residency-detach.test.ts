@@ -1,11 +1,12 @@
 /**
- * Team Host — host detach-pull (Phase F T3).
+ * Team Host — host side of the HYBRID detach (artifact + goodbye routes).
  *
- * Covers the pull enumerator (machine scoping, publications-regardless-of-machine,
- * FK-topological order, cursor resume mid-table, identical page re-request), the
- * true-stub predicate, and the handler's exactly-once-ish side effects (first-page
- * claim release, done-page transcript purge + stub deregister + status-cache
- * invalidation), plus tenancy/body validation.
+ * Covers the artifact handler (whole-project scope across ALL machines, host
+ * roster excluded, digest correctness, lineage neutralization proven against
+ * grove-pathed DBs on both sides), the goodbye handler's idempotent side
+ * effects (claims release, machine-scoped transcript prune, true-stub
+ * deregister + status-cache invalidation), the stub predicate, and tenancy
+ * validation.
  *
  * Hermetic: an in-memory DB (`setupTestDb`) for rows/claims; a fresh MYCO_HOME +
  * MYCO_TEAM_HOME for the registry deregister + transcript trees.
@@ -18,13 +19,19 @@ import { fileURLToPath } from 'node:url';
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { classifyRouteStamp } from '@myco/host/routing.js';
-import { ROUTED_RESIDENCY_PULL_PATH } from '@myco/host/residency-journal.js';
+import { ROUTED_DETACH_ARTIFACT_PATH, ROUTED_DETACH_COMPLETE_PATH } from '@myco/host/residency-journal.js';
 import { getDatabase } from '@myco/db/client.js';
+import { projectHasForeignMachineRows } from '@myco/db/queries/residency-pull.js';
 import {
-  pullResidencyPage,
-  projectHasForeignMachineRows,
-} from '@myco/db/queries/residency-pull.js';
-import { createRoutedResidencyPullHandler } from '@myco/host/routed-residency-pull.js';
+  _clearDetachArtifactCacheForTests,
+  createRoutedDetachArtifactHandler,
+  createRoutedDetachCompleteHandler,
+  neutralizeArtifactLineage,
+} from '@myco/host/routed-residency-detach.js';
+import { createHash } from 'node:crypto';
+import { Database as BunDatabase } from 'bun:sqlite';
+import { createSchema } from '@myco/db/schema.js';
+import { createBackup, restoreBackup, projectScope, DETACH_ARTIFACT_TABLES } from '@myco/backup/engine.js';
 import {
   clearGroveRegistryCaches,
   createGrove,
@@ -100,128 +107,154 @@ function reqCtx(groveId: string, projectId: string, machineId: string): MycoRequ
 // (0) Route wiring
 // ---------------------------------------------------------------------------
 
-describe('residency-pull route wiring', () => {
-  test('the pull route is collect-stamped with the Collection capability', () => {
-    expect(classifyRouteStamp('POST', ROUTED_RESIDENCY_PULL_PATH)).toEqual({
-      stamp: 'collect',
-      capability: 'Collection',
-    });
+describe('detach route wiring', () => {
+  test('both detach routes are collect-stamped with the Collection capability', () => {
+    expect(classifyRouteStamp('POST', ROUTED_DETACH_ARTIFACT_PATH)).toEqual({ stamp: 'collect', capability: 'Collection' });
+    expect(classifyRouteStamp('POST', ROUTED_DETACH_COMPLETE_PATH)).toEqual({ stamp: 'collect', capability: 'Collection' });
   });
 
-  test('the daemon mounts the pull handler at ROUTED_RESIDENCY_PULL_PATH', () => {
+  test('the daemon mounts both handlers at their path constants', () => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
     const mainSrc = fs.readFileSync(path.join(repoRoot, 'packages', 'myco', 'src', 'daemon', 'main.ts'), 'utf8');
-    const match = mainSrc.match(/\.registerRoute\(\s*'POST'\s*,\s*'([^']+)'\s*,\s*createRoutedResidencyPullHandler/);
-    expect(match, 'no registerRoute(POST, <path>, createRoutedResidencyPullHandler(...)) in daemon/main.ts').not.toBeNull();
-    expect(match![1]).toBe(ROUTED_RESIDENCY_PULL_PATH);
+    const artifact = mainSrc.match(/\.registerRoute\(\s*'POST'\s*,\s*'([^']+)'\s*,\s*createRoutedDetachArtifactHandler/);
+    expect(artifact, 'artifact handler not mounted').not.toBeNull();
+    expect(artifact![1]).toBe(ROUTED_DETACH_ARTIFACT_PATH);
+    const complete = mainSrc.match(/\.registerRoute\(\s*'POST'\s*,\s*'([^']+)'\s*,\s*createRoutedDetachCompleteHandler/);
+    expect(complete, 'complete handler not mounted').not.toBeNull();
+    expect(complete![1]).toBe(ROUTED_DETACH_COMPLETE_PATH);
+  });
+
+  test('the retired pull path answers a guidance tombstone, never the old handler', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const mainSrc = fs.readFileSync(path.join(repoRoot, 'packages', 'myco', 'src', 'daemon', 'main.ts'), 'utf8');
+    // The literal path stays mounted — as a 410 tombstone with actionable
+    // copy for an OLD member mid-detach — and the retired handler is gone.
+    expect(mainSrc).toContain("'residency_pull_retired'");
+    expect(mainSrc).not.toContain('createRoutedResidencyPullHandler');
   });
 });
 
 // ---------------------------------------------------------------------------
-// (1) Pull enumerator
+// (1) Artifact handler
 // ---------------------------------------------------------------------------
 
-describe('residency detach-pull enumeration', () => {
+describe('detach artifact handler', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
-  beforeEach(() => { cleanTestDb(); });
+  beforeEach(() => { cleanTestDb(); initTeamContext(HOST_MACHINE); _clearDetachArtifactCacheForTests(); });
+  afterEach(() => { resetTeamContext(); });
 
-  test('returns only the caller machine rows; host and other-member rows are excluded', () => {
-    seedNoFk(() => {
-      insertSession('s_a1', PROJ, MEMBER_A);
-      insertSession('s_a2', PROJ, MEMBER_A);
-      insertSession('s_b1', PROJ, MEMBER_B);       // another member
-      insertSession('s_host', PROJ, HOST_MACHINE); // host-derived
-      insertSession('s_other', PROJ2, MEMBER_A);   // different project
-    });
-    const page = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A });
-    const sessionIds = page.rows.filter((r) => r.table === 'sessions').map((r) => r.row.id).sort();
-    expect(sessionIds).toEqual(['s_a1', 's_a2']);
-    expect(page.done).toBe(true);
-  });
-
-  test('includes content_publications for the project artifacts regardless of machine', () => {
-    seedNoFk(() => {
-      insertSkillRecord('sk1', PROJ, MEMBER_A);
-      insertSkillRecord('sk_other', PROJ2, MEMBER_A);
-      insertPublication('sk1', 3, HOST_MACHINE);      // host-published, still returned
-      insertPublication('sk_other', 1, MEMBER_A);     // other project's artifact — excluded
-    });
-    const page = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A });
-    const pubs = page.rows.filter((r) => r.table === 'content_publications');
-    expect(pubs).toHaveLength(1);
-    expect(pubs[0].row.artifact_id).toBe('sk1');
-    expect(pubs[0].row.published_generation).toBe(3);
-  });
-
-  test('emits tables in FK-topological order (parents before children)', () => {
-    seedNoFk(() => {
-      insertSpore('sp1', PROJ, MEMBER_A);
-      insertSession('s_a1', PROJ, MEMBER_A);
-    });
-    const page = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A });
-    const tables = page.rows.map((r) => r.table);
-    expect(tables.indexOf('sessions')).toBeLessThan(tables.indexOf('spores'));
-  });
-
-  test('resumes mid-table on the cursor and re-requests a page identically', () => {
-    seedNoFk(() => {
-      insertSession('s_a1', PROJ, MEMBER_A);
-      insertSession('s_a2', PROJ, MEMBER_A);
-      insertSession('s_a3', PROJ, MEMBER_A);
-    });
-    const first = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A, maxRows: 2 });
-    expect(first.rows).toHaveLength(2);
-    expect(first.done).toBe(false);
-    expect(first.nextCursor).not.toBeNull();
-
-    // Re-request the SAME first page → identical rows (lost-ack safety).
-    const firstAgain = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A, maxRows: 2 });
-    expect(firstAgain.rows.map((r) => r.row.id)).toEqual(first.rows.map((r) => r.row.id));
-
-    const second = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A, cursor: first.nextCursor, maxRows: 2 });
-    const allIds = [...first.rows, ...second.rows].map((r) => r.row.id).sort();
-    expect(allIds).toEqual(['s_a1', 's_a2', 's_a3']);
-    expect(second.done).toBe(true);
-  });
-
-  test('resumes across a table boundary (sessions exhausted, cursor crosses into spores)', () => {
-    seedNoFk(() => {
-      insertSession('s_a1', PROJ, MEMBER_A);
-      insertSession('s_a2', PROJ, MEMBER_A);
-      insertSpore('sp_a1', PROJ, MEMBER_A);
-      insertSpore('sp_a2', PROJ, MEMBER_A);
-    });
-    // A page size of 2 fills exactly at the sessions boundary, so the next page must
-    // resume from an end-of-sessions cursor and cross into spores.
-    const collected: { table: string; id: unknown }[] = [];
-    let cursor: string | null = null;
-    let pages = 0;
-    for (;;) {
-      const page = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A, cursor, maxRows: 2 });
-      pages += 1;
-      for (const r of page.rows) collected.push({ table: r.table, id: r.row.id });
-      if (page.done) break;
-      cursor = page.nextCursor;
-      expect(pages).toBeLessThan(10); // never-advancing cursor guard
+  /** Drive the full prepare/chunk protocol and reassemble the artifact. */
+  async function fetchArtifact(): Promise<{ status: number; artifact: string; sha256: string; size: number }> {
+    const handler = createRoutedDetachArtifactHandler({});
+    const call = async (body: Record<string, unknown>) => {
+      const res = await handler({
+        body, query: {}, params: {}, pathname: ROUTED_DETACH_ARTIFACT_PATH,
+        requestContext: reqCtx('grove_x', PROJ, MEMBER_A),
+      });
+      return { status: res.status ?? 200, body: res.body as Record<string, unknown> };
+    };
+    const prep = await call({ op: 'prepare' });
+    if (prep.status !== 200 || prep.body.ready !== true) {
+      return { status: prep.status, artifact: '', sha256: '', size: 0 };
     }
-    expect(pages).toBeGreaterThan(1); // it actually paged across the boundary
-    expect(collected.filter((r) => r.table === 'sessions').map((r) => r.id).sort()).toEqual(['s_a1', 's_a2']);
-    expect(collected.filter((r) => r.table === 'spores').map((r) => r.id).sort()).toEqual(['sp_a1', 'sp_a2']);
-    expect(collected).toHaveLength(4); // every row exactly once, no dupes across pages
+    const sha256 = prep.body.sha256 as string;
+    const size = prep.body.size as number;
+    const parts: Buffer[] = [];
+    let offset = 0;
+    for (;;) {
+      const piece = await call({ op: 'chunk', offset, sha256 });
+      expect(piece.status).toBe(200);
+      expect(piece.body.restart).not.toBe(true);
+      parts.push(Buffer.from(piece.body.chunk as string, 'base64'));
+      const next = piece.body.next_offset as number | null;
+      if (next === null) break;
+      offset = next;
+    }
+    return { status: 200, artifact: Buffer.concat(parts).toString('utf-8'), sha256, size };
+  }
+
+  test('the artifact carries the WHOLE project — every machine\'s rows — and nothing from other projects', async () => {
+    seedNoFk(() => {
+      insertSession('s_a1', PROJ, MEMBER_A);
+      insertSession('s_b1', PROJ, MEMBER_B);       // another member: the project moves whole (rev 4 C1)
+      insertSession('s_host', PROJ, HOST_MACHINE); // host intelligence rows too
+      insertSession('s_other', PROJ2, MEMBER_A);   // different project — excluded
+    });
+    const res = await fetchArtifact();
+    expect(res.status).toBe(200);
+    const artifact = res.artifact;
+    expect(artifact).toContain("'s_a1'");
+    expect(artifact).toContain("'s_b1'");
+    expect(artifact).toContain("'s_host'");
+    expect(artifact).not.toContain("'s_other'");
   });
 
-  test('an empty project pulls one done page with no rows', () => {
-    const page = pullResidencyPage(getDatabase(), { projectId: PROJ, machineId: MEMBER_A });
-    expect(page.rows).toHaveLength(0);
-    expect(page.done).toBe(true);
-    expect(page.nextCursor).toBeNull();
+  test('the artifact NEVER carries the host roster', async () => {
+    seedNoFk(() => {
+      insertSession('s_a1', PROJ, MEMBER_A);
+      getDatabase().prepare(`INSERT INTO team_members (id, "user", machine_id) VALUES ('tm1', 'operator', 'host')`).run();
+    });
+    const res = await fetchArtifact();
+    expect(res.artifact).not.toContain('team_members');
+  });
+
+  test('sha256 and size describe the exact artifact bytes', async () => {
+    seedNoFk(() => { insertSession('s_a1', PROJ, MEMBER_A); });
+    const res = await fetchArtifact();
+    expect(res.sha256).toBe(createHash('sha256').update(res.artifact, 'utf-8').digest('hex'));
+    expect(res.size).toBe(Buffer.byteLength(res.artifact, 'utf-8'));
+  });
+
+  test('rejects a request missing tenancy', async () => {
+    const handler = createRoutedDetachArtifactHandler({});
+    const res = await handler({
+      body: { op: 'prepare' }, query: {}, params: {}, pathname: ROUTED_DETACH_ARTIFACT_PATH,
+      requestContext: { groveId: 'grove_x', projectId: null, machineId: MEMBER_A } as MycoRequestContext,
+    });
+    expect(res.status).toBe(400);
   });
 });
 
 // ---------------------------------------------------------------------------
-// (2) True-stub predicate
+// (1b) Lineage neutralization — proven against grove-pathed DBs on BOTH sides
 // ---------------------------------------------------------------------------
+
+describe('artifact lineage neutralization', () => {
+  test('a host-grove dump restores into a DIFFERENT member grove only after neutralization', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-lineage-'));
+    try {
+      const hostDbPath = path.join(home, 'groves', 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'myco.db');
+      const memberDbPath = path.join(home, 'groves', 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'myco.db');
+      fs.mkdirSync(path.dirname(hostDbPath), { recursive: true });
+      fs.mkdirSync(path.dirname(memberDbPath), { recursive: true });
+      const hostDb = new BunDatabase(hostDbPath);
+      const memberDb = new BunDatabase(memberDbPath);
+      createSchema(hostDb, 'host');
+      createSchema(memberDb, 'member');
+      hostDb.run('PRAGMA foreign_keys = OFF');
+      hostDb.prepare(
+        `INSERT INTO sessions (id, agent, project_id, started_at, status, created_at, machine_id)
+         VALUES ('s1', 'claude', ?, 1, 'active', 1, 'm')`,
+      ).run(PROJ);
+      const dump = createBackup(hostDb, path.join(home, 'dumps'), 'host', projectScope(assertGroveProjectId(PROJ)), 'detach', DETACH_ARTIFACT_TABLES);
+      const raw = fs.readFileSync(dump, 'utf-8');
+      expect(raw).toContain('-- grove_id:'); // the host lineage IS emitted for a grove-pathed DB
+
+      // Un-neutralized: the member-side lineage gate refuses the cross-grove restore.
+      expect(() => restoreBackup(memberDb, dump)).toThrow();
+
+      // Neutralized: restores cleanly — the detach artifact is cross-grove BY DESIGN.
+      const cleanPath = path.join(home, 'dumps', 'clean.sql');
+      fs.writeFileSync(cleanPath, neutralizeArtifactLineage(raw), 'utf-8');
+      restoreBackup(memberDb, cleanPath);
+      const c = (memberDb.prepare(`SELECT COUNT(*) c FROM sessions WHERE id = 's1'`).get() as { c: number }).c;
+      expect(c).toBe(1);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('projectHasForeignMachineRows', () => {
   beforeAll(() => { setupTestDb(); });
@@ -249,7 +282,7 @@ describe('projectHasForeignMachineRows', () => {
 // (3) Handler side effects
 // ---------------------------------------------------------------------------
 
-describe('detach-pull handler side effects', () => {
+describe('detach goodbye handler side effects', () => {
   let home: string;
   let grove: GroveRecord;
   let projectId: string;
@@ -276,34 +309,34 @@ describe('detach-pull handler side effects', () => {
     }, home);
   }
 
-  async function pull(cursor: string | null): Promise<{ status: number; body: Record<string, unknown> }> {
-    const handler = createRoutedResidencyPullHandler({ mycoHome: home });
+  async function goodbye(asMachine: string = MEMBER_A): Promise<{ status: number; body: Record<string, unknown> }> {
+    const handler = createRoutedDetachCompleteHandler({ mycoHome: home });
     const res = await handler({
-      body: { cursor }, query: {}, params: {}, pathname: '/routed-capture/residency-pull',
-      requestContext: reqCtx(grove.id, projectId, MEMBER_A),
+      body: {}, query: {}, params: {}, pathname: ROUTED_DETACH_COMPLETE_PATH,
+      requestContext: reqCtx(grove.id, projectId, asMachine),
     });
     return { status: res.status ?? 200, body: res.body as Record<string, unknown> };
   }
 
-  test('releases the caller machine claims on the first page, idempotently', async () => {
+  test('releases the departing machine claims, idempotently', async () => {
     registerHosted();
     seedNoFk(() => {
       insertActiveClaim('cl_a', 'sk1', projectId, MEMBER_A);   // caller's — released
       insertActiveClaim('cl_b', 'sk2', projectId, MEMBER_B);   // other member — untouched
       insertActiveClaim('cl_a2', 'sk3', PROJ2, MEMBER_A);      // caller, other project — untouched
     });
-    await pull(null);
+    await goodbye();
     expect(claimState('cl_a')).toBe('released');
     expect(claimState('cl_b')).toBe('active');
     expect(claimState('cl_a2')).toBe('active');
 
-    // Re-pull the first page — already released, no error, still released.
-    const again = await pull(null);
+    // A replayed goodbye — already released, no error, still released.
+    const again = await goodbye();
     expect(again.status).toBe(200);
     expect(claimState('cl_a')).toBe('released');
   });
 
-  test('done page on a true stub deregisters the hosted row', async () => {
+  test('a goodbye on a true stub deregisters the hosted row', async () => {
     registerHosted();
     seedNoFk(() => {
       insertSession('s_a', projectId, MEMBER_A);        // caller's
@@ -311,8 +344,8 @@ describe('detach-pull handler side effects', () => {
     });
     expect(getRegisteredProjectInGrove(grove.id, projectId, home)).not.toBeNull();
 
-    const res = await pull(null); // small project → single done page
-    expect(res.body.done).toBe(true);
+    const res = await goodbye();
+    expect(res.status).toBe(200);
     expect(getRegisteredProjectInGrove(grove.id, projectId, home)).toBeNull();
   });
 
@@ -322,7 +355,7 @@ describe('detach-pull handler side effects', () => {
     // project. That member's first forwarded capture must re-register it.
     registerHosted();
     seedNoFk(() => insertSession('s_a', projectId, MEMBER_A)); // only the departing caller
-    await pull(null);
+    await goodbye();
     expect(getRegisteredProjectInGrove(grove.id, projectId, home)).toBeNull(); // deregistered
 
     // The (previously never-captured) member's first collect capture hits the seam.
@@ -337,18 +370,18 @@ describe('detach-pull handler side effects', () => {
     expect(getRegisteredProjectInGrove(grove.id, projectId, home)).not.toBeNull();
   });
 
-  test('done page with another member still present does NOT deregister', async () => {
+  test('a goodbye with another member still present does NOT deregister', async () => {
     registerHosted();
     seedNoFk(() => {
       insertSession('s_a', projectId, MEMBER_A);
       insertSpore('sp_b', projectId, MEMBER_B); // another member's row
     });
-    const res = await pull(null);
-    expect(res.body.done).toBe(true);
+    const res = await goodbye();
+    expect(res.status).toBe(200);
     expect(getRegisteredProjectInGrove(grove.id, projectId, home)).not.toBeNull();
   });
 
-  test('done page purges the departing project session transcript trees only', async () => {
+  test('a goodbye purges the departing machine\'s session transcript trees only', async () => {
     registerHosted();
     seedNoFk(() => {
       insertSession('s_a', projectId, MEMBER_A);
@@ -363,16 +396,32 @@ describe('detach-pull handler side effects', () => {
     fs.writeFileSync(path.join(projectTree, 't.jsonl'), 'x');
     fs.writeFileSync(path.join(unrelatedTree, 't.jsonl'), 'y');
 
-    const res = await pull(null);
-    expect(res.body.done).toBe(true);
+    const res = await goodbye();
+    expect(res.status).toBe(200);
     expect(fs.existsSync(projectTree)).toBe(false);   // the project's session tree is purged
     expect(fs.existsSync(unrelatedTree)).toBe(true);  // an unrelated session tree survives
   });
 
+  test('the LAST member reclaim fires even though earlier members\' rows stay (departed set)', async () => {
+    registerHosted();
+    seedNoFk(() => {
+      insertSession('s_a', projectId, MEMBER_A);
+      insertSpore('sp_b', projectId, MEMBER_B);
+    });
+    // A departs first: B still present → no deregister.
+    await goodbye(MEMBER_A);
+    expect(getRegisteredProjectInGrove(grove.id, projectId, home)).not.toBeNull();
+    // B departs: A's rows remain forever (copy-out) but A is in the departed
+    // set — without it this reclaim could never fire for any project two
+    // machines ever touched.
+    await goodbye(MEMBER_B);
+    expect(getRegisteredProjectInGrove(grove.id, projectId, home)).toBeNull();
+  });
+
   test('rejects a request missing tenancy', async () => {
-    const handler = createRoutedResidencyPullHandler({ mycoHome: home });
+    const handler = createRoutedDetachCompleteHandler({ mycoHome: home });
     const res = await handler({
-      body: { cursor: null }, query: {}, params: {}, pathname: '/routed-capture/residency-pull',
+      body: {}, query: {}, params: {}, pathname: ROUTED_DETACH_COMPLETE_PATH,
       requestContext: { groveId: grove.id, projectId: null, machineId: MEMBER_A } as MycoRequestContext,
     });
     expect(res.status).toBe(400);

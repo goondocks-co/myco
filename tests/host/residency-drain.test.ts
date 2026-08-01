@@ -280,7 +280,7 @@ describe('residency drain — abort races the drain', () => {
       return { status: 200, applied: body.rows.length };
     };
 
-    await runResidencyTransitions({ ...deps, transport: racingTransport, resolveHostTarget: targetResolver(), applyStagedRows: () => {} });
+    await runResidencyTransitions({ ...deps, transport: racingTransport, resolveHostTarget: targetResolver() });
 
     // deleteAfterAck re-confirmed the (now-cleared) journal and skipped — the
     // project the abort restored still has all its rows.

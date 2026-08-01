@@ -20,8 +20,6 @@ import { createHostRegistryOperations, type HostRecord } from '@myco/host/regist
 import { membershipErrorCode } from '@myco/host/membership-error.js';
 import { abortResidency, residencyStatus, type ResidencyDaemonDeps } from '@myco/host/residency-transition.js';
 import {
-  appendResidencyStagingRows,
-  listResidencyStagingTables,
   readResidencyJournal,
   startResidencyJournal,
 } from '@myco/host/residency-journal.js';
@@ -98,7 +96,7 @@ function attachJournal(projectId: string, source: string, host: HostRecord, root
   });
 }
 
-function detachJournal(projectId: string, host: HostRecord, root: string, phase: 'pulling' | 'applying' | 'rehoming', targetGrove: string) {
+function detachJournal(projectId: string, host: HostRecord, root: string, phase: 'pulling' | 'applying' | 'fetching' | 'restoring' | 'rehoming', targetGrove: string) {
   startResidencyJournal({
     direction: 'detach', phase, host_id: host.host_id, project_id: projectId,
     divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: targetGrove,
@@ -164,13 +162,45 @@ describe('abortResidency — the abort matrix', () => {
     const root = makeCheckout(projectId);
     attachProject(host.host_id, { grove_id: host.served_grove_id!, project_id: projectId, root }, home);
     detachJournal(projectId, host, root, 'pulling', createGroveId());
-    appendResidencyStagingRows(projectId, [{ table: 'spores', row: { id: 'sp1' } }]);
+    // A LEGACY staging tree (the retired page-pull left these): the abort's
+    // clearResidencyStaging still sweeps it.
+    const stagingDir = path.join(teamHome, 'residency', `${projectId}-staging`);
+    fs.mkdirSync(stagingDir, { recursive: true });
+    fs.writeFileSync(path.join(stagingDir, 'spores.ndjson'), '{"id":"sp1"}\n', 'utf-8');
 
     expect(abortResidency(projectId, baseDeps())).toEqual({ ok: true });
 
     expect(readResidencyJournal(projectId)).toBeNull();
-    expect(listResidencyStagingTables(projectId).state).toBe('absent');
+    expect(fs.existsSync(stagingDir)).toBe(false);
     expect(resolveAttach(projectId)).not.toBeNull(); // still attached — nothing flipped
+  });
+
+  test('detach (fetching): aborts cleanly — still attached, nothing local changed', () => {
+    const host = makeHost();
+    writeHostRecordFixture(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachProject(host.host_id, { grove_id: host.served_grove_id!, project_id: projectId, root }, home);
+    detachJournal(projectId, host, root, 'fetching', createGroveId());
+
+    expect(abortResidency(projectId, baseDeps())).toEqual({ ok: true });
+    expect(readResidencyJournal(projectId)).toBeNull();
+    expect(resolveAttach(projectId)).not.toBeNull(); // still attached — nothing flipped
+  });
+
+  test('detach (restoring): refuses residency_abort_too_late (restore+flip finish on their own)', () => {
+    const host = makeHost();
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    detachJournal(projectId, host, root, 'restoring', createGroveId());
+
+    try {
+      abortResidency(projectId, baseDeps());
+      throw new Error('expected refusal');
+    } catch (err) {
+      expect(membershipErrorCode(err)).toBe('residency_abort_too_late');
+    }
+    expect(readResidencyJournal(projectId)?.phase).toBe('restoring'); // untouched
   });
 
   test('detach (applying): refuses residency_abort_too_late (flip already happened)', () => {
