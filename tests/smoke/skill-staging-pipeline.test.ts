@@ -238,9 +238,10 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
     expect(finalizeResult.generation).toBe(1);
     expect(finalizeResult.path).toBe('.agents/skills/smoke-happy/SKILL.md');
 
+    // Agent-path finalize is DB-only — no live file; content truth is lineage,
+    // and disk delivery happens via the claim Publish flow.
     const liveFile = path.join(tmpDir, '.agents', 'skills', 'smoke-happy', 'SKILL.md');
-    expect(fs.existsSync(liveFile)).toBe(true);
-    expect(fs.readFileSync(liveFile, 'utf-8')).toContain('Smoke test skill smoke-happy');
+    expect(fs.existsSync(liveFile)).toBe(false);
 
     const record = getSkillRecordByName('smoke-happy', ALL_PROJECTS_SCOPE);
     expect(record).not.toBeNull();
