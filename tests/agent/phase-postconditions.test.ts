@@ -20,6 +20,7 @@ import { setState } from '@myco/db/queries/agent-state.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertWriteIntent } from '@myco/db/queries/write-intents.js';
+import { insertRunEvent } from '@myco/db/queries/agent-run-events.js';
 import { checkPhasePostCondition, type PhasePostConditionInput } from '@myco/agent/phase-postconditions.js';
 import { DEFAULT_AGENT_ID, epochSeconds } from '@myco/constants.js';
 
@@ -265,10 +266,11 @@ describe('phase postconditions — new kinds', () => {
   // ---------------------------------------------------------------------
 
   describe('skill-survey-reconcile-queue', () => {
-    it('LIVE: fails when the phase completes with zero tool calls', () => {
+    it('LIVE: fails when the phase completes with zero tool calls, naming the never-called diagnosis', () => {
       const result = checkPhasePostCondition('skill-survey-reconcile-queue', baseInput());
       expect(result.passed).toBe(false);
-      expect(result.reason).toBe('skill-survey reconcile-queue completed without valid reconciliation plan state');
+      expect(result.reason).toContain('skill-survey reconcile-queue completed without valid reconciliation plan state');
+      expect(result.reason).toContain('without calling vault_skill_survey_reconciliation_plan at all');
     });
 
     it('LIVE: passes when reconciliation state carries run_id + validated_at for this run', () => {
@@ -284,7 +286,7 @@ describe('phase postconditions — new kinds', () => {
       expect(result.passed).toBe(true);
     });
 
-    it('LIVE: fails when the state run_id does not match the run', () => {
+    it('LIVE: fails on stale state from a prior run, distinguishing never-called from rejected attempts', () => {
       setState(
         DEFAULT_AGENT_ID,
         TEST_PROJECT_ID,
@@ -293,9 +295,26 @@ describe('phase postconditions — new kinds', () => {
         epochSeconds(),
       );
 
-      const result = checkPhasePostCondition('skill-survey-reconcile-queue', baseInput());
-      expect(result.passed).toBe(false);
-      expect(result.reason).toBe('skill-survey reconciliation plan state run_id does not match the run');
+      // Zero plan calls this run → the run-e1213599 shape: three-week-old
+      // state plus a phase that never reached its terminal call.
+      const neverCalled = checkPhasePostCondition('skill-survey-reconcile-queue', baseInput());
+      expect(neverCalled.passed).toBe(false);
+      expect(neverCalled.reason).toContain('belongs to prior run some-other-run');
+      expect(neverCalled.reason).toContain('without calling vault_skill_survey_reconciliation_plan at all');
+
+      // A completed-but-not-landed call (e.g. every attempt rejected by
+      // plan validation) reads differently from never-called.
+      insertRunEvent({
+        runId: TEST_RUN_ID,
+        phaseName: 'reconcile-queue',
+        eventType: 'post_tool_use',
+        toolName: 'vault_skill_survey_reconciliation_plan',
+        outcome: 'success',
+      });
+      const attempted = checkPhasePostCondition('skill-survey-reconcile-queue', baseInput());
+      expect(attempted.passed).toBe(false);
+      expect(attempted.reason).toContain('belongs to prior run some-other-run');
+      expect(attempted.reason).toContain('none stored this run');
     });
 
     it('LIVE: fails when state is missing validated_at (present but not server-stamped)', () => {

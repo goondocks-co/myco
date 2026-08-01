@@ -317,12 +317,36 @@ function checkSkillSurveyReconcileQueue(input: PhasePostConditionInput): PhasePo
   const stateValue = getState(input.agentId, input.projectId, SKILL_SURVEY_RECONCILIATION_STATE_KEY)?.value;
   const plan = asPlainRecord(stateValue);
   if (!plan || typeof plan.run_id !== 'string' || plan.validated_at === undefined || plan.validated_at === null) {
-    return failed('skill-survey reconcile-queue completed without valid reconciliation plan state');
+    return failed(`skill-survey reconcile-queue completed without valid reconciliation plan state${describeReconciliationPlanAttempts(input.runId)}`);
   }
   if (plan.run_id !== input.runId) {
-    return failed('skill-survey reconciliation plan state run_id does not match the run');
+    // The bare "does not match" message hid the real story in run
+    // e1213599: the state was a three-week-old leftover and the phase had
+    // made ZERO plan calls this run. Name which failure actually happened.
+    return failed(`skill-survey reconciliation plan state belongs to prior run ${plan.run_id}${describeReconciliationPlanAttempts(input.runId)}`);
   }
   return PASSED;
+}
+
+/**
+ * Diagnostic suffix distinguishing "the phase never called the plan tool"
+ * from "it called and every attempt was rejected" from "a successful call
+ * somehow didn't land as this run's state". Counts are phase-scoped
+ * post_tool_use events; 'error' here means the call itself threw/isError —
+ * a validation rejection returned via textResult still counts 'success',
+ * so rejected-but-attempted shows up in the success bucket with stale
+ * state, which the final wording covers.
+ */
+function describeReconciliationPlanAttempts(runId: string): string {
+  const successes = countPhaseToolCallsByOutcome(runId, 'reconcile-queue', 'vault_skill_survey_reconciliation_plan', 'success');
+  const errors = countPhaseToolCallsByOutcome(runId, 'reconcile-queue', 'vault_skill_survey_reconciliation_plan', 'error');
+  if (successes + errors === 0) {
+    return ' — the phase ended without calling vault_skill_survey_reconciliation_plan at all';
+  }
+  if (successes === 0) {
+    return ` — all ${errors} vault_skill_survey_reconciliation_plan call(s) this run threw`;
+  }
+  return ` — ${successes} call(s) completed but none stored this run's plan (likely every attempt was rejected by plan validation)`;
 }
 
 /**

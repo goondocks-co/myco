@@ -882,6 +882,23 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
           return originalHandler(args, extra);
         }
 
+        // Args-shape narrowing: a call the tool can PROVE non-destructive
+        // from its arguments (e.g. a bookkeeping watermark update) skips
+        // the classifier — a model must never sit in judgment of a write
+        // whose harmlessness is deterministically decidable. A throwing
+        // predicate falls through to classification, never to bypass.
+        if (toolDef.nonDestructiveCall && args && typeof args === 'object') {
+          let provablyNonDestructive = false;
+          try {
+            provablyNonDestructive = toolDef.nonDestructiveCall(args as Record<string, unknown>);
+          } catch {
+            provablyNonDestructive = false;
+          }
+          if (provablyNonDestructive) {
+            return originalHandler(args, extra);
+          }
+        }
+
         if (!phasePurpose || !harnessId || !model) {
           return originalHandler(args, extra);
         }
