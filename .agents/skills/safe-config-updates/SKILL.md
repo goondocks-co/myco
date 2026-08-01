@@ -95,6 +95,12 @@ updateTierConfigRaw({ kind: 'grove', groveId }, (raw) => {
 
 **Tier migration compatibility**: When implementing features that modify configuration across projects, ensure compatibility with config tier migration patterns. Project configurations should remain functional when migrated to grove coordination models.
 
+### Secrets File Writes — Prototype-Safe Decoding Guard
+
+The secrets file (`SECRETS_FILE` constant in `packages/myco/src/config/secrets.ts`) is a separate write surface from `myco.yaml` but carries the same silent-corruption risk. `decodeSecrets()` builds the parsed record with `Object.create(null)` instead of a plain object literal, and rejects any key in the `PROTOTYPE_LIKE_ENV_KEYS` set (`__proto__`, `prototype`, `constructor`) before assignment, preventing prototype-pollution via a crafted secrets file. `decodeSecretBuffer()` also decodes with `new TextDecoder('utf-8', { fatal: true })`, throwing on malformed byte sequences rather than silently substituting replacement characters.
+
+Encode-time validation of a value you're about to write is not sufficient on its own — any code path that reads or mutates secrets must go through `readSecretsFile()`/`decodeSecrets()` so the prototype-safe decode and strict UTF-8 check apply consistently. Don't add ad-hoc parsing of the secrets file elsewhere.
+
 ### Pitfall: append-only gitignore staleness
 
 `myco.yaml` contains a `gitignore` section with patterns that the daemon writes to `.gitignore`. This section is managed with a strip-and-rewrite strategy (the daemon removes the old Myco block and writes a fresh one), not with `updateConfig`. Don't conflate these: `.gitignore` writes are strip-and-rewrite, `myco.yaml` writes go through the gate.
@@ -231,7 +237,7 @@ When adding any new user-configurable behavior, follow these steps to determine 
 **Step 1: Apply the tier decision rule**
 - **Machine tier**: Global daemon behavior across all groves (port, logging, global auth, capture policy)
 - **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies, agent provider and model selection, agent harness configuration, task configuration overlays, embedding configuration)
-- **Project tier**: Team collaboration settings specific to this project (task configs)
+- **Project tier**: Team collaboration settings specific to this project (task configs, team sync)
 - **Personal tier**: Individual developer experience preferences (UI themes, notification settings, daemon operational settings)
 
 **Step 2: Consult the scope registry**
@@ -249,6 +255,7 @@ Use these established patterns as representative examples (verify against the li
 - Symbiont manifest (`symbionts.*`)
 - Agent operational limits (`agent.timeout`, `agent.context_window`)
 - Vault data policies (`vault.retention_days`, `vault.max_sessions`)
+- Team sync enablement (`sync.enabled`)
 
 *Grove Settings:* Multi-project coordination within a grove
 - Agent provider and model selection (`agent.provider`, `agent.model`)
@@ -440,6 +447,7 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 ## Checklist Before Submitting a Config Change
 
+- [ ] Secrets reads/writes go through `readSecretsFile()`/`decodeSecrets()` in `packages/myco/src/config/secrets.ts` — never hand-parse the secrets file
 - [ ] YAML write goes through `updateConfig()` (or a named helper that uses it) for project tier
 - [ ] Machine/grove tier writes use `updateTierConfigRaw()`; callers catch `TierConfigUnreadableError` and surface as 422
 - [ ] Every partial update spreads sibling keys at each level
