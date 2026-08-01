@@ -146,6 +146,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 72, migrate: (db) => migrateV71ToV72(db) },
   { version: 73, migrate: (db) => migrateV72ToV73(db) },
   { version: 74, migrate: (db) => migrateV73ToV74(db) },
+  { version: 75, migrate: (db) => migrateV74ToV75(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4697,5 +4698,87 @@ function migrateV73ToV74(db: Database): void {
   } catch (err) {
     db.prepare('ROLLBACK').run();
     throw err;
+  }
+}
+
+/**
+ * v75 — residency ingest-trust prerequisites, one transactional step:
+ *
+ * 1. `entity_mentions` gains `id TEXT PRIMARY KEY` (rename -> create -> copy ->
+ *    drop; the shape has a UNIQUE key but no PK, and both the backup dump
+ *    contract and the outbox contract address rows by `id`). The new column
+ *    carries a self-generating DEFAULT so the id-less INSERT in
+ *    `grove/importer.ts` still produces a keyed row instead of a NULL id
+ *    (an OLDER binary never reaches a v75 vault — SchemaVersionTooNewError
+ *    refuses it at open). Existing rows also
+ *    backfill a NULL `project_id` from the owning entity — the sidecar's
+ *    tenancy was previously derivable but unstored.
+ * 2. The ten timestamp-ordered residency tables gain a nullable
+ *    `received_at INTEGER` — FORENSIC bookkeeping stamped by the apply engine
+ *    with the receiver's clock (consumers: the capture-fidelity audit and the
+ *    clamp log line, which together let an operator distinguish when a row
+ *    LANDED from what its origin CLAIMED). The enforcement against trusting
+ *    caller timestamps is the far-future clamp in the apply engine, not this
+ *    column. Additive + nullable, so an older binary on a newer vault keeps
+ *    working.
+ */
+function migrateV74ToV75(db: Database): void {
+  // The rebuild copies historical rows into a table that keeps its
+  // REFERENCES clauses. Re-validating years-old rows against live FKs at
+  // migration time turns one orphaned mention (a restore artifact, a
+  // partial import) into a vault that refuses to OPEN — so FKs are held
+  // off for the rebuild, exactly as the v34 rebuild does, and restored in
+  // the finally. Orphans survive the copy; the residency apply engine
+  // still refuses NEW orphans at its own boundary.
+  const foreignKeys = readPragmaNumber(db, 'foreign_keys');
+  const legacyAlterTable = readPragmaNumber(db, 'legacy_alter_table');
+  setPragmaBoolean(db, 'foreign_keys', 0);
+  setPragmaBoolean(db, 'legacy_alter_table', 1);
+
+  db.prepare('BEGIN').run();
+  try {
+    if (!getTableColumnSet(db, 'entity_mentions').has('id')) {
+      db.prepare('ALTER TABLE entity_mentions RENAME TO entity_mentions_v74').run();
+      db.exec(`CREATE TABLE entity_mentions (
+        id          TEXT PRIMARY KEY NOT NULL DEFAULT ('ment_' || lower(hex(randomblob(16)))),
+        project_id  TEXT,
+        entity_id   TEXT NOT NULL REFERENCES entities(id),
+        note_id     TEXT NOT NULL,
+        note_type   TEXT NOT NULL,
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        machine_id  TEXT NOT NULL DEFAULT 'local',
+        synced_at   INTEGER,
+        UNIQUE (entity_id, note_id, note_type, agent_id)
+      )`);
+      db.prepare(
+        `INSERT INTO entity_mentions (id, project_id, entity_id, note_id, note_type, agent_id, machine_id, synced_at)
+         SELECT 'ment_' || lower(hex(randomblob(16))),
+                COALESCE(old.project_id, (SELECT e.project_id FROM entities e WHERE e.id = old.entity_id)),
+                old.entity_id, old.note_id, old.note_type, old.agent_id, old.machine_id, old.synced_at
+         FROM entity_mentions_v74 old`,
+      ).run();
+      db.prepare('DROP TABLE entity_mentions_v74').run();
+    }
+
+    const RECEIVED_AT_TABLES = [
+      'spores', 'plans', 'artifacts', 'skill_candidates', 'skill_records',
+      'okf_generations', 'okf_pages', 'knowledge_release_state', 'entities', 'digest_extracts',
+    ];
+    for (const table of RECEIVED_AT_TABLES) {
+      if (!getTableColumnSet(db, table).has('received_at')) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN received_at INTEGER`).run();
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(75, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  } finally {
+    setPragmaBoolean(db, 'legacy_alter_table', legacyAlterTable);
+    setPragmaBoolean(db, 'foreign_keys', foreignKeys);
   }
 }

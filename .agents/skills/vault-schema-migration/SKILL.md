@@ -171,7 +171,9 @@ Backfills must complete inside the same `BEGIN`/`COMMIT` as the DDL — never sp
 
 ### 4d. Recreating a table (rename → create → copy → drop)
 
-SQLite only allows adding columns; changing a column's type or dropping/renaming a column requires a full table rebuild. Rename the live table out of the way, create the new shape from a **frozen** literal DDL string (never the live `TABLE_DDLS` constant — see step 4), copy forward only the columns that exist on both shapes, then drop the renamed original:
+SQLite only allows adding columns; changing a column's type or dropping/renaming a column requires a full table rebuild. Rename the live table out of the way, create the new shape from a **frozen** literal DDL string (never the live `TABLE_DDLS` constant — see step 4), copy forward only the columns that exist on both shapes, then drop the renamed original.
+
+**Hold foreign keys OFF for the rebuild — outside `BEGIN`, restored in `finally`.** Every connection runs `PRAGMA foreign_keys = ON` (`db/client.ts`), so the copy re-validates every historical row against live FK constraints that were only enforced at original insert time. One orphaned row — plantable by `restoreBackup` (which runs FK-off with `INSERT OR IGNORE`), a partial import, or any historical write path — then rolls the migration back and the vault **refuses to open, on this start and every one after it**. `migrateV33ToV34` is the precedent and `migrateV74ToV75` follows it: save `foreign_keys` + `legacy_alter_table` with `readPragmaNumber`, clear both with `setPragmaBoolean` *before* `BEGIN`, restore both in the `finally`. And seed an orphaned row in the migration's test — an FK-clean fixture cannot see this failure class:
 
 ```ts
 function migrateV39ToV40(db: Database): void {

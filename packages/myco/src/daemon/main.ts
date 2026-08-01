@@ -1757,7 +1757,7 @@ export async function main(): Promise<void> {
   // of waiting out the housekeeping round-robin — with no overlapping passes.
   const residencyKicker = createResidencyKicker(() => runResidencyTransitions({
     ...residencyDeps,
-    applyStagedRows: (db, table, rows) => { applyResidencyRows(db, table, rows, { logger }); },
+    applyStagedRows: (db, table, rows, projectId) => { applyResidencyRows(db, table, rows, { expectedProjectId: projectId }, { logger }); },
     // Daemon-scope on purpose: a mid-transition project is registered in no
     // Grove, so a project-scoped row could not be written for exactly the
     // project that needs it.
