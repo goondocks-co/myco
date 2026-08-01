@@ -37,6 +37,7 @@ import {
   stripCollectRoute,
 } from '@myco/capture/collect-buffer-route';
 import { EventBuffer } from '@myco/capture/buffer';
+import { EventBody } from '@myco/daemon/event-dispatch';
 import { resolveProjectBufferDir } from '@myco/grove/paths';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
 import { createHostRegistryOperations } from '@myco/host/registry';
@@ -997,5 +998,64 @@ describe('drain health (consolidation Task C-5)', () => {
     const entry = store.get(HOST_A, 'sess-1');
     expect(entry?.consecutive_failures).toBe(0);
     expect(entry?.last_error_kind).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hook-fallback deliverability: session_id is stamped into the replayed BODY
+// ---------------------------------------------------------------------------
+
+describe('hook-fallback body stamp', () => {
+  test('a fallback record (no session_id by design) replays with the buffer identity stamped into a body the host schema accepts', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/fallback';
+    // Exactly what hooks/user-prompt-submit buffers on daemon outage: the
+    // reconciler keys the session from the FILENAME, so the record body
+    // carries no session_id.
+    buf.append(dir, 'sess-out', stampCollectRoute({ type: 'user_prompt', prompt: 'offline turn', transcript_path: '/t.jsonl' }, '/events'));
+    const sink = recordingSink();
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), transport: sink.transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+
+    await q.drainAll();
+
+    expect(sink.calls).toHaveLength(1);
+    expect(sink.calls[0].body.session_id).toBe('sess-out');
+    // The gate: the REAL host-side schema must accept the replayed body — a
+    // rejected fallback record permanently blocks every record behind it.
+    expect(EventBody.safeParse(sink.calls[0].body).success).toBe(true);
+  });
+
+  test('a stop-shaped fallback record replays to /events/stop with the session stamped — never a silent /events drop', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/stop-fallback';
+    // What hooks/stop.ts buffers on outage, with the route stamp send-event
+    // now writes: without the stamp this record would default to /events,
+    // dispatch as an unknown type, and drop the turn's summary silently.
+    buf.append(dir, 'sess-out', stampCollectRoute({ type: 'stop', last_assistant_message: 'done', transcript_path: '/t.jsonl' }, '/events/stop'));
+    const sink = recordingSink();
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), transport: sink.transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+    expect(sink.calls).toHaveLength(1);
+    expect(sink.calls[0].route).toBe('/events/stop');
+    expect(sink.calls[0].body.session_id).toBe('sess-out');
+  });
+
+  test('a record that already carries a session_id keeps its own', async () => {
+    const buf = memBuffer();
+    const dir = '/buf/carried';
+    buf.append(dir, 'sess-file', evt({ session_id: 'sess-inner' }));
+    const sink = recordingSink();
+    const q = new EventReplayDrainQueue({
+      machineId: MACHINE, store: memStore(), transport: sink.transport, bufferReader: buf.reader,
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, bufferDir: dir })],
+    });
+    await q.drainAll();
+    expect(sink.calls[0].body.session_id).toBe('sess-inner');
   });
 });

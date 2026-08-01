@@ -1758,6 +1758,45 @@ export async function main(): Promise<void> {
   const residencyKicker = createResidencyKicker(() => runResidencyTransitions({
     ...residencyDeps,
     applyStagedRows: (db, table, rows) => { applyResidencyRows(db, table, rows, { logger }); },
+    // Daemon-scope on purpose: a mid-transition project is registered in no
+    // Grove, so a project-scoped row could not be written for exactly the
+    // project that needs it.
+    notifyStalledTransition: (journal, stalledForMs) => {
+      const minutes = Math.max(1, Math.round(stalledForMs / 60_000));
+      const direction = journal.direction === 'attach'
+        ? 'moving to the team host'
+        : 'returning to this machine';
+      // Past the detach flip there is no cancel control (abort refuses, and
+      // the Team page hides it), so the closing sentence must not point at
+      // one. The raw last_error stays in metadata — the visible copy keeps
+      // mechanism strings out of banners; the Team page shows the detail on
+      // hover, matching the rest of the residency surfaces.
+      const pastFlip = journal.direction === 'detach'
+        && (journal.phase === 'applying' || journal.phase === 'rehoming');
+      const action = pastFlip
+        ? 'It finishes on its own once the underlying issue clears — nothing is lost in the meantime.'
+        : 'You can cancel the move from the Team page.';
+      // Daemon-scope dedup (5-minute window) collapses two projects stalling
+      // in the same window into one banner — accepted: simultaneous stalls
+      // are rare, the Team page shows per-project stall state, and the 6-hour
+      // re-surface names each survivor.
+      notify(bootstrapVaultDir, {
+        domain: 'team',
+        type: 'team.residency.stalled',
+        title: 'Project move stalled',
+        message: `"${journal.project_name}" has been ${direction} for ${minutes} minutes and is still retrying.`
+          + ' New work on this project waits until the move finishes. '
+          + action,
+        metadata: {
+          project_id: journal.project_id,
+          host_id: journal.host_id,
+          phase: journal.phase,
+          direction: journal.direction,
+          stalled_for_minutes: minutes,
+          last_error: journal.last_error ?? null,
+        },
+      }, liveConfig.current, { scope: 'daemon' });
+    },
   }));
   residencyDeps.kickResidencyDrain = residencyKicker.kick;
 

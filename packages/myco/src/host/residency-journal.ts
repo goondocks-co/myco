@@ -225,6 +225,45 @@ export function advanceResidencyPhase(
   return writeResidencyJournal(next, teamsHome);
 }
 
+/**
+ * Stamp the last drain failure onto a project's journal WITHOUT touching its
+ * phase. Reads the journal fresh rather than trusting a caller's snapshot: a
+ * failure recorder holding a journal captured before an await — or before a
+ * whole drain pass — must never write that snapshot's phase back. A failure
+ * during `applying` that rewrote the journal to `pulling` would undo the detach
+ * flip's durable record after the flip already ran, and the abort path would
+ * then delete the staged rows believing nothing local had changed. No journal
+ * on disk → no-op (a concurrent abort or completion cleared it).
+ */
+export function stampResidencyFailure(
+  projectId: string,
+  message: string,
+  teamsHome: string = resolveTeamsHome(),
+): ResidencyJournal | null {
+  const current = readResidencyJournal(projectId, teamsHome);
+  if (!current) return null;
+  return writeResidencyJournal(
+    { ...current, last_error: message, last_error_at: new Date().toISOString() },
+    teamsHome,
+  );
+}
+
+/** Clear a previously stamped failure, phase-preserving for the same reason as
+ *  {@link stampResidencyFailure}. Returns the journal unchanged when nothing is
+ *  stamped; null when no journal exists. */
+export function clearResidencyFailure(
+  projectId: string,
+  teamsHome: string = resolveTeamsHome(),
+): ResidencyJournal | null {
+  const current = readResidencyJournal(projectId, teamsHome);
+  if (!current) return null;
+  if (current.last_error === undefined && current.last_error_at === undefined) return current;
+  return writeResidencyJournal(
+    { ...current, last_error: undefined, last_error_at: undefined },
+    teamsHome,
+  );
+}
+
 /** Remove a project's journal (and any torn temp sibling). Idempotent. */
 export function clearResidencyJournal(projectId: string, teamsHome: string = resolveTeamsHome()): void {
   if (!isGroveEraId(projectId, 'project')) return;

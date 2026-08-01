@@ -64,7 +64,10 @@ import { primaryProductionRef } from '@myco/release-provenance/config.js';
 // Schema
 // ---------------------------------------------------------------------------
 
-const EventBody = z.object({ type: z.string(), session_id: z.string() }).passthrough();
+/** Exported so the replay-drain gate can prove a buffered fallback record —
+ *  which omits `session_id` by design — is stamped into a body THIS schema
+ *  accepts, rather than testing against a stub of it. */
+export const EventBody = z.object({ type: z.string(), session_id: z.string() }).passthrough();
 
 // ---------------------------------------------------------------------------
 // Deps
