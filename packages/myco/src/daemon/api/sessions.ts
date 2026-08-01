@@ -19,6 +19,7 @@ import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import {
   filesystemRootFromRequestContext,
+  mutationScopeFromRequestContext,
   projectScopeFromRequestContext,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
@@ -201,7 +202,10 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
     const sessionId = req.params.id;
-    const scope = projectScopeFromRequestContext(req.requestContext);
+    const scope = mutationScopeFromRequestContext(req.requestContext);
+    if (scope === null) {
+      return { status: 400, body: errorBody('missing_project_context', 'A write must name one project — this request resolved a Grove but no project.') };
+    }
     if (!getSession(sessionId, scope)) return { status: 404, body: { error: 'Session not found' } };
 
     const body = (req.body ?? {}) as { force?: boolean; expect_empty?: boolean };
@@ -324,7 +328,10 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
    */
   async function handleCompleteSession(req: RouteRequest): Promise<RouteResponse> {
     const sessionId = req.params.id;
-    const scope = projectScopeFromRequestContext(req.requestContext);
+    const scope = mutationScopeFromRequestContext(req.requestContext);
+    if (scope === null) {
+      return { status: 400, body: errorBody('missing_project_context', 'A write must name one project — this request resolved a Grove but no project.') };
+    }
     const session = getSession(sessionId, scope);
     if (!session) return { status: 404, body: { error: 'Session not found' } };
 
@@ -375,7 +382,10 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
    *  propagates a tombstone across the team. Require an explicit
    *  `{force_remote: true}` opt-in before deleting someone else's row. */
   async function handleDeletePlan(req: RouteRequest): Promise<RouteResponse> {
-    const scope = projectScopeFromRequestContext(req.requestContext);
+    const scope = mutationScopeFromRequestContext(req.requestContext);
+    if (scope === null) {
+      return { status: 400, body: errorBody('missing_project_context', 'A write must name one project — this request resolved a Grove but no project.') };
+    }
     const existing = getPlan(req.params.id, scope);
     if (!existing) return { status: 404, body: errorBody('plan-not-found', 'Plan not found') };
 
@@ -426,7 +436,10 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
 
   /** PATCH /api/plans/:id — status-only update through the shared plan write path. */
   async function handlePatchPlan(req: RouteRequest): Promise<RouteResponse> {
-    const scope = projectScopeFromRequestContext(req.requestContext);
+    const scope = mutationScopeFromRequestContext(req.requestContext);
+    if (scope === null) {
+      return { status: 400, body: errorBody('missing_project_context', 'A write must name one project — this request resolved a Grove but no project.') };
+    }
     const existing = getPlan(req.params.id, scope);
     if (!existing) return { status: 404, body: errorBody('plan-not-found', 'Plan not found') };
 

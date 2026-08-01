@@ -214,8 +214,10 @@ export function moveProjectBetweenGroves(
   if (sourceEntry) {
     // The marker is this move's crash-resumable record — a resumed move
     // finds it and continues — so it is what keeps the project blocked if
-    // this process dies mid-move. The move deletes it on completion, which
-    // is what lets the lease resolve as free.
+    // this process dies mid-move. On completion the marker is RETAINED at a
+    // terminal phase (the idempotent-return path reads it back); the lease
+    // resolves free because the evidence rule treats terminal phases as
+    // finished, NOT because the file goes away.
     pauseProject(
       sourceGroveId,
       projectId,
@@ -493,7 +495,7 @@ const PHASE_ORDER: MovePhase[] = [
  * deliberately outside PHASE_ORDER — it never participates in resume
  * ordering; both terminal phases mean "this op is over".
  */
-const TERMINAL_PHASES = new Set<MovePhase>(['completed', 'failed']);
+export const TERMINAL_PHASES = new Set<MovePhase>(['cleaned', 'completed', 'failed']);
 const VALID_MARKER_PHASES = new Set<MovePhase>([...PHASE_ORDER, 'failed']);
 
 function orderOf(phase: MovePhase): number {
