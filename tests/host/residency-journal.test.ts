@@ -13,11 +13,13 @@ import { createProjectId, createGroveId, createHostId } from '@myco/grove/ids.js
 import {
   RESIDENCY_DIRNAME,
   advanceResidencyPhase,
+  clearResidencyFailure,
   clearResidencyJournal,
   listResidencyJournals,
   readResidencyJournal,
   residencyDirExists,
   residencyTransitionInFlight,
+  stampResidencyFailure,
   startResidencyJournal,
   writeResidencyJournal,
   type ResidencyJournalInit,
@@ -130,5 +132,42 @@ describe('residency journal', () => {
       updated_at: 'x',
     })).toThrow(/grove project id/);
     expect(readResidencyJournal('../escape')).toBeNull();
+  });
+});
+
+describe('failure stamp/clear — phase-preserving by construction', () => {
+  test('stamp records the error against the CURRENT durable phase, not the caller\'s snapshot', () => {
+    const init = makeInit({ direction: 'detach', phase: 'pulling' });
+    startResidencyJournal(init);
+    // The durable journal advances (the flip) while some caller still holds
+    // the pulling-phase snapshot it listed at pass start.
+    advanceResidencyPhase(init.project_id, 'applying');
+
+    const stamped = stampResidencyFailure(init.project_id, 'database is locked');
+
+    expect(stamped?.phase).toBe('applying'); // never regressed by the stamp
+    expect(stamped?.last_error).toBe('database is locked');
+    expect(stamped?.last_error_at).toBeTruthy();
+    expect(readResidencyJournal(init.project_id)?.phase).toBe('applying');
+  });
+
+  test('clear removes the stamp and preserves the current phase', () => {
+    const init = makeInit({ direction: 'detach', phase: 'pulling' });
+    startResidencyJournal(init);
+    stampResidencyFailure(init.project_id, 'transient');
+    advanceResidencyPhase(init.project_id, 'applying');
+
+    const cleared = clearResidencyFailure(init.project_id);
+
+    expect(cleared?.phase).toBe('applying');
+    expect(cleared?.last_error).toBeUndefined();
+    expect(cleared?.last_error_at).toBeUndefined();
+  });
+
+  test('stamp and clear on a missing journal are no-ops returning null', () => {
+    const projectId = makeInit().project_id;
+    expect(stampResidencyFailure(projectId, 'x')).toBeNull();
+    expect(clearResidencyFailure(projectId)).toBeNull();
+    expect(readResidencyJournal(projectId)).toBeNull(); // nothing was created
   });
 });

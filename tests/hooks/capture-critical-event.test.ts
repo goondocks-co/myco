@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { captureCriticalEvent, shouldBufferFallback } from '@myco/hooks/send-event.js';
+import { readCollectRoute } from '@myco/capture/collect-buffer-route.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
@@ -74,12 +75,13 @@ describe('captureCriticalEvent — policy-driven buffer fallback', () => {
     result: { ok: boolean; data?: unknown };
     postBody: Record<string, unknown>;
     bufferEvent: Record<string, unknown> | null;
+    endpoint?: string;
   }) {
     return captureCriticalEvent({
       vaultDir,
       sessionId: opts.sessionId,
       hookName: 'test-hook',
-      endpoint: '/events',
+      endpoint: opts.endpoint ?? '/events',
       postBody: opts.postBody,
       bufferEvent: opts.bufferEvent,
       client: fakeClient(opts.result),
@@ -362,6 +364,33 @@ describe('captureCriticalEvent — policy-driven buffer fallback', () => {
       } finally {
         fs.rmSync(brokenRoot, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('collect-route stamp on the buffered copy', () => {
+    it('stamps the posting endpoint so an attached-project replay re-forwards to the SAME route', async () => {
+      await run({
+        sessionId: 'sess-stop-route',
+        result: { ok: false },
+        endpoint: '/events/stop',
+        postBody: { session_id: 'sess-stop-route', last_assistant_message: 'done' },
+        bufferEvent: { type: 'stop', last_assistant_message: 'done' },
+      });
+      const lines = bufferedLines('sess-stop-route');
+      expect(lines).toHaveLength(1);
+      // Without the stamp, replay defaults this record to /events, where a
+      // `stop` type dispatches as unknown and is silently dropped host-side.
+      expect(readCollectRoute(lines[0]!)).toBe('/events/stop');
+    });
+
+    it('stamps the default /events endpoint too — one rule, no per-route special case', async () => {
+      await run({
+        sessionId: 'sess-events-route',
+        result: { ok: false },
+        postBody: { type: 'user_prompt', prompt: 'p', session_id: 'sess-events-route' },
+        bufferEvent: { type: 'user_prompt', prompt: 'p' },
+      });
+      expect(readCollectRoute(bufferedLines('sess-events-route')[0]!)).toBe('/events');
     });
   });
 });

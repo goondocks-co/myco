@@ -653,7 +653,16 @@ export class EventReplayDrainQueue {
     for (let i = acked; i < records.length; i += 1) {
       const record = records[i];
       const route = readCollectRoute(record) ?? DEFAULT_COLLECT_ROUTE;
-      const body = stripCollectRoute(record);
+      const body = { ...stripCollectRoute(record) };
+      // The hook's offline fallback deliberately omits `session_id` from the
+      // buffered record (the local reconciler keys it from the filename), but
+      // the host's event route requires it in the BODY — the header alone is
+      // not read there. Stamp it from the buffer identity; a record that
+      // already carries one keeps it. Without this, one rejected fallback
+      // record permanently blocks every record behind it for the session.
+      if (typeof body.session_id !== 'string' || body.session_id.length === 0) {
+        body.session_id = sessionId;
+      }
       let status: number;
       try {
         ({ status } = await this.transport(attached.target, route, sessionId, body));

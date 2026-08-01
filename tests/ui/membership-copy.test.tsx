@@ -118,21 +118,29 @@ describe('membershipErrorCopy', () => {
 });
 
 describe('leaveHostConfirmMessage (host detail slideout + HostCard, Task T5)', () => {
-  it('names the project count when the host has attached projects', () => {
-    expect(leaveHostConfirmMessage('Mac Studio', 2)).toBe(
-      'Leave "Mac Studio"? This detaches 2 attached projects (they go back to local-only) and removes this host\'s overlay connection.',
-    );
-  });
-
-  it('singularizes "project" for exactly one attached project', () => {
-    expect(leaveHostConfirmMessage('Mac Studio', 1)).toContain('1 attached project ');
-    expect(leaveHostConfirmMessage('Mac Studio', 1)).not.toContain('1 attached projects');
-  });
-
-  it('drops the detach clause entirely when there are no attached projects', () => {
-    const copy = leaveHostConfirmMessage('Mac Studio', 0);
+  it('confirms a plain leave — the attached-projects case never reaches this confirm (the control disables)', () => {
+    const copy = leaveHostConfirmMessage('Mac Studio');
     expect(copy).toBe('Leave "Mac Studio"? This removes this host\'s overlay connection from this machine.');
+    expect(copy).not.toContain('Detach');
     expect(copy).not.toContain('detaches');
+  });
+});
+
+describe('leave refusal copy (leave gating)', () => {
+  it('maps leave_projects_attached to UI-affordance copy, dropping the CLI-voiced message', () => {
+    const copy = membershipErrorCopy(membershipApiError('leave_projects_attached',
+      'Cannot leave host h_x: 2 project(s) are still attached through it. Detach each project first (`myco detach`), then leave.'));
+    expect(copy).toContain('Detach each project first');
+    expect(copy).not.toContain('myco detach'); // no CLI verbs in browser copy
+  });
+
+  it('maps leave_transition_in_flight to host-level copy that offers no cancel control', () => {
+    const copy = membershipErrorCopy(membershipApiError('leave_transition_in_flight',
+      'Cannot leave host h_x: a project move involving this host is still in progress ("demo"). Wait for it to finish, then leave.'));
+    expect(copy).toContain('still moving through this host');
+    // Past the detach flip there is no cancel control — the copy must not point at one.
+    expect(copy.toLowerCase()).not.toContain('cancel');
+    expect(copy).not.toContain('this project'); // host-level surface, not project-voiced
   });
 });
 

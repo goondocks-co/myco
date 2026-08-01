@@ -13,8 +13,13 @@ export function LeaveHostControl({ host }: { host: HostMembershipHost }) {
   const leave = useLeaveHost();
   const [error, setError] = useState<string | null>(null);
 
+  // Leaving with attached projects is refused server-side (the attach refs and
+  // the unrecoverable bearer would be destroyed), so the control doesn't offer
+  // it — mirroring how the Detach control gates on an in-flight move.
+  const blocked = host.projects.length > 0;
+
   const handleLeave = async () => {
-    if (!window.confirm(leaveHostConfirmMessage(host.label, host.projects.length))) return;
+    if (!window.confirm(leaveHostConfirmMessage(host.label))) return;
     setError(null);
     try {
       await leave.mutateAsync(host.host_id);
@@ -26,9 +31,12 @@ export function LeaveHostControl({ host }: { host: HostMembershipHost }) {
   return (
     <div className="flex items-center justify-between gap-2">
       {error && <p className="text-xs text-terracotta m-0">{error}</p>}
+      {blocked && !error && (
+        <p className="text-xs text-on-surface-variant m-0">Detach the attached project{host.projects.length === 1 ? '' : 's'} first, then leave.</p>
+      )}
       <button
         type="button"
-        disabled={leave.isPending}
+        disabled={leave.isPending || blocked}
         onClick={handleLeave}
         className="ml-auto text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50"
       >

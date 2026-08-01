@@ -39,6 +39,7 @@ import {
   listResidencyStagingTables,
   readResidencyJournal,
   startResidencyJournal,
+  writeResidencyJournal,
 } from '@myco/host/residency-journal.js';
 import {
   countResidencyInFlight,
@@ -599,5 +600,154 @@ describe('detach — suppression during the window', () => {
     const resolved = ensureProjectRegistered(root, home, testPerUserLockNamespace);
     expect(resolved?.grove.id).toBe(local.id); // local, not the host divert grove
     expect(resolved?.grove.id).not.toBe(host.served_grove_id);
+  });
+});
+
+describe('detach drain — failure honesty (phase, stamps, stall surface)', () => {
+  /** Drive a detach to the point where the pull is complete and the flip +
+   *  apply are next: begun via the real command, one staged page. */
+  function beginPulledDetach(): { projectId: string; localId: string } {
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    writeHostRecordFixture(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachRef(host, projectId, root, local.id);
+    detachCommand({ projectPath: root, beginDetachResidency: injectedBeginDetach });
+    return { projectId, localId: local.id };
+  }
+
+  test('a crash AFTER the flip keeps the durable phase at applying — a stale pass snapshot can never regress it to pulling', async () => {
+    const { projectId } = beginPulledDetach();
+    const { transport } = pagingPull([[{ table: 'spores', row: { id: 'sp_1', project_id: projectId } }]]);
+
+    // The apply throws OUT of runDetachTransition (a SQLITE_BUSY shape), so the
+    // failure is recorded by the OUTER pass catch — which holds the journal as
+    // it looked at pass start: `pulling`. The durable journal has moved through
+    // the flip to `applying` in between.
+    const crash: ApplyStagedRows = () => { throw new Error('database is locked'); };
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows: crash });
+
+    const journal = readResidencyJournal(projectId);
+    expect(journal?.phase).toBe('applying'); // NOT 'pulling' — the flip's durable record must stand
+    expect(journal?.last_error).toContain('database is locked');
+    // The flip itself happened: the attach ref is gone.
+    expect(resolveAttach(projectId)).toBeNull();
+
+    // And the retry converges: next tick applies and finishes.
+    const applied: string[] = [];
+    const collect: ApplyStagedRows = (_db, table) => { applied.push(table); };
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows: collect });
+    expect(applied).toContain('spores');
+    expect(readResidencyJournal(projectId)).toBeNull();
+  });
+
+  test('a host below the residency protocol stamps last_error instead of skipping silently', async () => {
+    const { projectId } = beginPulledDetach();
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: pagingPull([]).transport, resolveHostTarget: targetResolver(2) });
+    const journal = readResidencyJournal(projectId);
+    expect(journal?.phase).toBe('pulling'); // untouched — retry when the host updates
+    expect(journal?.last_error).toContain('below the residency protocol');
+  });
+
+  test('a missing host record stamps last_error instead of skipping silently', async () => {
+    const { projectId } = beginPulledDetach();
+    const gone: ResolveResidencyTarget = () => undefined as never;
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: pagingPull([]).transport, resolveHostTarget: gone });
+    const journal = readResidencyJournal(projectId);
+    expect(journal?.phase).toBe('pulling');
+    expect(journal?.last_error).toContain('host record');
+  });
+
+  test('an old, currently-failing transition raises the stall surface exactly once per interval — and a young one never does', async () => {
+    const { projectId } = beginPulledDetach();
+    const failing: ResidencyPullTransport = async () => ({ status: 500, rows: [], next_cursor: null, done: false });
+    const stalls: { projectId: string; ms: number }[] = [];
+    const notify = (journal: { project_id: string }, ms: number) =>
+      { stalls.push({ projectId: journal.project_id, ms }); };
+
+    // Young transition + fresh failure: the age gate must hold — a large
+    // first pull failing early is not a stall.
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: failing, resolveHostTarget: targetResolver(), notifyStalledTransition: notify });
+    const stamped = readResidencyJournal(projectId);
+    expect(stamped?.last_error).toContain('500');
+    expect(stalls).toHaveLength(0);
+
+    // Age the transition past the stall threshold, keeping it failing.
+    writeResidencyJournal({ ...stamped!, created_at: new Date(Date.now() - 40 * 60 * 1000).toISOString() });
+
+    // The stall check runs AFTER this pass's own failed attempt, against the
+    // stamp the pass just wrote — so it fires regardless of drain cadence.
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: failing, resolveHostTarget: targetResolver(), notifyStalledTransition: notify });
+    expect(stalls).toHaveLength(1);
+    expect(stalls[0]!.projectId).toBe(projectId);
+    expect(stalls[0]!.ms).toBeGreaterThanOrEqual(30 * 60 * 1000);
+
+    // Still stalled on the next tick — but inside the re-notify interval, so silent.
+    await runResidencyTransitions({ ...baseDeps(), pullTransport: failing, resolveHostTarget: targetResolver(), notifyStalledTransition: notify });
+    expect(stalls).toHaveLength(1);
+  });
+
+  test('an old transition whose attempt did NOT fail this pass stays silent — a stale stamp is not a stall', async () => {
+    // A journal shape the drain no-ops (attach direction in a non-attach
+    // phase): the pass makes no attempt and writes no stamp, so the only
+    // failure evidence is the OLD stamp — the freshness gate must reject it.
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    writeHostRecordFixture(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    registerProjectInGrove(local.id, { projectId, projectName: 'demo', projectRoot: root }, home);
+    clearGroveRegistryCaches();
+    startResidencyJournal({
+      direction: 'attach', phase: 'pulling', host_id: host.host_id, project_id: projectId,
+      divert_grove_id: host.served_grove_id!, source_grove_id: local.id,
+      project_name: 'demo', root, backup_ref: null, cursors: {},
+    });
+    const journal = readResidencyJournal(projectId)!;
+    writeResidencyJournal({
+      ...journal,
+      created_at: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
+      last_error: 'old failure',
+      last_error_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+    });
+
+    const stalls: unknown[] = [];
+    await runResidencyTransitions({
+      ...baseDeps(),
+      pullTransport: pagingPull([]).transport,
+      resolveHostTarget: targetResolver(),
+      notifyStalledTransition: (j) => { stalls.push(j); },
+    });
+    expect(stalls).toHaveLength(0);
+  });
+
+  test('a failed re-home preserves the journal in rehoming — the buffered events keep their retry path', async () => {
+    const local = createGrove('Local', home);
+    const host = makeHost(3);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    registerProjectInGrove(local.id, { projectId, projectName: 'demo', projectRoot: root }, home);
+    clearGroveRegistryCaches();
+    startResidencyJournal({
+      direction: 'detach', phase: 'rehoming', host_id: host.host_id, project_id: projectId,
+      divert_grove_id: host.served_grove_id!, source_grove_id: host.served_grove_id!, target_grove_id: local.id,
+      project_name: 'demo', root, backup_ref: null, cursors: { pull: 'done' },
+    });
+    // Seed a buffered file, then deny enumeration of the divert buffer dir —
+    // an undetermined read must NOT count as "nothing buffered".
+    const fromDir = resolveProjectBufferDir(host.served_grove_id!, projectId, home);
+    fs.mkdirSync(fromDir, { recursive: true });
+    fs.writeFileSync(path.join(fromDir, 'sess_x.jsonl'), '{"event":"x"}\n', 'utf-8');
+    fs.chmodSync(fromDir, 0o000); // deny enumeration
+    try {
+      await runResidencyTransitions({ ...baseDeps(), pullTransport: pagingPull([]).transport, resolveHostTarget: targetResolver() });
+    } finally {
+      fs.chmodSync(fromDir, 0o700); // restore so the fixture can clean up
+    }
+
+    const journal = readResidencyJournal(projectId);
+    expect(journal?.phase).toBe('rehoming'); // NOT cleared — the journal is the retry path
+    expect(journal?.last_error).toBeTruthy();
   });
 });

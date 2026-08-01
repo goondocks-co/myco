@@ -65,17 +65,62 @@ import {
   RESIDENCY_MIN_HOST_PROTOCOL,
   advanceResidencyPhase,
   appendResidencyStagingRows,
+  clearResidencyFailure,
   clearResidencyJournal,
   clearResidencyStaging,
   listResidencyJournals,
   listResidencyStagingTables,
   readResidencyJournal,
   readResidencyStagingRows,
+  stampResidencyFailure,
   type ResidencyJournal,
 } from './residency-journal.js';
 
 /** Throttle window for repeated per-project drain-failure warnings. */
 const FAILURE_LOG_INTERVAL_MS = 60_000;
+
+/** A transition must be at least this old before it can be called stalled —
+ *  a large first pull legitimately takes a while. */
+const STALL_NOTIFY_MIN_AGE_MS = 30 * 60 * 1000;
+/**
+ * The stall check runs immediately after each journal's attempt this pass, so
+ * a qualifying failure stamp is at most seconds old. This window only has to
+ * cover that same-pass gap — it must NOT be sized to the drain cadence, which
+ * stretches to 5 minutes in the `sleep` power state; a cadence-sized window
+ * would reject every stamp in exactly the walked-away scenario the surface
+ * exists for. Anything older than this means the transition progressed
+ * without failing on the current attempt.
+ */
+const STALL_NOTIFY_FRESH_FAILURE_MS = 60 * 1000;
+/** Re-surface a still-stalled transition at most this often per project. */
+const STALL_NOTIFY_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Raise the stalled-transition surface when a journal is old and its attempt
+ * THIS pass just failed (read fresh from disk — the pass-start snapshot
+ * predates this pass's own stamp). Every input is a durable harness fact
+ * (journal timestamps), never inference. A stalled transition is not data
+ * loss — capture buffers and the journal retries — but writes into the
+ * project wait indefinitely and, for tool writes, are refused outright; the
+ * user must be able to SEE that and choose to cancel rather than discover it
+ * by absence.
+ */
+function notifyIfStalledAfterAttempt(
+  projectId: string,
+  deps: ResidencyDrainDeps,
+  teamsHome: string | undefined,
+): void {
+  if (!deps.notifyStalledTransition) return;
+  const journal = readResidencyJournal(projectId, teamsHome);
+  if (!journal || journal.phase === 'done') return;
+  const now = Date.now();
+  const createdAt = Date.parse(journal.created_at);
+  if (!Number.isFinite(createdAt) || now - createdAt < STALL_NOTIFY_MIN_AGE_MS) return;
+  const lastErrorAt = journal.last_error_at ? Date.parse(journal.last_error_at) : Number.NaN;
+  if (!Number.isFinite(lastErrorAt) || now - lastErrorAt > STALL_NOTIFY_FRESH_FAILURE_MS) return;
+  if (!shouldLogOncePerInterval(`residency.stall.notify.${projectId}`, STALL_NOTIFY_INTERVAL_MS, now)) return;
+  deps.notifyStalledTransition(journal, now - createdAt);
+}
 
 /** Cursor sentinel meaning a sidecar stream is fully shipped. A real cursor is a
  *  JSON-encoded key, never this literal. */
@@ -140,6 +185,14 @@ export interface ResidencyDrainDeps extends ResidencyDaemonDeps {
   /** Apply staged detach rows into the local Grove DB (the shared engine). */
   applyStagedRows?: ApplyStagedRows;
   teamsHome?: string;
+  /**
+   * Operator-visible surface for a transition that keeps failing while holding
+   * the project write lease. Injected by the daemon (daemon-scope notification:
+   * a mid-transition project is registered in no Grove, so no project-scoped
+   * surface can carry this). The drain decides WHEN deterministically; the
+   * daemon decides HOW it renders.
+   */
+  notifyStalledTransition?: (journal: ResidencyJournal, stalledForMs: number) => void;
 }
 
 /**
@@ -369,6 +422,7 @@ export async function runResidencyTransitions(deps: ResidencyDrainDeps): Promise
     } catch (err) {
       recordJournalFailure(journal, err, deps, teamsHome);
     }
+    notifyIfStalledAfterAttempt(journal.project_id, deps, teamsHome);
   }
 
   return { processed };
@@ -402,8 +456,19 @@ async function runDetachTransition(
   if (journal.phase === 'pulling') {
     if (journal.cursors.pull !== CURSOR_DONE) {
       const target = resolveTarget(journal.host_id, journal.divert_grove_id, journal.project_id);
-      if (!target) return; // host record gone — leave for a later tick
+      if (!target) {
+        // Not a transient miss: the record only leaves the registry with the
+        // membership. Stamp it so the health/stall surfaces can see the hold
+        // instead of the journal spinning silently forever.
+        stampResidencyFailure(journal.project_id, `host record for ${journal.host_id} is missing — the move cannot proceed`, teamsHome);
+        return;
+      }
       if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {
+        stampResidencyFailure(
+          journal.project_id,
+          `host is below the residency protocol (${target.host.protocol_version} < ${RESIDENCY_MIN_HOST_PROTOCOL}) — waiting for the host to update`,
+          teamsHome,
+        );
         if (shouldLogOncePerInterval(`residency.proto.${journal.project_id}`, FAILURE_LOG_INTERVAL_MS, Date.now())) {
           deps.logger?.warn(LOG_KINDS.RESIDENCY_DETACH_PULL, 'host below residency protocol — pull skipped', {
             project_id: journal.project_id, host_id: journal.host_id, host_protocol: target.host.protocol_version,
@@ -619,10 +684,20 @@ async function pushTransition(
   teamsHome: string | undefined,
 ): Promise<void> {
   const target = resolveTarget(journal.host_id, journal.divert_grove_id, journal.project_id);
-  if (!target) return; // host record gone — leave the journal for a later tick
+  if (!target) {
+    // Not a transient miss: the record only leaves the registry with the
+    // membership. Stamp it so the health/stall surfaces can see the hold.
+    stampResidencyFailure(journal.project_id, `host record for ${journal.host_id} is missing — the move cannot proceed`, teamsHome);
+    return;
+  }
   if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {
     // The route the push needs does not exist on a pre-residency host; it never
     // self-heals by retry, so skip until an upgrade + reconnect.
+    stampResidencyFailure(
+      journal.project_id,
+      `host is below the residency protocol (${target.host.protocol_version} < ${RESIDENCY_MIN_HOST_PROTOCOL}) — waiting for the host to update`,
+      teamsHome,
+    );
     if (shouldLogOncePerInterval(`residency.proto.${journal.project_id}`, FAILURE_LOG_INTERVAL_MS, Date.now())) {
       deps.logger?.warn(LOG_KINDS.RESIDENCY_ATTACH_PUSH, 'host below residency protocol — push skipped', {
         project_id: journal.project_id,
@@ -812,23 +887,25 @@ function recordJournalFailure(
   teamsHome: string | undefined,
 ): void {
   const message = err instanceof Error ? err.message : String(err);
+  // The stamp re-reads the durable journal and preserves whatever phase it
+  // holds NOW. The `journal` argument here can be a snapshot from before an
+  // await — or the pass-start listing — and the durable phase may have advanced
+  // since (the detach flip advances it mid-pass); writing a snapshot phase back
+  // would regress the journal across the irreversible flip.
+  const current = stampResidencyFailure(journal.project_id, message, teamsHome);
   if (shouldLogOncePerInterval(`residency.fail.${journal.project_id}`, FAILURE_LOG_INTERVAL_MS, Date.now())) {
     deps.logger?.warn(LOG_KINDS.RESIDENCY_ATTACH_PUSH, 'residency transition step failed — retry next tick', {
       project_id: journal.project_id,
       host_id: journal.host_id,
-      phase: journal.phase,
+      phase: current?.phase ?? journal.phase,
       error: message,
     });
   }
-  // Record the last error for the residency-status/doctor surface, without
-  // advancing the phase (retry resumes from the same point next tick).
-  advanceResidencyPhase(journal.project_id, journal.phase, {
-    last_error: message,
-    last_error_at: new Date().toISOString(),
-  }, teamsHome);
 }
 
-function clearJournalFailure(journal: ResidencyJournal, deps: ResidencyDrainDeps, teamsHome: string | undefined): void {
+function clearJournalFailure(journal: ResidencyJournal, _deps: ResidencyDrainDeps, teamsHome: string | undefined): void {
   if (!journal.last_error && !journal.last_error_at) return;
-  advanceResidencyPhase(journal.project_id, journal.phase, { last_error: undefined, last_error_at: undefined }, teamsHome);
+  // Phase-preserving for the same reason as the stamp: this may hold a stale
+  // snapshot, and the clear must not write its phase back.
+  clearResidencyFailure(journal.project_id, teamsHome);
 }

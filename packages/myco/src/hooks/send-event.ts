@@ -4,6 +4,7 @@ import { createHookDaemonClient, isIgnoredEventResponse, type DaemonClient } fro
 import { type NormalizedHookInput } from './normalize.js';
 import { readHookInput } from './input.js';
 import { EventBuffer } from '../capture/buffer.js';
+import { stampCollectRoute } from '../capture/collect-buffer-route.js';
 import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
@@ -165,7 +166,14 @@ export async function captureCriticalEvent(opts: {
         if (postBody.origin !== undefined && bufferEvent.origin === undefined) {
           enriched.origin = postBody.origin;
         }
-        new EventBuffer(location.bufferDir, sessionId).append(enriched);
+        // Stamp the collect route so an attached-project replay re-forwards
+        // to the SAME host route this hook was posting to. Without it the
+        // replay drain defaults every record to /events — a buffered stop
+        // (endpoint /events/stop) would then dispatch as an unknown /events
+        // type and be silently dropped, losing the turn's summary host-side.
+        // The local reconciler branches on `type` and ignores the reserved
+        // route key, so locally-reconciled buffers are unaffected.
+        new EventBuffer(location.bufferDir, sessionId).append(stampCollectRoute(enriched, endpoint));
         // Stderr trace so "session not captured" investigations can see the
         // buffer-fallback path firing without a daemon round-trip. The
         // queued-by-design stop response buffers every successful turn —
