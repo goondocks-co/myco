@@ -38,6 +38,7 @@ import {
   type MemberOverlayDeps,
 } from '@myco/host/member-overlay';
 import { membershipErrorCode } from '@myco/host/membership-error';
+import { advanceResidencyPhase, startResidencyJournal } from '@myco/host/residency-journal';
 import { TAILSCALE_VERSION, type CommandRunner } from '@myco/host/overlay-binaries';
 import { getServiceManager } from '@myco/service/manager';
 import type {
@@ -1081,6 +1082,66 @@ describe('member overlay — multi-host join / leave', () => {
 
     expect(callCount()).toBe(3); // bounded — never a 4th attempt
     expect(sleeps).toEqual([2000, 4000]); // backoff only BETWEEN attempts
+    expect(getHost(id)).toBeNull();
+  });
+
+  test('leave refuses while projects are still attached — record, bearer, and tailscaled all untouched', async () => {
+    const id = hostId();
+    const port = await findFreeLoopbackPort();
+    await joinHost(
+      { hostRef: id, key: 'k', serverUrl: 'https://h:8080' },
+      deps({ proxyPort: port, enrollmentClient: fakeEnrollment(id, 'bearer-X', '100.64.0.9:7433') }),
+    );
+    attachProject(id, {
+      grove_id: createGroveId(), project_id: createProjectId(), root: '/checkout/demo', local_grove_id: createGroveId(),
+    });
+
+    try {
+      await leaveHost(id, deps());
+      throw new Error('expected refusal');
+    } catch (err) {
+      expect(membershipErrorCode(err)).toBe('leave_projects_attached');
+    }
+    // Refusal is a completeness gate: nothing may have been torn down — the
+    // bearer is unrecoverable and the attach refs route live capture.
+    expect(getHost(id)).not.toBeNull();
+    expect(readHostSecrets(id)[HOST_BEARER_SECRET]).toBe('bearer-X');
+    expect(svc.uninstalled).not.toContain(memberTailscaledLabel(id));
+  });
+
+  test('leave refuses while a project move through the host is in flight, then proceeds once it completes', async () => {
+    const id = hostId();
+    const port = await findFreeLoopbackPort();
+    await joinHost(
+      { hostRef: id, key: 'k', serverUrl: 'https://h:8080' },
+      deps({ proxyPort: port, enrollmentClient: fakeEnrollment(id, 'bearer-Y', '100.64.0.10:7433') }),
+    );
+    const projectId = createProjectId();
+    startResidencyJournal({
+      direction: 'detach', phase: 'pulling', host_id: id, project_id: projectId,
+      divert_grove_id: createGroveId(), source_grove_id: createGroveId(), target_grove_id: createGroveId(),
+      project_name: 'demo', root: '/checkout/demo', backup_ref: null, cursors: {},
+    });
+    // A move through a DIFFERENT host must not gate this host's leave.
+    startResidencyJournal({
+      direction: 'detach', phase: 'pulling', host_id: createHostId(), project_id: createProjectId(),
+      divert_grove_id: createGroveId(), source_grove_id: createGroveId(), target_grove_id: createGroveId(),
+      project_name: 'other', root: '/checkout/other', backup_ref: null, cursors: {},
+    });
+
+    try {
+      await leaveHost(id, deps({ teamsHome: tmp }));
+      throw new Error('expected refusal');
+    } catch (err) {
+      expect(membershipErrorCode(err)).toBe('leave_transition_in_flight');
+    }
+    expect(getHost(id)).not.toBeNull();
+
+    // This host's move finishing unblocks the leave — the OTHER host's live
+    // journal is still in flight and must not block it.
+    advanceResidencyPhase(projectId, 'done');
+    const result = await leaveHost(id, deps({ teamsHome: tmp }));
+    expect(result.removed).toBe(true);
     expect(getHost(id)).toBeNull();
   });
 });

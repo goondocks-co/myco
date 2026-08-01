@@ -61,6 +61,17 @@ export type MembershipErrorCode =
    *  Surfaced by `attachCommand`/`detachCommand`; the running transition (or a
    *  `residency abort`) resolves it, a second start does not. */
   | 'residency_transition_in_flight'
+  /** Leave was refused because projects are still attached through the host.
+   *  Leaving would destroy the attach refs and the unrecoverable bearer,
+   *  leaving those projects registered nowhere with capture diverting to a
+   *  Grove that no longer exists locally. Detach each project, then leave. */
+  | 'leave_projects_attached'
+  /** Leave was refused because a residency move through this host is still in
+   *  flight. Distinct from `residency_transition_in_flight` (a project-level
+   *  refusal on attach/detach) because the surface is host-level and the move
+   *  may be past the point where a cancel control exists — the copy must not
+   *  offer one. */
+  | 'leave_transition_in_flight'
   /** A with-history attach cannot proceed because the joined host predates the
    *  residency protocol (its recorded protocol version is below the minimum
    *  the row push requires). Surfaced by the residency transition — nothing has

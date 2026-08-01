@@ -47,6 +47,10 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
   residency_detach_needs_root:
     'Reconnect this project once first so Myco learns its folder, then disconnect.',
   residency_abort_too_late: RESIDENCY_ABORT_TOO_LATE_GENERIC,
+  leave_projects_attached:
+    'This host still has projects attached through it. Detach each project first — its row has a Detach control — then leave.',
+  leave_transition_in_flight:
+    'A project is still moving through this host. Wait for the move to finish, then leave.',
 };
 
 /**
@@ -66,11 +70,11 @@ export const ATTACH_MISMATCH_WARNING_COPY =
  * (`HostCard`) and the host detail slideout (`HostDetailPanel`) so the two
  * surfaces never drift into two different sentences for the same action.
  */
-export function leaveHostConfirmMessage(hostLabel: string, attachedProjectCount: number): string {
-  return attachedProjectCount > 0
-    ? `Leave "${hostLabel}"? This detaches ${attachedProjectCount} attached project${attachedProjectCount === 1 ? '' : 's'} `
-      + '(they go back to local-only) and removes this host\'s overlay connection.'
-    : `Leave "${hostLabel}"? This removes this host's overlay connection from this machine.`;
+export function leaveHostConfirmMessage(hostLabel: string): string {
+  // Only the no-attached-projects path can reach this confirm: the Leave
+  // control disables itself while projects are attached (the server refuses
+  // that leave outright), so the message never has to explain detach-first.
+  return `Leave "${hostLabel}"? This removes this host's overlay connection from this machine.`;
 }
 
 /**

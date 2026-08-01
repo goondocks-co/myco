@@ -90,6 +90,7 @@ import {
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
 import { codedMembershipError } from './membership-error.js';
+import { listResidencyJournals } from './residency-journal.js';
 import {
   abandonHostEnrollment,
   advanceHostEnrollmentPhase,
@@ -544,6 +545,8 @@ export interface MemberOverlayDeps {
   socketPath?: string;
   stateDir?: string;
   binDir?: string;
+  /** Override the team home the residency-journal gate reads (tests). */
+  teamsHome?: string;
   /** Wait for the just-started tailscaled to bind its socket before `up`
    *  (the start→up race). Default polls the socket path; tests inject a stub. */
   waitForSocket?: (socketPath: string) => Promise<boolean>;
@@ -972,16 +975,37 @@ async function leaveHostLocked(
     log(`Not joined to host ${hostId} — nothing to remove.`);
     return { removed: false, tailscaledRemoved: false, notes };
   }
+
+  // Leaving destroys the bearer and every attach ref for this host, and the
+  // bearer is unrecoverable — re-joining mints a new generation. So a leave
+  // while projects are still attached (or mid-move) would leave them
+  // registered nowhere, with capture diverting to a Grove that no longer
+  // exists locally. Refuse until the projects are detached and no move is in
+  // flight. Placed AFTER the nothing-to-remove no-op so a journal naming an
+  // already-gone host (partial teardown) keeps the documented idempotent
+  // return instead of turning into a refusal.
+  const attachedProjects = inspection.record?.projects ?? [];
+  if (attachedProjects.length > 0) {
+    throw codedMembershipError(
+      'leave_projects_attached',
+      `Cannot leave host ${hostId}: ${attachedProjects.length} project(s) are still attached through it. `
+      + 'Detach each project first (`myco detach`), then leave.',
+    );
+  }
+  const inFlight = listResidencyJournals(deps.teamsHome)
+    .filter((journal) => journal.host_id === hostId && journal.phase !== 'done');
+  if (inFlight.length > 0) {
+    throw codedMembershipError(
+      'leave_transition_in_flight',
+      `Cannot leave host ${hostId}: a project move involving this host is still in progress `
+      + `("${inFlight[0]!.project_name}"). Wait for it to finish, then leave.`,
+    );
+  }
   if (proxyPort === null) {
     throw new Error(
       `Could not safely remove host ${hostId}: no trustworthy proxy-port identity remains in the registry or installed service.`,
     );
   }
-  const record = inspection.record;
-  if (record && record.projects.length > 0) {
-    notes.push(`removing ${record.projects.length} attach ref(s) for host ${hostId}`);
-  }
-
   // Stop THIS host's tailscaled FIRST (before deleting its statedir with the record).
   let tailscaledRemoved = false;
   try {

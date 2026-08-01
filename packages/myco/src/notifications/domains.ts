@@ -61,6 +61,14 @@ export function registerBuiltinDomains(): void {
   });
 
   register({
+    domain: 'team',
+    label: 'Team',
+    types: [
+      { id: 'team.residency.stalled', label: 'Project move stalled', defaultMode: 'banner', defaultLevel: 'warning' },
+    ],
+  });
+
+  register({
     domain: 'settings',
     label: 'Settings',
     types: [
