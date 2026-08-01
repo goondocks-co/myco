@@ -88,7 +88,7 @@ mock.module('../../packages/myco/ui/src/hooks/use-debounce', () => ({
   useDebounce: (v: string) => v,
 }));
 
-// SkillList renders the content-claims "Unpublished" badge per row, and
+// SkillList renders the content-claims "Ready to publish" badge per row, and
 // SkillDetail renders the full ClaimControl (B6) — stub every hook
 // ClaimControl imports so this unrelated test doesn't need a PowerProvider
 // or a mocked lib/api just to satisfy usePowerQuery's context requirement.
