@@ -88,19 +88,35 @@ export function requireGenerationReadyCandidate(
   return null;
 }
 
+/**
+ * Copy doctrine: outcome vocabulary in user-visible strings. Agent writes are
+ * DB-only, so created/evolved must announce a version READY TO PUBLISH (not a
+ * changed file), and retired must say the published file stays in the tree.
+ */
 export function emitSkillNotification(
   vaultDir: string | undefined,
   kind: 'created' | 'evolved' | 'retired',
   opts: { name: string; display_name: string; description: string; recordId: string; generation: number },
 ): void {
-  const message = kind === 'retired'
-    ? `${opts.display_name} was retired — its file remains in your project; remove it with a commit when ready.`
-    : opts.description.slice(0, 120);
+  const copy = {
+    created: {
+      title: `New skill ready to publish: ${opts.display_name}`,
+      message: `${opts.display_name} is ready to publish to your project.`,
+    },
+    evolved: {
+      title: `Skill update ready to publish: ${opts.display_name}`,
+      message: `A new version of ${opts.display_name} is ready to publish.`,
+    },
+    retired: {
+      title: `Skill retired: ${opts.display_name}`,
+      message: `${opts.display_name} was retired — its file remains in your project; remove it with a commit when ready.`,
+    },
+  }[kind];
   notify(vaultDir, {
     domain: 'skills',
     type: `skill.${kind}`,
-    title: `Skill ${kind}: ${opts.display_name}`,
-    message,
+    title: copy.title,
+    message: copy.message,
     link: `/skills?skill=${encodeURIComponent(opts.name)}`,
     metadata: { skillId: opts.recordId, name: opts.name, generation: opts.generation },
   });
