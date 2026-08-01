@@ -176,7 +176,13 @@ export type ResidencyPullTransport = (
  * inside a transaction — the caller wraps it. Injected so the drain stays
  * testable and decoupled from the engine's extraction timing.
  */
-export type ApplyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[]) => void;
+export type ApplyStagedRows = (
+  db: Database,
+  table: string,
+  rows: Record<string, unknown>[],
+  /** The project the staged rows belong to — the engine's tenancy scope. */
+  projectId: string,
+) => void;
 
 export interface ResidencyDrainDeps extends ResidencyDaemonDeps {
   transport?: ResidencyPostTransport;
@@ -593,7 +599,7 @@ async function runDetachTransition(
 
     deps.withGroveDb(targetGroveId, (db) => {
       db.transaction(() => {
-        for (const page of pages) applyRows(db, page.table, page.rows);
+        for (const page of pages) applyRows(db, page.table, page.rows, journal.project_id);
       })();
     });
     // Advance to the terminal sweep. The journal PERSISTS through `rehoming` so a
@@ -726,10 +732,18 @@ async function pushTransition(
     return lastStatus;
   };
 
+  // The host answers a REFUSAL (a request it will never accept identically —
+  // tenancy rejection, missing context) with 400/403. Splitting such a batch
+  // ships its in-scope halves while the offending rows keep refusing, so the
+  // transition half-applies and then loops; refusal must stop the ship
+  // wholesale, not bisect around the refused rows.
+  const isRefusal = (status: number): boolean => status === 400 || status === 403;
+
   // A non-200 STATUS on a multi-row batch may just be an over-cap payload (near
   // the 8MB per-request limit); halve and retry so an oversized batch can't wedge
   // retry-forever. A transport error (status 0 — host unreachable) never
-  // self-heals by splitting, so it fails straight to a next-tick retry.
+  // self-heals by splitting, so it fails straight to a next-tick retry — and a
+  // refusal never self-heals at all, so it never splits either.
   const shipOutboxRows = async (table: string, rows: OutboxRow[]): Promise<boolean> => {
     if (rows.length === 0) return true;
     const status = await post({ table, rows: rows.map((r) => r.payload) });
@@ -741,7 +755,7 @@ async function pushTransition(
       });
       return true;
     }
-    if (status !== 0 && rows.length > 1) {
+    if (status !== 0 && !isRefusal(status) && rows.length > 1) {
       const mid = Math.floor(rows.length / 2);
       return (await shipOutboxRows(table, rows.slice(0, mid))) && (await shipOutboxRows(table, rows.slice(mid)));
     }
@@ -752,7 +766,7 @@ async function pushTransition(
     if (rows.length === 0) return true;
     const status = await post({ table, rows });
     if (status === 200) return true;
-    if (status !== 0 && rows.length > 1) {
+    if (status !== 0 && !isRefusal(status) && rows.length > 1) {
       const mid = Math.floor(rows.length / 2);
       return (await shipPlainRows(table, rows.slice(0, mid))) && (await shipPlainRows(table, rows.slice(mid)));
     }
@@ -760,7 +774,16 @@ async function pushTransition(
   };
 
   const giveUp = (): void =>
-    recordJournalFailure(journal, new Error(`residency push failed (host status ${lastStatus})`), deps, teamsHome);
+    recordJournalFailure(
+      journal,
+      new Error(
+        isRefusal(lastStatus)
+          ? `residency push refused by the host (status ${lastStatus}) — retrying the identical batch cannot succeed; cancel the move or fix the scoping mismatch`
+          : `residency push failed (host status ${lastStatus})`,
+      ),
+      deps,
+      teamsHome,
+    );
 
   // (1) outbox rows — drain project-filtered batches, one POST per table.
   for (;;) {

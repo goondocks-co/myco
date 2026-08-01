@@ -113,11 +113,12 @@ describe('backup engine', () => {
       expect(BACKUP_TABLES).toContain('canopy_maps');
     });
 
-    it('excludes tables that cannot participate in row-by-row dumps', () => {
-      // The dump format addresses rows by primary key for INSERT OR IGNORE
-      // idempotency. `entity_mentions` has no `id` column
-      // (gotcha_entity_mentions_not_synced) so it is carved out explicitly.
-      expect(BACKUP_TABLES).not.toContain('entity_mentions');
+    it('covers every project-scoped table and nothing outside the surface', () => {
+      // `entity_mentions` participates as of v75 (it gained the `id` primary
+      // key the dump's INSERT OR IGNORE idempotency addresses rows by) — the
+      // detach artifact is the ONLY carrier in that direction, so a carve-out
+      // here is silent single-carrier data loss.
+      expect(BACKUP_TABLES).toContain('entity_mentions');
 
       // Tables outside the project-scoped surface (and not team_members)
       // do not appear in BACKUP_TABLES.

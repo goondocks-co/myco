@@ -160,7 +160,8 @@ export const KNOWLEDGE_RELEASE_STATE_TABLE = `
     checked_at               INTEGER NOT NULL,
     created_at               INTEGER NOT NULL,
     updated_at               INTEGER,
-    synced_at                INTEGER
+    synced_at                INTEGER,
+    received_at INTEGER
   )`;
 
 export const ACTIVITIES_TABLE = `
@@ -205,7 +206,8 @@ export const PLANS_TABLE = `
     updated_at       INTEGER,
     embedded         INTEGER DEFAULT 0,
     machine_id       TEXT NOT NULL DEFAULT 'local',
-    synced_at        INTEGER
+    synced_at        INTEGER,
+    received_at INTEGER
   )`;
 
 export const ARTIFACTS_TABLE = `
@@ -222,7 +224,8 @@ export const ARTIFACTS_TABLE = `
     updated_at       INTEGER,
     embedded         INTEGER DEFAULT 0,
     machine_id       TEXT NOT NULL DEFAULT 'local',
-    synced_at        INTEGER
+    synced_at        INTEGER,
+    received_at INTEGER
   )`;
 
 export const TEAM_MEMBERS_TABLE = `
@@ -290,7 +293,8 @@ export const SPORES_TABLE = `
     updated_at        INTEGER,
     embedded          INTEGER DEFAULT 0,
     machine_id        TEXT NOT NULL DEFAULT 'local',
-    synced_at         INTEGER
+    synced_at         INTEGER,
+    received_at INTEGER
   )`;
 
 export const ENTITIES_TABLE = `
@@ -305,7 +309,8 @@ export const ENTITIES_TABLE = `
     last_seen   INTEGER NOT NULL,
     status      TEXT DEFAULT 'active',
     machine_id  TEXT NOT NULL DEFAULT 'local',
-    synced_at   INTEGER
+    synced_at   INTEGER,
+    received_at INTEGER
   )`;
 
 export const GRAPH_EDGES_TABLE = `
@@ -328,6 +333,7 @@ export const GRAPH_EDGES_TABLE = `
 
 export const ENTITY_MENTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS entity_mentions (
+    id          TEXT PRIMARY KEY NOT NULL DEFAULT ('ment_' || lower(hex(randomblob(16)))),
     project_id  TEXT,
     entity_id   TEXT NOT NULL REFERENCES entities(id),
     note_id     TEXT NOT NULL,
@@ -363,7 +369,8 @@ export const DIGEST_EXTRACTS_TABLE = `
     substrate_hash  TEXT,
     generated_at    INTEGER NOT NULL,
     machine_id      TEXT NOT NULL DEFAULT 'local',
-    synced_at       INTEGER
+    synced_at       INTEGER,
+    received_at INTEGER
   )`;
 
 export const CORTEX_INSTRUCTIONS_TABLE = `
@@ -541,7 +548,8 @@ export const SKILL_CANDIDATES_TABLE = `
     quality_failures TEXT NOT NULL DEFAULT '[]',
     coverage_matches TEXT NOT NULL DEFAULT '[]',
     last_reconciled_at INTEGER,
-    reconciliation_reason TEXT
+    reconciliation_reason TEXT,
+    received_at INTEGER
   )`;
 
 export const SKILL_RECORDS_TABLE = `
@@ -564,7 +572,8 @@ export const SKILL_RECORDS_TABLE = `
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     properties      TEXT NOT NULL DEFAULT '{}',
-    synced_at       INTEGER
+    synced_at       INTEGER,
+    received_at INTEGER
   )`;
 
 export const SKILL_LINEAGE_TABLE = `
@@ -609,7 +618,8 @@ export const OKF_GENERATIONS_TABLE = `
     findings     TEXT NOT NULL DEFAULT '[]',
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
-    synced_at    INTEGER
+    synced_at    INTEGER,
+    received_at INTEGER
   )`;
 
 export const OKF_PAGES_TABLE = `
@@ -626,7 +636,8 @@ export const OKF_PAGES_TABLE = `
     generation  INTEGER NOT NULL DEFAULT 1,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
-    synced_at   INTEGER
+    synced_at   INTEGER,
+    received_at INTEGER
   )`;
 
 export const OKF_PAGE_REVISIONS_TABLE = `
@@ -1249,8 +1260,9 @@ export function tablesGatedByWorkerProtocol(
  * (kept from being wiped on a transient registry read), so a paused/transition
  * window delays a push but never loses a member's delete; push-side membership
  * gating still bounds what actually ships. Widens the FTS auto-sync-trigger
- * pattern above. `entity_mentions` is intentionally absent — no single `id`
- * column, never reaches D1.
+ * pattern above. `entity_mentions` is intentionally absent — it has an `id`
+ * as of v75, but it never rode the outbox contract; adding its delete trigger
+ * is a deliberate future decision, not a structural gap.
  */
 export const TEAM_DELETE_TRIGGER_TABLES = [
   'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',

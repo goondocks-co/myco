@@ -484,7 +484,7 @@ describe('detach drain — crash-resume + freshness', () => {
     }]]);
 
     // The exact production wiring from main.ts — the real engine, one transaction.
-    const applyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[]) => { applyResidencyRows(db, table, rows, {}); };
+    const applyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[], projectId: string) => { applyResidencyRows(db, table, rows, { expectedProjectId: projectId }, {}); };
     await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows });
 
     const landed = getDatabase().prepare(`SELECT content FROM spores WHERE id = 'sp_new'`).get() as { content: string } | undefined;
@@ -513,7 +513,7 @@ describe('detach drain — crash-resume + freshness', () => {
       { table: 'sessions', row: { id: 'sess_r', project_id: projectId, agent: 'claude-code', started_at: 1, created_at: 1, machine_id: 'local' } },
     ]]);
 
-    const applyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[]) => { applyResidencyRows(db, table, rows, {}); };
+    const applyStagedRows = (db: Database, table: string, rows: Record<string, unknown>[], projectId: string) => { applyResidencyRows(db, table, rows, { expectedProjectId: projectId }, {}); };
     await runResidencyTransitions({ ...baseDeps(), pullTransport: transport, resolveHostTarget: targetResolver(), applyStagedRows });
 
     // Both FK-children landed → their parents were applied first (else the whole

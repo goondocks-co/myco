@@ -81,15 +81,15 @@ describe('P1 #2: Concurrency guard query helpers', () => {
 // ---------------------------------------------------------------------------
 // P1 #3: v7 migration — entity_mentions excluded
 // ---------------------------------------------------------------------------
-describe('P1 #3: v7 migration entity_mentions exclusion', () => {
+describe('entity_mentions shape (v75 rebuild)', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
 
-  it('entity_mentions table exists without id column', () => {
+  it('entity_mentions carries the v75 id primary key alongside its composite identity', () => {
     const db = getDatabase();
     const cols = db.prepare("PRAGMA table_info('entity_mentions')").all() as Array<{ name: string }>;
     const colNames = cols.map(c => c.name);
-    expect(colNames).not.toContain('id');
+    expect(colNames).toContain('id');
     expect(colNames).toContain('entity_id');
     expect(colNames).toContain('machine_id');
   });
