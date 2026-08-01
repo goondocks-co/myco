@@ -9,8 +9,9 @@
  * The `sanitizeSyncPayload` strip is preserved: host copies are deliberately
  * free of local-only columns, exactly as team sync always shipped them.
  *
- * The two sidecar tables — `entity_mentions` (no `id`/`synced_at`, keyed by a
- * four-column UNIQUE) and `content_publications` (no `project_id`, keyed by
+ * The two sidecar tables — `entity_mentions` (id-keyed as of v75 but with no
+ * `synced_at` outbox wiring; identity is the four-column UNIQUE) and
+ * `content_publications` (no `project_id`, keyed by
  * `(artifact_kind, artifact_id)`) — cannot ride the outbox, whose contract is
  * `id`+`synced_at`. They are paged directly by the drain via the enumerators
  * here and shipped over the same route with journal cursors.

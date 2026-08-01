@@ -260,11 +260,19 @@ describe('skill_candidates column shape: fresh install ≡ upgraded vault', () =
           .sort((a, b) => a.cid - b.cid)
           .map((col) => col.name);
 
-        expect(new Set(freshCols), 'column NAME SET must match between fresh and upgraded').toEqual(
+        // This fixture upgrades a frozen v41 vault through migration 42 ONLY,
+        // so columns added by LATER migrations exist on the fresh side alone.
+        // Filter them by name; full-chain order parity for these columns is
+        // asserted by their own migration tests (v75:
+        // migrate-v74-to-v75-residency-trust.test.ts).
+        const POST_V42_COLUMNS = new Set(['received_at']);
+        const comparableFresh = freshCols.filter((c) => !POST_V42_COLUMNS.has(c));
+
+        expect(new Set(comparableFresh), 'column NAME SET must match between fresh and upgraded').toEqual(
           new Set(upgradedCols),
         );
 
-        expect(freshCols, 'column ORDER must match — prevents PRAGMA-positional drift between vaults').toEqual(
+        expect(comparableFresh, 'column ORDER must match — prevents PRAGMA-positional drift between vaults').toEqual(
           upgradedCols,
         );
       } finally {

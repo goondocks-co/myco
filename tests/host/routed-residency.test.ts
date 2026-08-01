@@ -301,7 +301,7 @@ describe('residency apply matrix', () => {
 
   function apply(table: string, rows: Record<string, unknown>[]): number {
     const db = getDatabase();
-    return db.transaction(() => applyResidencyRows(db, table, rows).applied)();
+    return db.transaction(() => applyResidencyRows(db, table, rows, { expectedProjectId: PROJ }).applied)();
   }
 
   // -- ensure-agent: an agent-referencing row with a novel agent id applies -----
@@ -451,8 +451,18 @@ describe('residency apply matrix', () => {
     expect(row.response_summary).toBe('done');
   });
 
+  // A publication's tenancy resolves through its owning artifact, so the
+  // owner must exist in-project before any publications batch applies.
+  function seedSkillOwner(id: string, projectId: string): void {
+    apply('skill_records', [{
+      id, project_id: projectId, agent_id: 'myco-agent', name: `n-${id}`, display_name: 'N',
+      description: 'd', status: 'active', path: '/p', generation: 1, created_at: NOW, updated_at: NOW,
+    }]);
+  }
+
   // -- content_publications: max-generation -------------------------------------
   test('content_publications keeps the max published_generation', () => {
+    seedSkillOwner('sk1', PROJ);
     const pub = (gen: number, by: string) => ({ artifact_kind: 'skill', artifact_id: 'sk1', published_generation: gen, published_at: NOW, published_by: by, machine_id: 'm' });
     apply('content_publications', [pub(2, 'alice')]);
     // A lower generation never regresses the row.
@@ -470,6 +480,7 @@ describe('residency apply matrix', () => {
   // -- idempotent double-apply per class ----------------------------------------
   test('double-apply is idempotent across every class', () => {
     apply('sessions', [sessionRow('s1', PROJ, { title: 'T' })]);
+    seedSkillOwner('sk1', PROJ);
     const twice = (table: string, rows: Record<string, unknown>[]) => { apply(table, rows); apply(table, rows); };
     twice('spores', [sporeRow('sp1', PROJ)]);
     twice('entities', [{ id: 'e1', project_id: PROJ, agent_id: 'myco-agent', type: 't', name: 'n', first_seen: NOW, last_seen: NOW, status: 'active' }]);
@@ -495,7 +506,7 @@ describe('residency entity_mentions absent-FK handling', () => {
 
   function apply(table: string, rows: Record<string, unknown>[]): ReturnType<typeof applyResidencyRows> {
     const db = getDatabase();
-    return db.transaction(() => applyResidencyRows(db, table, rows))();
+    return db.transaction(() => applyResidencyRows(db, table, rows, { expectedProjectId: PROJ }))();
   }
 
   test('an absent-entity mention throws and rolls the WHOLE batch back (no partial, never silently dropped)', () => {
@@ -598,5 +609,150 @@ describe('residency ingest handler', () => {
     ] });
     expect(res.status).toBe(409);
     expect(count('entity_mentions')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (6) Tenancy admission — every applied row belongs to the declared project
+// ---------------------------------------------------------------------------
+
+describe('residency tenancy admission', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); resetResidencyColumnCache(); });
+
+  const FOREIGN = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+  function apply(table: string, rows: Record<string, unknown>[], scopeProject: string = PROJ): number {
+    const db = getDatabase();
+    return db.transaction(() => applyResidencyRows(db, table, rows, { expectedProjectId: scopeProject }).applied)();
+  }
+
+  test('an if-newer row naming a foreign project is refused and rolls the whole batch back', () => {
+    expect(() => apply('spores', [sporeRow('ok', PROJ), sporeRow('bad', FOREIGN)])).toThrow(/rejected/);
+    expect(count('spores')).toBe(0); // the in-scope row rolled back with it
+  });
+
+  test('a field-merge row naming a foreign project is refused', () => {
+    expect(() => apply('sessions', [sessionRow('s1', FOREIGN)])).toThrow(/rejected/);
+    expect(count('sessions')).toBe(0);
+  });
+
+  test('an insert-only row naming a foreign project is refused', () => {
+    expect(() => apply('resolution_events', [
+      { id: 'r1', project_id: FOREIGN, agent_id: 'myco-agent', spore_id: null, event_type: 'x', created_at: NOW, machine_id: 'm' },
+    ])).toThrow(/rejected/);
+  });
+
+  test('a NULL project_id is refused — fail closed, never applied unscoped', () => {
+    expect(() => apply('spores', [sporeRow('sp_null', null as unknown as string)])).toThrow(/rejected/);
+  });
+
+  test('a mention whose ENTITY belongs to another project is refused even when the row itself claims the scoped project', () => {
+    apply('entities', [{ id: 'e_foreign', project_id: FOREIGN, agent_id: 'myco-agent', type: 't', name: 'n', first_seen: NOW, last_seen: NOW, status: 'active' }], FOREIGN);
+    expect(() => apply('entity_mentions', [
+      { project_id: PROJ, entity_id: 'e_foreign', note_id: 'sp1', note_type: 'spore', agent_id: 'myco-agent', machine_id: 'm' },
+    ])).toThrow(/rejected/);
+    expect(count('entity_mentions')).toBe(0);
+  });
+
+  test('a publication whose artifact belongs to another project is refused; an ABSENT artifact stays retryable', () => {
+    apply('skill_records', [{
+      id: 'skf', project_id: FOREIGN, agent_id: 'myco-agent', name: 'skill-f', display_name: 'F',
+      description: 'd', status: 'active', path: '/p', generation: 1, created_at: NOW, updated_at: NOW,
+    }], FOREIGN);
+    // Foreign owner: permanent refusal.
+    expect(() => apply('content_publications', [
+      { artifact_kind: 'skill', artifact_id: 'skf', published_generation: 1, machine_id: 'm', published_at: NOW },
+    ])).toThrow(/rejected/);
+    // Absent owner: plain retryable throw (ordering miss), NOT a tenancy refusal.
+    expect(() => apply('content_publications', [
+      { artifact_kind: 'skill', artifact_id: 'never_landed', published_generation: 1, machine_id: 'm', published_at: NOW },
+    ])).toThrow(/absent artifact/);
+  });
+
+  test('the ingest handler maps a tenancy violation to a NON-retryable 403', async () => {
+    const handler = createRoutedResidencyHandler({});
+    const res = await handler({
+      body: { table: 'spores', rows: [sporeRow('sp_f', FOREIGN)] },
+      query: {}, params: {}, pathname: ROUTED_RESIDENCY_ROWS_PATH,
+      requestContext: reqCtx('grove_x', PROJ),
+    });
+    expect(res.status).toBe(403);
+    expect((res.body as Record<string, unknown>).error).toBe('tenancy_rejected');
+    expect((res.body as Record<string, unknown>).retryable).toBe(false);
+  });
+
+  test('the ingest handler refuses a request that resolves no project context', async () => {
+    const handler = createRoutedResidencyHandler({});
+    const res = await handler({
+      body: { table: 'spores', rows: [sporeRow('sp1', PROJ)] },
+      query: {}, params: {}, pathname: ROUTED_RESIDENCY_ROWS_PATH,
+      requestContext: undefined,
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as Record<string, unknown>).error).toBe('missing_project_context');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (7) Receiver-clock stamping + far-future clamp
+// ---------------------------------------------------------------------------
+
+describe('residency receiver-clock ordering', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); resetResidencyColumnCache(); });
+
+  function apply(table: string, rows: Record<string, unknown>[]): number {
+    const db = getDatabase();
+    return db.transaction(() => applyResidencyRows(db, table, rows, { expectedProjectId: PROJ }).applied)();
+  }
+  const realNow = () => Math.floor(Date.now() / 1000);
+
+  test('a far-future claimed timestamp cannot pin a row: a later honest update still wins', () => {
+    const farFuture = realNow() + 10 * 365 * 24 * 60 * 60; // ten years out
+    apply('spores', [sporeRow('sp1', PROJ, { updated_at: farFuture, content: 'FORGED' })]);
+    // Without the clamp this honest write loses the if-newer comparison forever.
+    apply('spores', [sporeRow('sp1', PROJ, { updated_at: realNow() + 1, content: 'honest' })]);
+    expect(getRow('spores', 'sp1')!.content).toBe('honest');
+  });
+
+  test('a within-skew future timestamp is preserved (ordinary clock drift is not punished)', () => {
+    const slightlyAhead = realNow() + 60; // one minute of drift
+    apply('spores', [sporeRow('sp1', PROJ, { updated_at: slightlyAhead, content: 'drifted' })]);
+    expect(getRow('spores', 'sp1')!.updated_at).toBe(slightlyAhead);
+  });
+
+  test('applied rows carry the receiver clock in received_at', () => {
+    const before = realNow();
+    apply('spores', [sporeRow('sp1', PROJ, { updated_at: 100 })]);
+    const received = getRow('spores', 'sp1')!.received_at as number;
+    expect(received).toBeGreaterThanOrEqual(before);
+    expect(received).toBeLessThanOrEqual(realNow() + 1);
+  });
+
+  test('a replayed identical clamped batch converges — one row, stable content, ordering timestamp never escapes the clamp', () => {
+    const farFuture = realNow() + 10 * 365 * 24 * 60 * 60;
+    const row = sporeRow('sp1', PROJ, { updated_at: farFuture, content: 'same' });
+    apply('spores', [row]);
+    const firstStored = getRow('spores', 'sp1')!.updated_at as number;
+    apply('spores', [row]);
+    expect(count('spores')).toBe(1);
+    expect(getRow('spores', 'sp1')!.content).toBe('same');
+    // The stored ordering timestamp may creep to the replay's own clamp time
+    // (documented residual) but must NEVER hold the far-future claim.
+    const stored = getRow('spores', 'sp1')!.updated_at as number;
+    expect(stored).toBeGreaterThanOrEqual(firstStored);
+    expect(stored).toBeLessThanOrEqual(realNow() + 1);
+  });
+
+  test('a sane created_at fallback rides untouched next to a far-future updated_at — only the DECIDING column clamps', () => {
+    const farFuture = realNow() + 10 * 365 * 24 * 60 * 60;
+    const createdAt = 12345;
+    apply('spores', [sporeRow('sp1', PROJ, { updated_at: farFuture, created_at: createdAt, content: 'x' })]);
+    const stored = getRow('spores', 'sp1')!;
+    expect(stored.created_at).toBe(createdAt); // preserved as data
+    expect(stored.updated_at as number).toBeLessThanOrEqual(realNow() + 1); // clamped
   });
 });

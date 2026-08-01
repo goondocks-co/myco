@@ -21,8 +21,8 @@ import { sortRowsByParentChain } from './importer/parent-chain-sort.js';
 
 /**
  * Tables the move copies, verifies, and cleans. The full project-scoped
- * registry — including `entity_mentions`, which the dump format excludes
- * (no `id` column) but a direct row copy carries fine.
+ * registry — every table, including `entity_mentions` (id-keyed as of v75;
+ * the backup dump carries it too).
  */
 export const MOVE_COPY_TABLES: readonly string[] = GROVE_PROJECT_SCOPED_TABLES;
 

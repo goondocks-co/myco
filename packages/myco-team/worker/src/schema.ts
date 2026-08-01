@@ -163,6 +163,7 @@ export const ARTIFACTS_TABLE = `
 
 export const ENTITY_MENTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS entity_mentions (
+    id          TEXT PRIMARY KEY,
     entity_id   TEXT NOT NULL,
     note_id     TEXT NOT NULL,
     note_type   TEXT NOT NULL,
@@ -523,6 +524,7 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
   // Migrations for existing tables (safe to re-run — silently ignored if column exists)
   const migrations = [
     'ALTER TABLE plans ADD COLUMN logical_key TEXT',
+    'ALTER TABLE entity_mentions ADD COLUMN id TEXT',
     'ALTER TABLE skill_usage ADD COLUMN synced_at INTEGER',
     'ALTER TABLE skill_candidates ADD COLUMN approved_at INTEGER',
     'ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT',
@@ -589,7 +591,7 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     ['entities', ['project_id']],
     ['graph_edges', ['project_id']],
     ['artifacts', ['project_id']],
-    ['entity_mentions', ['project_id']],
+    ['entity_mentions', ['project_id', 'id']],
     ['resolution_events', ['project_id']],
     ['digest_extracts', ['project_id']],
     ['skill_records', ['project_id']],

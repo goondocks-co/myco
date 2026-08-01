@@ -189,8 +189,9 @@ describe('structural guard: every synced table has a delete trigger', () => {
   // Two DISTINCT reasons a synced table is intentionally trigger-less:
   //   - machine-scoped (e.g. team_members): no `project_id` column for the
   //     ${table}_team_ad trigger to journal — derived from SYNCED_TABLE_SCOPE.
-  //   - no single `id` column (entity_mentions): the trigger journals OLD.id —
-  //     a separate reason, still project-scoped.
+  //   - entity_mentions: id-keyed as of v75, but its delete trigger was never
+  //     wired (outbox identity is the four-column UNIQUE) — recorded contract,
+  //     not a structural gap; still project-scoped.
   // Cross-list parity for these exclusions is enforced in
   // synced-table-parity.test.ts (NO_SINGLE_ID_TABLES / NO_DELETE_TRIGGER_TABLES).
   const machineScoped = WORKER_SYNCED_TABLES.filter((t) => SYNCED_TABLE_SCOPE[t] === 'machine');

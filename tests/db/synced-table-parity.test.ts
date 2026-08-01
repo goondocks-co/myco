@@ -103,11 +103,12 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Tables that are synced (pushed to D1 + counted for drift) but have NO single
- * `id` column, so they cannot have a delete trigger (the trigger journals
- * `OLD.id`) and cannot be backfilled/rebuilt by `id` (backfillRows selects by
- * `id`). `entity_mentions` uses a composite key (entity_id, note_id,
- * note_type, agent_id).
+ * Tables that are synced (pushed to D1 + counted for drift) but stay outside
+ * the id-driven outbox machinery. `entity_mentions` gained an `id` in v75
+ * (backup/dump now carries it), but its outbox identity was always the
+ * four-column UNIQUE (entity_id, note_id, note_type, agent_id) and wiring it
+ * into REBUILD / BACKFILL / DELETE_TRIGGER is a deliberate future decision —
+ * this set records the current contract, not a structural impossibility.
  *
  * Consequence: present in worker SYNCED_TABLES + daemon OBSERVED, ABSENT from
  * REBUILD / BACKFILL / DELETE_TRIGGER.

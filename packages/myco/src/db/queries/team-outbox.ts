@@ -73,6 +73,11 @@ export const LOCAL_ONLY_OUTBOX_TABLES = new Set<string>([
   'session_myco_tool_calls',
 ]);
 
+// Receiver-stamped apply bookkeeping (schema v75): each machine's residency
+// apply stamps its OWN clock into `received_at`, so the value is meaningless
+// off-machine and must never ride a sync payload.
+const RECEIVED_AT_LOCAL_ONLY = ['received_at'] as const;
+
 export const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
   sessions: [
     'embedded',
@@ -96,7 +101,17 @@ export const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
     'basis_ref',
     'basis_sha',
     'evidence_json',
+    ...RECEIVED_AT_LOCAL_ONLY,
   ],
+  spores: RECEIVED_AT_LOCAL_ONLY,
+  plans: RECEIVED_AT_LOCAL_ONLY,
+  artifacts: RECEIVED_AT_LOCAL_ONLY,
+  skill_candidates: RECEIVED_AT_LOCAL_ONLY,
+  skill_records: RECEIVED_AT_LOCAL_ONLY,
+  okf_generations: RECEIVED_AT_LOCAL_ONLY,
+  okf_pages: RECEIVED_AT_LOCAL_ONLY,
+  entities: RECEIVED_AT_LOCAL_ONLY,
+  digest_extracts: RECEIVED_AT_LOCAL_ONLY,
 };
 
 /**
@@ -593,7 +608,7 @@ export const TEAM_SYNC_BACKFILL_TABLES = [
   'okf_pages',
   'okf_page_revisions',
 ] as const;
-// entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
+// entity_mentions excluded from the outbox contract. It HAS an `id` as of v75 (backup now carries it); outbox inclusion is a deliberate future decision, no longer structurally blocked.
 // skill_usage excluded — no `synced_at` column (syncs via syncRow on insert); included
 // in REBUILD_TABLES so rebuild produces an exact cloud mirror
 

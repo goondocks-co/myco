@@ -36,6 +36,7 @@ import { epochSeconds } from '@myco/constants.js';
 import type { Database } from '@myco/db/client.js';
 import { REBUILD_TABLES } from '@myco/db/queries/team-outbox.js';
 import type { Logger } from '@myco/daemon/logger.js';
+import { shouldLogOncePerInterval } from '@myco/daemon/log-throttle.js';
 
 /** The two sidecar tables that ride the residency route but are not in
  *  `REBUILD_TABLES` (no `id`/`synced_at` outbox contract). */
@@ -366,11 +367,15 @@ function upsertRow(
   ).run(...columns.map((c) => row[c] as never));
 }
 
-/** if-newer: whole-row replace on conflict, guarded by the freshness condition. */
-function applyIfNewer(db: Database, table: string, rows: Record<string, unknown>[], rule: IfNewerRule): void {
+/** if-newer: whole-row replace on conflict, guarded by the freshness condition.
+ *  Rows are receiver-stamped (`received_at`) and their claimed ordering
+ *  timestamps clamped before the conflict decision. */
+function applyIfNewer(db: Database, table: string, rows: Record<string, unknown>[], rule: IfNewerRule, logger?: Logger): void {
   const columns = tableColumns(db, table);
   const where = ifNewerConditionSql(rule);
-  for (const row of rows) {
+  const now = epochSeconds();
+  for (const raw of rows) {
+    const row = stampAndClampRow(raw, table, rule.timestamp, rule.fallbackTimestamp, columns, now, logger);
     const cols = insertableColumns(row, columns);
     const setClause = cols.filter((c) => c !== 'id').map((c) => `${c} = excluded.${c}`).join(', ');
     if (!setClause) { insertRow(db, table, row, cols, true); continue; }
@@ -403,10 +408,12 @@ function applyFieldMerge(db: Database, table: string, rows: Record<string, unkno
 
 /** identity upsert (`digest_extracts`): resolve by identity tuple, replace when
  *  the incoming row is newer by `timestamp`, keeping the existing PK. */
-function applyIdentity(db: Database, table: string, rows: Record<string, unknown>[], rule: IdentityRule): void {
+function applyIdentity(db: Database, table: string, rows: Record<string, unknown>[], rule: IdentityRule, logger?: Logger): void {
   const columns = tableColumns(db, table);
   const mutable = [...columns].filter((c) => c !== 'id' && !rule.identity.includes(c));
-  for (const row of rows) {
+  const now = epochSeconds();
+  for (const raw of rows) {
+    const row = stampAndClampRow(raw, table, rule.timestamp, undefined, columns, now, logger);
     const whereParts: string[] = [];
     const whereParams: unknown[] = [];
     for (const key of rule.identity) {
@@ -464,12 +471,22 @@ function applyPublications(db: Database, rows: Record<string, unknown>[]): void 
  * lost. `INSERT OR IGNORE` dedups an already-present mention — the idempotent replay
  * path — but never swallows the FK violation.
  */
-function applyEntityMentions(db: Database, rows: Record<string, unknown>[]): void {
+function applyEntityMentions(db: Database, rows: Record<string, unknown>[], scope: ResidencyApplyScope): void {
   const columns = tableColumns(db, 'entity_mentions');
-  const entityStmt = db.prepare('SELECT 1 FROM entities WHERE id = ?');
+  const entityStmt = db.prepare('SELECT project_id FROM entities WHERE id = ?');
   for (const row of rows) {
-    if (!entityStmt.get(row.entity_id as never)) {
+    const entity = entityStmt.get(row.entity_id as never) as { project_id: string | null } | undefined;
+    if (!entity) {
       throw new Error(`entity_mentions references an absent entity ${String(row.entity_id)}`);
+    }
+    // The mention's own project_id is validated by the generic scope check;
+    // the OWNING ENTITY must also live in the declared project — otherwise a
+    // scoped batch could hang a mention off another project's entity.
+    if (entity.project_id !== scope.expectedProjectId) {
+      throw new ResidencyTenancyError(
+        'entity_mentions',
+        `entity ${String(row.entity_id)} belongs to project ${String(entity.project_id ?? 'NULL')}, batch is scoped to ${scope.expectedProjectId}`,
+      );
     }
     insertRow(db, 'entity_mentions', row, insertableColumns(row, columns), true);
   }
@@ -486,6 +503,149 @@ export interface ResidencyApplyResult {
 }
 
 /**
+ * The tenancy scope every apply MUST declare — a required argument, not a
+ * default, so a new call site decides rather than inherits (the same rule the
+ * write-admission lease applies to its evidence argument). Every applied row
+ * must belong to `expectedProjectId`; a row naming another project (or none)
+ * throws {@link ResidencyTenancyError} and rolls the batch back.
+ *
+ * SCOPE OF THE GUARANTEE: this is batch-internal consistency, not
+ * authorization. On the host route the expected project comes from the
+ * member-supplied request header, so under v1 flat trust a bearer-holding
+ * member can still declare any hosted project — cross-member isolation is the
+ * authenticated-machine-identity workstream (post-v1), not this check.
+ */
+export interface ResidencyApplyScope {
+  expectedProjectId: string;
+}
+
+/**
+ * A batch violated the declared tenancy scope. Distinct from a transient apply
+ * failure: retrying the identical batch can never succeed, so the ingest route
+ * maps this to a refusal (4xx), not a retryable error.
+ */
+export class ResidencyTenancyError extends Error {
+  constructor(table: string, detail: string) {
+    super(`residency batch rejected for ${table}: ${detail}`);
+    this.name = 'ResidencyTenancyError';
+  }
+}
+
+/**
+ * Claimed ordering timestamps are clamped to the receiver's own clock (plus a
+ * skew allowance) before they decide a conflict. Without this, one row carrying
+ * a far-future `updated_at` wins every future conflict PERMANENTLY — the
+ * receiver has no way to distinguish a fast clock from a forged one, but it
+ * never has to accept a claim from further in the future than clocks drift.
+ *
+ * Stated residuals, deliberate: (1) the STORED side is never clamped — a row
+ * already holding a far-future timestamp (written locally, or before this
+ * shipped) still pins until something rewrites it; the clamp prevents NEW pins
+ * arriving over the wire, it does not repair history. (2) a clamped row still
+ * lands at `now`, so it wins the CURRENT conflict against honestly-older rows —
+ * the property delivered is "cannot pin the future", not "cannot win today".
+ * (3) a replayed identical far-future row re-clamps to the replay's own `now`
+ * and re-applies — content-identical, so convergent, but the stored ordering
+ * timestamp creeps to the latest replay time rather than staying frozen.
+ */
+const MAX_CLAIMED_TIMESTAMP_SKEW_SECONDS = 24 * 60 * 60;
+
+/** Validate every row of a batch against the declared project scope. */
+function assertRowsInScope(
+  db: Database,
+  table: string,
+  rows: Record<string, unknown>[],
+  scope: ResidencyApplyScope,
+): void {
+  const columns = tableColumns(db, table);
+  if (columns.has('project_id')) {
+    for (const row of rows) {
+      if (row.project_id !== scope.expectedProjectId) {
+        throw new ResidencyTenancyError(
+          table,
+          `row ${String(row.id ?? row.note_id ?? '?')} names project ${String(row.project_id ?? 'NULL')}, batch is scoped to ${scope.expectedProjectId}`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * `content_publications` carries no `project_id`; its tenancy comes from the
+ * owning artifact row. Two distinct outcomes, deliberately not conflated:
+ * an artifact present under ANOTHER project is a tenancy violation (permanent
+ * refusal — retrying the identical batch can never succeed), while an artifact
+ * not present AT ALL is a transient ordering miss (a publication page can
+ * arrive before its artifact table lands) and throws a plain retryable error,
+ * mirroring the entity_mentions absent-FK discipline — never acked-and-lost,
+ * never permanently refused for arriving early.
+ */
+function assertPublicationsInScope(
+  db: Database,
+  rows: Record<string, unknown>[],
+  scope: ResidencyApplyScope,
+): void {
+  const stmt = db.prepare(
+    `SELECT project_id FROM (
+       SELECT id, project_id FROM skill_records
+       UNION
+       SELECT id, project_id FROM okf_pages
+     ) WHERE id = ?`,
+  );
+  for (const row of rows) {
+    const owner = stmt.get(row.artifact_id as never) as { project_id: string | null } | undefined;
+    if (!owner) {
+      throw new Error(`content_publications references an absent artifact ${String(row.artifact_id)}`);
+    }
+    if (owner.project_id !== scope.expectedProjectId) {
+      throw new ResidencyTenancyError(
+        'content_publications',
+        `artifact ${String(row.artifact_id)} belongs to project ${String(owner.project_id ?? 'NULL')}, batch is scoped to ${scope.expectedProjectId}`,
+      );
+    }
+  }
+}
+
+/**
+ * Stamp the receiver's clock and clamp the claimed ordering timestamp on a row
+ * copy. `received_at` records WHEN this receiver applied the row (forensic
+ * bookkeeping, local-only for sync); the clamp keeps a caller-supplied
+ * timestamp from ordering beyond the receiver's own notion of now + drift.
+ * Only the column that DECIDES the conflict is clamped — the primary
+ * timestamp when present, else the fallback the COALESCE would use — so a
+ * far-future `created_at` riding alongside a sane `updated_at` is preserved
+ * as data rather than silently rewritten. A fired clamp logs (throttled): a
+ * silent mutation of synced data must be observable.
+ */
+function stampAndClampRow(
+  row: Record<string, unknown>,
+  table: string,
+  primaryCol: string,
+  fallbackCol: string | undefined,
+  columns: Set<string>,
+  now: number,
+  logger: Logger | undefined,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...row };
+  if (columns.has('received_at')) out.received_at = now;
+  const decidingCol = typeof out[primaryCol] === 'number' ? primaryCol : (fallbackCol ?? primaryCol);
+  const claimed = out[decidingCol];
+  const ceiling = now + MAX_CLAIMED_TIMESTAMP_SKEW_SECONDS;
+  if (typeof claimed === 'number' && claimed > ceiling) {
+    out[decidingCol] = now;
+    if (shouldLogOncePerInterval(`residency.clamp.${table}`, CLAMP_LOG_INTERVAL_MS, Date.now())) {
+      logger?.warn('residency-apply', 'clamped a far-future claimed timestamp to the receiver clock', {
+        table, row_id: String(out.id ?? '?'), column: decidingCol, claimed, clamped_to: now,
+      });
+    }
+  }
+  return out;
+}
+
+/** Throttle for clamp warnings — a whole batch of forged rows logs once. */
+const CLAMP_LOG_INTERVAL_MS = 60_000;
+
+/**
  * Apply one table's rows under its rule. MUST run inside a transaction (the caller
  * wraps it) so a throw rolls the whole batch back. Ensures referenced agents first
  * for agent-bearing tables. Every row is applied or the whole batch throws — there
@@ -497,11 +657,22 @@ export function applyResidencyRows(
   db: Database,
   table: string,
   rows: Record<string, unknown>[],
+  scope: ResidencyApplyScope,
   deps: { logger?: Logger } = {},
 ): ResidencyApplyResult {
   const rule = RESIDENCY_APPLY_RULES[table];
   if (!rule) throw new Error(`no residency apply rule for table ${table}`);
   if (rows.length === 0) return { applied: 0 };
+
+  // Tenancy admission runs BEFORE any write, for every rule kind that writes:
+  // a batch is either entirely inside its declared project or entirely
+  // refused. `ignore` skips it (never written); publications validate via the
+  // owning artifact (no project_id column of their own).
+  if (rule.kind === 'publications') {
+    assertPublicationsInScope(db, rows, scope);
+  } else if (rule.kind !== 'ignore') {
+    assertRowsInScope(db, table, rows, scope);
+  }
 
   if (AGENT_REFERENCING_TABLES.has(table)) {
     ensureReferencedAgents(db, rows, epochSeconds());
@@ -509,10 +680,10 @@ export function applyResidencyRows(
 
   switch (rule.kind) {
     case 'if-newer':
-      applyIfNewer(db, table, rows, rule);
+      applyIfNewer(db, table, rows, rule, deps.logger);
       break;
     case 'identity':
-      applyIdentity(db, table, rows, rule);
+      applyIdentity(db, table, rows, rule, deps.logger);
       break;
     case 'insert-only':
       for (const row of rows) insertRow(db, table, row, insertableColumns(row, tableColumns(db, table)), true);
@@ -524,7 +695,7 @@ export function applyResidencyRows(
       applyPublications(db, rows);
       break;
     case 'entity-mentions':
-      applyEntityMentions(db, rows);
+      applyEntityMentions(db, rows, scope);
       break;
     case 'ignore':
       // Recognized but never sent by the drain (team_members is machine-scoped).

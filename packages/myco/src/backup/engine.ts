@@ -26,23 +26,17 @@ export { ALL_PROJECTS_SCOPE, projectScope, type ProjectScope };
 // ---------------------------------------------------------------------------
 
 /**
- * Tables that cannot participate in the row-by-row backup format.
- *
- * `entity_mentions` has no `id` column (gotcha_entity_mentions_not_synced):
- * the dump format addresses rows by primary key for `INSERT OR IGNORE`
- * idempotency, and a keyless table can't be addressed that way. Adding
- * an `id` column to `entity_mentions` removes this carve-out.
- */
-const BACKUP_EXCLUSIONS = new Set<string>(['entity_mentions']);
-
-/**
- * Tables included in backup dumps. Derived from GROVE_PROJECT_SCOPED_TABLES
- * so backup coverage and project-scope coverage stay in lockstep, plus
- * `team_members` which is grove-scoped (not project-scoped) but still
- * needs to round-trip through backup/restore.
+ * Tables included in backup dumps — EVERY project-scoped table, with no
+ * exclusions, plus `team_members` which is grove-scoped (not project-scoped)
+ * but still needs to round-trip through backup/restore. `entity_mentions`
+ * participates as of schema v75 (it gained the `id` primary key the dump's
+ * `INSERT OR IGNORE` idempotency addresses rows by). Coverage completeness
+ * is gated by the per-direction residency coverage test — a project-scoped
+ * backup must be able to carry the WHOLE project, because the detach
+ * artifact is the only carrier in that direction.
  */
 export const BACKUP_TABLES = [
-  ...GROVE_PROJECT_SCOPED_TABLES.filter((t) => !BACKUP_EXCLUSIONS.has(t)),
+  ...GROVE_PROJECT_SCOPED_TABLES,
   'team_members',
 ] as const;
 

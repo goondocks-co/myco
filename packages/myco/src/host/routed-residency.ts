@@ -20,7 +20,7 @@ import { z } from 'zod';
 
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { getDatabase } from '../db/client.js';
-import { RESIDENCY_ALLOWED_TABLES, applyResidencyRows } from '../db/queries/residency-apply.js';
+import { RESIDENCY_ALLOWED_TABLES, ResidencyTenancyError, applyResidencyRows } from '../db/queries/residency-apply.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import type { Logger } from '../daemon/logger.js';
 import type { RouteRequest, RouteResponse } from '../daemon/router.js';
@@ -66,13 +66,36 @@ export function createRoutedResidencyHandler(
 
     const groveId = req.requestContext?.groveId ?? null;
     const projectId = rowProjectIdFromRequestContext(req.requestContext) ?? null;
+    if (!projectId) {
+      // The apply engine's tenancy admission is scoped to the request's
+      // project; a request that resolves no project has nothing to validate
+      // against and is refused outright — never applied unscoped.
+      return { status: 400, body: { ok: false, error: 'missing_project_context' } };
+    }
 
     let applied: number;
     try {
       const db = getDatabase();
-      const result = db.transaction(() => applyResidencyRows(db, table, rows, { logger: deps.logger }))();
+      const result = db.transaction(() =>
+        applyResidencyRows(db, table, rows, { expectedProjectId: projectId }, { logger: deps.logger }),
+      )();
       applied = result.applied;
     } catch (err) {
+      if (err instanceof ResidencyTenancyError) {
+        // The batch names rows outside the request's own project. Retrying the
+        // identical batch can never succeed, so this is a REFUSAL (the member
+        // logs it and its transition stalls visibly), not a retryable miss —
+        // answering retryable would hide a scoping bug behind an infinite
+        // retry loop.
+        if (shouldLogOncePerInterval(`residency.tenancy_rejected:${table}`, INGEST_LOG_INTERVAL_MS)) {
+          deps.logger?.warn(LOG_KINDS.RESIDENCY_ATTACH_PUSH, 'Residency batch rejected — rows outside the request project', {
+            table,
+            project_id: projectId,
+            error: err.message,
+          });
+        }
+        return { status: 403, body: { ok: false, error: 'tenancy_rejected', retryable: false, message: err.message } };
+      }
       // Rolled back whole. A child arriving before its parent table is the
       // designed self-healing case: answer retryable so the member re-sends the
       // identical batch next tick, after the parent lands.
