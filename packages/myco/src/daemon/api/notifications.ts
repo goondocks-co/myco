@@ -21,7 +21,7 @@ import { getAllDomains } from '../../notifications/registry.js';
 import { notify } from '../../notifications/notify.js';
 import { loadMachineConfig, loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
-import { projectScopeFromRequestContext } from '../../grove/request-context.js';
+import { mutationScopeFromRequestContext, projectScopeFromRequestContext } from '../../grove/request-context.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '../../grove/ids.js';
 
 const DEFAULT_NOTIFICATION_RETENTION_DAYS = 30;
@@ -217,7 +217,10 @@ export async function handleUpdateNotification(
     return { status: 400, body: { error: 'validation_failed', issues: parsed.error.issues } };
   }
 
-  const scope = projectScopeFromRequestContext(req.requestContext);
+  const scope = mutationScopeFromRequestContext(req.requestContext);
+  if (scope === null) {
+    return { status: 400, body: { error: 'missing_project_context' } };
+  }
   const updated = updateNotificationStatus(
     req.params.id,
     parsed.data.status,
@@ -235,15 +238,19 @@ export async function handleUpdateNotification(
 /**
  * POST /api/notifications/dismiss-all — dismiss all (optionally per domain).
  *
- * GLOBAL, no-context route (NOT wrapped in `tenantRoute`): scoped by
- * `projectScopeFromRequestContext`, so a synthesized/no-project context only
- * dismisses global/phantom rows, never a tenant's.
+ * Scoped by `mutationScopeFromRequestContext`: a synthesized/no-project
+ * context dismisses only global/phantom rows, and a caller-asserted
+ * grove-only context (which would resolve the un-predicated `all` scope) is
+ * refused outright — a bulk mutation may never span every project's rows.
  */
 export async function handleDismissAll(
   req: RouteRequest,
 ): Promise<RouteResponse> {
   const domain = (req.body as Record<string, unknown>)?.domain as string | undefined;
-  const scope = projectScopeFromRequestContext(req.requestContext);
+  const scope = mutationScopeFromRequestContext(req.requestContext);
+  if (scope === null) {
+    return { status: 400, body: { error: 'missing_project_context' } };
+  }
   const count = dismissAllNotifications(domain, scope, { includeDaemonScope: true });
   pruneAcknowledgedForRequest(req, scope, { includeDaemonScope: true });
   return { body: { ok: true, dismissed: count } };
@@ -252,15 +259,18 @@ export async function handleDismissAll(
 /**
  * POST /api/notifications/mark-all-read — mark all unread as read.
  *
- * GLOBAL, no-context route (NOT wrapped in `tenantRoute`): scoped by
- * `projectScopeFromRequestContext`, so a synthesized/no-project context only
- * marks global/phantom rows, never a tenant's.
+ * Scoped by `mutationScopeFromRequestContext`: a synthesized/no-project
+ * context marks only global/phantom rows, and a caller-asserted grove-only
+ * context (the un-predicated `all` scope) is refused outright.
  */
 export async function handleMarkAllRead(
   req: RouteRequest,
 ): Promise<RouteResponse> {
   const domain = (req.body as Record<string, unknown>)?.domain as string | undefined;
-  const scope = projectScopeFromRequestContext(req.requestContext);
+  const scope = mutationScopeFromRequestContext(req.requestContext);
+  if (scope === null) {
+    return { status: 400, body: { error: 'missing_project_context' } };
+  }
   const count = markAllRead(domain, scope, { includeDaemonScope: true });
   pruneAcknowledgedForRequest(req, scope, { includeDaemonScope: true });
   return { body: { ok: true, marked: count } };

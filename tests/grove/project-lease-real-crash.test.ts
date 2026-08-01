@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readProjectLease, type LeaseEvidence } from '@myco/grove/project-lease.js';
+import { MOVE_TERMINAL_PHASES } from '@myco/grove/lease-evidence.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
 
 const PROJECT = assertGroveProjectId('proj_' + 'f'.repeat(32));
@@ -128,5 +129,96 @@ describe('W4 — a REAL dead holder in the same boot', () => {
     await waitForReaped(holder.pid);
 
     expect(isHeld()).toBe(false);
+  });
+});
+
+describe('W3 (grove-move) — a dead holder with a move-marker at each phase', () => {
+  let mycoHome: string;
+  let childScript: string;
+  let markerPath: string;
+
+  beforeEach(() => {
+    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-w3-move-'));
+    markerPath = path.join(mycoHome, 'migration', 'grove-move-w3.json');
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    childScript = path.join(mycoHome, 'holder.ts');
+    fs.writeFileSync(
+      childScript,
+      `const { acquireProjectLease } = await import(${JSON.stringify(`${SRC}/grove/project-lease.ts`)});\n`
+      + 'const [, , home, projectId, evidenceJson] = process.argv;\n'
+      + "acquireProjectLease(projectId, 'grove-move', 'moving between groves', "
+      + "evidenceJson === 'null' ? null : JSON.parse(evidenceJson), home);\n"
+      + "console.log('ACQUIRED');\n"
+      + 'setInterval(() => {}, 1000);\n',
+      'utf-8',
+    );
+  });
+  afterEach(() => {
+    fs.rmSync(mycoHome, { recursive: true, force: true });
+  });
+
+  async function spawnMoveHolder(): Promise<{ pid: number; exited: Promise<number>; kill: () => void }> {
+    const child = Bun.spawn(
+      ['bun', 'run', childScript, mycoHome, PROJECT, JSON.stringify({ kind: 'move-marker', path: markerPath })],
+      { stdout: 'pipe', stderr: 'pipe' },
+    );
+    const leaseFile = path.join(mycoHome, 'leases', `${PROJECT}.json`);
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      if (fs.existsSync(leaseFile)) break;
+      await Bun.sleep(50);
+    }
+    if (!fs.existsSync(leaseFile)) throw new Error(`holder never acquired: ${await new Response(child.stderr).text()}`);
+    return { pid: child.pid, exited: child.exited, kill: () => child.kill(9) };
+  }
+
+  async function crashedHolderWithMarker(content: string | null): Promise<void> {
+    if (content !== null) fs.writeFileSync(markerPath, content, 'utf-8');
+    else fs.rmSync(markerPath, { force: true });
+    const holder = await spawnMoveHolder();
+    holder.kill();
+    await holder.exited; // reaped for certain — no pid-poll flake surface
+  }
+
+  const held = () => readProjectLease(PROJECT, mycoHome).state === 'present';
+  const marker = (phase: string) => JSON.stringify({ move_op_id: 'grove-move-w3', phase });
+
+  // Live-holder control: held-ness must come from LIVENESS here, not the
+  // marker — otherwise the phase cases below prove nothing about the rule.
+  it('control: a LIVE holder is held even at a terminal marker phase', async () => {
+    fs.writeFileSync(markerPath, marker('completed'), 'utf-8');
+    const holder = await spawnMoveHolder();
+    try {
+      expect(held()).toBe(true);
+    } finally {
+      holder.kill();
+      await holder.exited;
+    }
+  });
+
+  // Every production phase, both polarities, driven from the EXPORTED
+  // terminal set so the gate can never drift from the rule it guards.
+  const ALL_PHASES = ['snapshot', 'snapshot_complete', 'restored', 'verified', 'committed', 'cleaned', 'completed', 'failed'] as const;
+  for (const phase of ALL_PHASES) {
+    const expectHeld = !MOVE_TERMINAL_PHASES.has(phase);
+    it(`dead holder + marker at '${phase}' → ${expectHeld ? 'HELD (resumable work remains)' : 'FREE (terminal)'}`, async () => {
+      await crashedHolderWithMarker(marker(phase));
+      expect(held()).toBe(expectHeld);
+    });
+  }
+
+  it('dead holder + marker gone entirely → FREE (nothing unfinished)', async () => {
+    await crashedHolderWithMarker(null);
+    expect(held()).toBe(false);
+  });
+
+  it('dead holder + TORN marker (unparseable) → HELD — a torn record can never prove the move finished', async () => {
+    await crashedHolderWithMarker('{"move_op_id": "grove-move-w3", "pha');
+    expect(held()).toBe(true);
+  });
+
+  it('dead holder + marker with NO phase field → HELD (fail closed)', async () => {
+    await crashedHolderWithMarker(JSON.stringify({ move_op_id: 'grove-move-w3' }));
+    expect(held()).toBe(true);
   });
 });
