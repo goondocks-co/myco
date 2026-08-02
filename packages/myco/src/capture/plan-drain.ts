@@ -39,6 +39,7 @@ import { assertSafeCaptureSegment, resolveMemberPlanDrainDir } from '../grove/pa
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { getHostMembershipSnapshot } from '../host/registry.js';
+import { requireProjectScopedTarget } from '../host/routing.js';
 import type { RemoteTarget } from '../host/routing.js';
 import {
   nativePerUserLockNamespace,
@@ -55,6 +56,7 @@ import {
   type FailureTrackedEntry,
 } from './drain-health.js';
 import { readFilePresence, type Presence } from '@myco/utils/presence.js';
+
 
 /** Stable, filesystem-safe queue key for one plan file (its member-local path).
  *  Whole-file channel → keyed by path (no inode/offset like the transcript id). */
@@ -257,7 +259,7 @@ export const defaultPlanTransport: PlanPostTransport = async (target, body) => {
     // capturePlan writes to. The host stamps its OWN local daemon bearer after the
     // overlay gate, so we send no `x-myco-auth` (the member stripped it; the host
     // re-adds it).
-    [REQUEST_CONTEXT_HEADERS.projectId]: String(target.projectId),
+    [REQUEST_CONTEXT_HEADERS.projectId]: requireProjectScopedTarget(target, 'plan drain'),
     [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
     [REQUEST_CONTEXT_HEADERS.machineId]: body.machine_id,
     [REQUEST_CONTEXT_HEADERS.sessionId]: body.session_id,
@@ -426,7 +428,7 @@ export class PlanDrainQueue {
         host_id: target.host.host_id,
         session_id: sessionId,
         plan_ref: planRef,
-        project_id: target.projectId,
+        project_id: requireProjectScopedTarget(target, 'plan drain'),
         grove_id: target.groveId,
         plan_path: planPath,
         agent,

@@ -51,7 +51,8 @@
  */
 import type { GroveProjectId } from '../grove/ids.js';
 import { scopePolicyForPath } from '../config/scope.js';
-import { resolveAttachMembership } from './registry.js';
+import { isGroveEraId } from '../grove/ids.js';
+import { getHostMembershipSnapshot, resolveAttachMembership } from './registry.js';
 import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
@@ -70,7 +71,11 @@ export interface RouteClassification {
 
 /** Everything the host proxy (Task 1.3) needs to forward one request. */
 export interface RemoteTarget {
-  projectId: GroveProjectId;
+  /** `null` for a HOST-CARRIER target (E1 §5.3): the request is addressed
+   *  to a host, not a project — the host derives its served grove itself,
+   *  and `buildForwardHeaders` omits the project header entirely rather
+   *  than stamping a fabricated id the host would refuse. */
+  projectId: GroveProjectId | null;
   /** Grove id from the attach record — the hosted Grove's identity, not a local row. */
   groveId: string;
   /**
@@ -782,6 +787,121 @@ export function overlayHostStampRefusal(method: string, pathname: string): Refus
     case 'collect':
       return null;
   }
+}
+
+/**
+ * Resolve the `x-myco-host-id` carrier (E1 §5.3 rev 6) into a routing
+ * target. This is what makes a joined host with ZERO attached projects
+ * configurable: the old attach-ref-as-carrier scheme had no ref to ride,
+ * so `classifyRoute` short-circuited to local and the write silently
+ * landed on the member's own daemon.
+ *
+ * Grove selection, three states (absent ≠ null — the wire and the copy
+ * must keep them apart):
+ *   - `served_grove_id` present  → use it (never the stale side: the
+ *     mismatch flag treats it as the reference value).
+ *   - ABSENT (pre-designation host record) → fall back to any attach
+ *     ref's grove — those hosts are configurable TODAY via the ref
+ *     carrier, and refusing them would be a regression (review RC5-3).
+ *     Refuse `host_predates_served_grove` only when no ref exists either,
+ *     and say the remedy honestly: a re-join needs an OPERATOR-minted key.
+ *   - explicit `null` (host reports it serves NO grove) → refuse with
+ *     designate-storage copy; re-joining cannot fix that state.
+ */
+export function resolveHostCarrierTarget(
+  hostId: string,
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
+): { kind: 'target'; target: RemoteTarget } | { kind: 'refusal'; refusal: RefusalPayload } {
+  // Shape-validate BEFORE the registry read: a malformed id (garbage, or a
+  // traversal attempt) otherwise throws HostJoinStateCorruptError out of the
+  // path resolver — a 500 that reflects the caller's raw string into the
+  // body and an ERROR log, on the newest attack-surface header. Traversal
+  // itself is blocked deeper (assertGroveEraId), but the refusal belongs
+  // here, typed, as the same 404 an unknown well-formed id gets.
+  if (!isGroveEraId(hostId, 'host')) {
+    return {
+      kind: 'refusal',
+      refusal: {
+        status: 404,
+        error: 'unknown_host',
+        message: 'No joined host with that id on this machine.',
+        retryable: false,
+      },
+    };
+  }
+  const snapshot = getHostMembershipSnapshot(hostId, lockNamespace);
+  if (!snapshot) {
+    return {
+      kind: 'refusal',
+      refusal: {
+        status: 404,
+        error: 'unknown_host',
+        message: `No joined host with id ${hostId} on this machine.`,
+        retryable: false,
+      },
+    };
+  }
+  const { record, bearer } = snapshot;
+  let groveId: string | undefined;
+  if (typeof record.served_grove_id === 'string' && record.served_grove_id) {
+    groveId = record.served_grove_id;
+  } else if (record.served_grove_id === null) {
+    return {
+      kind: 'refusal',
+      refusal: {
+        status: 409,
+        error: 'host_serves_no_grove',
+        message: `Host "${record.label}" reports it serves no team storage — the host operator must designate storage (re-run enable on the host). Re-joining does not change this.`,
+        retryable: false,
+      },
+    };
+  } else {
+    // Absent: legacy pre-designation record. Any attach ref's grove works —
+    // that is exactly how these hosts are configured today.
+    groveId = record.projects[0]?.grove_id;
+    if (!groveId) {
+      return {
+        kind: 'refusal',
+        refusal: {
+          status: 409,
+          error: 'host_predates_served_grove',
+          message: `Host "${record.label}" predates served-grove designation and has no attached projects to infer it from. `
+            + 'Re-join this host with a NEW one-time key minted by the host operator.',
+          retryable: false,
+        },
+      };
+    }
+  }
+  return {
+    kind: 'target',
+    target: {
+      projectId: null,
+      groveId,
+      host: {
+        host_id: record.host_id,
+        label: record.label,
+        overlay_address: record.overlay_address,
+        protocol_version: record.protocol_version,
+        proxy_port: record.proxy_port,
+      },
+      bearer,
+    },
+  };
+}
+
+/**
+ * The one guard for {@link RemoteTarget.projectId}'s nullability: attach-
+ * scoped channels (capture drains, residency, buffer writes) require a
+ * project, and a host-carrier target (`projectId: null`, E1 §5.3) reaching
+ * one is a programming error — the carrier admits only team-write routes.
+ * Fail loud; a silent `String(null)` puts `x-myco-project-id: "null"` on
+ * the wire, a caller-asserted tenancy id that resolves nowhere.
+ */
+export function requireProjectScopedTarget(target: RemoteTarget, channel: string): GroveProjectId {
+  if (target.projectId === null) {
+    throw new Error(`${channel} requires a project-scoped target; host-carrier targets carry none.`);
+  }
+  return target.projectId;
 }
 
 /** Assemble the {@link RemoteTarget} a host round-trip needs from the attach

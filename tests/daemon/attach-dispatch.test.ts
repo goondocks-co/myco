@@ -151,6 +151,89 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
     return { projectId, groveId };
   }
 
+  /** Seed a JOINED host with a served grove and NO attached projects — the
+   *  exact state the x-myco-host-id carrier exists for (E1 §5.3). */
+  function joinHostOnly(overrides: Partial<HostRecord> = {}): { hostId: string; servedGroveId: string } {
+    const servedGroveId = createGroveId();
+    const host: HostRecord = {
+      host_id: createHostId(),
+      label: 'Mac Studio',
+      overlay_address: overlayAddress,
+      protocol_version: 1,
+      served_grove_id: servedGroveId,
+      created_at: new Date().toISOString(),
+      projects: [],
+      ...overrides,
+    };
+    writeHostRecordFixture(host);
+    writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'host-bearer');
+    return { hostId: host.host_id, servedGroveId };
+  }
+
+  test('CARRIER GATE: x-myco-host-id without the daemon bearer → 401, host receives NOTHING', async () => {
+    // The header selects which remote machine receives a write — the most
+    // powerful context switch there is. Review BLOCKER: this gate existed
+    // only as a comment; deleting enforceContextSwitchAuth failed no test.
+    const { hostId } = joinHostOnly();
+    server.registerRoute('PUT', '/api/team/config', async () => ({ body: { ok: true } }));
+    const res = await fetch(`${base}/api/team/config`, {
+      method: 'PUT',
+      headers: { 'x-myco-host-id': hostId, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(401);
+    expect(hostHits).toHaveLength(0);
+  });
+
+  test('CARRIER: bearer + team-write → dialed by HOST ID with zero attached projects; carrier + project headers never ride the hop; grove = served grove', async () => {
+    const { hostId, servedGroveId } = joinHostOnly();
+    server.registerRoute('PUT', '/api/team/config', async () => ({ body: { ok: true } }));
+    const res = await fetch(`${base}/api/team/config`, {
+      method: 'PUT',
+      headers: { 'x-myco-host-id': hostId, 'x-myco-auth': authToken, 'content-type': 'application/json' },
+      body: '{"agent":{}}',
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).from).toBe('host');
+    expect(hostHits).toHaveLength(1);
+    // The routing instruction is member-side only — it must never reach the
+    // host; and a carrier target has NO project, so the header is OMITTED,
+    // never stamped 'null' (the host supports grove-scoped tenancy).
+    expect(hostHits[0].headers['x-myco-host-id']).toBeUndefined();
+    expect(hostHits[0].headers['x-myco-project-id']).toBeUndefined();
+    expect(hostHits[0].headers['x-myco-grove-id']).toBe(servedGroveId);
+    expect(hostHits[0].headers.authorization).toBe('Bearer host-bearer');
+    expect(hostHits[0].headers['x-myco-auth']).toBeUndefined();
+  });
+
+  test('CARRIER ADMISSION: a non-team-write route ignores the header — served locally, host never dialed', async () => {
+    // Deleting the team-write narrowing widened the carrier to every stamp
+    // (unmatched routes default to serve) and failed no test — review B1.
+    const { hostId } = joinHostOnly();
+    const res = await fetch(`${base}/api/sessions`, {
+      headers: { 'x-myco-host-id': hostId, 'x-myco-auth': authToken },
+    });
+    expect(res.status).toBe(200);
+    expect(hostHits).toHaveLength(0);
+    expect(sessionsHandlerCalls).toBe(1);
+  });
+
+  test('CARRIER: a malformed host id is a typed 404, never a 500 echoing the caller string', async () => {
+    server.registerRoute('PUT', '/api/team/config', async () => ({ body: { ok: true } }));
+    for (const bad of ['not-a-host-id', '../../../../etc']) {
+      const res = await fetch(`${base}/api/team/config`, {
+        method: 'PUT',
+        headers: { 'x-myco-host-id': bad, 'x-myco-auth': authToken, 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(res.status).toBe(404);
+      const body = await res.json() as { error: string; message?: string };
+      expect(body.error).toBe('unknown_host');
+      expect(JSON.stringify(body)).not.toContain('etc');
+    }
+    expect(hostHits).toHaveLength(0);
+  });
+
   test('attached + serve route → proxied to host, handler never runs, no DB opened', async () => {
     const { projectId } = attach();
     const res = await fetch(`${base}/api/sessions`, {

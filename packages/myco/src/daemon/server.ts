@@ -22,6 +22,7 @@ import {
   UnauthorizedRequestContextError,
   UnknownRequestContextError,
   enforceUrlTenancyAuth,
+  enforceContextSwitchAuth,
   readHeader,
   requestContextFromHttpHeaders,
   requestContextFromTenancyIds,
@@ -29,7 +30,7 @@ import {
   type MycoRequestContext,
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
-import { classifyRoute, overlayHostStampRefusal, refusalJson, type RefusalPayload } from '../host/routing.js';
+import { classifyRoute, classifyRouteStamp, overlayHostStampRefusal, refusalJson, resolveHostCarrierTarget, type RefusalPayload } from '../host/routing.js';
 import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
@@ -1119,6 +1120,35 @@ export class DaemonServer {
           // an attached project must never open a local Grove DB. A non-attached
           // project (the common case) returns `local` after a single empty-set
           // registry probe, so the path below is byte-identical.
+          // E1 §5.3: the EXPLICIT destination-host carrier. A member's Team
+          // page addresses a HOST, not a project — the old attach-ref-as-
+          // carrier scheme left a joined host with zero attached projects
+          // silently unconfigurable (no ref → classifyRoute short-circuits
+          // to local). Browser-only by design: `mcp/http.ts` never honors
+          // this header. Admitted ONLY for team-write stamps — every other
+          // class either answers locally (localhost-only) or has no
+          // legitimate host-carrier caller (serve/collect are project-
+          // scoped; config-carve is member-assembled).
+          const carrierHostId = readHeader(req.headers, REQUEST_CONTEXT_HEADERS.hostId);
+          if (carrierHostId) {
+            // The header selects which remote machine receives the write —
+            // a strictly MORE powerful context switch than grove/project —
+            // so it sits behind the same daemon-bearer gate (throws → 401).
+            enforceContextSwitchAuth(req.headers, this.authToken);
+            const carrierClassification = classifyRouteStamp(req.method!, match.pathname);
+            if (carrierClassification.stamp === 'team-write') {
+              const resolved = resolveHostCarrierTarget(carrierHostId, this.lockNamespace);
+              if (resolved.kind === 'refusal') {
+                this.writeRefusal(res, resolved.refusal, versionHeader);
+                return;
+              }
+              await handleAttachedRequest(req, res, resolved.target, carrierClassification, {
+                ...this.hostProxyDeps,
+                logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
+              });
+              return;
+            }
+          }
           const inboundProjectId = this.inboundProjectId(match.params, req.headers);
           const decision = classifyRoute({
             method: req.method!,

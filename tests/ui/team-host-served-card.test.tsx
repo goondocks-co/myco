@@ -47,34 +47,34 @@ describe('TeamHostServedCard', () => {
 
   it('renders nothing while loading', () => {
     setStatus(undefined);
-    const { container } = render(wrap(<TeamHostServedCard groveId="grove_1" groveSlug="home-lab" />));
+    const { container } = render(wrap(<TeamHostServedCard groveId="grove_1" />));
     expect(container.firstChild).toBeNull();
   });
 
   it('renders nothing when not serving', () => {
     setStatus({ serving: false });
-    const { container } = render(wrap(<TeamHostServedCard groveId="grove_1" groveSlug="home-lab" />));
+    const { container } = render(wrap(<TeamHostServedCard groveId="grove_1" />));
     expect(container.firstChild).toBeNull();
   });
 
   it('renders nothing when serving a DIFFERENT Grove than the one being viewed', () => {
     setStatus(SERVING_FIXTURE); // served_grove_id: 'grove_1'
-    const { container } = render(wrap(<TeamHostServedCard groveId="grove_2" groveSlug="other-grove" />));
+    const { container } = render(wrap(<TeamHostServedCard groveId="grove_2" />));
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders when the viewed Grove matches the served Grove, linking to that Grove\'s Team page', () => {
+  it('renders when the viewed Grove matches the served Grove, linking to the machine-scoped Team page (E1 §5.4)', () => {
     setStatus(SERVING_FIXTURE);
-    render(wrap(<TeamHostServedCard groveId="grove_1" groveSlug="home-lab" />));
+    render(wrap(<TeamHostServedCard groveId="grove_1" />));
 
     expect(screen.getByText('Served to your team by this machine')).toBeInTheDocument();
     const link = screen.getByRole('link');
-    expect(link).toHaveAttribute('href', '/g/home-lab/team');
+    expect(link).toHaveAttribute('href', '/team');
   });
 
   it('renders backup/key/external-access health badges', () => {
     setStatus(SERVING_FIXTURE);
-    render(wrap(<TeamHostServedCard groveId="grove_1" groveSlug="home-lab" />));
+    render(wrap(<TeamHostServedCard groveId="grove_1" />));
 
     // health.backup='ok', health.key='not_applicable', health.mcp_coherence='ok'
     expect(screen.getAllByText('ok').length).toBeGreaterThanOrEqual(2);
@@ -87,14 +87,14 @@ describe('TeamHostServedCard', () => {
       external_mcp: { enabled: false, port: 4919, bound: null, token_present: false },
       health: { ...SERVING_FIXTURE.health, mcp_coherence: 'not_enabled' },
     });
-    render(wrap(<TeamHostServedCard groveId="grove_1" groveSlug="home-lab" />));
+    render(wrap(<TeamHostServedCard groveId="grove_1" />));
 
     expect(screen.getByText('Off')).toBeInTheDocument();
   });
 
   it('never renders classifier/mechanism jargon in visible copy', () => {
     setStatus(SERVING_FIXTURE);
-    const { container } = render(wrap(<TeamHostServedCard groveId="grove_1" groveSlug="home-lab" />));
+    const { container } = render(wrap(<TeamHostServedCard groveId="grove_1" />));
     const text = container.textContent ?? '';
     expect(text).not.toMatch(/designation/i);
     expect(text).not.toMatch(/classifier/i);
