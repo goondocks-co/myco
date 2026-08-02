@@ -1464,6 +1464,140 @@ export async function checkInstallSource(): Promise<DoctorCheck> {
   }
 }
 
+/**
+ * Locate the first executable named `name` on PATH, or null.
+ *
+ * `statSync` follows symlinks, so a symlinked shim reports as a file — the
+ * caller resolves it to a realpath before comparing. PATH entries that don't
+ * exist (or hold an unexpanded `~`) simply fail the stat and are skipped.
+ */
+function findOnPath(
+  name: string,
+  platform: NodeJS.Platform,
+  pathVar: string | undefined,
+): string | null {
+  if (!pathVar) return null;
+  const extensions = platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
+  for (const dir of pathVar.split(path.delimiter)) {
+    if (!dir) continue;
+    for (const extension of extensions) {
+      const candidate = path.join(dir, `${name}${extension}`);
+      try {
+        if (!fs.statSync(candidate).isFile()) continue;
+        if (platform !== 'win32') fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch {
+        // Not present or not executable here — keep walking PATH.
+      }
+    }
+  }
+  return null;
+}
+
+/** Resolve symlinks for comparison, falling back to the input when unreadable. */
+function realpathOrSelf(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return target;
+  }
+}
+
+/**
+ * PATH ownership of the `myco` command.
+ *
+ * The managed binary is only reachable as `myco` if the shell resolves that
+ * name to it. Two states break that and are otherwise silent until every
+ * command fails: the managed bin dir was never added to PATH (the installer's
+ * rc edit didn't run), or an unrelated `myco` earlier on PATH shadows it (a
+ * leftover from the retired npm distribution is the common case — `npm update
+ * -g` re-extracts that package and strips the generated dispatch file, leaving
+ * a shim that hard-exits).
+ *
+ * Pure classifier so the whole matrix is testable without a real PATH;
+ * {@link checkPathBinary} injects the live values.
+ */
+export function classifyPathBinary(args: {
+  /** Managed binary location, as configured (pre-symlink-resolution). */
+  managedBinary: string;
+  /** Whether the managed binary is present on disk. */
+  managedExists: boolean;
+  /** Directory that must be on PATH for `myco` to resolve. */
+  binDir: string;
+  /** First `myco` found on PATH, as found (pre-symlink-resolution). */
+  pathBinary: string | null;
+  /** Active `runtime.command` pin, when a deliberate override is in force. */
+  pin: string | null;
+  platform: NodeJS.Platform;
+  /** Symlink resolver — injected so tests need no real filesystem. */
+  realpath: (target: string) => string;
+}): DoctorCheck | null {
+  const { managedBinary, managedExists, binDir, pathBinary, pin, platform, realpath } = args;
+
+  // No managed binary means a source build or a pre-convergence install —
+  // there is no "correct" target to compare PATH against, so asserting
+  // anything here would be inventing a fact this check never verified.
+  if (!managedExists) return null;
+
+  // A runtime pin is a deliberate developer override that redirects ahead of
+  // PATH, so PATH is not authoritative on this machine.
+  if (pin) {
+    return {
+      name: 'PATH',
+      status: 'ok',
+      detail: `runtime pin active — \`myco\` routes to ${pin}`,
+      fixable: false,
+    };
+  }
+
+  if (pathBinary === null) {
+    const base = {
+      name: 'PATH',
+      status: 'fail' as const,
+      detail: `no \`myco\` on PATH — the managed binary at ${managedBinary} is unreachable by name. `
+        + `Add ${binDir} to PATH.`,
+    };
+    // rc-file editing is the POSIX installer's mechanism; Windows PATH lives
+    // in the registry and is not ours to rewrite from doctor.
+    return platform === 'win32'
+      ? { ...base, fixable: false }
+      : fixableCheck(base, 'path-bindir', { binDir });
+  }
+
+  if (realpath(pathBinary) === realpath(managedBinary)) {
+    return { name: 'PATH', status: 'ok', detail: pathBinary, fixable: false };
+  }
+
+  return {
+    name: 'PATH',
+    status: 'fail',
+    detail: `\`myco\` on PATH resolves to ${pathBinary}, not the managed binary at ${managedBinary}. `
+      + `Remove the shadowing file, or put ${binDir} earlier on PATH.`,
+    fixable: false,
+  };
+}
+
+/** {@link classifyPathBinary} bound to the live PATH, pin, and install layout. */
+export async function checkPathBinary(): Promise<DoctorCheck | null> {
+  try {
+    const { managedBinaryPath, managedBinDir } = await import('../install/managed-binary.js');
+    const { resolveRuntimeCommand } = await import('../daemon/update-checker.js');
+    const mycoHome = resolveMycoHome();
+    const managedBinary = managedBinaryPath(mycoHome, process.platform, process.env.LOCALAPPDATA);
+    return classifyPathBinary({
+      managedBinary,
+      managedExists: fs.existsSync(managedBinary),
+      binDir: managedBinDir(mycoHome, process.platform, process.env.LOCALAPPDATA),
+      pathBinary: findOnPath('myco', process.platform, process.env.PATH),
+      pin: resolveRuntimeCommand(),
+      platform: process.platform,
+      realpath: realpathOrSelf,
+    });
+  } catch {
+    return null;
+  }
+}
+
 // --- Public API ---
 
 /** Run all health checks against a vault directory. */
@@ -1496,6 +1630,12 @@ export async function runChecks(
   if (servedGroveKeyHealth) checks.push(servedGroveKeyHealth);
   const externalMcpCoherence = await checkExternalMcpCoherence();
   if (externalMcpCoherence) checks.push(externalMcpCoherence);
+
+  // Machine-global, and deliberately ahead of the no-config early return: a
+  // shadowed or unreachable `myco` breaks every invocation, including the ones
+  // run outside a project directory.
+  const pathBinary = await checkPathBinary();
+  if (pathBinary) checks.push(pathBinary);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:
