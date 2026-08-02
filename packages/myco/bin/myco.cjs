@@ -129,10 +129,14 @@ if (!binaryPath) {
 try {
   execFileSync(binaryPath, process.argv.slice(2), { stdio: 'inherit' });
 } catch (err) {
-  // A child that ran and exited non-zero reports a numeric status — pass it
-  // through untouched. Anything else is a SPAWN failure (ENOENT, EACCES), and
-  // exiting silently on those is how a broken install looks like a command
-  // that simply produced no output.
+  // A numeric status is a child that ran and exited non-zero; pass it
+  // through. A signal-terminated child (status null, signal set) maps to the
+  // conventional 128+n so Ctrl-C reads as 130, not a spawn failure. Anything
+  // else is a spawn failure (ENOENT, EACCES) and is reported.
   if (typeof err.status === 'number') process.exit(err.status);
+  if (err.signal) {
+    const signals = require('node:os').constants.signals;
+    process.exit(128 + (signals[err.signal] || 0));
+  }
   die(`could not execute ${binaryPath}: ${err.code || err.message}`);
 }

@@ -186,6 +186,18 @@ describe('myco.cjs binary resolution', () => {
     expect(res.stderr).toContain('install.sh');
   });
 
+  it('maps a signal-terminated child to 128+n instead of reporting a spawn failure', () => {
+    const { shimPath, mycoHome } = makeFixture();
+    const managed = path.join(mycoHome, 'bin', 'myco');
+    fs.mkdirSync(path.dirname(managed), { recursive: true });
+    fs.writeFileSync(managed, '#!/bin/sh\nkill -INT $$\n', { mode: 0o755 });
+
+    const res = runShim(shimPath, mycoHome);
+
+    expect(res.status).toBe(130);
+    expect(res.stderr).not.toContain('could not execute');
+  });
+
   it('forwards the child exit code rather than masking it', () => {
     const { shimPath, mycoHome } = makeFixture();
     const managed = path.join(mycoHome, 'bin', 'myco');
