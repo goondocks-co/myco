@@ -120,7 +120,8 @@ Idempotent — detaching a project that is not attached is a clean no-op.
 Commands:
   enable --server-url <https://host:8080> [--hostname <name>] [--listen-addr <addr>]
                                           [--user <headscale-user>] [--key-expiration <dur>]
-                                          [--designate-default] [--emit-join]
+                                          [--designate-default | --designate-fresh [--storage-name <name>]]
+                                          [--emit-join]
                                           [--team-key <key>] [--team-key-provider <anthropic|openai|openrouter>]
                                           [--setup-key-expiration <dur>]
   disable

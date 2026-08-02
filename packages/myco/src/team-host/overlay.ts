@@ -41,7 +41,7 @@ import { allocateHostServeOverlayPort } from '@myco/host/registry.js';
 import { createTailscaleCli, type TailscaleCli } from '@myco/host/tailscale-cli.js';
 import { readServeTcpForwards, readServeTcpPorts, retireOverlayForward } from '@myco/daemon/overlay-forward.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
-import { createGrove, ensureDefaultGrove, loadGroveRecord, resolveDefaultGrove } from '@myco/grove/registry.js';
+import { createGrove, ensureDefaultGrove, listGroves, loadGroveRecord, resolveDefaultGrove } from '@myco/grove/registry.js';
 import { seedGroveBackupDefaults } from '@myco/backup/service.js';
 import { getServiceManager } from '@myco/service/manager.js';
 import { getScopedServiceManager, resolveObservedScope } from '@myco/service/scoped.js';
@@ -115,9 +115,19 @@ export interface HostEnableOptions {
    *     personal daemon): creates a brand-new Grove dedicated to serving,
    *     crash-resumable via a durable intent marker. An existing personal
    *     Grove is never designated.
-   * Default: `'default'`.
+   * REQUIRED (rev 6 breaking change) on a machine that already has Groves
+   * and no designation yet — a silent `'default'` here designated the
+   * user's PERSONAL Grove as team storage, immutably.
    */
   groveDesignation?: 'default' | 'fresh';
+  /**
+   * Name for the team storage created by `'fresh'` designation (E1 §8 Q3:
+   * the enabling user names it, CLI and UI both). Fallback: `'Team Host'`.
+   * On a re-run with a designation already on record the name is IGNORED
+   * WITH A NOTE — designation is immutable once set, and silence would
+   * mean the user typed a name and watched it not take effect.
+   */
+  storageName?: string;
 }
 
 export interface HostEnableDeps {
@@ -146,6 +156,14 @@ export interface HostEnableDeps {
   overlayPort?: number;
   /** Resolve the headscale node id for the host node (best-effort). */
   resolveNodeId?: (runner: CommandRunner, headscaleBin: string, configPath: string, hostname: string) => Promise<string | undefined>;
+  /** Restart THIS machine's Myco daemon to (un)bind the overlay listener.
+   *  Default: `restartDaemonForHostServe` via the platform manager. The
+   *  host-admin routes inject a DEFERRING implementation here — never a
+   *  fake ServiceManager: `serviceManager` supervises tailscaled and the
+   *  user-domain headscale, and impersonating it silently no-ops the
+   *  overlay install/uninstall and the §15 prove-gone gates (PR 2 diff
+   *  review, BLOCKER 1 — proven non-functional at runtime). */
+  restartDaemon?: (mycoHome: string) => Promise<import('./daemon-apply.js').DaemonRestartResult>;
   /** Scoped manager for the headscale unit (tests inject a fake). Production
    *  resolves via `getScopedServiceManager` at the configured scope. */
   headscaleServiceManager?: ServiceManager;
@@ -156,8 +174,6 @@ export interface HostEnableDeps {
    *  "vicious rather than loud": `tailscale up` hangs forever (see the
    *  empty-DERP-map note in headscale-config.ts). */
   waitForAdminSocket?: (socketPath: string) => Promise<boolean>;
-  /** Best-effort probe that the daemon overlay listener came up. Never fatal. */
-  verifyOverlayListener?: (address: string, mycoHome: string) => Promise<boolean>;
   logger?: (message: string) => void;
 }
 
@@ -170,7 +186,6 @@ export interface HostEnableResult {
   headscaleVersion: string;
   tailscaleVersion: string | null;
   daemonRestarted: boolean;
-  overlayListenerUp: boolean;
   /** The Grove this host is designated to serve (`served_grove_id`). */
   servedGroveId: string;
   notes: string[];
@@ -235,7 +250,12 @@ function clearDesignationIntent(controlDir: string): void {
  * attempt crashed before the designation itself was persisted adopts the
  * SAME Grove instead of minting a second orphan.
  */
-function createOrAdoptFreshServedGrove(mycoHome: string, controlDir: string, log: (message: string) => void): string {
+function createOrAdoptFreshServedGrove(
+  mycoHome: string,
+  controlDir: string,
+  log: (message: string) => void,
+  storageName?: string,
+): string {
   const intent = readDesignationIntent(controlDir);
   if (intent) {
     const existing = loadGroveRecord(intent.grove_id, mycoHome);
@@ -246,7 +266,45 @@ function createOrAdoptFreshServedGrove(mycoHome: string, controlDir: string, log
     // The marker names a Grove that no longer exists (e.g. deleted out of
     // band) — stale marker, fall through to creating a fresh Grove below.
   }
-  const grove = createGrove('Team Host', mycoHome);
+  // Disable→re-enable ADOPTS the team's previous storage (E1 §4.1 rev 5;
+  // "this state should not be possible"): `host disable` records the
+  // outgoing served grove, and creating a second one here would orphan the
+  // team's entire attached history — then crash on the name collision.
+  const lastServed = loadMachineConfig(mycoHome).daemon.host_serve.last_served_grove_id ?? undefined;
+  if (lastServed) {
+    const previous = loadGroveRecord(lastServed, mycoHome);
+    if (previous) {
+      const requested = storageName?.trim();
+      if (requested && requested !== previous.name) {
+        // An explicitly DIFFERENT name is the user's escape hatch to new
+        // storage (PR 2 diff review, C5 — without this, "start a new team
+        // on this box" had no path short of hand-editing config.yaml). The
+        // previous Grove is KEPT, stated out loud, never silently orphaned.
+        log(`NOTE: previous team storage "${previous.name}" (${previous.id}) is KEPT but not adopted — you asked for new storage "${requested}". The old Grove and its history remain on this machine.`);
+      } else {
+        // Ignore-with-a-note parity with the immutable-designation path:
+        // adoption must never silently swallow a typed name.
+        log(`Re-enabling Team Host: adopting the previously-served team storage ("${previous.name}", ${previous.id}) — its attached history is intact.`);
+        writeDesignationIntent(controlDir, previous.id);
+        return previous.id;
+      }
+    }
+  }
+  const name = storageName?.trim() || 'Team Host';
+  let grove: ReturnType<typeof createGrove>;
+  try {
+    grove = createGrove(name, mycoHome);
+  } catch (err) {
+    // A name/slug collision with an EXISTING grove is a refusal, never an
+    // adoption: the only groves this path may adopt arrive via the two safe
+    // channels above (crash-resume intent, previously-served storage) —
+    // designating an arbitrary same-named grove is exactly the personal-
+    // grove hazard decision-963ca301 forbids.
+    throw new Error(
+      `Cannot create team storage "${name}": ${err instanceof Error ? err.message : String(err)}. `
+      + 'Pass a different --storage-name (an existing Grove is never designated as team storage).',
+    );
+  }
   writeDesignationIntent(controlDir, grove.id);
   return grove.id;
 }
@@ -269,9 +327,16 @@ export function resolveServedGroveDesignation(
   mycoHome: string,
   controlDir: string,
   log: (message: string) => void,
+  storageName?: string,
 ): { groveId: string; warning?: string } {
   if (existingServedGroveId) {
     const grove = loadGroveRecord(existingServedGroveId, mycoHome);
+    // Ignore-with-a-note, never silently (E1 §4.1 rev 6): the designation is
+    // immutable once set, and the common case (converge re-run) would
+    // otherwise swallow a name the user typed.
+    if (storageName?.trim() && grove && grove.name !== storageName.trim()) {
+      log(`NOTE: --storage-name "${storageName.trim()}" ignored — this host already serves "${grove.name}" (designation is immutable once set; disable and re-enable to change it).`);
+    }
     if (!grove) {
       const warning = `served_grove_id ${existingServedGroveId} no longer names a Grove on this machine — the designation is dangling (see \`myco doctor\`). Team Host serving stays off until this is resolved; the designation was NOT silently replaced.`;
       log(`WARNING: ${warning}`);
@@ -289,9 +354,75 @@ export function resolveServedGroveDesignation(
   }
 
   if (mode === 'fresh') {
-    return { groveId: createOrAdoptFreshServedGrove(mycoHome, controlDir, log) };
+    return { groveId: createOrAdoptFreshServedGrove(mycoHome, controlDir, log, storageName) };
   }
   return { groveId: ensureDefaultGrove(mycoHome).id };
+}
+
+/**
+ * The designation mode for this run — EXPLICIT on first designation (rev 6
+ * breaking change). The old silent `?? 'default'` designated the machine's
+ * existing default Grove as team storage, immutably: on a personal machine
+ * that is the user's personal Grove, violating decision-963ca301. A re-run
+ * with a designation on record needs no choice (designation is immutable;
+ * the mode only affects the default-pointer drift warn).
+ */
+export function resolveDesignationMode(
+  requested: 'default' | 'fresh' | undefined,
+  existingServedGroveId: string | undefined,
+  mycoHome: string,
+): 'default' | 'fresh' {
+  if (requested) return requested;
+  if (existingServedGroveId) return 'default';
+  let hasGroves = false;
+  try {
+    hasGroves = listGroves(mycoHome).length > 0;
+  } catch { /* unreadable registry — fall through to the safe refusal below */ hasGroves = true; }
+  if (hasGroves) {
+    throw new Error(
+      'This machine already has project storage (Groves), so `myco host enable` needs an explicit choice: '
+      + '--designate-fresh creates NEW dedicated team storage (optionally named via --storage-name); '
+      + '--designate-default serves this box\'s default Grove (the --serve installer path). '
+      + 'An existing personal Grove is never designated silently.',
+    );
+  }
+  return 'default';
+}
+
+/**
+ * Validate a prospective fresh-designation BEFORE any binaries are
+ * provisioned or services touched (E1 §4.1 rev 6: "the route must validate
+ * storage_name against the registry before touching binaries or services").
+ * Collisions with the two safe adoption channels (crash-resume intent,
+ * previously-served storage) are NOT refusals — those are the groves the
+ * designation will adopt.
+ */
+export function validateFreshDesignationName(
+  storageName: string | undefined,
+  mycoHome: string,
+  controlDir: string,
+): void {
+  const name = storageName?.trim() || 'Team Host';
+  const intentGroveId = readDesignationIntent(controlDir)?.grove_id;
+  // The previously-served Grove is excluded from collision detection ONLY
+  // when the requested name matches it — that is the adoption path. A
+  // different name means "new storage", and colliding with any OTHER
+  // existing grove (including a renamed last-served one) is a refusal.
+  const lastServedId = loadMachineConfig(mycoHome).daemon.host_serve.last_served_grove_id ?? undefined;
+  const lastServedGrove = lastServedId ? loadGroveRecord(lastServedId, mycoHome) : undefined;
+  let collision: { id: string; name: string } | undefined;
+  try {
+    collision = listGroves(mycoHome).find((g) =>
+      g.name === name
+      && g.id !== intentGroveId
+      && !(g.id === lastServedId && lastServedGrove?.name === name));
+  } catch { return; /* unreadable registry — createGrove's own refusal is the backstop */ }
+  if (collision) {
+    throw new Error(
+      `Team storage name "${name}" already names a Grove on this machine (${collision.id}). `
+      + 'Pass a different --storage-name — an existing Grove is never designated as team storage.',
+    );
+  }
 }
 
 /** How long to wait for a freshly-installed host tailscaled to bind its control
@@ -382,6 +513,16 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     } else {
       log('root: sudo available for the boot-scoped headscale unit install (tailscaled runs unprivileged).');
     }
+  }
+
+  // Designation preflight — refuse BEFORE provisioning binaries or touching
+  // services (E1 §4.1 rev 6): the explicit-choice requirement and a
+  // storage-name collision are user errors, and surfacing them after the
+  // overlay stack is half-installed converts a typo into a teardown.
+  const preExistingServedGroveId = loadMachineConfig(mycoHome).daemon.host_serve.served_grove_id ?? undefined;
+  const designationMode = resolveDesignationMode(options.groveDesignation, preExistingServedGroveId, mycoHome);
+  if (!preExistingServedGroveId && designationMode === 'fresh') {
+    validateFreshDesignationName(options.storageName, mycoHome, resolveHostControlDir());
   }
 
   // 1. Provision binaries (idempotent — re-verifies in place).
@@ -617,13 +758,13 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   //    the daemon's enrollment endpoint (Task 2.4) can self-report id +
   //    label to joining members. `hostname` is the host's tailnet node
   //    name — the label.
-  const existingServedGroveId = loadMachineConfig(mycoHome).daemon.host_serve.served_grove_id ?? undefined;
   const designation = resolveServedGroveDesignation(
-    options.groveDesignation ?? 'default',
-    existingServedGroveId,
+    designationMode,
+    preExistingServedGroveId,
     mycoHome,
     controlDir,
     log,
+    options.storageName,
   );
   if (designation.warning) notes.push(designation.warning);
 
@@ -651,19 +792,17 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   if (loadGroveRecord(designation.groveId, mycoHome)) {
     seedGroveBackupDefaults(designation.groveId, mycoHome);
   }
-  const restart = await restartDaemonForHostServe(mycoHome, deps.serviceManager ?? getServiceManager());
-  log(restart.detail);
-  if (!restart.restarted) {
-    // Load-bearing, not informational: the daemon wires the inbound forward
-    // only when it binds. If it did not restart, nothing re-wires, and this
-    // host stays unreachable to members until it does.
-    const warning = `${restart.detail} The overlay forward is wired when the daemon binds, so this host `
-      + 'is NOT reachable by members until the daemon restarts. Restart it, then re-run `myco host enable`.';
-    log(`WARNING: ${warning}`);
-    notes.push(warning);
-  }
-
-  // 7. Resolve node id (best-effort) + record host state.
+  // 7. Resolve node id (best-effort) + record host state — BEFORE the
+  //    restart (E1 §4.1 named reorder): neither depends on the restart (the
+  //    node id comes from the headscale CLI, state is a disk write), and
+  //    completing ALL durable state first is what makes the restart a
+  //    genuinely terminal step — run in-daemon, the restart SIGTERMs the
+  //    process executing this orchestration, so nothing after it is
+  //    guaranteed to run. NOTE the ordering invariant this preserves:
+  //    `readHostState()` above supplies host_id/enabled_at (§9.7), and
+  //    every headscale admin call (mint at step 5, node-id here) runs after
+  //    the supervision step converged (§7 gate — the admin socket is
+  //    user-owned only once the user cell is up).
   const nodeId = deps.resolveNodeId
     ? await deps.resolveNodeId(runner, bins.headscaleBin, layout.configPath, hostname)
     : await defaultResolveNodeId(runner, bins.headscaleBin, layout.configPath, hostname);
@@ -690,12 +829,26 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     tailscaled_bin: bins.tailscaledBin,
   });
 
-  // 8. Best-effort verify the overlay listener came up (never fatal).
-  const verify = deps.verifyOverlayListener ?? defaultVerifyOverlayListener;
-  const overlayListenerUp = await verify(overlayAddress, mycoHome).catch(() => false);
-  log(overlayListenerUp
-    ? `Overlay listener responding on ${overlayAddress}.`
-    : 'Overlay listener not confirmed yet — verify with the live checklist after the daemon settles.');
+  // 8. TERMINAL: restart the daemon to bind the overlay listener. Last on
+  //    purpose — all durable state is already written, so run in-daemon
+  //    the SIGTERM lands after nothing that matters, and a re-run converges
+  //    from disk. The old best-effort `verifyOverlayListener` probe is GONE:
+  //    its replacement is the status route's OBSERVED `serving &&
+  //    overlay_listener_bound && started_at !== <pre-restart snapshot>`
+  //    poll (E1 §4.1 rev 6) — a bind-truthful, restart-discriminated read
+  //    instead of a race against daemon settle.
+  const restart = await (deps.restartDaemon
+    ?? ((home: string) => restartDaemonForHostServe(home, deps.serviceManager ?? getServiceManager())))(mycoHome);
+  log(restart.detail);
+  if (!restart.restarted) {
+    // Load-bearing, not informational: the daemon wires the inbound forward
+    // only when it binds. If it did not restart, nothing re-wires, and this
+    // host stays unreachable to members until it does.
+    const warning = `${restart.detail} The overlay forward is wired when the daemon binds, so this host `
+      + 'is NOT reachable by members until the daemon restarts.';
+    log(`WARNING: ${warning}`);
+    notes.push(warning);
+  }
 
   return {
     hostId,
@@ -705,7 +858,6 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     headscaleVersion: bins.headscaleVersion,
     tailscaleVersion: bins.tailscaleVersion,
     daemonRestarted: restart.restarted,
-    overlayListenerUp,
     servedGroveId: designation.groveId,
     notes,
   };
@@ -763,16 +915,20 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
     });
   }
 
-  // 1. Clear host_serve and restart, so the daemon stops serving before the
-  //    overlay is torn out from under it.
+  // 1. Clear host_serve config. The RESTART that applies it is now the
+  //    TERMINAL step (E1 §4.1 rev 6 — disable's own named cut): it used to
+  //    be step 1 of 5 "so the daemon stops serving before the overlay is
+  //    torn out from under it", but run in-daemon that SIGTERMs the process
+  //    executing this teardown — prove-gone, both uninstalls, and all
+  //    destruction would never run, leaving both services installed and
+  //    running under `enabled:false` (the exact §15 fail-open). The honest
+  //    trade, stated: during teardown the daemon keeps serving over an
+  //    overlay being dismantled, so members see connection errors instead
+  //    of a clean stop. A crash mid-teardown converges on retry exactly as
+  //    before — every step tolerates an already-absent resource.
   let daemonRestarted = false;
   await step('clear host_serve config', async () => {
     writeHostServeConfig({ enabled: false, overlayAddress: null }, mycoHome);
-  });
-  await step('restart daemon', async () => {
-    const r = await restartDaemonForHostServe(mycoHome, deps.serviceManager ?? getServiceManager());
-    daemonRestarted = r.restarted;
-    log(r.detail);
   });
 
   // 2-4. §15 REQUIRED ORDER: uninstall the services → PROVE they are gone →
@@ -912,6 +1068,14 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
     deleteSecrets(mycoHome, [HOST_SERVE_BEARER_SECRET]);
   });
 
+  // TERMINAL: restart so the daemon re-reads the cleared config and unbinds.
+  await step('restart daemon', async () => {
+    const r = await (deps.restartDaemon
+      ?? ((home: string) => restartDaemonForHostServe(home, deps.serviceManager ?? getServiceManager())))(mycoHome);
+    daemonRestarted = r.restarted;
+    log(r.detail);
+  });
+
   if (errors.length > 0) {
     log(`host disable completed with ${errors.length} issue(s); local host-serve is off.`);
   } else {
@@ -971,36 +1135,6 @@ async function defaultResolveNodeId(
   }
 }
 
-/**
- * Best-effort overlay-listener probe: read the running daemon's port from
- * `daemon.json` and issue one short request to the overlay address. Any HTTP
- * response (even a 401 from the bearer gate) proves the listener is bound; a
- * connection error means it isn't up yet. Never throws — the live checklist is
- * the authoritative verification.
- */
-async function defaultVerifyOverlayListener(_address: string, mycoHome: string): Promise<boolean> {
-  try {
-    // LOOPBACK, and the OVERLAY port — not the overlay address and not the
-    // daemon's canonical port. Post-C1 there is no TUN, so the host has no
-    // route to its own 100.64 address (measured: the dial times out), and the
-    // listener binds `127.0.0.1:overlay_port`. Probing the old pair reported
-    // every healthy host as unconfirmed. End-to-end overlay reachability is a
-    // member-side fact (X1–X3), not something the host can self-check.
-    const port = loadMachineConfig(mycoHome).daemon.host_serve.overlay_port;
-    if (!port) return false;
-    const address = '127.0.0.1';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1500);
-    try {
-      await fetch(`http://${address}:${port}/health`, { signal: controller.signal });
-      return true; // any response (incl. 401) means the listener is bound
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch {
-    return false;
-  }
-}
 
 /** Reduce an arbitrary hostname to a tailnet-safe label. */
 function sanitizeHostname(name: string): string {

@@ -144,7 +144,30 @@ export async function handleRestart(
 
   const mgr = deps.serviceManager ?? getServiceManager();
   const serviceManagedLabel = await resolveRestartServiceLabel(mgr);
+  scheduleDetachedSelfRestart({
+    serviceManagedLabel,
+    vaultDir: deps.vaultDir,
+    terminateSelf: deps.terminateSelf,
+  });
 
+  return {
+    body: { status: 'restarting' },
+  };
+}
+
+/**
+ * Schedule THIS daemon process's restart: spawn the detached restart child,
+ * then self-SIGTERM on a timer. Extracted from {@link handleRestart} so the
+ * host-admin enable/disable jobs share the one safe in-daemon restart shape
+ * (E1 §4.1 rev 6) — an inline awaited `manager.restart` SIGTERMs the process
+ * mid-await, and everything after it is dead code.
+ */
+export function scheduleDetachedSelfRestart(deps: {
+  serviceManagedLabel: string | null;
+  vaultDir: string;
+  terminateSelf?: () => Promise<void>;
+}): void {
+  const { serviceManagedLabel } = deps;
   // Schedule: respond → wait for flush → SIGTERM self → child starts after parent exits.
   // When service-managed, the child calls `myco service restart`, which uses
   // launchctl kickstart -k / systemctl --user restart to atomically SIGTERM us
@@ -194,8 +217,4 @@ export async function handleRestart(
         } catch { /* best-effort */ }
       });
   }, sigtermDelay);
-
-  return {
-    body: { status: 'restarting' },
-  };
 }

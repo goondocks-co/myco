@@ -271,7 +271,6 @@ describe('hostEnable designation wiring', () => {
       waitForSocket: async () => true,
       overlayPort: 41443,
       resolveNodeId: async () => 'node-9',
-      verifyOverlayListener: async () => true,
       // Headscale runs at the daemon's scope via the scoped manager; the
       // fake never binds a real admin socket, so short-circuit the health
       // proof and pin the observed scope to the fake's installed state.

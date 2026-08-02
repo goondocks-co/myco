@@ -239,14 +239,71 @@ export function isValidOverlayPort(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535;
 }
 
+/** Why an enabled-looking config still yields no serving runtime. One reason
+ *  per refusal branch below; consumed by the status route's `serving: false`
+ *  body so the UI renders the daemon's actual diagnosis instead of a bare
+ *  boolean (E1 §4.1, review RC3). */
+export type HostServeRefusalReason =
+  | 'disabled'
+  | 'invalid_overlay_address'
+  | 'invalid_overlay_port'
+  | 'dangling_served_grove'
+  | 'grove_registry_unreadable'
+  | 'bearer_unavailable';
+
+export type HostServeClassification =
+  | { runtime: HostServeRuntime; reason?: undefined }
+  | { runtime?: undefined; reason: HostServeRefusalReason };
+
+/** Thin wrapper preserving the boot call sites' `runtime | null` contract —
+ *  the classification (with its refusal reason) is the single source of
+ *  truth; this only drops the reason. */
 export function resolveHostServeConfig(options: {
   machineConfig: MachineConfig;
   mycoHome?: string;
   logger?: HostServeLogger;
   lockNamespace?: PerUserLockNamespace;
 }): HostServeRuntime | null {
+  return classifyHostServeConfig(options).runtime ?? null;
+}
+
+/**
+ * READ-ONLY refusal probe: the same gate order as {@link classifyHostServeConfig}
+ * but WITHOUT bearer resolution. Load-bearing distinction: bearer
+ * resolution is mint-if-absent — a WRITE that takes a per-user file lock
+ * and persists a machine secret — and the status route's `serving: false`
+ * branch (the Phase-2 poll's hot path) must never do that on a GET (PR 2
+ * diff review, C4 — a poll was creating `secrets.env`). Returns `null`
+ * when the config is valid, i.e. serving would start on the next boot.
+ */
+export function classifyHostServeRefusalReadOnly(options: {
+  machineConfig: MachineConfig;
+  mycoHome?: string;
+}): Exclude<HostServeRefusalReason, 'bearer_unavailable'> | null {
   const hostServe = options.machineConfig.daemon.host_serve;
-  if (!hostServe?.enabled) return null;
+  if (!hostServe?.enabled) return 'disabled';
+  if (!isOverlayRangeAddress(hostServe.overlay_address)) return 'invalid_overlay_address';
+  if (!isValidOverlayPort(hostServe.overlay_port)) return 'invalid_overlay_port';
+  const servedGroveId = hostServe.served_grove_id?.trim() || undefined;
+  if (servedGroveId) {
+    const mycoHome = options.mycoHome ?? resolveMycoHome();
+    try {
+      if (!listGroves(mycoHome).some((grove) => grove.id === servedGroveId)) return 'dangling_served_grove';
+    } catch {
+      return 'grove_registry_unreadable';
+    }
+  }
+  return null;
+}
+
+export function classifyHostServeConfig(options: {
+  machineConfig: MachineConfig;
+  mycoHome?: string;
+  logger?: HostServeLogger;
+  lockNamespace?: PerUserLockNamespace;
+}): HostServeClassification {
+  const hostServe = options.machineConfig.daemon.host_serve;
+  if (!hostServe?.enabled) return { reason: 'disabled' };
 
   const address = hostServe.overlay_address;
   if (!isOverlayRangeAddress(address)) {
@@ -255,7 +312,7 @@ export function resolveHostServeConfig(options: {
       'Team Host serve is enabled but overlay_address is absent or not a 100.64/10 (CGNAT) overlay address — host serving stays off',
       { overlay_address: address ?? null },
     );
-    return null;
+    return { reason: 'invalid_overlay_address' };
   }
 
   // Fail CLOSED on a missing/invalid port rather than falling back to the
@@ -270,7 +327,7 @@ export function resolveHostServeConfig(options: {
       + 'Re-run `myco host enable` to allocate and persist one.',
       { overlay_port: overlayPort ?? null },
     );
-    return null;
+    return { reason: 'invalid_overlay_port' };
   }
 
   const mycoHome = options.mycoHome ?? resolveMycoHome();
@@ -286,7 +343,7 @@ export function resolveHostServeConfig(options: {
           'Team Host serve is enabled but served_grove_id names no Grove on this machine — a dangling designation, host serving stays off',
           { served_grove_id: servedGroveId },
         );
-        return null;
+        return { reason: 'dangling_served_grove' };
       }
     } catch (err) {
       // listGroves() walks + TOML-parses every grove.toml on the machine — an
@@ -298,7 +355,7 @@ export function resolveHostServeConfig(options: {
         'Team Host serve is enabled but served_grove_id could not be validated against the Grove registry — host serving stays off',
         { served_grove_id: servedGroveId, error: (err as Error).message },
       );
-      return null;
+      return { reason: 'grove_registry_unreadable' };
     }
   }
 
@@ -308,12 +365,14 @@ export function resolveHostServeConfig(options: {
       options.lockNamespace ?? nativePerUserLockNamespace,
     );
     return {
-      overlayAddress: (address as string).trim(),
-      overlayPort,
-      bearer,
-      hostId: hostServe.host_id ?? undefined,
-      label: hostServe.label ?? undefined,
-      servedGroveId,
+      runtime: {
+        overlayAddress: (address as string).trim(),
+        overlayPort,
+        bearer,
+        hostId: hostServe.host_id ?? undefined,
+        label: hostServe.label ?? undefined,
+        servedGroveId,
+      },
     };
   } catch (err) {
     options.logger?.warn(
@@ -321,7 +380,7 @@ export function resolveHostServeConfig(options: {
       'Team Host serve is enabled but the host bearer could not be resolved — host serving stays off',
       { error: (err as Error).message },
     );
-    return null;
+    return { reason: 'bearer_unavailable' };
   }
 }
 

@@ -474,6 +474,17 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   //     admin actions with no Grove/project scope to proxy. `status` is the
   //     read-only companion (host list + attach refs + affiliation hint) the
   //     Team page polls; same posture, no new state. ---
+  // --- localhost-only: Team Host ADMINISTRATION (E1 §4, `daemon/api/
+  //     host-admin.ts`). enable/disable run the plain hostEnable/hostDisable
+  //     orchestration as an in-daemon job (progress-tracked, restart
+  //     deferred to a detached child); mint-join-key is the explicit member
+  //     onboarding mint (unprivileged post-re-scope). All mutate THIS
+  //     machine's own hosting state — no Grove/project scope to proxy,
+  //     same posture as the membership family below. ---
+  { method: 'POST', pattern: '/api/host-admin/enable', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-admin/disable', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-admin/mint-join-key', stamp: 'localhost-only', capability: HOST_ADMIN },
+
   { method: 'POST', pattern: '/api/host-membership/join', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/host-membership/leave', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/host-membership/attach', stamp: 'localhost-only', capability: HOST_ADMIN },
