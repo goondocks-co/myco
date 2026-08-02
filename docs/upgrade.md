@@ -84,7 +84,21 @@ See [Lifecycle](lifecycle.md) for the contributor workflow.
 
 ## Rollback
 
-Myco archives older Myco-owned per-project files rather than deleting them. The self-updater also keeps the previously installed binary, so if an update misbehaves Myco can fall back to the prior version. To pin a specific release line, use the **Stable** / **Beta** channel toggle in the Settings page's Upgrade section — see [Lifecycle](lifecycle.md) for how channels work.
+Myco archives older Myco-owned per-project files rather than deleting them. The self-updater also keeps the previously installed binary, so if an update misbehaves Myco falls back to the prior version automatically.
+
+**Rollback is refused across a storage-format change.** Some upgrades update the on-disk format of your data. An older Myco cannot read the newer format, so once an upgrade has updated your data, going back to the older version — automatically after a failed update, or explicitly via `myco upgrade <older-version>` or the Stable/Beta toggle — is refused rather than leaving you with a service that cannot start. The refusal message, `myco doctor`, and the dashboard all say exactly which versions are involved.
+
+**Before any storage-format update, Myco takes a backup automatically.** The backup lands in the affected Grove's regular backup folder, records the pre-upgrade format version inside the file, and is pinned so retention cleanup never reclaims it. If the backup cannot be taken, the format update itself is refused — your data is never migrated without the safety net.
+
+To actually go back across a storage-format change, use the pre-upgrade backup with a fresh data directory:
+
+1. Stop the service (`myco service stop`) and move the affected Grove's data file aside (keep it — it is your newest data): `~/.myco/groves/<grove-id>/myco.db`.
+2. Install the older Myco and start it once — it creates a fresh, empty data file in the old format.
+3. Restore the pre-upgrade backup into it from the dashboard's backup page (or `myco __restore-backup <db> <backup> <out>` for scripted recovery).
+
+Restoring a backup **merges rows into** the target — it never converts a newer-format file in place, which is why the fresh data directory in step 2 is required. Restore checks the direction: a backup written at a newer storage format than the target database is refused with a message naming both versions, instead of failing partway through.
+
+To pin a specific release line, use the **Stable** / **Beta** channel toggle in the Settings page's Upgrade section — see [Lifecycle](lifecycle.md) for how channels work.
 
 If you want to remove Myco entirely:
 
@@ -117,3 +131,11 @@ Open the dashboard's Symbionts page and trigger re-detect. If you committed proj
 ### `myco doctor` reports agent configuration drift
 
 Run `myco doctor --fix`, or visit the Symbionts page in the dashboard and trigger re-detect.
+
+### The service won't start after going back to an older version
+
+If the local service stays down after a downgrade and `myco doctor` reports the data is at a newer storage format than the binary supports: the data was written by a newer Myco, and the older binary refuses to touch it rather than risk it. Nothing has been modified. Upgrade Myco back (`myco upgrade`), or follow the recovery steps under [Rollback](#rollback) to go back with a pre-upgrade backup.
+
+### Downgrade leftovers when external access was on
+
+If a machine had **external agent access** enabled (Team page) and is moved to an older Myco that predates the feature, external access quietly turns off, and the public address entry it registered with the overlay network can be left behind. It is inert but visible in `tailscale serve status`; re-upgrading Myco cleans it up, or remove it manually with `tailscale serve --https=443 off`. A machine that was mid-enable when the newer version stopped will refuse to start the older binary and say why — finish or disable external access on the newer version first.

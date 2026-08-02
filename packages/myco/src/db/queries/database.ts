@@ -38,7 +38,15 @@ export interface IndexInfo {
 }
 
 export interface SchemaInfo {
+  /**
+   * The DATABASE's stamped schema version (its newest `schema_version`
+   * row) — what the file on disk actually is, not what this binary would
+   * migrate it to. Falls back to the binary's constant only when the
+   * stamp is unreadable.
+   */
   version: number;
+  /** The running binary's compiled SCHEMA_VERSION. */
+  binary_version: number;
   journal_mode: string;
   foreign_keys: boolean;
 }
@@ -174,8 +182,19 @@ export function getSchemaInfo(): SchemaInfo {
   const journal_mode = String(pragmaScalar<string>('journal_mode'));
   const foreign_keys_raw = pragmaScalar<number | string>('foreign_keys');
   const foreign_keys = Number(foreign_keys_raw) === 1;
+  const stamped = (() => {
+    try {
+      const row = getDatabase()
+        .prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1')
+        .get() as { version: number } | undefined;
+      return typeof row?.version === 'number' ? row.version : null;
+    } catch {
+      return null;
+    }
+  })();
   return {
-    version: SCHEMA_VERSION,
+    version: stamped ?? SCHEMA_VERSION,
+    binary_version: SCHEMA_VERSION,
     journal_mode,
     foreign_keys,
   };

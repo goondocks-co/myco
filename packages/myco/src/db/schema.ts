@@ -133,6 +133,45 @@ export function isSchemaMigrationPending(db: Database): boolean {
 }
 
 /**
+ * Context passed to the pre-migration hook: the database about to be
+ * migrated and the version span the pending chain would cover.
+ */
+export interface PreMigrationContext {
+  db: Database;
+  machineId: string;
+  /** The vault's stamped version before any pending migration runs. */
+  fromVersion: number;
+  /** The binary's SCHEMA_VERSION the chain will advance to. */
+  toVersion: number;
+}
+
+export type PreMigrationHook = (ctx: PreMigrationContext) => void;
+
+let preMigrationHook: PreMigrationHook | null = null;
+
+/**
+ * Register a hook that runs inside `createSchema` immediately before a
+ * pending migration chain executes — and ONLY then: fresh installs,
+ * same-version DDL reapplies, and too-new refusals never invoke it.
+ *
+ * This module stays a leaf (bun:sqlite + constants + DDL + migrations),
+ * so the hook is injected rather than imported: the daemon composition
+ * root registers the pre-migration backup checkpoint here, and every
+ * `createSchema` caller in that process — boot, lazy Grove opens, agent
+ * runs, Grove provisioning — is covered without per-call-site wiring.
+ *
+ * A throwing hook ABORTS the migration (the error propagates before any
+ * migration runs and the vault's stamped version is unchanged). That is
+ * the contract, not an accident: a checkpoint that cannot be taken means
+ * the migration must not run.
+ *
+ * Pass `null` to deregister (tests).
+ */
+export function setPreMigrationHook(hook: PreMigrationHook | null): void {
+  preMigrationHook = hook;
+}
+
+/**
  * Create all database tables, indexes, and record the schema version.
  *
  * Fully idempotent -- safe to call on every startup. Uses `IF NOT EXISTS`
@@ -160,6 +199,16 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
       reapplyCurrentSchemaDdl(db);
       return;
     }
+
+    // Pre-migration seam: a real migration is imminent (version table
+    // exists, stamped version is behind). A throwing hook aborts the
+    // migration with the vault untouched — see setPreMigrationHook.
+    preMigrationHook?.({
+      db,
+      machineId,
+      fromVersion: currentVersion,
+      toVersion: SCHEMA_VERSION,
+    });
 
     // Run pending migrations in order. Errors propagate intentionally so
     // partial upgrade failures are visible to the caller.

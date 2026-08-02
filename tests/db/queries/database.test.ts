@@ -82,6 +82,19 @@ describe('database queries — introspection', () => {
     expect(typeof info.foreign_keys).toBe('boolean');
   });
 
+  it('getSchemaInfo reports the DB\'s STAMPED version, not the binary constant', () => {
+    const db = initDatabase(dbPath);
+    const binaryVersion = getSchemaInfo().binary_version;
+    // Rewrite the stamp to simulate a vault the binary has not migrated yet.
+    db.prepare('DELETE FROM schema_version').run();
+    db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)')
+      .run(binaryVersion - 2, 100);
+
+    const info = getSchemaInfo();
+    expect(info.version).toBe(binaryVersion - 2);
+    expect(info.binary_version).toBe(binaryVersion);
+  });
+
   it('getLastDatabaseLogTimestamp returns null when no matching log entry exists', () => {
     const ts = getLastDatabaseLogTimestamp('database.optimize');
     expect(ts).toBeNull();

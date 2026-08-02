@@ -73,6 +73,24 @@ const BACKUP_HEADER_TEMPLATE = '-- Myco backup';
 // ---------------------------------------------------------------------------
 
 /**
+ * The DB's own stamped schema version — the newest row of `schema_version`,
+ * or `null` when the table is absent or unreadable (pre-schema DBs, ad-hoc
+ * test databases). Reads the stamp directly rather than the binary's
+ * `SCHEMA_VERSION` constant: a checkpoint dump describes the vault as it
+ * was, not what this binary would migrate it to.
+ */
+function readStampedSchemaVersion(db: Database): number | null {
+  try {
+    const row = db
+      .prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1')
+      .get() as { version: number } | null;
+    return typeof row?.version === 'number' ? row.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Backup uses the canonical `ProjectScope` from `@myco/grove/ids.js`:
  *   - `{ kind: 'project', id }`  — single-project dump (filter `project_id = ?`)
  *   - `{ kind: 'global' }`        — daemon-wide rows (no project filter applies
@@ -183,52 +201,104 @@ export function createBackup(
 ): string {
   fs.mkdirSync(backupDir, { recursive: true });
 
-  const lines: string[] = [];
   const timestamp = epochSeconds();
   const clause = projectScopeClause(scope);
   const scopeLabel = scope.kind === 'project'
     ? `project=${scope.id}`
     : 'all-projects';
 
-  // Header
-  lines.push(`${BACKUP_HEADER_TEMPLATE}: machine_id=${machineId}, created_at=${timestamp}`);
-  lines.push(`-- Protocol version: ${SYNC_PROTOCOL_VERSION}`);
-  lines.push(`-- scope: ${scopeLabel}`);
-  // Grove lineage, when the source DB lives at a Grove path. Restore
-  // refuses to merge a Grove's dump into a DIFFERENT Grove's DB — the
-  // dump's literal AUTOINCREMENT ids only mean anything in their home
-  // Grove. Non-Grove DBs (tests, ad-hoc paths) emit no lineage line.
-  const sourceGroveId = groveIdFromDbPath(db.filename);
-  if (sourceGroveId) lines.push(`-- grove_id: ${sourceGroveId}`);
-  lines.push('');
-
-  for (const table of tables) {
-    const useScope = clause.sql !== '' && PROJECT_SCOPED_BACKUP_TABLES.has(table);
-    const sql = `SELECT * FROM ${table}${useScope ? clause.sql : ''}`;
-    const rows = useScope
-      ? db.prepare(sql).all(...clause.params) as Record<string, unknown>[]
-      : db.prepare(sql).all() as Record<string, unknown>[];
-    if (rows.length === 0) continue;
-
-    lines.push(`-- Table: ${table} (${rows.length} rows)`);
-
-    // Get column names from the first row
-    const columns = Object.keys(rows[0]);
-    const columnList = columns.map((c) => `"${c}"`).join(', ');
-
-    for (const row of rows) {
-      const values = columns.map((c) => toSqlLiteral(row[c])).join(', ');
-      lines.push(`INSERT OR IGNORE INTO ${table} (${columnList}) VALUES (${values});`);
-    }
-
-    lines.push('');
-  }
+  // The requested table list is the CURRENT binary's constant, but the DB
+  // may be at an older schema (the pre-migration checkpoint dumps the vault
+  // BEFORE the migration that would create newer tables). Dump only tables
+  // that exist in this DB; record the rest so the header stays honest about
+  // what the dump does not carry.
+  const presentTables = new Set(
+    (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+      .all() as { name: string }[]).map((r) => r.name),
+  );
+  const dumpTables = tables.filter((t) => presentTables.has(t));
+  const skippedTables = tables.filter((t) => !presentTables.has(t));
 
   const filename = scope.kind === 'project'
     ? `${machineId}__${projectSlug ?? 'unknown'}__${timestamp}${BACKUP_EXTENSION}`
     : `${machineId}__${timestamp}${BACKUP_EXTENSION}`;
   const filePath = path.join(backupDir, filename);
-  fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+
+  // STREAMED, never accumulated: this also runs as the pre-migration
+  // checkpoint on the daemon's boot path, where a whole-dump string is a
+  // multi-GB RSS spike on large vaults (BLOBs hex-expand at 2x) and a
+  // deterministic V8 max-string-length throw past ~536 MB — which the
+  // fail-closed checkpoint would convert into "the daemon cannot start".
+  // Buffered ~1 MB writes into a temp file, renamed on success so a
+  // partial dump is never mistaken for a complete backup.
+  const tmpPath = `${filePath}.tmp`;
+  const fd = fs.openSync(tmpPath, 'w');
+  let buf = '';
+  const push = (chunk: string): void => {
+    buf += chunk;
+    if (buf.length >= 1_000_000) {
+      fs.writeSync(fd, buf);
+      buf = '';
+    }
+  };
+  try {
+    // Header
+    push(`${BACKUP_HEADER_TEMPLATE}: machine_id=${machineId}, created_at=${timestamp}\n`);
+    push(`-- Protocol version: ${SYNC_PROTOCOL_VERSION}\n`);
+    push(`-- scope: ${scopeLabel}\n`);
+    // Grove lineage, when the source DB lives at a Grove path. Restore
+    // refuses to merge a Grove's dump into a DIFFERENT Grove's DB — the
+    // dump's literal AUTOINCREMENT ids only mean anything in their home
+    // Grove. Non-Grove DBs (tests, ad-hoc paths) emit no lineage line.
+    const sourceGroveId = groveIdFromDbPath(db.filename);
+    if (sourceGroveId) push(`-- grove_id: ${sourceGroveId}\n`);
+    const stampedSchemaVersion = readStampedSchemaVersion(db);
+    if (stampedSchemaVersion !== null) {
+      push(`-- schema_version: ${stampedSchemaVersion}\n`);
+    }
+    if (skippedTables.length > 0) {
+      push(`-- skipped_tables: ${skippedTables.join(',')}\n`);
+    }
+
+    for (const table of dumpTables) {
+      const useScope = clause.sql !== '' && PROJECT_SCOPED_BACKUP_TABLES.has(table);
+      const where = useScope ? clause.sql : '';
+      // Row count up front for the table header (the count the restore
+      // preview keys on). The scan below is snapshot-consistent within
+      // itself (iterate holds a read snapshot); the count is taken
+      // immediately before it, so a commit from another PROCESS landing
+      // in the gap can skew the header count by a row — preview-only
+      // cosmetics, since restore counts actual INSERT lines.
+      const countRow = (useScope
+        ? db.prepare(`SELECT COUNT(*) AS n FROM ${table}${where}`).get(...clause.params)
+        : db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()) as { n: number };
+      if (countRow.n === 0) continue;
+
+      push(`\n-- Table: ${table} (${countRow.n} rows)\n`);
+
+      const stmt = db.prepare(`SELECT * FROM ${table}${where}`);
+      const iter = (useScope
+        ? stmt.iterate(...clause.params)
+        : stmt.iterate()) as Iterable<Record<string, unknown>>;
+      let columnList = '';
+      let columns: string[] | null = null;
+      for (const row of iter) {
+        if (columns === null) {
+          columns = Object.keys(row);
+          columnList = columns.map((c) => `"${c}"`).join(', ');
+        }
+        const values = columns.map((c) => toSqlLiteral(row[c])).join(', ');
+        push(`INSERT OR IGNORE INTO ${table} (${columnList}) VALUES (${values});\n`);
+      }
+    }
+    if (buf !== '') fs.writeSync(fd, buf);
+    fs.closeSync(fd);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* already closed */ }
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* best-effort */ }
+    throw err;
+  }
 
   return filePath;
 }
@@ -301,6 +371,73 @@ export interface PruneRetentionPolicy {
   keep_weekly: number;
 }
 
+/**
+ * Sidecar keep-list: backups named here are exempt from retention pruning.
+ * Pre-migration checkpoints use it — they are the only artifact that spans
+ * a schema gap, and an aggressive-but-valid retention config (keep_daily: 1)
+ * must not delete them while docs/upgrade.md is telling the user to go get
+ * one. Capped: the newest KEEP_LIST_CAP entries stay pinned; older ones
+ * age out into ordinary prunable files.
+ */
+const KEEP_LIST_FILENAME = 'keep.json';
+const KEEP_LIST_CAP = 5;
+
+/**
+ * A MISSING keep-list is normal (no pins yet); an unreadable one is not,
+ * and the two must not collapse — pruning fail-closes on `corrupt` (see
+ * pruneBackups) because "couldn't identify the pins" must never become
+ * "reclaimed the pins".
+ */
+function readKeepListRaw(backupDir: string): { entries: string[]; corrupt: boolean } {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(path.join(backupDir, KEEP_LIST_FILENAME), 'utf-8');
+  } catch {
+    return { entries: [], corrupt: false };
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return { entries: [], corrupt: true };
+    return { entries: parsed.filter((e): e is string => typeof e === 'string'), corrupt: false };
+  } catch {
+    return { entries: [], corrupt: true };
+  }
+}
+
+export function readKeepList(backupDir: string): string[] {
+  return readKeepListRaw(backupDir).entries;
+}
+
+/**
+ * Pin `fileName` against pruning. The cap is PER machine_id (parsed from
+ * the filename), matching pruneBackups' own grouping — in a shared/synced
+ * backup folder, machine A's checkpoints must not push machine B's out of
+ * the keep list. A corrupt keep-list is rebuilt from this pin.
+ */
+export function addToKeepList(backupDir: string, fileName: string): void {
+  const current = readKeepListRaw(backupDir).entries
+    .filter((name) => name !== fileName)
+    // Drop entries whose files are already gone.
+    .filter((name) => fs.existsSync(path.join(backupDir, name)));
+  const next = [...current, fileName];
+  const byMachine = new Map<string, string[]>();
+  for (const name of next) {
+    const machine = BACKUP_FILENAME_PATTERN.exec(name)?.[1] ?? '';
+    const arr = byMachine.get(machine) ?? [];
+    arr.push(name);
+    byMachine.set(machine, arr);
+  }
+  const kept = new Set<string>();
+  for (const names of byMachine.values()) {
+    for (const name of names.slice(-KEEP_LIST_CAP)) kept.add(name);
+  }
+  const final = next.filter((name) => kept.has(name));
+  const target = path.join(backupDir, KEEP_LIST_FILENAME);
+  const tmp = `${target}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(final, null, 2), 'utf-8');
+  fs.renameSync(tmp, target);
+}
+
 export interface PruneResult {
   removed: string[];
   kept: number;
@@ -321,6 +458,18 @@ export function pruneBackups(
   now = Date.now(),
 ): PruneResult {
   const all = listAllBackupEntries(backupDir);
+  const keepListRaw = readKeepListRaw(backupDir);
+  if (keepListRaw.corrupt) {
+    // Fail closed: an unreadable keep-list means the pinned pre-migration
+    // checkpoints cannot be identified, and pruning without knowing them
+    // could reclaim the only artifact that spans a schema gap.
+    console.warn(
+      `[backup] ${path.join(backupDir, KEEP_LIST_FILENAME)} is unreadable; `
+        + 'skipping prune this cycle (pinned checkpoints could not be identified)',
+    );
+    return { removed: [], kept: all.length };
+  }
+  const keepList = new Set(keepListRaw.entries);
   const grouped = new Map<string, RawBackupEntry[]>();
   for (const entry of all) {
     const arr = grouped.get(entry.machine_id) ?? [];
@@ -333,9 +482,14 @@ export function pruneBackups(
 
   for (const [, files] of grouped) {
     files.sort((a, b) => b.modified_ms - a.modified_ms);
-    const legacy = files.filter((f) => !TIMESTAMPED_PATTERN.test(f.file_name));
-    const timestamped = files.filter((f) => TIMESTAMPED_PATTERN.test(f.file_name));
+    // Keep-listed files (pre-migration checkpoints) are exempt like legacy
+    // files, and do NOT consume daily/weekly retention slots.
+    const pinned = files.filter((f) => keepList.has(f.file_name));
+    const unpinned = files.filter((f) => !keepList.has(f.file_name));
+    const legacy = unpinned.filter((f) => !TIMESTAMPED_PATTERN.test(f.file_name));
+    const timestamped = unpinned.filter((f) => TIMESTAMPED_PATTERN.test(f.file_name));
 
+    kept += pinned.length;
     kept += legacy.length;
     const dailyKept = timestamped.slice(0, retention.keep_daily);
     const olderThanDaily = timestamped.slice(retention.keep_daily);
@@ -352,6 +506,7 @@ export function pruneBackups(
     kept += weeklyKept.size;
 
     const keepNames = new Set<string>([
+      ...pinned.map((f) => f.file_name),
       ...legacy.map((f) => f.file_name),
       ...dailyKept.map((f) => f.file_name),
       ...Array.from(weeklyKept.values()).map((f) => f.file_name),
@@ -441,6 +596,19 @@ export interface SnapshotHeader {
    * predate lineage recording and for dumps of non-Grove DBs.
    */
   grove_id: string | null;
+  /**
+   * The source DB's stamped schema version at dump time. `null` for
+   * legacy archives that predate the line and for dumps of DBs without
+   * a `schema_version` table. Recovery tooling matches this against a
+   * binary's supported version to find a compatible restore target.
+   */
+  schema_version: number | null;
+  /**
+   * Requested tables that were absent from the source DB and therefore
+   * not dumped (an old-schema vault dumped by a newer binary). Empty for
+   * legacy archives and complete dumps.
+   */
+  skipped_tables: string[];
 }
 
 const HEADER_SCAN_LIMIT = 16;
@@ -466,6 +634,8 @@ export function readSnapshotHeader(snapshotPath: string): SnapshotHeader {
     protocol_version: null,
     scope: null,
     grove_id: null,
+    schema_version: null,
+    skipped_tables: [],
   };
 
   const lines = raw.split('\n').slice(0, HEADER_SCAN_LIMIT);
@@ -485,6 +655,18 @@ export function readSnapshotHeader(snapshotPath: string): SnapshotHeader {
     const protocolMatch = /^Protocol version:\s*(\d+)/.exec(meta);
     if (protocolMatch) {
       header.protocol_version = Number(protocolMatch[1]);
+      continue;
+    }
+
+    const schemaMatch = /^schema_version:\s*(\d+)$/.exec(meta);
+    if (schemaMatch) {
+      header.schema_version = Number(schemaMatch[1]);
+      continue;
+    }
+
+    const skippedMatch = /^skipped_tables:\s*(\S+)$/.exec(meta);
+    if (skippedMatch) {
+      header.skipped_tables = skippedMatch[1].split(',').filter((t) => t !== '');
       continue;
     }
 
@@ -669,6 +851,32 @@ export class BackupGroveMismatchError extends Error {
 }
 
 /**
+ * A dump written at a NEWER schema than the target DB cannot merge — its
+ * INSERTs name columns the older schema lacks, so the restore would die
+ * deep inside `db.exec` with a raw "no such column". Refused up front,
+ * typed, with the direction spelled out (the recovery procedure in
+ * docs/upgrade.md restores an OLD-format dump into an old-format DB; this
+ * is the wrong-direction case). Old dump into newer DB is fine — columns
+ * are named explicitly and later columns are additive-nullable.
+ */
+export class BackupSchemaMismatchError extends Error {
+  readonly code = 'backup_schema_too_new';
+
+  constructor(
+    readonly backupSchemaVersion: number,
+    readonly targetSchemaVersion: number,
+  ) {
+    super(
+      `Backup was written at storage format v${backupSchemaVersion}, newer than the `
+      + `target database (v${targetSchemaVersion}); restore is refused. Restore this `
+      + `backup into a database at v${backupSchemaVersion} or newer — see "Rollback" `
+      + 'in docs/upgrade.md.',
+    );
+    this.name = 'BackupSchemaMismatchError';
+  }
+}
+
+/**
  * Restore a backup by feeding the entire dump to SQLite's own parser as
  * one multi-statement script. SQLite's parser understands string literals
  * with embedded newlines, so multi-line text values round-trip byte-exact.
@@ -706,6 +914,17 @@ export function restoreBackup(
       `[backup] archive ${path.basename(backupPath)} carries no grove_id lineage; `
       + `cross-Grove guard skipped for restore into Grove ${targetGroveId}`,
     );
+  }
+  // Direction gate: a newer-format dump cannot merge into an older DB
+  // (its INSERTs name columns the older schema lacks). Legacy archives
+  // without the header line skip the gate, same posture as lineage.
+  const targetSchemaVersion = readStampedSchemaVersion(db);
+  if (
+    header.schema_version !== null
+    && targetSchemaVersion !== null
+    && header.schema_version > targetSchemaVersion
+  ) {
+    throw new BackupSchemaMismatchError(header.schema_version, targetSchemaVersion);
   }
 
   const content = fs.readFileSync(backupPath, 'utf-8');
