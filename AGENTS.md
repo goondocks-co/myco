@@ -28,7 +28,7 @@ Myco captures project memory in a local vault and serves it back through context
 - Session ID is the durable key. Do not tie persistent state to hook lifecycle events.
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
 - Maintain one canonical source of truth per concern. Derived files, stubs, and mirrors should stay thin and point back to it.
-- License is **Apache 2.0** (relicensed from MIT on 2026-04-29). New files must carry the Apache header; do not introduce GPL- or AGPL-licensed dependencies.
+- License is **Apache 2.0** (relicensed from MIT on 2026-04-29), applied repo-wide via `LICENSE` + `NOTICE` (© Goondocks Consulting LLC). Per-file headers are optional and not enforced. Do not introduce GPL- or AGPL-licensed dependencies.
 
 ## Non-Negotiable Rules
 
@@ -82,7 +82,7 @@ The surface each actor touches is fixed:
 | Surface | Whose | For |
 |---|---|---|
 | **MCP tools** (`packages/myco/src/tools/`) | Symbionts | Read project intelligence. No administrative ops. |
-| **Skills** (`packages/myco/src/skills/`, generated) | Symbionts | Workflows; may instruct the symbiont to invoke the CLI. |
+| **Skills** (`packages/myco/skills/` built-in + vault-generated) | Symbionts | Workflows; may instruct the symbiont to invoke the CLI. |
 | **CLI** (`packages/myco/src/cli/`) | Users (primary) and Symbionts (via skills) | Bootstrap + admin. |
 | **UI** (`packages/myco/ui/`) | Users | Primary interface for ongoing work. |
 | **Agent harness tools** (`packages/myco/src/agent/tools/`) | Myco agent | Internal; not exposed via MCP. |

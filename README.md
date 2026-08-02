@@ -13,7 +13,7 @@
   <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
   <a href="https://github.com/sponsors/goondocks-co"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-22c55e" alt="Sponsor Myco"></a>
   <img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Linux%20%7C%20Windows-22c55e" alt="Runs on macOS, Linux, Windows">
-  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20Cline%20%7C%20VS%20Code%20%7C%20Antigravity%20%7C%20Devin%20Desktop%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | Cline | VS Code | Antigravity | Devin Desktop | OpenCode | Pi">
+  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20Cline%20%7C%20Copilot%20%7C%20Antigravity%20%7C%20Devin%20Desktop%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | Cline | Copilot | Antigravity | Devin Desktop | OpenCode | Pi">
 </p>
 
 ## What is Myco?
@@ -33,7 +33,7 @@ That knowledge also evolves. Myco is not an ever-growing static archive. It keep
 ## What Myco does
 
 - **Captures the work** — sessions, prompts, tool use, plans, screenshots, decisions, trade-offs, and gotchas.
-- **Builds project knowledge** — durable **spores**, wisdom, summaries, digests, graph links, and searchable context.
+- **Builds project knowledge** — durable **spores**, wisdom, summaries, digests, and searchable context.
 - **Evolves what matters** — stale observations can be superseded, repeated lessons become wisdom, and workflows stay current as the code changes.
 - **Routes context to agents** — session briefings, relevant spores, and Canopy file anatomy surface when agents need them.
 - **Maps the codebase** — [Canopy](docs/canopy.md) gives agents semantic awareness of files before they open them.
@@ -71,9 +71,7 @@ Myco keeps itself up to date **automatically** — the local service self-update
 
 No `npm update` is needed. (A `myco upgrade` CLI exists for advanced or scripted use, with `--channel stable|beta`, but the automatic and dashboard paths are the normal way to stay current.) Upgrading from an older per-project install archives legacy Myco-owned files the next time Myco starts. See [Upgrading Myco](docs/upgrade.md).
 
-Team Host operator commands (`myco host`, `myco join`, `myco attach`) are part of the main binary and upgrade with it — no separate package. One optional operator package remains for infrastructure administration (an npm/Node tool that requires Node 22+):
-
-- `@goondocks/myco-collective` — deploy and manage a Myco Collective
+Team Host operator commands (`myco host`, `myco join`, `myco attach`) are part of the main binary and upgrade with it — no separate package.
 
 ## How it works
 
@@ -83,7 +81,7 @@ Symbionts connect Myco to the agents you already use. They capture session start
 
 ### Intelligence
 
-The [agent harness](docs/agent-harness.md) runs Myco's background intelligence work. It reads captured sessions, extracts **spores** (decisions, gotchas, discoveries, trade-offs, fixes), generates titles and summaries, links entities into a knowledge graph, and refreshes digest extracts.
+The [agent harness](docs/agent-harness.md) runs Myco's background intelligence work. It reads captured sessions, extracts **spores** (decisions, gotchas, discoveries, trade-offs, fixes), generates titles and summaries, links them to their source sessions, and refreshes digest extracts.
 
 When Myco finds 3+ semantically similar spores, it synthesizes them into a **wisdom** spore — a higher-order observation that captures the pattern across sessions. Individual observations become institutional knowledge.
 
@@ -144,24 +142,15 @@ myco host enable --server-url https://your-host:8080   # on the host machine
 myco join <host> --key <one-time-key> --server-url <url> --overlay-address <address>   # on a member's machine
 ```
 
-Both steps are also available from the dashboard's **Team** page — enabling a host prints a ready-to-paste join command, and joining is a form with the same four fields. Once joined, connect the projects you want the team to share (Team page, or `myco attach [path] --host <id>`). From then on, each connected project's knowledge reaches the host directly: new spores, session summaries, plans, and graph edges become available to the team in the background, and search returns both local and team knowledge.
+Both steps are also available from the dashboard's **Team** page — enabling a host prints a ready-to-paste join command, and joining is a form with the same four fields. Once joined, connect the projects you want the team to share (Team page, or `myco attach [path] --host <id>`). Connecting a project moves its knowledge — sessions, spores, plans, skills — to the host, which holds the single copy while the project is connected; agent tools and search route to it transparently. Disconnecting (`myco detach`) brings the full history back home in one verified transfer.
 
-Local Grove databases remain the source of truth. Joined machines and the host talk over a direct, encrypted overlay connection, and each record carries a machine identity for attribution.
+For projects you haven't connected to a host, your local Grove databases remain the source of truth. Joined machines and the host talk over a direct, encrypted overlay connection, and each record carries a machine identity for attribution.
 
 See the [Team Host docs](docs/team-host.md) for the full guide, including running a team server and the external read-only MCP endpoint for agents that aren't Myco members.
 
 ### Collective
 
-Search across projects and manage shared settings by connecting multiple team workers to one Myco Collective.
-
-Install it only if you want the cross-project admin layer:
-
-```bash
-npm install -g @goondocks/myco-collective
-myco-collective install
-```
-
-The Collective gives you a worker-hosted admin UI for connected projects, shared settings, and cross-project search. See the [Collective guide](docs/collective.md).
+The Collective — a cross-team admin layer — is not currently integrated with Myco; it's kept as a design record pending a redesign around Team Host. See the [Collective notes](docs/collective.md) for its status.
 
 ### External read-only MCP
 
@@ -169,7 +158,7 @@ A Team Host can also expose a read-only, six-tool MCP endpoint over a secure pub
 
 ### Skills — automated curation, not just memory
 
-Memory is table stakes. Myco goes further: it turns accumulated project knowledge into **repeatable workflows** that every agent follows. The intelligence pipeline identifies procedural patterns across sessions — debugging the build, adding API routes, configuring providers, resolving common gotchas — and surfaces them as candidates. You approve what becomes canon, and Myco generates validated SKILL.md files under `.agents/skills/`, symlinked into every agent's native skills directory.
+Memory is table stakes. Myco goes further: it turns accumulated project knowledge into **repeatable workflows** that every agent follows. The intelligence pipeline identifies procedural patterns across sessions — debugging the build, adding API routes, configuring providers, resolving common gotchas — and surfaces them as candidates. You approve what becomes canon; Myco generates and validates the skill, and when you **Publish** it, the SKILL.md file lands in your project under `.agents/skills/`, symlinked into every agent's native skills directory.
 
 Skills evolve as your code does. When a pattern is abandoned, a new gotcha is discovered, or a workflow shifts, Myco refreshes affected skills — preserving what's still accurate, incorporating what's new, and splitting skills that have grown too broad. See the [Skills docs](docs/skills.md) for the full lifecycle.
 

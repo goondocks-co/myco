@@ -63,7 +63,7 @@ Myco data lives in two places: a per-user global directory and per-Grove databas
 
 | Path | Purpose |
 |------|---------|
-| `myco.db` | Sessions, batches, activities, spores, entities, graph edges, plans, artifacts, skills, FTS indexes |
+| `myco.db` | Sessions, batches, activities, spores, entities, lineage edges, plans, artifacts, skills, FTS indexes |
 | `vectors.db` | Semantic search embeddings |
 | `grove.toml` | Grove identity |
 | `registry/projects.toml` | Projects registered in this Grove |
@@ -111,6 +111,20 @@ myco remove         # Uninstall: remove Myco's contributions from every agent's 
 myco remove --purge # Additionally remove ~/.myco/ itself
 ```
 
+### Start at login or at boot
+
+By default the service starts **at login**, as your user. On macOS and Linux you can instead run it **at boot** — useful for a machine that hosts a team or serves external agent access and should come back after a reboot without anyone logging in:
+
+```yaml
+# machine config (~/.myco/config.yaml)
+daemon:
+  service_scope: boot   # 'login' (default) or 'boot'
+```
+
+Then run `myco service install` from a shell that can elevate — realizing a boot-scoped service generally needs administrator rights (on Linux, running it as your own user uses `loginctl enable-linger` instead), which is also why this setting is machine-scoped config and deliberately **not** a dashboard toggle (a switch the dashboard couldn't act on without elevation would be a lie). `myco doctor` reports when the installed service doesn't match the configured scope.
+
+On **Windows**, the service always runs at login via Task Scheduler; boot scope isn't supported there, and a `service_scope: boot` setting is reported by `myco doctor` but not realized.
+
 ## Updates
 
 Myco runs as a single native binary and one local service serving every Grove on the machine. It keeps itself up to date:
@@ -123,11 +137,7 @@ Myco runs as a single native binary and one local service serving every Grove on
 
 All three paths end at the same state: the installed Myco binary is at the new version, and the next restart updates your local service and connected agents.
 
-If you also installed the standalone Collective operator CLI, it remains an npm/Node tool and can be updated directly:
-
-- `npm update -g @goondocks/myco-collective`
-
-Team Host operator commands (`myco host`, `myco join`, `myco attach`) live in the main binary and upgrade automatically with the rest of Myco — see [Team Host](team-host.md).
+Team Host operator commands (`myco host`, `myco join`, `myco attach`) live in the main binary and upgrade automatically with the rest of Myco — see [Team Host](team-host.md). If your team shares a host, update the host machine first, then members.
 
 See [Upgrading Myco](upgrade.md) for the full upgrade walkthrough.
 
@@ -137,7 +147,7 @@ The Upgrade section of the Settings page has a **Stable**/**Beta** toggle that c
 
 **Switching to Beta.** Click **Beta**. Myco installs the latest beta release and uses it for the dashboard, agent connections, and intelligence pipeline across every Grove on the machine.
 
-**Reverting to Stable.** Click **Revert to Stable & Restart**. Myco steps the binary back to the latest stable release and restarts the service. You return to the same Stable version a fresh install would give you.
+**Reverting to Stable.** Click **Revert to Stable & Restart**. Myco steps the binary back to the latest stable release and restarts the service. You return to the same Stable version a fresh install would give you — with one guard: if a Beta release updated your data's storage format beyond what the Stable release can read, the revert is refused with a message naming the versions involved, because the older binary would refuse to start. See [Rollback](upgrade.md#rollback) for what to do in that case.
 
 ## Configuration
 
