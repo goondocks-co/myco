@@ -280,6 +280,10 @@ export function createStreamableMcpHttpHandler(
       return;
     }
     const { requestContext } = resolved;
+    // Overlay marking, matching chokepoint 1 (daemon/server.ts): tool
+    // handlers that shape responses by whether they cross the overlay
+    // (host-path suppression) read this flag.
+    requestContext.hostServed = overlayRequest;
 
     // Team Host served-grove filter (Task 2), chokepoint 2 of 2 (see
     // `daemon/server.ts` for chokepoint 1). `/mcp` is a raw route — it never
@@ -334,6 +338,7 @@ export function createStreamableMcpHttpHandler(
       requestContext,
       resolveDatabase: options.resolveDatabase,
       callContextConstraint,
+      toolCallerTransport: req.headers['x-myco-tool-transport'] === 'cli' ? 'cli' : 'mcp',
     });
     const server = createMcpProtocolServer(tools, {
       logger: options.logger,

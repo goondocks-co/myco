@@ -13,13 +13,27 @@ export const SUBAGENT_CORTEX_GUIDANCE = [
   'Apply them to your assigned task, and defer broad orchestration decisions back to the parent agent.',
 ].join('\n');
 
-export const CLI_TOOL_TRANSPORT_DIRECTIVE = [
-  '**Myco tool transport (this host):** No Myco MCP server is installed here.',
-  'Call every Myco tool — including any `myco_*` tool named below or in any skill —',
-  "via your shell: `myco tool call <tool> --json --input '<json-args>'`,",
-  'run from the project working directory (this resolves project tenancy automatically).',
-  'Example: `myco tool call myco_cortex --json --input \'{"op":"instructions"}\'`.',
-].join('\n');
+/**
+ * Render the CLI transport directive for a concrete binary invocation.
+ *
+ * `mycoBinary` must be resolvable on the host this text is injected into:
+ * agents run the command in non-interactive shells, which do not read
+ * interactive rc files. A path containing whitespace degrades to the bare
+ * name — direct-argv hosts cannot spawn a quoted path (the same rule as
+ * install-time `assertSafeBinaryPathForUnquoted`). The text is composed
+ * per-request and the caller must pass the bare name for host-served
+ * (overlay) responses, so an absolute path never crosses machines.
+ */
+export function cliToolTransportDirective(mycoBinary: string): string {
+  const invocation = /\s/.test(mycoBinary) ? 'myco' : mycoBinary;
+  return [
+    '**Myco tool transport (this host):** No Myco MCP server is installed here.',
+    'Call every Myco tool — including any `myco_*` tool named below or in any skill —',
+    `via your shell: \`${invocation} tool call <tool> --json --input '<json-args>'\`,`,
+    'run from the project working directory (this resolves project tenancy automatically).',
+    `Example: \`${invocation} tool call myco_cortex --json --input '{"op":"instructions"}'\`.`,
+  ].join('\n');
+}
 
 export type CortexInjectionSurface = 'session-start' | 'subagent-start';
 
@@ -31,12 +45,16 @@ export interface CortexInjectionContext {
 export function composeCortexInstructionInjection(
   cortexContent: string,
   surface: CortexInjectionSurface,
-  options: { cliToolTransport?: boolean } = {},
+  options: { cliToolTransport?: boolean; mycoBinary?: string } = {},
 ): CortexInjectionContext | null {
   const trimmed = cortexContent.trim();
   if (!trimmed) return null;
 
-  const directive = options.cliToolTransport ? `${CLI_TOOL_TRANSPORT_DIRECTIVE}\n\n` : '';
+  // The caller resolves `mycoBinary` for the host; the bare name is the
+  // last-resort rendering.
+  const directive = options.cliToolTransport
+    ? `${cliToolTransportDirective(options.mycoBinary || 'myco')}\n\n`
+    : '';
 
   if (surface === 'subagent-start') {
     return {

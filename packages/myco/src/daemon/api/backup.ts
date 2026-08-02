@@ -89,6 +89,7 @@ export function createBackupHandlers(deps: BackupDeps) {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const inflight = new ActionInflightRegistry();
   const restoreRunner: RestoreRunner =
+    // Self-identity spawn: restore runs the SAME code as this daemon.
     deps.restoreRunner ?? ((p) => restoreViaChild({ ...p, binaryPath: process.execPath }));
   const restoreJobs = new RestoreJobRegistry(restoreRunner);
 

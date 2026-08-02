@@ -48,6 +48,13 @@ export interface MycoToolsOptions {
    * find it from env/config, matching `resolveCallContext`'s convention.
    */
   mycoHome?: string;
+  /**
+   * Invocation channel of the caller: 'cli' when the request came from
+   * `myco tool call` (declared via the x-myco-tool-transport header), else
+   * 'mcp'. Governs whether instruction-shaped responses carry the CLI
+   * transport directive.
+   */
+  toolCallerTransport?: 'cli' | 'mcp';
 }
 
 interface JsonSchemaProperty {
@@ -158,6 +165,24 @@ function requireCallerTenancy(context: MycoRequestContext | undefined): MycoRequ
     );
   }
   return context;
+}
+
+/**
+ * Prefix an op:instructions body with the CLI transport directive. The
+ * invocation resolves on THIS machine; a host-served request's response
+ * crosses the overlay to another machine, so it renders the bare name.
+ */
+async function withCliTransportDirective(result: unknown, context?: MycoRequestContext): Promise<unknown> {
+  if (!result || typeof result !== 'object') return result;
+  const body = result as { content?: unknown };
+  if (typeof body.content !== 'string' || !body.content.trim()) return result;
+  const { cliToolTransportDirective } = await import('../context/cortex-injection-context.js');
+  const { isHostServedRequest } = await import('../grove/request-context.js');
+  const { resolveBinary } = await import('../runtime/binary-resolution.js');
+  const invocation = isHostServedRequest(context)
+    ? 'myco'
+    : resolveBinary('instruction', { kind: 'machine' }).path;
+  return { ...body, content: `${cliToolTransportDirective(invocation)}\n\n${body.content}` };
 }
 
 export function createMycoTools(vaultDir: string, client: DaemonClient, options: MycoToolsOptions = {}): MycoTools {
@@ -371,7 +396,8 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       case 'instructions': {
         const result = await cortex.handleCortexInstructions(client, context);
         logActivity(context, TOOL_CORTEX, { op, duration_ms: Date.now() - start });
-        return result;
+        if (options.toolCallerTransport !== 'cli') return result;
+        return withCliTransportDirective(result, context);
       }
       case 'canopy_entry':
         return await dispatchCanopyEntry(input, context, start, cortex.handleCortexCanopyEntry);

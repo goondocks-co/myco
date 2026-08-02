@@ -32,33 +32,18 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const resolution = require('./binary-resolution.cjs');
 
-const RUNTIME_COMMAND_INSECURE_MODE_MASK = 0o022;
 const RUNTIME_COMMAND_FILENAME = 'runtime.command';
 const RUNTIME_HOME_FILENAME = 'runtime.home';
 
+// Delegates to the shared module's G7 check.
 function checkRuntimeCommandTrust(filePath) {
-  if (process.platform === 'win32') return { ok: true };
-  let stat;
-  try {
-    stat = fs.statSync(filePath);
-  } catch (err) {
-    if (err && err.code === 'ENOENT') return { ok: false, reason: 'pin file missing' };
-    return { ok: false, reason: `stat failed: ${(err && err.message) || 'unknown'}` };
-  }
-  const myUid = typeof process.getuid === 'function' ? process.getuid() : null;
-  if (myUid !== null && stat.uid !== myUid) {
-    return { ok: false, reason: `pin file owned by uid ${stat.uid}, expected ${myUid}` };
-  }
-  const mode = stat.mode & 0o777;
-  if (mode & RUNTIME_COMMAND_INSECURE_MODE_MASK) {
-    return { ok: false, reason: `pin file mode 0${mode.toString(8)} is writable by group/other` };
-  }
-  return { ok: true };
+  return resolution.checkPinTrust(filePath);
 }
 
 function readPinAt(filePath, traceRefusal) {
-  const trust = checkRuntimeCommandTrust(filePath);
+  const trust = resolution.checkPinTrust(filePath);
   if (!trust.ok) {
     if (typeof traceRefusal === 'function') traceRefusal(`${filePath}: ${trust.reason}`);
     return null;
@@ -89,7 +74,8 @@ function readProjectRuntimeCommand(startDir, traceRefusal) {
 }
 
 function readMachineRuntimeCommand(env, traceRefusal) {
-  const home = env.MYCO_HOME ? expandHome(env.MYCO_HOME) : path.join(os.homedir(), '.myco');
+  const raw = (env.MYCO_HOME || '').trim();
+  const home = raw ? path.resolve(resolution.expandHome(raw)) : path.join(os.homedir(), '.myco');
   const filePath = path.join(home, RUNTIME_COMMAND_FILENAME);
   const pin = readPinAt(filePath, traceRefusal);
   return pin ? { pin, source: filePath } : null;
@@ -108,9 +94,7 @@ function readLayeredRuntimeCommand(startDir, env = process.env, traceRefusal) {
 }
 
 function expandHome(value) {
-  if (value === '~') return os.homedir();
-  if (value.startsWith(`~${path.sep}`)) return path.join(os.homedir(), value.slice(2));
-  return value;
+  return resolution.expandHome(value);
 }
 
 /**

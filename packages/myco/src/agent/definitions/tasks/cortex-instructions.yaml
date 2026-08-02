@@ -123,10 +123,10 @@ phases:
              "Call `myco_cortex({"op":"canopy_map"})` first when you
              need project layout — finding a feature, locating the right
              file before editing, or orienting in this codebase." Use
-             exactly one invocation form (MCP). Do NOT also list the
-             `myco tool call ...` CLI form in this
-             paragraph; the dual-form phrasing reads as two redundant
-             steps and is the reason agents skip the tool. Frame it as a
+             exactly one invocation form (the MCP tool name). Do NOT
+             list any shell CLI invocation form in this paragraph; the
+             dual-form phrasing reads as two redundant steps and is the
+             reason agents skip the tool. Frame it as a
              default first move, never as a condition the agent
              self-evaluates ("when you need to explore unfamiliar code",
              "if you're new to the project"). Do NOT enumerate other
@@ -175,11 +175,10 @@ phases:
          Cortex context, it should refresh the current project instructions
          with `myco_cortex({"op":"instructions"})` and include the returned
          instructions verbatim in that agent's prompt, along with the
-         task-specific instructions. Include this CLI fallback in the same
-         sentence for hosts without MCP:
-         `myco tool call myco_cortex --json --input '{"op":"instructions"}'`.
-         Do not assume the returned instructions have any particular
-         heading or section name.
+         task-specific instructions. Name tools only — never shell command
+         syntax; each host injects its own transport directive with the
+         correct invocation for that machine. Do not assume the returned
+         instructions have any particular heading or section name.
 
       6. A `### Recent workstreams` section that MUST cite at least
          one active plan or recent session BY TITLE from the research

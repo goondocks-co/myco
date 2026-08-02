@@ -38,7 +38,11 @@ import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js'
 
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 
-interface HostHit { url: string; body: string; }
+interface HostHit {
+  url: string;
+  body: string;
+  headers: Record<string, string | string[] | undefined>;
+}
 
 function mcpBody(name: string, args: Record<string, unknown>): string {
   return JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } });
@@ -71,7 +75,7 @@ describe('/mcp attach short-circuit + proxy (chokepoint 2)', () => {
       const chunks: Buffer[] = [];
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
-        hostHits.push({ url: req.url ?? '', body: Buffer.concat(chunks).toString('utf-8') });
+        hostHits.push({ url: req.url ?? '', body: Buffer.concat(chunks).toString('utf-8'), headers: { ...req.headers } });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end('{"jsonrpc":"2.0","id":1,"result":{"ok":true}}');
       });
@@ -147,6 +151,24 @@ describe('/mcp attach short-circuit + proxy (chokepoint 2)', () => {
     expect(parsed.error.data.code).toBe('capability_unavailable_hosted');
     expect(hostHits).toHaveLength(0);
     expect(dbCalls).toBe(0);
+  });
+
+  test('the member CLI transport header never crosses the proxy to the host', async () => {
+    // The host would render its own binary path into instruction responses;
+    // the member daemon applies the directive with the member's path instead.
+    const projectId = attach();
+    const res = await fetch(memberUrl(), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-myco-tool-transport': 'cli',
+        [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+      },
+      body: mcpBody('myco_search', { type: 'session', query: 'x' }),
+    });
+    expect(res.status).toBe(200);
+    expect(hostHits.length).toBe(1);
+    expect(hostHits[0].headers['x-myco-tool-transport']).toBeUndefined();
   });
 
   test('a non-attached request falls through to local resolution (never the seam)', async () => {

@@ -145,42 +145,36 @@ export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, c
     log(`managed binary copy skipped: ${err?.message ?? err}`);
   }
 
-  // --- Pin reconciliation -------------------------------------------------
-  // `runtime.command` is the machine pin every CLI shim re-execs. We may
-  // safely point it at the managed binary, but must NOT clobber an active
-  // beta managed-runtime pin or a deliberate external/dev pin.
+  // --- Pin migration ------------------------------------------------------
+  // `runtime.command` is an operator override; its absence is the normal
+  // state — every consumer falls through to the managed binary on its own.
+  // A pin naming the managed binary (what earlier postinstalls wrote) is
+  // redundant by construction and is removed. Any other pin carries operator
+  // intent and is untouched.
   try {
     const pinPath = path.join(mycoHome, 'runtime.command');
     let pin = '';
     try { pin = fs.readFileSync(pinPath, 'utf8').trim(); } catch { /* absent */ }
 
-    // Preserve a legacy managed-runtime pin (a path under ~/.myco/runtime/node_modules/)
-    // so a pre-native-installer setup isn't stranded.
+    // Removable pins: one naming the managed binary (redundant — resolution
+    // reaches it without the pin), or one under a foreign node_modules (its
+    // target is deleted by any npm update). An active managed-runtime pin
+    // (<mycoHome>/runtime/node_modules/) and every other pin carry intent and
+    // are untouched.
     const normalize = (p) => p.split(path.sep).join('/');
     const managedPrefix = `${normalize(path.join(mycoHome, 'runtime'))}/node_modules/`;
     const isManagedRuntimePin = pin !== '' && normalize(pin).startsWith(managedPrefix);
+    const isRetiredNpmPin = pin.includes('/node_modules/') && !isManagedRuntimePin;
 
-    const shouldWrite =
-      pin === '' ||
-      pin === dest ||
-      (pin.includes('/node_modules/') && !isManagedRuntimePin);
-
-    if (shouldWrite) {
-      fs.mkdirSync(mycoHome, { recursive: true });
-      fs.writeFileSync(pinPath, `${dest}\n`, { mode: 0o644 });
-      // `mode` in writeFileSync is masked by umask; chmod to be certain the
-      // pin is never group/other-writable (runtime-redirect.cjs refuses it).
-      try { fs.chmodSync(pinPath, 0o644); } catch { /* best effort */ }
-      pinAction = 'wrote';
-    } else if (isManagedRuntimePin) {
-      log('legacy managed-runtime pin detected; not re-pointing runtime.command');
-      pinAction = 'preserved-managed';
-    } else {
-      log('external runtime.command pin preserved; not re-pointing');
+    if (pin === dest || isRetiredNpmPin) {
+      fs.rmSync(pinPath, { force: true });
+      pinAction = 'removed-redundant';
+    } else if (pin !== '') {
+      log('runtime.command pin preserved (operator override); not touching');
       pinAction = 'preserved-external';
     }
   } catch (err) {
-    log(`runtime.command reconcile skipped: ${err?.message ?? err}`);
+    log(`runtime.command migration skipped: ${err?.message ?? err}`);
   }
 
   // --- Install marker -----------------------------------------------------

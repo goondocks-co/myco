@@ -121,7 +121,7 @@ describe('select-binary convergeNpmInstall', () => {
     expect(fs.existsSync(versionedPath)).toBe(true);
   });
 
-  it('writes the runtime.command pin to dest, never group/other-writable (c)', () => {
+  it('writes no pin, and removes a redundant pin naming the managed binary (c)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
     const { mycoHome, resolvedBinary } = fixture;
@@ -138,11 +138,23 @@ describe('select-binary convergeNpmInstall', () => {
       versionedDest: versionedPath,
     });
 
-    expect(readPin(mycoHome)).toBe(dest);
-    if (process.platform !== 'win32') {
-      const mode = fs.statSync(path.join(mycoHome, 'runtime.command')).mode & 0o777;
-      expect(mode & 0o022).toBe(0);
-    }
+    // Absence is the normal state: consumers reach the managed binary
+    // without a pin, so none is written.
+    expect(fs.existsSync(path.join(mycoHome, 'runtime.command'))).toBe(false);
+
+    // A redundant pin from an earlier postinstall is migrated away.
+    writePin(mycoHome, dest);
+    const second = convergeNpmInstall({
+      mycoHome,
+      platform: PLATFORM,
+      resolvedBinary,
+      dest,
+      channel: 'stable',
+      version: TEST_VERSION,
+      versionedDest: versionedPath,
+    });
+    expect(second.pinAction).toBe('removed-redundant');
+    expect(fs.existsSync(path.join(mycoHome, 'runtime.command'))).toBe(false);
   });
 
   it('writes the install marker with source=npm, bin=dest, and channel (d)', () => {
@@ -195,7 +207,7 @@ describe('select-binary convergeNpmInstall', () => {
     expect(fs.existsSync(dest)).toBe(true);
   });
 
-  it('re-points a legacy node_modules pin onto the managed binary (f)', () => {
+  it('removes a retired npm-era node_modules pin instead of re-pointing it (f)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
     const { mycoHome, resolvedBinary } = fixture;
@@ -215,8 +227,10 @@ describe('select-binary convergeNpmInstall', () => {
       versionedDest: versionedPath,
     });
 
-    expect(readPin(mycoHome)).toBe(dest);
-    expect(result.pinAction).toBe('wrote');
+    // Its target is deleted by any npm update; removal lets resolution fall
+    // through to the managed binary instead of pinning a dead path.
+    expect(fs.existsSync(path.join(mycoHome, 'runtime.command'))).toBe(false);
+    expect(result.pinAction).toBe('removed-redundant');
   });
 
   it('preserves a deliberate external/dev pin (not node_modules, not managed-runtime) (g)', () => {

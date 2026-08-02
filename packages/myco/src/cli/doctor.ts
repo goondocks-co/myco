@@ -1523,9 +1523,8 @@ export async function checkInstallSource(): Promise<DoctorCheck> {
 /**
  * Locate the first executable named `name` on PATH, or null.
  *
- * `statSync` follows symlinks, so a symlinked shim reports as a file — the
- * caller resolves it to a realpath before comparing. PATH entries that don't
- * exist (or hold an unexpanded `~`) simply fail the stat and are skipped.
+ * `statSync` follows symlinks, so a symlinked shim reports as a file; the
+ * caller realpaths it before comparing. Unreadable PATH entries are skipped.
  */
 function findOnPath(
   name: string,
@@ -1550,7 +1549,6 @@ function findOnPath(
   return null;
 }
 
-/** Resolve symlinks for comparison, falling back to the input when unreadable. */
 function realpathOrSelf(target: string): string {
   try {
     return fs.realpathSync(target);
@@ -1560,48 +1558,34 @@ function realpathOrSelf(target: string): string {
 }
 
 /**
- * PATH ownership of the `myco` command.
+ * PATH ownership of the `myco` command, for the shell that invoked doctor.
  *
- * The managed binary is only reachable as `myco` if the shell resolves that
- * name to it. Two states break that and are otherwise silent until every
- * command fails: the managed bin dir was never added to PATH (the installer's
- * rc edit didn't run), or an unrelated `myco` earlier on PATH shadows it (a
- * leftover from the retired npm distribution is the common case — `npm update
- * -g` re-extracts that package and strips the generated dispatch file, leaving
- * a shim that hard-exits).
+ * Reports two otherwise-silent states: the managed bin dir is not on PATH, or
+ * an unrelated `myco` earlier on PATH shadows the managed binary. This row
+ * sees only the invoking shell's PATH — a pass here does not prove
+ * non-interactive shells resolve `myco`; binary consumers do not rely on PATH
+ * at all (they resolve pin → managed themselves).
  *
- * Pure classifier so the whole matrix is testable without a real PATH;
- * {@link checkPathBinary} injects the live values.
+ * Pure classifier; {@link checkPathBinary} injects the live values.
  */
 export function classifyPathBinary(args: {
-  /** Managed binary location, as configured (pre-symlink-resolution). */
-  managedBinary: string;
-  /** Whether the managed binary is present on disk. */
-  managedExists: boolean;
-  /** Directory that must be on PATH for `myco` to resolve. */
-  binDir: string;
+  facts: import('../runtime/binary-resolution.js').ResolutionFacts;
   /** First `myco` found on PATH, as found (pre-symlink-resolution). */
   pathBinary: string | null;
-  /** Active `runtime.command` pin, when a deliberate override is in force. */
-  pin: string | null;
   platform: NodeJS.Platform;
-  /** Symlink resolver — injected so tests need no real filesystem. */
   realpath: (target: string) => string;
 }): DoctorCheck | null {
-  const { managedBinary, managedExists, binDir, pathBinary, pin, platform, realpath } = args;
+  const { facts, pathBinary, platform, realpath } = args;
 
-  // No managed binary means a source build or a pre-convergence install —
-  // there is no "correct" target to compare PATH against, so asserting
-  // anything here would be inventing a fact this check never verified.
-  if (!managedExists) return null;
+  // Source build / pre-convergence: no target to compare PATH against.
+  if (!facts.managedExists) return null;
 
-  // A runtime pin is a deliberate developer override that redirects ahead of
-  // PATH, so PATH is not authoritative on this machine.
-  if (pin) {
+  // A pin redirects ahead of PATH, so PATH is not authoritative here.
+  if (facts.pin) {
     return {
       name: 'PATH',
       status: 'ok',
-      detail: `runtime pin active — \`myco\` routes to ${pin}`,
+      detail: `runtime pin active — \`myco\` routes to ${facts.pin}`,
       fixable: false,
     };
   }
@@ -1610,44 +1594,106 @@ export function classifyPathBinary(args: {
     const base = {
       name: 'PATH',
       status: 'fail' as const,
-      detail: `no \`myco\` on PATH — the managed binary at ${managedBinary} is unreachable by name. `
-        + `Add ${binDir} to PATH.`,
+      detail: `no \`myco\` on PATH in this shell — the managed binary at ${facts.managedBinary} `
+        + `is unreachable by name. Add ${facts.binDir} to PATH.`,
     };
-    // rc-file editing is the POSIX installer's mechanism; Windows PATH lives
-    // in the registry and is not ours to rewrite from doctor.
+    // Windows PATH lives in the registry, not in rc files.
     return platform === 'win32'
       ? { ...base, fixable: false }
-      : fixableCheck(base, 'path-bindir', { binDir });
+      : fixableCheck(base, 'path-bindir', { binDir: facts.binDir });
   }
 
-  if (realpath(pathBinary) === realpath(managedBinary)) {
+  if (realpath(pathBinary) === realpath(facts.managedBinary)) {
     return { name: 'PATH', status: 'ok', detail: pathBinary, fixable: false };
   }
 
   return {
     name: 'PATH',
     status: 'fail',
-    detail: `\`myco\` on PATH resolves to ${pathBinary}, not the managed binary at ${managedBinary}. `
-      + `Remove the shadowing file, or put ${binDir} earlier on PATH.`,
+    detail: `\`myco\` on PATH resolves to ${pathBinary}, not the managed binary at ${facts.managedBinary}. `
+      + `Remove the shadowing file, or put ${facts.binDir} earlier on PATH.`,
     fixable: false,
   };
 }
 
-/** {@link classifyPathBinary} bound to the live PATH, pin, and install layout. */
+/** {@link classifyPathBinary} bound to the live PATH and install layout. */
 export async function checkPathBinary(): Promise<DoctorCheck | null> {
   try {
-    const { managedBinaryPath, managedBinDir } = await import('../install/managed-binary.js');
-    const { resolveRuntimeCommand } = await import('../daemon/update-checker.js');
-    const mycoHome = resolveMycoHome();
-    const managedBinary = managedBinaryPath(mycoHome, process.platform, process.env.LOCALAPPDATA);
+    const { gatherFacts } = await import('../runtime/binary-resolution.js');
     return classifyPathBinary({
-      managedBinary,
-      managedExists: fs.existsSync(managedBinary),
-      binDir: managedBinDir(mycoHome, process.platform, process.env.LOCALAPPDATA),
+      facts: gatherFacts({ kind: 'machine' }),
       pathBinary: findOnPath('myco', process.platform, process.env.PATH),
-      pin: resolveRuntimeCommand(),
       platform: process.platform,
       realpath: realpathOrSelf,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Machine runtime pin health.
+ *
+ * The pin is an operator override that wins over every other resolution
+ * source; its absence is the normal state and emits no row. A pin naming the
+ * managed binary is redundant and removable; a pin whose target is gone
+ * breaks every consumer, with no fallback behind it.
+ *
+ * Pure classifier; {@link checkRuntimePin} injects the live values.
+ */
+export function classifyRuntimePin(args: {
+  facts: import('../runtime/binary-resolution.js').ResolutionFacts;
+  /** Whether the pin's target is present on disk. */
+  pinTargetExists: boolean;
+}): DoctorCheck | null {
+  const { facts, pinTargetExists } = args;
+  if (!facts.pin || !facts.pinPath) {
+    if (facts.pinRefusal) {
+      return {
+        name: 'Runtime pin',
+        status: 'fail',
+        detail: `${facts.pinRefusal.pinPath} exists but is refused (${facts.pinRefusal.reason}) — `
+          + 'every consumer ignores it. Fix its ownership/permissions (0644) or remove it.',
+        fixable: false,
+      };
+    }
+    return null;
+  }
+
+  if (facts.pin === facts.managedBinary) {
+    return fixableCheck(
+      {
+        name: 'Runtime pin',
+        status: 'warn',
+        detail: `${facts.pinPath} names the managed binary — redundant (resolution reaches it `
+          + 'without the pin) and it suppresses PATH diagnostics. Remove it.',
+      },
+      'runtime-pin-redundant',
+      { pinPath: facts.pinPath, managedBinary: facts.managedBinary },
+    );
+  }
+
+  if (!pinTargetExists) {
+    return {
+      name: 'Runtime pin',
+      status: 'fail',
+      detail: `points at ${facts.pin}, which does not exist — the pin wins over every fallback, `
+        + 'so repoint it or remove it.',
+      fixable: false,
+    };
+  }
+
+  return { name: 'Runtime pin', status: 'ok', detail: `${facts.pin} (override)`, fixable: false };
+}
+
+/** {@link classifyRuntimePin} bound to the live install layout. */
+export async function checkRuntimePin(): Promise<DoctorCheck | null> {
+  try {
+    const { gatherFacts } = await import('../runtime/binary-resolution.js');
+    const facts = gatherFacts({ kind: 'machine' });
+    return classifyRuntimePin({
+      facts,
+      pinTargetExists: facts.pin !== null && fs.existsSync(facts.pin),
     });
   } catch {
     return null;
@@ -1687,11 +1733,12 @@ export async function runChecks(
   const externalMcpCoherence = await checkExternalMcpCoherence();
   if (externalMcpCoherence) checks.push(externalMcpCoherence);
 
-  // Machine-global, and deliberately ahead of the no-config early return: a
-  // shadowed or unreachable `myco` breaks every invocation, including the ones
-  // run outside a project directory.
+  // Machine-global: ahead of the no-config early return so they apply outside
+  // a project directory too.
   const pathBinary = await checkPathBinary();
   if (pathBinary) checks.push(pathBinary);
+  const runtimePin = await checkRuntimePin();
+  if (runtimePin) checks.push(runtimePin);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:
@@ -2101,8 +2148,10 @@ export async function run(
   // re-run the checks so `myco doctor --fix && ...` chains succeed after
   // a successful repair instead of reporting the pre-fix failures.
   let finalChecks = checks;
+  let appliedActions: string[] = [];
   if (shouldFix) {
     const actions = await fix(vaultDir, checks);
+    appliedActions = actions;
     if (actions.length > 0) {
       console.log('');
       for (const action of actions) {
@@ -2122,7 +2171,14 @@ export async function run(
   // Failed checks must be visible to scripts and CI, not just humans
   // reading the table. Warnings stay exit-0 — a healthy machine install
   // run outside a project produces only warn rows.
-  if (finalChecks.some((check) => check.status === 'fail')) {
+  const rcAppendHappened = shouldFix && appliedActions.some((a) => a.includes('to PATH in'));
+  const fatal = finalChecks.filter((check) => check.status === 'fail').filter((check) => {
+    // An rc append is invisible to this process's PATH; the row clears in the
+    // next shell. Everything else must still fail the run.
+    if (rcAppendHappened && check.fixId === 'path-bindir') return false;
+    return true;
+  });
+  if (fatal.length > 0) {
     process.exitCode = 1;
   }
 }

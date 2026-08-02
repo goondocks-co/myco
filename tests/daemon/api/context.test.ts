@@ -148,7 +148,11 @@ describe('createSessionContextHandler', () => {
     // codex declares toolTransport: cli — the directive teaching it to call
     // tools via `myco tool call` on its shell must ride along.
     const codex = await handler(makeReq({ session_id: 'sess-cli-codex', agent: 'codex' }));
-    expect((codex.body as { text: string }).text).toContain('myco tool call');
+    const codexText = (codex.body as { text: string }).text;
+    expect(codexText).toContain('tool call');
+    // The composing process is not guaranteed to be the myco binary, so the
+    // resolver must never name `process.execPath`.
+    expect(codexText).not.toContain(process.execPath);
 
     // claude-code is mcp-transport — no CLI directive. (Different session id so
     // the per-session dedup gate doesn't suppress the second serve.)

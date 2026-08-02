@@ -101,7 +101,7 @@ export interface UpgradeJobDeps {
   daemonPort: number;
   /**
    * Myco binary path used for the direct-spawn restart fallback.
-   * Defaults to `resolveMycoBinary()` (i.e. `process.execPath` when it is the myco binary, else `'myco'`).
+   * Defaults to `resolveMycoBinary()` (`process.execPath` when it is the myco binary, else pin → managed → bare).
    */
   mycoBinary?: string;
   /** Project root for direct-spawn restart cwd. */

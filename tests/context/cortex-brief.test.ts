@@ -291,7 +291,8 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('Myco has not already injected subagent-start Cortex context');
     expect(result.instruction).toContain('myco_cortex({"op":"instructions"})');
     expect(result.instruction).toContain('include the returned instructions verbatim');
-    expect(result.instruction).toContain('myco tool call myco_cortex --json --input \'{"op":"instructions"}\'');
+    // The body teaches tools by NAME; the transport directive owns the shell form.
+    expect(result.instruction).not.toContain('myco tool call');
     expect(result.instruction).toContain('Do not assume the returned instructions have any particular heading or section name');
     expect(result.instruction).toContain('Do not introduce additional tool calls inside recent-workstream prose');
     expect(result.instruction).toContain('never invent extra `myco_cortex` ops from recent context');

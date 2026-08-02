@@ -150,7 +150,12 @@ async function withMcpClient<T>(
     return { ok: false, error: { code: 'daemon_unavailable', message: DAEMON_UNAVAILABLE_MESSAGE } };
   }
 
-  const headers = buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token);
+  const headers = {
+    ...buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token),
+    // Marks this /mcp caller as shell-CLI so tool responses that carry
+    // transport guidance (myco_cortex op:instructions) render the CLI form.
+    'x-myco-tool-transport': 'cli',
+  };
   const transport = new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${info.port}/mcp`),
     { requestInit: { headers } },

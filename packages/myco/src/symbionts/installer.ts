@@ -20,6 +20,7 @@ import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpe
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
+import { resolveBinary } from '../runtime/binary-resolution.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 import { BUNDLED_SKILLS } from './skills.generated.js';
@@ -210,11 +211,8 @@ export function resolveManagedBinaryPath(
   mycoHome: string = resolveMycoHome(),
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const pin = resolveRuntimeCommand();
-  if (pin) return pin.replaceAll('\\', '/');
-  const managed = managedBinaryPath(mycoHome, platform, process.env.LOCALAPPDATA);
-  if (fs.existsSync(managed)) return managed.replaceAll('\\', '/');
-  return process.execPath.replaceAll('\\', '/');
+  const resolved = resolveBinary('self-exec', { kind: 'machine' }, { mycoHome, platform });
+  return resolved.path.replaceAll('\\', '/');
 }
 
 /**
