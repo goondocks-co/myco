@@ -64,17 +64,24 @@ describe('GET /api/host-serve/status', () => {
     else process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
   });
 
-  test('not serving (hostServe: null) -> { serving: false }, no disk read at all', async () => {
-    let loadCalled = false;
+  test('not serving (hostServe: null) -> { serving: false } WITH its reason (contract change, E1 §4.1 rev 6)', async () => {
+    // The old contract pinned "no disk read at all" — but a bare boolean
+    // left the UI with nothing to render while the daemon knew exactly why.
+    // The serving:false branch now re-classifies from current config: one
+    // cheap yaml read per poll, in exchange for `not_serving_reason`
+    // (including 'restart_pending', the enable flow's normal window).
     const handler = createHostServeStatusHandler({
       hostServe: null,
       mycoHome: home,
-      loadMachineConfig: (h) => { loadCalled = true; return loadMachineConfig(h); },
     });
     const res = await handler(req());
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ serving: false });
-    expect(loadCalled).toBe(false);
+    expect(res.body).toEqual({
+      serving: false,
+      not_serving_reason: 'disabled',
+      overlay_listener_bound: null,
+      started_at: null,
+    });
   });
 
   test('serving, designated, no backup yet, no provider, external MCP off -> full shape with defaults', async () => {
@@ -99,6 +106,8 @@ describe('GET /api/host-serve/status', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       serving: true,
+      overlay_listener_bound: null,
+      started_at: null,
       served_grove_id: grove.id,
       served_grove_name: 'Served',
       hosted_project_count: 0,

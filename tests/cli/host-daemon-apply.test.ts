@@ -71,6 +71,7 @@ describe('writeHostServeConfig', () => {
       host_id: null,
       label: null,
       served_grove_id: null,
+      last_served_grove_id: null,
     });
 
     // The written address satisfies Task 2.3's downstream gate...
@@ -105,6 +106,8 @@ describe('writeHostServeConfig', () => {
       host_id: null,
       label: null,
       served_grove_id: null,
+      // No served grove existed, so disable had nothing to remember.
+      last_served_grove_id: null,
     });
     expect(resolveHostServeConfig({ machineConfig: machine, mycoHome: process.env.MYCO_HOME })).toBeNull();
   });

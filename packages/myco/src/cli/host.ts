@@ -46,7 +46,8 @@ const HOST_HELP = `Usage: myco host <command>
 Commands:
   enable --server-url <https://host:8080> [--hostname <name>] [--listen-addr <addr>]
                                           [--user <headscale-user>] [--key-expiration <dur>]
-                                          [--designate-default] [--emit-join]
+                                          [--designate-default | --designate-fresh [--storage-name <name>]]
+                                          [--emit-join]
                                           [--team-key <key>] [--team-key-provider <anthropic|openai|openrouter>]
                                           [--setup-key-expiration <dur>]
   disable
@@ -69,6 +70,13 @@ env name (default: anthropic), mint a one-time setup key, and print the complete
 ready-to-paste "myco join ..." command. On a re-run (this machine is already a
 Team Host), prompts before minting another key — re-emission is deliberate, not
 automatic.
+
+On a machine that already has project storage, the FIRST enable requires an
+explicit designation choice (breaking change in 1.3.1): --designate-fresh
+creates new dedicated team storage (name it with --storage-name; a later
+re-enable adopts the same storage, history intact), --designate-default
+serves this box's default Grove. An existing personal Grove is never
+designated silently.
 
 disable tears down the overlay services and stops serving. status prints the
 current Team Host state.
@@ -111,8 +119,13 @@ export async function runHostCommand(args: string[]): Promise<void> {
       listenAddr: flags.get('listen-addr'),
       headscaleUser: flags.get('user'),
       keyExpiration: flags.get('key-expiration'),
-      groveDesignation: flags.has('designate-default') ? 'default' : undefined,
+      groveDesignation: flags.has('designate-default') ? 'default' : (flags.has('designate-fresh') ? 'fresh' : undefined),
+      storageName: flags.get('storage-name'),
     };
+    if (flags.has('designate-default') && flags.has('designate-fresh')) {
+      console.error('Pass ONE of --designate-default or --designate-fresh, not both.');
+      process.exit(2);
+    }
 
     if (flags.has('emit-join')) {
       const teamAgentKey = flags.get('team-key') ?? process.env[TEAM_AGENT_KEY_SECRET];

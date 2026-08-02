@@ -38,6 +38,8 @@ import { resolveMycoHome } from '../../grove/paths.js';
 import { loadGroveRecord } from '../../grove/registry.js';
 import { countHostedProjects } from '../../host/hosted-projects.js';
 import {
+  classifyHostServeRefusalReadOnly,
+  type HostServeRefusalReason,
   formatOverlayAuthority,
   resolveExternalMcpCoherence,
   resolveServedGroveBackupHealth,
@@ -68,6 +70,16 @@ export interface HostServeStatusRouteDeps {
    *  when no live listener was threaded into these deps, mirroring
    *  `team-config.ts`'s `ExternalMcpStatusBody.bound`. */
   externalMcp?: { listener: Pick<ExternalMcpListenerControl, 'isBound'> };
+  /** Is the overlay listener actually bound? `serving` alone is config-
+   *  derived and survives every bind failure (EADDRINUSE, EMFILE, bad
+   *  address) — E1 §7 gate 4 requires success to mean a BOUND listener.
+   *  `null` when no live server was threaded in (tests, degraded wiring). */
+  overlayListenerBound?: () => boolean;
+  /** Daemon process start stamp (ISO) — the enable job's restart
+   *  discriminator (E1 §4.1 rev 6): Phase 2 must observe a DIFFERENT value
+   *  than its pre-restart snapshot, or the poll can succeed against the
+   *  dying pre-restart process (a 15s cache makes this the common case). */
+  startedAt?: () => string;
   /** Test seam: override the machine-config load (default the real loader). */
   loadMachineConfig?: typeof loadMachineConfig;
   /** Test seam: current-time source, for TTL determinism. */
@@ -77,8 +89,19 @@ export interface HostServeStatusRouteDeps {
   lockNamespace?: PerUserLockNamespace;
 }
 
+/** Why serving is off, as the STATUS ROUTE reports it: the config
+ *  classifier's refusal reasons plus 'restart_pending' — config is valid
+ *  NOW but this process booted before it was written, i.e. the enable
+ *  flow's normal pre-restart window. */
+type NotServingReason = HostServeRefusalReason | 'restart_pending';
+
 interface HostServeStatusBody {
   serving: true;
+  /** Observed listener bind — `serving && overlay_listener_bound` is the
+   *  ONLY honest success condition (gate 4); `null` = not probeable. */
+  overlay_listener_bound: boolean | null;
+  /** Restart discriminator (see {@link HostServeStatusRouteDeps.startedAt}). */
+  started_at: string | null;
   served_grove_id: string | null;
   served_grove_name: string | null;
   /** Registered rows under the served Grove's `hosted/` synthetic-root namespace
@@ -139,9 +162,43 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
 
   let cache: { body: HostServeStatusBody; expiresAt: number; epoch: number } | null = null;
 
+  // The not-serving REASON is cached like the serving body (same TTL, same
+  // epoch): this is the Phase-2 poll's hot path, and the classification
+  // walks the Grove registry when a designation is set. READ-ONLY by
+  // construction — the classifier never resolves the bearer, because bearer
+  // resolution is mint-if-absent and a GET must never persist a machine
+  // secret (diff review C4). The live fields (listener bind, started_at)
+  // are NOT cached — they are the poll's whole point.
+  let notServingReasonCache: { reason: NotServingReason; expiresAt: number; epoch: number } | null = null;
+  const notServingBody = (): Record<string, unknown> => {
+    let reason: NotServingReason;
+    if (notServingReasonCache && now() < notServingReasonCache.expiresAt && notServingReasonCache.epoch === statusCacheEpoch) {
+      reason = notServingReasonCache.reason;
+    } else {
+      try {
+        // `null` = config valid NOW but this process booted before it was
+        // written: the enable flow's normal pre-restart window. (Best-effort
+        // naming — a transient boot failure that has since cleared also
+        // reads as restart_pending; the Phase-2 discriminator, not this
+        // label, is what decides completion.)
+        const refusal = classifyHostServeRefusalReadOnly({ machineConfig: loadConfig(mycoHome), mycoHome });
+        reason = refusal ?? 'restart_pending';
+      } catch {
+        reason = 'disabled';
+      }
+      notServingReasonCache = { reason, expiresAt: now() + ttlMs, epoch: statusCacheEpoch };
+    }
+    return {
+      serving: false,
+      not_serving_reason: reason,
+      overlay_listener_bound: deps.overlayListenerBound ? deps.overlayListenerBound() : null,
+      started_at: deps.startedAt ? deps.startedAt() : null,
+    };
+  };
+
   return async (): Promise<RouteResponse> => {
     const runtime = deps.hostServe;
-    if (!runtime) return { status: 200, body: { serving: false } };
+    if (!runtime) return { status: 200, body: notServingBody() };
 
     if (cache && now() < cache.expiresAt && cache.epoch === statusCacheEpoch) {
       return { status: 200, body: cache.body };
@@ -160,6 +217,8 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
 
     const body: HostServeStatusBody = {
       serving: true,
+      overlay_listener_bound: deps.overlayListenerBound ? deps.overlayListenerBound() : null,
+      started_at: deps.startedAt ? deps.startedAt() : null,
       served_grove_id: servedGroveId,
       served_grove_name: servedGroveName,
       hosted_project_count: servedGroveId ? countHostedProjects(servedGroveId, mycoHome) : 0,

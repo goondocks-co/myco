@@ -5,11 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { hostDisable, hostEnable, HOST_TAILSCALED_LABEL, type HostEnableDeps } from '@myco/team-host/overlay.js';
+import { createHostAdminDisableHandler, createHostAdminEnableHandler } from '@myco/daemon/api/host-admin.js';
+import { ProgressTracker } from '@myco/daemon/api/progress.js';
 import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '@myco/team-host/binaries.js';
 import { HEADSCALE_SERVICE_LABEL } from '@myco/team-host/system-service.js';
 import { serviceLabel } from '@myco/service/labels';
 import { readHostState } from '@myco/team-host/state.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
+import { createGrove, loadGroveRecord } from '@myco/grove/registry.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
 import type { ServiceManager, ServiceStatus, InstallResult, ServiceSpec } from '@myco/service/types.js';
 
@@ -174,7 +177,6 @@ describe('hostEnable / hostDisable orchestration', () => {
       hostTailscaledStateDir: path.join(tmp, 'ts', 'state'),
       waitForSocket: async () => true,
       resolveNodeId: async () => 'node-9',
-      verifyOverlayListener: async () => true,
       logger: () => {},
       ...overrides,
     };
@@ -341,7 +343,7 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(result.errors).toEqual([]);
     // host_serve cleared.
     const machine = loadMachineConfig(process.env.MYCO_HOME);
-    expect(machine.daemon.host_serve).toEqual({
+    expect(machine.daemon.host_serve).toMatchObject({
       enabled: false,
       overlay_address: null,
       overlay_port: null,
@@ -349,6 +351,9 @@ describe('hostEnable / hostDisable orchestration', () => {
       label: null,
       served_grove_id: null,
     });
+    // Disable REMEMBERS the outgoing storage so re-enable adopts it instead
+    // of orphaning the team's history (E1 §4.1 rev 5).
+    expect(machine.daemon.host_serve.last_served_grove_id).toMatch(/^grove_/);
     // Both services torn down — but NEVER via the vendor's own uninstaller,
     // which is byte-identical to removing the user's genuine Tailscale.
     expect(calls.some((c) => c.join(' ').includes('uninstall-system-daemon'))).toBe(false);
@@ -614,6 +619,155 @@ describe('hostEnable / hostDisable orchestration', () => {
     });
     await expect(hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d))
       .rejects.toThrow(/did not bind its admin socket/);
+  });
+
+  it('FIRST designation on a machine with existing Groves requires an explicit choice (rev 6 breaking change)', async () => {
+    createGrove('Personal', process.env.MYCO_HOME!);
+    const { deps: d } = deps();
+    await expect(hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d))
+      .rejects.toThrow(/explicit choice/);
+    // The refusal is a PREFLIGHT — nothing was provisioned or installed.
+    expect(d.headscaleServiceManager && (await d.headscaleServiceManager.isInstalled(HEADSCALE_SERVICE_LABEL))).toBe(false);
+  });
+
+  it('fresh designation names the team storage; a colliding name refuses BEFORE provisioning', async () => {
+    createGrove('Taken', process.env.MYCO_HOME!);
+    const bad = deps();
+    await expect(hostEnable(
+      { serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh', storageName: 'Taken' },
+      bad.deps,
+    )).rejects.toThrow(/already names a Grove/);
+
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const { deps: d } = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    const result = await hostEnable(
+      { serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh', storageName: 'Acme Team' },
+      d,
+    );
+    expect(loadGroveRecord(result.servedGroveId, process.env.MYCO_HOME!)?.name).toBe('Acme Team');
+  });
+
+  it('disable → re-enable ADOPTS the previously-served storage — same Grove, history intact, no collision throw', async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    const enabled = await hostEnable(
+      { serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh', storageName: 'Acme Team' },
+      first.deps,
+    );
+
+    const dis = deps({ serviceManager: first.deps.serviceManager });
+    expect((await hostDisable(dis.deps)).cleared).toBe(true);
+
+    // Re-enable with the SAME name — the old behavior orphaned the first
+    // Grove and threw `Grove already exists` here (E1 review RC6).
+    const again = deps({ serviceManager: first.deps.serviceManager, resolveOverlayIp: async () => '100.64.0.5' });
+    const reEnabled = await hostEnable(
+      { serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh', storageName: 'Acme Team' },
+      again.deps,
+    );
+    expect(reEnabled.servedGroveId).toBe(enabled.servedGroveId);
+    // Consumed: the breadcrumb does not linger once re-adopted.
+    expect(loadMachineConfig(process.env.MYCO_HOME).daemon.host_serve.last_served_grove_id).toBeNull();
+  });
+
+  it('after disable, a DIFFERENT --storage-name creates NEW storage and KEEPS the old Grove (diff review C5)', async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    const enabled = await hostEnable(
+      { serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh', storageName: 'First Team' },
+      first.deps,
+    );
+    await hostDisable(deps({ serviceManager: first.deps.serviceManager }).deps);
+
+    const logs: string[] = [];
+    const again = deps({
+      serviceManager: first.deps.serviceManager,
+      resolveOverlayIp: async () => '100.64.0.5',
+      logger: (m: string) => logs.push(m),
+    });
+    const second = await hostEnable(
+      { serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh', storageName: 'Second Team' },
+      again.deps,
+    );
+    // New storage under the new name — the escape hatch out of adoption.
+    expect(second.servedGroveId).not.toBe(enabled.servedGroveId);
+    expect(loadGroveRecord(second.servedGroveId, process.env.MYCO_HOME!)?.name).toBe('Second Team');
+    // The old team storage is KEPT and the skip was stated out loud.
+    expect(loadGroveRecord(enabled.servedGroveId, process.env.MYCO_HOME!)?.name).toBe('First Team');
+    expect(logs.some((m) => /KEPT but not adopted/.test(m))).toBe(true);
+  });
+
+  it('a re-run with a designation on record IGNORES --storage-name with a note, never silently', async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const logs: string[] = [];
+    const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    await hostEnable(
+      { serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh', storageName: 'Acme Team' },
+      first.deps,
+    );
+    const rerun = deps({
+      serviceManager: first.deps.serviceManager,
+      resolveOverlayIp: async () => '100.64.0.5',
+      logger: (m: string) => logs.push(m),
+    });
+    await hostEnable(
+      { serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh', storageName: 'Renamed Team' },
+      rerun.deps,
+    );
+    expect(logs.some((m) => /storage-name .*ignored/i.test(m) || /"Renamed Team" ignored/.test(m))).toBe(true);
+  });
+
+  it('INTEGRATION: the host-admin handlers drive the REAL orchestration end to end (diff review B1 gate)', async () => {
+    // The gate that would have caught BLOCKER 1: the route-level tests stub
+    // the orchestration, so an injected dep that silently breaks
+    // hostEnable/hostDisable internals (the deferring-ServiceManager bug —
+    // tailscaled never supervised, disable aborted at its own prove-gone
+    // gate) is invisible to them. This runs the REAL functions through the
+    // handlers with the same honest fixture the CLI tests use.
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const fixture = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    const tracker = new ProgressTracker();
+    let restartScheduled = 0;
+    const routeDeps = {
+      tracker,
+      mycoHome: process.env.MYCO_HOME!,
+      platform: 'darwin' as const,
+      startedAt: () => 'T0',
+      scheduleRestart: () => { restartScheduled += 1; },
+      hostEnableDeps: fixture.deps,
+    };
+
+    const res = await createHostAdminEnableHandler(routeDeps)(
+      { body: { server_url: 'https://host.example:8080', label: 'testhost', storage_name: 'Route Team' }, params: {}, query: {} } as never,
+    );
+    expect(res.status).toBe(202);
+    const token = (res.body as { token: string }).token;
+    // The real orchestration runs async — wait for the terminal state.
+    for (let tries = 0; tries < 100 && tracker.get(token)?.status === 'running'; tries += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const entry = tracker.get(token)!;
+    expect(entry.status).toBe('completed');
+    // The REAL enable supervised tailscaled + headscale through the fixture
+    // manager — the defect made this list empty and the job fail.
+    expect(fixture.installs.some((sp) => sp.label === HOST_TAILSCALED_LABEL)).toBe(true);
+    expect(fixture.installs.some((sp) => sp.label === HEADSCALE_SERVICE_LABEL)).toBe(true);
+    expect(restartScheduled).toBe(1);
+    expect(loadMachineConfig(process.env.MYCO_HOME).daemon.host_serve.enabled).toBe(true);
+    expect(loadGroveRecord(readHostState() === null ? '' : loadMachineConfig(process.env.MYCO_HOME).daemon.host_serve.served_grove_id!, process.env.MYCO_HOME!)?.name).toBe('Route Team');
+
+    // Disable through the route: the REAL teardown, §15 gates included.
+    const disRes = await createHostAdminDisableHandler(routeDeps)({ body: {}, params: {}, query: {} } as never);
+    const disToken = (disRes.body as { token: string }).token;
+    for (let tries = 0; tries < 100 && tracker.get(disToken)?.status === 'running'; tries += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const disEntry = tracker.get(disToken)!;
+    expect(disEntry.status).toBe('completed');
+    expect(fixture.uninstalls).toContain(HOST_TAILSCALED_LABEL);
+    expect(fixture.uninstalls).toContain(HEADSCALE_SERVICE_LABEL);
+    expect(restartScheduled).toBe(2);
+    expect(loadMachineConfig(process.env.MYCO_HOME).daemon.host_serve.enabled).toBe(false);
   });
 
   it('disable is safe when never enabled (idempotent teardown)', async () => {

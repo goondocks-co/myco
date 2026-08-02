@@ -2074,7 +2074,50 @@ export async function main(): Promise<void> {
   // `localhost-only`, unlike the team-write routes above — reuses the SAME
   // boot-resolved `hostServe` runtime + external MCP listener, never
   // re-parsed per request.
-  registerHostServeStatusRoute(server, { hostServe, mycoHome, externalMcp: { listener: externalMcpListener } });
+  // Team Host administration (E1 §4): enable/disable as progress-tracked
+  // in-daemon jobs + explicit join-key minting. The restart a job requests
+  // is DEFERRED through the detached-child pattern and scheduled only after
+  // the tracker's terminal state is written (the tracker dies with us).
+  {
+    const { registerHostAdminRoutes } = await import('./api/host-admin.js');
+    const { scheduleDetachedSelfRestart, resolveRestartServiceLabel } = await import('./api/restart.js');
+    const { getServiceManager: getMgr } = await import('../service/manager.js');
+    registerHostAdminRoutes(server, {
+      tracker: progressTracker,
+      mycoHome,
+      startedAt: () => server.startedAtIso(),
+      scheduleRestart: ({ token }) => {
+        // The same guard POST /api/restart enforces (diff review C2): the
+        // host-admin job itself is already terminal by contract, so any
+        // active operation here is a DIFFERENT job (backup, agent run,
+        // upgrade) that a restart would SIGTERM mid-flight. Defer, say so
+        // in the step log, and let the operator restart when it settles.
+        if (progressTracker.hasActiveOperations()) {
+          progressTracker.appendStep(token,
+            'Daemon restart DEFERRED: other operations are in progress. Restart when they finish (`myco restart`) — host-serve config is written and a restart applies it.');
+          return;
+        }
+        void resolveRestartServiceLabel(getMgr(), mycoHome)
+          .then((label) => scheduleDetachedSelfRestart({ serviceManagedLabel: label, vaultDir: bootstrapVaultDir }))
+          .catch((err: unknown) => {
+            logger.warn(LOG_KINDS.HOST_SERVE, 'host-admin restart scheduling failed', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+      },
+    });
+  }
+
+  registerHostServeStatusRoute(server, {
+    hostServe,
+    mycoHome,
+    externalMcp: { listener: externalMcpListener },
+    // Live feeds (E1 §4.1 rev 6): the observed listener bind (gate 4 — the
+    // config-derived `serving` flag survives every bind failure) and the
+    // process start stamp (the enable job's restart discriminator).
+    overlayListenerBound: () => server.isOverlayListenerBound(),
+    startedAt: () => server.startedAtIso(),
+  });
 
   // Machine-tier config (~/.myco/config.yaml) — port, log policy, update
   // channel. One daemon per machine, so the route is global (no scope

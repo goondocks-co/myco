@@ -23,7 +23,6 @@ import { updateTierConfigRaw } from '@myco/config/loader.js';
 import { isOverlayRangeAddress, isValidOverlayPort } from '@myco/daemon/host-serve.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { getServiceManager } from '@myco/service/manager.js';
-import { serviceLabel } from '@myco/service/labels.js';
 import type { ServiceManager } from '@myco/service/types.js';
 
 export interface HostServeApply {
@@ -67,6 +66,16 @@ export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = r
     if (daemon !== undefined && (daemon === null || typeof daemon !== 'object' || Array.isArray(daemon))) {
       throw new Error('daemon must be a mapping');
     }
+    // On DISABLE, remember the outgoing served grove: a later fresh-mode
+    // enable adopts the team's existing storage instead of orphaning it
+    // (with its whole attached history) and then crashing on the name
+    // collision. Consumed (nulled) by the next enable.
+    const prior = (daemon as Record<string, unknown> | undefined)?.host_serve as
+      | Record<string, unknown>
+      | undefined;
+    const lastServed = apply.enabled
+      ? null
+      : ((typeof prior?.served_grove_id === 'string' && prior.served_grove_id) || (typeof prior?.last_served_grove_id === 'string' && prior.last_served_grove_id) || null);
     raw.daemon = {
       ...(daemon as Record<string, unknown> | undefined),
       host_serve: {
@@ -76,6 +85,7 @@ export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = r
         host_id: apply.enabled ? (apply.hostId ?? null) : null,
         label: apply.enabled ? (apply.label ?? null) : null,
         served_grove_id: apply.enabled ? (apply.servedGroveId ?? null) : null,
+        last_served_grove_id: lastServed,
       },
     };
   }, { mycoHome });
@@ -96,16 +106,33 @@ export async function restartDaemonForHostServe(
   mycoHome: string = resolveMycoHome(),
   manager: ServiceManager = getServiceManager(),
 ): Promise<DaemonRestartResult> {
-  const label = serviceLabel(mycoHome);
   if (!manager.supported) {
     return { restarted: false, detail: `Restart the Myco daemon manually to apply host-serve (${manager.platformName}).` };
   }
-  if (!(await manager.isInstalled(label))) {
+  // OWNING-domain probe (spec R-B1, adopted from daemon/api/restart.ts): a
+  // boot-scoped daemon has no login unit, and a bare `isInstalled` against
+  // the login manager reported `restarted:false` on exactly the always-on
+  // host this release recommends — telling the operator to restart by hand
+  // after every enable (E1 review, RC4/G5).
+  const { findInstalledServiceLabel } = await import('@myco/daemon/api/restart.js');
+  const found = await findInstalledServiceLabel(manager, mycoHome);
+  if (!found) {
     return {
       restarted: false,
       detail: 'The Myco daemon is not installed as a managed service; restart it manually (`myco restart`) to apply host-serve.',
     };
   }
-  await manager.restart(label);
-  return { restarted: true, detail: `Restarted the Myco daemon service (${label}) to apply host-serve.` };
+  try {
+    await found.manager.restart(found.label);
+  } catch (err) {
+    // Fourth failure state (E1 §4.1 rev 6): durable state is already
+    // written by the caller's reorder, so a failed restart is NOT a failed
+    // enable — it is "state written, restart failed, re-run converges".
+    return {
+      restarted: false,
+      detail: `Daemon restart failed (${err instanceof Error ? err.message : String(err)}). `
+        + 'Host-serve config is written; restart the daemon (`myco restart`) or re-run `myco host enable` to converge.',
+    };
+  }
+  return { restarted: true, detail: `Restarted the Myco daemon service (${found.label}) to apply host-serve.` };
 }

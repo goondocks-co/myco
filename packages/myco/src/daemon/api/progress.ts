@@ -15,6 +15,11 @@ export interface ProgressEntry {
   status: ProgressStatus;
   percent?: number;
   message?: string;
+  /** Append-only step log (E1 §4.1): `update()` OVERWRITES `message`, so a
+   *  multi-step job (host enable/disable) records its narrative here — the
+   *  UI renders the full log, and the terminal step is written BEFORE the
+   *  daemon restart so it survives to be read. */
+  steps?: string[];
   created: number;
   updated: number;
 }
@@ -72,6 +77,16 @@ export class ProgressTracker {
     if (data.percent !== undefined) entry.percent = data.percent;
     if (data.message !== undefined) entry.message = data.message;
     if (data.status !== undefined) entry.status = data.status;
+    entry.updated = Date.now();
+  }
+
+  /** Append one line to the entry's step log (and mirror it to `message`
+   *  as the "current" line). Append-only by design — see {@link ProgressEntry.steps}. */
+  appendStep(token: string, step: string): void {
+    const entry = this.entries.get(token);
+    if (!entry) return;
+    (entry.steps ??= []).push(step);
+    entry.message = step;
     entry.updated = Date.now();
   }
 

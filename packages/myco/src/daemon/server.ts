@@ -384,6 +384,21 @@ export class DaemonServer {
    * when the snapshot was taken, so the file's `started` is stable
    * across re-assertions.
    */
+  /** Is the overlay (host-serve) listener actually BOUND right now? The
+   *  status route's `serving` flag alone is config-derived and survives
+   *  every bind failure — this is the observed half of E1 §7 gate 4. */
+  isOverlayListenerBound(): boolean {
+    return this.overlayServer !== null;
+  }
+
+  /** Process start stamp (ISO) — the status route's restart discriminator:
+   *  an enable job snapshots it pre-restart and Phase 2 requires the
+   *  observed value to DIFFER, otherwise the poll can succeed against the
+   *  dying pre-restart process (E1 §4.1 rev 6). */
+  startedAtIso(): string {
+    return this.startedAt;
+  }
+
   currentDaemonState(): DaemonState {
     return {
       pid: process.pid,

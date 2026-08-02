@@ -568,6 +568,14 @@ const HostServeSchema = z.object({
    * an enforced invariant.
    */
   served_grove_id: z.string().nullable().default(null),
+  /**
+   * The Grove this host served BEFORE the most recent `host disable` —
+   * written by the disable path so a later `host enable` (fresh mode)
+   * ADOPTS the team's existing storage instead of orphaning it and then
+   * throwing on the name collision (E1 §4.1 rev 5; Chris: "this state
+   * should not be possible"). Consumed (nulled) by the next enable.
+   */
+  last_served_grove_id: z.string().nullable().default(null),
 }).strict();
 
 /**
