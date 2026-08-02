@@ -28,7 +28,8 @@ export const UPDATE_EVENTS_PATH = path.join(MYCO_GLOBAL_DIR, 'update-events.json
 /**
  * Filename for the machine-scope runtime command pin (lives in `~/.myco/`).
  *
- * Single source of truth for which `myco` binary the launcher shims exec.
+ * An operator override: when present and trusted it redirects every
+ * launcher shim ahead of the managed binary. Absence is the normal state.
  * Still load-bearing post native-installer: convergence, `runtime-redirect.cjs`,
  * the launch preamble, and dev dogfood pins all read/write it. (The retired
  * managed-runtime DIR/TMP constants were deleted with the native installer; the
