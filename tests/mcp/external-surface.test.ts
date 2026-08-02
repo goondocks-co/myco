@@ -576,16 +576,34 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     expect(listener.isBound).toBe(false);
   });
 
-  test('(d) serves /mcp only — /health and /api/* are 404, indistinguishable from any other unregistered path', async () => {
+  test('(d) serves /mcp and the Funnel-stripped root only — /health and /api/* are 404, indistinguishable from any other unregistered path', async () => {
     listener = newListener();
     const bound = await listener.bind({ kind: 'loopback', port: 0 });
     expect(bound.ok).toBe(true);
     if (!bound.ok) return;
     const base = `http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}`;
 
-    for (const p of ['/health', '/api/version', '/api/team/config', '/', '/mcp-not-quite']) {
+    for (const p of ['/health', '/api/version', '/api/team/config', '/mcp-not-quite']) {
       const res = await fetch(`${base}${p}`, { headers: { authorization: `Bearer ${TOKEN}` } });
       expect(res.status, `${p} should be 404`).toBe(404);
+    }
+  });
+
+  test('(d2) the Funnel-stripped root path is the same MCP endpoint (mount prefix removed at the edge)', async () => {
+    listener = newListener();
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
+    if (!bound.ok) throw new Error('bind failed');
+    const base = `http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}`;
+
+    for (const p of ['/', '/mcp']) {
+      const res = await fetch(`${base}${p}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+      expect(res.status, `${p} should serve MCP`).toBe(200);
+      const body = await res.text();
+      expect(body).toContain('myco_search');
     }
   });
 
