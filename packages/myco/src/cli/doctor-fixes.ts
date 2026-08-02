@@ -14,8 +14,34 @@ import path from 'node:path';
 import type { DaemonStateAuthority } from '../daemon/daemon-state-authority.js';
 import type { DoctorCheck } from './doctor.js';
 
-/** Shell rc files the POSIX installer appends its PATH export to, in its order. */
-const RC_FILENAMES = ['.zshrc', '.bashrc', '.profile'] as const;
+/**
+ * Shell rc files the POSIX installer appends its PATH export to, in its order.
+ *
+ * `.zshenv`, NOT `.zshrc`: zsh reads `.zshenv` for EVERY shell and `.zshrc`
+ * only for interactive ones, so a `.zshrc` entry leaves `myco` unresolvable in
+ * the non-interactive shells coding agents spawn. `.zshenv` is `create: true`
+ * because it is the only zsh file that reaches those shells and is absent by
+ * default; the rest are appended only when they already exist, so doctor never
+ * invents a shell config the user does not use.
+ */
+const RC_TARGETS = [
+  { name: '.zshenv', create: true },
+  { name: '.bashrc', create: false },
+  { name: '.profile', create: false },
+] as const;
+
+/** A PATH prepend that repeated sourcing cannot duplicate. */
+function pathExportBlock(binDir: string): string {
+  return [
+    '',
+    '# Added by Myco (myco doctor --fix).',
+    'case ":$PATH:" in',
+    `  *":${binDir}:"*) ;;`,
+    `  *) export PATH="${binDir}:$PATH" ;;`,
+    'esac',
+    '',
+  ].join('\n');
+}
 
 export type DoctorFixerId =
   | 'daemon-stale'
@@ -24,7 +50,8 @@ export type DoctorFixerId =
   | 'migration-retry'
   | 'service-reinstall'
   | 'symbiont-global-refresh'
-  | 'path-bindir';
+  | 'path-bindir'
+  | 'runtime-pin';
 
 export interface DoctorFixContext {
   vaultDir: string;
@@ -206,15 +233,16 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
     for (const binDir of binDirs) {
       let appended = 0;
       let alreadyPresent = 0;
-      for (const rcName of RC_FILENAMES) {
-        const rcPath = path.join(os.homedir(), rcName);
+      for (const target of RC_TARGETS) {
+        const rcPath = path.join(os.homedir(), target.name);
         try {
-          if (!fs.existsSync(rcPath)) continue;
-          if (fs.readFileSync(rcPath, 'utf8').includes(binDir)) {
+          const exists = fs.existsSync(rcPath);
+          if (!exists && !target.create) continue;
+          if (exists && fs.readFileSync(rcPath, 'utf8').includes(binDir)) {
             alreadyPresent += 1;
             continue;
           }
-          fs.appendFileSync(rcPath, `\nexport PATH="${binDir}:$PATH"\n`);
+          fs.appendFileSync(rcPath, pathExportBlock(binDir));
           actions.push(`Added ${binDir} to PATH in ${rcPath}`);
           appended += 1;
         } catch (err) {
@@ -227,6 +255,31 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
         actions.push(`${binDir} is already exported in a shell rc file — restart your shell to pick it up`);
       } else {
         actions.push(`No shell rc file found to update — add ${binDir} to PATH manually`);
+      }
+    }
+    return actions;
+  },
+
+  // Write the machine runtime pin. This is what makes `myco` resolvable
+  // WITHOUT PATH for the hook guard, the Pi extension's tool dispatch, and the
+  // npm shim's redirect — the consumers that GUI-launched agents (minimal
+  // launchd PATH) and non-interactive shells would otherwise fail.
+  'runtime-pin': async (_ctx, matched) => {
+    const actions: string[] = [];
+    for (const check of matched) {
+      const pinPath = check.fixData?.pinPath;
+      const managedBinary = check.fixData?.managedBinary;
+      if (typeof pinPath !== 'string' || typeof managedBinary !== 'string') continue;
+      try {
+        fs.mkdirSync(path.dirname(pinPath), { recursive: true });
+        fs.writeFileSync(pinPath, `${managedBinary}\n`, { mode: 0o644 });
+        // The readers refuse a group/other-writable pin (it is exec'd as the
+        // user's `myco`), and writeFileSync's mode is masked by umask — so set
+        // the mode explicitly rather than trusting the create flags.
+        fs.chmodSync(pinPath, 0o644);
+        actions.push(`Wrote runtime pin ${pinPath} -> ${managedBinary}`);
+      } catch (err) {
+        actions.push(`Could not write ${pinPath}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return actions;

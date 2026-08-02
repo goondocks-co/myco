@@ -218,6 +218,32 @@ export function resolveManagedBinaryPath(
 }
 
 /**
+ * Resolve the `myco` invocation to embed in INSTRUCTION TEXT handed to an agent
+ * (the `toolTransport: cli` directive), as opposed to a command Myco itself
+ * writes into a config file.
+ *
+ * Same first two steps as {@link resolveManagedBinaryPath}, and deliberately a
+ * DIFFERENT last resort. `process.execPath` is right when the running process
+ * is itself the myco binary — true for the installer paths — but the process
+ * composing instruction text carries no such guarantee. Under the test runner
+ * it is `bun`, which produced a directive telling the agent to run
+ * `…/bun.exe tool call …`: a command that cannot work, stated with total
+ * confidence. When neither the pin nor the managed binary is present, the bare
+ * name is the honest answer — it may not resolve on the agent's PATH, but it is
+ * at least the right command, and the `Runtime pin` doctor row names the gap.
+ */
+export function resolveMycoInvocationForInstructions(
+  mycoHome: string = resolveMycoHome(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const pin = resolveRuntimeCommand();
+  if (pin) return pin.replaceAll('\\', '/');
+  const managed = managedBinaryPath(mycoHome, platform, process.env.LOCALAPPDATA);
+  if (fs.existsSync(managed)) return managed.replaceAll('\\', '/');
+  return platform === 'win32' ? 'myco.exe' : 'myco';
+}
+
+/**
  * Refuse to emit a hook command whose binary path contains whitespace.
  * Quoting would survive shell symbionts but break direct-argv symbionts
  * (cursor / windsurf / pi). Failing loudly at install time beats silent

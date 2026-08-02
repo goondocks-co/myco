@@ -27,6 +27,7 @@ import { shouldInjectSessionStartDigest } from '@myco/context/session-start-dige
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import { symbiontHasCapability, symbiontToolTransport } from '@myco/symbionts/capabilities.js';
+import { resolveMycoInvocationForInstructions } from '@myco/symbionts/installer.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
 import { resolveTenantConfig } from '../request-config.js';
 import { recordInjectionAndShouldSuppress, getSessionInjectedSporeIds } from '../injection-records.js';
@@ -144,7 +145,13 @@ export function createSessionContextHandler(deps: ContextDeps) {
       }
 
       const cliToolTransport = symbiontToolTransport(agent) === 'cli';
-      const composed = composeSessionStartContext(config, cortexContent, requestScope, { cliToolTransport });
+      const composed = composeSessionStartContext(config, cortexContent, requestScope, {
+        cliToolTransport,
+        // Resolved per-host (pin → managed binary → bare name) so the CLI
+        // directive names a binary that exists here, rather than a bare `myco`
+        // the agent's non-interactive shell cannot resolve.
+        mycoBinary: cliToolTransport ? resolveMycoInvocationForInstructions() : undefined,
+      });
       const textParts: string[] = composed.parts.map((p) => p.text);
       const sourceParts: string[] = composed.parts.map((p) =>
         p.kind === 'cortex' ? 'cortex' : `digest:${p.tier ?? config.cortex.digest.tier}`,
@@ -289,8 +296,10 @@ export function createSubagentContextHandler(deps: ContextDeps) {
         ? { kind: 'project', id: requestProjectId }
         : { kind: 'global' };
       const snapshot = getCortexInstructionsSnapshot(config, requestScope);
+      const subagentCliTransport = symbiontToolTransport(agent) === 'cli';
       const composed = composeCortexInstructionInjection(snapshot.content, 'subagent-start', {
-        cliToolTransport: symbiontToolTransport(agent) === 'cli',
+        cliToolTransport: subagentCliTransport,
+        mycoBinary: subagentCliTransport ? resolveMycoInvocationForInstructions() : undefined,
       });
       if (!composed) {
         logger.info(LOG_KINDS.CONTEXT_SESSION, 'Subagent context skipped — no stored Cortex instructions', {

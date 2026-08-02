@@ -118,33 +118,49 @@ describe('path-bindir fixer', () => {
 
   const ctx = {} as DoctorFixContext;
 
-  it('appends the PATH export only to rc files that already exist', async () => {
+  it('writes .zshenv — not .zshrc — so non-interactive shells resolve myco', async () => {
+    // The whole point: zsh reads .zshenv for EVERY shell, .zshrc only for
+    // interactive ones. Agents spawn non-interactive shells.
     const home = sandboxHome(['.zshrc', '.profile']);
 
     await DOCTOR_FIXERS['path-bindir'](ctx, matched);
 
-    expect(fs.readFileSync(path.join(home, '.zshrc'), 'utf8')).toContain(`export PATH="${BIN_DIR}:$PATH"`);
+    expect(fs.readFileSync(path.join(home, '.zshenv'), 'utf8')).toContain(`export PATH="${BIN_DIR}:$PATH"`);
     expect(fs.readFileSync(path.join(home, '.profile'), 'utf8')).toContain(`export PATH="${BIN_DIR}:$PATH"`);
-    // Never create an rc file the user's shell may not read.
+    // .zshrc must be left alone — writing it is what created the illusion of a fix.
+    expect(fs.readFileSync(path.join(home, '.zshrc'), 'utf8')).toBe('# existing\n');
+    // Never create a config for a shell the user may not use.
     expect(fs.existsSync(path.join(home, '.bashrc'))).toBe(false);
   });
 
-  it('is idempotent — a second run appends nothing', async () => {
-    const home = sandboxHome(['.zshrc']);
+  it('creates .zshenv when absent — it is the only zsh file reaching non-interactive shells', async () => {
+    const home = sandboxHome([]);
 
-    await DOCTOR_FIXERS['path-bindir'](ctx, matched);
-    const afterFirst = fs.readFileSync(path.join(home, '.zshrc'), 'utf8');
     const actions = await DOCTOR_FIXERS['path-bindir'](ctx, matched);
 
-    expect(fs.readFileSync(path.join(home, '.zshrc'), 'utf8')).toBe(afterFirst);
+    expect(fs.existsSync(path.join(home, '.zshenv'))).toBe(true);
+    expect(actions.join(' ')).toContain('.zshenv');
+  });
+
+  it('is idempotent — a second run appends nothing', async () => {
+    const home = sandboxHome(['.profile']);
+
+    await DOCTOR_FIXERS['path-bindir'](ctx, matched);
+    const afterFirst = fs.readFileSync(path.join(home, '.zshenv'), 'utf8');
+    const actions = await DOCTOR_FIXERS['path-bindir'](ctx, matched);
+
+    expect(fs.readFileSync(path.join(home, '.zshenv'), 'utf8')).toBe(afterFirst);
     expect(actions.join(' ')).toContain('already exported');
   });
 
-  it('reports plainly when there is no rc file to update', async () => {
-    sandboxHome([]);
+  it('emits a guarded block so repeated sourcing cannot duplicate the entry', async () => {
+    // .zshenv runs for every zsh, including nested ones — an unguarded
+    // `export PATH=` would grow the variable without bound.
+    const home = sandboxHome([]);
 
-    const actions = await DOCTOR_FIXERS['path-bindir'](ctx, matched);
+    await DOCTOR_FIXERS['path-bindir'](ctx, matched);
 
-    expect(actions.join(' ')).toContain('add /home/u/.myco/bin to PATH manually');
+    const written = fs.readFileSync(path.join(home, '.zshenv'), 'utf8');
+    expect(written).toContain(`*":${BIN_DIR}:"*) ;;`);
   });
 });

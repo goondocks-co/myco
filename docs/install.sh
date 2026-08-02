@@ -324,19 +324,66 @@ printf '{\n  "channel": "%s",\n  "source": "curl",\n  "bin": "%s/myco"\n}\n' \
   "$CHANNEL" "$BIN_DIR" > "$HOME/.myco/install.json"
 
 # ---------------------------------------------------------------------------
+# Machine runtime pin
+#
+# `~/.myco/runtime.command` holds the absolute managed-binary path. It is the
+# PATH-INDEPENDENT resolution mechanism already honored by the hook guard
+# (`myco-run.cjs`), the Pi extension's tool dispatch, and the npm shim's
+# redirect. Without it every one of those falls back to a bare `myco` on PATH —
+# which GUI-launched agents (minimal launchd PATH) and non-interactive shells
+# (how coding agents spawn commands) do not have. The npm postinstall has
+# always written this pin; the native installer did not, so curl-installed
+# machines had no PATH-independent path at all.
+#
+# A pin pointing elsewhere is a deliberate dev/beta override and is preserved,
+# matching the npm postinstall's reconcile.
+# ---------------------------------------------------------------------------
+PIN_FILE="$HOME/.myco/runtime.command"
+EXISTING_PIN=""
+if [ -f "$PIN_FILE" ]; then
+  EXISTING_PIN="$(tr -d '\n' < "$PIN_FILE" 2>/dev/null || true)"
+fi
+if [ -z "$EXISTING_PIN" ] || [ "$EXISTING_PIN" = "${BIN_DIR}/myco" ]; then
+  printf '%s\n' "${BIN_DIR}/myco" > "$PIN_FILE"
+  # Readers refuse a group/other-writable pin: it is exec'd as the user's
+  # `myco`, so a writable pin would let a local user redirect every invocation.
+  chmod 644 "$PIN_FILE"
+else
+  warn "Preserved existing runtime pin: ${EXISTING_PIN}"
+fi
+
+# ---------------------------------------------------------------------------
 # PATH — idempotent rc edits
+#
+# zsh reads `.zshenv` for EVERY shell; `.zshrc` only for INTERACTIVE ones. The
+# installer used to write `.zshrc`, so a human's terminal found `myco` while
+# anything spawning `zsh -c` / `sh -c` did not. bash has no true equivalent, so
+# `.bashrc`/`.profile` stay the conventional pair — the runtime pin above is
+# what covers the cases they miss.
+#
+# `.zshenv` is CREATED when absent (it is the only zsh file that reaches
+# non-interactive shells); the others are appended only when they exist, so the
+# installer never invents a shell config the user does not use.
 # ---------------------------------------------------------------------------
 case ":${PATH}:" in
   *":${BIN_DIR}:"*)
     :  # already on PATH
     ;;
   *)
-    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
-      if [ -f "$rc" ] && ! grep -qF "$BIN_DIR" "$rc"; then
-        # SC2016: $PATH must NOT expand here — it belongs in the rc file verbatim
-        # shellcheck disable=SC2016
-        printf '\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$rc"
-      fi
+    for rc in "$HOME/.zshenv" "$HOME/.bashrc" "$HOME/.profile"; do
+      if [ ! -f "$rc" ] && [ "$rc" != "$HOME/.zshenv" ]; then continue; fi
+      if [ -f "$rc" ] && grep -qF "$BIN_DIR" "$rc"; then continue; fi
+      # SC2016: $PATH must NOT expand here — it belongs in the rc file verbatim.
+      # The guard makes repeated sourcing (.zshenv runs for every zsh, including
+      # nested ones) unable to duplicate the entry.
+      # shellcheck disable=SC2016
+      {
+        printf '\n# Added by the Myco installer.\n'
+        printf 'case ":$PATH:" in\n'
+        printf '  *":%s:"*) ;;\n' "$BIN_DIR"
+        printf '  *) export PATH="%s:$PATH" ;;\n' "$BIN_DIR"
+        printf 'esac\n'
+      } >> "$rc"
     done
     warn "Added ${BIN_DIR} to PATH in shell rc files."
     warn "Restart your shell or run: export PATH=\"${BIN_DIR}:\$PATH\""

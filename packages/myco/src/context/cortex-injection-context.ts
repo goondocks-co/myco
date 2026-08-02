@@ -13,13 +13,32 @@ export const SUBAGENT_CORTEX_GUIDANCE = [
   'Apply them to your assigned task, and defer broad orchestration decisions back to the parent agent.',
 ].join('\n');
 
-export const CLI_TOOL_TRANSPORT_DIRECTIVE = [
-  '**Myco tool transport (this host):** No Myco MCP server is installed here.',
-  'Call every Myco tool — including any `myco_*` tool named below or in any skill —',
-  "via your shell: `myco tool call <tool> --json --input '<json-args>'`,",
-  'run from the project working directory (this resolves project tenancy automatically).',
-  'Example: `myco tool call myco_cortex --json --input \'{"op":"instructions"}\'`.',
-].join('\n');
+/**
+ * Render the CLI transport directive against a concrete binary invocation.
+ *
+ * The directive used to hardcode a bare `myco`, which is only resolvable in
+ * shells that read the user's interactive rc files. Coding agents spawn
+ * NON-interactive shells (`zsh -c`, `sh -c`) and GUI-launched agents inherit a
+ * minimal launchd PATH, so for exactly the hosts this directive targets — the
+ * `toolTransport: cli` symbionts, whose ONLY tool path this is — the command
+ * we handed them did not run. Callers pass the resolved binary so the
+ * instruction is true on the host it is injected into.
+ *
+ * This text is composed per-host at injection time and never stored, so an
+ * absolute path here cannot leak into vault content that syncs across machines.
+ */
+export function cliToolTransportDirective(mycoBinary: string): string {
+  // A path containing whitespace would split when the agent pastes the command
+  // into a shell. Quote only when needed so the common case stays readable.
+  const invocation = /\s/.test(mycoBinary) ? `"${mycoBinary}"` : mycoBinary;
+  return [
+    '**Myco tool transport (this host):** No Myco MCP server is installed here.',
+    'Call every Myco tool — including any `myco_*` tool named below or in any skill —',
+    `via your shell: \`${invocation} tool call <tool> --json --input '<json-args>'\`,`,
+    'run from the project working directory (this resolves project tenancy automatically).',
+    `Example: \`${invocation} tool call myco_cortex --json --input '{"op":"instructions"}'\`.`,
+  ].join('\n');
+}
 
 export type CortexInjectionSurface = 'session-start' | 'subagent-start';
 
@@ -31,12 +50,17 @@ export interface CortexInjectionContext {
 export function composeCortexInstructionInjection(
   cortexContent: string,
   surface: CortexInjectionSurface,
-  options: { cliToolTransport?: boolean } = {},
+  options: { cliToolTransport?: boolean; mycoBinary?: string } = {},
 ): CortexInjectionContext | null {
   const trimmed = cortexContent.trim();
   if (!trimmed) return null;
 
-  const directive = options.cliToolTransport ? `${CLI_TOOL_TRANSPORT_DIRECTIVE}\n\n` : '';
+  // `mycoBinary` is resolved by the caller (which has the host context this
+  // pure composer deliberately lacks). A bare `myco` is the last-resort
+  // rendering, not a default worth relying on — see cliToolTransportDirective.
+  const directive = options.cliToolTransport
+    ? `${cliToolTransportDirective(options.mycoBinary || 'myco')}\n\n`
+    : '';
 
   if (surface === 'subagent-start') {
     return {

@@ -335,6 +335,30 @@ $json = $markerObj | ConvertTo-Json
 [System.IO.File]::WriteAllText($Marker, $json, (New-Object System.Text.UTF8Encoding($false)))
 
 # ---------------------------------------------------------------------------
+# Machine runtime pin
+#
+# `~/.myco/runtime.command` holds the absolute managed-binary path — the
+# PATH-independent resolution the hook guard, the Pi extension's tool dispatch,
+# and the npm shim's redirect all consult before falling back to a bare `myco`.
+# A User-PATH edit only reaches processes started after it, so without the pin
+# every already-running agent stays unable to resolve `myco`.
+#
+# A pin pointing elsewhere is a deliberate dev/beta override and is preserved,
+# matching the npm postinstall's reconcile.
+# ---------------------------------------------------------------------------
+$PinFile = Join-Path $markerDir 'runtime.command'
+$existingPin = ''
+if (Test-Path $PinFile) {
+    $existingPin = (Get-Content -Raw -Path $PinFile -ErrorAction SilentlyContinue)
+    if ($null -ne $existingPin) { $existingPin = $existingPin.Trim() }
+}
+if ([string]::IsNullOrEmpty($existingPin) -or $existingPin -ieq $Exe) {
+    [System.IO.File]::WriteAllText($PinFile, "$Exe`n", (New-Object System.Text.UTF8Encoding($false)))
+} else {
+    Write-Host "Preserved existing runtime pin: $existingPin" -ForegroundColor Yellow
+}
+
+# ---------------------------------------------------------------------------
 # First run — install the managed service so the dashboard is reachable
 # ---------------------------------------------------------------------------
 $ServiceOk = $true

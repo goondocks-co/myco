@@ -1577,6 +1577,99 @@ export function classifyPathBinary(args: {
   };
 }
 
+/**
+ * Machine runtime pin health.
+ *
+ * `~/.myco/runtime.command` holds an absolute binary path and is consulted
+ * BEFORE PATH by the hook guard (`myco-run.cjs`), the Pi extension's tool
+ * dispatch, and the npm shim's redirect. It is the only resolution those
+ * consumers have that survives a minimal launchd PATH (GUI-launched agents) or
+ * a non-interactive shell (how coding agents spawn commands).
+ *
+ * Its absence is not fatal — every consumer falls back to a bare `myco` — but
+ * that fallback is exactly the one that fails on the hosts this pin exists to
+ * serve, so an absent pin is a warning with a fix rather than a silent pass.
+ *
+ * Pure classifier; {@link checkRuntimePin} injects the live values.
+ */
+export function classifyRuntimePin(args: {
+  /** Resolved managed binary location. */
+  managedBinary: string;
+  /** Whether the managed binary is present on disk. */
+  managedExists: boolean;
+  /** `~/.myco/runtime.command`. */
+  pinPath: string;
+  /** Trimmed pin contents, or null when absent/unreadable. */
+  pin: string | null;
+  /** Whether the pin's target is present on disk. */
+  pinTargetExists: boolean;
+}): DoctorCheck | null {
+  const { managedBinary, managedExists, pinPath, pin, pinTargetExists } = args;
+
+  // Source build / pre-convergence — there is no managed binary to pin to.
+  if (!managedExists) return null;
+
+  if (pin === null) {
+    return fixableCheck(
+      {
+        name: 'Runtime pin',
+        status: 'warn',
+        detail: `absent (${pinPath}) — agents that cannot rely on PATH fall back to a bare \`myco\`. `
+          + `Pin it to ${managedBinary}.`,
+      },
+      'runtime-pin',
+      { pinPath, managedBinary },
+    );
+  }
+
+  if (!pinTargetExists) {
+    return fixableCheck(
+      {
+        name: 'Runtime pin',
+        status: 'fail',
+        detail: `points at ${pin}, which does not exist — every pinned invocation fails. `
+          + `Repoint to ${managedBinary}.`,
+      },
+      'runtime-pin',
+      { pinPath, managedBinary },
+    );
+  }
+
+  // A pin aimed elsewhere is a deliberate dev/beta override, not drift —
+  // report it plainly rather than "fixing" a choice the operator made.
+  if (pin !== managedBinary) {
+    return { name: 'Runtime pin', status: 'ok', detail: `${pin} (override — not the managed binary)`, fixable: false };
+  }
+
+  return { name: 'Runtime pin', status: 'ok', detail: pin, fixable: false };
+}
+
+/** {@link classifyRuntimePin} bound to the live install layout. */
+export async function checkRuntimePin(): Promise<DoctorCheck | null> {
+  try {
+    const { managedBinaryPath } = await import('../install/managed-binary.js');
+    const { resolveMachineRuntimeCommandPath } = await import('../grove/paths.js');
+    const mycoHome = resolveMycoHome();
+    const managedBinary = managedBinaryPath(mycoHome, process.platform, process.env.LOCALAPPDATA);
+    const pinPath = resolveMachineRuntimeCommandPath(mycoHome);
+    let pin: string | null = null;
+    try {
+      pin = fs.readFileSync(pinPath, 'utf8').trim() || null;
+    } catch {
+      pin = null;
+    }
+    return classifyRuntimePin({
+      managedBinary,
+      managedExists: fs.existsSync(managedBinary),
+      pinPath,
+      pin,
+      pinTargetExists: pin !== null && fs.existsSync(pin),
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** {@link classifyPathBinary} bound to the live PATH, pin, and install layout. */
 export async function checkPathBinary(): Promise<DoctorCheck | null> {
   try {
@@ -1636,6 +1729,8 @@ export async function runChecks(
   // run outside a project directory.
   const pathBinary = await checkPathBinary();
   if (pathBinary) checks.push(pathBinary);
+  const runtimePin = await checkRuntimePin();
+  if (runtimePin) checks.push(runtimePin);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:

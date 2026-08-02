@@ -41,7 +41,7 @@ export function composeSessionStartContext(
   config: MycoConfig,
   cortexContent: string,
   scope: import('@myco/grove/ids.js').ProjectScope = { kind: 'global' },
-  options: { cliToolTransport?: boolean } = {},
+  options: { cliToolTransport?: boolean; mycoBinary?: string } = {},
 ): ComposedSessionStartContext {
   const cortexEnabled = shouldInjectCortex(config);
   const digestEnabled = shouldInjectSessionStartDigest(config.cortex.digest);
@@ -50,6 +50,7 @@ export function composeSessionStartContext(
   if (cortexEnabled && cortexContent) {
     const cortex = composeCortexInstructionInjection(cortexContent, 'session-start', {
       cliToolTransport: options.cliToolTransport,
+      mycoBinary: options.mycoBinary,
     });
     if (cortex) parts.push({ kind: 'cortex', text: cortex.text });
   }
