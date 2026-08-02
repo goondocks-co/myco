@@ -178,6 +178,13 @@ describe('hostEnable / hostDisable orchestration', () => {
       logger: () => {},
       ...overrides,
     };
+    // Headscale seams derive from the EFFECTIVE manager (post-overrides), so
+    // tests that share one manager across enable→disable bundles get a scope
+    // observation that follows the honest double's installed state.
+    base.headscaleServiceManager ??= base.serviceManager;
+    base.resolveHeadscaleScope ??= async () => (
+      (await base.headscaleServiceManager!.isInstalled(HEADSCALE_SERVICE_LABEL)) ? 'login' : 'none');
+    base.waitForAdminSocket ??= async () => true;
     return { deps: base, calls, restarts, installs, uninstalls, servePorts };
   }
 
@@ -194,8 +201,14 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(result.daemonRestarted).toBe(true);
     expect(restarts).toHaveLength(1);
 
-    // headscale supervised as a root LaunchDaemon.
-    expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(true);
+    // headscale supervised at the DAEMON'S scope as the invoking user (E1
+    // §3.2) — via the scoped manager, never the root boot backend. Explicit
+    // start follows install (systemd user units only reload+enable).
+    const hsSpec = installs.find((spec) => spec.label === HEADSCALE_SERVICE_LABEL)!;
+    expect(hsSpec).toBeDefined();
+    expect(hsSpec.scope).toEqual({ startAt: 'login', runAs: 'invoking-user' });
+    // NOTHING lands in the system domain on the default login-scope path.
+    expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(false);
     // tailscaled is supervised UNPRIVILEGED in the user domain — never via the
     // vendor's native system-daemon installer (coexistence C1/C2).
     expect(calls.some((c) => c.join(' ').includes('install-system-daemon'))).toBe(false);
@@ -214,10 +227,12 @@ describe('hostEnable / hostDisable orchestration', () => {
       '--login-server', 'https://host.example:8080', '--auth-key', 'onetimekeyvalue123', '--hostname', 'testhost']);
     expect(up).not.toContain('sudo');
 
-    // The headscale admin socket is root-owned — the key-mint calls (users
-    // create/list, preauthkeys create) all route through sudo.
+    // The headscale admin socket is USER-owned (pinned via `unix_socket`) —
+    // the key-mint calls run unprivileged, which is what makes member adds
+    // daemon-callable (E1 §3.2 family-B collapse).
     const mintCall = calls.find((c) => c.join(' ').includes('preauthkeys create'))!;
-    expect(mintCall[0]).toBe('sudo');
+    expect(mintCall[0]).not.toBe('sudo');
+    expect(mintCall[0]).toContain('headscale');
 
     // Daemon wired: machine-tier host_serve written with the 100.64 IP + the host
     // id/label the enrollment endpoint self-reports (Task 2.4).
@@ -259,7 +274,11 @@ describe('hostEnable / hostDisable orchestration', () => {
     await expect(hostEnable({ serverUrl: '' }, d)).rejects.toThrow(/requires --server-url/);
   });
 
-  it('surfaces the root requirement when sudo is unavailable (no smuggled credentials)', async () => {
+  it('login scope is ZERO-sudo: no root preflight, no root note, even when sudo is unavailable', async () => {
+    // E1 §3.2: the default enable path is fully unprivileged. The old
+    // unconditional preflight pushed "root privileges are required" into
+    // notes[] — factually wrong post-re-scope, and §4.1 routes notes[] to
+    // the UI as failure copy (review CORRECTION 9).
     const { runner } = overlayRunner(launchDaemonsDir);
     const wrapped: CommandRunner = {
       async run(command, args) {
@@ -267,11 +286,34 @@ describe('hostEnable / hostDisable orchestration', () => {
         return runner.run(command, args);
       },
     };
-    const notes: string[] = [];
     const ips = [null as string | null, '100.64.0.5']; let i = 0;
     const { deps: d } = deps({ runner: wrapped, resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
-    const result = await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, { ...d, logger: (m) => notes.push(m) });
-    expect(result.notes.some((n) => /root privileges are required/.test(n))).toBe(true);
+    const result = await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
+    expect(result.notes.some((n) => /root privileges are required/.test(n))).toBe(false);
+  });
+
+  it('darwin+boot is the ONE cell that surfaces the root requirement (no smuggled credentials)', async () => {
+    // An operator-converged boot-scope host still needs sudo for the
+    // system-domain unit step — and only that cell says so up front.
+    fs.writeFileSync(path.join(process.env.MYCO_HOME!, 'config.yaml'), 'daemon:\n  service_scope: boot\n');
+    const { runner } = overlayRunner(launchDaemonsDir);
+    const wrapped: CommandRunner = {
+      async run(command, args) {
+        if (command === 'sudo' && args[0] === '-n') return { stdout: '', exitCode: 1 };
+        return runner.run(command, args);
+      },
+    };
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const { deps: d, installs } = deps({ runner: wrapped, resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    try {
+      const result = await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
+      expect(result.notes.some((n) => /root privileges are required/.test(n))).toBe(true);
+      // And the configured scope carried end to end into the unit spec.
+      const hsSpec = installs.find((spec) => spec.label === HEADSCALE_SERVICE_LABEL)!;
+      expect(hsSpec.scope).toEqual({ startAt: 'boot', runAs: 'invoking-user' });
+    } finally {
+      fs.writeFileSync(path.join(process.env.MYCO_HOME!, 'config.yaml'), '');
+    }
   });
 
   it('disable clears host_serve, tears down both services, and removes state', async () => {
@@ -279,7 +321,7 @@ describe('hostEnable / hostDisable orchestration', () => {
     const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
     const d = first.deps;
     await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
-    expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(true);
+    expect(first.installs.some((spec) => spec.label === HEADSCALE_SERVICE_LABEL)).toBe(true);
 
     // A live bearer exists (as after real serving) — gate 9 asserts DEC-2's
     // credential destruction, which a bearer-less fixture proves vacuously.
@@ -311,7 +353,10 @@ describe('hostEnable / hostDisable orchestration', () => {
     // which is byte-identical to removing the user's genuine Tailscale.
     expect(calls.some((c) => c.join(' ').includes('uninstall-system-daemon'))).toBe(false);
     expect(uninstalls).toContain(HOST_TAILSCALED_LABEL);
-    expect(calls.some((c) => c.includes('bootout'))).toBe(true);
+    // Headscale torn down through the USER-domain manager (E1 §3.2) — and
+    // nothing on the login-scope path ever elevates: no sudo, no bootout.
+    expect(uninstalls).toContain(HEADSCALE_SERVICE_LABEL);
+    expect(calls.some((c) => c[0] === 'sudo')).toBe(false);
     expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(false);
     // State removed.
     expect(readHostState()).toBeNull();
@@ -353,32 +398,34 @@ describe('hostEnable / hostDisable orchestration', () => {
       resolveOverlayIp: async () => '100.64.0.5',
     });
 
-    // (a) tailscaled restarted via its manager; (b) headscale via the
-    // systemCtx runner argv; (c) socket unlinked BEFORE the restart.
-    // The restart flowed through the SHARED (first) manager.
+    // (a) tailscaled restarted via its manager; (b) headscale via the SCOPED
+    // manager — never `restartSystemService`, which is boot-domain-only
+    // (E1 §3.2); (c) socket unlinked BEFORE the restart.
+    // Both restarts flowed through the SHARED (first) manager.
     expect(first.restarts).toContain(HOST_TAILSCALED_LABEL);
-    expect(second.calls.some((c) => c[0] === 'sudo' && c[1] === 'launchctl' && c[2] === 'kickstart' && c[3] === '-k')).toBe(true);
+    expect(first.restarts).toContain(HEADSCALE_SERVICE_LABEL);
     expect(socketExistedAtRestart).toBe(false);
     expect(readHostState()!.enabled_at).toBe(enabledAt);
 
     // (d) a throwing headscale restart fails the enable BEFORE writeHostState.
     const stateBefore = readHostState();
+    const throwingRestart: ServiceManager = {
+      ...first.deps.serviceManager!,
+      restart: async (label: string) => {
+        if (label === HEADSCALE_SERVICE_LABEL) throw new Error('kickstart refused');
+        return first.deps.serviceManager!.restart(label);
+      },
+    };
     const third = deps({
       serviceManager: first.deps.serviceManager,
+      headscaleServiceManager: throwingRestart,
+      resolveHeadscaleScope: async () => 'login',
       provisionBinaries: async () => ({
         headscaleBin: '/tmp/hs', tailscaleBin: '/tmp/ts', tailscaledBin: '/tmp/tsd',
         headscaleVersion: HEADSCALE_VERSION, tailscaleVersion: '9.9.9',
         changed: ['headscale'],
         source: { headscale: 'download' as const, tailscale: 'brew' as const },
       }),
-      systemCtx: {
-        launchDaemonsDir,
-        stagingDir: path.join(tmp, 'staging'),
-        runner: { async run(command: string, args: string[]) {
-          if (args.includes('kickstart')) return { stdout: 'kickstart refused', exitCode: 1 };
-          return { stdout: '', exitCode: 0 };
-        } },
-      },
     });
     await expect(hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, {
       ...third.deps,
@@ -473,7 +520,7 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(summaries.some((m) => /ABORTED/.test(m) && /forward may still be live/.test(m) && /doctor/.test(m))).toBe(true);
   });
 
-  it('resolves the node id via the default headscale client, sudo\'d (no resolveNodeId override)', async () => {
+  it('resolves the node id via the default headscale client, UNPRIVILEGED (no resolveNodeId override)', async () => {
     const ips = [null as string | null, '100.64.0.5']; let i = 0;
     const { deps: d, calls } = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)], resolveNodeId: undefined });
 
@@ -482,8 +529,91 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(result.hostId).toBeDefined();
     const state = readHostState()!;
     expect(state.node_id).toBe('9'); // from overlayRunner's `nodes list` fixture
+    // The admin socket is user-owned post-re-scope — no sudo anywhere in the
+    // admin-CLI family (E1 §3.2: this is what makes it daemon-callable).
     const nodesListCall = calls.find((c) => c.join(' ').includes('nodes list'))!;
-    expect(nodesListCall[0]).toBe('sudo');
+    expect(nodesListCall[0]).not.toBe('sudo');
+  });
+
+  it('enable REFUSES a wrong-domain headscale unit with the remedy matched to the cell', async () => {
+    // A unit observed outside the configured domain is never converged
+    // in-place — installing at the target domain anyway would create two
+    // supervisors over one SQLite file (E1 review RC1). The remedy DIFFERS
+    // by cell: transitionable drift gets the non-destructive command;
+    // prescribing teardown for drift would destroy the team's control-plane
+    // state for a condition `myco service install` fixes (diff review C4).
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    // Drift: boot observed, no system-domain unit file (a Myco boot-user cell).
+    const { deps: d } = deps({
+      resolveOverlayIp: async () => ips[Math.min(i++, 1)],
+      resolveHeadscaleScope: async () => 'boot',
+    });
+    await expect(hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d))
+      .rejects.toThrow(/myco service install/);
+
+    // Legacy root cell: boot observed AND a root-rendered system unit file.
+    fs.mkdirSync(launchDaemonsDir, { recursive: true });
+    fs.writeFileSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`), '<plist>legacy root cell — no UserName key</plist>');
+    const legacy = deps({ resolveHeadscaleScope: async () => 'boot' });
+    await expect(hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, legacy.deps))
+      .rejects.toThrow(/legacy root service.*myco host disable/s);
+    fs.rmSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`));
+
+    const both = deps({ resolveHeadscaleScope: async () => 'both' });
+    await expect(hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, both.deps))
+      .rejects.toThrow(/BOTH supervision domains/);
+  });
+
+  it('disable tears headscale out of BOTH domains, routed by ACTUAL unit location', async () => {
+    // Disable is the one operation that must converge to ZERO units in ANY
+    // domain. Routing is by unit-file presence, never semantic scope — the
+    // Linux linger cell is a USER unit whose observation reads 'boot', and
+    // routing that to the system domain demands sudo for a unit that does
+    // not exist, aborting before the REAL unit is touched (diff review B1).
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, first.deps);
+
+    // A legacy system-domain unit ALSO exists (bad-day coexistence).
+    fs.mkdirSync(launchDaemonsDir, { recursive: true });
+    fs.writeFileSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`), '<plist>legacy</plist>');
+    const dis = deps({ serviceManager: first.deps.serviceManager });
+    const result = await hostDisable(dis.deps);
+    expect(result.cleared).toBe(true);
+    // System domain: torn down via the boot backend (sudo bootout + rm)
+    // because the unit FILE was present.
+    expect(dis.calls.some((c) => c[0] === 'sudo' && c.includes('bootout'))).toBe(true);
+    // User domain: torn down via the manager, and proven gone.
+    expect(first.uninstalls).toContain(HEADSCALE_SERVICE_LABEL);
+  });
+
+  it('a Linux-linger-shaped disable (boot observation, NO system unit) never touches the system domain', async () => {
+    // The B1 regression pin: user unit + 'boot' observation (linger/marker),
+    // no /etc/systemd/system file. Disable must go straight to the user
+    // manager — zero sudo — and still fully converge.
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, first.deps);
+
+    const dis = deps({
+      serviceManager: first.deps.serviceManager,
+      resolveHeadscaleScope: async () => 'boot', // enable-side seam; disable must IGNORE semantic scope
+    });
+    const result = await hostDisable(dis.deps);
+    expect(result.cleared).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(first.uninstalls).toContain(HEADSCALE_SERVICE_LABEL);
+    expect(dis.calls.some((c) => c[0] === 'sudo')).toBe(false);
+  });
+
+  it('enable fails LOUD when the admin socket never appears (a dead control plane, not a hang)', async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const { deps: d } = deps({
+      resolveOverlayIp: async () => ips[Math.min(i++, 1)],
+      waitForAdminSocket: async () => false,
+    });
+    await expect(hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d))
+      .rejects.toThrow(/did not bind its admin socket/);
   });
 
   it('disable is safe when never enabled (idempotent teardown)', async () => {

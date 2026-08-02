@@ -55,11 +55,11 @@ Commands:
 
 enable turns THIS machine into a Team Host: it provisions the pinned overlay
 networking binaries, joins this host to the overlay, and wires the local daemon
-to serve your team over it. The networking stack runs unprivileged and entirely
-in its own space, so it neither sees nor disturbs a Tailscale you already have
-installed. Sudo is needed for one step only — installing the control plane as a
-system service — so you may be prompted for your password.
---server-url is the address teammates dial to reach this host.
+to serve your team over it. The whole stack runs unprivileged as your user —
+no sudo on the default setup, and nothing here sees or disturbs a Tailscale
+you already have installed. (The one exception: a machine whose daemon is
+boot-scoped via \`myco service install\` needs sudo for the system-domain unit
+step on macOS.) --server-url is the address teammates dial to reach this host.
 
 --designate-default --emit-join is the --serve installer flag's composite path:
 enable, make this box's project storage what it serves for the team, optionally
@@ -86,6 +86,19 @@ export async function runHostCommand(args: string[]): Promise<void> {
   }
 
   if (subcommand === 'enable') {
+    // Operators habitually sudo-prefix this command (the old help text even
+    // promised a password prompt). Post-re-scope that inverts the outcome:
+    // run as root, headscale's user unit would enroll into ROOT's session
+    // with root's HOME — divergent machine_id, root-owned files in the
+    // user's vault. Refuse up front with the caller-appropriate message
+    // (the renderers' own guards stay as the backstop for other paths).
+    if (process.getuid?.() === 0) {
+      console.error(
+        'Run `myco host enable` WITHOUT sudo — the whole stack runs unprivileged as your user, '
+        + 'and Myco elevates only the individual steps that need it.',
+      );
+      process.exit(1);
+    }
     const flags = flagMap(rest);
     const serverUrl = flags.get('server-url');
     if (!serverUrl) {
@@ -136,6 +149,18 @@ export async function runHostCommand(args: string[]): Promise<void> {
   }
 
   if (subcommand === 'disable') {
+    // Same reflex-guard as enable: under sudo, every HOME-derived path
+    // (control home, host state, serve bearer) resolves to ROOT'S home —
+    // the disable "succeeds" while the user's actual host stays untouched.
+    // Myco elevates the individual system-domain steps itself when a legacy
+    // unit exists.
+    if (process.getuid?.() === 0) {
+      console.error(
+        'Run `myco host disable` WITHOUT sudo — Myco elevates the individual removal steps that need it. '
+        + 'Under sudo the teardown would target root\'s home, not yours.',
+      );
+      process.exit(1);
+    }
     const result = await hostDisable();
     if (result.cleared) {
       console.log('Team Host disabled.');

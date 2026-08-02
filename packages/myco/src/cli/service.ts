@@ -157,6 +157,19 @@ export async function run(args: string[]): Promise<void> {
         await target.install({ ...spec, scope: targetScope }, { force: true });
         await target.start(label);
         console.log(`Installed ${label} via ${target.platformName}`);
+        // Headscale follows the daemon's scope (E1 §3.2) — this call is what
+        // keeps the two units in one domain; without it, converging the
+        // daemon strands a serving host's control plane at the old scope
+        // (§7 gate 2). No-op unless host serving is enabled.
+        {
+          const { convergeHeadscaleScope } = await import('../team-host/scope-converge.js');
+          // The daemon's own step already succeeded — a failed headscale
+          // carry must not turn that into an unhandled-rejection exit.
+          // Report it; the doctor row keeps nagging until converged.
+          await convergeHeadscaleScope({ mycoHome }).catch((err: unknown) => {
+            console.error(`NOTE: headscale scope carry failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
         if (intent === 'boot' && process.platform === 'darwin') {
           console.log(
             'Note: unattended upgrades of a boot-scoped daemon re-run sudo without a terminal. '
@@ -190,6 +203,17 @@ export async function run(args: string[]): Promise<void> {
         log: (message) => console.log(message),
       });
       console.log(`Transitioned ${label} to ${intent} scope via ${target.platformName}`);
+      // Same propagation on the transition path — the daemon changed domains,
+      // so a serving host's headscale must follow it (E1 §3.2, §7 gate 2).
+      {
+        const { convergeHeadscaleScope } = await import('../team-host/scope-converge.js');
+        // The daemon's own step already succeeded — a failed headscale
+        // carry must not turn that into an unhandled-rejection exit.
+        // Report it; the doctor row keeps nagging until converged.
+        await convergeHeadscaleScope({ mycoHome }).catch((err: unknown) => {
+          console.error(`NOTE: headscale scope carry failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
       if (intent === 'boot' && process.platform === 'darwin') {
         // N2: `sudo -n true` passing NOW may be a cached timestamp, not a
         // durable rule — but unattended upgrade restarts re-elevate later

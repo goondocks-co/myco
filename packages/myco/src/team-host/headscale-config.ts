@@ -9,8 +9,12 @@
  *     (`tailscale up --login-server <server_url>`), derived from the operator's
  *     advertised host, never guessed.
  *   - all mutable state (sqlite DB, noise key) lives UNDER the machine-global
- *     host-control home, never in a system dir — so `host disable` can remove it
- *     wholesale and a non-root process generated it.
+ *     host-control home, never in a system dir — so `host disable` can remove
+ *     it wholesale. (Precision matters here: this module writes only the
+ *     CONFIG file unprivileged; the DB and noise key are created by the
+ *     headscale process itself at whatever identity it runs as. That is why
+ *     the process now runs as the invoking user — user-cell headscale means
+ *     user-owned runtime state.)
  *
  * SELF-HOSTED DERP POSTURE (spike §2.3, stated honestly in the generated file):
  * a self-hosted Headscale still lists Tailscale Inc's public DERP fleet as the
@@ -26,12 +30,13 @@
  * silences the fatal.
  *
  * Key minting shells the headscale CLI behind the {@link CommandRunner} seam so
- * it unit-tests with no real control plane. Every invocation runs through
- * `sudo` — the headscale admin socket is root-owned (headscale runs as a root
- * service), so administering it is a privileged step, the same as every
- * service-install step in overlay.ts. The exact v0.29 `preauthkeys`/`users`
- * flag syntax is pinned here and re-confirmed in live validation (the spike
- * flagged a `preauthkeys list` vs `create` flag-shape nit for Phase 2).
+ * it unit-tests with no real control plane. Invocations are UNPRIVILEGED:
+ * headscale runs as the invoking user and its admin socket is pinned
+ * user-owned under the host-control home (`unix_socket` below), so the CLI
+ * reaches it with no sudo — which is what makes member adds and key rotation
+ * daemon-callable. The exact v0.29 `preauthkeys`/`users` flag syntax is
+ * pinned here and re-confirmed in live validation (the spike flagged a
+ * `preauthkeys list` vs `create` flag-shape nit for Phase 2).
  */
 import path from 'node:path';
 
@@ -44,6 +49,13 @@ export interface HeadscaleLayout {
   stateDir: string;
   dbPath: string;
   noiseKeyPath: string;
+  /** The admin CLI socket, pinned under the host-control home. Load-bearing
+   *  for the user-cell re-scope: headscale 0.29.2's compiled-in default
+   *  socket directory is root-owned, so a user-cell headscale that inherits
+   *  the default cannot create its admin socket at all — which takes down
+   *  every admin call (`users create`, `preauthkeys create`, `nodes list`)
+   *  and therefore `host enable` itself. */
+  adminSocketPath: string;
 }
 
 /** Resolve every headscale on-disk path under the host-control home. */
@@ -54,6 +66,7 @@ export function headscaleLayout(controlDir: string): HeadscaleLayout {
     stateDir,
     dbPath: path.join(stateDir, 'db.sqlite'),
     noiseKeyPath: path.join(stateDir, 'noise_private.key'),
+    adminSocketPath: path.join(stateDir, 'headscale.sock'),
   };
 }
 
@@ -96,6 +109,15 @@ prefixes:
 
 noise:
   private_key_path: ${input.layout.noiseKeyPath}
+
+# Admin CLI socket, pinned under the host-control home — NEVER inherited from
+# headscale's compiled-in default (whose directory is root-owned; a user-cell
+# headscale inheriting it cannot create the socket, which takes down every
+# admin call and \`host enable\` with them). Permission is pinned too:
+# headscale's own default is group 0770, and the daemon is the only intended
+# admin client, so owner-only.
+unix_socket: ${input.layout.adminSocketPath}
+unix_socket_permission: "0700"
 
 database:
   type: sqlite
@@ -168,12 +190,12 @@ export interface MintPreauthKeyInput {
  * the id from `users list --output json` after ensuring the user exists.
  */
 export async function mintPreauthKey(input: MintPreauthKeyInput): Promise<string> {
-  // The headscale admin socket is root-owned (headscale runs as a root
-  // service) — administering it is a privileged step, so every invocation
-  // routes through sudo (consistent with overlay.ts's service-install steps).
-  const base = [input.headscaleBin, '--config', input.configPath] as const;
+  // Unprivileged: headscale runs as the invoking user, so its admin socket
+  // (pinned via `unix_socket` under the host-control home) is user-owned and
+  // the CLI resolves it from the same `--config`. No sudo — this is what
+  // makes member adds and key rotation daemon-callable.
   const run = (args: string[], opts?: { input?: string }) =>
-    input.runner.run('sudo', [base[0], base[1], base[2], ...args], opts);
+    input.runner.run(input.headscaleBin, ['--config', input.configPath, ...args], opts);
 
   // 1. Ensure the user exists (tolerate "already exists").
   const created = await run(['users', 'create', input.user, '--output', 'json']);

@@ -1412,6 +1412,62 @@ export async function checkServiceScope(
   return { name: 'Service scope', status: 'warn', detail, fixable: false };
 }
 
+/**
+ * E1 §7 gate 2's runtime half: headscale follows the daemon's scope, and
+ * this row is what fails when the two units drift apart. Covers BOTH the
+ * legacy root cell ("pre-1.3.1 supervision; no in-place migration — tear
+ * down and re-enable") and the dangerous both-domains state.
+ */
+export async function checkHeadscaleScope(mycoHome?: string): Promise<DoctorCheck | null> {
+  const home = mycoHome ?? resolveMycoHome();
+  let report: import('../team-host/scope-converge.js').HeadscaleScopeReport;
+  try {
+    const { classifyHeadscaleScope } = await import('../team-host/scope-converge.js');
+    report = await classifyHeadscaleScope(home);
+  } catch {
+    return null;
+  }
+  switch (report.verdict) {
+    case 'not-serving':
+    case 'converged':
+      return null;
+    case 'missing':
+      return {
+        name: 'Team Host control plane scope',
+        status: 'warn',
+        detail: 'host serving is enabled but no headscale unit is installed in any domain — run `myco host enable` to converge.',
+        fixable: false,
+      };
+    case 'legacy-root':
+      return {
+        name: 'Team Host control plane scope',
+        status: 'warn',
+        detail: 'headscale is supervised as a legacy root service (pre-1.3.1). Every admin call against its '
+          + 'root-owned socket fails unprivileged — members cannot be added. There is no in-place migration: '
+          + 'run `myco host disable` then `myco host enable` (the teardown needs sudo on both platforms).',
+        fixable: false,
+      };
+    case 'both':
+      return {
+        name: 'Team Host control plane scope',
+        status: 'fail',
+        detail: 'headscale units exist in BOTH supervision domains — two supervisors over one database. '
+          + 'Run `myco host disable` (removes both) then `myco host enable`.',
+        fixable: false,
+      };
+    case 'drift':
+      return {
+        name: 'Team Host control plane scope',
+        status: 'warn',
+        detail: `headscale is '${report.observed}'-scoped but daemon.service_scope calls for '${report.targetDomain}' — `
+          + 'run `myco service install` to carry it to the daemon\'s scope.',
+        fixable: false,
+      };
+    default:
+      return null;
+  }
+}
+
 async function checkService(): Promise<DoctorCheck> {
   const { getServiceManager } = await import('../service/manager.js');
   const { serviceLabel } = await import('../service/labels.js');
@@ -1664,6 +1720,8 @@ export async function runChecks(
   checks.push(await checkService());
   const serviceScope = await checkServiceScope();
   if (serviceScope) checks.push(serviceScope);
+  const headscaleScope = await checkHeadscaleScope();
+  if (headscaleScope) checks.push(headscaleScope);
   checks.push(checkBinaryVersionSkew());
   const updateResidue = await checkUpdateResidue();
   if (updateResidue) checks.push(updateResidue);

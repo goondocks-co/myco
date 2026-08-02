@@ -17,6 +17,7 @@ import {
   type HostEnableDeps,
 } from '@myco/team-host/overlay.js';
 import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '@myco/team-host/binaries.js';
+import { HEADSCALE_SERVICE_LABEL } from '@myco/team-host/system-service.js';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader.js';
 import { resolveServedGroveDesignationHealth } from '@myco/daemon/host-serve.js';
 import { checkServedGroveDesignation } from '@myco/cli/doctor.js';
@@ -271,6 +272,12 @@ describe('hostEnable designation wiring', () => {
       overlayPort: 41443,
       resolveNodeId: async () => 'node-9',
       verifyOverlayListener: async () => true,
+      // Headscale runs at the daemon's scope via the scoped manager; the
+      // fake never binds a real admin socket, so short-circuit the health
+      // proof and pin the observed scope to the fake's installed state.
+      headscaleServiceManager: manager,
+      resolveHeadscaleScope: async () => ((await manager.isInstalled(HEADSCALE_SERVICE_LABEL)) ? 'login' : 'none'),
+      waitForAdminSocket: async () => true,
       logger: () => {},
       ...overrides,
     };
