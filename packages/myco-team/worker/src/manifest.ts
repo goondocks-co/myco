@@ -40,8 +40,9 @@ export const WORKER_CONTENT_HASH_TABLES = new Set<string>([
 /**
  * Tables eligible for manifest reconcile: synced tables that have a
  * single `id` column (primary key). `entity_mentions` is excluded
- * because its primary key is composite (entity_id, note_id, note_type,
- * agent_id) — there is no single `id` to cursor-page on.
+ * because it never rode the outbox contract — it gained an `id` column
+ * in schema v75, but outbox/backfill inclusion remains a deliberate
+ * future decision (see db/schema-ddl.ts on the delete-trigger set).
  */
 export const MANIFEST_ELIGIBLE_TABLES = new Set<string>(
   SYNCED_TABLES.filter((t) => t !== 'entity_mentions'),

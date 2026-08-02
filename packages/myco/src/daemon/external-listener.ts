@@ -1,7 +1,9 @@
 /**
  * The external read-only MCP listener (server-mode design spec §7) — a
  * dedicated, purpose-bound `http.createServer` that serves ONLY the
- * allowlist-filtered MCP handler on `/mcp`. Every other path is 404, and a
+ * allowlist-filtered MCP handler on `/mcp` and on `/` (the form Tailscale
+ * Funnel delivers after stripping its `--set-path` mount prefix). Every
+ * other path is 404, and a
  * request is 401ed before any tool dispatch unless it presents the
  * external MCP token (a THIRD credential, distinct from the loopback daemon
  * token and the member serve-bearer — `HOST_EXTERNAL_MCP_TOKEN_SECRET`).
