@@ -680,6 +680,18 @@ export function createFunnelOffRunner(
         detail: `confirmed no public Funnel handler targets ${describeFunnelTarget(target)}`,
       };
     } catch (error) {
+      // ENOENT = no vendor tailscale CLI in any dir on the daemon's PATH
+      // (spec-builder renders brew + system bins). Funnel is served by
+      // vendor tailscaled, which ships with that CLI, so absence means no
+      // public Funnel can exist on this machine: verified-off. All other
+      // failures (timeout, non-zero exit, unparseable status) fail closed.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return {
+          ok: true,
+          detail: 'vendor tailscale CLI not installed — no public Funnel can be '
+            + `served from this machine (${describeFunnelTarget(target)})`,
+        };
+      }
       return {
         ok: false,
         detail: error instanceof Error ? error.message : String(error),
