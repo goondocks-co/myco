@@ -1,6 +1,6 @@
 # Contributing to Myco
 
-Myco is a collective intelligence plugin for coding projects, supporting Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, and OpenCode. This guide covers development setup and project conventions. For architecture details, see [Lifecycle docs](docs/lifecycle.md).
+Myco is a collective intelligence plugin for coding projects, supporting Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, and Pi. This guide covers development setup and project conventions. For architecture details, see [Lifecycle docs](docs/lifecycle.md).
 
 ## Installing Myco (End Users)
 
@@ -20,7 +20,7 @@ This sets up the vault, configures your LLM backend, and starts capturing sessio
 ### Requirements
 
 - Node.js 22+
-- One or more supported coding agents (Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, or OpenCode)
+- One or more supported coding agents (Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, or Pi)
 - **Embedding provider** (one of): [Ollama](https://ollama.com) with `bge-m3` (local, free), [OpenRouter](https://openrouter.ai), or [OpenAI](https://platform.openai.com)
 - **Intelligence provider** (one of): Cloud (Claude), [Ollama](https://ollama.com), or [LM Studio](https://lmstudio.ai)
 
@@ -98,13 +98,13 @@ myco/
 │   │   │   ├── mcp/                  # MCP server + tool handlers
 │   │   │   ├── prompts/              # LLM prompt templates (extraction, summary, title, classification)
 │   │   │   ├── services/             # Shared service logic (used by both CLI and API)
-│   │   │   ├── symbionts/            # Symbiont adapters and manifests (Claude Code, Cursor, Codex, VS Code, Gemini, Windsurf, OpenCode) — transcript discovery, parsing, and project-local registration
+│   │   │   ├── symbionts/            # Symbiont adapters and manifests (Claude Code, Cursor, Codex, Cline, Copilot, Antigravity, Devin Desktop, OpenCode, Pi) — transcript discovery, parsing, and project-local registration
 │   │   │   └── vault/                # Reader, writer, Zod schemas for database records
 │   │   ├── ui/                       # React + Tailwind dashboard (Vite build → dist/ui/)
 │   │   └── skills/                   # Skill markdown files (subdirectory per skill)
-│   ├── myco-team/                    # Standalone operator CLI for team-sync workers + worker source
-│   ├── myco-collective/              # Standalone operator CLI for a Myco Collective + worker + admin UI
-│   └── myco-deploy/                  # Private shared deploy helpers used by the two operator CLIs
+│   ├── myco-team/                    # DORMANT — operator CLI for the retired Team Sync stack (kept for reference)
+│   ├── myco-collective/              # DORMANT — Collective operator CLI, pending redesign around Team Host
+│   └── myco-deploy/                  # Private shared deploy helpers used by the two dormant operator CLIs
 ├── tests/                            # Mirrors packages/myco/src/ structure
 ├── docs/                             # Lifecycle, quickstart, agent tools
 └── Makefile                          # Dev shortcuts
@@ -121,23 +121,21 @@ See [docs/lifecycle.md](docs/lifecycle.md) for the full lifecycle with diagrams.
 
 ## Distribution
 
-Three packages are published to [npmjs.org](https://www.npmjs.com/) under the `@goondocks` scope:
+One package is actively published to [npmjs.org](https://www.npmjs.com/) under the `@goondocks` scope:
 
-- [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco) — main CLI, daemon, hooks, and dashboard
-- [`@goondocks/myco-team`](https://www.npmjs.com/package/@goondocks/myco-team) — team-sync operator CLI (`myco-team create` / `upgrade` / `status` / etc.)
-- [`@goondocks/myco-collective`](https://www.npmjs.com/package/@goondocks/myco-collective) — standalone Collective operator CLI (`myco-collective`)
+- [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco) — main CLI, daemon, hooks, and dashboard (plus its per-platform binary packages)
 
-`@goondocks/myco-deploy` under `packages/` is private — it holds the shared Cloudflare deploy helpers the two operator CLIs depend on.
+`@goondocks/myco-team` and `@goondocks/myco-collective` exist on npm but are **dormant** — the Team Sync stack they operated was retired in favor of Team Host, and they are not released alongside Myco. `@goondocks/myco-deploy` under `packages/` is private.
 
 1. Push to `main` — CI runs lint + tests
-2. Tag a release (`v0.x.y`) — triggers the publish workflow
+2. Tag a release (`myco/vX.Y.Z`) — triggers the publish workflow
 3. `npm publish` builds and pushes each publishable package to npmjs.org
-4. Users update via `npm update -g @goondocks/myco` (or the corresponding `-team` / `-collective` package) or re-run the install script
+4. Installed Mycos self-update from their release channel; `npm update -g @goondocks/myco` also works for npm installs
 
 ## Conventions
 
 - TypeScript strict mode, ES modules
-- `tsup` for bundled builds (native deps `better-sqlite3`/`sqlite-vec` are external, installed at runtime)
+- Native binaries built with Bun compile (`packages/myco/scripts/build-single-target.mjs`); `make build` is the standard gate
 - `make check` must pass before committing
 - Prompt templates are markdown with `{{placeholder}}` syntax
 - Config is YAML (`myco.yaml`), records are stored in SQLite (FTS5 + sqlite-vec)

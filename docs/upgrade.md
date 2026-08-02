@@ -52,17 +52,11 @@ After the upgrade, verify with `myco doctor`. It reports anything Myco could not
 
 The license changed from MIT to Apache 2.0 on 2026-04-29 (commit `57a9571a`). No code action required, but if your team's compliance review tracks license metadata, re-acknowledge.
 
-## Optional operator packages
+## Teams
 
 Team Host operator commands (`myco host`, `myco join`, `myco attach`) live in the main binary and upgrade automatically with the rest of Myco — there's no separate package for them.
 
-If you installed the standalone Collective operator CLI, it upgrades independently.
-
-```bash
-npm update -g @goondocks/myco-collective # Collective operator CLI
-```
-
-Most users never need this.
+When you update Myco across a team, **update the host first, then the members**, and finish any in-flight project move before updating either machine — see [Team Host](team-host.md) for the details.
 
 ## Verifying the upgrade
 
@@ -84,7 +78,7 @@ See [Lifecycle](lifecycle.md) for the contributor workflow.
 
 ## Rollback
 
-Myco archives older Myco-owned per-project files rather than deleting them. The self-updater also keeps the previously installed binary, so if an update misbehaves Myco falls back to the prior version automatically.
+Myco archives older Myco-owned per-project files rather than deleting them. The self-updater also keeps the previously installed binary, so if an update misbehaves Myco falls back to the prior version automatically — except across a storage-format change, below.
 
 **Rollback is refused across a storage-format change.** Some upgrades update the on-disk format of your data. An older Myco cannot read the newer format, so once an upgrade has updated your data, going back to the older version — automatically after a failed update, or explicitly via `myco upgrade <older-version>` or the Stable/Beta toggle — is refused rather than leaving you with a service that cannot start. The refusal message, `myco doctor`, and the dashboard all say exactly which versions are involved.
 
@@ -138,4 +132,4 @@ If the local service stays down after a downgrade and `myco doctor` reports the 
 
 ### Downgrade leftovers when external access was on
 
-If a machine had **external agent access** enabled (Team page) and is moved to an older Myco that predates the feature, external access quietly turns off, and the public address entry it registered with the overlay network can be left behind. It is inert but visible in `tailscale serve status`; re-upgrading Myco cleans it up, or remove it manually with `tailscale serve --https=443 off`. A machine that was mid-enable when the newer version stopped will refuse to start the older binary and say why — finish or disable external access on the newer version first.
+If a machine had **external agent access** enabled (Team page) and is moved to an older Myco that predates the feature, external access quietly turns off, and the public address entry it registered with the overlay network can be left behind. It is inert but visible in `tailscale funnel status`; re-upgrading Myco cleans it up, or remove it manually with `tailscale funnel --https=443 off`. A machine that was mid-enable when the newer version stopped will refuse to start the older binary and say why — finish or disable external access on the newer version first.

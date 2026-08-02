@@ -46,7 +46,7 @@ The human. Uses Myco, controls Myco, reviews Myco-agent-generated data, and admi
 | Surface | Path | Audience | Allowed operations |
 |---|---|---|---|
 | **MCP tools** | `packages/myco/src/tools/` | Symbionts | Read + editorial (spores, plans). No admin. |
-| **Skills** | `packages/myco/src/skills/` (built-in) + vault-generated | Symbionts | Workflow guidance; may instruct symbiont to invoke CLI. |
+| **Skills** | `packages/myco/skills/` (built-in) + vault-generated | Symbionts | Workflow guidance; may instruct symbiont to invoke CLI. |
 | **CLI** | `packages/myco/src/cli/` | Users (primary), Symbionts (via skills only) | Full surface: read, write, admin, lifecycle. |
 | **UI** | `packages/myco/ui/` | Users | Primary interface — everything users do day-to-day. |
 | **Agent harness tools** | `packages/myco/src/agent/tools/` | Myco agent | Internal harness affordances for editorial work. |

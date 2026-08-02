@@ -8,7 +8,7 @@ Myco does not replace an agent's reasoning, native memory, tools, or workflow. I
 
 - **A supported OS** — macOS (arm64/x64), Linux (x64/arm64), or Windows (x64). Myco ships as a self-contained native binary, so **no Node runtime is required to run it**. macOS is the supported path, with **Linux and Windows in beta**. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
 - **At least one supported coding agent** — Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, or Pi
-- **Node 22+** is only needed for the optional npm install path and the Collective operator CLI (`@goondocks/myco-collective`).
+- **Node 22+** is only needed for the optional npm install path.
 
 Provider configuration is **optional** at install time. Myco captures sessions and provides full-text search immediately. To enable spores, digests, semantic search, Canopy summaries, and skill lifecycle features, configure intelligence and embedding providers in the dashboard after install.
 
@@ -45,7 +45,7 @@ npm install -g @goondocks/myco
 
 Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page. There is nothing to run by hand and no `npm update` step.
 
-For advanced or scripted use, the `myco upgrade` CLI (with `--channel stable|beta`) is available, but the automatic and dashboard paths are the normal way to stay current. You do not need to install the standalone Collective operator CLI unless you want cross-project Collective administration (`@goondocks/myco-collective`).
+For advanced or scripted use, the `myco upgrade` CLI (with `--channel stable|beta`) is available, but the automatic and dashboard paths are the normal way to stay current.
 
 ## That's it — ready by default
 
@@ -91,7 +91,7 @@ Once installed, Myco works automatically:
 
 - **Session start**: Myco adds a project briefing when intelligence providers are configured
 - **During the session**: Activity (prompts, tool calls, responses) is captured in the vault
-- **After the session**: Myco extracts spores, generates summaries, and maintains the knowledge graph
+- **After the session**: Myco extracts spores, generates summaries, and links them to your sessions and plans
 - **Over time**: Repeated lessons become wisdom, stale knowledge can be superseded, and approved skills evolve with the code
 
 You don't need to drive the loop manually. Myco captures knowledge in the background and augments your agents without taking over their native memory or workflows.
@@ -120,20 +120,21 @@ See [Grove Management](groves.md) for the guide to Groves, project movement, cap
 
 ## MCP tools
 
-Myco exposes a set of MCP tools to your coding agent — search, recall, remember, browse sessions and plans, traverse the knowledge graph, and inspect skills. Agents discover them automatically through MCP.
+Myco exposes a set of MCP tools to your coding agent — search, recall, remember, browse sessions and plans, and inspect skills. Agents discover them automatically through MCP.
 
 See [Agent Tools](agent-tools.md) for the full reference.
 
 ## Skills
 
-Myco **auto-generates project-specific skills** from accumulated vault knowledge — repeatable workflows that teach every connected agent how to work in your codebase. As the intelligence pipeline processes sessions, it identifies procedural patterns with cross-session evidence and surfaces them as candidates. You approve what becomes canon in the Skills dashboard, and Myco writes validated SKILL.md files to `.agents/skills/`. Skills evolve automatically as your code does.
+Myco **auto-generates project-specific skills** from accumulated vault knowledge — repeatable workflows that teach every connected agent how to work in your codebase. As the intelligence pipeline processes sessions, it identifies procedural patterns with cross-session evidence and surfaces them as candidates. You approve what becomes canon in the Skills dashboard; Myco generates and validates the skill, and when you **Publish** it, the SKILL.md file lands in your project for every agent to load. Skills evolve automatically as your code does.
 
-Myco also ships two slash-command skills out of the box:
+Myco also ships a built-in `myco` skill that activates automatically during ongoing work (design decisions, debugging, vault hygiene), plus three slash-command skills:
 
 | Command | What it does |
 |---------|-------------|
-| `/myco` | Guidance on using Myco during ongoing work — design decisions, debugging, vault hygiene |
 | `/myco-rules` | Keep `AGENTS.md` minimal, durable, and canonical across agents |
+| `/myco-okf` | Create and maintain an OKF-conformant project wiki from your Myco intelligence |
+| `/myco-handoff` | Hand work off between sessions with plans and context intact |
 
 See the [Skills docs](skills.md) for the full auto-curation lifecycle.
 
@@ -194,12 +195,4 @@ myco remove --purge   # additionally remove ~/.myco/ itself
 
 ## Optional Operator CLIs
 
-Most users only need `@goondocks/myco`. Team Host operator commands (`myco host enable`, `myco join`, `myco attach`) are already part of that package — see the [Team Host guide](team-host.md) for running a team server or joining one. Install the extra CLI below only if you want its dedicated operator surface.
-
-### Collective CLI
-
-```bash
-npm install -g @goondocks/myco-collective
-```
-
-Use it to create and manage a [Myco Collective](collective.md).
+Most users only need `@goondocks/myco`. Team Host operator commands (`myco host enable`, `myco join`, `myco attach`) are already part of that package — see the [Team Host guide](team-host.md) for running a team server or joining one.

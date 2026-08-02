@@ -281,7 +281,7 @@
           <span class="feature-kicker">02 · Curate</span>
         </div>
         <h3>Repeated patterns become evolving workflows.</h3>
-        <p>The agent harness surveys your vault for procedural patterns with cross-session evidence, drafts a SKILL.md, runs quality checks, and — with your approval — promotes it to <code>.agents/skills/</code>. As the code changes, those skills can evolve too.</p>
+        <p>The agent harness surveys your vault for procedural patterns with cross-session evidence, drafts a SKILL.md, and runs quality checks. You approve and publish — publishing is what writes it to <code>.agents/skills/</code> for your agents. As the code changes, those skills can evolve too.</p>
         <div class="feature-meta">
           <span class="tag">survey</span>
           <span class="tag">approve</span>
@@ -300,7 +300,7 @@
         <div class="feature-meta">
           <span class="tag">team host</span>
           <span class="tag">external mcp</span>
-          <span class="tag">collective</span>
+          <span class="tag">residency</span>
         </div>
       </article>
     </div>
@@ -390,8 +390,8 @@
           </div>
           <div class="life-label"><span>Step 03</span><span class="actor">Agent</span></div>
           <h3>Generate</h3>
-          <p>A reusable skill is drafted from the source material, reviewed, and made available to your connected agents.</p>
-          <div class="life-tag"><code>.agents/skills/</code><span class="n">gen 1</span></div>
+          <p>A reusable skill is drafted from the source material and validated; publishing it writes <code>.agents/skills/</code> for your connected agents.</p>
+          <div class="life-tag"><code>publish</code><span class="n">gen 1</span></div>
         </article>
 
         <article class="life-step terra">
@@ -684,7 +684,7 @@
     <div class="sec-head">
       <span class="eyebrow">Docs</span>
       <h2 class="sec-title">Dig in.</h2>
-      <p class="sec-lede">Guides cover everything from your first install to running a Collective across dozens of projects.</p>
+      <p class="sec-lede">Guides cover everything from your first install to running a Team Host for your whole team.</p>
     </div>
 
     <div class="docs-grid">
@@ -737,10 +737,10 @@
         <span class="go">Read guide</span>
       </a>
       <a class="doc-card" href="/collective">
-        <span class="kind">Scale</span>
+        <span class="kind">Reference</span>
         <h4>Collective</h4>
-        <p>Connect multiple Myco-enabled teams into a single Collective with cross-project agent access.</p>
-        <span class="go">Read guide</span>
+        <p>Design notes for a future cross-team layer — not currently integrated; kept as a status record.</p>
+        <span class="go">Read notes</span>
       </a>
       <a class="doc-card" href="/agent-harness">
         <span class="kind">Advanced</span>
@@ -751,7 +751,7 @@
       <a class="doc-card" href="/agent-tools">
         <span class="kind">Reference</span>
         <h4>Agent MCP tools</h4>
-        <p>Full reference for the MCP tools Myco exposes — search, recall, remember, graph traversal, skills.</p>
+        <p>Full reference for the MCP tools Myco exposes — search, recall, remember, plans, skills.</p>
         <span class="go">Read guide</span>
       </a>
       <a class="doc-card" href="/symbionts">
@@ -838,10 +838,6 @@
     </div>
     <div class="footer-meta">
       <span class="stamp"><span class="dot"></span><span id="footer-version">v—</span> · built in the forest · <a href="https://goondocks.co" target="_blank" rel="noopener" style="color: var(--outline);">goondocks.co ↗</a></span>
-      <span class="pkg-versions" style="display:inline-flex; gap: 18px; color: var(--outline);">
-        <span><span style="color: var(--outline-variant);">@goondocks/myco-team</span> <span id="pkg-team">—</span></span>
-        <span><span style="color: var(--outline-variant);">@goondocks/myco-collective</span> <span id="pkg-collective">—</span></span>
-      </span>
       <span>© myco — the nervous system for AI-assisted software teams</span>
     </div>
   </div>
@@ -896,17 +892,6 @@
       })
       .catch(function(){});
 
-    function pkgVersionFor(name, elId) {
-      fetchPackageInfo(name)
-        .then(function(data) {
-          var tags = data && data['dist-tags'];
-          var version = tags && (tags.latest || tags.beta);
-          setText(elId, version ? 'v' + version : '—');
-        })
-        .catch(function(){ setText(elId, '—'); });
-    }
-    pkgVersionFor('@goondocks/myco-team', 'pkg-team');
-    pkgVersionFor('@goondocks/myco-collective', 'pkg-collective');
   })();
 
   // Install tabs
