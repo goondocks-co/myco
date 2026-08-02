@@ -73,7 +73,7 @@ const projectItem: NavItem = {
 };
 
 const groveItem: NavItem = {
-  to: '/g/:groveSlug/team',
+  to: '/g/:groveSlug/operations',
   label: 'Team',
   icon: (() => null) as never,
   scope: 'grove',
@@ -106,19 +106,19 @@ describe('resolveNavLinkTo', () => {
 
   it('substitutes the selected grove slug into a grove-scoped template', () => {
     expect(resolveNavLinkTo(groveItem, selectionA, '/anything', [groveA]))
-      .toBe('/g/alpha/team');
+      .toBe('/g/alpha/operations');
   });
 
   it('falls back to the first available grove when ProjectSelection is null (the bug)', () => {
     // Pre-fix this returned '/' and silently redirected to the Dashboard.
     expect(resolveNavLinkTo(groveItem, null, '/anything', [groveA]))
-      .toBe('/g/alpha/team');
+      .toBe('/g/alpha/operations');
   });
 
   it('falls back to the default grove when multiple groves exist and no selection', () => {
     // groveA has is_default: true.
     expect(resolveNavLinkTo(groveItem, null, '/anything', [groveB, groveA]))
-      .toBe('/g/alpha/team');
+      .toBe('/g/alpha/operations');
   });
 
   it('returns "/" only when there are NO groves at all (truly empty install)', () => {

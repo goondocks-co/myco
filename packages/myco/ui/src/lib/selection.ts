@@ -154,18 +154,10 @@ export function projectRouteSuffix(pathname: string): string {
 
 export type NavScope = 'project' | 'grove' | 'machine';
 
-/**
- * Pages whose true scope differs from what their URL implies. The Team surface
- * is machine-wide (teams are global; you assign any project from any grove) even
- * though it is bound to a grove route for request-context headers.
- */
-const PAGE_SCOPE_OVERRIDES: Array<{ test: RegExp; scope: NavScope }> = [
-  { test: /^\/g\/[^/]+\/team(\/|$|\?)/, scope: 'machine' },
-];
-
-/** Page scope inferred from the URL: project (/g/<g>/p/<p>/…), grove (/g/<g>/…), else machine. */
+/** Page scope inferred from the URL: project (/g/<g>/p/<p>/…), grove (/g/<g>/…), else machine.
+ *  (The old PAGE_SCOPE_OVERRIDES list existed solely for the Team page's
+ *  grove-bound URL; the page lives at machine-scoped /team now — E1 §5.4.) */
 export function scopeForPath(pathname: string): NavScope {
-  for (const o of PAGE_SCOPE_OVERRIDES) if (o.test.test(pathname)) return o.scope;
   if (/^\/g\/[^/]+\/p\/[^/]+/.test(pathname)) return 'project';
   if (/^\/g\/[^/]+/.test(pathname)) return 'grove';
   return 'machine';

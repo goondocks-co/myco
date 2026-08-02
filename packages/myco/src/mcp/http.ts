@@ -185,6 +185,10 @@ export function createStreamableMcpHttpHandler(
         const { projectId } = resolveInboundProjectId(req.headers, vaultDir, {
           expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
         });
+        // NOTE (E1 §5.3): the browser-only `x-myco-host-id` destination
+        // carrier is DELIBERATELY not honored here — an MCP client has no
+        // legitimate host-carrier caller; server.ts's chokepoint is the one
+        // place the header is resolved.
         const decision = classifyRoute(
           { method: req.method ?? 'POST', pathname: '/mcp', projectId },
           lockNamespace,

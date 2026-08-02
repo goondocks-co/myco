@@ -121,7 +121,9 @@ export function fetchHostGroveConfig(
           authorization: `Bearer ${target.bearer}`,
           [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
           [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
-          [REQUEST_CONTEXT_HEADERS.projectId]: target.projectId,
+          // Host-carrier targets carry no project (E1 §5.3) — omit rather
+          // than stamp null; the host supports grove-scoped tenancy.
+          ...(target.projectId !== null ? { [REQUEST_CONTEXT_HEADERS.projectId]: target.projectId } : {}),
           accept: 'application/json',
         },
       });
@@ -285,11 +287,16 @@ export async function handleAttachedConfigRequest(
   body: unknown,
   deps: AttachedConfigDeps,
 ): Promise<void> {
+  // config-carve is attach-only (a host-carrier target never classifies
+  // config_carve — the carrier admits team-write routes), so a null
+  // projectId cannot legitimately reach the attach lookup.
   const projectRoot = readHeader(req, REQUEST_CONTEXT_HEADERS.projectRoot)
-    ?? resolveAttach(
-      target.projectId,
-      deps.lockNamespace ?? nativePerUserLockNamespace,
-    )?.ref.root;
+    ?? (target.projectId !== null
+      ? resolveAttach(
+        target.projectId,
+        deps.lockNamespace ?? nativePerUserLockNamespace,
+      )?.ref.root
+      : undefined);
   if (!projectRoot) {
     respondJson(res, { status: 400, body: { error: 'missing_project_root' } });
     return;

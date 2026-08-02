@@ -61,6 +61,7 @@ import {
 } from '../grove/paths.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import { readHostMembershipSnapshots } from '../host/registry.js';
+import { requireProjectScopedTarget } from '../host/routing.js';
 import type { RemoteTarget } from '../host/routing.js';
 import {
   nativePerUserLockNamespace,
@@ -69,6 +70,7 @@ import {
 import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
 import {
+
   clearDrainFailure,
   recordDrainFailure,
   summarizeDrainHealth,
@@ -342,7 +344,7 @@ function makeDefaultTransport(machineId: string): EventReplayTransport {
       'content-type': 'application/json',
       'content-length': String(payload.length),
       [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
-      [REQUEST_CONTEXT_HEADERS.projectId]: target.projectId,
+      [REQUEST_CONTEXT_HEADERS.projectId]: requireProjectScopedTarget(target, 'event-replay drain'),
       [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
       [REQUEST_CONTEXT_HEADERS.machineId]: machineId,
       [REQUEST_CONTEXT_HEADERS.sessionId]: sessionId,
@@ -550,9 +552,10 @@ export class EventReplayDrainQueue {
   async noteSessionEnded(target: RemoteTarget, sessionId: string): Promise<void> {
     try {
       const hostId = target.host.host_id;
-      const bufferDir = resolveProjectBufferDir(target.groveId, target.projectId);
+      const projectId = requireProjectScopedTarget(target, 'event-replay drain');
+      const bufferDir = resolveProjectBufferDir(target.groveId, projectId);
       if (hostProtocolCompatible(target.host.protocol_version)) {
-        await this.drainSession({ hostId, projectId: target.projectId, target, bufferDir }, sessionId);
+        await this.drainSession({ hostId, projectId, target, bufferDir }, sessionId);
       }
       // Cheap unlocked early-out only — the authoritative check is the locked
       // re-read inside deleteSessionBuffer below.

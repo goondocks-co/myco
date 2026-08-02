@@ -74,7 +74,7 @@ export const navItems: readonly NavItem[] = [
   { to: '/g/:groveSlug/dashboard', label: 'Grove', icon: Trees, scope: 'grove', category: 'Grove management' },
   { to: '/groves', label: 'Groves', icon: FolderTree, scope: 'machine', category: 'Grove management' },
   { to: '/symbionts', label: 'Symbionts', icon: Plug, scope: 'machine', category: 'Grove management' },
-  { to: '/g/:groveSlug/team', label: 'Team', icon: Users, scope: 'grove', category: 'Grove management' },
+  { to: '/team', label: 'Team', icon: Users, scope: 'machine', category: 'Grove management' },
   { to: '/settings', label: 'Settings', icon: Settings, scope: 'machine', category: 'Settings' },
 ];
 
@@ -360,7 +360,7 @@ function NavGroup({
  *
  * Machine-wide pages (/groves, /logs, /settings) render under
  * GlobalSelectionBoundary — useProjectSelection() returns null there.
- * For grove-scoped nav items (Operations, Grove, Team), we still need a
+ * For grove-scoped nav items (Operations, Grove), we still need a
  * grove slug to build a valid URL. We resolve a fallback the same way
  * LegacyGroveRedirect does, so the sidebar never silently rewrites
  * grove-scoped links to '/'.

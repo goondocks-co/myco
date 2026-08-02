@@ -33,6 +33,17 @@ export const REQUEST_CONTEXT_HEADERS = {
   projectRoot: 'x-myco-project-root',
   projectId: 'x-myco-project-id',
   groveId: 'x-myco-grove-id',
+  /**
+   * Selects the DESTINATION HOST for a member-side team-scoped request
+   * (E1 §5.3): the daemon resolves it to a synthetic routing target built
+   * from the host record, so a joined host with ZERO attached projects is
+   * still configurable — the old attach-ref-as-carrier scheme silently
+   * routed those writes to the member's own daemon. It never names a
+   * Grove: the host derives its served grove itself (`team-config.ts`'s
+   * invariant), so the two rules compose. Browser-only; `mcp/http.ts`
+   * deliberately does NOT honor it.
+   */
+  hostId: 'x-myco-host-id',
   machineId: 'x-myco-machine-id',
   sessionId: 'x-myco-session-id',
   /**
@@ -81,6 +92,10 @@ const CONTEXT_SWITCHING_HEADERS = [
   REQUEST_CONTEXT_HEADERS.projectRoot,
   REQUEST_CONTEXT_HEADERS.projectId,
   REQUEST_CONTEXT_HEADERS.groveId,
+  // A destination-host selection is a STRICTLY more powerful context switch
+  // than a grove/project one — it picks which remote machine receives the
+  // write — so it sits inside the same bearer gate (E1 review, RC5-4).
+  REQUEST_CONTEXT_HEADERS.hostId,
 ] as const;
 
 /**
@@ -551,7 +566,7 @@ export function enforceUrlTenancyAuth(
   }
 }
 
-function enforceContextSwitchAuth(
+export function enforceContextSwitchAuth(
   headers: IncomingHttpHeaders,
   expectedToken: string | null,
 ): void {

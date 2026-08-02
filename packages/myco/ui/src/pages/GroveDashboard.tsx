@@ -45,7 +45,7 @@ export default function GroveDashboard() {
           port={daemon.daemon.port}
           version={daemon.daemon.version}
         />
-        <TeamHostServedCard groveId={grove.id} groveSlug={grove.slug} />
+        <TeamHostServedCard groveId={grove.id} />
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">

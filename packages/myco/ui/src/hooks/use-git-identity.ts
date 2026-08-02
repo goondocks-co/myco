@@ -1,3 +1,4 @@
+import { useProjectSelection } from './use-project-selection';
 import { usePowerQuery } from './use-power-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
@@ -26,9 +27,16 @@ export interface GitIdentity {
  * (a page reload / re-selection re-mounts the query).
  */
 export function useGitIdentity() {
+  // Probe-or-skip (E1 §5.4): `/git/status` is project-scoped, and on a
+  // MACHINE-scoped page (Team, Machine, Logs, Groves…) there is no ambient
+  // project selection — polling anyway produced a background error drumbeat
+  // in the console on every such page, not just Team. No selection → no
+  // query, and a later selection re-arms it (the key changes).
+  const selection = useProjectSelection();
   return usePowerQuery<GitIdentity>({
     queryKey: ['git-identity'],
     queryFn: ({ signal }) => fetchJson<GitIdentity>('/git/status', { signal }),
+    enabled: selection !== null,
     refetchInterval: (query) => (hostedDegradedInfo(query.state.error) ? false : POLL_INTERVALS.GIT_IDENTITY),
     retry: (failureCount, err) => (hostedDegradedInfo(err) ? false : failureCount < 3),
     pollCategory: 'standard',

@@ -9,7 +9,6 @@ import { useHostServeStatus } from '../../hooks/use-host-serve-status';
 
 interface Props {
   groveId: string;
-  groveSlug: string;
 }
 
 /**
@@ -23,14 +22,14 @@ interface Props {
  * that used to occupy this same Row 1 slot: whole-card link to the Team
  * page, `ochre` tone, `Users` eyebrow icon.
  */
-export function TeamHostServedCard({ groveId, groveSlug }: Props) {
+export function TeamHostServedCard({ groveId }: Props) {
   const { data } = useHostServeStatus();
   if (!data || data.serving !== true || data.served_grove_id !== groveId) return null;
 
   const { health, external_mcp: externalMcp, hosted_project_count: hostedProjectCount } = data;
 
   return (
-    <Link to={`/g/${groveSlug}/team`} className="block transition-opacity hover:opacity-90">
+    <Link to="/team" className="block transition-opacity hover:opacity-90">
       <Panel
         tone="ochre"
         eyebrow={<IconEyebrow Icon={Users} tone="ochre">Team</IconEyebrow>}

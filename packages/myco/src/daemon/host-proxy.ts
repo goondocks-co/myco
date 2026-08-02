@@ -86,6 +86,9 @@ const FLUSH_BEFORE_FORWARD_ROUTES = new Set([
  *  ever set (bearer-only auth), so `cookie` is stripped alongside `origin` /
  *  `referer` as the same class of header with no business on this hop. */
 const STRIPPED_REQUEST_HEADERS = new Set([
+  // The destination-host selector must never ride the proxy to the host —
+  // it is a member-side routing instruction, not host-facing context.
+  'x-myco-host-id',
   'host',
   'connection',
   'content-length',
@@ -374,6 +377,12 @@ function defaultDeps(logger?: ProxyLogger): HostProxyDeps {
     flushBeforeForward: async () => { /* no-op until the transcript drain plugs in */ },
     noteCollectEvent: () => { /* no-op until the transcript drain plugs in */ },
     bufferAppend: (target, sessionId, event) => {
+      // Unreachable for host-carrier targets (the carrier admits only
+      // team-write routes, never collect) — guarded anyway so a future
+      // widening fails loud instead of writing a buffer under 'null'.
+      if (target.projectId === null) {
+        throw new Error('bufferAppend requires a project-scoped target; host-carrier targets carry none.');
+      }
       const bufferDir = resolveProjectBufferDir(target.groveId, target.projectId);
       new EventBuffer(bufferDir, sessionId).append(event);
     },
@@ -520,7 +529,13 @@ function buildForwardHeaders(
   // target; this is the same rule at the live-relay chokepoint. IDENTITY
   // (machine/session headers) stays the caller's — that is the member's own.
   headers[REQUEST_CONTEXT_HEADERS.groveId] = target.groveId;
-  headers[REQUEST_CONTEXT_HEADERS.projectId] = target.projectId;
+  // A host-carrier target has NO project (E1 §5.3 rev 6): the host already
+  // supports grove-scoped project-less tenancy (request-context.ts), and a
+  // fabricated id would throw UnknownRequestContextError before the handler
+  // runs. Omit the header entirely rather than stamping a lie.
+  if (target.projectId !== null) {
+    headers[REQUEST_CONTEXT_HEADERS.projectId] = target.projectId;
+  }
   // MACHINE IDENTITY always crosses the hop. Agent/MCP clients supply
   // `x-myco-machine-id` themselves — forwarded verbatim, never overwritten.
   // A browser supplies none, and a host handler receiving no machine id

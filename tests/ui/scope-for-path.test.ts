@@ -16,9 +16,11 @@ describe('scopeForPath', () => {
     expect(scopeForPath('/groves')).toBe('machine');
     expect(scopeForPath('/')).toBe('machine');
   });
-  it('classifies the Team page as machine-wide despite its grove-bound route', () => {
-    expect(scopeForPath('/g/default/team')).toBe('machine');
-    expect(scopeForPath('/g/default/team?tab=sync')).toBe('machine');
+  it('the Team page LIVES at machine scope now — the old grove-bound URL only redirects (E1 §5.4)', () => {
+    // Rev 6 moved the route: /team is a first-class machine-scoped page, so
+    // the PAGE_SCOPE_OVERRIDES special case is gone. The legacy grove URL is
+    // a redirect whose momentary classification is irrelevant to nav state.
+    expect(scopeForPath('/team')).toBe('machine');
   });
   it('still classifies a normal grove page as grove and a project page as project', () => {
     expect(scopeForPath('/g/default')).toBe('grove');
