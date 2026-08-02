@@ -261,6 +261,26 @@ describe('external MCP production activation posture', () => {
     ]);
   });
 
+  it('a missing vendor CLI (ENOENT) is verified-off, not a failure', async () => {
+    const runner = createFunnelOffRunner(async () => {
+      const err = new Error('spawn tailscale ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    });
+    const result = await runner({ kind: 'port', port: 8743 });
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('not installed');
+  });
+
+  it('any other runner failure stays fail-closed', async () => {
+    const runner = createFunnelOffRunner(async () => {
+      throw new Error('tailscale exited 1');
+    });
+    const result = await runner({ kind: 'port', port: 8743 });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('exited 1');
+  });
+
   test('production runner leaves an unrelated replacement untouched', async () => {
     const calls: string[][] = [];
     const runner = createFunnelOffRunner(async (args) => {
