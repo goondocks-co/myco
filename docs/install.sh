@@ -324,24 +324,38 @@ printf '{\n  "channel": "%s",\n  "source": "curl",\n  "bin": "%s/myco"\n}\n' \
   "$CHANNEL" "$BIN_DIR" > "$HOME/.myco/install.json"
 
 # ---------------------------------------------------------------------------
-# PATH — idempotent rc edits
+# PATH — idempotent rc edits (human convenience; binary consumers resolve the
+# managed binary themselves and never rely on PATH)
+#
+# Per-file, not gated on the installer's own PATH: the inherited PATH proves
+# nothing about which rc files carry the entry (a re-run in a shell that
+# already has it must still repair the files). zsh reads `.zshenv` for every
+# shell and `.zshrc` only for interactive ones, so `.zshenv` is what reaches
+# non-interactive shells and is created when absent; `.zshrc` is still written
+# because macOS path_helper rebuilds login-shell PATH after `.zshenv` runs,
+# demoting its prepend. The rest are appended only when they already exist.
+# The emitted block is guarded so repeated sourcing cannot duplicate the
+# entry.
 # ---------------------------------------------------------------------------
-case ":${PATH}:" in
-  *":${BIN_DIR}:"*)
-    :  # already on PATH
-    ;;
-  *)
-    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
-      if [ -f "$rc" ] && ! grep -qF "$BIN_DIR" "$rc"; then
-        # SC2016: $PATH must NOT expand here — it belongs in the rc file verbatim
-        # shellcheck disable=SC2016
-        printf '\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$rc"
-      fi
-    done
-    warn "Added ${BIN_DIR} to PATH in shell rc files."
-    warn "Restart your shell or run: export PATH=\"${BIN_DIR}:\$PATH\""
-    ;;
-esac
+APPENDED_RC=0
+for rc in "$HOME/.zshenv" "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+  if [ ! -f "$rc" ] && [ "$rc" != "$HOME/.zshenv" ]; then continue; fi
+  if [ -f "$rc" ] && grep -qF "$BIN_DIR" "$rc"; then continue; fi
+  # SC2016: $PATH must NOT expand here — it belongs in the rc file verbatim
+  # shellcheck disable=SC2016
+  {
+    printf '\n# Added by the Myco installer.\n'
+    printf 'case ":$PATH:" in\n'
+    printf '  *":%s:"*) ;;\n' "$BIN_DIR"
+    printf '  *) export PATH="%s:$PATH" ;;\n' "$BIN_DIR"
+    printf 'esac\n'
+  } >> "$rc"
+  APPENDED_RC=$((APPENDED_RC + 1))
+done
+if [ "$APPENDED_RC" -gt 0 ]; then
+  warn "Added ${BIN_DIR} to PATH in ${APPENDED_RC} shell rc file(s)."
+  warn "Restart your shell or run: export PATH=\"${BIN_DIR}:\$PATH\""
+fi
 
 # ---------------------------------------------------------------------------
 # First run — install the managed service so the dashboard is reachable
