@@ -161,7 +161,9 @@ class LingeringServiceManager implements ServiceManager {
 
   async install(spec: ServiceSpec, opts?: InstallOptions): Promise<InstallResult> {
     const result = await this.inner.install(spec, opts);
-    const state = await this.loginctl.run(['show-user', String(process.env.USER ?? ''), '--property=Linger']);
+    // `USER` falls back to os.userInfo(): a unit-launched daemon renders a
+    // minimal env, and an empty username here would misreport linger state.
+    const state = await this.loginctl.run(['show-user', String(process.env.USER ?? nodeOs.userInfo().username), '--property=Linger']);
     const lingering = state.exitCode === 0 && state.stdout.includes('Linger=yes');
     if (!lingering) {
       const enabled = await this.loginctl.run(['enable-linger']);
@@ -304,9 +306,23 @@ export async function resolveObservedScope(
     // 'login' forever: a permanent false doctor warn, and every `myco
     // service install` reclassified as a destructive scope change (M7).
     if (platform === 'linux') {
+      // Per-label first: linger is per-USER and machine-global, so on a box
+      // whose daemon lingers, the linger consult alone would misreport every
+      // other label. The renderer stamps `# X-Myco-Scope=<startAt>` into any
+      // unit with a declared scope (systemd-unit.ts) — a `boot` marker is
+      // decisive on its own (the unit both declares AND effectively gets
+      // boot). A `login` marker is NOT: this function reports what is
+      // ACTUALLY installed (its contract above), and a login-declared unit
+      // on a lingering box still starts at boot — linger is machine-wide
+      // and Myco never disables it — so the linger consult still runs.
+      // Marker-less legacy units get the consult too.
+      const marker = /^# X-Myco-Scope=(login|boot)$/m.exec(
+        (() => { try { return nodeFs.readFileSync(loginUnit, 'utf-8'); } catch { return ''; } })(),
+      );
+      if (marker?.[1] === 'boot') return 'boot';
       const loginctl = options.loginctl ?? new RealLoginctlRunner();
       const state = await loginctl
-        .run(['show-user', String(process.env.USER ?? ''), '--property=Linger'])
+        .run(['show-user', String(process.env.USER ?? nodeOs.userInfo().username), '--property=Linger'])
         .catch(() => ({ stdout: '', exitCode: 1 }));
       if (state.exitCode === 0 && state.stdout.includes('Linger=yes')) return 'boot';
     }

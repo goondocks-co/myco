@@ -200,6 +200,14 @@ describe('hostEnableAndEmitJoin', () => {
         overlayPort: 41443,
         resolveNodeId: async () => 'node-9',
         verifyOverlayListener: async () => true,
+        // Headscale supervision flows through the scoped-manager seam. The
+        // always-installed fake plus 'login' observation DELIBERATELY pins
+        // the "already installed — skipping" branch: this file's subject is
+        // compose/join emission, not supervision (the install/refusal
+        // branches are exercised by host-enable.test.ts's honest doubles).
+        headscaleServiceManager: fakeManager(),
+        resolveHeadscaleScope: async () => 'login',
+        waitForAdminSocket: async () => true,
         logger: () => {},
         lockNamespace: testPerUserLockNamespace,
         ...overrides,

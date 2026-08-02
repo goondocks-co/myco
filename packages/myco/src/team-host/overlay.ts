@@ -12,17 +12,17 @@
  * key mint + join. So a crash between any two steps is recovered by simply
  * re-running `host enable`.
  *
- * PRIVILEGE, precisely (Overlay Coexistence spec C1/C2): tailscaled runs
- * UNPRIVILEGED — a user-domain service in userspace-networking mode on its own
- * private socket and statedir, adopting the member overlay's proven shape. Root
- * is still required for ONE named reason: headscale is supervised as a SYSTEM
- * service so the control plane survives reboot-before-login, and its admin
- * socket is root-owned (key minting, node listing). Root is surfaced up front,
- * never smuggled, and each privileged step shells `sudo` through the runner seam.
- *
- * Note the honest limit on that justification: the Myco daemon itself is
- * user-domain, and nothing here enables systemd lingering, so a host is not
- * actually reachable before login regardless of headscale's domain.
+ * PRIVILEGE, precisely (E1 spec §3.2, superseding the C1/C2-era model):
+ * BOTH overlay services run as the invoking user. tailscaled always did —
+ * a user-domain service in userspace-networking mode on its own private
+ * socket and statedir. headscale now follows the DAEMON'S own scope
+ * (`daemon.service_scope`, `runAs` always invoking-user): a boot-pinned
+ * control plane behind a login-scoped overlay listener bought no
+ * reachability, only a recurring sudo — every member add and key rotation
+ * was privileged forever because the admin socket was root-owned. With the
+ * process and socket user-owned, the whole admin CLI family is unprivileged
+ * and daemon-callable. The one remaining elevation is darwin+boot (an
+ * operator-converged always-on host), surfaced up front, never smuggled.
  */
 import os from 'node:os';
 import fs from 'node:fs';
@@ -44,7 +44,8 @@ import { loadMachineConfig } from '@myco/config/loader.js';
 import { createGrove, ensureDefaultGrove, loadGroveRecord, resolveDefaultGrove } from '@myco/grove/registry.js';
 import { seedGroveBackupDefaults } from '@myco/backup/service.js';
 import { getServiceManager } from '@myco/service/manager.js';
-import type { ServiceManager } from '@myco/service/types.js';
+import { getScopedServiceManager, resolveObservedScope } from '@myco/service/scoped.js';
+import type { ServiceManager, ServiceScope } from '@myco/service/types.js';
 import { sha256OfFile } from '@myco/host/overlay-provisioning-manifest.js';
 
 import {
@@ -58,12 +59,11 @@ import type { ServiceSpec } from '@myco/service/types.js';
 import { headscaleLayout, mintPreauthKey, renderHeadscaleConfig } from './headscale-config.js';
 import { realRunner } from './run.js';
 import { restartDaemonForHostServe, writeHostServeConfig } from './daemon-apply.js';
+import { headscaleSystemUnitPath, isLegacyRootHeadscaleUnit } from './scope-converge.js';
 import { clearHostState, readHostState, writeHostState } from './state.js';
 import {
   buildOverlayServiceSpec,
   checkRootAvailable,
-  installSystemService,
-  restartSystemService,
   isSystemServiceInstalled,
   uninstallSystemService,
   HEADSCALE_SERVICE_LABEL,
@@ -146,6 +146,16 @@ export interface HostEnableDeps {
   overlayPort?: number;
   /** Resolve the headscale node id for the host node (best-effort). */
   resolveNodeId?: (runner: CommandRunner, headscaleBin: string, configPath: string, hostname: string) => Promise<string | undefined>;
+  /** Scoped manager for the headscale unit (tests inject a fake). Production
+   *  resolves via `getScopedServiceManager` at the configured scope. */
+  headscaleServiceManager?: ServiceManager;
+  /** Observed-scope resolver for the headscale label (tests inject). */
+  resolveHeadscaleScope?: () => Promise<'login' | 'boot' | 'both' | 'none'>;
+  /** Wait for the freshly-started headscale to bind its ADMIN socket —
+   *  the post-start health proof. A dead control plane otherwise fails
+   *  "vicious rather than loud": `tailscale up` hangs forever (see the
+   *  empty-DERP-map note in headscale-config.ts). */
+  waitForAdminSocket?: (socketPath: string) => Promise<boolean>;
   /** Best-effort probe that the daemon overlay listener came up. Never fatal. */
   verifyOverlayListener?: (address: string, mycoHome: string) => Promise<boolean>;
   logger?: (message: string) => void;
@@ -353,13 +363,25 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   const hostname = sanitizeHostname(options.hostname ?? os.hostname());
   const headscaleUser = options.headscaleUser ?? 'myco-host';
 
-  // Surface the root requirement up front — never smuggle credentials.
-  const root = await checkRootAvailable(ctx);
-  if (!root.available) {
-    log(`NOTE: ${root.detail}`);
-    notes.push(root.detail);
-  } else {
-    log('root: sudo available for the headscale system-service install (tailscaled runs unprivileged).');
+  // Headscale follows the daemon's own scope (E1 spec §3.2): `runAs` is
+  // always the invoking user, `startAt` comes from `daemon.service_scope`.
+  // On the default login scope the whole enable is UNPRIVILEGED on every
+  // platform — no preflight, no sudo, no note. The one cell that still
+  // touches the system domain is darwin+boot (an operator-converged
+  // always-on host), and only THAT path surfaces the root requirement up
+  // front — never smuggle credentials.
+  const headscaleScope: ServiceScope = {
+    startAt: loadMachineConfig(mycoHome).daemon.service_scope,
+    runAs: 'invoking-user',
+  };
+  if (platform === 'darwin' && headscaleScope.startAt === 'boot') {
+    const root = await checkRootAvailable(ctx);
+    if (!root.available) {
+      log(`NOTE: ${root.detail}`);
+      notes.push(root.detail);
+    } else {
+      log('root: sudo available for the boot-scoped headscale unit install (tailscaled runs unprivileged).');
+    }
   }
 
   // 1. Provision binaries (idempotent — re-verifies in place).
@@ -380,7 +402,13 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   }), 'utf-8');
   log(`Wrote headscale config: ${layout.configPath}`);
 
-  // 3. Supervise headscale as a ROOT service (the reboot lesson — never nohup).
+  // 3. Supervise headscale at the DAEMON'S scope, as the invoking user (the
+  //    reboot lesson still holds — never nohup; supervision is just no longer
+  //    hard-pinned to the system domain). The install/skip decision is
+  //    OBSERVED-SCOPE-AWARE, never a boot-domain file check: the boot-only
+  //    check here was the fail-open that made every post-re-scope re-run
+  //    install a SECOND unit — two supervisors, two headscale processes, one
+  //    SQLite file (E1 review, RC1).
   const headscaleSpec = buildOverlayServiceSpec({
     label: HEADSCALE_SERVICE_LABEL,
     description: 'Myco Team Host control plane (headscale)',
@@ -388,22 +416,92 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     args: ['serve', '--config', layout.configPath],
     workingDir: layout.stateDir,
     logDir: path.join(layout.stateDir, 'logs'),
+    scope: headscaleScope,
   });
-  if (isSystemServiceInstalled(ctx, HEADSCALE_SERVICE_LABEL)) {
+  // Sandbox/test unit-dir overrides must reach the OBSERVATION and the
+  // MUTATION alike — a classification against the real /Library/LaunchDaemons
+  // paired with a sandboxed write is two functions addressing different
+  // machines (E1 diff review, CORRECTION 3).
+  const systemUnitDirOverride = platform === 'darwin' ? ctx.launchDaemonsDir : ctx.systemdUnitDir;
+  const headscaleManager = deps.headscaleServiceManager ?? getScopedServiceManager({
+    scope: headscaleScope,
+    platform,
+    bootOverrides: { unitDir: systemUnitDirOverride, stagingDir: ctx.stagingDir, runner },
+    // Linger disclosure must reach the operator, not a daemon log nobody
+    // reads (E1 spec §3.2(b)) — route it through this run's log + notes.
+    disclose: (message) => { log(message); notes.push(message); },
+  });
+  const observedHeadscale = await (deps.resolveHeadscaleScope
+    ?? (() => resolveObservedScope(HEADSCALE_SERVICE_LABEL, { platform, bootUnitDir: systemUnitDirOverride })))();
+  const targetDomain = headscaleScope.startAt === 'boot' ? 'boot' : 'login';
+  // A unit in the wrong domain (or both domains) is never converged in-place
+  // — enable refuses rather than manufacturing the two-supervisor state. The
+  // REMEDY differs by cell, and prescribing teardown for transitionable
+  // drift would destroy the team's control-plane state for a condition one
+  // non-destructive command fixes (E1 diff review, CORRECTION 4):
+  if (observedHeadscale === 'both') {
+    throw new Error(
+      'headscale units exist in BOTH supervision domains — two supervisors over one database. '
+      + 'Run `myco host disable` (removes both), then re-run `myco host enable`.',
+    );
+  }
+  if (observedHeadscale === 'boot' && isLegacyRootHeadscaleUnit(platform, systemUnitDirOverride)) {
+    // Legacy root cell (pre-1.3.1): no migration exists (E1 §3.3 rev 5).
+    throw new Error(
+      'headscale is supervised as a legacy root service (pre-1.3.1). There is no in-place migration — '
+      + 'run `myco host disable` (Myco elevates the individual removal steps itself), then re-run '
+      + '`myco host enable`.',
+    );
+  }
+  if (observedHeadscale !== 'none' && observedHeadscale !== targetDomain) {
+    // A Myco invoking-user cell in the wrong domain: transitionable drift.
+    throw new Error(
+      `headscale is '${observedHeadscale}'-scoped but daemon.service_scope calls for '${targetDomain}'. `
+      + 'Run `myco service install` to carry it to the daemon\'s scope, then re-run `myco host enable`.',
+    );
+  }
+  if (observedHeadscale === targetDomain) {
     if (bins.changed.includes('headscale')) {
       // §14.4: replace-and-restart is ONE operation — the unit is
       // byte-identical after a binary swap at the same path, so nothing
       // else would ever converge the running process. A restart failure is
       // LOUD (R-M1): recording success over a stale process would replace
-      // an honest stale record with a false fresh one.
-      await restartSystemService(ctx, HEADSCALE_SERVICE_LABEL);
+      // an honest stale record with a false fresh one. The SCOPED manager's
+      // restart, not `restartSystemService` — that one is boot-domain-only.
+      // Unlink the admin socket FIRST: a stale socket file survives SIGTERM
+      // and would let the health proof below certify the DYING pre-restart
+      // process as ready (the same R-M2 ordering the tailscaled path pins).
+      fs.rmSync(layout.adminSocketPath, { force: true });
+      await headscaleManager.restart(HEADSCALE_SERVICE_LABEL);
       log('headscale binary converged — restarted the supervised service.');
     } else {
       log('headscale service already installed — skipping.');
     }
   } else {
-    await installSystemService(ctx, headscaleSpec);
-    log('headscale supervised as a root service.');
+    fs.rmSync(layout.adminSocketPath, { force: true });
+    await headscaleManager.install(headscaleSpec);
+    // Start only when install did not already start the job: SystemdUser
+    // install only daemon-reloads + enables (registered-but-dead until
+    // reboot; `tailscale up` then waits forever rather than erroring — the
+    // empty-DERP-map failure shape), while launchd's bootstrap DOES start
+    // (RunAtLoad) and its `start` verb is kickstart -k, which would SIGTERM
+    // a headscale mid-SQLite-open for nothing.
+    const postInstall = await headscaleManager.status(HEADSCALE_SERVICE_LABEL);
+    if (postInstall.running !== true) {
+      await headscaleManager.start(HEADSCALE_SERVICE_LABEL);
+    }
+    log(`headscale supervised as a ${targetDomain}-scope service (runs as ${os.userInfo().username}).`);
+  }
+  // Post-start health proof: a dead control plane fails "vicious rather
+  // than loud" — the admin socket never appears and every admin call (and
+  // `tailscale up`) hangs or errors confusingly. Bound the wait and fail
+  // with the log path.
+  const adminSocketUp = await (deps.waitForAdminSocket ?? defaultWaitForAdminSocket)(layout.adminSocketPath);
+  if (!adminSocketUp) {
+    throw new Error(
+      `headscale did not bind its admin socket at ${layout.adminSocketPath} — the control plane is not serving. `
+      + `Check its logs under ${path.join(layout.stateDir, 'logs')} and re-run host enable.`,
+    );
   }
 
   // 4. Supervise tailscaled as an UNPRIVILEGED user-domain service on its own
@@ -736,13 +834,56 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
     }
   }
 
-  // 3. Headscale (boot backend THROWS on a failed removal — never a
-  // success-shaped "✓" over a surviving root unit).
-  if (isSystemServiceInstalled(ctx, HEADSCALE_SERVICE_LABEL)) {
-    try {
-      await uninstallSystemService(ctx, HEADSCALE_SERVICE_LABEL);
-    } catch (err) {
-      return abort('uninstall headscale', err);
+  // 3. Headscale — BOTH-domain teardown under proof, routed by ACTUAL UNIT
+  // LOCATION, never by boot-domain file check and never by semantic scope.
+  // The old boot-only check skipped the uninstall entirely post-re-scope and
+  // then destroyed `db.sqlite` under a LIVE KeepAlive-supervised process
+  // (E1 review, RC1). Semantic scope has the inverse trap: the Linux linger
+  // cell is a USER unit whose observation reads 'boot', so routing 'boot' to
+  // the system domain demands sudo for a unit that does not exist — and the
+  // abort would strand the REAL unit installed and running. A legacy
+  // root-cell unit AND a user-cell unit can coexist after a bad day; disable
+  // is the one operation that must converge to ZERO units in ANY domain.
+  {
+    // System-domain unit file present (legacy root cell, or a darwin
+    // boot×invoking-user cell): the boot backend THROWS on a failed removal —
+    // never a success-shaped "✓" over a surviving root unit. Sudo here is
+    // real, and applies only when this file actually exists.
+    const systemUnitDir = platform === 'darwin' ? ctx.launchDaemonsDir : ctx.systemdUnitDir;
+    const hadSystemUnit = fs.existsSync(headscaleSystemUnitPath(platform, systemUnitDir));
+    if (hadSystemUnit) {
+      try {
+        await uninstallSystemService(ctx, HEADSCALE_SERVICE_LABEL);
+      } catch (err) {
+        return abort('uninstall headscale (system domain)', err);
+      }
+    }
+    // User-domain unit (the ordinary login cell AND the Linux linger cell —
+    // linger itself is machine-wide and shared with the daemon, so it is
+    // never disabled here). Uninstall, then PROVE gone the same way
+    // tailscaled is proved: affirmative not-installed/not-running plus the
+    // admin socket no longer accepting. 'unknown' is NOT proof (R-M4). Same
+    // manager as the tailscaled teardown — the user domain has exactly one
+    // manager per platform, and test fakes inject it once.
+    const hsInstalledLogin = await serviceManager.isInstalled(HEADSCALE_SERVICE_LABEL).catch(() => false);
+    if (hsInstalledLogin) {
+      try {
+        await serviceManager.uninstall(HEADSCALE_SERVICE_LABEL);
+        const after = await serviceManager.status(HEADSCALE_SERVICE_LABEL);
+        if (after.installed || after.running !== false) {
+          throw new Error(`headscale still ${after.installed ? 'installed' : `running (state ${String(after.running)})`} after uninstall`);
+        }
+      } catch (err) {
+        return abort('uninstall headscale (user domain)', err);
+      }
+    }
+    if (hadSystemUnit || hsInstalledLogin) {
+      const hsSocket = headscaleLayout(resolveHostControlDir()).adminSocketPath;
+      if (await socketAccepts(hsSocket)) {
+        return abort('prove headscale gone', new Error(
+          `headscale admin socket at ${hsSocket} still accepts connections after uninstall`,
+        ));
+      }
     }
   }
 
@@ -796,8 +937,23 @@ async function socketAccepts(socketPath: string): Promise<boolean> {
   });
 }
 
+/** Poll the headscale admin socket until it accepts (the post-start health
+ *  proof). Deadline-bounded at 10s WALL time — per-iteration cost varies
+ *  (socketAccepts itself waits up to 1.5s on a hanging socket), so an
+ *  iteration-count bound would stretch to ~40s worst case. `false` means
+ *  the control plane never came up. */
+async function defaultWaitForAdminSocket(socketPath: string): Promise<boolean> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await socketAccepts(socketPath)) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
 /** `headscale nodes list --output json` → the id of the node matching `hostname`.
- *  The admin socket is root-owned, so the call is sudo'd (same as key minting). */
+ *  Unprivileged: the admin socket is user-owned (pinned via `unix_socket`),
+ *  same as key minting — which is what makes this daemon-callable. */
 async function defaultResolveNodeId(
   runner: CommandRunner,
   headscaleBin: string,
@@ -805,7 +961,7 @@ async function defaultResolveNodeId(
   hostname: string,
 ): Promise<string | undefined> {
   try {
-    const res = await runner.run('sudo', [headscaleBin, '--config', configPath, 'nodes', 'list', '--output', 'json']);
+    const res = await runner.run(headscaleBin, ['--config', configPath, 'nodes', 'list', '--output', 'json']);
     if (res.exitCode !== 0) return undefined;
     const parsed = JSON.parse(res.stdout) as Array<{ id?: unknown; name?: unknown; given_name?: unknown }>;
     const match = parsed.find((n) => n.name === hostname || n.given_name === hostname);

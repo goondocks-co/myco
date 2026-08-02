@@ -81,17 +81,19 @@ describe('mintPreauthKey', () => {
 
     expect(key).toBe('abc123def456key');
     // preauthkeys create references the user by resolved numeric id, one-time (no --reusable).
-    // Every call is routed through sudo — the headscale admin socket is root-owned.
+    // Every call is UNPRIVILEGED — the admin socket is user-owned (pinned via
+    // `unix_socket`), which is what makes minting daemon-callable (E1 §3.2).
     const mintCall = calls.find((c) => c.includes('preauthkeys'))!;
     expect(mintCall).toEqual([
-      'sudo', '/bin/headscale', '--config', '/cfg/config.yaml',
+      '/bin/headscale', '--config', '/cfg/config.yaml',
       'preauthkeys', 'create', '--user', '7', '--expiration', '1h', '--output', 'json',
     ]);
     expect(mintCall).not.toContain('--reusable');
-    // Every headscale invocation (create, list, mint) is sudo'd, not just the mint.
+    // NO headscale invocation (create, list, mint) elevates — sudo anywhere
+    // here would silently reintroduce privilege family (B).
     for (const call of calls) {
-      expect(call[0]).toBe('sudo');
-      expect(call[1]).toBe('/bin/headscale');
+      expect(call[0]).toBe('/bin/headscale');
+      expect(call).not.toContain('sudo');
     }
   });
 

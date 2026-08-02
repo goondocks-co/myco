@@ -2,8 +2,8 @@
  * Team Host HOST-side binary provisioning (Task 2.1).
  *
  * Provisions the pinned overlay binaries into the machine-global host control
- * home (`~/.myco-team/host/bin/`), checksum-verified, before either is installed
- * as a root service. Two provisioning sources, per the live spike (§0.1b) and
+ * home (`~/.myco-team/host/bin/`), checksum-verified, before either is
+ * supervised as a user-scoped service. Two provisioning sources, per the live spike (§0.1b) and
  * each vendor's actual distribution model:
  *
  *   - Headscale v0.29.2 (control plane): a single static binary published as a
