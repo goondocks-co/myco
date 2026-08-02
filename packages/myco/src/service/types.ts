@@ -1,6 +1,24 @@
 /** Which daemon variant the service hosts. */
 export type ServiceVariant = 'prod' | 'dev';
 
+/**
+ * Declared service scope (Overlay Coexistence spec §13): WHEN the service
+ * starts and WHO it runs as — two orthogonal facts, both explicit. Root is a
+ * VALUE, never an absence. Absence of the whole object means today's
+ * behavior exactly: login-scoped, invoking-user (§13.13 gate 1 pins the
+ * rendered bytes byte-identical per platform).
+ */
+export interface ServiceScope {
+  /** `login`: starts with the user session (LaunchAgent / systemctl --user /
+   *  Task Scheduler logon trigger). `boot`: starts with the machine. */
+  startAt: 'login' | 'boot';
+  /** `invoking-user`: the service runs as the user who installed it — for
+   *  `boot` on macOS that is a LaunchDaemon WITH `UserName`; on Linux the
+   *  user manager plus linger. `root` exists for the overlay control-plane
+   *  services (headscale) only, never the daemon, and is never config-driven. */
+  runAs: 'invoking-user' | 'root';
+}
+
 /** Platform-agnostic description of a managed user service. */
 export interface ServiceSpec {
   /** Unique label, e.g. `co.goondocks.myco` or `co.goondocks.myco-dev`. */
@@ -24,12 +42,26 @@ export interface ServiceSpec {
   keepAlive: boolean;
   /** Minimum seconds between restart attempts. */
   throttleSeconds: number;
+  /** Declared scope (§13). ABSENT means login + invoking-user with today's
+   *  exact rendering; see {@link ServiceScope}. The boot backend refuses a
+   *  spec whose declared object lacks an explicit `runAs` (the dangerous
+   *  input is a forgotten field, §13.13 gate 3) — enforced at runtime by
+   *  `resolveScope` because dynamic/cast call paths bypass the type. */
+  scope?: ServiceScope;
+  /** Human-readable supervisor description. Falls back to the legacy
+   *  `Myco daemon (${variant})` when absent — `variant` no longer describes
+   *  non-daemon services (a headscale unit is not a "Myco daemon"). */
+  description?: string;
 }
 
 /** Observed state of an installed service. */
 export interface ServiceStatus {
   installed: boolean;
-  running: boolean;
+  /** `'unknown'` when the owning domain cannot be read without privilege
+   *  (boot-scope status without root). Consumers MUST NOT treat `'unknown'`
+   *  as false — starting a live service or reporting "not running" on a
+   *  healthy boot-scoped daemon are exactly the failure modes this guards. */
+  running: boolean | 'unknown';
   pid: number | null;
   /** Most recent exit code as reported by the platform supervisor. */
   lastExitCode: number | null;
@@ -102,4 +134,40 @@ export interface ServiceManager {
    *  respawning dead units. Implemented where stale units accumulate (launchd);
    *  absent elsewhere. `keepLabel` guards the unit the caller is managing. */
   pruneSupersededUnits?(keepLabel?: string): Promise<string[]>;
+}
+
+/** The scope every spec without a declared one resolves to — today's world. */
+export const DEFAULT_SERVICE_SCOPE: ServiceScope = Object.freeze({
+  startAt: 'login',
+  runAs: 'invoking-user',
+});
+
+export class UnsupportedServiceScopeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedServiceScopeError';
+  }
+}
+
+/**
+ * Normalize + refuse in ONE place (both backends call this). Refusals:
+ * `login`+`root` is not a thing on any platform (§13.3 — unsupported
+ * combinations throw, never silently degrade); a declared object missing
+ * `runAs` (reachable via casts/dynamic construction) is refused because the
+ * forgotten field is the dangerous input (§13.13 gate 3).
+ */
+export function resolveScope(spec: Pick<ServiceSpec, 'scope' | 'label'>): ServiceScope {
+  const scope = spec.scope;
+  if (scope === undefined) return DEFAULT_SERVICE_SCOPE;
+  if (typeof (scope as { runAs?: unknown }).runAs !== 'string') {
+    throw new UnsupportedServiceScopeError(
+      `Service ${spec.label} declares a scope without an explicit runAs — root is a value, never an absence.`,
+    );
+  }
+  if (scope.startAt === 'login' && scope.runAs === 'root') {
+    throw new UnsupportedServiceScopeError(
+      `Service ${spec.label} declares login+root, which no platform supports.`,
+    );
+  }
+  return scope;
 }

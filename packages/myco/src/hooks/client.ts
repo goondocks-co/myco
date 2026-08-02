@@ -661,12 +661,12 @@ export class DaemonClient {
       const mgr = this.serviceManager ?? getServiceManager();
       const installed = await findInstalledServiceLabel(mgr, path.dirname(this.daemonService.stateDir));
       if (installed) {
-        if (!installed.status.running) {
+        if (installed.status.running === false) {
           // Supervisor knows about the service but isn't running it (cold
           // boot, throttle window). Ask it to start; the supervisor handles
           // port / lifecycle correctly. Fire-and-forget — the next probe
           // will discover whether the start succeeded.
-          await mgr.start(installed.label).catch(() => { /* best-effort */ });
+          await installed.manager.start(installed.label).catch(() => { /* best-effort */ });
         }
         return;
       }
@@ -732,7 +732,7 @@ export class DaemonClient {
       const mgr = this.serviceManager ?? getServiceManager();
       const installed = await findInstalledServiceLabel(mgr, path.dirname(this.daemonService.stateDir));
       if (installed) {
-        await mgr.restart(installed.label).catch(() => { /* best-effort */ });
+        await installed.manager.restart(installed.label).catch(() => { /* best-effort */ });
         return;
       }
     } catch {

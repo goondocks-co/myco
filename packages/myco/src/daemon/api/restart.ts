@@ -60,17 +60,45 @@ export function buildRestartArgv(
 export async function findInstalledServiceLabel(
   mgr: ServiceManager,
   mycoHome: string = resolveMycoHome(),
-): Promise<{ label: string; status: ServiceStatus } | null> {
-  if (!mgr.supported) return null;
+  opts: {
+    /** Test seam: the boot-domain manager to probe. Defaults to the real
+     *  scoped facade (which reads the real /Library/LaunchDaemons). Without
+     *  this seam no fixture can exist and the R-B1 gate is unwritable. */
+    bootManager?: ServiceManager;
+  } = {},
+): Promise<{ label: string; status: ServiceStatus; manager: ServiceManager } | null> {
   const label = serviceLabel(mycoHome);
-  const installed = await mgr.isInstalled(label).catch(() => false);
-  if (!installed) return null;
-  const status = await mgr.status(label).catch(() => null);
-  if (status) return { label, status };
-  return {
-    label,
-    status: { installed: true, running: false, pid: null, lastExitCode: null, unitPath: null },
-  };
+  if (mgr.supported) {
+    const installed = await mgr.isInstalled(label).catch(() => false);
+    if (installed) {
+      const status = await mgr.status(label).catch(() => null);
+      return {
+        label,
+        status: status ?? { installed: true, running: false, pid: null, lastExitCode: null, unitPath: null },
+        manager: mgr,
+      };
+    }
+  }
+  // The BOOT domain (spec R-B1): a boot-scoped daemon has NO login unit, and
+  // resolving null here is how it silently falls out of supervision — every
+  // restart/recovery path would direct-spawn an unsupervised daemon. macOS
+  // only: on Linux the boot+invoking-user unit IS the user unit probed above
+  // (persistence comes from linger), and the daemon never runs as root.
+  if (process.platform === 'darwin' || opts.bootManager) {
+    const bootMgr = opts.bootManager
+      ?? (await import('../../service/scoped.js'))
+        .getScopedServiceManager({ scope: { startAt: 'boot', runAs: 'invoking-user' } });
+    const bootInstalled = await bootMgr.isInstalled(label).catch(() => false);
+    if (bootInstalled) {
+      const status = await bootMgr.status(label).catch(() => null);
+      return {
+        label,
+        status: status ?? { installed: true, running: 'unknown', pid: null, lastExitCode: null, unitPath: null },
+        manager: bootMgr,
+      };
+    }
+  }
+  return null;
 }
 
 /**
