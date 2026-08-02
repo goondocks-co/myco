@@ -17,7 +17,7 @@
  * leak again and these assertions catch it without needing to inspect
  * launchctl's actual state.
  */
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, test, beforeEach, afterEach, it } from 'bun:test';
 import { RealLaunchctlRunner } from '../../packages/myco/src/service/launchd';
 import { RealSystemctlRunner } from '../../packages/myco/src/service/systemd';
 import { RealSchtasksRunner } from '../../packages/myco/src/service/windows';
@@ -196,5 +196,24 @@ describe('Real runners DO shell out when not in sandbox mode', () => {
     const runner = new RealLaunchctlRunner();
     const result = await runner.run(['version']);
     expect(result.stdout).not.toMatch(/^\[sandbox\] skipped /);
+  });
+});
+
+describe('RealLoginctlRunner sandbox gate (spec medium 10 / m4)', () => {
+  const saved = process.env.MYCO_LAUNCH_AGENTS_DIR;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.MYCO_LAUNCH_AGENTS_DIR;
+    else process.env.MYCO_LAUNCH_AGENTS_DIR = saved;
+  });
+
+  it('refuses enable-linger under a sandboxed unit dir — linger is machine-global and never disabled', async () => {
+    process.env.MYCO_LAUNCH_AGENTS_DIR = '/tmp/myco-sandbox-gate-test';
+    const { RealLoginctlRunner } = await import('@myco/service/scoped.js');
+    const runner = new RealLoginctlRunner();
+    const enable = await runner.run(['enable-linger']);
+    expect(enable.exitCode).not.toBe(0);
+    expect(enable.stdout).toContain('[sandbox] refused loginctl');
+    const disable = await runner.run(['disable-linger']);
+    expect(disable.exitCode).not.toBe(0);
   });
 });

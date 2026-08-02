@@ -117,6 +117,15 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
     const mgr = getServiceManager();
     if (mgr.supported) {
       await mgr.uninstall(serviceLabel(mycoHome));
+      // §13.11: `myco remove` on a boot-scoped install must not leave the
+      // root LaunchDaemon behind. Guarded by OBSERVED state; the boot
+      // backend refuses under a sandboxed unit dir, so test runs never sudo.
+      const { resolveObservedScope, getScopedServiceManager } = await import('../service/scoped.js');
+      const observed = await resolveObservedScope(serviceLabel(mycoHome));
+      if (observed === 'boot' || observed === 'both') {
+        const bootMgr = getScopedServiceManager({ scope: { startAt: 'boot', runAs: 'invoking-user' } });
+        await bootMgr.uninstall(serviceLabel(mycoHome));
+      }
       console.log('  ✓ Unregistered OS service');
     }
   } catch (err) {

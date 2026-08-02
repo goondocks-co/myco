@@ -1164,13 +1164,22 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       // supervisor-tracked PID is NOT us (we are the live lock-holder). Any other
       // shape (no unit, not running, or the supervisor already tracks us) is
       // healthy. Only the clear "running under a different PID" case acts.
-      const detached = !!found && found.status.running
+      const detached = !!found && found.status.running === true
         && found.status.pid !== null && found.status.pid !== process.pid;
       if (!detached) { serviceReconcileLatched = false; return; }
       // Two-tick latch so a single transient launchctl status read can't trigger
       // a needless self-restart.
       if (!serviceReconcileLatched) { serviceReconcileLatched = true; return; }
       serviceReconcileLatched = false;
+      // Spec R-B2: reconcile rebuilds a LOGIN unit — never auto-spawn it for
+      // a boot-supervised daemon (found.manager !== mgr means the boot
+      // domain owns the unit; scope changes are operator work).
+      if (found!.manager !== mgr) {
+        logger.warn(LOG_KINDS.DAEMON_START, 'Detached from BOOT-domain supervisor — not auto-reconciling; run `myco service install`', {
+          tracked_pid: found!.status.pid, my_pid: process.pid, label: found!.label,
+        });
+        return;
+      }
       logger.warn(LOG_KINDS.DAEMON_START, 'Detached from supervisor job — spawning `service reconcile`', {
         tracked_pid: found!.status.pid, my_pid: process.pid, label: found!.label,
       });

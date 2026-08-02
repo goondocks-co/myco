@@ -74,6 +74,46 @@ export async function ensureSelfInstalledAsService(
 
     const mycoHome = opts.mycoHome ?? resolveMycoHome();
     const label = serviceLabel(mycoHome);
+
+    // §13.5: the daemon is a READ-ONLY OBSERVER of boot scope on macOS —
+    // realizing it needs sudo the daemon does not have, and rebuilding the
+    // default login spec here would create two units, one label, two
+    // domains. It refrains from the PRIVILEGED step only (spec R-M2): on
+    // Linux boot+invoking-user the unit is the ordinary user unit, and this
+    // very install is what keeps it current across binary swaps — only the
+    // linger enable is operator work. On platforms where boot is
+    // unsupported (win32), a stray `service_scope: boot` keeps realizing
+    // login scope; the doctor scope row reports the mismatch.
+    if (process.platform === 'darwin') {
+      try {
+        const { loadMachineConfig } = await import('../config/loader.js');
+        const { resolveObservedScope } = await import('./scoped.js');
+        const intent = loadMachineConfig(mycoHome).daemon.service_scope;
+        if (intent === 'boot') {
+          const observed = await resolveObservedScope(label);
+          if (observed === 'boot' || observed === 'both') {
+            // Realized boot scope: the daemon refrains — refreshing would
+            // rebuild a login unit beside the LaunchDaemon (§13.5).
+            logger.debug('daemon.service_install', 'Boot-scoped install observed; daemon refrains from self-install', {
+              home: mycoHome,
+            });
+            return;
+          }
+          // Intent declared but NOT yet realized (observed login/none): the
+          // LOGIN unit is still the live scope — keep refreshing it (this
+          // install is what re-points it across binary swaps; going stale
+          // here is spec M8's finding) and warn about the divergence.
+          logger.warn('daemon.service_install', 'service_scope intent is boot but the boot unit is missing — run `myco service install` (the daemon cannot elevate); keeping the login unit current meanwhile', {
+            home: mycoHome, intent, observed,
+          });
+        }
+      } catch (err) {
+        logger.debug('daemon.service_install', 'Scope-intent read skipped', {
+          error: (err as Error).message,
+        });
+      }
+    }
+
     const wasInstalled = await mgr.isInstalled(label);
 
     const executable = opts.executable ?? defaultServiceExecutable(mycoHome);

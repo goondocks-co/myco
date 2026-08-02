@@ -49,6 +49,10 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   // mechanic (the port a member points Funnel at), never git-shared. Covers
   // both `daemon.external_mcp.enabled` and `daemon.external_mcp.port`.
   'daemon.external_mcp': { home: 'machine', overridableBy: [] },
+  // §13.4 declared service-scope INTENT — machine-locked (a per-machine
+  // daemon mechanic like `port`; realization requires operator privilege on
+  // this box, so the value is meaningless anywhere else).
+  'daemon.service_scope': { home: 'machine', overridableBy: [] },
   // Legacy `update.channel` leaf. Runtime reads/writes machine
   // `daemon.update_channel` exclusively, and the loader lifts any legacy
   // `update.channel` from myco.yaml or local.yaml to machine once, then strips

@@ -135,6 +135,21 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
     const refusal = assertSafeServiceMutation({ action: 'install' }, process.execPath, mycoHome);
     if (refusal) return [refusal];
 
+    // Spec R-M3: the dangerous shape is a BOOT-observed unit — reinstalling
+    // the login unit beside it gives two supervisors one daemon. Keyed on
+    // OBSERVED state (config intent alone would miss intent-login+observed-boot).
+    {
+      const { resolveObservedScope } = await import('../service/scoped.js');
+      const { serviceLabel: resolveLabel } = await import('../service/labels.js');
+      const observed = await resolveObservedScope(resolveLabel(mycoHome));
+      if (observed === 'boot' || observed === 'both') {
+        return [
+          `Refusing service-reinstall: the ${observed === 'both' ? 'boot AND login units' : 'boot unit'} `
+          + 'own this daemon. Use `myco service install` to converge scope instead.',
+        ];
+      }
+    }
+
     // The 'executable missing' check fires precisely when the recorded
     // command is gone, and buildServiceSpec throws on a missing path —
     // fall back to the running binary.

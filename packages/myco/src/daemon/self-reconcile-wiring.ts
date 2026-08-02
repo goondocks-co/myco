@@ -94,7 +94,8 @@ export function startSelfReconcileLoop(
 
 /** Fire-and-forget supervisor restart via `ServiceManager.restart(label)`. */
 function requestSupervisorRestart(logger: DaemonLogger, daemonService: DaemonServiceState): void {
-  const label = serviceLabel(path.dirname(daemonService.stateDir));
+  const mycoHome = path.dirname(daemonService.stateDir);
+  const label = serviceLabel(mycoHome);
   const serviceManager = getServiceManager();
   if (!serviceManager.supported) {
     logger.warn(
@@ -104,7 +105,18 @@ function requestSupervisorRestart(logger: DaemonLogger, daemonService: DaemonSer
     );
     return;
   }
-  serviceManager.restart(label).catch((err: unknown) => {
+  // Route through the OWNING domain (spec R-B1): under boot scope a
+  // login-manager kickstart targets a gui/ domain with no job and the
+  // self-reconciler never heals.
+  void (async () => {
+    const { findInstalledServiceLabel } = await import('./api/restart.js');
+    const found = await findInstalledServiceLabel(serviceManager, mycoHome);
+    if (!found) {
+      logger.warn(LOG_KINDS.DAEMON_RECONCILE, 'No supervised unit found for restart', { label });
+      return;
+    }
+    await found.manager.restart(found.label);
+  })().catch((err: unknown) => {
     logger.error(
       LOG_KINDS.DAEMON_RECONCILE,
       'Supervisor restart failed',

@@ -230,7 +230,7 @@ export class SystemdUserServiceManager implements ServiceManager {
   }
 }
 
-function parseSystemdCommand(unit: string): InstalledServiceCommand | null {
+export function parseSystemdCommand(unit: string): InstalledServiceCommand | null {
   const serviceSections = [...unit.matchAll(/^\[Service\]\s*$/gm)];
   if (serviceSections.length !== 1) return null;
   const sectionStart = serviceSections[0].index! + serviceSections[0][0].length;

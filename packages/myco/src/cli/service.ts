@@ -106,33 +106,131 @@ export async function run(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Label-keyed actions act on the OWNING domain (spec R-B1): a boot-scoped
+  // daemon's restart must reach the system domain, not a gui/ domain with no
+  // job. Install stays login-scoped here; scope transitions are their own
+  // operation (`myco service install` reads `daemon.service_scope`).
+  const { findInstalledServiceLabel } = await import('../daemon/api/restart.js');
+  const owning = async () => (await findInstalledServiceLabel(mgr, mycoHome))?.manager ?? mgr;
+
   switch (parsed.action) {
     case 'install': {
       const spec = buildServiceSpec({ mycoHome, executable: resolveServiceExecutable(mycoHome) });
-      await mgr.install(spec, { force: true });
-      await mgr.start(label);
-      console.log(`Installed ${label} via ${mgr.platformName}`);
+      const { loadMachineConfig } = await import('../config/loader.js');
+      const {
+        getScopedServiceManager, resolveObservedScope, supportsScope, transitionServiceScope,
+      } = await import('../service/scoped.js');
+      const intent = loadMachineConfig(mycoHome).daemon.service_scope;
+      // Refuse root BEFORE anything destructive (round-3 follow-up): on the
+      // transition path the renderer's own refusal fires only AFTER the
+      // working login unit is uninstalled, and a rollback running as root
+      // leaves a root-owned plist in ~/Library/LaunchAgents that the user's
+      // daemon can never rewrite again. The renderer check stays as the
+      // backstop for every other path.
+      if (intent === 'boot' && process.getuid?.() === 0) {
+        console.error(
+          'Refusing to install a boot-scoped service as root. '
+          + 'Run `myco service install` WITHOUT sudo — Myco elevates only the individual steps that need it.',
+        );
+        process.exit(1);
+      }
+      const targetScope = { startAt: intent, runAs: 'invoking-user' as const };
+      const capability = await supportsScope(targetScope);
+      if (!capability.supported) {
+        // (Note: `myco service install` is the remediation surface itself —
+        // the failure detail explains how to elevate.)
+        // §13.8: an unsupported scope THROWS rather than silently doing
+        // nothing (a boot option that quietly installs login scope would be
+        // the rev-6 defect back again).
+        console.error(`Cannot realize service_scope '${intent}' on this machine: ${capability.detail}`);
+        process.exit(1);
+      }
+      const observed = await resolveObservedScope(label);
+      const currentScope = observed === 'boot' || observed === 'both'
+        ? { startAt: 'boot' as const, runAs: 'invoking-user' as const }
+        : { startAt: 'login' as const, runAs: 'invoking-user' as const };
+      const target = getScopedServiceManager({ scope: targetScope });
+      if (observed === 'none' || currentScope.startAt === intent) {
+        if (observed === 'both') {
+          console.error(`Both a login and a boot unit exist for ${label}; converging on '${intent}'.`);
+        }
+        await target.install({ ...spec, scope: targetScope }, { force: true });
+        await target.start(label);
+        console.log(`Installed ${label} via ${target.platformName}`);
+        if (intent === 'boot' && process.platform === 'darwin') {
+          console.log(
+            'Note: unattended upgrades of a boot-scoped daemon re-run sudo without a terminal. '
+            + 'If your user has no passwordless-sudo (NOPASSWD) rule for launchctl/install, restarts '
+            + 'after upgrades will need a manual `myco service restart`.',
+          );
+        }
+        return;
+      }
+      // §13.7: the scope CHANGE is one named operation, CLI-driven. BOTH
+      // ends are preflighted (spec M5): boot→login's stop/uninstall need
+      // sudo just as much as login→boot's install does.
+      if (currentScope.startAt === 'boot' || targetScope.startAt === 'boot') {
+        const fromCapability = await supportsScope({ startAt: 'boot', runAs: 'invoking-user' });
+        if (!fromCapability.supported) {
+          console.error(`Cannot transition service scope: ${fromCapability.detail}`);
+          process.exit(1);
+        }
+      }
+      const from = getScopedServiceManager({ scope: currentScope });
+      const fromStatus = await from.status(label);
+      const { boundedServiceRunner } = await import('../service/scoped.js');
+      await transitionServiceScope({
+        label,
+        spec,
+        from: { manager: from, scope: currentScope, unitPath: fromStatus.unitPath ?? '' },
+        to: { manager: target, scope: targetScope },
+        // Bounded (spec m8/M9): the rollback path re-elevates through this
+        // runner; a sudo prompt with no tty must time out, never hang.
+        runner: boundedServiceRunner,
+        log: (message) => console.log(message),
+      });
+      console.log(`Transitioned ${label} to ${intent} scope via ${target.platformName}`);
+      if (intent === 'boot' && process.platform === 'darwin') {
+        // N2: `sudo -n true` passing NOW may be a cached timestamp, not a
+        // durable rule — but unattended upgrade restarts re-elevate later
+        // with no tty. Disclose instead of discovering it as a fallen-out-
+        // of-supervision daemon months from now.
+        console.log(
+          'Note: unattended upgrades of a boot-scoped daemon re-run sudo without a terminal. '
+          + 'If your user has no passwordless-sudo (NOPASSWD) rule for launchctl/install, restarts '
+          + 'after upgrades will need a manual `myco service restart`.',
+        );
+      }
       return;
     }
-    case 'uninstall':
-      await mgr.uninstall(label);
+    case 'uninstall': {
+      const target = await owning();
+      await target.uninstall(label);
       console.log(`Uninstalled ${label}`);
       return;
-    case 'start':
-      await mgr.start(label);
+    }
+    case 'start': {
+      const target = await owning();
+      await target.start(label);
       console.log(`Started ${label}`);
       return;
-    case 'stop':
-      await mgr.stop(label);
+    }
+    case 'stop': {
+      const target = await owning();
+      await target.stop(label);
       console.log(`Stopped ${label}`);
       return;
-    case 'restart':
-      await mgr.restart(label);
+    }
+    case 'restart': {
+      const target = await owning();
+      await target.restart(label);
       console.log(`Restarted ${label}`);
       return;
+    }
     case 'status': {
-      const st = await mgr.status(label);
-      console.log(JSON.stringify({ label, platform: mgr.platformName, ...st }, null, 2));
+      const target = await owning();
+      const st = await target.status(label);
+      console.log(JSON.stringify({ label, platform: target.platformName, ...st }, null, 2));
       return;
     }
     case 'reconcile': {
@@ -169,6 +267,16 @@ export async function reconcile(
   if (!found) {
     console.log(`No managed service installed for ${label}; nothing to reconcile.`);
     return;
+  }
+  if (found.manager !== mgr) {
+    // Spec R-B2: reconcile rebuilds a LOGIN unit with force — under boot
+    // scope that is exactly the two-units-one-label-two-domains state §13.5
+    // forbids, from a daemon-initiated path. Scope changes are operator work.
+    console.error(
+      `${label} is supervised in the boot domain; \`myco service reconcile\` only manages login-scoped `
+      + 'daemons. Use `myco service install` to change scope.',
+    );
+    process.exit(1);
   }
 
   const { resolveGlobalDaemonPort } = await import('../daemon/service-state.js');

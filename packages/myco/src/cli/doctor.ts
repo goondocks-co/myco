@@ -1076,7 +1076,9 @@ export function evaluateServiceCheck(
       fixable: false,
     };
   }
-  if (!status.running) {
+  // 'unknown' (boot-scope status without privilege) is NOT "not running" —
+  // a healthy boot-scoped daemon must not produce a warn row here.
+  if (status.running === false) {
     return {
       name: 'Service',
       status: 'warn',
@@ -1108,12 +1110,46 @@ export function evaluateServiceCheck(
     }
   }
 
+  if (status.running === 'unknown') {
+    // Boot-scope status can need privilege to read — say so instead of
+    // asserting a liveness we don't have (spec medium 12).
+    return {
+      name: 'Service',
+      status: 'ok',
+      detail: `${label} installed (boot-scoped; run state needs privilege to read) via ${status.unitPath ?? 'service unit'}`,
+      fixable: false,
+    };
+  }
   return {
     name: 'Service',
     status: 'ok',
     detail: `${label} running (pid ${status.pid ?? '?'}) via ${status.unitPath ?? 'service unit'}`,
     fixable: false,
   };
+}
+
+/** §13.4/§13.5: report declared service-scope intent vs observed state.
+ *  The daemon never converges this; divergence is an OPERATOR row pointing
+ *  at `myco service install`. */
+export async function checkServiceScope(): Promise<DoctorCheck | null> {
+  const { loadMachineConfig } = await import('../config/loader.js');
+  const { resolveObservedScope } = await import('../service/scoped.js');
+  const { serviceLabel: resolveLabel } = await import('../service/labels.js');
+  const mycoHome = resolveMycoHome();
+  let intent: 'login' | 'boot';
+  try {
+    intent = loadMachineConfig(mycoHome).daemon.service_scope;
+  } catch {
+    return null;
+  }
+  const label = resolveLabel(mycoHome);
+  const observed = await resolveObservedScope(label);
+  if (intent === 'login' && (observed === 'login' || observed === 'none')) return null;
+  if (intent === 'boot' && observed === 'boot') return null;
+  const detail = observed === 'both'
+    ? `both a login and a boot unit exist for ${label} — two supervisors will fight over one daemon; run \`myco service install\` to converge on the declared scope (${intent})`
+    : `daemon.service_scope is '${intent}' but the installed unit is ${observed === 'none' ? 'missing' : `'${observed}'-scoped`} — run \`myco service install\` from a shell that can elevate`;
+  return { name: 'Service scope', status: 'warn', detail, fixable: false };
 }
 
 async function checkService(): Promise<DoctorCheck> {
@@ -1128,7 +1164,11 @@ async function checkService(): Promise<DoctorCheck> {
   }
   const mycoHome = resolveMycoHome();
   const label = serviceLabel(mycoHome);
-  const status = await mgr.status(label);
+  // OWNING domain (spec R-M3): a boot-scoped machine would otherwise show a
+  // permanent false "not installed" with a --fix that installs a SECOND unit.
+  const { findInstalledServiceLabel } = await import('../daemon/api/restart.js');
+  const found = await findInstalledServiceLabel(mgr, mycoHome);
+  const status = found?.status ?? await mgr.status(label);
   const serviceExec = resolveServiceExecutable(mycoHome);
   const managedBinary = managedBinaryPath(mycoHome, process.platform, process.env.LOCALAPPDATA);
   return evaluateServiceCheck(label, status, serviceExec, { isDefaultHome: isDefaultMycoHome(mycoHome), managedBinary });
@@ -1222,6 +1262,8 @@ export async function runChecks(
   checks.push(...await checkAgents(vaultDir, config));
   checks.push(await checkDaemon(vaultDir));
   checks.push(await checkService());
+  const serviceScope = await checkServiceScope();
+  if (serviceScope) checks.push(serviceScope);
   checks.push(checkBinaryVersionSkew());
   checks.push(await checkInstallSource());
   checks.push(await checkGlobalLaunchers());

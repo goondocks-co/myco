@@ -283,7 +283,7 @@ function parsePlistExecutable(plist: string, expectedLabel?: string): string | n
   return parsePlistCommand(plist, expectedLabel)?.executable ?? null;
 }
 
-function parsePlistCommand(plist: string, expectedLabel?: string): InstalledServiceCommand | null {
+export function parsePlistCommand(plist: string, expectedLabel?: string): InstalledServiceCommand | null {
   const parsed = parsePlistDocument(plist);
   if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return null;
   if (expectedLabel !== undefined && parsed.Label !== expectedLabel) return null;
@@ -304,6 +304,9 @@ function decodePlistString(value: string): string | null {
 }
 
 function isLaunchdJobAbsent(stdout: string): boolean {
+  // A PERMISSION refusal is not absence (spec R-M6): reading "Operation not
+  // permitted" as "no job" would report a live service as gone.
+  if (/not privileged|operation not permitted|permission denied/i.test(stdout)) return false;
   return /^\[sandbox\] skipped launchctl print /i.test(stdout)
     || /(?:could not find|not found|unknown) service/i.test(stdout);
 }

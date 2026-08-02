@@ -1,3 +1,4 @@
+import { resolveScope } from './types.js';
 import type { ServiceSpec } from './types.js';
 
 function shellEscape(value: string): string {
@@ -26,10 +27,20 @@ export function renderSystemdUnit(spec: ServiceSpec): string {
     .join('\n');
 
   const restart = spec.keepAlive ? 'on-failure' : 'no';
-  const wantedBy = spec.runAtLoad ? 'default.target' : '';
+  const scope = resolveScope(spec);
+  // A system unit (boot+root) is wanted by the machine, not a user session.
+  // Every other cell keeps today's exact bytes (§13.13 gate 1).
+  const bootRoot = scope.startAt === 'boot' && scope.runAs === 'root';
+  const wantedBy = spec.runAtLoad ? (bootRoot ? 'multi-user.target' : 'default.target') : '';
+  const description = spec.description ?? `Myco daemon (${spec.variant})`;
+  // `# X-Myco-Scope=` is a COMMENT, not a directive (spec m3): its only job
+  // is making the rendered bytes differ across scopes so the content-match
+  // early return in systemd.ts cannot swallow a scope change. Emitted only
+  // for a DECLARED scope so undeclared specs stay byte-identical to today.
+  const scopeMarker = spec.scope ? `# X-Myco-Scope=${scope.startAt}\n` : '';
 
-  return `[Unit]
-Description=Myco daemon (${spec.variant})
+  return `${scopeMarker}[Unit]
+Description=${description}
 After=network.target
 
 [Service]

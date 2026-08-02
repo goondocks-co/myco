@@ -685,7 +685,7 @@ async function joinHostLocked(
     });
     expectedServiceSpec = spec;
     const beforeInstall = await serviceManager.status(label);
-    servicePreexisting = beforeInstall.installed || beforeInstall.running;
+    servicePreexisting = beforeInstall.installed || beforeInstall.running === true;
     proxyPortReservation = advanceHostEnrollmentPhase(
       proxyPortReservation,
       'service_preparing',
@@ -694,7 +694,9 @@ async function joinHostLocked(
     );
     const install = await serviceManager.install(spec);
     const status = await serviceManager.status(label);
-    if (!status.running) {
+    // `running === false` deliberately: 'unknown' (unreadable owning
+    // domain) must never trigger a blind start of a possibly-live service.
+    if (status.running === false) {
       await serviceManager.start(label);
       log(`member tailscaled ${install.changed ? 'installed' : 'present'} + started (user LaunchAgent ${label}).`);
     } else {
