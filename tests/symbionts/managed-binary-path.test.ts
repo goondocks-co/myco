@@ -10,30 +10,20 @@
  * PREFERRED path when it exists on disk: pin → managed (on disk) → execPath.
  */
 
-import { describe, it, expect, afterAll, mock } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-
-// ---------------------------------------------------------------------------
-// Module mocks — hoisted before any import that resolves update-checker
-// ---------------------------------------------------------------------------
-
-const realUpdateChecker = await import('@myco/daemon/update-checker.js');
-
-let mockResolveRuntimeCommand: () => string | null = () => null;
-
-mock.module('@myco/daemon/update-checker.js', () => ({
-  ...realUpdateChecker,
-  resolveRuntimeCommand: () => mockResolveRuntimeCommand(),
-}));
-
-afterAll(() => {
-  mock.module('@myco/daemon/update-checker.js', () => realUpdateChecker);
-});
-
-// Import AFTER mocking so the stub is in place when installer.ts loads
 import { resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
+
+// The contract reads the machine pin from `<mycoHome>/runtime.command` on
+// disk, so tests write a real pin file instead of mocking a resolver.
+function writeMachinePin(mycoHome: string, target: string): void {
+  fs.mkdirSync(mycoHome, { recursive: true });
+  const pinPath = path.join(mycoHome, 'runtime.command');
+  fs.writeFileSync(pinPath, `${target}\n`, { mode: 0o644 });
+  fs.chmodSync(pinPath, 0o644);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,7 +38,8 @@ function makeTempHomeWithManagedBinary(): { home: string; mycoHome: string; mana
   const binDir = path.join(mycoHome, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
   const managedPath = path.join(binDir, 'myco');
-  fs.writeFileSync(managedPath, '#!/bin/sh\nexec myco "$@"', 'utf8');
+  fs.writeFileSync(managedPath, '#!/bin/sh\nexec myco "$@"', { mode: 0o755 });
+  fs.chmodSync(managedPath, 0o755);
   return { home, mycoHome, managedPath };
 }
 
@@ -66,7 +57,7 @@ describe('resolveManagedBinaryPath', () => {
     it('returns the pin path when resolveRuntimeCommand returns a value, ignoring managed binary existence', () => {
       const { home, managedPath } = makeTempHomeWithManagedBinary();
       const pin = '/opt/special/bin/myco';
-      mockResolveRuntimeCommand = () => pin;
+      writeMachinePin(home, pin);
 
       try {
         const result = resolveManagedBinaryPath(home, 'linux');
@@ -75,21 +66,21 @@ describe('resolveManagedBinaryPath', () => {
         expect(result).not.toBe(process.execPath.replaceAll('\\', '/'));
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
-        mockResolveRuntimeCommand = () => null;
+        // no pin file written
       }
     });
 
     it('forward-slashes the pin path', () => {
       const home = makeTempHomeWithoutManagedBinary();
       const pin = 'C:\\Users\\test\\AppData\\Local\\Myco\\bin\\myco.exe';
-      mockResolveRuntimeCommand = () => pin;
+      writeMachinePin(home, pin);
 
       try {
         const result = resolveManagedBinaryPath(home, 'win32');
         expect(result).toBe('C:/Users/test/AppData/Local/Myco/bin/myco.exe');
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
-        mockResolveRuntimeCommand = () => null;
+        // no pin file written
       }
     });
   });
@@ -97,7 +88,7 @@ describe('resolveManagedBinaryPath', () => {
   describe('managed binary preferred over execPath (coexistence fix)', () => {
     it('returns the managed binary when no pin AND managed binary exists on disk', () => {
       const { home, mycoHome, managedPath } = makeTempHomeWithManagedBinary();
-      mockResolveRuntimeCommand = () => null;
+      // no pin file written
 
       try {
         const result = resolveManagedBinaryPath(mycoHome, 'linux');
@@ -115,7 +106,7 @@ describe('resolveManagedBinaryPath', () => {
       // converged ~/.myco/bin/myco on disk, the hook MUST embed that managed path,
       // not the writing daemon's own execPath.
       const { home, mycoHome, managedPath } = makeTempHomeWithManagedBinary();
-      mockResolveRuntimeCommand = () => null;
+      // no pin file written
 
       // The dev daemon's execPath is something like
       // packages/myco-darwin-arm64/bin/myco — but we only need to verify
@@ -140,7 +131,7 @@ describe('resolveManagedBinaryPath', () => {
       fs.mkdirSync(binDir, { recursive: true });
       const managedPath = path.join(binDir, 'myco.exe');
       fs.writeFileSync(managedPath, 'placeholder', 'utf8');
-      mockResolveRuntimeCommand = () => null;
+      // no pin file written
 
       try {
         const result = resolveManagedBinaryPath(home, 'win32');
@@ -149,7 +140,7 @@ describe('resolveManagedBinaryPath', () => {
         expect(result).not.toBe(process.execPath.replaceAll('\\', '/'));
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
-        mockResolveRuntimeCommand = () => null;
+        // no pin file written
       }
     });
   });
@@ -157,7 +148,7 @@ describe('resolveManagedBinaryPath', () => {
   describe('execPath fallback (pre-convergence, no managed binary on disk)', () => {
     it('returns process.execPath when no pin AND no managed binary exists', () => {
       const home = makeTempHomeWithoutManagedBinary();
-      mockResolveRuntimeCommand = () => null;
+      // no pin file written
 
       try {
         const result = resolveManagedBinaryPath(home, 'linux');
@@ -169,7 +160,7 @@ describe('resolveManagedBinaryPath', () => {
 
     it('forward-slashes the execPath fallback', () => {
       const home = makeTempHomeWithoutManagedBinary();
-      mockResolveRuntimeCommand = () => null;
+      // no pin file written
 
       try {
         const result = resolveManagedBinaryPath(home, process.platform);
@@ -185,20 +176,20 @@ describe('resolveManagedBinaryPath', () => {
     it('pin beats managed binary when both exist', () => {
       const { home } = makeTempHomeWithManagedBinary();
       const pin = '/pinned/bin/myco';
-      mockResolveRuntimeCommand = () => pin;
+      writeMachinePin(home, pin);
 
       try {
         const result = resolveManagedBinaryPath(home, 'linux');
         expect(result).toBe(pin);
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
-        mockResolveRuntimeCommand = () => null;
+        // no pin file written
       }
     });
 
     it('managed binary beats execPath when managed exists but no pin', () => {
       const { home, mycoHome, managedPath } = makeTempHomeWithManagedBinary();
-      mockResolveRuntimeCommand = () => null;
+      // no pin file written
 
       try {
         const result = resolveManagedBinaryPath(mycoHome, 'linux');
