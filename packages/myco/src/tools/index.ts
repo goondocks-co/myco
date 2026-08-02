@@ -179,7 +179,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     fn: () => Promise<T>,
   ): Promise<T> {
     const { openDatabase, withDatabase } = await import('@myco/db/client.js');
-    const { createSchema } = await import('@myco/db/schema.js');
+    const { createSchema, SchemaVersionTooNewError } = await import('@myco/db/schema.js');
     const { getMachineId } = await import('@myco/machine-id.js');
     if (options.resolveDatabase) {
       let db: Database;
@@ -237,8 +237,14 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     try {
       // Real machine id (not the 'local' default) so the v52 conversion runs.
       createSchema(db, getMachineId());
-    } catch {
+    } catch (err) {
       db.close();
+      if (err instanceof SchemaVersionTooNewError) {
+        // Don't flatten THIS one to the generic message: "your vault was
+        // written by a newer Myco" names its own remediation (upgrade) and
+        // flattening it cost a real diagnosis in the wild.
+        throw new ToolError('tool_call_failed', err.message);
+      }
       throw new ToolError('tool_call_failed', 'Vault database is not available');
     }
     try {

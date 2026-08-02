@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { run, type ApplyUpdateDeps, type ApplyAdoptParams } from '@myco/upgrade/orchestrator.js';
+import { SCHEMA_VERSION as BINARY_SCHEMA_VERSION } from '@myco/db/schema.js';
 import { FakeServiceManager } from '../helpers/fake-service-manager';
 
 // ---------------------------------------------------------------------------
@@ -578,5 +579,108 @@ describe('runAdopt — existing paths untouched', () => {
     expect(rec.restoreCalls).toEqual([]);
     // The restart-reason file should have been written.
     expect(fs.existsSync(reasonPath)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 6: Rollback schema-gap guard
+// ---------------------------------------------------------------------------
+
+describe('runAdopt — rollback refused across a schema gap', () => {
+  const CRASH_LOOP = { healthSequence: [null, null, null, null, null, null] };
+
+  interface GapRecorder extends AdoptRecorder {
+    markCalls: Array<{ version: string }>;
+  }
+
+  function makeGapDeps(
+    opts: AdoptRecorderOpts & { vaultSchemaVersion?: number | null | (() => number | null) } = {},
+  ): GapRecorder {
+    const rec = makeAdoptDeps(opts) as GapRecorder;
+    rec.markCalls = [];
+    rec.deps.readMaxStampedSchemaVersion = () => {
+      const v = opts.vaultSchemaVersion;
+      return typeof v === 'function' ? v() : v ?? null;
+    };
+    rec.deps.markAdoptFailed = (_home, _platform, version) => {
+      rec.markCalls.push({ version });
+    };
+    return rec;
+  }
+
+  function readEvents(eventsPath: string): Array<{ message: string; data?: Record<string, unknown> }> {
+    if (!fs.existsSync(eventsPath)) return [];
+    return fs.readFileSync(eventsPath, 'utf-8')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l));
+  }
+
+  it('crash-loop: refuses the restore, marks the TARGET adopt-failed, still restarts', async () => {
+    const rec = makeGapDeps({ ...CRASH_LOOP, vaultSchemaVersion: BINARY_SCHEMA_VERSION + 1 });
+    const errorPath = path.join(tmpDir, 'update-error.json');
+    const sentinelPath = path.join(tmpDir, 'update.in-progress');
+    fs.writeFileSync(sentinelPath, JSON.stringify({ targetVersion: '1.2.3', startedAt: 1, initiator: 'test' }));
+    const params = makeParams({ errorPath, inProgressSentinelPath: sentinelPath });
+
+    await run([writeParamsFile(params)], rec.deps);
+
+    // THE gate: the restore never ran.
+    expect(rec.restoreCalls).toEqual([]);
+    // Loop-breaker: the refused target is marked so it is not re-adopted.
+    expect(rec.markCalls).toEqual([{ version: '1.2.3' }]);
+    // The daemon still comes back (on the new binary), and the sentinel is cleared.
+    expect(rec.restartCount).toBeGreaterThan(0);
+    expect(fs.existsSync(sentinelPath)).toBe(false);
+    // Both channels carry the refusal.
+    expect(JSON.parse(fs.readFileSync(errorPath, 'utf-8')).error).toContain('REFUSED');
+    const refusal = readEvents(params.updateEventsPath!).find((e) => e.message === 'rollback refused across schema gap');
+    expect(refusal?.data?.phase).toBe('crash-loop');
+    expect(refusal?.data?.vault_schema_version).toBe(BINARY_SCHEMA_VERSION + 1);
+  });
+
+  it('adopt-throw: same refusal (the vault can advance outside the adopt flow)', async () => {
+    const rec = makeGapDeps({
+      adoptThrows: new Error('copy failed'),
+      vaultSchemaVersion: BINARY_SCHEMA_VERSION + 1,
+    });
+    const params = makeParams({ errorPath: path.join(tmpDir, 'update-error.json') });
+
+    await run([writeParamsFile(params)], rec.deps);
+
+    expect(rec.restoreCalls).toEqual([]);
+    expect(rec.markCalls).toEqual([{ version: '1.2.3' }]);
+    expect(rec.restartCount).toBeGreaterThan(0);
+    const refusal = readEvents(params.updateEventsPath!).find((e) => e.message === 'rollback refused across schema gap');
+    expect(refusal?.data?.phase).toBe('adopt-throw');
+  });
+
+  it('vault at exactly the supported version: restore proceeds (regression pair)', async () => {
+    const rec = makeGapDeps({ ...CRASH_LOOP, vaultSchemaVersion: BINARY_SCHEMA_VERSION });
+
+    await run([writeParamsFile(makeParams())], rec.deps);
+
+    expect(rec.restoreCalls).toEqual([{ version: '1.1.0' }]);
+    expect(rec.markCalls).toEqual([]);
+  });
+
+  it('unreadable vault (null) allows the restore — fresh installs are never bricked', async () => {
+    const rec = makeGapDeps({ ...CRASH_LOOP, vaultSchemaVersion: null });
+
+    await run([writeParamsFile(makeParams())], rec.deps);
+
+    expect(rec.restoreCalls).toEqual([{ version: '1.1.0' }]);
+  });
+
+  it('a THROWING vault scan is treated as unreadable (allow), not as a refusal', async () => {
+    const rec = makeGapDeps({
+      ...CRASH_LOOP,
+      vaultSchemaVersion: () => { throw new Error('scan blew up'); },
+    });
+
+    await run([writeParamsFile(makeParams())], rec.deps);
+
+    expect(rec.restoreCalls).toEqual([{ version: '1.1.0' }]);
+    expect(rec.markCalls).toEqual([]);
   });
 });

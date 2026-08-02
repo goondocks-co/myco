@@ -232,15 +232,25 @@ export class GroveRuntimeCache {
 
 function openInitializedDatabase(databasePath: string): Database {
   const db = openDatabase(databasePath);
-  // Pass the resolved machine id (not the 'local' default) so the v52
-  // machine_id='local'→real conversion actually runs. This is the runtime
-  // choke point that serves every non-boot Grove; defaulting here would
-  // permanently stamp v52 with the conversion skipped.
-  createSchema(db, getMachineId());
-  // Seeds built-in agents/tasks into this Grove DB on every open.
-  // `withDatabase` scopes `getDatabase()` to this `db` via AsyncLocalStorage
-  // so registerAgent/upsertTask target this handle without signature changes.
-  withDatabase(db, () => seedBuiltInAgentsAndTasks(resolveDefinitionsDir()));
+  try {
+    // Pass the resolved machine id (not the 'local' default) so the v52
+    // machine_id='local'→real conversion actually runs. This is the runtime
+    // choke point that serves every non-boot Grove; defaulting here would
+    // permanently stamp v52 with the conversion skipped.
+    createSchema(db, getMachineId());
+    // Seeds built-in agents/tasks into this Grove DB on every open.
+    // `withDatabase` scopes `getDatabase()` to this `db` via AsyncLocalStorage
+    // so registerAgent/upsertTask target this handle without signature changes.
+    withDatabase(db, () => seedBuiltInAgentsAndTasks(resolveDefinitionsDir()));
+  } catch (err) {
+    // A Grove that refuses to open (SchemaVersionTooNewError from a vault
+    // written by a newer binary, a failed pre-migration checkpoint, a
+    // migration error) must not leak its handle. Nothing is cached — the
+    // throw happens before `touch` stores the entry — so the refusal is
+    // per-request and the daemon survives to serve other Groves.
+    try { db.close(); } catch { /* best-effort */ }
+    throw err;
+  }
   return db;
 }
 

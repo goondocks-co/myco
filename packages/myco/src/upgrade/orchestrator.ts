@@ -46,6 +46,8 @@ import { getServiceManager } from '../service/manager.js';
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
 import { resolveServiceDaemonStatePath } from '../grove/paths.js';
 import { appendUpdateEvent, type UpdateEventLevel } from './update-events.js';
+import { readMaxStampedSchemaVersion, rollbackWouldCrossSchemaGap } from './schema-gap.js';
+import { SCHEMA_VERSION } from '../db/schema.js';
 import type { ServiceManager } from '../service/types.js';
 
 // ---------------------------------------------------------------------------
@@ -94,7 +96,12 @@ export interface ApplyAdoptParams {
    * can copy it back.
    */
   prevVersion: string;
-  /** Myco home directory (`~/.myco` on POSIX, `%LOCALAPPDATA%\Myco` on win32). */
+  /**
+   * Myco home directory — always `resolveMycoHome()` (`~/.myco` unless
+   * MYCO_HOME overrides; NOT %LOCALAPPDATA% on win32 — Groves live under
+   * this dir on every platform, and the schema-gap scan reads
+   * `<home>/groves/`). Binary-path helpers apply their own win32 mapping.
+   */
   home: string;
   /** Target platform — controls managed-binary path computation + win32 gate. */
   platform: NodeJS.Platform;
@@ -198,6 +205,24 @@ export interface ApplyUpdateDeps {
     keep: number,
     current: string,
     previous?: string,
+    localAppData?: string,
+  ) => void;
+  /**
+   * Vault-side scan for the rollback schema-gap guard: the MAX stamped
+   * schema_version across the home's Grove DBs, null when unreadable.
+   * Optional + injected for tests; defaults to the real read-only scan.
+   */
+  readMaxStampedSchemaVersion?: (home: string) => number | null;
+  /**
+   * Mark a version slot adopt-failed (the loop-breaker: a refused rollback
+   * must also stop `resolveNewestStagedVersion` from re-adopting the same
+   * target on the next idle tick). Optional + injected for tests;
+   * production resolves lazily to avoid a static import cycle.
+   */
+  markAdoptFailed?: (
+    home: string,
+    platform: NodeJS.Platform,
+    version: string,
     localAppData?: string,
   ) => void;
 }
@@ -581,6 +606,44 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
     }
   };
 
+  // Rollback schema-gap guard. This orchestrator process IS the prev binary
+  // (all three initiators run it from the currently-installed image and pass
+  // `prevVersion: currentVersion`), so its own compiled SCHEMA_VERSION is
+  // prev's supported version — authoritative, no stamp file needed. The
+  // vault side is the MAX stamped version across the home's Grove DBs; if
+  // any Grove has migrated past what prev supports, restoring prev produces
+  // a binary that refuses to boot (a signal-free crash-loop pre-refusal-era),
+  // so the restore is refused: keep the new binary on disk, mark the target
+  // adopt-failed (loop-breaker), and surface through every channel we have.
+  // Availability yields to data preservation here — the recovery path is
+  // documented in docs/upgrade.md, and doctor reads the same channels.
+  const refuseRollbackIfSchemaGap = async (phase: 'adopt-throw' | 'crash-loop'): Promise<boolean> => {
+    let vaultSchema: number | null = null;
+    try {
+      vaultSchema = (deps.readMaxStampedSchemaVersion ?? readMaxStampedSchemaVersion)(p.home);
+    } catch {
+      vaultSchema = null; // unreadable vault = nothing provably at risk
+    }
+    if (!rollbackWouldCrossSchemaGap(vaultSchema, SCHEMA_VERSION)) return false;
+    const markFn = deps.markAdoptFailed
+      ?? (await import('./auto-check.js')).markAdoptFailed;
+    markFn(p.home, p.platform, p.targetVersion, p.localAppData);
+    writeError(
+      `rollback to ${p.prevVersion} REFUSED (${phase}): the vault is at storage format `
+        + `v${vaultSchema}, newer than ${p.prevVersion} supports (v${SCHEMA_VERSION}); a restored `
+        + `binary would refuse to start. Staying on ${p.targetVersion}. `
+        + `See "Rollback" in docs/upgrade.md for recovery.`,
+    );
+    event('error', 'rollback refused across schema gap', {
+      phase,
+      target: p.targetVersion,
+      prev: p.prevVersion,
+      vault_schema_version: vaultSchema,
+      prev_supported_schema_version: SCHEMA_VERSION,
+    });
+    return true;
+  };
+
   // --- Step 1: cooperative stop ---
   const cooperativeShutdown = await resolveRequestCooperativeShutdown(deps);
   const stopConfirmed = await cooperativeShutdown(p.daemonPort);
@@ -619,13 +682,23 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
   } catch (adoptErr) {
     // adoptStaged threw → managed binary may be untouched or in a bad state.
     // restoreVersion copies the previous version back to be safe, then restart.
-    writeError(`adoptStaged failed: ${String(adoptErr)} — restoring previous version ${p.prevVersion}`);
-    try {
-      await restoreVersionFn(p.home, p.platform, p.prevVersion, p.localAppData);
-    } catch (restoreErr) {
+    // The schema-gap guard runs even here: the adopt itself never migrates
+    // the vault, but agent runs migrate on every dispatch, so the vault can
+    // be ahead of prev by the time an adopt is attempted.
+    if (await refuseRollbackIfSchemaGap('adopt-throw')) {
       writeError(
-        `adoptStaged failed AND restoreVersion also failed: ${String(restoreErr)} — restarting on whatever binary is on disk`,
+        `adoptStaged failed: ${String(adoptErr)} — and restoring ${p.prevVersion} was refused `
+          + `(schema gap); restarting on whatever binary is on disk`,
       );
+    } else {
+      writeError(`adoptStaged failed: ${String(adoptErr)} — restoring previous version ${p.prevVersion}`);
+      try {
+        await restoreVersionFn(p.home, p.platform, p.prevVersion, p.localAppData);
+      } catch (restoreErr) {
+        writeError(
+          `adoptStaged failed AND restoreVersion also failed: ${String(restoreErr)} — restarting on whatever binary is on disk`,
+        );
+      }
     }
     clearSentinel();
     try {
@@ -691,8 +764,17 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
     }
 
     // Crash-loop: new binary never reported the target version. Restore prev +
-    // restart again. clearSentinel fires because the restored daemon comes back
-    // on the OLD version — the daemon-startup target-version clear won't fire.
+    // restart again — unless the vault has crossed a schema migration prev
+    // does not support (the new binary migrated it, or an agent run did):
+    // then the restore is refused and we restart on the new binary, which
+    // may still be unhealthy. clearSentinel fires because the restored
+    // daemon comes back on the OLD version — the daemon-startup
+    // target-version clear won't fire.
+    if (await refuseRollbackIfSchemaGap('crash-loop')) {
+      clearSentinel();
+      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot, p.home);
+      return;
+    }
     try {
       await restoreVersionFn(p.home, p.platform, p.prevVersion, p.localAppData);
     } catch (restoreErr) {

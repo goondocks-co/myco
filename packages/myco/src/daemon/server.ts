@@ -38,7 +38,9 @@ import { maybeRegisterHostedProjectOnIngest } from '../host/hosted-projects.js';
 import { defaultDial, handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from './host-proxy.js';
 import { handleAttachedConfigRequest } from './attached-config.js';
 import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
-import { pausedErrorResponse } from './api/error-envelope.js';
+import { pausedErrorResponse, errorBody } from './api/error-envelope.js';
+import { SchemaVersionTooNewError } from '@myco/db/schema.js';
+import { PreMigrationCheckpointError } from '@myco/backup/pre-migration-checkpoint.js';
 import {
   buildHostEnrollmentPayload,
   isBindableOverlayAddress,
@@ -1305,6 +1307,22 @@ export class DaemonServer {
             message: error.message,
             grove_id: error.groveId,
           }));
+          return;
+        }
+        if (error instanceof SchemaVersionTooNewError || error instanceof PreMigrationCheckpointError) {
+          // The request's Grove refused to open: its vault was written by a
+          // newer binary (rollback residue), or its pre-migration checkpoint
+          // failed so the migration was aborted. Per-Grove and per-request —
+          // nothing broken is cached and the daemon keeps serving every other
+          // Grove. 503 because the state is operator-repairable (upgrade the
+          // binary / clear the backup failure), not a client error.
+          this.logger.error(LOG_KINDS.SERVER_ERROR, 'Grove refused to open', {
+            path: req.url,
+            code: error.code,
+            error: error.message,
+          });
+          res.writeHead(503, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify(errorBody(error.code, error.message)));
           return;
         }
         this.logger.error(LOG_KINDS.SERVER_ERROR, 'Request handler error', {

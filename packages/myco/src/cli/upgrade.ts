@@ -44,6 +44,12 @@ import {
   type StageBinaryDeps,
 } from '../upgrade/apply-binary.js';
 import { initiateAdopt, type InitiateAdoptOpts } from '../upgrade/adopt.js';
+import {
+  readMaxStampedSchemaVersion,
+  readSupportedSchemaVersion,
+  rollbackWouldCrossSchemaGap,
+  SchemaGapDowngradeError,
+} from '../upgrade/schema-gap.js';
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
 import {
   readProjectReleaseChannel,
@@ -106,6 +112,10 @@ export interface UpgradeDeps {
   checkFn?: typeof resolveMycoPackageCheck;
   /** Resolve this machine's target triple (process.platform/arch by default). */
   targetTriple?: () => TargetTriple;
+  /** Inject the vault-side schema scan (downgrade schema-gap guard). */
+  readMaxStampedSchemaVersion?: typeof readMaxStampedSchemaVersion;
+  /** Inject the target-binary supported-schema read (downgrade schema-gap guard). */
+  readSupportedSchemaVersion?: typeof readSupportedSchemaVersion;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +238,31 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   const home = deps.home ?? resolveMycoHome();
   const platform = deps.platform ?? (process.platform as NodeJS.Platform);
   const localAppData = deps.localAppData ?? process.env.LOCALAPPDATA;
+
+  // Schema-gap guard for the two paths that intentionally skip the
+  // no-downgrade rule (explicit version, channel switch): a target whose
+  // supported storage format is below any local Grove's stamped version
+  // would refuse to start after the swap. Refused BEFORE staging — the
+  // download is pointless. Forward upgrades never trip this (a newer
+  // binary supports at least the current schema).
+  {
+    const semver = await import('semver');
+    if (
+      semver.valid(refs.targetVersion)
+      && semver.valid(currentVersion)
+      && semver.lt(refs.targetVersion, currentVersion)
+    ) {
+      const readVaultSchema = deps.readMaxStampedSchemaVersion ?? readMaxStampedSchemaVersion;
+      const readTargetSchema = deps.readSupportedSchemaVersion ?? readSupportedSchemaVersion;
+      const vaultSchema = readVaultSchema(home);
+      const targetSchema = readTargetSchema(home, platform, refs.targetVersion, localAppData);
+      if (rollbackWouldCrossSchemaGap(vaultSchema, targetSchema)) {
+        const refusal = new SchemaGapDowngradeError(refs.targetVersion, vaultSchema!, targetSchema);
+        console.error(`myco upgrade: ${refusal.message}`);
+        process.exit(1);
+      }
+    }
+  }
 
   // Stage the binary (download → verify → stage under versions/<v>/).
   console.log('  Downloading and verifying…');

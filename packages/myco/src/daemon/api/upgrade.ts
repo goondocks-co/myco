@@ -35,6 +35,12 @@ import type { CachedCheck, UpdateConfig } from '../update-checker.js';
 import { TierConfigUnreadableError } from '../../config/loader.js';
 import { spawnRestartScript } from '@myco/upgrade/spawn.js';
 import { initiateAdopt } from '@myco/upgrade/adopt.js';
+import {
+  readMaxStampedSchemaVersion,
+  readSupportedSchemaVersion,
+  rollbackWouldCrossSchemaGap,
+  SchemaGapDowngradeError,
+} from '@myco/upgrade/schema-gap.js';
 import { resolveMycoPackageCheck } from '@myco/upgrade/checker.js';
 import type { PackageCheckResult } from '@myco/upgrade/checker.js';
 import { resolveMycoBinaryUpdateRefs } from '@myco/upgrade/release-resolver.js';
@@ -130,6 +136,10 @@ export interface UpgradeDeps {
   stageBinary?: typeof stageBinary;
   /** Download/hash deps for `stageBinary`. Defaults to DEFAULT_BINARY_UPDATE_DEPS. */
   stageDeps?: StageBinaryDeps;
+  /** Inject the vault-side schema scan (downgrade schema-gap guard). Test override. */
+  readMaxStampedSchemaVersion?: typeof readMaxStampedSchemaVersion;
+  /** Inject the target-binary supported-schema read (downgrade schema-gap guard). */
+  readSupportedSchemaVersion?: typeof readSupportedSchemaVersion;
 }
 
 // ---------------------------------------------------------------------------
@@ -656,6 +666,31 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
           }
           mycoTargetVersion = resolved.version;
         }
+      }
+    }
+
+    // Schema-gap guard for the one API path that intentionally bypasses the
+    // no-downgrade gate (revert-to-stable): a target whose supported storage
+    // format is below any local Grove's stamped version would refuse to
+    // start after the swap. Forward adopts never trip this. Note the target
+    // may have JUST been staged and never booted here — then its supported
+    // version is unknown and the guard fails closed.
+    if (
+      mycoTargetVersion !== null
+      && semver.valid(mycoTargetVersion) !== null
+      && semver.valid(currentVersion) !== null
+      && semver.lt(mycoTargetVersion, currentVersion)
+    ) {
+      const readVaultSchema = deps.readMaxStampedSchemaVersion ?? readMaxStampedSchemaVersion;
+      const readTargetSchema = deps.readSupportedSchemaVersion ?? readSupportedSchemaVersion;
+      const vaultSchema = readVaultSchema(home);
+      const targetSchema = readTargetSchema(home, platform, mycoTargetVersion, localAppData);
+      if (rollbackWouldCrossSchemaGap(vaultSchema, targetSchema)) {
+        const refusal = new SchemaGapDowngradeError(mycoTargetVersion, vaultSchema!, targetSchema);
+        return {
+          status: 422,
+          body: { error: refusal.code, message: refusal.message },
+        };
       }
     }
 

@@ -589,8 +589,37 @@ async function resolveAttachedHost(
   return attach ? { label: attach.host.label, hostId: attach.host.host_id } : null;
 }
 
+/**
+ * Stamped-vs-binary schema comparison for the Database row. Doctor never
+ * migrates, so without this a too-new vault (rollback residue) reads as
+ * "ok" while the daemon silently refuses to start. Returns a fail row for
+ * a too-new vault, else a detail suffix noting a pending migration.
+ */
+export function databaseSchemaStatus(
+  stamped: number | null,
+  binarySupported: number,
+): { tooNewRow: DoctorCheck | null; pendingSuffix: string } {
+  if (stamped !== null && stamped > binarySupported) {
+    return {
+      tooNewRow: {
+        name: 'Database',
+        status: 'fail',
+        detail: `data is at storage format v${stamped}, newer than this Myco supports (v${binarySupported}) — `
+          + 'it was written by a newer Myco (usually rollback residue). The local service refuses to start '
+          + 'rather than touch it. Fix: upgrade Myco on this machine (`myco upgrade`).',
+        fixable: false,
+      },
+      pendingSuffix: '',
+    };
+  }
+  const pendingSuffix = stamped !== null && stamped < binarySupported
+    ? ` — storage format v${stamped}, will update to v${binarySupported} on next service start`
+    : '';
+  return { tooNewRow: null, pendingSuffix };
+}
+
 /** Check that the SQLite database exists and can be queried. */
-async function checkDatabase(
+export async function checkDatabase(
   vaultDir: string,
   lockNamespace: PerUserLockNamespace,
 ): Promise<DoctorCheck> {
@@ -613,12 +642,26 @@ async function checkDatabase(
   }
   try {
     const { initDatabase, closeDatabase } = await import('../db/client.js');
+    const { SCHEMA_VERSION } = await import('../db/schema.js');
     const db = initDatabase(databasePath);
+    const stampedRow = (() => {
+      try {
+        return db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1')
+          .get() as { version: number } | undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    const { tooNewRow, pendingSuffix } = databaseSchemaStatus(stampedRow?.version ?? null, SCHEMA_VERSION);
+    if (tooNewRow) {
+      closeDatabase();
+      return tooNewRow;
+    }
     const row = db.prepare('SELECT count(*) AS cnt FROM sessions').get() as { cnt: number } | undefined;
     const count = row?.cnt ?? 0;
     closeDatabase();
     const label = usingGrove ? 'Grove DB' : DB_FILENAME;
-    return { name: 'Database', status: 'ok', detail: `${label} (${count.toLocaleString()} sessions)`, fixable: false };
+    return { name: 'Database', status: 'ok', detail: `${label} (${count.toLocaleString()} sessions)${pendingSuffix}`, fixable: false };
   } catch (err) {
     // Ensure DB is closed even on error
     try { const { closeDatabase } = await import('../db/client.js'); closeDatabase(); } catch { /* ignore */ }
@@ -1148,10 +1191,75 @@ function checkBinaryVersionSkew(): DoctorCheck {
   return { name: 'Binary version', status: 'ok', detail: baked, fixable: false };
 }
 
-async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
-  const daemonFile = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
+/**
+ * The daemon's schema-refusal marker as a doctor row, or null when absent.
+ * With the daemon down there is no /health and no log drain — this marker
+ * (written by the boot refusal, cleared by the next successful boot) is
+ * the one machine-readable trace of WHY it is down.
+ */
+export async function schemaRefusalRow(stateDir: string): Promise<DoctorCheck | null> {
+  const { readSchemaRefusalMarker } = await import('../daemon/schema-refusal.js');
+  const marker = readSchemaRefusalMarker(stateDir);
+  if (!marker) return null;
+  return {
+    name: 'Daemon',
+    status: 'fail',
+    detail: `refusing to start: data is at storage format v${marker.found}, newer than this binary `
+      + `supports (v${marker.supported}; binary ${marker.binary_version}, last attempt `
+      + `${formatSessionAge(marker.refused_at)}) — the data has not been touched. `
+      + 'Fix: upgrade Myco on this machine (`myco upgrade`).',
+    fixable: false,
+  };
+}
+
+/**
+ * Surface the update orchestrator's error side-channel, or null when clear.
+ * The orchestrator runs while the daemon is down, so its failures (rollback
+ * refused across a schema gap, restore failures) have no live channel —
+ * this file is where they land, and doctor is its reader. Cleared by the
+ * next successful adopt.
+ */
+export async function checkUpdateResidue(
+  mycoHome = resolveMycoHome(),
+  errorPathOverride?: string,
+): Promise<DoctorCheck | null> {
+  const { UPDATE_ERROR_PATH } = await import('../constants/update.js');
+  const { isDefaultMycoHome } = await import('../grove/paths.js');
+  // UPDATE_ERROR_PATH is machine-global (literal ~/.myco, not MYCO_HOME-
+  // scoped) because the orchestrator writes it while no daemon is up. Only
+  // the default-home doctor may read it — a dogfood doctor surfacing the
+  // production daemon's update errors is exactly the cross-home leak the
+  // schema-refusal marker was scoped to avoid. Params are test seams
+  // (matching ApplyAdoptParams.errorPath): the home is compared as a path
+  // string, so tests never touch the real ~/.myco.
+  if (!isDefaultMycoHome(mycoHome)) return null;
+  const errorPath = errorPathOverride ?? UPDATE_ERROR_PATH;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(errorPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  let message = raw.trim();
+  try {
+    const parsed = JSON.parse(raw) as { error?: string };
+    if (typeof parsed.error === 'string') message = parsed.error;
+  } catch { /* surface the raw content */ }
+  if (message === '') return null;
+  return {
+    name: 'Updates',
+    status: 'warn',
+    detail: `last update run recorded an error: ${message}`,
+    fixable: false,
+  };
+}
+
+export async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
+  const serviceState = resolveDaemonServiceState(vaultDir, { env: process.env });
+  const daemonFile = serviceState.statePath;
   if (!fs.existsSync(daemonFile)) {
-    return { name: 'Daemon', status: 'warn', detail: 'Not running (no daemon state)', fixable: false };
+    return (await schemaRefusalRow(serviceState.stateDir))
+      ?? { name: 'Daemon', status: 'warn', detail: 'Not running (no daemon state)', fixable: false };
   }
   try {
     const state = readDaemonState(daemonFile);
@@ -1167,7 +1275,8 @@ async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
     if (isProcessAlive(state.pid)) {
       return { name: 'Daemon', status: 'ok', detail: `PID ${state.pid}, port ${state.port ?? 'unknown'}`, fixable: false };
     }
-    return fixableCheck({ name: 'Daemon', status: 'warn', detail: `Stale daemon.json (PID ${state.pid} not running)` }, 'daemon-stale', { stalePid: state.pid });
+    return (await schemaRefusalRow(serviceState.stateDir))
+      ?? fixableCheck({ name: 'Daemon', status: 'warn', detail: `Stale daemon.json (PID ${state.pid} not running)` }, 'daemon-stale', { stalePid: state.pid });
   } catch (err) {
     return fixableCheck({ name: 'Daemon', status: 'fail', detail: `daemon state parse error: ${(err as Error).message}` }, 'daemon-malformed');
   }
@@ -1400,6 +1509,8 @@ export async function runChecks(
   const serviceScope = await checkServiceScope();
   if (serviceScope) checks.push(serviceScope);
   checks.push(checkBinaryVersionSkew());
+  const updateResidue = await checkUpdateResidue();
+  if (updateResidue) checks.push(updateResidue);
   const overlayDrift = await checkOverlayBinaryDrift();
   if (overlayDrift) checks.push(overlayDrift);
   checks.push(await checkInstallSource());

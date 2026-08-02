@@ -29,6 +29,7 @@ import { EventBuffer } from '../capture/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
 import { runGlobalBootstrap, shouldRunGlobalBootstrap } from '../cli/bootstrap.js';
 import { resolveMycoHome, resolveGroveDbPath, resolveProjectVaultDir } from '../grove/paths.js';
+import { installPreMigrationCheckpoint } from '@myco/backup/pre-migration-checkpoint.js';
 import { stampHarnessRedirectEpoch } from '@myco/agent/harness/redirect-epoch.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
@@ -163,7 +164,9 @@ import {
   readProjectActivitySeed,
 } from './project-power-state.js';
 import { pauseAwareShouldVisit, isProjectPaused } from '../grove/registry.js';
-import { createSchema } from '../db/schema.js';
+import { createSchema, SchemaVersionTooNewError } from '../db/schema.js';
+import { clearSchemaRefusalMarker, handleBootSchemaRefusal } from './schema-refusal.js';
+import { stampSupportedSchemaVersion } from '../upgrade/schema-gap.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
 import { createAgentRunHandlers } from './api/agent-runs.js';
@@ -1041,8 +1044,43 @@ export async function main(): Promise<void> {
   }
 
   // --- SQLite initialization ---
+  // Pre-migration checkpoint for every pending schema migration this
+  // process performs (boot DB here; lazy Grove opens and agent runs pick
+  // it up through the same hook): dump the Grove to its canonical backup
+  // dir first, and abort the migration if the dump fails. The checkpoint
+  // is the one recovery artifact that spans a schema gap — rollback to an
+  // older binary across a migration is refused.
+  installPreMigrationCheckpoint({ mycoHome });
   const db = initDatabase(dataPaths.databasePath);
-  createSchema(db, machineId);
+  try {
+    createSchema(db, machineId);
+  } catch (err) {
+    if (err instanceof SchemaVersionTooNewError) {
+      // The vault was written by a NEWER binary (rollback residue). The DB
+      // has not been touched. Exiting non-zero would crash-loop under every
+      // supervisor with zero signal — the listener never binds, so there is
+      // no /health and no log drain. Instead: durable marker (doctor reads
+      // it), one stderr line (daemon.err.log keeps it), then the deliberate
+      // step-aside exit(0) that supervisors leave down. The next successful
+      // boot clears the marker below.
+      handleBootSchemaRefusal(err, daemonService.stateDir, getPluginVersion(), {
+        exit: process.exit,
+        stderr: (line) => console.error(line),
+      });
+    }
+    throw err;
+  }
+  clearSchemaRefusalMarker(daemonService.stateDir);
+  // Self-stamp this binary's supported schema version into its own
+  // versions/<v>/ slot (best-effort; skipped when the slot doesn't exist).
+  // A future rollback/downgrade decision reads the stamp to evaluate this
+  // version without running it.
+  stampSupportedSchemaVersion(
+    mycoHome,
+    process.platform as NodeJS.Platform,
+    getPluginVersion(),
+    process.env.LOCALAPPDATA,
+  );
   registerBuiltinDomains();
   // Boot-DB sweep only — the Grove fan-out for any other registered
   // Groves runs after `runtimeCache` is built (see "interrupt stale runs

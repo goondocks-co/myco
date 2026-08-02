@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import {
+  addToKeepList,
   createBackup,
   listBackups,
   pruneBackups,
@@ -86,11 +87,19 @@ export function createGroveBackup(params: {
   db: Database;
   machineId: string;
   mycoHome?: string;
+  /**
+   * Pin this backup against retention pruning (the keep-list). Used by the
+   * pre-migration checkpoint: it is the only artifact that spans a schema
+   * gap, so an aggressive retention config must not reclaim it — including
+   * the prune that runs at the end of THIS call.
+   */
+  pin?: boolean;
 }): CreateGroveBackupResult {
   const mycoHome = params.mycoHome ?? resolveMycoHome();
   const cfg = backupConfig(params.groveId, mycoHome);
   const dir = resolveGroveBackupDir(params.groveId, { mycoHome });
   const filePath = createBackup(params.db, dir, params.machineId);
+  if (params.pin) addToKeepList(dir, path.basename(filePath));
 
   // Suppress prune for one cycle right after a migration consolidated legacy
   // backups into this dir — see migrationMarkerPath. Consuming the marker

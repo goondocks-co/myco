@@ -561,3 +561,83 @@ describe('myco upgrade: adopt opts', () => {
     expect(deps.initiateAdopt).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 6. Downgrade schema-gap guard (explicit version / channel revert)
+// ---------------------------------------------------------------------------
+
+describe('myco upgrade <older-version>: schema-gap guard', () => {
+  const OLD_RELEASES = [
+    makeRelease('myco/v0.9.0', false),
+    makeRelease('myco/v1.0.0', false),
+  ];
+
+  it('refuses across the gap: exit 1, nothing staged, message names versions + recovery', async () => {
+    const deps = makeDeps({
+      fetchReleases: vi.fn(async () => OLD_RELEASES),
+      readMaxStampedSchemaVersion: vi.fn(() => 76),
+      readSupportedSchemaVersion: vi.fn(() => 71),
+    });
+
+    await expect(run(['0.9.0'], deps)).rejects.toThrow('__exit__1__');
+
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+    const stderrText = (stderrSpy.mock.calls as unknown as string[][]).map((c) => c[0]).join('\n');
+    expect(stderrText).toContain('v76');
+    expect(stderrText).toContain('v71');
+    expect(stderrText).toContain('restore a backup');
+  });
+
+  it('refuses when the target has no stamp (unknown fails closed)', async () => {
+    const deps = makeDeps({
+      fetchReleases: vi.fn(async () => OLD_RELEASES),
+      readMaxStampedSchemaVersion: vi.fn(() => 76),
+      readSupportedSchemaVersion: vi.fn(() => null),
+    });
+
+    await expect(run(['0.9.0'], deps)).rejects.toThrow('__exit__1__');
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+  });
+
+  it('proceeds when the target\'s stamp covers the vault', async () => {
+    const deps = makeDeps({
+      fetchReleases: vi.fn(async () => OLD_RELEASES),
+      stageBinary: vi.fn(async (_params, _deps) => ({
+        versionDir: '/fake/versions/0.9.0',
+        version: '0.9.0',
+      })),
+      readMaxStampedSchemaVersion: vi.fn(() => 76),
+      readSupportedSchemaVersion: vi.fn(() => 76),
+    });
+
+    await run(['0.9.0'], deps);
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
+  });
+
+  it('proceeds when no vault is readable (fresh install)', async () => {
+    const deps = makeDeps({
+      fetchReleases: vi.fn(async () => OLD_RELEASES),
+      stageBinary: vi.fn(async (_params, _deps) => ({
+        versionDir: '/fake/versions/0.9.0',
+        version: '0.9.0',
+      })),
+      readMaxStampedSchemaVersion: vi.fn(() => null),
+      readSupportedSchemaVersion: vi.fn(() => null),
+    });
+
+    await run(['0.9.0'], deps);
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
+  });
+
+  it('forward upgrades never run the guard', async () => {
+    const deps = makeDeps({
+      readMaxStampedSchemaVersion: vi.fn(() => { throw new Error('must not be called'); }),
+      readSupportedSchemaVersion: vi.fn(() => { throw new Error('must not be called'); }),
+    });
+
+    await run(['--target-version', '1.1.0'], deps);
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
+    expect(deps.readMaxStampedSchemaVersion).not.toHaveBeenCalled();
+  });
+});
