@@ -431,10 +431,10 @@ export async function checkExternalMcpCoherence(mycoHome?: string): Promise<Doct
     name: 'Team Host',
     status: 'warn',
     detail:
-      `The external read-only MCP listener is enabled (port ${coherence.port}) but no access token exists — `
-      + 'it cannot authenticate any caller in this state. Enabling it is API-driven, not a dashboard toggle — '
-      + 're-run `PUT /api/team/external-mcp/toggle` to mint one (see docs/team-host.md, "External read-only '
-      + 'MCP"), or disable exposure until it can.',
+      'External access is enabled but no access token exists — it cannot '
+      + 'authenticate any caller in this state. Turn external access off and '
+      + 'back on from the Team page\'s "External access" panel to mint a '
+      + 'fresh token (see docs/team-host.md, "External read-only MCP").',
     fixable: false,
   };
 }

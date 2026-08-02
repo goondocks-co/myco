@@ -19,6 +19,7 @@ import {
 } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 import { pruneToTier } from './scope.js';
+import { EXTERNAL_MCP_DEFAULT_PORT } from '@myco/constants.js';
 import { CAPABILITIES } from './capabilities.js';
 import { enumerateLeafPaths } from './leaf-paths.js';
 import { stripDefaultSections } from './sparse.js';
@@ -573,6 +574,72 @@ export function disableExternalMcpConfig(
     invalidateMergedConfigCache();
     return parsedView;
   });
+}
+
+/**
+ * The ONE sanctioned enable writer for the protected `daemon.external_mcp`
+ * subtree — the activation sibling of {@link disableExternalMcpConfig}.
+ * Callable ONLY from the containment-locked enable flow (the containment
+ * authority serializes it against every other external-MCP mutation); the
+ * general `saveMachineConfig` path still throws on this subtree, and a stale
+ * whole-machine snapshot still cannot restore `enabled: true`. Stamps the
+ * explicit subtree surgically (raw-doc merge, unknown siblings preserved)
+ * and re-parses the result so a malformed doc never lands half-written.
+ */
+export function enableExternalMcpConfig(
+  mycoHome = resolveMycoHome(),
+  options: { durable?: boolean } = {},
+): MachineConfig {
+  return withMachineConfigLock(mycoHome, () => {
+    const filePath = resolveGlobalConfigPath(mycoHome);
+    const rawDoc = readRawYamlDocStrict(filePath);
+    const daemon = getAtPath(rawDoc, ['daemon']);
+    if (daemon !== undefined && (daemon === null || typeof daemon !== 'object' || Array.isArray(daemon))) {
+      throw new TierConfigUnreadableError(filePath, 'daemon must be a YAML mapping');
+    }
+    const daemonMapping = (daemon ?? {}) as Record<string, unknown>;
+    const externalMcp = daemonMapping.external_mcp;
+    if (externalMcp !== undefined
+      && (externalMcp === null || typeof externalMcp !== 'object' || Array.isArray(externalMcp))) {
+      throw new TierConfigUnreadableError(
+        filePath,
+        'daemon.external_mcp must be a YAML mapping',
+      );
+    }
+    const existing = externalMcp as Record<string, unknown> | undefined;
+    rawDoc.daemon = {
+      ...daemonMapping,
+      external_mcp: {
+        ...existing,
+        enabled: true,
+        // `port` stays the legacy containment-reconciliation field; the
+        // socket path is DERIVED from MYCO_HOME, never configured. Preserve
+        // an existing explicit port, else stamp the schema default so the
+        // subtree is always explicit (H1: tokenPresent without an explicit
+        // subtree is the boot-breaking brownfield state).
+        port: isExplicitExternalMcpPort(existing?.port) ? existing.port : EXTERNAL_MCP_DEFAULT_PORT,
+      },
+    };
+    const parsedView = parseTierDocTolerant(
+      (doc) => MachineConfigSchema.parse(doc),
+      rawDoc,
+    );
+    if (!parsedView.daemon.external_mcp.enabled) {
+      throw new TierConfigUnreadableError(filePath, 'daemon.external_mcp did not verify as enabled');
+    }
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    atomicWriteFileSync(filePath, YAML.stringify(rawDoc), {
+      encoding: 'utf-8',
+      durable: options.durable,
+    });
+    machineConfigCache.delete(filePath);
+    invalidateMergedConfigCache();
+    return parsedView;
+  });
+}
+
+function isExplicitExternalMcpPort(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 1024 && Number(value) <= 65535;
 }
 
 /**

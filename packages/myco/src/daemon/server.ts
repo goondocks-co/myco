@@ -99,6 +99,10 @@ const HTTP_LISTEN_BACKLOG = 4_096;
 export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
+  /** Report the CURRENT external-MCP activation posture on `/health` — the
+   *  takeover-handshake predicate reads it (eviction.ts). Defaults to the
+   *  static `retired` value for callers (tests) that never activate. */
+  externalMcpPosture?: () => string;
   /** Override the host tailscale CLI used for overlay-forward management
    *  (tests). Production resolves it from recorded host state. */
   hostTailscaleCliFactory?: () => TailscaleCli | null;
@@ -333,9 +337,12 @@ export class DaemonServer {
    */
   private htmlCache = new Map<string, string>();
 
+  private readonly externalMcpPosture: (() => string) | null;
+
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
     this.logger = config.logger;
+    this.externalMcpPosture = config.externalMcpPosture ?? null;
     this.stateAuthority = config.daemonStateAuthority
       ?? createDaemonStateAuthority(
         resolveDaemonServiceState(config.vaultDir, { env: process.env }),
@@ -855,7 +862,7 @@ export class DaemonServer {
       res.end(JSON.stringify({
         myco: true,
         version: this.version,
-        external_mcp_activation: EXTERNAL_MCP_ACTIVATION_POSTURE,
+        external_mcp_activation: this.externalMcpPosture?.() ?? EXTERNAL_MCP_ACTIVATION_POSTURE,
         pid: process.pid,
         uptime: process.uptime(),
       }));

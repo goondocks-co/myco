@@ -45,6 +45,10 @@
  */
 import crypto from 'node:crypto';
 import http from 'node:http';
+import net from 'node:net';
+import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Database } from '../db/client.js';
 import { DaemonClient } from '../hooks/client.js';
@@ -65,12 +69,69 @@ import { createExternalTools } from '../mcp/external-surface.js';
 import { readSecrets } from '../config/secrets.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../constants.js';
+import { describeFunnelTarget } from './external-mcp-containment.js';
+import type { FunnelOnRunner } from './external-mcp-containment.js';
+import { physicalPathIdentity } from '../utils/physical-path-identity.js';
+import type { ExternalMcpFunnelTarget } from './external-mcp-containment.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { applyDaemonHttpServerLimits, DAEMON_HTTP_LISTEN_BACKLOG, gracefullyCloseHttpServer, classifyRequest, type RequestClass } from './server.js';
 import type { Logger } from './logger.js';
 import type { FunnelOffRunner } from './external-mcp-containment.js';
 
 const EXTERNAL_MCP_PATH = '/mcp';
+
+/**
+ * The local endpoint the listener binds. Sockets are the activation shape
+ * (the public Funnel proxies to the socket; no TCP port exists to race);
+ * loopback TCP remains for tests and legacy containment reconciliation.
+ */
+export type ExternalMcpBindTarget =
+  | { kind: 'socket'; path: string }
+  | { kind: 'loopback'; port: number };
+
+/**
+ * Derive THIS daemon's external-MCP socket path. HOME-anchored and SHORT for
+ * the AF_UNIX `sun_path` 104-byte cap (same rationale as
+ * `resolveHostTailscaledSocketPath`), in a Myco-owned dir that is NOT
+ * `~/.myco-ts/` (that neighborhood belongs to tailscaled and its teardown).
+ * The tag hashes the physical MYCO_HOME identity so a dev daemon
+ * (`~/.myco-dev`) and the prod daemon never contend for one socket — and so
+ * socket contention and the containment lock are keyed by the SAME identity
+ * (see the reclaim rationale at `bind`).
+ */
+export function resolveExternalMcpSocketPath(mycoHome: string): string {
+  const tag = crypto.createHash('sha256')
+    .update(physicalPathIdentity(mycoHome))
+    .digest('hex')
+    .slice(0, 10);
+  const preferred = path.join(os.homedir(), '.myco-emcp', `${tag}.sock`);
+  if (Buffer.byteLength(preferred) < 100) return preferred;
+  const uid = process.getuid?.() ?? 0;
+  return path.join('/tmp', `myco-emcp-${uid}-${tag}.sock`);
+}
+
+/**
+ * Probe whether a socket file has a live owner. Fail toward LIVE: only
+ * ECONNREFUSED/ENOENT prove staleness — any other error (EACCES, a full
+ * backlog, a reset) or a hung connect means we must NOT unlink. Bounded so a
+ * wedged filesystem cannot hang `bind` while it holds the containment lock.
+ */
+async function socketHasLiveOwner(socketPath: string): Promise<boolean> {
+  return await new Promise((resolve) => {
+    const probe = net.connect(socketPath);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (alive: boolean) => {
+      if (timer !== undefined) clearTimeout(timer);
+      try { probe.destroy(); } catch { /* already gone */ }
+      resolve(alive);
+    };
+    timer = setTimeout(() => done(true), 2_000);
+    probe.once('connect', () => done(true));
+    probe.once('error', (err: NodeJS.ErrnoException) => {
+      done(!(err.code === 'ECONNREFUSED' || err.code === 'ENOENT'));
+    });
+  });
+}
 /** Same fast-shutdown grace window the loopback/overlay listeners use. */
 const EXTERNAL_MCP_STOP_GRACE_MS = 2_000;
 
@@ -153,7 +214,7 @@ export class ExternalMcpListener {
   private readonly deps: ExternalMcpListenerDeps;
   private readonly logger: ExternalListenerLogger;
   private server: http.Server | null = null;
-  private boundPort = 0;
+  private currentTarget: ExternalMcpBindTarget | null = null;
 
   constructor(deps: ExternalMcpListenerDeps) {
     this.deps = deps;
@@ -164,8 +225,9 @@ export class ExternalMcpListener {
     return this.server !== null;
   }
 
-  get port(): number {
-    return this.boundPort;
+  /** The bound local endpoint, or null while unbound. */
+  get boundTarget(): ExternalMcpBindTarget | null {
+    return this.server ? this.currentTarget : null;
   }
 
   /** Current raw token, or null when none has ever been minted. Re-read
@@ -178,15 +240,46 @@ export class ExternalMcpListener {
   }
 
   /**
-   * Bind the listener on 127.0.0.1:`port`. Idempotent — calling `bind`
-   * while already bound on the SAME port is a no-op; a different port
-   * unbinds first. Never throws: a bind failure (port in use) resolves
-   * `{ ok: false }` with the reason so a caller (the toggle route, or boot
-   * re-bind) can report it without crashing the daemon.
+   * Bind the listener on the given local target. Idempotent — calling `bind`
+   * while already bound on the SAME target is a no-op; a different target
+   * unbinds first. Never throws: a bind failure resolves `{ ok: false }`
+   * with the reason so a caller (the toggle route, or boot re-bind) can
+   * report it without crashing the daemon.
+   *
+   * Socket targets reclaim a STALE socket file (connect probe refuses ⇒ no
+   * live owner ⇒ unlink) but never a live one. The probe→unlink pair is not
+   * atomic on its own; it is safe because every production bind runs under
+   * the external-MCP containment lock and both the lock and the socket tag
+   * derive from `physicalPathIdentity(mycoHome)` — two processes contending
+   * for one socket necessarily serialize on one lock.
    */
-  async bind(port: number): Promise<{ ok: true; port: number } | { ok: false; error: string }> {
-    if (this.server && this.boundPort === port) return { ok: true, port: this.boundPort };
+  async bind(
+    target: ExternalMcpBindTarget,
+  ): Promise<{ ok: true; target: ExternalMcpBindTarget } | { ok: false; error: string }> {
+    const current = this.boundTarget;
+    if (current && JSON.stringify(current) === JSON.stringify(target)) {
+      return { ok: true, target: current };
+    }
     if (this.server) await this.unbind();
+
+    if (target.kind === 'socket') {
+      if (process.platform === 'win32') {
+        return { ok: false, error: 'external MCP socket activation is not available on Windows' };
+      }
+      try {
+        const dir = path.dirname(target.path);
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        fs.chmodSync(dir, 0o700);
+        if (fs.existsSync(target.path)) {
+          if (await socketHasLiveOwner(target.path)) {
+            return { ok: false, error: `socket ${target.path} has a live owner` };
+          }
+          fs.unlinkSync(target.path);
+        }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
 
     return new Promise((resolve) => {
       const server = http.createServer((req, res) => {
@@ -205,27 +298,41 @@ export class ExternalMcpListener {
       server.on('upgrade', (_req, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
       applyDaemonHttpServerLimits(server);
 
+      const targetDesc = target.kind === 'socket' ? { socket: target.path } : { port: target.port };
       const onBindError = (err: NodeJS.ErrnoException) => {
         this.logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener failed to bind', {
-          port, error: err.message, code: err.code ?? null,
+          ...targetDesc, error: err.message, code: err.code ?? null,
         });
         try { server.close(); } catch { /* not listening */ }
         resolve({ ok: false, error: err.message });
       };
       server.once('error', onBindError);
 
-      try {
-        server.listen(port, '127.0.0.1', DAEMON_HTTP_LISTEN_BACKLOG, () => {
-          server.removeListener('error', onBindError);
-          server.on('error', (err) => {
-            this.logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener socket error', { error: (err as Error).message });
-          });
-          const addr = server.address() as { port: number };
-          this.server = server;
-          this.boundPort = addr.port;
-          this.logger.info(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener bound', { port: this.boundPort });
-          resolve({ ok: true, port: this.boundPort });
+      const onListening = () => {
+        server.removeListener('error', onBindError);
+        server.on('error', (err) => {
+          this.logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener socket error', { error: (err as Error).message });
         });
+        this.server = server;
+        if (target.kind === 'socket') {
+          // Dir perms (0700) are the tenancy boundary; 0600 on the socket
+          // itself is defense in depth.
+          try { fs.chmodSync(target.path, 0o600); } catch { /* fs race — dir perms still hold */ }
+          this.currentTarget = target;
+        } else {
+          const addr = server.address() as { port: number };
+          this.currentTarget = { kind: 'loopback', port: addr.port };
+        }
+        this.logger.info(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener bound', targetDesc);
+        resolve({ ok: true, target: this.currentTarget! });
+      };
+
+      try {
+        if (target.kind === 'socket') {
+          server.listen(target.path, DAEMON_HTTP_LISTEN_BACKLOG, onListening);
+        } else {
+          server.listen(target.port, '127.0.0.1', DAEMON_HTTP_LISTEN_BACKLOG, onListening);
+        }
       } catch (err) {
         // `server.listen` throws SYNCHRONOUSLY (never emits 'error') for some
         // invalid inputs — e.g. a port outside 0-65535. Uncaught, that throw
@@ -236,7 +343,7 @@ export class ExternalMcpListener {
         server.removeListener('error', onBindError);
         try { server.close(); } catch { /* not listening */ }
         const message = err instanceof Error ? err.message : String(err);
-        this.logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener failed to bind (synchronous)', { port, error: message });
+        this.logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener failed to bind (synchronous)', { ...targetDesc, error: message });
         resolve({ ok: false, error: message });
       }
     });
@@ -244,10 +351,16 @@ export class ExternalMcpListener {
 
   async unbind(): Promise<void> {
     const server = this.server;
+    const wasBound = this.currentTarget;
     this.server = null;
-    this.boundPort = 0;
+    this.currentTarget = null;
     if (!server) return;
     await gracefullyCloseHttpServer(server, { gracePeriodMs: EXTERNAL_MCP_STOP_GRACE_MS });
+    if (wasBound?.kind === 'socket') {
+      // Node removes the socket file on close; sweep defensively so a stale
+      // inode never outlives the bind.
+      try { fs.unlinkSync(wasBound.path); } catch { /* already gone */ }
+    }
     this.logger.info(LOG_KINDS.EXTERNAL_MCP, 'External MCP listener unbound');
   }
 
@@ -439,13 +552,20 @@ function publicPortFromHostPort(hostPort: string): number {
   return port;
 }
 
-function proxyTargetsLocalPort(proxy: string, targetPort: number): boolean {
+function proxyMatchesTarget(proxy: string, target: ExternalMcpFunnelTarget): boolean {
+  if (target.kind === 'socket') {
+    // Serve reports a unix-socket proxy with the absolute path embedded in
+    // the proxy string (exact rendering pinned by the live rig validation);
+    // match liberally on the path so a format drift fails toward MORE
+    // handlers being treated as ours (removed), never fewer.
+    return proxy.includes(target.path);
+  }
   try {
     const parsed = new URL(proxy);
     return (
       parsed.protocol === 'http:'
       && ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname)
-      && Number(parsed.port) === targetPort
+      && Number(parsed.port) === target.port
     );
   } catch {
     return false;
@@ -454,7 +574,7 @@ function proxyTargetsLocalPort(proxy: string, targetPort: number): boolean {
 
 function readFunnelStatus(
   rawStatus: string,
-  targetPort: number,
+  target: ExternalMcpFunnelTarget,
 ): FunnelStatusSnapshot {
   const parsed = JSON.parse(rawStatus) as unknown;
   const config = mapping(parsed, 'Funnel status');
@@ -476,6 +596,22 @@ function readFunnelStatus(
       mapping(webConfig, `Funnel status Web.${hostPort}`).Handlers,
       `Funnel status Web.${hostPort}.Handlers`,
     );
+    // Match handlers FIRST; validate only host-ports carrying one of OURS.
+    // An operator's unrelated Funnel (a non-HTTPS TCP forward, an odd
+    // selector shape, a non-string proxy) must neither block activation nor
+    // wedge boot containment — foreign entries are ignored, not judged.
+    const matching: Array<{ mount: string; proxy: string }> = [];
+    for (const [mount, rawHandler] of Object.entries(handlers)) {
+      const handler = mapping(
+        rawHandler,
+        `Funnel status Web.${hostPort}.Handlers.${mount}`,
+      );
+      if (typeof handler.Proxy !== 'string') continue;
+      if (proxyMatchesTarget(handler.Proxy, target)) {
+        matching.push({ mount, proxy: handler.Proxy });
+      }
+    }
+    if (matching.length === 0) continue;
     const publicPort = publicPortFromHostPort(hostPort);
     const tcpHandler = mapping(
       tcp[String(publicPort)],
@@ -484,23 +620,8 @@ function readFunnelStatus(
     if (tcpHandler.HTTPS !== true) {
       throw new Error(`Funnel status TCP.${publicPort} is not an HTTPS handler`);
     }
-    for (const [mount, rawHandler] of Object.entries(handlers)) {
-      const handler = mapping(
-        rawHandler,
-        `Funnel status Web.${hostPort}.Handlers.${mount}`,
-      );
-      if (handler.Proxy === undefined) continue;
-      if (typeof handler.Proxy !== 'string') {
-        throw new Error(`Funnel handler proxy at ${hostPort}${mount} must be a string`);
-      }
-      if (proxyTargetsLocalPort(handler.Proxy, targetPort)) {
-        selectors.push({
-          hostPort,
-          publicPort,
-          mount,
-          proxy: handler.Proxy,
-        });
-      }
+    for (const { mount, proxy } of matching) {
+      selectors.push({ hostPort, publicPort, mount, proxy });
     }
   }
 
@@ -514,10 +635,10 @@ function readFunnelStatus(
 export function createFunnelOffRunner(
   runCommand: TailscaleCommandRunner,
 ): FunnelOffRunner {
-  return async (port) => {
+  return async (target) => {
     try {
       const before = await runCommand(['funnel', 'status', '--json']);
-      const beforeStatus = readFunnelStatus(before.stdout, port);
+      const beforeStatus = readFunnelStatus(before.stdout, target);
       const selectors = beforeStatus.selectors;
       for (const selector of selectors) {
         await runCommand([
@@ -540,7 +661,7 @@ export function createFunnelOffRunner(
       const after = selectors.length > 0
         ? await runCommand(['funnel', 'status', '--json'])
         : before;
-      const afterStatus = readFunnelStatus(after.stdout, port);
+      const afterStatus = readFunnelStatus(after.stdout, target);
       const remainingAllowedHostPorts = new Set(
         selectors
           .map((selector) => selector.hostPort)
@@ -551,12 +672,12 @@ export function createFunnelOffRunner(
           ok: false,
           detail: remainingAllowedHostPorts.size > 0
             ? `public Funnel remains enabled for ${[...remainingAllowedHostPorts].join(', ')}`
-            : `public Funnel still targets local port ${port}`,
+            : `public Funnel still targets ${describeFunnelTarget(target)}`,
         };
       }
       return {
         ok: true,
-        detail: `confirmed no public Funnel handler targets local port ${port}`,
+        detail: `confirmed no public Funnel handler targets ${describeFunnelTarget(target)}`,
       };
     } catch (error) {
       return {
@@ -567,7 +688,61 @@ export function createFunnelOffRunner(
   };
 }
 
-export const defaultFunnelOffRunner: FunnelOffRunner = createFunnelOffRunner(async (args) => {
+/**
+ * Activate the public Funnel onto the external-MCP unix socket. The ONE
+ * sanctioned vendor-Tailscale MUTATION (a deliberate, recorded widening of
+ * the Stage D X1-X3 coexistence invariant): explicit user action only, with
+ * `createFunnelOffRunner` as its bounded inverse. Speaks to the operator's
+ * VENDOR tailscale from PATH (unsocketed) like the off-runner — Funnel is a
+ * Tailscale-cloud feature headscale cannot provide.
+ *
+ * Arg construction is concentrated here so the exact CLI syntax (candidate:
+ * `unix:<abs path>` target, pinned by the live rig validation) is a one-line
+ * fix if the vendor CLI renders it differently.
+ */
+export function createFunnelOnRunner(
+  runCommand: TailscaleCommandRunner,
+): FunnelOnRunner {
+  return async (target, opts) => {
+    try {
+      // Idempotence first: if the expected handler already serves this
+      // socket, do NOT touch the operator's serve config again — the
+      // sanctioned mutation stays tied to genuine state changes (enable, or
+      // repairing a genuinely-missing handler at boot), not every start.
+      const existing = readFunnelStatus((await runCommand(['funnel', 'status', '--json'])).stdout, target);
+      const existingSelector = existing.selectors.find((candidate) => candidate.mount === opts.mount);
+      if (!existingSelector || !existing.allowedHostPorts.has(existingSelector.hostPort)) {
+        await runCommand([
+          'funnel',
+          '--bg',
+          '--yes',
+          `--https=${opts.publicPort}`,
+          `--set-path=${opts.mount}`,
+          `unix:${target.path}`,
+        ]);
+      }
+      const status = await runCommand(['funnel', 'status', '--json']);
+      const snapshot = readFunnelStatus(status.stdout, target);
+      const selector = snapshot.selectors.find((candidate) => candidate.mount === opts.mount);
+      if (!selector || !snapshot.allowedHostPorts.has(selector.hostPort)) {
+        return { ok: false, detail: 'the Funnel handler did not verify after activation' };
+      }
+      const host = selector.hostPort.replace(/:443$/, '');
+      return {
+        ok: true,
+        detail: `public Funnel serves ${selector.hostPort}${selector.mount}`,
+        funnelUrl: `https://${host}${selector.mount}`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+}
+
+const runVendorTailscale = async (args: string[]): Promise<TailscaleCommandResult> => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const execFileAsync = promisify(execFile);
@@ -576,4 +751,8 @@ export const defaultFunnelOffRunner: FunnelOffRunner = createFunnelOffRunner(asy
     encoding: 'utf-8',
   });
   return { stdout };
-});
+};
+
+export const defaultFunnelOnRunner: FunnelOnRunner = createFunnelOnRunner(runVendorTailscale);
+
+export const defaultFunnelOffRunner: FunnelOffRunner = createFunnelOffRunner(runVendorTailscale);

@@ -658,8 +658,26 @@ export const HOST_EXTERNAL_MCP_TOKEN_SECRET = 'MYCO_HOST_EXTERNAL_MCP_TOKEN';
  * reconcile persisted state without touching unrelated Funnel targets.
  */
 export const EXTERNAL_MCP_DEFAULT_PORT = 8743;
-/** Health posture proving the daemon has no external MCP activation surface. */
+/** Health posture value for a daemon with NO external MCP activation — the
+ *  fleet default, and the only value pre-activation binaries know. */
 export const EXTERNAL_MCP_ACTIVATION_POSTURE = 'retired' as const;
+/** Health posture value for a daemon whose explicit config has external MCP
+ *  ENABLED (activation-era binaries only). */
+export const EXTERNAL_MCP_ACTIVE_POSTURE = 'active' as const;
+/**
+ * Every posture a well-formed Myco daemon can report. The eviction predicate
+ * derives its accepted set from THIS constant (never literals): a successor
+ * may step aside / terminate any daemon reporting a known posture, because
+ * an activation-era successor's boot reconcile re-establishes exposure and
+ * a `shutdown` containment only quiesces (config survives). A pre-activation
+ * binary still requires `retired` — so a DOWNGRADE meeting an `active`
+ *  daemon terminates it and its own boot then disavows the config: downgrade
+ * quietly deactivates external MCP (recorded in the PR 8 rollback docs).
+ */
+export const KNOWN_EXTERNAL_MCP_POSTURES = [
+  EXTERNAL_MCP_ACTIVATION_POSTURE,
+  EXTERNAL_MCP_ACTIVE_POSTURE,
+] as const;
 
 /**
  * Directory segment under a served Grove's dir (`<grove>/hosted/<projectId>`)
