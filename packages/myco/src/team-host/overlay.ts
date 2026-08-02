@@ -45,6 +45,7 @@ import { createGrove, ensureDefaultGrove, loadGroveRecord, resolveDefaultGrove }
 import { seedGroveBackupDefaults } from '@myco/backup/service.js';
 import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager } from '@myco/service/types.js';
+import { sha256OfFile } from '@myco/host/overlay-provisioning-manifest.js';
 
 import {
   provisionOverlayBinaries,
@@ -62,6 +63,7 @@ import {
   buildOverlayServiceSpec,
   checkRootAvailable,
   installSystemService,
+  restartSystemService,
   isSystemServiceInstalled,
   uninstallSystemService,
   HEADSCALE_SERVICE_LABEL,
@@ -128,6 +130,10 @@ export interface HostEnableDeps {
   /** Overrides for the system-service dirs (tests inject temp dirs). */
   systemCtx?: Partial<SystemServiceContext>;
   brewBinDirs?: string[];
+  /** Provisioner seam (tests): inject a fake reporting `changed` binaries so
+   *  the §14.4 restart-on-converge gate is writable — the real darwin path
+   *  can never report a change (brew adoption is required-mode). */
+  provisionBinaries?: typeof provisionOverlayBinaries;
   /** Resolve the host's assigned 100.64/10 overlay IP from tailscale. */
   resolveOverlayIp?: (cli: TailscaleCli) => Promise<string | null>;
   /** Override THIS machine's host tailscaled socket path (tests inject a short temp path). */
@@ -152,7 +158,7 @@ export interface HostEnableResult {
   overlayPort: number;
   serverUrl: string;
   headscaleVersion: string;
-  tailscaleVersion: string;
+  tailscaleVersion: string | null;
   daemonRestarted: boolean;
   overlayListenerUp: boolean;
   /** The Grove this host is designated to serve (`served_grove_id`). */
@@ -358,7 +364,7 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
 
   // 1. Provision binaries (idempotent — re-verifies in place).
   log(`Provisioning overlay binaries for ${target.os}/${target.arch}…`);
-  const bins = await provisionOverlayBinaries({
+  const bins = await (deps.provisionBinaries ?? provisionOverlayBinaries)({
     target, fetcher, runner, brewBinDirs: deps.brewBinDirs, logger: log,
   });
 
@@ -384,7 +390,17 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     logDir: path.join(layout.stateDir, 'logs'),
   });
   if (isSystemServiceInstalled(ctx, HEADSCALE_SERVICE_LABEL)) {
-    log('headscale service already installed — skipping.');
+    if (bins.changed.includes('headscale')) {
+      // §14.4: replace-and-restart is ONE operation — the unit is
+      // byte-identical after a binary swap at the same path, so nothing
+      // else would ever converge the running process. A restart failure is
+      // LOUD (R-M1): recording success over a stale process would replace
+      // an honest stale record with a false fresh one.
+      await restartSystemService(ctx, HEADSCALE_SERVICE_LABEL);
+      log('headscale binary converged — restarted the supervised service.');
+    } else {
+      log('headscale service already installed — skipping.');
+    }
   } else {
     await installSystemService(ctx, headscaleSpec);
     log('headscale supervised as a root service.');
@@ -398,8 +414,18 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   const tailscaledStateDir = deps.hostTailscaledStateDir ?? resolveHostTailscaledStateDir();
   assertSocketPathFits(tailscaledSocket, platform);
   fs.mkdirSync(tailscaledStateDir, { recursive: true });
+  const tailscaledChanged = bins.changed.includes('tailscaled');
   if (await serviceManager.inspect(HOST_TAILSCALED_LABEL)) {
-    log('host tailscaled already supervised — skipping.');
+    if (tailscaledChanged) {
+      // §14.4 replace-and-restart (R-M2 ordering: BEFORE the socket wait,
+      // with the stale socket unlinked so existence means real readiness —
+      // the old socket file can survive a SIGTERM and fake instant-ready).
+      fs.rmSync(tailscaledSocket, { force: true });
+      await serviceManager.restart(HOST_TAILSCALED_LABEL);
+      log('host tailscaled binary converged — restarted the supervised service.');
+    } else {
+      log('host tailscaled already supervised — skipping.');
+    }
   } else {
     await serviceManager.install(buildHostTailscaledSpec({
       executable: bins.tailscaledBin,
@@ -553,6 +579,13 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     headscale_user: headscaleUser,
     headscale_version: bins.headscaleVersion,
     tailscale_version: bins.tailscaleVersion,
+    // Required-mode drift record (§14.6): digest of the binary we actually
+    // supervise. Managed platforms rely on the provisioning manifest instead.
+    // Optional by contract — an unreadable binary at this instant must not
+    // fail an otherwise-complete enable; the doctor handles the missing case.
+    tailscaled_sha256: platform === 'darwin'
+      ? (() => { try { return sha256OfFile(bins.tailscaledBin); } catch { return null; } })()
+      : null,
     platform,
     headscale_bin: bins.headscaleBin,
     tailscale_bin: bins.tailscaleBin,
@@ -644,37 +677,104 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
     log(r.detail);
   });
 
-  // 2. Tear down tailscaled.
-  const tailscaledBin = state?.tailscaled_bin ?? 'tailscaled';
-  await step('uninstall tailscaled', async () => {
-    await (deps.serviceManager ?? getServiceManager({ platform })).uninstall(HOST_TAILSCALED_LABEL);
+  // 2-4. §15 REQUIRED ORDER: uninstall the services → PROVE they are gone →
+  // only then destroy identity + credential. The old flow failed OPEN — a
+  // failed tailscaled uninstall proceeded to delete the headscale DB and
+  // clear host state under a LIVE tailscaled, leaving a running process with
+  // in-memory identity, wiped state, and nothing to converge from. The
+  // member's leaveHostLocked is the reference: stop first, destroy under
+  // proof, fail closed, cosmetics last.
+  const serviceManager = deps.serviceManager ?? getServiceManager({ platform });
+  const socketPath = deps.hostTailscaledSocketPath ?? resolveHostTailscaledSocketPath();
+  const stateDirPath = deps.hostTailscaledStateDir ?? resolveHostTailscaledStateDir();
+
+  const abort = (stage: string, err: unknown): HostDisableResult => {
+    errors.push(`${stage}: ${err instanceof Error ? err.message : String(err)}`);
+    log(
+      `host disable ABORTED at "${stage}": the tailscaled statedir, host state record, and serve `
+      + 'credential are all KEPT so a retry (or recovery by `myco host enable`) converges. NOTE: a '
+      + 'durable overlay forward may still be live — check `myco doctor` and retry `myco host disable`.',
+    );
+    return { cleared: false, errors, daemonRestarted };
+  };
+
+  // 2. Tailscaled: uninstall where installed, and PROVE it is gone —
+  // uninstall didn't throw, the unit is gone, and the supervisor no longer
+  // reports it running ('unknown' is NOT proof, §13's boot backend degrades
+  // to it by design).
+  const tailscaledWasInstalled = await serviceManager.isInstalled(HOST_TAILSCALED_LABEL).catch(() => false);
+  if (tailscaledWasInstalled) {
+    try {
+      await serviceManager.uninstall(HOST_TAILSCALED_LABEL);
+      const after = await serviceManager.status(HOST_TAILSCALED_LABEL);
+      // R-M4: 'unknown' is NOT proof of absence — only an affirmative
+      // running===false counts (a boot-scoped future for this label would
+      // otherwise fail open here).
+      if (after.installed || after.running !== false) {
+        throw new Error(`tailscaled still ${after.installed ? 'installed' : `running (state ${String(after.running)})`} after uninstall`);
+      }
+      // R-M4's second proof: the control socket no longer ACCEPTS — the unit
+      // file being gone says nothing about the process, and destruction of
+      // the statedir under a live tailscaled is exactly what §15 forbids.
+      if (await socketAccepts(socketPath)) {
+        throw new Error(`tailscaled control socket at ${socketPath} still accepts connections after uninstall`);
+      }
+    } catch (err) {
+      return abort('uninstall tailscaled', err);
+    }
+  }
+  if (platform === 'linux' && isSystemServiceInstalled(ctx, LEGACY_TAILSCALED_LINUX_LABEL)) {
     // Converge an upgraded pre-C1 rig: the legacy ROOT unit was Myco-labeled,
-    // so removing it is safe. Its vendor-path STATE is deliberately left alone
-    // — deleting /var/lib/tailscale is indistinguishable from deleting a
-    // genuine vendor install's state.
-    if (platform === 'linux' && isSystemServiceInstalled(ctx, LEGACY_TAILSCALED_LINUX_LABEL)) {
+    // so removing it is safe. Its vendor-path STATE is deliberately left
+    // alone — deleting /var/lib/tailscale is indistinguishable from deleting
+    // a genuine vendor install's state.
+    try {
       await uninstallSystemService(ctx, LEGACY_TAILSCALED_LINUX_LABEL);
       log('removed the legacy root tailscaled unit from a pre-coexistence install.');
+    } catch (err) {
+      return abort('uninstall legacy tailscaled', err);
     }
-  });
+  }
 
-  // 3. Tear down headscale.
-  await step('uninstall headscale', async () => {
-    await uninstallSystemService(ctx, HEADSCALE_SERVICE_LABEL);
-  });
+  // 3. Headscale (boot backend THROWS on a failed removal — never a
+  // success-shaped "✓" over a surviving root unit).
+  if (isSystemServiceInstalled(ctx, HEADSCALE_SERVICE_LABEL)) {
+    try {
+      await uninstallSystemService(ctx, HEADSCALE_SERVICE_LABEL);
+    } catch (err) {
+      return abort('uninstall headscale', err);
+    }
+  }
 
-  // 4. Remove headscale state + host state record (keep the binary cache — cheap
-  //    to keep, speeds a later re-enable; it holds no secrets).
+  // 4. Destruction — reached ONLY after both proofs. Removes: headscale
+  // state (control-plane DB), the tailscaled STATEDIR (holds the durable
+  // serve config — the §10 standing-bearer-channel backstop — and the node
+  // identity that must not outlive the control plane), the socket file
+  // (separate tree from the statedir), the host state record, and the SERVE
+  // BEARER (DEC-2: a credential must not outlive the identity it was issued
+  // against; re-enable mints fresh and members re-join regardless). Binary
+  // cache deliberately kept (no secrets; speeds re-enable).
   await step('remove headscale state', async () => {
     const layout = headscaleLayout(resolveHostControlDir());
     fs.rmSync(layout.stateDir, { recursive: true, force: true });
   });
+  await step('remove tailscaled statedir', async () => {
+    fs.rmSync(stateDirPath, { recursive: true, force: true });
+  });
+  await step('remove tailscaled socket', async () => {
+    fs.rmSync(socketPath, { force: true });
+  });
   await step('clear host state', async () => { clearHostState(); });
+  await step('clear serve bearer', async () => {
+    const { deleteSecrets } = await import('@myco/config/secrets.js');
+    const { HOST_SERVE_BEARER_SECRET } = await import('@myco/constants.js');
+    deleteSecrets(mycoHome, [HOST_SERVE_BEARER_SECRET]);
+  });
 
   if (errors.length > 0) {
     log(`host disable completed with ${errors.length} issue(s); local host-serve is off.`);
   } else {
-    log('Team Host disabled: services stopped + removed, host-serve off.');
+    log('Team Host disabled: services stopped + removed, state, node identity, and serve credential cleared.');
   }
   return { cleared: errors.length === 0, errors, daemonRestarted };
 }
@@ -683,6 +783,18 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
 // Default seams
 // ---------------------------------------------------------------------------
 
+
+/** Does a unix socket accept connections right now? Bounded; any error or
+ *  timeout is "no". Used as §15's prove-gone second signal. */
+async function socketAccepts(socketPath: string): Promise<boolean> {
+  const net = await import('node:net');
+  return await new Promise<boolean>((resolve) => {
+    const probe = net.connect(socketPath);
+    const timer = setTimeout(() => { probe.destroy(); resolve(false); }, 1_500);
+    probe.once('connect', () => { clearTimeout(timer); probe.destroy(); resolve(true); });
+    probe.once('error', () => { clearTimeout(timer); resolve(false); });
+  });
+}
 
 /** `headscale nodes list --output json` → the id of the node matching `hostname`.
  *  The admin socket is root-owned, so the call is sudo'd (same as key minting). */

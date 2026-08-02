@@ -1145,3 +1145,60 @@ describe('member overlay — multi-host join / leave', () => {
     expect(getHost(id)).toBeNull();
   });
 });
+
+describe('R-B5(c): shared-bin-dir convergence restarts every joined host', () => {
+  test('restartAllMemberTailscaled restarts each running member service, unlinks every socket (incl. the current one), and reports failures in notes', async () => {
+    const { restartAllMemberTailscaled, memberTailscaledLabel } = await import('@myco/host/member-overlay.js');
+    const { resolveMemberTailscaledSocketPath } = await import('@myco/grove/paths.js');
+    // Two enrolled hosts, via the registry-read seam (the enrollment state
+    // machine is irrelevant to the restart property under test).
+    const hostA = createHostId();
+    const hostB = createHostId();
+    const listHosts = () => [{ host_id: hostA }, { host_id: hostB }];
+    for (const hostId of [hostA, hostB]) {
+      const sock = resolveMemberTailscaledSocketPath(hostId);
+      fs.mkdirSync(path.dirname(sock), { recursive: true });
+      fs.writeFileSync(sock, '');
+    }
+    const restarts: string[] = [];
+    const manager = {
+      supported: true, platformName: 'fake',
+      async isInstalled() { return true; },
+      async inspect() { return null; },
+      async install() { return { changed: false, supervisorReloaded: false }; },
+      async uninstall() {},
+      async start() {}, async stop() {},
+      async restart(label: string) {
+        restarts.push(label);
+        if (label === memberTailscaledLabel(hostB)) throw new Error('kickstart refused');
+      },
+      restartShellCommand: () => 'true',
+      async status() {
+        return { installed: true, running: true as const, pid: 1, lastExitCode: null, unitPath: null };
+      },
+    };
+    const notes: string[] = [];
+    const currentSocket = resolveMemberTailscaledSocketPath(hostA);
+
+    await restartAllMemberTailscaled(manager, testPerUserLockNamespace, currentSocket, () => {}, notes, listHosts);
+
+    expect(restarts.sort()).toEqual([memberTailscaledLabel(hostA), memberTailscaledLabel(hostB)].sort());
+    // EVERY socket unlinked — including the current host's (review M6).
+    expect(fs.existsSync(resolveMemberTailscaledSocketPath(hostA))).toBe(false);
+    expect(fs.existsSync(resolveMemberTailscaledSocketPath(hostB))).toBe(false);
+    // A failed restart is REPORTED, never logged as success (review M7).
+    expect(notes.some((n) => n.includes(hostB) && n.includes('kickstart refused'))).toBe(true);
+  });
+
+  test('both join branches invoke the shared-dir restart when the binary changed (source pin)', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'packages/myco/src/host/member-overlay.ts'),
+      'utf-8',
+    );
+    const calls = [...source.matchAll(/await restartAllMemberTailscaled\(serviceManager, lockNamespace, socketPath, log, notes\);/g)];
+    expect(calls.length).toBe(2);
+    // Each call is guarded on a reported change.
+    const guards = [...source.matchAll(/tailscale\.changed\.length > 0/g)];
+    expect(guards.length).toBeGreaterThanOrEqual(2);
+  });
+});

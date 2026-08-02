@@ -42,6 +42,7 @@ export {
   checkRootAvailable,
   installSystemService,
   uninstallSystemService,
+  restartSystemService,
 } from '@myco/service/boot-backend.js';
 
 /** Team-Host-facing alias of the boot backend's context. */
