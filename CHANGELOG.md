@@ -47,6 +47,11 @@ All notable changes to Myco are documented here. Format follows [Keep a Changelo
 
 ### Fixed
 
+- **`npm update -g` no longer breaks the `myco` command.** The launcher now survives npm re-extracting the platform package (deleted dispatch file, lost executable bit) by falling back to the managed binary, and `myco doctor` checks that the command on your PATH is healthy.
+- **Explicit downgrades across a storage-format change are refused** even when version numbers alone look safe — the same guard that protects automatic rollback now applies in both directions.
+- **Disabling external agent access works on machines without Tailscale installed** — teardown verification no longer requires the CLI it was checking for.
+- **External agent access answers at the advertised URL** — Tailscale Funnel strips the path prefix it mounts, and the listener now accepts the stripped form.
+- The Windows installer no longer suggests the dormant Collective CLI.
 - Reliability fixes across detach/attach edge cases, capture reconciliation, and daemon restart supervision; see the GitHub release notes for the full list.
 
 ### Security
@@ -56,6 +61,7 @@ All notable changes to Myco are documented here. Format follows [Keep a Changelo
 ### Notes for upgraders (from 1.2.x)
 
 - **Storage format advances from v66 to v76** on first start. The update takes the automatic pre-update backup described above; no action needed.
+- **Legacy Team Sync queue is cleared.** Any capture rows still queued for the retired Cloudflare sync at upgrade time are discarded along with the sync membership; your local data is unaffected.
 - **Teams: update the host first, then members** — see the Team Host guide.
 - Point releases between the sections here (v1.0.x, v1.1.x, and v1.2.1 through v1.2.13) shipped without changelog entries — installer, self-update, and platform hardening; their notes live on the [GitHub releases page](https://github.com/goondocks-co/myco/releases).
 
