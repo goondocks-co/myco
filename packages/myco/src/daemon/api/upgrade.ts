@@ -669,28 +669,33 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       }
     }
 
-    // Schema-gap guard for the one API path that intentionally bypasses the
-    // no-downgrade gate (revert-to-stable): a target whose supported storage
-    // format is below any local Grove's stamped version would refuse to
-    // start after the swap. Forward adopts never trip this. Note the target
-    // may have JUST been staged and never booted here — then its supported
-    // version is unknown and the guard fails closed.
-    if (
-      mycoTargetVersion !== null
-      && semver.valid(mycoTargetVersion) !== null
-      && semver.valid(currentVersion) !== null
-      && semver.lt(mycoTargetVersion, currentVersion)
-    ) {
+    // Schema-gap guard: a target whose supported storage format is below
+    // any local Grove's stamped version would refuse to start after the
+    // swap. Two triggers: a version-lower target (revert-to-stable past the
+    // no-downgrade gate; unknown stamp fails closed), or a KNOWN stamp
+    // below the vault regardless of version direction — version order is
+    // not schema order when the running binary carries a dev version.
+    // Unknown stamps on version-higher targets stay allowed: a genuinely
+    // newer release has no stamp until it first boots.
+    if (mycoTargetVersion !== null) {
       const readVaultSchema = deps.readMaxStampedSchemaVersion ?? readMaxStampedSchemaVersion;
       const readTargetSchema = deps.readSupportedSchemaVersion ?? readSupportedSchemaVersion;
-      const vaultSchema = readVaultSchema(home);
+      const versionLower = semver.valid(mycoTargetVersion) !== null
+        && semver.valid(currentVersion) !== null
+        && semver.lt(mycoTargetVersion, currentVersion);
       const targetSchema = readTargetSchema(home, platform, mycoTargetVersion, localAppData);
-      if (rollbackWouldCrossSchemaGap(vaultSchema, targetSchema)) {
-        const refusal = new SchemaGapDowngradeError(mycoTargetVersion, vaultSchema!, targetSchema);
-        return {
-          status: 422,
-          body: { error: refusal.code, message: refusal.message },
-        };
+      if (versionLower || targetSchema !== null) {
+        const vaultSchema = readVaultSchema(home);
+        const crossesGap = versionLower
+          ? rollbackWouldCrossSchemaGap(vaultSchema, targetSchema)
+          : vaultSchema !== null && targetSchema !== null && targetSchema < vaultSchema;
+        if (crossesGap) {
+          const refusal = new SchemaGapDowngradeError(mycoTargetVersion, vaultSchema!, targetSchema);
+          return {
+            status: 422,
+            body: { error: refusal.code, message: refusal.message },
+          };
+        }
       }
     }
 
