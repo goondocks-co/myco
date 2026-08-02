@@ -902,13 +902,14 @@ describe('handleUpgradeApply — revert-to-stable schema-gap guard', () => {
     expect(initiateAdopt).toHaveBeenCalled();
   });
 
-  it('forward upgrades never invoke the schema readers', async () => {
+  it('forward upgrades with an unknown target stamp skip the vault scan and proceed', async () => {
     (getInstalledVersion as AnyMock).mockReturnValue('1.0.0');
     (readCachedCheck as AnyMock).mockReturnValue(makeUpdateCache());
     (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
     const readVault = vi.fn(() => { throw new Error('must not be called'); });
     const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({
       readMaxStampedSchemaVersion: readVault,
+      readSupportedSchemaVersion: vi.fn(() => null),
     }));
 
     const result = await handleUpgradeApply(makeReq());
@@ -916,5 +917,22 @@ describe('handleUpgradeApply — revert-to-stable schema-gap guard', () => {
     expect(result.status).toBeUndefined();
     expect(readVault).not.toHaveBeenCalled();
     expect(initiateAdopt).toHaveBeenCalled();
+  });
+
+  it('a KNOWN stamp below the vault refuses even on a version-higher target (dev current)', async () => {
+    (getInstalledVersion as AnyMock).mockReturnValue('0.0.0-dev+1.2.13-72-gabc1234');
+    (readCachedCheck as AnyMock).mockReturnValue(makeUpdateCache());
+    (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
+    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({
+      currentVersion: '0.0.0-dev+1.2.13-72-gabc1234',
+      readMaxStampedSchemaVersion: vi.fn(() => 76),
+      readSupportedSchemaVersion: vi.fn(() => 66),
+    }));
+
+    const result = await handleUpgradeApply(makeReq());
+
+    expect(result.status).toBe(422);
+    expect((result.body as Record<string, unknown>).error).toBe('schema_gap_downgrade');
+    expect(initiateAdopt).not.toHaveBeenCalled();
   });
 });

@@ -630,14 +630,40 @@ describe('myco upgrade <older-version>: schema-gap guard', () => {
     expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
   });
 
-  it('forward upgrades never run the guard', async () => {
+  it('forward upgrades with an unknown target stamp proceed without the vault scan', async () => {
     const deps = makeDeps({
       readMaxStampedSchemaVersion: vi.fn(() => { throw new Error('must not be called'); }),
-      readSupportedSchemaVersion: vi.fn(() => { throw new Error('must not be called'); }),
+      readSupportedSchemaVersion: vi.fn(() => null),
     });
 
     await run(['--target-version', '1.1.0'], deps);
     expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
     expect(deps.readMaxStampedSchemaVersion).not.toHaveBeenCalled();
+  });
+
+  it('a KNOWN stamp below the vault refuses even when the target is version-higher (dev current)', async () => {
+    const deps = makeDeps({
+      currentVersion: '0.0.0-dev+1.2.13-72-gabc1234',
+      fetchReleases: vi.fn(async () => [makeRelease('myco/v1.2.13', false)]),
+      readMaxStampedSchemaVersion: vi.fn(() => 76),
+      readSupportedSchemaVersion: vi.fn(() => 66),
+    });
+
+    await expect(run(['1.2.13'], deps)).rejects.toThrow('__exit__1__');
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
+
+  it('a KNOWN stamp at or above the vault proceeds on a version-higher target', async () => {
+    const deps = makeDeps({
+      currentVersion: '0.0.0-dev+1.2.13-72-gabc1234',
+      fetchReleases: vi.fn(async () => [makeRelease('myco/v1.2.13', false)]),
+      stageBinary: vi.fn(async (_params, _deps) => ({ versionDir: '/x/1.2.13', version: '1.2.13' })),
+      readMaxStampedSchemaVersion: vi.fn(() => 76),
+      readSupportedSchemaVersion: vi.fn(() => 76),
+    });
+
+    await run(['1.2.13'], deps);
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
   });
 });
