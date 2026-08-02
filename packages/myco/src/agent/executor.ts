@@ -12,7 +12,7 @@ import {
 import { tryParseJson } from '@myco/utils/json.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { initDatabase, vaultDbPath } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { createSchema, SchemaVersionTooNewError } from '@myco/db/schema.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { listReports } from '@myco/db/queries/reports.js';
@@ -178,8 +178,23 @@ export async function runAgent(
   options?: RunOptions,
 ): Promise<AgentRunResult> {
   const db = initDatabase(options?.requestContext?.databasePath ?? vaultDbPath(vaultDir));
-  // Real machine id (not the 'local' default) so the v52 conversion runs.
-  createSchema(db, getMachineId());
+  try {
+    // Real machine id (not the 'local' default) so the v52 conversion runs.
+    createSchema(db, getMachineId());
+  } catch (err) {
+    if (err instanceof SchemaVersionTooNewError) {
+      // The vault was written by a newer binary (rollback residue). The run
+      // fails typed instead of crashing the dispatcher — the vault has not
+      // been modified, and every future dispatch fails the same way until
+      // the binary is upgraded.
+      return {
+        runId: options?.resumeRunId ?? '',
+        status: STATUS_FAILED,
+        error: `${err.code}: ${err.message}`,
+      };
+    }
+    throw err;
+  }
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
   const projectId = rowProjectIdFromRequestContext(options?.requestContext);

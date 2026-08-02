@@ -131,6 +131,27 @@ describe('tool front door — never migrates a project mid-move', () => {
     expect(row.version).toBe(SCHEMA_VERSION);
   });
 
+  it('surfaces the too-new-vault diagnosis instead of flattening it', async () => {
+    const db = openDatabase(dbPath);
+    createSchema(db, 'test_machine');
+    db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)')
+      .run(SCHEMA_VERSION + 1, 0);
+    db.close();
+
+    let thrown: unknown;
+    try {
+      await tools().callTool('myco_sessions', { op: 'list' });
+    } catch (error) {
+      thrown = error;
+    }
+
+    // Same code the Canopy dispatchers key on, but the MESSAGE carries the
+    // real diagnosis — "written by a newer version of Myco" names its own
+    // remediation, and flattening it cost a real diagnosis in the wild.
+    expect((thrown as { code?: string }).code).toBe('tool_call_failed');
+    expect((thrown as Error).message).toContain('newer version of Myco');
+  });
+
   it('admits a read on a leased project when no migration is pending', async () => {
     const seeded = openDatabase(dbPath);
     createSchema(seeded, 'test_machine');

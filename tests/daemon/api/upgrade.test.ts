@@ -807,3 +807,114 @@ describe('manual channel: automatic paths no-op, operator paths proceed', () => 
     expect(result.status).toBeUndefined(); // 200 OK
   });
 });
+
+// ---------------------------------------------------------------------------
+// handleUpgradeApply — downgrade schema-gap guard (revert-to-stable)
+// ---------------------------------------------------------------------------
+
+describe('handleUpgradeApply — revert-to-stable schema-gap guard', () => {
+  const stableRefs = {
+    assetUrl: 'https://example/myco-darwin-arm64',
+    sha256sumsUrl: 'https://example/SHA256SUMS',
+    assetName: 'myco-darwin-arm64',
+    targetVersion: '1.0.0',
+  };
+
+  beforeEach(() => {
+    mock.clearAllMocks();
+    (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
+    (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
+    (getInstalledVersion as AnyMock).mockReturnValue('1.1.0-beta.1');
+    (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
+    (initiateAdopt as AnyMock).mockResolvedValue(undefined);
+    (resolveNewestStagedVersion as AnyMock).mockReturnValue(null);
+    (readCachedCheck as AnyMock).mockReturnValue({
+      checked_at: new Date().toISOString(),
+      channel: 'stable',
+      packages: {
+        myco: { package_name: '@goondocks/myco', latest_stable: '1.0.0', latest_beta: null },
+      },
+    });
+  });
+
+  function gapDeps(overrides: Record<string, unknown> = {}) {
+    return makeDeps({
+      currentVersion: '1.1.0-beta.1',
+      resolveRevertRefs: vi.fn(async () => stableRefs),
+      stageBinary: vi.fn(async () => ({ versionDir: '/x/versions/1.0.0', version: '1.0.0' })),
+      ...overrides,
+    });
+  }
+
+  it('422 schema_gap_downgrade when the stable target cannot read the vault; nothing adopted', async () => {
+    const deps = gapDeps({
+      readMaxStampedSchemaVersion: vi.fn(() => 76),
+      readSupportedSchemaVersion: vi.fn(() => 71),
+    });
+    const { handleUpgradeApply } = createUpgradeHandlers(deps);
+
+    const result = await handleUpgradeApply(makeReq());
+
+    expect(result.status).toBe(422);
+    expect((result.body as Record<string, unknown>).error).toBe('schema_gap_downgrade');
+    expect(String((result.body as Record<string, unknown>).message)).toContain('v76');
+    expect(initiateAdopt).not.toHaveBeenCalled();
+    // The in-progress sentinel was never written — nothing is in flight.
+    expect(fs.existsSync(path.join((deps as { daemonStateDir: string }).daemonStateDir, 'update.in-progress'))).toBe(false);
+  });
+
+  it('422 when the target has no supported-schema stamp (unknown fails closed)', async () => {
+    const deps = gapDeps({
+      readMaxStampedSchemaVersion: vi.fn(() => 76),
+      readSupportedSchemaVersion: vi.fn(() => null),
+    });
+    const { handleUpgradeApply } = createUpgradeHandlers(deps);
+
+    const result = await handleUpgradeApply(makeReq());
+    expect(result.status).toBe(422);
+    expect(initiateAdopt).not.toHaveBeenCalled();
+  });
+
+  it('reverts normally when the target stamp covers the vault', async () => {
+    const deps = gapDeps({
+      readMaxStampedSchemaVersion: vi.fn(() => 76),
+      readSupportedSchemaVersion: vi.fn(() => 76),
+    });
+    const { handleUpgradeApply } = createUpgradeHandlers(deps);
+
+    const result = await handleUpgradeApply(makeReq());
+
+    expect(result.status).toBeUndefined();
+    expect(initiateAdopt).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'daemon', targetVersion: '1.0.0' }),
+    );
+  });
+
+  it('reverts normally when no vault is readable (fresh install)', async () => {
+    const deps = gapDeps({
+      readMaxStampedSchemaVersion: vi.fn(() => null),
+      readSupportedSchemaVersion: vi.fn(() => null),
+    });
+    const { handleUpgradeApply } = createUpgradeHandlers(deps);
+
+    const result = await handleUpgradeApply(makeReq());
+    expect(result.status).toBeUndefined();
+    expect(initiateAdopt).toHaveBeenCalled();
+  });
+
+  it('forward upgrades never invoke the schema readers', async () => {
+    (getInstalledVersion as AnyMock).mockReturnValue('1.0.0');
+    (readCachedCheck as AnyMock).mockReturnValue(makeUpdateCache());
+    (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
+    const readVault = vi.fn(() => { throw new Error('must not be called'); });
+    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({
+      readMaxStampedSchemaVersion: readVault,
+    }));
+
+    const result = await handleUpgradeApply(makeReq());
+
+    expect(result.status).toBeUndefined();
+    expect(readVault).not.toHaveBeenCalled();
+    expect(initiateAdopt).toHaveBeenCalled();
+  });
+});

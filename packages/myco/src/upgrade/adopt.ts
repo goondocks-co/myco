@@ -41,7 +41,11 @@ interface AdoptBaseOpts {
   targetVersion: string;
   /** The previously-running version (rollback target on crash-loop). */
   prevVersion: string;
-  /** Myco home directory (`~/.myco` on POSIX, `%LOCALAPPDATA%\Myco` on win32). */
+  /**
+   * Myco home directory — always `resolveMycoHome()` on every platform
+   * (see ApplyAdoptParams.home; Groves and the schema-gap scan live under
+   * this dir, and binary-path helpers apply their own win32 mapping).
+   */
   home: string;
   /** Target platform — controls binary-path computation and win32 copy-gate. */
   platform: NodeJS.Platform;
