@@ -147,6 +147,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 73, migrate: (db) => migrateV72ToV73(db) },
   { version: 74, migrate: (db) => migrateV73ToV74(db) },
   { version: 75, migrate: (db) => migrateV74ToV75(db) },
+  { version: 76, migrate: (db) => migrateV75ToV76(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4780,5 +4781,43 @@ function migrateV74ToV75(db: Database): void {
   } finally {
     setPragmaBoolean(db, 'legacy_alter_table', legacyAlterTable);
     setPragmaBoolean(db, 'foreign_keys', foreignKeys);
+  }
+}
+
+/**
+ * v76 — content_publications backfill to current generation.
+ *
+ * Claim-gated materialization ships in this version: agent skill writes stop
+ * landing on disk, so "claimable" (lineage generation ahead of publication)
+ * must mean "a new version you have not published" — not "a skill the old
+ * direct-write model already delivered". Local direct writes materialized
+ * every generation at write time, so publication-at-current-generation is the
+ * historically true state; v69 seeded rows at then-current generations, so
+ * this must UPSERT the bump, not INSERT OR IGNORE past them. Host-served
+ * generations that were never member-published get stamped too — accepted,
+ * bounded staleness: the next evolution re-surfaces them, and a missing file
+ * still triggers the file-status republish affordance.
+ */
+function migrateV75ToV76(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(
+      `INSERT INTO content_publications
+         (artifact_kind, artifact_id, published_generation, published_at, published_by, machine_id)
+       SELECT 'skill', sr.id, sr.generation, ?, 'migration:v76-backfill', sr.machine_id
+       FROM skill_records sr WHERE sr.status = 'active'
+       ON CONFLICT (artifact_kind, artifact_id) DO UPDATE SET
+         published_generation = excluded.published_generation,
+         published_at = excluded.published_at,
+         published_by = excluded.published_by
+       WHERE excluded.published_generation > content_publications.published_generation`,
+    ).run(epochSeconds());
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(76, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
   }
 }

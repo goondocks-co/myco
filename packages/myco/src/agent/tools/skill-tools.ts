@@ -24,12 +24,16 @@
  *     without touching the live DB or .agents/skills/ directory.
  *   - vault_finalize_skill: promotes a staged skill. Only commit point;
  *     re-runs dedup + validation as defense in depth, then atomically
- *     inserts the skill_records row, lineage, candidate transition to
- *     'generated', disk file, and symlinks. Cleans up staging on success.
+ *     inserts the skill_records row, lineage, and candidate transition to
+ *     'generated'. Cleans up staging on success.
+ *
+ * Every tool here is DB-only with respect to the project tree: content truth
+ * is skill_lineage.content_snapshot, and the committed SKILL.md + symlinks
+ * land on disk only through the content-claim Publish flow
+ * (daemon/api/content-claims-materialize.ts).
  */
 
 import crypto from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
@@ -78,14 +82,10 @@ import {
 } from './skill-staging.js';
 import {
   publishedSkillRelativePath,
-  removePublishedSkillFileOrDirectoryIfLocal,
   resolvePublishedSkillPaths,
-  syncPublishedSkillSymlinksIfLocal,
-  writePublishedSkillFile,
 } from '@myco/skills/publication.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
 import { isHostServedRequest } from '@myco/grove/request-context.js';
-import type { SkillArtifactResult } from '@myco/skills/publication.js';
 import { buildSkillSurveyPreparation, hasHumanReviewEvidence } from '../skill-survey-prepare.js';
 import {
   RECONCILIATION_HANDLED_GROUPS,
@@ -219,29 +219,11 @@ export function createSkillTools(deps: VaultToolDeps) {
   const projectId = rowProjectIdFromVaultToolDeps(deps);
   const scope = projectScopeFromVaultToolDeps(deps);
 
-  // Team Host residency: on a host-served-for-a-member run the host holds the
-  // Grove DB but NOT the member's working tree. The skill RECORD still lands in
-  // the DB (generation is unchanged); the committed SKILL.md publishes to the
-  // member's tree only on manual accept. So the disk publish must never write,
-  // symlink, or remove a working tree the host lacks — these wrappers no-op the
-  // filesystem side of publication on a host-served run while preserving the
-  // path-escape validation the callers rely on. Local runs behave exactly as
-  // before (hostServed is false, so every wrapper delegates straight through).
+  // Writes are DB-only everywhere (claim-gated materialization), but the
+  // fabrication gate READS the working tree to verify path/symbol claims —
+  // on a host-served run the host lacks the member's tree, so the gate is
+  // skipped rather than false-rejecting every real claim.
   const hostServed = isHostServedRequest(deps.requestContext);
-
-  function publishSkillFile(root: string, name: string, content: string): SkillArtifactResult {
-    if (!hostServed) return writePublishedSkillFile(root, name, content);
-    // Preserve the path-escape refusal the callers check for, without touching disk.
-    return resolvePublishedSkillPaths(root, name);
-  }
-
-  function publishSkillSymlinks(root: string, name: string, options?: { remove?: boolean }): void {
-    syncPublishedSkillSymlinksIfLocal(root, name, hostServed, options);
-  }
-
-  function removePublishedSkillArtifacts(root: string, name: string, options?: { fileOnly?: boolean }): void {
-    removePublishedSkillFileOrDirectoryIfLocal(root, name, hostServed, options);
-  }
 
   function hydrateIdentifiedPlanEntriesFromBundles(
     plan: JsonRecord,
@@ -1229,54 +1211,15 @@ export function createSkillTools(deps: VaultToolDeps) {
     | { error: string }
   > {
     const root = projectRoot ?? process.cwd();
+    // Claim-gated materialization: agent tools NEVER write the project tree.
+    // Skill content truth is skill_lineage.content_snapshot; the committed
+    // SKILL.md lands on disk only when a human publishes through the content
+    // claim flow (daemon/api/content-claims-materialize.ts), locally and on
+    // a Team Host alike. Path validation stays so records never carry an
+    // escaping delivery path.
     const publishedPaths = resolvePublishedSkillPaths(root, params.name);
     if (!publishedPaths.ok) {
       return { error: 'Invalid skill name: resolved path escapes .agents/skills' };
-    }
-    // If the directory already exists for a create, it's an orphan
-    // from a prior failed run — we overwrite the file and only remove
-    // the file itself on rollback (not the whole directory) to avoid
-    // clobbering anything else that may share the dir.
-    const skillDirPreexisted = existsSync(publishedPaths.paths.skillDir);
-
-    async function cleanupCreatedSkillArtifactsOnRollback(): Promise<void> {
-      try {
-        removePublishedSkillArtifacts(root, params.name, { fileOnly: skillDirPreexisted });
-      } catch (rollbackErr) {
-        console.warn(
-          `[${params.label}] file rollback after DB failure also failed:`,
-          rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
-        );
-      }
-
-      try {
-        publishSkillSymlinks(root, params.name, { remove: true });
-      } catch (rollbackErr) {
-        console.warn(
-          `[${params.label}] symlink rollback after DB failure also failed:`,
-          rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
-        );
-      }
-    }
-
-    try {
-      const writeResult = publishSkillFile(root, params.name, params.content);
-      if (!writeResult.ok) {
-        return { error: 'Invalid skill name: resolved path escapes .agents/skills' };
-      }
-    } catch (err) {
-      return {
-        error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-
-    try {
-      publishSkillSymlinks(root, params.name);
-    } catch (err) {
-      console.warn(
-        `[${params.label}] syncSkillSymlinks failed:`,
-        err instanceof Error ? err.message : err,
-      );
     }
 
     const now = epochSeconds();
@@ -1317,9 +1260,8 @@ export function createSkillTools(deps: VaultToolDeps) {
         params.linkCandidate?.(recordId, now);
       })();
     } catch (err) {
-      await cleanupCreatedSkillArtifactsOnRollback();
       return {
-        error: `Skill write aborted: database transaction failed and on-disk state was rolled back. ${err instanceof Error ? err.message : String(err)}`,
+        error: `Skill write aborted: database transaction failed. ${err instanceof Error ? err.message : String(err)}`,
       };
     }
 
@@ -1346,7 +1288,6 @@ export function createSkillTools(deps: VaultToolDeps) {
     existing: SkillRecordRow;
     name: string;
     content: string;
-    priorContent: string;
     display_name: string;
     description: string;
     source_ids?: string;
@@ -1357,19 +1298,12 @@ export function createSkillTools(deps: VaultToolDeps) {
   > {
     const root = projectRoot ?? process.cwd();
 
-    try {
-      const writeResult = publishSkillFile(root, params.name, params.content);
-      if (!writeResult.ok) {
-        return { ok: false, error: 'Invalid skill name: resolved path escapes .agents/skills' };
-      }
-    } catch (err) {
-      return { ok: false, error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}` };
-    }
-
-    try {
-      publishSkillSymlinks(root, params.name);
-    } catch (err) {
-      console.warn('[writeEvolvedSkill] syncSkillSymlinks failed:', err instanceof Error ? err.message : err);
+    // DB-only (claim-gated materialization): validate the delivery path but
+    // never touch a materialized file — the published copy on disk stays at
+    // whatever generation the user last published.
+    const writeResult = resolvePublishedSkillPaths(root, params.name);
+    if (!writeResult.ok) {
+      return { ok: false, error: 'Invalid skill name: resolved path escapes .agents/skills' };
     }
 
     const now = epochSeconds();
@@ -1402,20 +1336,9 @@ export function createSkillTools(deps: VaultToolDeps) {
         });
       })();
     } catch (err) {
-      try {
-        const rollback = publishSkillFile(root, params.name, params.priorContent);
-        if (!rollback.ok) {
-          console.warn('[writeEvolvedSkill] file rollback refused:', rollback.reason);
-        }
-      } catch (rollbackErr) {
-        console.warn(
-          '[writeEvolvedSkill] file rollback after DB failure also failed:',
-          rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
-        );
-      }
       return {
         ok: false,
-        error: `Skill write aborted: database transaction failed and on-disk state was rolled back. ${err instanceof Error ? err.message : String(err)}`,
+        error: `Skill write aborted: database transaction failed. ${err instanceof Error ? err.message : String(err)}`,
       };
     }
 
@@ -1721,20 +1644,21 @@ export function createSkillTools(deps: VaultToolDeps) {
 
         case 'delete': {
           if (!args.id) return textResult({ error: 'id is required for delete action' });
+          const existingForNotify = getSkillRecord(args.id, scope) ?? getSkillRecordByName(args.id, scope);
           const result = deleteSkillRecordCascade(args.id, scope);
           if (!result) return textResult({ error: `Skill record not found: ${args.id}` });
           try { embeddingManager?.onRemoved('skill_records', result.id); } catch { /* best-effort */ }
-          // Disk + symlink cleanup (best-effort)
-          const root = projectRoot ?? process.cwd();
-          if (!/[/\\]|\.\./.test(result.name)) {
-            try { removePublishedSkillArtifacts(root, result.name); } catch (err) {
-              console.warn('[vault_skill_records] Failed to remove skill directory:', err instanceof Error ? err.message : err);
-            }
-            try {
-              publishSkillSymlinks(root, result.name, { remove: true });
-            } catch (err) {
-              console.warn('[vault_skill_records] Failed to remove symlinks:', err instanceof Error ? err.message : err);
-            }
+          // DB-only delete: any published SKILL.md stays in the working tree —
+          // removing it is a human git action. The notification tells the user
+          // the file remains so it doesn't linger as an unnoticed orphan.
+          if (existingForNotify) {
+            emitSkillNotification(vaultDir, 'retired', {
+              name: existingForNotify.name,
+              display_name: existingForNotify.display_name,
+              description: existingForNotify.description,
+              recordId: existingForNotify.id,
+              generation: existingForNotify.generation,
+            });
           }
           return textResult({ deleted: true, id: result.id, name: result.name });
         }
@@ -1979,7 +1903,6 @@ export function createSkillTools(deps: VaultToolDeps) {
         existing,
         name: args.name,
         content: args.content,
-        priorContent,
         display_name: args.display_name,
         description: args.description,
         source_ids: args.source_ids,
@@ -2303,7 +2226,6 @@ export function createSkillTools(deps: VaultToolDeps) {
         existing,
         name: args.name,
         content: newContent,
-        priorContent,
         display_name: existing.display_name,
         description,
         source_ids: args.source_ids,

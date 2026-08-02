@@ -404,3 +404,16 @@ prod registration in the shared `gui/<uid>` domain.
 homes. Code that calls `managedBinaryPath()` and writes the result into a plist for a
 dev/dogfood home is a bug — it would silently point the dogfood unit at the prod binary
 after the prod binary is installed, violating home isolation.
+
+**`make build`/`make build-all` now auto-run `dev-install`.** This step (extracted from
+`dev-link`) copies the freshly built binary into `~/.myco-dev` and restarts the dogfood
+daemon automatically. Worktree builds refuse to deploy — a guard (Makefile:165-172)
+prints `worktree build — not replacing the dogfood binary` and skips the copy/restart,
+so a worktree build never clobbers the main checkout's dogfood daemon. Use
+`make build-only` for a compile-only build with no dev-install side effect.
+
+**Worktree builds need `vendor-src/` in addition to `vendor/`.** `libsqlite3` is embedded
+via a compile-time `import ... with { type: 'file' }` in
+`packages/myco/src/entries/cli.darwin-arm64.ts`, sourced from `vendor-src/libsqlite3/<target>/`.
+A worktree provisioned without `vendor-src/` fails `build:binary` roughly 10 minutes in. Run
+`packages/myco/scripts/build-libsqlite3-target.sh` to provision the missing source before retrying.

@@ -33,6 +33,7 @@ import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { listSkillRecords, getSkillRecordByName } from '@myco/db/queries/skill-records.js';
+import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
@@ -191,8 +192,9 @@ describe('skill staging → finalize pipeline', () => {
     expect(finalizeResult.name).toBe('happy-skill');
     expect(finalizeResult.generation).toBe(1);
 
-    // Live file and row exist now
-    expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'happy-skill', 'SKILL.md'))).toBe(true);
+    // Row exists now; the live file does NOT — agent-path finalize is DB-only,
+    // and disk delivery happens via the claim Publish flow.
+    expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'happy-skill', 'SKILL.md'))).toBe(false);
     expect(getSkillRecordByName('happy-skill', ALL_PROJECTS_SCOPE)).not.toBeNull();
 
     // Candidate flipped, approved_at preserved
@@ -303,12 +305,14 @@ describe('skill staging → finalize pipeline', () => {
       undefined,
     );
 
-    // Finalize — should promote v2
+    // Finalize — should promote v2 (DB content truth; no live file is written)
     const finalizeTool = findTool(tools, 'vault_finalize_skill');
     await finalizeTool.handler({ candidate_id: 'cand-iter' }, undefined);
 
-    const liveFile = path.join(tmpDir, '.agents', 'skills', 'iter-skill', 'SKILL.md');
-    expect(fs.readFileSync(liveFile, 'utf-8')).toContain('# Version 2');
+    const record = getSkillRecordByName('iter-skill', ALL_PROJECTS_SCOPE)!;
+    const lineage = listLineageForSkill(record.id, ALL_PROJECTS_SCOPE, 1);
+    expect(lineage[0]!.content_snapshot).toContain('# Version 2');
+    expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'iter-skill', 'SKILL.md'))).toBe(false);
   });
 
   // --------------------------------------------------------------------------
@@ -363,9 +367,10 @@ describe('skill staging → finalize pipeline', () => {
     ) as { error?: string };
     expect(result.error).toMatch(/already exists/i);
 
-    // The live (concurrent) skill is intact, not overwritten
-    const liveFile = path.join(tmpDir, '.agents', 'skills', 'race-skill', 'SKILL.md');
-    expect(fs.readFileSync(liveFile, 'utf-8')).toContain('# Concurrent');
+    // The (concurrent) skill's DB content is intact, not overwritten
+    const raceRecord = getSkillRecordByName('race-skill', ALL_PROJECTS_SCOPE)!;
+    const raceLineage = listLineageForSkill(raceRecord.id, ALL_PROJECTS_SCOPE, 1);
+    expect(raceLineage[0]!.content_snapshot).toContain('# Concurrent');
 
     // Staging still exists — finalize doesn't clean up on failure
     expect(fs.existsSync(stagingPath(vaultDir, 'cand-race'))).toBe(true);

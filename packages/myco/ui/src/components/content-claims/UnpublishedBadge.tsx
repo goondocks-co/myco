@@ -22,11 +22,11 @@ export function UnpublishedBadge({
   return (
     <Badge
       variant="warning"
-      title={`Generation ${claimable.lineage_generation} hasn't been published yet${
-        claimable.published_generation !== null ? ` (last published: gen ${claimable.published_generation})` : ''
+      title={`A new version (gen ${claimable.lineage_generation}) is ready to publish to your project${
+        claimable.published_generation !== null ? ` (currently published: gen ${claimable.published_generation})` : ''
       }`}
     >
-      Unpublished
+      Ready to publish
     </Badge>
   );
 }

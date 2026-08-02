@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { withDatabase, openDatabase, type Database } from '@myco/db/client.js';
@@ -131,7 +131,7 @@ describe('Task B1 — skill working-tree write gate (overlay-origin)', () => {
     expect(existsSync(path.join(projectRoot, '.agents', 'skills'))).toBe(false);
   });
 
-  test('local create: the SKILL.md file IS written (unchanged behavior — no over-refusal)', async () => {
+  test('local create: DB-only as well — local and host-served now behave identically (claim-gated materialization)', async () => {
     const name = 'local-create';
     await withDatabase(db, async () => {
       const write = findTool(createSkillTools(deps(false)), 'vault_write_skill');
@@ -145,13 +145,16 @@ describe('Task B1 — skill working-tree write gate (overlay-origin)', () => {
       expect(getSkillRecordByName(name, GLOBAL_SCOPE)).not.toBeNull();
     });
 
-    expect(existsSync(skillFilePath(name))).toBe(true);
-    expect(readFileSync(skillFilePath(name), 'utf-8')).toContain('# Residency Gate Fixture');
+    // Disk delivery is the claim Publish flow's job everywhere — the residency
+    // gate stopped being conditional when agent writes went DB-only.
+    expect(existsSync(skillFilePath(name))).toBe(false);
+    expect(existsSync(path.join(projectRoot, '.agents', 'skills'))).toBe(false);
   });
 
   test('host-served evolve: DB record bumps generation but the on-disk file is NOT rewritten', async () => {
     const name = 'evolve-target';
-    // Seed generation 1 locally so a file exists on disk (content A).
+    // Seed generation 1 in the DB, then materialize the file the way the claim
+    // Publish flow would (agent writes no longer materialize anything).
     await withDatabase(db, async () => {
       const write = findTool(createSkillTools(deps(false)), 'vault_write_skill');
       await callTool(write, {
@@ -161,7 +164,8 @@ describe('Task B1 — skill working-tree write gate (overlay-origin)', () => {
         content: VALID_SKILL_CONTENT(name),
       });
     });
-    expect(existsSync(skillFilePath(name))).toBe(true);
+    mkdirSync(path.dirname(skillFilePath(name)), { recursive: true });
+    writeFileSync(skillFilePath(name), VALID_SKILL_CONTENT(name), 'utf-8');
     const contentA = readFileSync(skillFilePath(name), 'utf-8');
 
     // Now evolve the SAME skill on a host-served run with different content (B).
@@ -286,7 +290,7 @@ describe('Task B5 — skill delete cancels the active claim, fs cleanup respects
     return path.join(projectRoot, '.agents', 'skills', name, 'SKILL.md');
   }
 
-  /** Seed a published skill locally (file on disk + DB record) and claim it. */
+  /** Seed a skill record, materialize its file as the Publish flow would, and claim it. */
   async function seedClaimedSkill(name: string): Promise<string> {
     await withDatabase(db, async () => {
       const write = findTool(createSkillTools(deps(false)), 'vault_write_skill');
@@ -297,6 +301,9 @@ describe('Task B5 — skill delete cancels the active claim, fs cleanup respects
         content: VALID_SKILL_CONTENT(name),
       });
     });
+    // Agent writes are DB-only; simulate a prior human Publish for the file.
+    mkdirSync(path.dirname(skillFilePath(name)), { recursive: true });
+    writeFileSync(skillFilePath(name), VALID_SKILL_CONTENT(name), 'utf-8');
     expect(existsSync(skillFilePath(name))).toBe(true);
 
     let skillId = '';
@@ -336,7 +343,7 @@ describe('Task B5 — skill delete cancels the active claim, fs cleanup respects
     expect(existsSync(skillFilePath(name))).toBe(true);
   });
 
-  test('local delete: the record, its active claim, AND the on-disk file are all removed', async () => {
+  test('local delete: the record and its active claim are removed, but the published file stays (human git action removes it)', async () => {
     const name = 'local-delete';
     const skillId = await seedClaimedSkill(name);
 
@@ -348,6 +355,8 @@ describe('Task B5 — skill delete cancels the active claim, fs cleanup respects
       expect(getActiveContentClaim('skill', skillId)).toBeNull();
     });
 
-    expect(existsSync(skillFilePath(name))).toBe(false);
+    // DB-only delete everywhere: the working tree is the user's; the retirement
+    // notification tells them the file remains.
+    expect(existsSync(skillFilePath(name))).toBe(true);
   });
 });
