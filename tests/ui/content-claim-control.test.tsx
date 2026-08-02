@@ -236,10 +236,10 @@ describe('ClaimControl — already published', () => {
 });
 
 describe('ClaimControl — unclaimed', () => {
-  it('shows the Unpublished badge and a Publish button', async () => {
+  it('shows the Ready to publish badge and a Publish button', async () => {
     renderControl();
 
-    await waitFor(() => expect(screen.getByText('Unpublished')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Ready to publish')).toBeInTheDocument());
     expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument();
     expect(screen.getByText(/gen 3/)).toBeInTheDocument();
   });
@@ -787,7 +787,7 @@ describe('ClaimControl — published but missing from the working tree (merged s
     await waitFor(() => expect(screen.getByTestId('claim-and-materialize')).toBeInTheDocument());
     expect(screen.getByTestId('claim-and-materialize')).toHaveTextContent('Publish');
     expect(screen.getByText(/Published file missing from your checkout/)).toBeInTheDocument();
-    expect(screen.queryByText('Unpublished')).toBeNull();
+    expect(screen.queryByText('Ready to publish')).toBeNull();
   });
 
   it('renders nothing when file_present is null (degraded) — no affordance', async () => {

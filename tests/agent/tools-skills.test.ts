@@ -2178,7 +2178,7 @@ describe('vault skill tools', () => {
   // -------------------------------------------------------------------------
 
   describe('vault_write_skill', () => {
-    it('creates a skill file and record', async () => {
+    it('creates a skill record with DB-resident content (no disk write)', async () => {
       const t = findTool(tools, 'vault_write_skill');
       const result = await t.handler(
         {
@@ -2199,20 +2199,21 @@ describe('vault skill tools', () => {
 
       expect(data.id).toBeDefined();
       expect(data.name).toBe('error-handling');
+      // `path` is the delivery target the claim Publish flow will write later.
       expect(data.path).toBe('.agents/skills/error-handling/SKILL.md');
       expect(data.generation).toBe(1);
 
-      // Verify file was written to disk
+      // DB-only: no file materialized — disk delivery is the Publish flow's job.
       const filePath = path.join(tmpDir, '.agents', 'skills', 'error-handling', 'SKILL.md');
-      expect(fs.existsSync(filePath)).toBe(true);
-      expect(fs.readFileSync(filePath, 'utf-8')).toContain('# Error Handling');
+      expect(fs.existsSync(filePath)).toBe(false);
 
-      // Verify skill record exists in DB
+      // Verify skill record + content exist in DB
       const recordsTool = findTool(tools, 'vault_skill_records');
       const recordsResult = await recordsTool.handler({ action: 'get', id: 'error-handling' }, undefined);
-      const record = parseResult(recordsResult) as { name: string; generation: number };
+      const record = parseResult(recordsResult) as { name: string; generation: number; content?: string };
       expect(record.name).toBe('error-handling');
       expect(record.generation).toBe(1);
+      expect(record.content).toContain('# Error Handling');
     });
 
     it('rejects a write that references a nonexistent file path (fabrication gate)', async () => {
@@ -2312,9 +2313,14 @@ describe('vault skill tools', () => {
       expect(data.generation).toBe(2);
       expect(data.name).toBe('versioned-skill');
 
-      // Verify file content was updated
+      // DB-only: the evolve landed in lineage, not on disk.
       const filePath = path.join(tmpDir, '.agents', 'skills', 'versioned-skill', 'SKILL.md');
-      expect(fs.readFileSync(filePath, 'utf-8')).toContain('# Version 2');
+      expect(fs.existsSync(filePath)).toBe(false);
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const record = parseResult(await recordsTool.handler({ action: 'get', id: 'versioned-skill' }, undefined)) as {
+        content?: string;
+      };
+      expect(record.content).toContain('# Version 2');
     });
 
     it('updates candidate status when candidate_id provided', async () => {
@@ -3849,7 +3855,7 @@ describe('vault skill tools', () => {
       );
     }
 
-    it('promotes a staged skill to .agents/skills and creates DB rows', async () => {
+    it('promotes a staged skill to DB rows without materializing a live file', async () => {
       // Seed candidate + stage content
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
@@ -3878,9 +3884,9 @@ describe('vault skill tools', () => {
       expect(data.generation).toBe(1);
       expect(data.path).toBe('.agents/skills/finalize-me/SKILL.md');
 
-      // Disk file
+      // DB-only: no live file — disk delivery happens via the claim Publish flow.
       const liveFile = path.join(tmpDir, '.agents', 'skills', 'finalize-me', 'SKILL.md');
-      expect(fs.existsSync(liveFile)).toBe(true);
+      expect(fs.existsSync(liveFile)).toBe(false);
 
       // DB row
       const recordsTool = findTool(tools, 'vault_skill_records');
@@ -4323,12 +4329,17 @@ describe('vault skill tools', () => {
       return parseResult(await t.handler({ name, edits }, undefined)) as Record<string, unknown>;
     }
 
-    it('applies edits and bumps generation on a clean result', async () => {
+    it('applies edits and bumps generation on a clean result (disk untouched)', async () => {
       seedSkill('edit-me', { body: 'old line', generation: 1 });
+      const before = readSkillFile('edit-me');
       const res = await runEdit('run-edit-1', 'edit-me', [{ old_string: 'old line', new_string: 'new line' }]);
       expect(res.error).toBeUndefined();
       expect(res.generation).toBe(2);
-      expect(readSkillFile('edit-me')).toContain('new line');
+      // DB-only: the edited content lives in lineage; the seeded file stays as-published.
+      expect(readSkillFile('edit-me')).toBe(before);
+      const t = findTool(tools, 'vault_skill_records');
+      const rec = parseResult(await t.handler({ action: 'get', id: 'edit-me' }, undefined)) as { content?: string };
+      expect(rec.content).toContain('new line');
     });
 
     it('rejects a no-match edit without touching disk', async () => {
@@ -4420,9 +4431,9 @@ describe('vault skill tools', () => {
       return path.join(tmpDir, '.agents', 'skills', name, 'SKILL.md');
     }
 
-    it('get returns lineage content when the published file is missing', async () => {
+    it('get returns lineage content with no file on disk (agent writes are DB-only)', async () => {
       await createSkill('db-res-get', '# DB Res Get\n\nBody from lineage.');
-      fs.rmSync(skillFilePath('db-res-get'));
+      expect(fs.existsSync(skillFilePath('db-res-get'))).toBe(false);
 
       const t = findTool(tools, 'vault_skill_records');
       const rec = parseResult(await t.handler({ action: 'get', id: 'db-res-get' }, undefined)) as { content?: string };
@@ -4431,6 +4442,8 @@ describe('vault skill tools', () => {
 
     it('get returns lineage content, not a hand-edited file (managed skills are DB-owned)', async () => {
       await createSkill('db-res-owned', '# Owned\n\nCanonical body.');
+      // Simulate a published copy that was then hand-edited.
+      fs.mkdirSync(path.dirname(skillFilePath('db-res-owned')), { recursive: true });
       fs.writeFileSync(
         skillFilePath('db-res-owned'),
         validSkillContent('db-res-owned', '# Owned\n\nHand edit.'),
@@ -4443,9 +4456,8 @@ describe('vault skill tools', () => {
       expect(rec.content).not.toContain('Hand edit.');
     });
 
-    it('evolve succeeds and re-materializes the file when it is missing locally', async () => {
+    it('evolve succeeds with no local file and does not materialize one', async () => {
       await createSkill('db-res-evolve', '# Evolve\n\nGen one body.');
-      fs.rmSync(skillFilePath('db-res-evolve'));
 
       const t = findTool(tools, 'vault_write_skill');
       const res = parseResult(await t.handler(
@@ -4459,12 +4471,12 @@ describe('vault skill tools', () => {
       )) as { generation?: number; error?: string };
       expect(res.error).toBeUndefined();
       expect(res.generation).toBe(2);
-      expect(fs.readFileSync(skillFilePath('db-res-evolve'), 'utf-8')).toContain('Gen two body.');
+      // Still DB-only — evolution never materializes.
+      expect(fs.existsSync(skillFilePath('db-res-evolve'))).toBe(false);
     });
 
-    it('edit succeeds when the published file is missing locally', async () => {
+    it('edit succeeds when no published file exists locally', async () => {
       await createSkill('db-res-edit', '# Edit\n\neditable line.');
-      fs.rmSync(skillFilePath('db-res-edit'));
 
       const t = findTool(tools, 'vault_edit_skill');
       const res = parseResult(await t.handler(
@@ -4473,18 +4485,20 @@ describe('vault skill tools', () => {
       )) as { generation?: number; error?: string };
       expect(res.error).toBeUndefined();
       expect(res.generation).toBe(2);
-      expect(fs.readFileSync(skillFilePath('db-res-edit'), 'utf-8')).toContain('edited line.');
+      expect(fs.existsSync(skillFilePath('db-res-edit'))).toBe(false);
     });
 
-    it('failed evolve rolls the file back to lineage-latest, not a hand edit', async () => {
+    it('failed evolve leaves lineage at gen 1 and never touches the published file', async () => {
       const id = await createSkill('db-res-rollback', '# Rollback\n\nCanonical body.');
-      // Manual edits to managed skills are unsupported: the rollback baseline
-      // is the DB snapshot, so the hand edit must NOT survive a failed evolve.
+      // A published copy exists (and was even hand-edited); a failed evolve
+      // must not touch it — there is no disk write to roll back anymore.
+      fs.mkdirSync(path.dirname(skillFilePath('db-res-rollback')), { recursive: true });
       fs.writeFileSync(
         skillFilePath('db-res-rollback'),
         validSkillContent('db-res-rollback', '# Rollback\n\nHand edit.'),
         'utf-8',
       );
+      const beforeOnDisk = fs.readFileSync(skillFilePath('db-res-rollback'), 'utf-8');
 
       const db = getDatabase();
       db.exec(
@@ -4503,14 +4517,209 @@ describe('vault skill tools', () => {
           },
           undefined,
         )) as { error?: string };
-        expect(res.error).toContain('rolled back');
+        expect(res.error).toContain('database transaction failed');
       } finally {
         db.exec('DROP TRIGGER IF EXISTS fail_lineage');
       }
 
-      const after = fs.readFileSync(skillFilePath('db-res-rollback'), 'utf-8');
-      expect(after).toContain('Canonical body.');
-      expect(after).not.toContain('Hand edit.');
+      // Disk byte-identical; lineage-latest still gen 1 canonical content.
+      expect(fs.readFileSync(skillFilePath('db-res-rollback'), 'utf-8')).toBe(beforeOnDisk);
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const rec = parseResult(await recordsTool.handler({ action: 'get', id: 'db-res-rollback' }, undefined)) as {
+        content?: string; generation?: number;
+      };
+      expect(rec.generation).toBe(1);
+      expect(rec.content).toContain('Canonical body.');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Claim-gated materialization: the agent tool surface is DB-only. Disk
+  // delivery happens exclusively through the content-claim Publish flow
+  // (daemon/api/content-claims-materialize.ts), locally and host-served alike.
+  // ---------------------------------------------------------------------------
+
+  describe('agent tool surface is DB-only (claim-gated materialization)', () => {
+    function liveSkillPath(name: string): string {
+      return path.join(tmpDir, '.agents', 'skills', name, 'SKILL.md');
+    }
+
+    it('vault_write_skill create records DB rows but writes nothing under .agents/skills', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+      const res = parseResult(await t.handler(
+        {
+          name: 'db-only-create',
+          display_name: 'DB Only Create',
+          description: 'Skill create must not touch the project tree',
+          content: validSkillContent('db-only-create', '# DB Only\n\nBody.'),
+        },
+        undefined,
+      )) as { id?: string; path?: string; generation?: number; error?: string };
+      expect(res.error).toBeUndefined();
+      expect(res.generation).toBe(1);
+      // `path` stays the delivery target materialize will write later.
+      expect(res.path).toBe('.agents/skills/db-only-create/SKILL.md');
+
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const rec = parseResult(await recordsTool.handler({ action: 'get', id: 'db-only-create' }, undefined)) as {
+        content?: string; generation?: number;
+      };
+      expect(rec.generation).toBe(1);
+      expect(rec.content).toContain('Body.');
+
+      // Disk untouched — the whole skills root, not just this skill's dir.
+      expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills'))).toBe(false);
+    });
+
+    it('vault_write_skill evolve bumps lineage without touching an existing on-disk file', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+      const created = parseResult(await t.handler(
+        {
+          name: 'db-only-evolve',
+          display_name: 'DB Only Evolve',
+          description: 'Skill evolve must not touch a materialized file',
+          content: validSkillContent('db-only-evolve', '# Gen one'),
+        },
+        undefined,
+      )) as { id?: string; error?: string };
+      expect(created.error).toBeUndefined();
+
+      // Simulate a prior human Publish: gen-1 content materialized on disk.
+      fs.mkdirSync(path.dirname(liveSkillPath('db-only-evolve')), { recursive: true });
+      fs.writeFileSync(liveSkillPath('db-only-evolve'), 'gen-1 materialized content', 'utf-8');
+
+      const evolved = parseResult(await t.handler(
+        {
+          name: 'db-only-evolve',
+          display_name: 'DB Only Evolve',
+          description: 'Skill evolve must not touch a materialized file',
+          content: validSkillContent('db-only-evolve', '# Gen two'),
+        },
+        undefined,
+      )) as { generation?: number; error?: string };
+      expect(evolved.error).toBeUndefined();
+      expect(evolved.generation).toBe(2);
+
+      // Disk still shows the published gen-1 copy; DB holds gen 2.
+      expect(fs.readFileSync(liveSkillPath('db-only-evolve'), 'utf-8')).toBe('gen-1 materialized content');
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const rec = parseResult(await recordsTool.handler({ action: 'get', id: 'db-only-evolve' }, undefined)) as {
+        content?: string; generation?: number;
+      };
+      expect(rec.generation).toBe(2);
+      expect(rec.content).toContain('# Gen two');
+    });
+
+    it('vault_skill_records delete removes DB rows but leaves disk artifacts alone', async () => {
+      const writeTool = findTool(tools, 'vault_write_skill');
+      const created = parseResult(await writeTool.handler(
+        {
+          name: 'db-only-delete',
+          display_name: 'DB Only Delete',
+          description: 'Skill delete must not remove published files',
+          content: validSkillContent('db-only-delete', '# Deletable'),
+        },
+        undefined,
+      )) as { id?: string; error?: string };
+      expect(created.error).toBeUndefined();
+
+      // Simulate a prior human Publish.
+      fs.mkdirSync(path.dirname(liveSkillPath('db-only-delete')), { recursive: true });
+      fs.writeFileSync(liveSkillPath('db-only-delete'), 'published content', 'utf-8');
+
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const deleted = parseResult(await recordsTool.handler(
+        { action: 'delete', id: created.id },
+        undefined,
+      )) as { deleted?: boolean; error?: string };
+      expect(deleted.deleted).toBe(true);
+
+      const gone = parseResult(await recordsTool.handler({ action: 'get', id: 'db-only-delete' }, undefined)) as {
+        error?: string;
+      };
+      expect(gone.error).toContain('not found');
+      // The published file stays — removal is a human git action (plan D8).
+      expect(fs.existsSync(liveSkillPath('db-only-delete'))).toBe(true);
+      expect(fs.readFileSync(liveSkillPath('db-only-delete'), 'utf-8')).toBe('published content');
+    });
+
+    it('path-escape names are still refused at create', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+      const res = parseResult(await t.handler(
+        {
+          name: '../escape',
+          display_name: 'Escape',
+          description: 'Must be refused by path validation',
+          content: validSkillContent('escape'),
+        },
+        undefined,
+      )) as { error?: string };
+      expect(res.error).toContain('Invalid skill name');
+      expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills'))).toBe(false);
+    });
+
+    it('GATE: full agent skill lifecycle (create → evolve → edit → delete) leaves .agents/skills byte-identical', async () => {
+      // The gate that fails if anyone reintroduces an agent-path disk write —
+      // including a new call site that bypasses the removed publish wrappers.
+      function snapshotTree(root: string): Array<[string, string]> {
+        if (!fs.existsSync(root)) return [];
+        const out: Array<[string, string]> = [];
+        const walk = (dir: string): void => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) walk(full);
+            else out.push([path.relative(root, full), fs.readFileSync(full, 'utf-8')]);
+          }
+        };
+        walk(root);
+        return out;
+      }
+
+      // Seed a materialized skill dir to prove even existing files are untouched.
+      const seededDir = path.join(tmpDir, '.agents', 'skills', 'seeded');
+      fs.mkdirSync(seededDir, { recursive: true });
+      fs.writeFileSync(path.join(seededDir, 'SKILL.md'), 'seeded content', 'utf-8');
+      const before = snapshotTree(path.join(tmpDir, '.agents', 'skills'));
+
+      const writeTool = findTool(tools, 'vault_write_skill');
+      const created = parseResult(await writeTool.handler(
+        {
+          name: 'gate-lifecycle',
+          display_name: 'Gate Lifecycle',
+          description: 'Full lifecycle must never touch the project tree',
+          content: validSkillContent('gate-lifecycle', '# Gate\n\ngen one line.'),
+        },
+        undefined,
+      )) as { id?: string; error?: string };
+      expect(created.error).toBeUndefined();
+
+      const evolved = parseResult(await writeTool.handler(
+        {
+          name: 'gate-lifecycle',
+          display_name: 'Gate Lifecycle',
+          description: 'Full lifecycle must never touch the project tree',
+          content: validSkillContent('gate-lifecycle', '# Gate\n\ngen two line.'),
+        },
+        undefined,
+      )) as { generation?: number; error?: string };
+      expect(evolved.error).toBeUndefined();
+      expect(evolved.generation).toBe(2);
+
+      const editTool = findTool(tools, 'vault_edit_skill');
+      const edited = parseResult(await editTool.handler(
+        { name: 'gate-lifecycle', edits: [{ old_string: 'gen two line.', new_string: 'gen three line.' }] },
+        undefined,
+      )) as { generation?: number; error?: string };
+      expect(edited.error).toBeUndefined();
+
+      const recordsTool = findTool(tools, 'vault_skill_records');
+      const deleted = parseResult(await recordsTool.handler(
+        { action: 'delete', id: created.id },
+        undefined,
+      )) as { deleted?: boolean };
+      expect(deleted.deleted).toBe(true);
+
+      expect(snapshotTree(path.join(tmpDir, '.agents', 'skills'))).toEqual(before);
     });
   });
 });

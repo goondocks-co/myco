@@ -311,7 +311,7 @@ export function ClaimControl({
       data-testid={`claim-control-${artifactKind}-${artifactId}`}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="warning">Unpublished</Badge>
+        <Badge variant="warning">Ready to publish</Badge>
         <span className="font-mono text-[10px] text-on-surface-variant">
           gen {claimable.lineage_generation}
           {claimable.published_generation !== null && ` · last published gen ${claimable.published_generation}`}

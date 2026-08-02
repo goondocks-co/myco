@@ -37,6 +37,7 @@ export function registerBuiltinDomains(): void {
       { id: 'skill.surveyed', label: 'Skill candidate surveyed', defaultMode: 'summary', defaultLevel: 'info' },
       { id: 'skill.created', label: 'Skill created', defaultMode: 'summary', defaultLevel: 'success' },
       { id: 'skill.evolved', label: 'Skill evolved', defaultMode: 'summary', defaultLevel: 'info' },
+      { id: 'skill.retired', label: 'Skill retired', defaultMode: 'summary', defaultLevel: 'info' },
     ],
   });
 
