@@ -9,8 +9,13 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { DaemonStateAuthority } from '../daemon/daemon-state-authority.js';
 import type { DoctorCheck } from './doctor.js';
+
+/** Shell rc files the POSIX installer appends its PATH export to, in its order. */
+const RC_FILENAMES = ['.zshrc', '.bashrc', '.profile'] as const;
 
 export type DoctorFixerId =
   | 'daemon-stale'
@@ -18,7 +23,8 @@ export type DoctorFixerId =
   | 'smoke-launcher-scrub'
   | 'migration-retry'
   | 'service-reinstall'
-  | 'symbiont-global-refresh';
+  | 'symbiont-global-refresh'
+  | 'path-bindir';
 
 export interface DoctorFixContext {
   vaultDir: string;
@@ -184,5 +190,45 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
     const { runSymbiontDetection } = await import('./bootstrap.js');
     runSymbiontDetection();
     return ['Re-ran global symbiont config refresh (rewrites Myco-owned hook groups)'];
+  },
+
+  // Append the managed bin dir to PATH in the user's shell rc files — the
+  // same idempotent edit `install.sh` performs when the dir isn't already on
+  // PATH. Existence-gated per file (never creates an rc file the user's shell
+  // may not read) and content-gated on the dir string, so re-running is inert.
+  'path-bindir': async (_ctx, matched) => {
+    const actions: string[] = [];
+    const binDirs = new Set<string>();
+    for (const check of matched) {
+      const dir = check.fixData?.binDir;
+      if (typeof dir === 'string' && dir.length > 0) binDirs.add(dir);
+    }
+    for (const binDir of binDirs) {
+      let appended = 0;
+      let alreadyPresent = 0;
+      for (const rcName of RC_FILENAMES) {
+        const rcPath = path.join(os.homedir(), rcName);
+        try {
+          if (!fs.existsSync(rcPath)) continue;
+          if (fs.readFileSync(rcPath, 'utf8').includes(binDir)) {
+            alreadyPresent += 1;
+            continue;
+          }
+          fs.appendFileSync(rcPath, `\nexport PATH="${binDir}:$PATH"\n`);
+          actions.push(`Added ${binDir} to PATH in ${rcPath}`);
+          appended += 1;
+        } catch (err) {
+          actions.push(`Could not update ${rcPath}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (appended > 0) {
+        actions.push(`Restart your shell or run: export PATH="${binDir}:$PATH"`);
+      } else if (alreadyPresent > 0) {
+        actions.push(`${binDir} is already exported in a shell rc file — restart your shell to pick it up`);
+      } else {
+        actions.push(`No shell rc file found to update — add ${binDir} to PATH manually`);
+      }
+    }
+    return actions;
   },
 };
