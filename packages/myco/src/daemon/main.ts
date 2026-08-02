@@ -8,7 +8,7 @@
 
 import { DaemonServer } from './server.js';
 import { resolveHostServeConfig } from './host-serve.js';
-import { ExternalMcpListener, defaultFunnelOffRunner } from './external-listener.js';
+import { ExternalMcpListener, defaultFunnelOffRunner, defaultFunnelOnRunner, resolveExternalMcpSocketPath } from './external-listener.js';
 import {
   ExternalMcpContainmentAuthority,
   type ExternalMcpListenerControl,
@@ -181,6 +181,8 @@ import {
   RESTART_RESPONSE_FLUSH_MS,
   JOB_RUNNER_CONCURRENCY,
   epochSeconds,
+  EXTERNAL_MCP_ACTIVATION_POSTURE,
+  EXTERNAL_MCP_ACTIVE_POSTURE,
 } from '../constants.js';
 import { RESTART_REASON_FILENAME } from '../constants/update.js';
 import { drainUpdateEvents } from '../upgrade/update-events.js';
@@ -779,11 +781,15 @@ export async function main(): Promise<void> {
     get isBound() {
       return externalMcpListener?.isBound ?? false;
     },
-    get port() {
-      return externalMcpListener?.port ?? 0;
+    get boundTarget() {
+      return externalMcpListener?.boundTarget ?? null;
     },
     async unbind() {
       await externalMcpListener?.unbind();
+    },
+    async bind(target) {
+      if (!externalMcpListener) return { ok: false, error: 'external MCP listener not yet constructed' };
+      return await externalMcpListener.bind(target);
     },
   };
   const externalMcpContainment = new ExternalMcpContainmentAuthority({
@@ -791,8 +797,9 @@ export async function main(): Promise<void> {
     stateDir: daemonService.stateDir,
     listener: externalMcpListenerControl,
     runFunnelOff: defaultFunnelOffRunner,
+    runFunnelOn: defaultFunnelOnRunner,
   });
-  return await externalMcpContainment.containWhile('retire', async () => {
+  return await externalMcpContainment.containWhile('reconcile', async (externalMcpBootState) => {
   const reconciledHostBearers = reconcileHostRollbackBearers();
 
   // `bootstrapVaultDir` is a *transitional* concept.
@@ -1357,6 +1364,35 @@ export async function main(): Promise<void> {
     },
   });
 
+  // Boot RE-BIND (spec R-B3b, second phase of the reconcile): the contain
+  // phase above DECIDED activation is intended; the bind happens here — the
+  // first point a listener exists — still inside the containment lock the
+  // continuation holds, so socket reclaim stays serialized against every
+  // other authority. Failure is loud-but-alive: the daemon boots, status
+  // surfaces report unbound, and `myco doctor` flags the incoherence — a
+  // crash-loop would be strictly worse than a host that serves everything
+  // except the public MCP surface.
+  if (externalMcpBootState.enabled) {
+    const externalMcpSocketPath = resolveExternalMcpSocketPath(mycoHome);
+    const rebind = await externalMcpListener.bind({ kind: 'socket', path: externalMcpSocketPath });
+    if (!rebind.ok) {
+      logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP re-bind failed at boot — enabled but not serving', {
+        socket: externalMcpSocketPath,
+        error: rebind.error,
+      });
+    } else {
+      const funnelRepair = await defaultFunnelOnRunner(
+        { kind: 'socket', path: externalMcpSocketPath },
+        { mount: '/mcp', publicPort: 443 },
+      );
+      if (!funnelRepair.ok) {
+        logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP Funnel verify/repair failed at boot', {
+          detail: funnelRepair.detail,
+        });
+      }
+    }
+  }
+
   // Team Host: the MEMBER-side transcript-content drain (capture-push C1). Ships
   // an attached session's transcript byte-deltas over the overlay to the host
   // materializer (C2), offset-authoritative + multi-host. Its `proxyDeps()` are
@@ -1416,6 +1452,15 @@ export async function main(): Promise<void> {
     vaultDir: bootstrapVaultDir,
     logger,
     daemonStateAuthority,
+    // /health posture: `active` iff the explicit config says enabled — the
+    // takeover handshake accepts any KNOWN posture (eviction.ts), and a
+    // pre-activation binary meeting `active` refuses to step-aside politely,
+    // terminates, then disavows at its own boot (documented downgrade path).
+    externalMcpPosture: () => (
+      loadMachineConfig(mycoHome).daemon.external_mcp.enabled
+        ? EXTERNAL_MCP_ACTIVE_POSTURE
+        : EXTERNAL_MCP_ACTIVATION_POSTURE
+    ),
     uiDir: uiDir ?? undefined,
     uiDevProxyTarget: uiDevProxyTarget ?? undefined,
     runtimeCache,

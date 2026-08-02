@@ -31,7 +31,7 @@ import {
   DAEMON_EVICT_POLL_MS,
   DAEMON_EVICT_TIMEOUT_MS,
   DAEMON_HEALTH_CHECK_TIMEOUT_MS,
-  EXTERNAL_MCP_ACTIVATION_POSTURE,
+  KNOWN_EXTERNAL_MCP_POSTURES,
 } from '../constants.js';
 import {
   cleanStaleDaemonJson,
@@ -107,7 +107,12 @@ export function isRetiredExternalMcpDaemon(
     : heartbeat.pid === expectedPid;
   return heartbeat.myco === true
     && pidMatches
-    && heartbeat.external_mcp_activation === EXTERNAL_MCP_ACTIVATION_POSTURE;
+    // Accepted set DERIVED from the exported constant (spec R-Q2 gate) — a
+    // posture is steppable-aside only if this binary knows how to reconcile
+    // what that posture implies at its own boot.
+    && (KNOWN_EXTERNAL_MCP_POSTURES as readonly string[]).includes(
+      String(heartbeat.external_mcp_activation),
+    );
 }
 
 /**

@@ -24,7 +24,7 @@ describe('host rollback bearer startup contract', () => {
       'utf-8',
     );
     const containment = source.indexOf(
-      "externalMcpContainment.containWhile('retire'",
+      "externalMcpContainment.containWhile('reconcile'",
     );
     const reconciliation = source.indexOf(
       'const reconciledHostBearers = reconcileHostRollbackBearers()',

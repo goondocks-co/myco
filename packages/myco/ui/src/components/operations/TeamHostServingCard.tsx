@@ -9,9 +9,12 @@ import { useHostServeStatus, type HostServeExternalMcpStatus } from '../../hooks
 
 function externalMcpSummary(mcp: HostServeExternalMcpStatus): string {
   if (!mcp.enabled) return 'Off';
-  const bound = mcp.bound === null ? 'bound state unknown' : mcp.bound ? 'bound' : 'not bound';
+  // The local endpoint (a private user-owned socket) is an implementation
+  // detail — what matters to an operator is whether it is serving and
+  // whether callers can authenticate.
+  const bound = mcp.bound === null ? 'serving state unknown' : mcp.bound ? 'serving' : 'not serving';
   const token = mcp.token_present ? 'token set' : 'token missing';
-  return `On · port ${mcp.port} · ${bound} · ${token}`;
+  return `On · ${bound} · ${token}`;
 }
 
 function Stat({ label, value, mono = false }: { label: string; value: ReactNode; mono?: boolean }) {

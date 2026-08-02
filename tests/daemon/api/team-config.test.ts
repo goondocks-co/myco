@@ -57,6 +57,7 @@ import { createHostRegistryOperations, type HostRecord } from '@myco/host/regist
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
 import { resolveGroveConfigPath, resolveGroveDir, resolveMycoHome } from '@myco/grove/paths';
 import { createSecretsOperations, readSecrets } from '@myco/config/secrets';
+import { resolveExternalMcpSocketPath } from '@myco/daemon/external-listener';
 import { loadMachineConfig, loadGroveConfig, saveMachineConfig } from '@myco/config/loader';
 import { HOST_BEARER_SECRET, HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 import type { RouteRequest } from '@myco/daemon/router';
@@ -704,8 +705,12 @@ describe('external MCP routes — fail-closed activation and containment-only di
   const { home } = withHermeticHomes();
   let grove: GroveRecord;
   let containCalls: string[];
+  let enableCalls: Array<{ socketPath: string; mintToken: () => { value: string; minted: boolean } }>;
+  let enableResult:
+    | { ok: true; funnelUrl: string | null; minted: boolean; token?: string }
+    | { ok: false; error: string };
   let containmentResult: {
-    enabled: false;
+    enabled: boolean;
     port: number;
     funnel: Array<{ ok: boolean; detail: string }>;
   };
@@ -713,6 +718,8 @@ describe('external MCP routes — fail-closed activation and containment-only di
   beforeEach(() => {
     grove = createGrove('Served', home());
     containCalls = [];
+    enableCalls = [];
+    enableResult = { ok: true, funnelUrl: 'https://host.ts.net/mcp', minted: false };
     containmentResult = {
       enabled: false,
       port: 8743,
@@ -731,70 +738,94 @@ describe('external MCP routes — fail-closed activation and containment-only di
       externalMcp: {
         listener: {
           isBound: false,
-          port: 0,
+          boundTarget: null,
           async unbind() {},
+          async bind() {
+            return { ok: false, error: 'fake listener never binds' };
+          },
         },
         containment: {
           async contain(operation) {
             containCalls.push(operation);
             return containmentResult;
           },
+          async enable(enableDeps) {
+            containCalls.push('enable');
+            enableCalls.push(enableDeps);
+            return enableResult;
+          },
         },
       },
     };
   }
 
-  test('enable refuses before port, config, token, listener, or journal mutation', async () => {
-    const configPath = path.join(home(), 'config.yaml');
-    fs.writeFileSync(configPath, [
-      'daemon:',
-      '  external_mcp:',
-      '    enabled: false',
-      '    port: 8743',
-      '',
-    ].join('\n'));
-    writeSecret(home(), HOST_EXTERNAL_MCP_TOKEN_SECRET, 'existing-token');
-    const secretsPath = path.join(home(), 'secrets.env');
-    const configBefore = fs.readFileSync(configPath);
-    const secretsBefore = fs.readFileSync(secretsPath);
+  test('enable routes through the containment authority with the derived socket and reveals the token ONLY on mint', async () => {
+    enableResult = { ok: true, funnelUrl: 'https://host.ts.net/mcp', minted: true, token: 'raw-minted-token' };
+    writeSecret(home(), HOST_EXTERNAL_MCP_TOKEN_SECRET, 'raw-minted-token');
 
-    const response = await handlePutExternalMcpToggle(deps(), {
+    const response = await handlePutExternalMcpToggle(deps(), { enabled: true });
+
+    expect(containCalls).toEqual(['enable']);
+    expect(enableCalls).toHaveLength(1);
+    expect(enableCalls[0]!.socketPath).toBe(resolveExternalMcpSocketPath(home()));
+    expect(response.body).toMatchObject({
       enabled: true,
-      port: 'invalid-but-unread',
+      funnel_url: 'https://host.ts.net/mcp',
+      token: 'raw-minted-token',
     });
-
-    expect(response).toEqual({
-      status: 409,
-      body: {
-        error: {
-          code: 'external_mcp_unavailable',
-          message: 'Public external MCP activation is unavailable in this release.',
-        },
-      },
-    });
-    expect(containCalls).toEqual([]);
-    expect(fs.readFileSync(configPath)).toEqual(configBefore);
-    expect(fs.readFileSync(secretsPath)).toEqual(secretsBefore);
   });
 
-  test('token rotation has the same unavailable posture without changing secrets', async () => {
+  test('a replayed enable (token already minted) NEVER echoes the stored token', async () => {
+    enableResult = { ok: true, funnelUrl: 'https://host.ts.net/mcp', minted: false };
+    writeSecret(home(), HOST_EXTERNAL_MCP_TOKEN_SECRET, 'stored-secret-token');
+
+    const response = await handlePutExternalMcpToggle(deps(), { enabled: true });
+
+    expect(JSON.stringify(response.body)).not.toContain('stored-secret-token');
+    expect((response.body as { tokenHash: string | null }).tokenHash).toBeTruthy();
+  });
+
+  test('an enable failure surfaces as 502 with the containment detail, nothing minted here', async () => {
+    enableResult = { ok: false, error: 'could not activate the public Funnel: no vendor tailscaled' };
+
+    const response = await handlePutExternalMcpToggle(deps(), { enabled: true });
+
+    expect(response.status).toBe(502);
+    expect(JSON.stringify(response.body)).toContain('could not activate the public Funnel');
+  });
+
+  test('the mintToken closure handed to enable mints-if-absent into the machine secret store', async () => {
+    let minted: { value: string; minted: boolean } | undefined;
+    enableResult = { ok: true, funnelUrl: null, minted: true };
+    const captured = deps();
+    await handlePutExternalMcpToggle(captured, { enabled: true });
+    minted = enableCalls[0]!.mintToken();
+    expect(minted.minted).toBe(true);
+    expect(minted.value).toMatch(/^[0-9a-f]{64}$/);
+    // Idempotent: the second call returns the SAME stored value, not a fresh one.
+    const again = enableCalls[0]!.mintToken();
+    expect(again.minted).toBe(false);
+    expect(again.value).toBe(minted.value);
+  });
+
+  test('rotate overwrites the token, reveals the new value once, and is effective without contain()', async () => {
     writeSecret(home(), HOST_EXTERNAL_MCP_TOKEN_SECRET, 'existing-token');
-    const secretsPath = path.join(home(), 'secrets.env');
-    const before = fs.readFileSync(secretsPath);
 
     const response = await handleRotateExternalMcpToken(deps());
 
-    expect(response).toEqual({
-      status: 409,
-      body: {
-        error: {
-          code: 'external_mcp_unavailable',
-          message: 'Public external MCP activation is unavailable in this release.',
-        },
-      },
-    });
+    const body = response.body as { token: string; tokenHash: string };
+    expect(body.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.token).not.toBe('existing-token');
+    expect(readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(body.token);
     expect(containCalls).toEqual([]);
-    expect(fs.readFileSync(secretsPath)).toEqual(before);
+  });
+
+  test('rotate refuses when external access was never enabled and no token exists', async () => {
+    const response = await handleRotateExternalMcpToken(deps());
+
+    expect(response.status).toBe(409);
+    expect(JSON.stringify(response.body)).toContain('external_mcp_not_enabled');
+    expect(readSecrets(home())[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBeUndefined();
   });
 
   test('disable delegates to the containment authority and preserves the response shape', async () => {

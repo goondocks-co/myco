@@ -20,6 +20,7 @@ import path from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import {
   disableExternalMcpConfig,
+  enableExternalMcpConfig,
   loadMachineConfigStrict,
   readExplicitExternalMcpConfigStrict,
   readRecoverableExternalMcpPortStrict,
@@ -55,9 +56,17 @@ const DEFAULT_FUNNEL_OFF_TIMEOUT_MS = 15_000;
 const EXTERNAL_MCP_CONFIG_PATH = 'daemon.external_mcp';
 const externalMcpContainmentQueues = new Map<string, Promise<void>>();
 
-export type ExternalMcpContainmentOperation = 'retire' | 'disable' | 'shutdown';
+/**
+ * `reconcile` is the activation-era boot operation: it DECIDES (drive off a
+ * leftover intent or incoherent state; leave a coherent explicit activation
+ * alone and report it) but never writes an intent naming itself — intents it
+ * creates are recorded as `retire` so a pre-activation binary can parse and
+ * resume them.
+ */
+export type ExternalMcpContainmentOperation = 'retire' | 'reconcile' | 'disable' | 'shutdown';
 export type ExternalMcpContainmentPhase =
   | 'port_recovery_pending'
+  | 'enable_pending'
   | 'funnel_off_pending'
   | 'listener_unbind_pending'
   | 'config_disable_pending';
@@ -68,11 +77,18 @@ export interface ExternalMcpContainmentState {
 }
 
 export interface ExternalMcpContainmentIntent {
-  version: 1;
+  version: 1 | 2;
   operation: ExternalMcpContainmentOperation;
   from: ExternalMcpContainmentState;
+  /** Always a drive-to-off state: an intent on disk ⇒ drive off. The enable
+   *  flow's target rides `enable_target`, never `to`. */
   to: ExternalMcpContainmentState & { enabled: false };
   ports: number[];
+  /** Socket paths containment must reconcile. Empty on every v1 intent. */
+  sockets: string[];
+  /** The socket an in-flight enable intends to expose (`enable_pending`
+   *  only). Recovery treats it as one more target to drive off. */
+  enable_target?: { kind: 'socket'; path: string };
   phase: ExternalMcpContainmentPhase;
   requested_at: string;
 }
@@ -100,8 +116,18 @@ export class ExternalMcpContainmentPortRecoveryError extends ExternalMcpContainm
 
 export interface ExternalMcpListenerControl {
   unbind(): Promise<void>;
+  bind(
+    target: { kind: 'socket'; path: string } | { kind: 'loopback'; port: number },
+  ): Promise<
+    | { ok: true; target: { kind: 'socket'; path: string } | { kind: 'loopback'; port: number } }
+    | { ok: false; error: string }
+  >;
   readonly isBound: boolean;
-  readonly port: number;
+  /** The bound local endpoint, or null while unbound. */
+  readonly boundTarget:
+    | { kind: 'socket'; path: string }
+    | { kind: 'loopback'; port: number }
+    | null;
 }
 
 export interface FunnelOffResult {
@@ -109,13 +135,42 @@ export interface FunnelOffResult {
   detail: string;
 }
 
-export type FunnelOffRunner = (port: number) => Promise<FunnelOffResult>;
+/**
+ * A local endpoint the public Funnel may proxy to. Ports are the legacy
+ * (pre-socket) exposure shape and remain first-class so historical state
+ * stays containable; sockets are the activation-era shape.
+ */
+export type ExternalMcpFunnelTarget =
+  | { kind: 'port'; port: number }
+  | { kind: 'socket'; path: string };
+
+export function describeFunnelTarget(target: ExternalMcpFunnelTarget): string {
+  return target.kind === 'port' ? `local port ${target.port}` : `local socket ${target.path}`;
+}
+
+export type FunnelOffRunner = (target: ExternalMcpFunnelTarget) => Promise<FunnelOffResult>;
+
+export interface FunnelOnResult {
+  ok: boolean;
+  detail: string;
+  /** The public URL the Funnel serves, derived from the vendor tailnet's
+   *  host-port selector — not otherwise knowable. Present when ok. */
+  funnelUrl?: string;
+}
+
+export type FunnelOnRunner = (
+  target: { kind: 'socket'; path: string },
+  opts: { mount: string; publicPort: number },
+) => Promise<FunnelOnResult>;
 
 export interface ExternalMcpContainmentAuthorityOptions {
   mycoHome: string;
   stateDir: string;
   listener: ExternalMcpListenerControl;
   runFunnelOff: FunnelOffRunner;
+  /** The activation inverse of `runFunnelOff`. Optional: shutdown/termination
+   *  authorities never activate. `enable` fails cleanly when absent. */
+  runFunnelOn?: FunnelOnRunner;
   lockNamespace?: PerUserLockNamespace;
   funnelOffTimeoutMs?: number;
   now?: () => Date;
@@ -180,16 +235,24 @@ function parseState(
   };
 }
 
+function isSocketPath(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && path.isAbsolute(value);
+}
+
+function parseEnableTarget(value: unknown): { kind: 'socket'; path: string } | undefined {
+  if (!isRecord(value) || !hasExactKeys(value, ['kind', 'path'])) return undefined;
+  if (value.kind !== 'socket' || !isSocketPath(value.path)) return undefined;
+  return { kind: 'socket', path: value.path };
+}
+
 function parseIntent(value: unknown): ExternalMcpContainmentIntent {
-  if (!isRecord(value) || !hasExactKeys(value, [
-    'version',
-    'operation',
-    'from',
-    'to',
-    'ports',
-    'phase',
-    'requested_at',
-  ])) {
+  const V1_KEYS = ['version', 'operation', 'from', 'to', 'ports', 'phase', 'requested_at'] as const;
+  const isV1Shape = isRecord(value) && hasExactKeys(value, V1_KEYS);
+  const isV2Shape = isRecord(value) && (
+    hasExactKeys(value, [...V1_KEYS, 'sockets'])
+    || hasExactKeys(value, [...V1_KEYS, 'sockets', 'enable_target'])
+  );
+  if (!isV1Shape && !isV2Shape) {
     throw new ExternalMcpContainmentError('External MCP containment intent has an invalid shape');
   }
 
@@ -199,14 +262,18 @@ function parseIntent(value: unknown): ExternalMcpContainmentIntent {
   const to = parseState(value.to, { disabledOnly: true });
   const ports = value.ports;
   const requestedAt = value.requested_at;
+  const expectedVersion = isV1Shape ? 1 : 2;
   if (
-    value.version !== 1
+    value.version !== expectedVersion
     || (operation !== 'retire' && operation !== 'disable' && operation !== 'shutdown')
     || (
       phase !== 'port_recovery_pending'
       && phase !== 'funnel_off_pending'
       && phase !== 'listener_unbind_pending'
       && phase !== 'config_disable_pending'
+      // enable_pending is an activation-era phase; it never appears in a
+      // v1 file, so a rolled-back binary never meets it.
+      && !(isV2Shape && phase === 'enable_pending')
     )
     || !from
     || !to
@@ -227,12 +294,35 @@ function parseIntent(value: unknown): ExternalMcpContainmentIntent {
     throw new ExternalMcpContainmentError('External MCP containment intent ports are not canonical');
   }
 
+  let sockets: string[] = [];
+  let enableTarget: { kind: 'socket'; path: string } | undefined;
+  if (isV2Shape) {
+    const rawSockets = value.sockets;
+    if (!Array.isArray(rawSockets) || !rawSockets.every(isSocketPath)) {
+      throw new ExternalMcpContainmentError('External MCP containment intent has invalid values');
+    }
+    const canonicalSockets = [...new Set(rawSockets)].sort();
+    if (canonicalSockets.length !== rawSockets.length
+      || canonicalSockets.some((socket, index) => socket !== rawSockets[index])) {
+      throw new ExternalMcpContainmentError('External MCP containment intent sockets are not canonical');
+    }
+    sockets = canonicalSockets;
+    if ('enable_target' in value) {
+      enableTarget = parseEnableTarget(value.enable_target);
+      if (!enableTarget) {
+        throw new ExternalMcpContainmentError('External MCP containment intent has invalid values');
+      }
+    }
+  }
+
   return {
-    version: 1,
+    version: expectedVersion,
     operation,
     from,
     to: { enabled: false, port: to.port },
     ports: canonicalPorts,
+    sockets,
+    ...(enableTarget ? { enable_target: enableTarget } : {}),
     phase,
     requested_at: requestedAt,
   };
@@ -264,15 +354,39 @@ export function writeExternalMcpContainmentIntent(
     intent.from.port,
     intent.to.port,
   ])].sort((a, b) => a - b);
-  const canonical = parseIntent({
-    ...intent,
-    ports,
-  });
+  const sockets = [...new Set([
+    ...(intent.sockets ?? []),
+    ...(intent.enable_target ? [intent.enable_target.path] : []),
+  ])].sort();
+  // Downgrade-clean serialization: a port-only intent is written as v1 so a
+  // rolled-back binary can still parse (and drive off) whatever it finds.
+  // v2 exists on disk only when a socket target is actually in play — the
+  // one case PR 8's rollback policy already governs.
+  const isPortOnly = sockets.length === 0
+    && intent.enable_target === undefined
+    && intent.phase !== 'enable_pending';
+  const serialized = isPortOnly
+    ? { version: 1 as const, operation: intent.operation, from: intent.from, to: intent.to, ports, phase: intent.phase, requested_at: intent.requested_at }
+    : {
+      version: 2 as const,
+      operation: intent.operation,
+      from: intent.from,
+      to: intent.to,
+      ports,
+      sockets,
+      ...(intent.enable_target ? { enable_target: intent.enable_target } : {}),
+      phase: intent.phase,
+      requested_at: intent.requested_at,
+    };
+  // parseIntent validates; the SERIALIZED shape is what lands on disk (the
+  // in-memory parse result always carries `sockets`, which must not leak
+  // into a v1 file).
+  parseIntent(serialized);
   const intentPath = externalMcpContainmentIntentPath(stateDir);
   assertIntentPathRegularOrMissing(intentPath);
   atomicWriteFileSync(
     intentPath,
-    stringify(canonical as unknown as Record<string, unknown>),
+    stringify(serialized as unknown as Record<string, unknown>),
     {
       mode: 0o600,
       durable: true,
@@ -368,24 +482,24 @@ async function withExternalMcpContainment<T>(
   }
 }
 
-function funnelOffFailure(port: number, detail: string): Error {
+function funnelOffFailure(target: ExternalMcpFunnelTarget, detail: string): Error {
   return new ExternalMcpContainmentError(
-    `Tailscale Funnel-off was not confirmed for port ${port}: ${detail}`,
+    `Tailscale Funnel-off was not confirmed for ${describeFunnelTarget(target)}: ${detail}`,
   );
 }
 
 async function runFunnelOffBounded(
   runner: FunnelOffRunner,
-  port: number,
+  target: ExternalMcpFunnelTarget,
   timeoutMs: number,
 ): Promise<FunnelOffResult> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
-      runner(port),
+      runner(target),
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
-          reject(funnelOffFailure(port, `timed out after ${timeoutMs}ms`));
+          reject(funnelOffFailure(target, `timed out after ${timeoutMs}ms`));
         }, timeoutMs);
       }),
     ]);
@@ -393,9 +507,9 @@ async function runFunnelOffBounded(
       || typeof result !== 'object'
       || typeof result.ok !== 'boolean'
       || typeof result.detail !== 'string') {
-      throw funnelOffFailure(port, 'runner returned an ambiguous result');
+      throw funnelOffFailure(target, 'runner returned an ambiguous result');
     }
-    if (!result.ok) throw funnelOffFailure(port, result.detail);
+    if (!result.ok) throw funnelOffFailure(target, result.detail);
     return result;
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
@@ -422,7 +536,7 @@ export class ExternalMcpContainmentAuthority {
   async contain(
     operation: ExternalMcpContainmentOperation,
     options: { additionalPorts?: number[] } = {},
-  ): Promise<{ enabled: false; port: number; funnel: FunnelOffResult[] }> {
+  ): Promise<{ enabled: boolean; port: number; funnel: FunnelOffResult[] }> {
     return await this.containWhile(
       operation,
       async (containment) => containment,
@@ -433,7 +547,7 @@ export class ExternalMcpContainmentAuthority {
   async containWhile<T>(
     operation: ExternalMcpContainmentOperation,
     continuation: (
-      containment: { enabled: false; port: number; funnel: FunnelOffResult[] },
+      containment: { enabled: boolean; port: number; funnel: FunnelOffResult[] },
     ) => Promise<T>,
     options: { additionalPorts?: number[] } = {},
   ): Promise<T> {
@@ -451,23 +565,139 @@ export class ExternalMcpContainmentAuthority {
     );
   }
 
+  /** The listener's bound loopback port, if any — legacy port-shaped reconcile input. */
+  private listenerPorts(): number[] {
+    const bound = this.options.listener.boundTarget;
+    return bound?.kind === 'loopback' ? [bound.port] : [];
+  }
+
+  /** The listener's bound socket path, if any — socket-shaped reconcile input. */
+  private listenerSockets(): string[] {
+    const bound = this.options.listener.boundTarget;
+    return bound?.kind === 'socket' ? [bound.path] : [];
+  }
+
+  /**
+   * The containment-locked ACTIVATION flow (spec plan 53c47c9ccb52794d D5).
+   * Ordering is load-bearing:
+   *   clean-slate drive-off → enable_pending intent → explicit config →
+   *   token mint → socket bind → funnel-on → verify → clear intent.
+   * Config-before-mint means the boot-breaking brownfield state (token
+   * present, no explicit subtree) is unrepresentable; intent-first means any
+   * crash resumes to the fail-closed drive-off (`enable_pending` resolves
+   * through the ordinary resume path — the recorded operation is `disable`).
+   * Every step runs under the SAME lock that serializes socket reclaim.
+   */
+  async enable(deps: {
+    socketPath: string;
+    mintToken: () => { value: string; minted: boolean };
+  }): Promise<
+    | { ok: true; funnelUrl: string | null; minted: boolean; token?: string }
+    | { ok: false; error: string }
+  > {
+    if (process.platform === 'win32') {
+      return { ok: false, error: 'External MCP activation is not available on Windows.' };
+    }
+    const runFunnelOn = this.options.runFunnelOn;
+    if (!runFunnelOn) {
+      return { ok: false, error: 'External MCP activation is not available through this authority.' };
+    }
+    const lockNamespace = this.options.lockNamespace ?? nativePerUserLockNamespace;
+    return await withExternalMcpContainment(
+      this.options.mycoHome,
+      lockNamespace,
+      async () => {
+        // Clean slate: drive any prior exposure (or leftover intent) to
+        // verified-off before building up. No-op on a clean machine.
+        await this.containLocked('disable', []);
+
+        const config = loadMachineConfigStrict(this.options.mycoHome).daemon.external_mcp;
+        writeExternalMcpContainmentIntent(this.options.stateDir, {
+          version: 2,
+          operation: 'disable',
+          from: config,
+          to: { enabled: false, port: config.port },
+          ports: [config.port],
+          sockets: [deps.socketPath],
+          enable_target: { kind: 'socket', path: deps.socketPath },
+          phase: 'enable_pending',
+          requested_at: this.options.now().toISOString(),
+        });
+
+        const recover = async (error: string) => {
+          try {
+            await this.containLocked('disable', []);
+          } catch (recoveryError) {
+            return {
+              ok: false as const,
+              error: `${error} (and recovery to off also failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`,
+            };
+          }
+          return { ok: false as const, error };
+        };
+
+        try {
+          enableExternalMcpConfig(this.options.mycoHome, { durable: true });
+        } catch (err) {
+          return await recover(`could not write activation config: ${err instanceof Error ? err.message : String(err)}`);
+        }
+
+        let mint: { value: string; minted: boolean };
+        try {
+          mint = deps.mintToken();
+        } catch (err) {
+          return await recover(`could not mint the access token: ${err instanceof Error ? err.message : String(err)}`);
+        }
+
+        const bound = await this.options.listener.bind({ kind: 'socket', path: deps.socketPath });
+        if (!bound.ok) return await recover(`could not bind the socket listener: ${bound.error}`);
+
+        const funnel = await runFunnelOn(
+          { kind: 'socket', path: deps.socketPath },
+          { mount: '/mcp', publicPort: 443 },
+        );
+        if (!funnel.ok) return await recover(`could not activate the public Funnel: ${funnel.detail}`);
+
+        clearExternalMcpContainmentIntent(this.options.stateDir);
+        return {
+          ok: true,
+          funnelUrl: funnel.funnelUrl ?? null,
+          minted: mint.minted,
+          // The one-time reveal channel: the raw value is returned ONLY on
+          // the minting call — a replayed enable can never read the token.
+          ...(mint.minted ? { token: mint.value } : {}),
+        };
+      },
+    );
+  }
+
   private async containLocked(
     operation: ExternalMcpContainmentOperation,
     additionalPorts: number[],
-  ): Promise<{ enabled: false; port: number; funnel: FunnelOffResult[] }> {
+  ): Promise<{ enabled: boolean; port: number; funnel: FunnelOffResult[] }> {
+    // Intents are parseable by pre-activation binaries: never record
+    // `reconcile` in a file — its fail-closed equivalent is `retire`.
+    const intentOperation: 'retire' | 'disable' | 'shutdown' = operation === 'reconcile' ? 'retire' : operation;
     reconcileDurableRemovalTombstonesSync(
       this.options.stateDir,
       EXTERNAL_MCP_CONTAINMENT_INTENT_FILENAME,
     );
     const existingIntent = readExternalMcpContainmentIntent(this.options.stateDir);
     const funnel: FunnelOffResult[] = [];
-    const runPorts = async (ports: number[]): Promise<void> => {
+    const runTargets = async (
+      ports: number[],
+      sockets: string[] = [],
+    ): Promise<void> => {
+      const targets: ExternalMcpFunnelTarget[] = [
+        ...ports.map((port) => ({ kind: 'port', port } as const)),
+        ...sockets.map((socket) => ({ kind: 'socket', path: socket } as const)),
+      ];
       const failures: unknown[] = [];
-      for (const port of ports) {
+      for (const target of targets) {
         try {
           funnel.push(await runFunnelOffBounded(
             this.options.runFunnelOff,
-            port,
+            target,
             this.options.funnelOffTimeoutMs,
           ));
         } catch (error) {
@@ -477,20 +707,46 @@ export class ExternalMcpContainmentAuthority {
       if (failures.length > 0) {
         throw new AggregateError(
           failures,
-          'External MCP containment could not confirm Funnel-off on every known port',
+          'External MCP containment could not confirm Funnel-off on every known target',
         );
       }
     };
 
+    // Quiesce vs disavow: `shutdown` stops SERVING (funnel-off + unbind —
+    // nothing will answer the public URL while the daemon is down) but MUST
+    // NOT write config; a user's activation survives a daemon restart. Only
+    // `retire`/`disable` (and a resumed intent at boot, which arrives as
+    // `retire`) disavow the config.
+    //
+    // EXCEPT: a leftover NON-shutdown intent on disk is a standing drive-off
+    // obligation ("an intent on disk ⇒ drive off"), and a shutdown that
+    // resumes one must complete the disavow — otherwise a disable that
+    // failed mid-funnel-off (or a crashed half-enable) is silently reverted
+    // by the next daemon stop, and the following boot re-activates exposure
+    // the user turned off. The converse branch (leftover shutdown intent met
+    // by boot `retire`) already resolves to disavow via the CURRENT
+    // operation.
+    const disavowsConfig = operation !== 'shutdown'
+      || (existingIntent !== undefined && existingIntent.operation !== 'shutdown');
     const finishContainment = async (
       activeIntent: ExternalMcpContainmentIntent,
       targetPort: number,
-    ): Promise<{ enabled: false; port: number; funnel: FunnelOffResult[] }> => {
+    ): Promise<{ enabled: boolean; port: number; funnel: FunnelOffResult[] }> => {
       writeExternalMcpContainmentIntent(this.options.stateDir, {
         ...activeIntent,
         phase: 'listener_unbind_pending',
       });
       await this.options.listener.unbind();
+
+      if (!disavowsConfig) {
+        clearExternalMcpContainmentIntent(this.options.stateDir);
+        const current = loadMachineConfigStrict(this.options.mycoHome).daemon.external_mcp;
+        return {
+          enabled: current.enabled,
+          port: current.port,
+          funnel,
+        };
+      }
 
       writeExternalMcpContainmentIntent(this.options.stateDir, {
         ...activeIntent,
@@ -537,7 +793,7 @@ export class ExternalMcpContainmentAuthority {
             ports: [
               ...existingIntent.ports,
               ...additionalPorts,
-              ...(this.options.listener.isBound ? [this.options.listener.port] : []),
+              ...this.listenerPorts(),
               ...(recoverableExternalMcpPort ? [recoverableExternalMcpPort] : []),
             ],
             phase: 'port_recovery_pending',
@@ -545,7 +801,7 @@ export class ExternalMcpContainmentAuthority {
           const unresolvedIntent = readExternalMcpContainmentIntent(
             this.options.stateDir,
           )!;
-          await runPorts(unresolvedIntent.ports);
+          await runTargets(unresolvedIntent.ports, unresolvedIntent.sockets);
           throw new ExternalMcpContainmentPortRecoveryError();
         }
         writeExternalMcpContainmentIntent(this.options.stateDir, {
@@ -559,10 +815,11 @@ export class ExternalMcpContainmentAuthority {
       }
       let activeIntent: ExternalMcpContainmentIntent = {
         ...resumableIntent,
+        sockets: [...new Set([...resumableIntent.sockets, ...this.listenerSockets()])].sort(),
         ports: [
           ...resumableIntent.ports,
           ...additionalPorts,
-          ...(this.options.listener.isBound ? [this.options.listener.port] : []),
+          ...this.listenerPorts(),
           ...(recoverableExternalMcp ? [recoverableExternalMcp.port] : []),
           ...(recoverableExternalMcpPort ? [recoverableExternalMcpPort] : []),
         ],
@@ -570,7 +827,7 @@ export class ExternalMcpContainmentAuthority {
       };
       writeExternalMcpContainmentIntent(this.options.stateDir, activeIntent);
       activeIntent = readExternalMcpContainmentIntent(this.options.stateDir)!;
-      await runPorts(activeIntent.ports);
+      await runTargets(activeIntent.ports, activeIntent.sockets);
 
       let externalMcp: ExternalMcpContainmentState;
       try {
@@ -599,7 +856,7 @@ export class ExternalMcpContainmentAuthority {
       };
       writeExternalMcpContainmentIntent(this.options.stateDir, activeIntent);
       activeIntent = readExternalMcpContainmentIntent(this.options.stateDir)!;
-      await runPorts(unconfirmedPorts);
+      await runTargets(unconfirmedPorts);
       return await finishContainment(activeIntent, externalMcp.port);
     }
 
@@ -628,21 +885,22 @@ export class ExternalMcpContainmentAuthority {
       };
       const fallbackIntent: ExternalMcpContainmentIntent = {
         version: 1,
-        operation,
+        operation: intentOperation,
         from: fallbackExternalMcp,
         to: { enabled: false, port: fallbackExternalMcp.port },
         ports: [
           fallbackExternalMcp.port,
           ...(recoverableExternalMcpPort ? [recoverableExternalMcpPort] : []),
           ...additionalPorts,
-          ...(this.options.listener.isBound ? [this.options.listener.port] : []),
+          ...this.listenerPorts(),
         ],
+        sockets: this.listenerSockets(),
         phase: 'funnel_off_pending',
         requested_at: this.options.now().toISOString(),
       };
       writeExternalMcpContainmentIntent(this.options.stateDir, fallbackIntent);
       const activeIntent = readExternalMcpContainmentIntent(this.options.stateDir)!;
-      await runPorts(activeIntent.ports);
+      await runTargets(activeIntent.ports, activeIntent.sockets);
       writeExternalMcpContainmentIntent(this.options.stateDir, {
         ...activeIntent,
         phase: 'listener_unbind_pending',
@@ -656,9 +914,23 @@ export class ExternalMcpContainmentAuthority {
     }
 
     const externalMcp = machineConfig.daemon.external_mcp;
-    const tokenPresent = typeof readSecrets(
-      this.options.mycoHome,
-    )[HOST_EXTERNAL_MCP_TOKEN_SECRET] === 'string';
+    // Trim-truthy like every OTHER reader of this secret (the round-2 spec
+    // review's latent-inconsistency finding): an empty-string token is not
+    // evidence of exposure.
+    const storedToken = readSecrets(this.options.mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+    const tokenPresent = typeof storedToken === 'string' && storedToken.trim().length > 0;
+
+    // Activation-era boot: a coherent explicit activation (enabled config +
+    // token) is INTENDED — leave it alone and report it; the boot re-bind
+    // phase (main.ts, same lock) re-establishes the listener and Funnel.
+    // Anything less coherent falls through to the fail-closed drive-off.
+    if (operation === 'reconcile' && explicitExternalMcpConfig && externalMcp.enabled && tokenPresent) {
+      return {
+        enabled: true,
+        port: externalMcp.port,
+        funnel: [],
+      };
+    }
     const brownfieldEvidenceWithoutPort = !explicitExternalMcpConfig
       && (
         operation === 'disable'
@@ -667,21 +939,22 @@ export class ExternalMcpContainmentAuthority {
     if (brownfieldEvidenceWithoutPort) {
       writeExternalMcpContainmentIntent(this.options.stateDir, {
         version: 1,
-        operation,
+        operation: intentOperation,
         from: externalMcp,
         to: { enabled: false, port: externalMcp.port },
         ports: [
           externalMcp.port,
           ...additionalPorts,
-          ...(this.options.listener.isBound ? [this.options.listener.port] : []),
+          ...this.listenerPorts(),
         ],
+        sockets: this.listenerSockets(),
         phase: 'port_recovery_pending',
         requested_at: this.options.now().toISOString(),
       });
       const unresolvedIntent = readExternalMcpContainmentIntent(
         this.options.stateDir,
       )!;
-      await runPorts(unresolvedIntent.ports);
+      await runTargets(unresolvedIntent.ports, unresolvedIntent.sockets);
       throw new ExternalMcpContainmentPortRecoveryError();
     }
     const requiresContainment = operation === 'disable'
@@ -700,20 +973,21 @@ export class ExternalMcpContainmentAuthority {
 
     const baseIntent: ExternalMcpContainmentIntent = {
       version: 1,
-      operation,
+      operation: intentOperation,
       from: externalMcp,
       to: { enabled: false, port: externalMcp.port },
       ports: [
         externalMcp.port,
         ...additionalPorts,
-        ...(this.options.listener.isBound ? [this.options.listener.port] : []),
+        ...this.listenerPorts(),
       ],
+      sockets: this.listenerSockets(),
       phase: 'funnel_off_pending',
       requested_at: this.options.now().toISOString(),
     };
     writeExternalMcpContainmentIntent(this.options.stateDir, baseIntent);
     const activeIntent = readExternalMcpContainmentIntent(this.options.stateDir)!;
-    await runPorts(activeIntent.ports);
+    await runTargets(activeIntent.ports, activeIntent.sockets);
     return await finishContainment(activeIntent, externalMcp.port);
   }
 }

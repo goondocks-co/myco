@@ -53,6 +53,7 @@ function intent(
     from: { enabled: true, port: 8743 },
     to: { enabled: false, port: 8743 },
     ports: [8743],
+    sockets: [],
     phase: 'funnel_off_pending',
     requested_at: '2026-07-24T00:00:00.000Z',
     ...overrides,
@@ -132,11 +133,70 @@ describe('external MCP containment intent', () => {
     expect(readExternalMcpContainmentIntent(stateDir())).toBeUndefined();
   });
 
+  test('GATE: a port-only intent serializes as v1 on disk — downgrade-clean for rolled-back binaries', () => {
+    const dir = stateDir();
+    writeExternalMcpContainmentIntent(dir, intent({ ports: [8743, 9000] }));
+
+    const raw = fs.readFileSync(externalMcpContainmentIntentPath(dir), 'utf-8');
+    expect(raw).toContain('version = 1');
+    expect(raw).not.toContain('sockets');
+    expect(readExternalMcpContainmentIntent(dir)).toEqual(intent({ ports: [8743, 9000] }));
+  });
+
+  test('an intent carrying a socket target serializes as v2 and round-trips', () => {
+    const dir = stateDir();
+    writeExternalMcpContainmentIntent(dir, intent({
+      version: 2,
+      sockets: ['/tmp/myco-emcp-test.sock'],
+    }));
+
+    const raw = fs.readFileSync(externalMcpContainmentIntentPath(dir), 'utf-8');
+    expect(raw).toContain('version = 2');
+    expect(readExternalMcpContainmentIntent(dir)).toEqual(intent({
+      version: 2,
+      sockets: ['/tmp/myco-emcp-test.sock'],
+    }));
+  });
+
+  test('an enable_pending intent round-trips with its enable_target and stays drive-to-off shaped', () => {
+    const dir = stateDir();
+    writeExternalMcpContainmentIntent(dir, intent({
+      version: 2,
+      phase: 'enable_pending',
+      enable_target: { kind: 'socket', path: '/tmp/myco-emcp-test.sock' },
+    }));
+
+    const read = readExternalMcpContainmentIntent(dir)!;
+    expect(read.phase).toBe('enable_pending');
+    expect(read.enable_target).toEqual({ kind: 'socket', path: '/tmp/myco-emcp-test.sock' });
+    // The enable target is ALSO folded into the reconcile socket set, and
+    // `to` remains a drive-to-off state: an intent on disk ⇒ drive off.
+    expect(read.sockets).toEqual(['/tmp/myco-emcp-test.sock']);
+    expect(read.to.enabled).toBe(false);
+  });
+
   test.each([
     ['malformed TOML', 'version = [\n'],
     ['unsupported version', stringify({
       ...intent(),
+      version: 3,
+    } as unknown as Record<string, unknown>)],
+    ['v1 shape claiming v2', stringify({
+      ...(({ sockets: _sockets, ...rest }) => rest)(intent()),
       version: 2,
+    } as unknown as Record<string, unknown>)],
+    ['v2 shape claiming v1', stringify({
+      ...intent(),
+      version: 1,
+    } as unknown as Record<string, unknown>)],
+    ['enable_pending phase in a v1 shape', stringify({
+      ...(({ sockets: _sockets, ...rest }) => rest)(intent()),
+      phase: 'enable_pending',
+    } as unknown as Record<string, unknown>)],
+    ['non-canonical sockets', stringify({
+      ...intent(),
+      version: 2,
+      sockets: ['/b.sock', '/a.sock'],
     } as unknown as Record<string, unknown>)],
     ['invalid operation', stringify({
       ...intent(),
@@ -269,8 +329,12 @@ describe('external MCP containment intent', () => {
 
 interface FakeListener {
   readonly isBound: boolean;
-  readonly port: number;
+  readonly boundTarget: { kind: 'socket'; path: string } | { kind: 'loopback'; port: number } | null;
   unbind(): Promise<void>;
+}
+
+function portOf(target: import('@myco/daemon/external-mcp-containment.js').ExternalMcpFunnelTarget): number | string {
+  return target.kind === 'port' ? target.port : target.path;
 }
 
 function containmentFixture(options: {
@@ -301,7 +365,7 @@ function containmentFixture(options: {
   const listener = {
     unbindCalls: 0,
     get isBound() { return bound; },
-    get port() { return boundPort; },
+    get boundTarget() { return bound ? { kind: 'loopback' as const, port: boundPort } : null; },
     async unbind() {
       this.unbindCalls += 1;
       bound = false;
@@ -324,13 +388,14 @@ describe('ExternalMcpContainmentAuthority', () => {
       stateDir: fixture.serviceDir,
       listener: {
         get isBound() { return fixture.listener.isBound; },
-        get port() { return fixture.listener.port; },
+        get boundTarget() { return fixture.listener.boundTarget; },
         async unbind() {
           events.push('unbind');
           await fixture.listener.unbind();
         },
       },
-      runFunnelOff: async (port) => {
+      runFunnelOff: async (target) => {
+        const port = portOf(target);
         const activeIntent = readExternalMcpContainmentIntent(fixture.serviceDir);
         expect(activeIntent?.phase).toBe('funnel_off_pending');
         expect(fixture.listener.isBound).toBe(true);
@@ -370,7 +435,7 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => ({ ok: true, detail: `off ${port}` }),
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
       lockNamespace: testPerUserLockNamespace,
     });
 
@@ -437,7 +502,8 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
+      runFunnelOff: async (target) => {
+        const port = portOf(target);
         calls.push(port);
         return port === 8743
           ? { ok: false, detail: 'first refused' }
@@ -467,9 +533,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -498,9 +564,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -524,9 +590,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -556,9 +622,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -594,9 +660,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -629,9 +695,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -663,9 +729,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -685,12 +751,12 @@ describe('ExternalMcpContainmentAuthority', () => {
       stateDir: fixture.serviceDir,
       listener: {
         get isBound() { return fixture.listener.isBound; },
-        get port() { return fixture.listener.port; },
+        get boundTarget() { return fixture.listener.boundTarget; },
         async unbind() {
           throw new Error('unbind refused');
         },
       },
-      runFunnelOff: async (port) => ({ ok: true, detail: `off ${port}` }),
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
       lockNamespace: testPerUserLockNamespace,
     });
 
@@ -709,13 +775,13 @@ describe('ExternalMcpContainmentAuthority', () => {
       stateDir: fixture.serviceDir,
       listener: {
         get isBound() { return fixture.listener.isBound; },
-        get port() { return fixture.listener.port; },
+        get boundTarget() { return fixture.listener.boundTarget; },
         async unbind() {
           await fixture.listener.unbind();
           fs.writeFileSync(path.join(fixture.home, 'config.yaml'), 'daemon: [unterminated\n');
         },
       },
-      runFunnelOff: async (port) => ({ ok: true, detail: `off ${port}` }),
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
       lockNamespace: testPerUserLockNamespace,
     });
 
@@ -726,6 +792,296 @@ describe('ExternalMcpContainmentAuthority', () => {
     expect(fixture.listener.isBound).toBe(false);
   });
 
+  test.skipIf(process.platform === 'win32')('ENABLE: locked flow lands config→token→bind→funnel in order and clears the intent', async () => {
+    const fixture = containmentFixture({ enabled: false, port: 8743 });
+    const events: string[] = [];
+    let bound: { kind: 'socket'; path: string } | { kind: 'loopback'; port: number } | null = null;
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: {
+        get isBound() { return bound !== null; },
+        get boundTarget() { return bound; },
+        async unbind() { bound = null; },
+        async bind(target) {
+          // Config-before-mint-before-bind: by bind time both must exist.
+          expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
+          events.push('bind');
+          bound = target;
+          return { ok: true, target };
+        },
+      },
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
+      runFunnelOn: async (target, opts) => {
+        events.push(`funnel-on ${target.path} at ${opts.mount}`);
+        return { ok: true, detail: 'serving', funnelUrl: 'https://host.ts.net/mcp' };
+      },
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.enable({
+      socketPath: '/tmp/myco-emcp-enable-test.sock',
+      mintToken: () => {
+        // Config-before-mint (spec H1): the explicit subtree must already be
+        // on disk when the mint runs — the boot-breaking brownfield state
+        // (token, no subtree) is unrepresentable.
+        expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
+        events.push('mint');
+        return { value: 'minted-token-value', minted: true };
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      funnelUrl: 'https://host.ts.net/mcp',
+      minted: true,
+      token: 'minted-token-value',
+    });
+    expect(events).toEqual(['mint', 'bind', 'funnel-on /tmp/myco-emcp-enable-test.sock at /mcp']);
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toBeUndefined();
+    expect(bound).toEqual({ kind: 'socket', path: '/tmp/myco-emcp-enable-test.sock' });
+  });
+
+  test.skipIf(process.platform === 'win32')('ENABLE failure drives back to verified-off (funnel-on refusal)', async () => {
+    const fixture = containmentFixture({ enabled: false, port: 8743 });
+    let bound: { kind: 'socket'; path: string } | { kind: 'loopback'; port: number } | null = null;
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: {
+        get isBound() { return bound !== null; },
+        get boundTarget() { return bound; },
+        async unbind() { bound = null; },
+        async bind(target) { bound = target; return { ok: true, target }; },
+      },
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
+      runFunnelOn: async () => ({ ok: false, detail: 'no vendor tailscaled' }),
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.enable({
+      socketPath: '/tmp/myco-emcp-fail-test.sock',
+      mintToken: () => ({ value: 'x', minted: true }),
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('could not activate the public Funnel');
+    // Driven back to verified-off: config disavowed, listener unbound, no intent.
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(false);
+    expect(bound).toBeNull();
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toBeUndefined();
+  });
+
+  test("RECONCILE leaves a coherent explicit activation alone and reports it (boot's decide phase)", async () => {
+    const fixture = containmentFixture({ enabled: true, port: 8743 });
+    writeSecret(fixture.home, HOST_EXTERNAL_MCP_TOKEN_SECRET, 'coherent-token', testPerUserLockNamespace);
+    const offCalls: Array<number | string> = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: 'off' };
+      },
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.contain('reconcile');
+
+    expect(result.enabled).toBe(true);
+    expect(offCalls).toEqual([]);
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
+  });
+
+  test('RECONCILE with an enabled config but NO token drives off (incoherent)', async () => {
+    const fixture = containmentFixture({ enabled: true, port: 8743, listenerPort: 8743 });
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.contain('reconcile');
+
+    expect(result.enabled).toBe(false);
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(false);
+  });
+
+  test('RECONCILE finding an enable_pending intent (crash mid-enable) drives off and records a v1-parseable intent during recovery', async () => {
+    const fixture = containmentFixture({ enabled: true, port: 8743 });
+    writeSecret(fixture.home, HOST_EXTERNAL_MCP_TOKEN_SECRET, 'crash-token', testPerUserLockNamespace);
+    writeExternalMcpContainmentIntent(fixture.serviceDir, {
+      version: 2,
+      operation: 'disable',
+      from: { enabled: false, port: 8743 },
+      to: { enabled: false, port: 8743 },
+      ports: [8743],
+      sockets: ['/tmp/myco-emcp-crash.sock'],
+      enable_target: { kind: 'socket', path: '/tmp/myco-emcp-crash.sock' },
+      phase: 'enable_pending',
+      requested_at: new Date(0).toISOString(),
+    });
+    const offCalls: Array<number | string> = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: 'off' };
+      },
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.contain('reconcile');
+
+    // Fail-closed: the half-enable is NEVER completed at boot — driven off,
+    // including the socket the enable intended to expose.
+    expect(result.enabled).toBe(false);
+    expect(offCalls).toContain('/tmp/myco-emcp-crash.sock');
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(false);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toBeUndefined();
+  });
+
+  test("GATE: contain('shutdown') QUIESCES — funnel off, unbound, config byte-preserved enabled", async () => {
+    const fixture = containmentFixture({ enabled: true, port: 8743, listenerPort: 8743 });
+    const configBefore = fs.readFileSync(path.join(fixture.home, 'config.yaml'), 'utf-8');
+    const offCalls: number[] = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
+      },
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.contain('shutdown');
+
+    // Serving is quiesced…
+    expect(offCalls).toEqual([8743]);
+    expect(fixture.listener.isBound).toBe(false);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toBeUndefined();
+    // …but the user's activation survives the restart: the config file is
+    // BYTE-identical (no rewrite, no enabled flip) and the result reports it.
+    expect(fs.readFileSync(path.join(fixture.home, 'config.yaml'), 'utf-8')).toBe(configBefore);
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
+    expect(result.enabled).toBe(true);
+  });
+
+  test("contain('disable') still DISAVOWS an enabled config (regression pair for the quiesce gate)", async () => {
+    const fixture = containmentFixture({ enabled: true, port: 8743, listenerPort: 8743 });
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.contain('disable');
+
+    expect(result.enabled).toBe(false);
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(false);
+    expect(fixture.listener.isBound).toBe(false);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toBeUndefined();
+  });
+
+  test("GATE: contain('shutdown') meeting a leftover DISAVOWING intent completes the disavow — a failed disable is never reverted", async () => {
+    const fixture = containmentFixture({ enabled: true, port: 8743, listenerPort: 8743 });
+    writeExternalMcpContainmentIntent(fixture.serviceDir, {
+      version: 1,
+      operation: 'disable',
+      from: { enabled: true, port: 8743 },
+      to: { enabled: false, port: 8743 },
+      ports: [8743],
+      sockets: [],
+      phase: 'funnel_off_pending',
+      requested_at: new Date(0).toISOString(),
+    });
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.contain('shutdown');
+
+    // The user's disable stands: config disavowed, intent cleared — the
+    // shutdown may not discard another operation's drive-off obligation.
+    expect(result.enabled).toBe(false);
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(false);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toBeUndefined();
+  });
+
+  test("contain('shutdown') meeting a leftover ENABLE_PENDING intent drives off — a crashed half-enable is never promoted", async () => {
+    const fixture = containmentFixture({ enabled: true, port: 8743 });
+    writeExternalMcpContainmentIntent(fixture.serviceDir, {
+      version: 2,
+      operation: 'disable',
+      from: { enabled: false, port: 8743 },
+      to: { enabled: false, port: 8743 },
+      ports: [8743],
+      sockets: ['/tmp/myco-emcp-shutdown-crash.sock'],
+      enable_target: { kind: 'socket', path: '/tmp/myco-emcp-shutdown-crash.sock' },
+      phase: 'enable_pending',
+      requested_at: new Date(0).toISOString(),
+    });
+    const offCalls: Array<number | string> = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: 'off' };
+      },
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.contain('shutdown');
+
+    expect(result.enabled).toBe(false);
+    expect(offCalls).toContain('/tmp/myco-emcp-shutdown-crash.sock');
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(false);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toBeUndefined();
+  });
+
+  test("a leftover shutdown intent resumed at boot ('retire') still drives to full disavow", async () => {
+    const fixture = containmentFixture({ enabled: true, port: 8743, listenerPort: 8743 });
+    writeExternalMcpContainmentIntent(fixture.serviceDir, {
+      version: 1,
+      operation: 'shutdown',
+      from: { enabled: true, port: 8743 },
+      to: { enabled: false, port: 8743 },
+      ports: [8743],
+      sockets: [],
+      phase: 'funnel_off_pending',
+      requested_at: new Date(0).toISOString(),
+    });
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.contain('retire');
+
+    expect(result.enabled).toBe(false);
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(false);
+    expect(readExternalMcpContainmentIntent(fixture.serviceDir)).toBeUndefined();
+  });
+
   test('disabled brownfield config still verifies Funnel-off at boot and shutdown', async () => {
     const fixture = containmentFixture({ enabled: false });
     const offCalls: number[] = [];
@@ -733,9 +1089,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -761,9 +1117,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -796,9 +1152,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -825,9 +1181,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offCalls.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -914,7 +1270,7 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => ({ ok: true, detail: `off ${port}` }),
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
       lockNamespace: testPerUserLockNamespace,
     });
 
@@ -986,9 +1342,9 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => {
-        offPorts.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offPorts.push(portOf(target));
+        return { ok: true, detail: `off ${portOf(target)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -1036,7 +1392,7 @@ describe('ExternalMcpContainmentAuthority', () => {
       mycoHome: fixture.home,
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
-      runFunnelOff: async (port) => ({ ok: true, detail: `off ${port}` }),
+      runFunnelOff: async (target) => ({ ok: true, detail: `off ${portOf(target)}` }),
       lockNamespace: testPerUserLockNamespace,
     });
     const startedAt = Date.now();

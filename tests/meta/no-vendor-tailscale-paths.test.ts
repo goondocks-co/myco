@@ -129,12 +129,17 @@ const INVOCATION_ALLOWLIST: readonly { file: string; why: string }[] = [
   },
   {
     file: 'packages/myco/src/daemon/external-listener.ts',
-    why: 'The external-MCP Funnel containment runner. DELIBERATE and NOT a defect: '
-      + 'Tailscale Funnel is a Tailscale-cloud feature headscale does not implement '
-      + '(it serves no cert endpoint — the same reason HTTPS `serve` 501s against it), '
-      + 'so external MCP inherently rides the operator\'s OWN vendor tailnet. Pointing '
-      + 'this at a Myco socket would break the feature outright. Reached only when '
-      + 'external MCP is actually configured (the `requiresContainment` guard in '
+    why: 'The external-MCP Funnel runners — BOTH directions. DELIBERATE and NOT a '
+      + 'defect: Tailscale Funnel is a Tailscale-cloud feature headscale does not '
+      + 'implement (it serves no cert endpoint — the same reason HTTPS `serve` 501s '
+      + 'against it), so external MCP inherently rides the operator\'s OWN vendor '
+      + 'tailnet. Pointing this at a Myco socket would break the feature outright. '
+      + 'The funnel-ON runner is the ONE sanctioned vendor-Tailscale MUTATION in '
+      + 'this codebase — a deliberate, recorded widening of the Stage D X1-X3 '
+      + 'coexistence invariant, reached only on an explicit user enable (or boot '
+      + 'reconcile of an explicitly-enabled config), with the funnel-off runner as '
+      + 'its bounded inverse. The off direction is reached only when external MCP '
+      + 'is actually configured (the `requiresContainment` guard in '
       + 'daemon/external-mcp-containment.ts), never on a clean machine.',
   },
 ];

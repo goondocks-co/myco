@@ -29,11 +29,14 @@
  * `probeProviderAvailable` read at dispatch time, so a key written here is
  * guaranteed to be a key a real scheduled run can actually find.
  */
+import crypto from 'node:crypto';
 import { loadMachineConfig } from '../../config/loader.js';
+import { resolveExternalMcpSocketPath } from '../external-listener.js';
 import {
   deleteSecrets,
   readSecrets,
   writeSecret,
+  writeSecretIfAbsent,
 } from '@myco/config/secrets.js';
 import { normalizeRawSecretInput } from '@myco/daemon/api/secret-input.js';
 import { resolveGroveDir, resolveMycoHome } from '../../grove/paths.js';
@@ -129,7 +132,7 @@ export interface TeamConfigRouteDeps {
    */
   externalMcp?: {
     listener: ExternalMcpListenerControl;
-    containment: Pick<ExternalMcpContainmentAuthority, 'contain'>;
+    containment: Pick<ExternalMcpContainmentAuthority, 'contain' | 'enable'>;
   };
 }
 
@@ -270,11 +273,36 @@ export async function handleDeleteTeamSecret(
 // POST /api/team/mcp-token/rotate
 // ---------------------------------------------------------------------------
 
-/** POST /api/team/mcp-token/rotate refuses while public activation is unavailable. */
+/**
+ * POST /api/team/mcp-token/rotate — overwrite the team's external-MCP token
+ * and return the new raw value ONCE. E-0(c): one token per team, rotatable by
+ * ANY member; this response (and the enable-time mint) are the ONLY two
+ * channels the raw value ever crosses — everything else is hash-or-boolean.
+ * The listener re-reads the secret per request, so rotation is effective on
+ * the very next call with no restart. (Reached as a `team-write` route, so
+ * the reveal crosses the authenticated overlay — accepted per spec R-Q1: a
+ * member who rotates but cannot read the value has bricked every external
+ * agent until a host admin intervenes.)
+ */
 export async function handleRotateExternalMcpToken(deps: TeamConfigRouteDeps): Promise<RouteResponse> {
   const groveIdOrRefusal = resolveServedGroveIdOrRefusal(deps);
   if (isRefusal(groveIdOrRefusal)) return groveIdOrRefusal;
-  return externalMcpUnavailableResponse();
+
+  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const machine = loadMachineConfig(mycoHome);
+  const existing = readSecrets(mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+  if (!machine.daemon.external_mcp.enabled && !(existing && existing.trim())) {
+    return {
+      status: 409,
+      body: errorBody(
+        'external_mcp_not_enabled',
+        'External access is not enabled, and no token exists to rotate. Enable external access first.',
+      ),
+    };
+  }
+  const token = crypto.randomBytes(32).toString('hex');
+  writeSecret(mycoHome, HOST_EXTERNAL_MCP_TOKEN_SECRET, token, deps.lockNamespace ?? nativePerUserLockNamespace);
+  return { body: { token, tokenHash: nonSecretTokenHash(token) } };
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +318,9 @@ interface ExternalMcpStatusBody {
    *  (`null`) when no live listener was threaded into these deps (see
    *  `TeamConfigRouteDeps.externalMcp`). */
   bound: boolean | null;
+  /** The bound local endpoint descriptor (socket path or loopback port), or
+   *  null when unbound / no live listener in deps. */
+  bound_target: { kind: 'socket'; path: string } | { kind: 'loopback'; port: number } | null;
 }
 
 /** GET /api/team/external-mcp returns status without the raw token. */
@@ -306,6 +337,7 @@ export async function handleGetExternalMcp(deps: TeamConfigRouteDeps): Promise<R
     port: machine.daemon.external_mcp.port,
     tokenHash: existingToken && existingToken.trim() ? nonSecretTokenHash(existingToken.trim()) : null,
     bound: deps.externalMcp ? deps.externalMcp.listener.isBound : null,
+    bound_target: deps.externalMcp ? deps.externalMcp.listener.boundTarget : null,
   };
   return { body };
 }
@@ -314,19 +346,21 @@ interface ExternalMcpTogglePutBody {
   enabled?: unknown;
 }
 
+/** Reachable only when no live listener/containment authority was threaded
+ *  into these deps (a partially-wired daemon) — never a policy refusal. */
 function externalMcpUnavailableResponse(): RouteResponse {
   return {
     status: 409,
     body: errorBody(
       'external_mcp_unavailable',
-      'Public external MCP activation is unavailable in this release.',
+      'External access controls are not available from this daemon right now.',
     ),
   };
 }
 
 /**
- * PUT /api/team/external-mcp/toggle refuses activation and routes explicit
- * disable requests through the containment authority.
+ * PUT /api/team/external-mcp/toggle — activation through the containment
+ * authority's locked enable flow; explicit disable through `contain`.
  */
 export async function handlePutExternalMcpToggle(
   deps: TeamConfigRouteDeps,
@@ -340,8 +374,49 @@ export async function handlePutExternalMcpToggle(
     return { status: 400, body: errorBody('invalid_input', '"enabled" (boolean) is required') };
   }
 
-  if (payload.enabled) return externalMcpUnavailableResponse();
   if (!deps.externalMcp) return externalMcpUnavailableResponse();
+
+  // Known collision, accepted + documented (spec R-M9): the central write
+  // gate can 409 this PUT with a paused-project message when the caller's
+  // headers name a project mid-move — pre-existing for disable, now also
+  // user-visible for enable. Machine-scoped re-classification was judged
+  // not worth the plumbing.
+  if (payload.enabled) {
+    const mycoHome = deps.mycoHome ?? resolveMycoHome();
+    const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
+    try {
+      const result = await deps.externalMcp.containment.enable({
+        socketPath: resolveExternalMcpSocketPath(mycoHome),
+        mintToken: () => writeSecretIfAbsent(
+          mycoHome,
+          HOST_EXTERNAL_MCP_TOKEN_SECRET,
+          () => crypto.randomBytes(32).toString('hex'),
+          lockNamespace,
+        ),
+      });
+      if (!result.ok) {
+        return { status: 502, body: errorBody('external_mcp_enable_failed', result.error) };
+      }
+      const stored = readSecrets(mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+      return {
+        body: {
+          enabled: true,
+          funnel_url: result.funnelUrl,
+          tokenHash: stored && stored.trim() ? nonSecretTokenHash(stored.trim()) : null,
+          // The one-time reveal: raw token ONLY when this call minted it.
+          ...(result.minted && result.token ? { token: result.token } : {}),
+        },
+      };
+    } catch (error) {
+      if (error instanceof ExternalMcpContainmentBusyError) {
+        return {
+          status: 409,
+          body: errorBody('external_mcp_busy', error.message),
+        };
+      }
+      throw error;
+    }
+  }
 
   try {
     return {

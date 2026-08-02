@@ -335,6 +335,26 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       hostServe,
       mycoHome: home,
       lockNamespace: testPerUserLockNamespace,
+      // A stub authority whose enable SUCCEEDS on the replay path (minted:
+      // false) — so the sweep below actually exercises the enable response,
+      // the one route DESIGNED to sometimes carry a raw token, and pins that
+      // a non-minting enable never echoes the stored value.
+      externalMcp: {
+        listener: {
+          isBound: false,
+          boundTarget: null,
+          async unbind() {},
+          async bind() { return { ok: false, error: 'leak-guard stub' }; },
+        },
+        containment: {
+          async contain() {
+            return { enabled: false, port: 8743, funnel: [] };
+          },
+          async enable() {
+            return { ok: true, funnelUrl: 'https://leak-guard.ts.net/mcp', minted: false };
+          },
+        },
+      },
     });
     // Per-task table (spec §6.3) — carries no secrets, so it needs no leak
     // assertions of its own, but is registered + swept here for uniformity
@@ -377,18 +397,24 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       body: JSON.stringify({ enabled: true }),
     });
     const enableText = await enableRes.text();
-    expect(enableRes.status).toBe(409);
+    expect(enableRes.status).toBe(200);
+    // Replayed (non-minting) enable: never echoes the stored token.
     expect(enableText).not.toContain(EXTERNAL_MCP_SENTINEL);
     expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(EXTERNAL_MCP_SENTINEL);
 
+    // Rotate is one of exactly TWO sanctioned reveal channels (enable-mint is
+    // the other): the response carries the NEW raw value once, never the old
+    // one, and the store is updated atomically.
     const rotateRes = await fetch(`${base}/api/team/mcp-token/rotate`, {
       method: 'POST',
       headers: overlayHeaders(),
     });
     const rotateText = await rotateRes.text();
-    expect(rotateRes.status).toBe(409);
+    expect(rotateRes.status).toBe(200);
     expect(rotateText).not.toContain(EXTERNAL_MCP_SENTINEL);
-    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(EXTERNAL_MCP_SENTINEL);
+    const rotated = JSON.parse(rotateText) as { token: string };
+    expect(rotated.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET]).toBe(rotated.token);
 
     const requests: Array<{ method: string; path: string; body?: unknown }> = [
       { method: 'GET', path: '/api/team/config' },
@@ -400,10 +426,13 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       { method: 'PUT', path: '/api/team/secrets/openai', body: { secret: TEAM_SENTINEL_NEW, leak: TEAM_SENTINEL_EXISTING } },
       { method: 'DELETE', path: '/api/team/secrets/anthropic' },
       // Status and toggle responses never contain the raw external token.
+      // (`mcp-token/rotate` is deliberately ABSENT: it is a sanctioned reveal
+      // channel, asserted separately above — everything else on this surface
+      // must never echo the CURRENT stored token either, which is what the
+      // per-request storedExternalToken assertion below pins.)
       { method: 'GET', path: '/api/team/external-mcp' },
       { method: 'PUT', path: '/api/team/external-mcp/toggle', body: { enabled: true } },
       { method: 'PUT', path: '/api/team/external-mcp/toggle', body: { enabled: false } },
-      { method: 'POST', path: '/api/team/mcp-token/rotate' },
       // Unknown-provider and missing-secret error paths must not echo anything either.
       { method: 'PUT', path: '/api/team/secrets/not-a-provider', body: { secret: TEAM_SENTINEL_NEW } },
       { method: 'PUT', path: '/api/team/secrets/anthropic', body: {} },
@@ -423,6 +452,10 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       expect(text, `${r.method} ${r.path} leaked the existing team key`).not.toContain(TEAM_SENTINEL_EXISTING);
       expect(text, `${r.method} ${r.path} leaked the new team key`).not.toContain(TEAM_SENTINEL_NEW);
       expect(text, `${r.method} ${r.path} leaked the external MCP token`).not.toContain(EXTERNAL_MCP_SENTINEL);
+      const currentToken = readSecrets(process.env.MYCO_HOME!)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+      if (currentToken) {
+        expect(text, `${r.method} ${r.path} leaked the CURRENT external MCP token`).not.toContain(currentToken);
+      }
     }
   });
 
