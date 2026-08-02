@@ -370,7 +370,12 @@ export class ExternalMcpListener {
     // Fail closed on the transport surface FIRST — everything except /mcp
     // is indistinguishable from a route that was never registered. No
     // /health, no /api/*, no enrollment on the public URL.
-    if (pathname !== EXTERNAL_MCP_PATH) {
+    // Tailscale Funnel strips the `--set-path` mount prefix before proxying
+    // to the unix socket (measured live: a request to the public
+    // `https://<node>/mcp` arrives here with pathname `/`). Accept both the
+    // stripped root and the literal path so the advertised funnel URL and a
+    // direct socket client resolve the same endpoint.
+    if (pathname !== EXTERNAL_MCP_PATH && pathname !== '/') {
       writeJson(res, 404, { error: 'not_found' });
       return;
     }
