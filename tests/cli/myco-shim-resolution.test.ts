@@ -18,6 +18,7 @@ import { managedBinaryPath } from '../../packages/myco/scripts/managed-paths.mjs
 
 const SHIM_SOURCE = path.resolve('packages/myco/bin/myco.cjs');
 const REDIRECT_SOURCE = path.resolve('packages/myco/bin/runtime-redirect.cjs');
+const RESOLUTION_SOURCE = path.resolve('packages/myco/bin/binary-resolution.cjs');
 
 /** The platform target the shim computes for this host. */
 function hostTarget(): string {
@@ -49,6 +50,7 @@ function makeFixture(): { shimPath: string; pkgRoot: string; mycoHome: string } 
   const shimPath = path.join(pkgRoot, 'bin', 'myco.cjs');
   fs.copyFileSync(SHIM_SOURCE, shimPath);
   fs.copyFileSync(REDIRECT_SOURCE, path.join(pkgRoot, 'bin', 'runtime-redirect.cjs'));
+  fs.copyFileSync(RESOLUTION_SOURCE, path.join(pkgRoot, 'bin', 'binary-resolution.cjs'));
 
   // A myco-home with no runtime.command, so the pin never short-circuits
   // resolution and each test exercises the source it set up.

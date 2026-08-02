@@ -40,6 +40,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { maybeRedirect } = require('./runtime-redirect.cjs');
+const resolution = require('./binary-resolution.cjs');
 
 function die(message) {
   process.stderr.write(`[myco] ${message}\n`);
@@ -52,31 +53,6 @@ function detectTarget() {
   if (platform === 'linux') return arch === 'arm64' ? 'linux-arm64' : 'linux-x64';
   if (platform === 'win32') return 'windows-x64';
   return null;
-}
-
-// Mirrors resolveMycoHome() in scripts/select-binary.mjs and src/grove/paths.ts.
-function resolveMycoHome() {
-  const configured = (process.env.MYCO_HOME || '').trim();
-  if (!configured) return path.join(os.homedir(), '.myco');
-  if (configured === '~') return os.homedir();
-  if (configured.startsWith('~/') || configured.startsWith(`~${path.sep}`)) {
-    return path.join(os.homedir(), configured.slice(2));
-  }
-  return path.resolve(configured);
-}
-
-// Layout duplicated from scripts/managed-paths.mjs — this file is plain CJS in
-// the published tarball and cannot require() that ESM module. The duplication
-// is gated by tests/cli/myco-shim-resolution.test.ts, which plants the binary
-// at the path managedBinaryPath() computes and asserts the shim finds it — so
-// the two copies cannot drift apart silently on the host platform.
-function managedBinaryPath() {
-  if (process.platform === 'win32') {
-    const localAppData = process.env.LOCALAPPDATA
-      || path.win32.join(os.homedir(), 'AppData', 'Local');
-    return path.win32.join(localAppData, 'Myco', 'bin', 'myco.exe');
-  }
-  return path.posix.join(resolveMycoHome(), 'bin', 'myco');
 }
 
 maybeRedirect(__filename);
@@ -113,28 +89,11 @@ const sources = [
     }
   },
   () => {
-    const candidate = managedBinaryPath();
+    const candidate = resolution.managedBinaryPath(resolution.resolveMycoHome(), process.platform, process.env.LOCALAPPDATA);
     return { from: `managed binary ${candidate}`, candidate };
   },
 ];
 
-/**
- * Existence is not enough — the candidate must be executable.
- *
- * `select-binary.mjs` is what chmods the platform binary to 0755, so on an
- * install whose postinstall never ran the file is present at mode 0644.
- * Accepting it on existence alone dead-ends the whole resolution on a binary
- * that cannot run, instead of falling through to a source that can.
- */
-function isRunnable(candidate) {
-  try {
-    if (!fs.statSync(candidate).isFile()) return false;
-    if (process.platform !== 'win32') fs.accessSync(candidate, fs.constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 let binaryPath = null;
 const tried = [];
@@ -145,7 +104,7 @@ for (const source of sources) {
     tried.push(result.from);
     continue;
   }
-  if (isRunnable(result.candidate)) {
+  if (resolution.isRunnableBinary(result.candidate)) {
     tried.push(result.from);
     binaryPath = result.candidate;
     break;

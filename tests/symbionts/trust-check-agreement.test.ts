@@ -1,12 +1,12 @@
 /**
  * G7 trust-check cross-copy agreement test.
  *
- * The runtime pin trust check (G7) is hand-copied across 6 locations because
- * CJS launchers can't import TS source. All copies must enforce the SAME mask
- * (0o022) and the SAME check shape (win32 short-circuit / uid-ownership /
- * mode-mask). This test reads each copy and asserts the invariants hold so a
- * future contributor who edits one copy without updating the others gets an
- * immediate failure.
+ * The runtime pin trust check (G7) exists in two real implementations — the
+ * TS contract (src/runtime/binary-resolution.ts, consumed by all TS sites via
+ * delegation) and the shared shim module (bin/binary-resolution.cjs, consumed
+ * by every bin/ entry point) — plus mirrors in agent plugin templates that
+ * cannot import either. All copies must enforce the SAME mask (0o022) and the
+ * SAME check shape (win32 short-circuit / uid-ownership / mode-mask).
  *
  * Copies covered:
  *   - bin/runtime-redirect.cjs             (RUNTIME_COMMAND_INSECURE_MODE_MASK)
@@ -25,9 +25,14 @@ const REPO_ROOT = path.resolve('.');
 
 const COPIES = [
   {
-    label: 'bin/runtime-redirect.cjs',
-    file: 'packages/myco/bin/runtime-redirect.cjs',
-    maskName: 'RUNTIME_COMMAND_INSECURE_MODE_MASK',
+    label: 'src/runtime/binary-resolution.ts',
+    file: 'packages/myco/src/runtime/binary-resolution.ts',
+    maskName: 'PIN_INSECURE_MODE_MASK',
+  },
+  {
+    label: 'bin/binary-resolution.cjs',
+    file: 'packages/myco/bin/binary-resolution.cjs',
+    maskName: 'PIN_INSECURE_MODE_MASK',
   },
   {
     label: 'src/symbionts/templates/myco-run.cjs',
@@ -48,11 +53,6 @@ const COPIES = [
     label: 'src/symbionts/templates/pi/plugin.ts',
     file: 'packages/myco/src/symbionts/templates/pi/plugin.ts',
     maskName: 'RUNTIME_PIN_INSECURE_MODE_MASK',
-  },
-  {
-    label: 'src/daemon/update-checker.ts',
-    file: 'packages/myco/src/daemon/update-checker.ts',
-    maskName: 'RUNTIME_COMMAND_INSECURE_MODE_MASK',
   },
 ] as const;
 
