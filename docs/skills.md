@@ -17,7 +17,9 @@ survey → approve → generate → evolve
 
 **Approve** — Candidates appear in the Skills dashboard. You approve what becomes canon and dismiss the rest. Only approved candidates proceed to generation.
 
-**Generate** — Myco writes a SKILL.md file from the approved candidate's source material. The skill is staged, validated against quality criteria (is it procedural? does it have concrete file paths? is it under 800 lines? does it conflict with existing skills?), and promoted to Myco's canonical skill store only when it passes — at which point every installed agent picks it up via its global skills symlink.
+**Generate** — Myco writes the skill from the approved candidate's source material. The draft is validated against quality criteria (is it procedural? does it have concrete file paths? is it under 800 lines? does it conflict with existing skills?) and lands in Myco's database as ready to publish — nothing touches your project's files yet.
+
+**Publish** — You publish a ready skill from the dashboard. Publishing is what writes the SKILL.md file into your project, at which point every installed agent picks it up via its global skills symlink. Until you publish, agents don't see it — no silent skill file changes.
 
 **Evolve** — Over time, Myco monitors active skills for drift. When new knowledge appears that should be incorporated, a skill's underlying spores get superseded, or a skill grows oversized and should be split, the evolve task rewrites it. Each rewrite bumps a generation number and records what changed.
 
@@ -27,16 +29,16 @@ Generated skills use the SKILL.md format with Myco-specific conventions:
 
 ```markdown
 ---
-name: myco:deploy-worker
+name: myco:vault-schema-migration
 description: |
-  Use this skill when deploying or updating the Cloudflare Worker,
-  running wrangler commands, or troubleshooting deployment failures.
+  Use this skill when adding or changing tables in the vault database,
+  writing a schema migration, or debugging a failed migration.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
-# Deploy Worker
+# Vault Schema Migration
 
 Brief context paragraph explaining what this procedure accomplishes.
 
@@ -57,14 +59,14 @@ Key conventions:
 
 - **`name: myco:<kebab-case>`** — the `myco:` prefix identifies Myco-managed skills
 - **`managed_by: myco`** — marks the skill as auto-managed; the evolve task only touches these
-- **`user-invocable: true`** — makes the skill available as a slash command (e.g., `/deploy-worker`)
+- **`user-invocable: true`** — makes the skill available as a slash command (e.g., `/vault-schema-migration`)
 - **`allowed-tools`** — scopes which tools the agent can use when executing the skill
 
 A validation gate enforces these conventions. Skills that fail validation are rejected and regenerated before they're accepted.
 
 ## How skills reach agents
 
-Skills are written to Myco's canonical skill store and symlinked into each agent's native skills directory at the **global** install location — `~/.claude/skills/`, `~/.cursor/skills/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity/skills/`, `~/.codeium/windsurf/skills/`, `~/.config/opencode/skills/`, and `~/.pi/agent/skills/`. Every project on your machine sees the same set of skills, kept in sync by Myco's symbiont layer — see [Supported Agents](symbionts.md) for the per-agent paths.
+Published skills are written to your project's skill store and symlinked into each agent's native skills directory at the **global** install location — `~/.claude/skills/`, `~/.cursor/skills/`, `~/.codex/skills/`, `~/.cline/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity/skills/`, `~/.codeium/windsurf/skills/`, `~/.config/opencode/skills/`, and `~/.pi/agent/skills/`. Every project on your machine sees the same set of skills, kept in sync by Myco's symbiont layer — see [Supported Agents](symbionts.md) for the per-agent paths.
 
 ## Dashboard
 

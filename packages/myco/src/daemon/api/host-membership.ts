@@ -83,6 +83,8 @@ export interface HostMembershipRouteDeps extends HostMembershipHealthRouteDeps {
   detach?: typeof detachCommand;
   mycoHome?: string;
   logger?: DaemonLogger;
+  /** Test seam: platform for the capability fields (default process.platform). */
+  platform?: NodeJS.Platform;
   /**
    * DAEMON-ONLY (Phase F): the residency transition to run when an attach
    * targets a project that still has local Grove data. Built in `daemon/main.ts`
@@ -399,9 +401,25 @@ export function createHostMembershipStatusHandler(deps: HostMembershipRouteDeps 
     // platform string: the UI needs to know joining will work, and Windows has
     // no overlay client build, so the Join form must say so up front rather
     // than fail after the operator has already minted a one-time key.
-    const overlaySupported = process.platform === 'darwin' || process.platform === 'linux';
+    const platform = deps.platform ?? process.platform;
+    const overlaySupported = platform === 'darwin' || platform === 'linux';
+    // External MCP activation is a distinct capability that happens to share
+    // the same platform set today (Unix-socket + Funnel; refused on win32 at
+    // external-mcp-containment.ts). Carried separately so the External access
+    // toggle never renders live on a machine where enabling can only 502 —
+    // and so a future platform gaining one capability without the other
+    // doesn't lie about either.
+    const externalMcpSupported = platform === 'darwin' || platform === 'linux';
 
-    return { status: 200, body: { hosts, hint, overlay_supported: overlaySupported } };
+    return {
+      status: 200,
+      body: {
+        hosts,
+        hint,
+        overlay_supported: overlaySupported,
+        external_mcp_supported: externalMcpSupported,
+      },
+    };
   };
 }
 

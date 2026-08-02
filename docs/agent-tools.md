@@ -43,10 +43,10 @@ A separate, read-only tool surface for agents that aren't Myco members — manag
 
 ## Slash-command skills
 
-Myco ships slash command skills that provide guided workflows. Type the command in your agent's prompt to activate. Beyond these, Myco **auto-generates project-specific skills** from your vault knowledge — see the [Skills docs](skills.md) for the full curation lifecycle.
+Myco ships a built-in `myco` skill — the primary skill for ongoing work (design decisions, debugging non-obvious issues, gotchas, context about prior work; it guides when and how to use each MCP tool) — which agents activate automatically rather than via a slash command. Alongside it, three slash-command skills provide guided workflows; type the command in your agent's prompt to activate. Beyond these, Myco **auto-generates project-specific skills** from your vault knowledge — see the [Skills docs](skills.md) for the full curation lifecycle.
 
 | Command | Purpose |
 |---------|---------|
-| `/myco` | The primary skill for ongoing work. Use when making design decisions, debugging non-obvious issues, encountering gotchas, or needing context about prior work. Provides guidance on when and how to use each MCP tool. |
 | `/myco-rules` | Keep `AGENTS.md` minimal, durable, and canonical across agents. |
 | `/myco-okf` | Create and maintain an OKF-conformant project wiki — a portable, git-committed markdown knowledge base synthesized from your project's Myco intelligence — directly in the repo, no daemon feature required. |
+| `/myco-handoff` | Hand work off between sessions — package plans, context, and skills for the next session to receive. |

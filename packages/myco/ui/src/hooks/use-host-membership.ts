@@ -60,6 +60,10 @@ export interface HostMembershipStatusResponse {
    *  team. Optional so an older daemon (which omits it) reads as capable
    *  rather than silently disabling the form. */
   overlay_supported?: boolean;
+  /** False when this machine cannot activate external agent access (the
+   *  Unix-socket + Funnel flow; refused on Windows). Same optional-field
+   *  posture as overlay_supported for older daemons. */
+  external_mcp_supported?: boolean;
 }
 
 const HOST_MEMBERSHIP_STATUS_KEY = ['host-membership-status'] as const;

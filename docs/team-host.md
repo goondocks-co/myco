@@ -24,7 +24,7 @@ Open the dashboard (`myco open`) and go to the **Team** page. Under **Join a Tea
 
 Prefer the terminal, or scripting a new machine's setup? `myco join <host> --key <one-time-key> --server-url <url> --overlay-address <address>` does the same enrollment and prints the connection details: a local proxy address, this machine's address on the team's overlay, and whether the host answered.
 
-To disconnect this machine from a host entirely, use **Leave host** on the Team page or run `myco leave <host>`.
+To disconnect this machine from a host entirely, use **Leave host** on the Team page or run `myco leave <host>`. Leaving is refused while any of your projects is still connected to that host — disconnect each first (`myco detach`) — and while a project move is in flight, so your data can never be stranded on a host you've left.
 
 ## Connect a project
 

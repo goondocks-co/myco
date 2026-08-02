@@ -1375,7 +1375,9 @@ export function evaluateServiceCheck(
 /** §13.4/§13.5: report declared service-scope intent vs observed state.
  *  The daemon never converges this; divergence is an OPERATOR row pointing
  *  at `myco service install`. */
-export async function checkServiceScope(): Promise<DoctorCheck | null> {
+export async function checkServiceScope(
+  platform: NodeJS.Platform = process.platform,
+): Promise<DoctorCheck | null> {
   const { loadMachineConfig } = await import('../config/loader.js');
   const { resolveObservedScope } = await import('../service/scoped.js');
   const { serviceLabel: resolveLabel } = await import('../service/labels.js');
@@ -1390,6 +1392,20 @@ export async function checkServiceScope(): Promise<DoctorCheck | null> {
   const observed = await resolveObservedScope(label);
   if (intent === 'login' && (observed === 'login' || observed === 'none')) return null;
   if (intent === 'boot' && observed === 'boot') return null;
+  // Boot scope does not exist on Windows (`myco service install` refuses it),
+  // so the elevate remediation below would send a Windows user at a command
+  // that exits 1 — a permanent unfixable warn with impossible advice. Name
+  // the real fix instead: the config value cannot be realized here.
+  if (intent === 'boot' && platform === 'win32') {
+    return {
+      name: 'Service scope',
+      status: 'warn',
+      detail: "daemon.service_scope is 'boot', but boot scope is not supported on Windows — "
+        + "the service runs at login via Task Scheduler. Remove the setting "
+        + "(or set it to 'login') in ~/.myco/config.yaml to clear this warning.",
+      fixable: false,
+    };
+  }
   const detail = observed === 'both'
     ? `both a login and a boot unit exist for ${label} — two supervisors will fight over one daemon; run \`myco service install\` to converge on the declared scope (${intent})`
     : `daemon.service_scope is '${intent}' but the installed unit is ${observed === 'none' ? 'missing' : `'${observed}'-scoped`} — run \`myco service install\` from a shell that can elevate`;

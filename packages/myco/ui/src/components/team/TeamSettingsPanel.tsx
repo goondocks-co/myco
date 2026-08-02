@@ -12,6 +12,7 @@ import {
   useScopedConfig,
   type TeamConfigTarget,
 } from '../../hooks/use-scoped-config';
+import { useHostMembershipStatus } from '../../hooks/use-host-membership';
 import { fetchJson, postJson, putJson } from '../../lib/api';
 
 export interface TeamSettingsPanelProps {
@@ -223,6 +224,12 @@ function ExternalAccessControls() {
  * `TeamConfigTargetProvider` below — no forked copies.
  */
 export function TeamSettingsPanel({ target }: TeamSettingsPanelProps) {
+  // External access is refused by the daemon off macOS/Linux (Unix-socket +
+  // Funnel activation). Rendering a live toggle that can only 502 is a lying
+  // switch — hide the panel when the daemon says the capability is absent.
+  // `!== false` keeps older daemons (field absent) rendering as before.
+  const membership = useHostMembershipStatus();
+  const externalMcpSupported = membership.data?.external_mcp_supported !== false;
   return (
     <TeamConfigTargetProvider target={target}>
       <div className="flex flex-col gap-4">
@@ -238,14 +245,16 @@ export function TeamSettingsPanel({ target }: TeamSettingsPanelProps) {
         <Panel tone="sage" title="Per-task overrides">
           <TeamTaskProviderConfig />
         </Panel>
-        <Panel tone="sage" title="External access">
-          <p className="text-xs text-on-surface-variant m-0 mb-3">
-            A public, read-only address tools outside the team's machines can use — gated by a
-            token. Turning it on mints the token and shows it once; rotating replaces it, and
-            existing connections stop working until they're updated.
-          </p>
-          <ExternalAccessControls />
-        </Panel>
+        {externalMcpSupported && (
+          <Panel tone="sage" title="External access">
+            <p className="text-xs text-on-surface-variant m-0 mb-3">
+              A public, read-only address tools outside the team's machines can use — gated by a
+              token. Turning it on mints the token and shows it once; rotating replaces it, and
+              existing connections stop working until they're updated.
+            </p>
+            <ExternalAccessControls />
+          </Panel>
+        )}
       </div>
     </TeamConfigTargetProvider>
   );

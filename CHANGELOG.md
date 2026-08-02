@@ -2,6 +2,63 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-08-02
+
+### Headline
+
+**Team Host residency: projects can move to a shared host — and come back.** Attaching a project to a Team Host now moves its full history to the host, which becomes the single copy while attached; teammates work against the same knowledge with per-project tenancy enforced on every write. Detaching brings everything home in one digest-verified, resumable transfer that restores your local copy before the switch — no window where reads come up empty.
+
+### Added
+
+#### Team Host
+
+- **Attach with history / detach with history.** A project's sessions, spores, plans, and skills travel to the host on attach and return on detach. Detach transfers are chunked, digest-verified, and resumable; the host reclaims departed machines and refuses writes from stale members.
+- **Multi-host Team page.** Manage several hosts from one dashboard: membership, per-host status and health, served-Grove designation, drain health, and garbage collection.
+- **Server mode in the main binary.** Hosting is a mode of `myco` itself — no separate operator package to install.
+- **Leaving is safe by construction.** `myco leave` is refused while any of your projects is still attached (detach each first), and while a project move involving that host is in flight.
+
+#### External read-only agent access
+
+- Opt-in, per-machine: expose a read-only slice of your team knowledge (six read-only tools) to agents running elsewhere, over a private Unix socket fronted by Tailscale Funnel. Token-gated with one-time reveal and rotation; disable verifiably tears everything down. macOS and Linux only.
+
+#### Service scope
+
+- `daemon.service_scope` (machine config): run the local service at `login` (default) or at `boot` on macOS and Linux. Boot scope keeps the service supervised across upgrades and reboots without a logged-in session. Windows keeps login scope via Task Scheduler.
+
+#### Upgrade safety
+
+- **Storage-format updates now take an automatic pre-update backup** into the affected Grove's backup folder, pinned so retention cleanup keeps the most recent checkpoints. If the backup cannot be taken, the storage-format update is refused and your data is left untouched.
+- **Rollback is refused across a storage-format change** — automatically after a failed update and via explicit downgrades — instead of leaving a service that cannot start. `myco doctor` explains exactly which versions are involved and what to do.
+
+#### Skills
+
+- **Review-then-publish.** Agent-proposed skills now live in Myco's database until you publish them; the Publish action is what writes a skill to your project for agents to load. No more silent skill file changes.
+- **New bundled skills**: `/myco-okf` creates and maintains an OKF-conformant project wiki from your Myco intelligence; `/myco-handoff` hands work off between sessions with plans and context intact.
+
+### Changed
+
+- **Capture fidelity**: prompt/response attribution hardened across compaction, subagent, and replay paths; Myco's own background agent runs no longer pollute session capture.
+- **Agent harness sign-in**: Claude subscription setup lives in Settings; auth failures raise an actionable notification instead of failing silently.
+- **Overlay networking**: the host overlay runs on Myco-provisioned, content-addressed binaries with drift detection in `myco doctor` (macOS uses your Homebrew tailscale — installed once with disclosure, never upgraded or removed by Myco). Disabling a host verifies teardown before destroying state.
+
+### Removed
+
+- **Team Sync (Cloudflare) and the Collective daemon integration.** The legacy background sync stack — D1 mirror, sync worker transport, and the Collective's daemon hooks — is retired. Team Host residency is its replacement. The `@goondocks/myco-team` and `@goondocks/myco-collective` operator packages are dormant pending redesign.
+
+### Fixed
+
+- Reliability fixes across detach/attach edge cases, capture reconciliation, and daemon restart supervision; see the GitHub release notes for the full list.
+
+### Security
+
+- Every write path into a Grove now passes tenancy admission: cross-project and cross-Grove writes are refused with typed errors, project lifecycle operations are gated while transfers are in flight, and served hosts refuse requests outside the served Grove.
+
+### Notes for upgraders (from 1.2.x)
+
+- **Storage format advances from v66 to v76** on first start. The update takes the automatic pre-update backup described above; no action needed.
+- **Teams: update the host first, then members** — see the Team Host guide.
+- Point releases between the sections here (v1.0.x, v1.1.x, and v1.2.1 through v1.2.13) shipped without changelog entries — installer, self-update, and platform hardening; their notes live on the [GitHub releases page](https://github.com/goondocks-co/myco/releases).
+
 ## [1.2.0] - 2026-06-23
 
 ### Headline
@@ -19,7 +76,9 @@ All notable changes to Myco are documented here. Format follows [Keep a Changelo
 - **Install no longer requires Node.** The installer downloads a native binary instead of installing the npm package. Node 22+ is now needed only for the optional npm install path and the operator CLIs (`@goondocks/myco-team`, `@goondocks/myco-collective`).
 - Platform support: macOS is the primary supported platform; Linux and Windows are in beta. Windows is x64 only — Windows on ARM is not supported.
 
-## [Unreleased]
+## [1.0.0] - 2026-05-31
+
+_(Recorded retroactively — this section previously sat mislabeled as "Unreleased" below 1.2.0.)_
 
 ### Headline
 
@@ -83,10 +142,6 @@ All notable changes to Myco are documented here. Format follows [Keep a Changelo
 
 - Clean removal of Myco's contributions to every agent's global config, preserving user-pre-existing keys.
 - `--purge` additionally removes `~/.myco/` itself.
-
-#### Skills
-
-- New bundled skill `myco-okf`: create and maintain an OKF-conformant project wiki from your project's Myco intelligence.
 
 #### Tests
 
@@ -152,5 +207,6 @@ The license changed from MIT to Apache 2.0 on 2026-04-29. No code action require
 
 ---
 
-[Unreleased]: https://github.com/goondocks-co/myco/compare/myco/v1.2.0...HEAD
+[1.3.0]: https://github.com/goondocks-co/myco/releases/tag/myco/v1.3.0
 [1.2.0]: https://github.com/goondocks-co/myco/releases/tag/myco/v1.2.0
+[1.0.0]: https://github.com/goondocks-co/myco/releases/tag/myco/v1.0.0

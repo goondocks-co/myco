@@ -1,11 +1,11 @@
 # Intelligence Pipeline
 
-Myco runs an intelligence pipeline in the background that reads your captured sessions, extracts observations into the knowledge vault, maintains the graph, and keeps digest extracts fresh. It's fully automatic — once providers are configured, you don't need to trigger it manually. This page covers what it does, what tasks are available, how to configure providers, and how to schedule or disable parts of it.
+Myco runs an intelligence pipeline in the background that reads your captured sessions, extracts observations into the knowledge vault, links them to their sessions, and keeps digest extracts fresh. It's fully automatic — once providers are configured, you don't need to trigger it manually. This page covers what it does, what tasks are available, how to configure providers, and how to schedule or disable parts of it.
 
 ## What the pipeline produces
 
 - **Spores** — discrete observations extracted from session activity (gotchas, decisions, discoveries, trade-offs, bug fixes, and higher-order wisdom syntheses)
-- **Entities and edges** — a knowledge graph linking spores to components, concepts, and people
+- **Lineage** — spores stay linked to the sessions and plans they came from, so every observation is traceable to its source
 - **Session titles and summaries** — human-readable labels for every captured session, generated from the actual work done
 - **Digest extracts** — pre-computed project context at three depth tiers (1500 / 5000 / 10000 tokens) that get injected at session start
 - **Skill candidates** — procedural patterns worth turning into [skills](skills.md) (requires approval)

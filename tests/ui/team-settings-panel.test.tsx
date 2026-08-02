@@ -131,6 +131,14 @@ mock.module('../../packages/myco/ui/src/components/providers/AdvancedModelPin', 
   AdvancedModelPin: () => null,
 }));
 
+// Controllable membership status: default mirrors a query with no data yet
+// (the shape every pre-existing test in this file ran under before the
+// External-access platform gate consulted the hook).
+const membershipStatusMock = vi.fn((): { data: unknown } => ({ data: undefined }));
+mock.module('../../packages/myco/ui/src/hooks/use-host-membership', () => ({
+  useHostMembershipStatus: () => membershipStatusMock(),
+}));
+
 import { TeamSettingsPanel } from '../../packages/myco/ui/src/components/team/TeamSettingsPanel';
 import type { TeamConfigTarget } from '../../packages/myco/ui/src/hooks/use-scoped-config';
 
@@ -168,6 +176,8 @@ beforeEach(() => {
   postJsonMock.mockReset();
   deleteJsonMock.mockReset();
   updateTaskConfigMutateMock.mockReset();
+  membershipStatusMock.mockReset();
+  membershipStatusMock.mockReturnValue({ data: undefined });
 });
 
 describe('TeamSettingsPanel', () => {
@@ -295,5 +305,38 @@ describe('TeamSettingsPanel', () => {
     await waitFor(() => expect(screen.getByText('Vault Evolve')).toBeInTheDocument());
     expect(screen.getByText('Task Config')).toBeInTheDocument();
     expect(updateTaskConfigMutateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('External access platform gate', () => {
+  it('hides the External access panel when the daemon reports external_mcp_supported: false', async () => {
+    membershipStatusMock.mockReturnValue({
+      data: { hosts: [], hint: null, external_mcp_supported: false },
+    });
+    stubTeamConfig('ok');
+    renderPanel();
+
+    // Team settings render; the External access panel does not — a live
+    // toggle whose enable can only 502 on this platform is a lying switch.
+    await screen.findByText('Team settings');
+    expect(screen.queryByText('External access')).toBeNull();
+  });
+
+  it('renders the panel when the daemon reports external_mcp_supported: true', async () => {
+    membershipStatusMock.mockReturnValue({
+      data: { hosts: [], hint: null, external_mcp_supported: true },
+    });
+    stubTeamConfig('ok');
+    renderPanel();
+
+    expect(await screen.findByText('External access')).toBeTruthy();
+  });
+
+  it('renders the panel when the field is absent (older daemon fallback)', async () => {
+    membershipStatusMock.mockReturnValue({ data: { hosts: [], hint: null } });
+    stubTeamConfig('ok');
+    renderPanel();
+
+    expect(await screen.findByText('External access')).toBeTruthy();
   });
 });
