@@ -30,6 +30,7 @@ import {
   resolveMycoHome,
   expandHome,
 } from '../grove/paths.js';
+import { readLayeredPin, readTrustedPin, resolveBinary } from '../runtime/binary-resolution.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -76,7 +77,9 @@ export function looksLikeMycoBinary(execPath: string): boolean {
  * without depending on the test runner's own execPath.
  */
 export function resolveMycoBinary(execPath: string = process.execPath): string {
-  return looksLikeMycoBinary(execPath) ? execPath : 'myco';
+  if (looksLikeMycoBinary(execPath)) return execPath;
+  // Not running as the binary (dev tsx/bun): pin -> managed -> bare name.
+  return resolveBinary('instruction', { kind: 'machine' }).path;
 }
 
 /**
@@ -93,10 +96,10 @@ export function resolveMycoBinary(execPath: string = process.execPath): string {
  */
 export function resolveRuntimeCommand(vaultDir?: string): string | null {
   if (vaultDir) {
-    const projectPin = readPinFile(path.join(vaultDir, 'runtime.command'));
+    const projectPin = readTrustedPin(path.join(vaultDir, 'runtime.command'));
     if (projectPin) return projectPin;
   }
-  return readPinFile(resolveMachineRuntimeCommandPath());
+  return readTrustedPin(resolveMachineRuntimeCommandPath());
 }
 
 /**
@@ -111,8 +114,8 @@ export function resolveRuntimeCommand(vaultDir?: string): string | null {
  */
 export function resolveRuntimeHome(vaultDir?: string): string | null {
   let raw: string | null = null;
-  if (vaultDir) raw = readPinFile(path.join(vaultDir, MACHINE_RUNTIME_HOME_FILENAME));
-  if (!raw) raw = readPinFile(path.join(resolveMycoHome(), MACHINE_RUNTIME_HOME_FILENAME));
+  if (vaultDir) raw = readTrustedPin(path.join(vaultDir, MACHINE_RUNTIME_HOME_FILENAME));
+  if (!raw) raw = readTrustedPin(path.join(resolveMycoHome(), MACHINE_RUNTIME_HOME_FILENAME));
   return raw ? expandHome(raw) : null;
 }
 
@@ -129,76 +132,9 @@ export function resolveRuntimeHome(vaultDir?: string): string | null {
  * hooks to the wrong binary.
  */
 export function resolveRuntimePinForCwd(cwd: string): string | null {
-  let dir = path.resolve(cwd);
-  while (true) {
-    const pin = readPinFile(path.join(dir, '.myco', 'runtime.command'));
-    if (pin) return pin;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return resolveRuntimeCommand();
+  return readLayeredPin({ kind: 'walk-up', from: cwd })?.pin ?? null;
 }
 
-/**
- * POSIX trust check for a `runtime.command` pin file — mirrors
- * `checkRuntimeCommandTrust` in `bin/runtime-redirect.cjs` (the G7 guard).
- * The two implementations are intentionally kept in sync: both refuse any pin
- * whose mode permits group/other write (`mode & 0o022 !== 0`) or whose owner
- * uid differs from the current process. `0o644` (owner rw, group/other
- * readable) is explicitly trusted — only *writability* is the threat surface.
- * Skipped on win32 (no POSIX mode semantics), where the pin is always trusted.
- *
- * Returns `{ ok: true }` when the pin is trusted (or on win32), or
- * `{ ok: false, reason }` when it must be ignored.
- */
-const RUNTIME_COMMAND_INSECURE_MODE_MASK = 0o022;
-
-function checkPinTrust(filePath: string): { ok: true } | { ok: false; reason: string } {
-  if (process.platform === 'win32') return { ok: true };
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(filePath);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') return { ok: false, reason: 'pin file missing' };
-    return { ok: false, reason: `stat failed: ${(err as Error).message ?? 'unknown'}` };
-  }
-  const myUid = typeof process.getuid === 'function' ? process.getuid() : null;
-  if (myUid !== null && stat.uid !== myUid) {
-    return { ok: false, reason: `pin file owned by uid ${stat.uid}, expected ${myUid}` };
-  }
-  const mode = stat.mode & 0o777;
-  if (mode & RUNTIME_COMMAND_INSECURE_MODE_MASK) {
-    return { ok: false, reason: `pin file mode 0${mode.toString(8)} is writable by group/other` };
-  }
-  return { ok: true };
-}
-
-function readPinFile(filePath: string): string | null {
-  const trust = checkPinTrust(filePath);
-  if (!trust.ok) {
-    // A missing pin is the normal "no pin → default" case (both runtime.command
-    // and runtime.home are absent on a plain install) — silent. Only a real
-    // trust REFUSAL (foreign owner / group-other-writable) warns: never fatal,
-    // a daemon with a poisoned pin falls back to the default rather than
-    // silently executing it.
-    if (trust.reason !== 'pin file missing') {
-      try {
-        process.stderr.write(`[myco] daemon: ignoring runtime pin (${trust.reason}): ${filePath}\n`);
-      } catch {
-        // stderr unavailable — swallow
-      }
-    }
-    return null;
-  }
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8').trim();
-    return raw || null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * The effective release channel is MACHINE-scoped (decision-46130740): it

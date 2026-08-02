@@ -403,6 +403,8 @@ export class DaemonServer {
     return {
       pid: process.pid,
       port: this.port,
+      // Self-identity record: the file names the RUNNING process (no
+      // resolution — see runtime/binary-resolution self-exec-entry).
       command: process.execPath,
       started: this.startedAt,
       sessions: [],

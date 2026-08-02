@@ -160,7 +160,12 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
     // command is gone, and buildServiceSpec throws on a missing path —
     // fall back to the running binary.
     let executable = resolveServiceExecutable(mycoHome);
-    if (!fs.existsSync(executable)) executable = process.execPath;
+    if (!fs.existsSync(executable)) {
+      // Recorded command gone: fall back to the service-unit policy (managed
+      // binary for the default home only), never a raw execPath.
+      const { resolveBinary } = await import('../runtime/binary-resolution.js');
+      executable = resolveBinary('home-scoped-managed', { kind: 'machine' }, { mycoHome }).path;
+    }
 
     let spec: import('../service/types.js').ServiceSpec;
     try {
