@@ -4809,7 +4809,8 @@ function migrateV75ToV76(db: Database): void {
        ON CONFLICT (artifact_kind, artifact_id) DO UPDATE SET
          published_generation = excluded.published_generation,
          published_at = excluded.published_at,
-         published_by = excluded.published_by
+         published_by = excluded.published_by,
+         machine_id = excluded.machine_id
        WHERE excluded.published_generation > content_publications.published_generation`,
     ).run(epochSeconds());
     db.prepare(
