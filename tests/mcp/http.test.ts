@@ -10,6 +10,8 @@ import {
 } from '@myco/mcp/http.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/grove/request-context.js';
+import { markOverlayRequest } from '@myco/daemon/host-serve.js';
+import { managedBinaryPath } from '@myco/install/managed-binary.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { vi } from '../helpers/vi-shim.js';
@@ -94,6 +96,74 @@ describe('streamable HTTP MCP', () => {
     expect(called.content[0]).toEqual({ type: 'text', text: 'HTTP MCP digest' });
 
     await client.close();
+  });
+
+  it('op:instructions over an overlay-marked request renders the bare invocation, never this host\'s path', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-http-mcp-overlay-'));
+    tmpDirs.push(tmp);
+    const home = path.join(tmp, 'home');
+    const savedHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = home;
+    const projectRoot = path.join(tmp, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    const vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    const grove = createGrove('Overlay', home);
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', name: 'Project Overlay' },
+      grove: { binding_id: 'gbind-b', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      projectName: 'Project Overlay',
+      projectRoot,
+      bindingId: 'gbind-b',
+    }, home);
+    // A runnable managed binary in this host's home: a LOCAL cli caller would
+    // resolve this path; the overlay caller must not receive it.
+    const managed = managedBinaryPath(home, process.platform, process.env.LOCALAPPDATA);
+    fs.mkdirSync(path.dirname(managed), { recursive: true });
+    fs.writeFileSync(managed, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    try {
+      const instructionsClient = {
+        ...mockClient(),
+        get: vi.fn(async (endpoint: string) => {
+          if (endpoint === '/api/cortex/instructions') {
+            return { ok: true, data: { content: 'BODY', generatedAt: 1, stored: true } };
+          }
+          return { ok: true, data: {} };
+        }),
+      } as unknown as DaemonClient;
+      const handler = createStreamableMcpHttpHandler(vaultDir, {
+        client: instructionsClient,
+        hostServe: { servedGroveId: grove.id },
+      });
+      const url = await listen((req, res) => {
+        markOverlayRequest(req);
+        void handler(req, res);
+      });
+      const requestContext = resolveLegacyRequestContext(vaultDir, {
+        projectRoot,
+        projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        groveId: grove.id,
+        machineId: 'machine-b',
+        source: 'explicit',
+      });
+      const client = new Client({ name: 'myco-http-test', version: '1.0.0' });
+      const transport = new StreamableHTTPClientTransport(url, {
+        requestInit: {
+          headers: { ...requestContextHeaders(requestContext), 'x-myco-tool-transport': 'cli' },
+        },
+      });
+      await client.connect(transport);
+      const called = await client.callTool({ name: 'myco_cortex', arguments: { op: 'instructions' } });
+      const text = (called.content as Array<{ type: string; text: string }>)[0].text;
+      expect(text).toContain('`myco tool call <tool>');
+      expect(text).not.toContain(managed);
+      await client.close();
+    } finally {
+      if (savedHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = savedHome;
+    }
   });
 
   it('rejects a headerless tool call with the legacy_vault wire error (no silent anchor default)', async () => {

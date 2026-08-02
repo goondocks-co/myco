@@ -21,7 +21,7 @@
 // from Myco packages — only use pi's own exports and Node.js built-ins.
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { readFileSync, appendFileSync, mkdirSync, statSync } from "node:fs";
+import { readFileSync, appendFileSync, mkdirSync, statSync, accessSync, constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { execFile, execFileSync } from "node:child_process";
@@ -312,35 +312,52 @@ interface ToolCliEnvelope {
   error?: { code: string; message: string };
 }
 
-// Resolve the Myco binary to dispatch CLI tool calls. Mirrors the daemon's
-// resolveRuntimePinForCwd (which the extension can't import — see the no-Myco-
-// imports rule above): filesystem upward walk for a project-scope
-// `<dir>/.myco/runtime.command` pin, then the machine pin at
-// `~/.myco/runtime.command`, then bare `myco` on PATH. The pin holds the
-// resolved self-contained binary path, so dispatch needs neither `node` nor
-// `launcher.cjs`. The bare-PATH fallback is a last resort; a real install
-// always has a machine pin written by global bootstrap.
+// Managed-binary layout; mirrors scripts/managed-paths.mjs, which this
+// extension cannot import (no-Myco-imports rule above). Agreement is gated by
+// tests/symbionts/pi-binary-resolution.test.ts.
+function managedBinaryPath(mycoHome: string): string {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+    return join(localAppData, "Myco", "bin", "myco.exe");
+  }
+  return join(mycoHome, "bin", "myco");
+}
+
+// A file that exists and (on POSIX) is executable; mode-0644 binaries fail.
+function isRunnableBinary(candidate: string): boolean {
+  try {
+    const stat = statSync(candidate);
+    if (!stat.isFile()) return false;
+    if (process.platform !== "win32") accessSync(candidate, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Resolve the Myco binary to dispatch CLI tool calls, in the contract order
+// (src/runtime/binary-resolution.ts, which the extension cannot import):
+// project-scope `<dir>/.myco/runtime.command` pin by upward walk, then the
+// machine pin, then the runnable managed binary, then the bare name. Every
+// step uses ONE home — the directory-aware `resolveMycoHome(directory)`, so a
+// `runtime.home`-pinned project's fallbacks come from its own home. All pin
+// reads pass the G7 trust check. The bare name is the last resort: a
+// GUI-launched agent's PATH need not contain it.
 function resolveMycoBinary(directory: string): string {
   let dir = resolve(directory);
   while (true) {
-    const pin = readRuntimePin(join(dir, ".myco", "runtime.command"));
+    const pin = readTrustedPin(join(dir, ".myco", "runtime.command"));
     if (pin) return pin;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  const machinePin = readRuntimePin(join(resolveMycoHome(), "runtime.command"));
+  const home = resolveMycoHome(directory);
+  const machinePin = readTrustedPin(join(home, "runtime.command"));
   if (machinePin) return machinePin;
+  const managed = managedBinaryPath(home);
+  if (isRunnableBinary(managed)) return managed;
   return process.platform === "win32" ? "myco.exe" : "myco";
-}
-
-function readRuntimePin(filePath: string): string | null {
-  try {
-    const raw = readFileSync(filePath, "utf-8").trim();
-    return raw || null;
-  } catch {
-    return null;
-  }
 }
 
 async function execMycoTool(

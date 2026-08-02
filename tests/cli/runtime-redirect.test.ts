@@ -287,6 +287,10 @@ describe('maybeRedirect (integration)', () => {
   function makeShim(): { shimPath: string; runtimeRedirect: string } {
     const runtimeRedirect = path.join(tmpRoot, 'runtime-redirect.cjs');
     fs.copyFileSync(MODULE_PATH, runtimeRedirect);
+    fs.copyFileSync(
+      path.resolve('packages/myco/bin/binary-resolution.cjs'),
+      path.join(tmpRoot, 'binary-resolution.cjs'),
+    );
 
     const shimPath = path.join(tmpRoot, 'shim.cjs');
     fs.writeFileSync(

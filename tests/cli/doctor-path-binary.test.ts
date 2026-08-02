@@ -1,12 +1,7 @@
 /**
- * PATH-ownership doctor check.
- *
- * Regression origin: `npm update -g` re-extracted the retired
- * `@goondocks/myco` npm package, discarding the postinstall-generated
- * dispatch file it needs. The leftover shim stayed first on PATH and
- * hard-exited on every invocation while the managed binary sat healthy at
- * `~/.myco/bin/myco`. Nothing in doctor compared the two, so the break was
- * invisible until every command failed.
+ * PATH-ownership doctor row: the `myco` the invoking shell resolves must be
+ * the managed binary, and the managed bin dir must be on PATH at all. Built
+ * on the resolution contract's facts.
  */
 
 import { afterEach, describe, it, expect, spyOn } from 'bun:test';
@@ -16,18 +11,29 @@ import path from 'node:path';
 import { classifyPathBinary } from '@myco/cli/doctor';
 import { DOCTOR_FIXERS } from '@myco/cli/doctor-fixes';
 import type { DoctorCheck, DoctorFixContext } from '@myco/cli/doctor-fixes';
+import type { ResolutionFacts } from '@myco/runtime/binary-resolution.js';
 
 const MANAGED = '/home/u/.myco/bin/myco';
 const BIN_DIR = '/home/u/.myco/bin';
 
-/** Base args for the healthy case; each test overrides only what it exercises. */
-function args(overrides: Partial<Parameters<typeof classifyPathBinary>[0]> = {}) {
+function facts(overrides: Partial<ResolutionFacts> = {}): ResolutionFacts {
   return {
+    binDir: BIN_DIR,
     managedBinary: MANAGED,
     managedExists: true,
-    binDir: BIN_DIR,
-    pathBinary: MANAGED,
+    managedRunnable: true,
     pin: null,
+    pinPath: null,
+    pinScope: null,
+    pinRefusal: null,
+    ...overrides,
+  };
+}
+
+function args(overrides: Partial<Parameters<typeof classifyPathBinary>[0]> = {}) {
+  return {
+    facts: facts(),
+    pathBinary: MANAGED,
     platform: 'linux' as NodeJS.Platform,
     realpath: (target: string) => target,
     ...overrides,
@@ -36,14 +42,12 @@ function args(overrides: Partial<Parameters<typeof classifyPathBinary>[0]> = {})
 
 describe('classifyPathBinary', () => {
   it('emits no row when the managed binary is absent (source build / pre-convergence)', () => {
-    // Nothing to compare PATH against — a row here would assert a fact the
-    // check never verified.
-    expect(classifyPathBinary(args({ managedExists: false, pathBinary: null }))).toBeNull();
+    // Nothing to compare PATH against.
+    expect(classifyPathBinary(args({ facts: facts({ managedExists: false }), pathBinary: null }))).toBeNull();
   });
 
   it('passes when PATH resolves to the managed binary', () => {
-    const check = classifyPathBinary(args());
-    expect(check?.status).toBe('ok');
+    expect(classifyPathBinary(args())?.status).toBe('ok');
   });
 
   it('passes when PATH holds a symlink that resolves to the managed binary', () => {
@@ -60,7 +64,7 @@ describe('classifyPathBinary', () => {
     expect(check?.status).toBe('fail');
     expect(check!.detail).toContain(shadow);
     expect(check!.detail).toContain(MANAGED);
-    // Deleting another package manager's file is not doctor's to automate.
+    // Deleting another package manager's file is out of scope for --fix.
     expect(check!.fixable).toBe(false);
   });
 
@@ -73,18 +77,21 @@ describe('classifyPathBinary', () => {
   });
 
   it('reports but does not offer an rc-file fix on win32', () => {
-    // Windows PATH lives in the registry — rc-file editing would be a no-op
-    // dressed up as a repair.
+    // Windows PATH lives in the registry, not in rc files.
     const check = classifyPathBinary(args({ pathBinary: null, platform: 'win32' }));
     expect(check?.status).toBe('fail');
     expect(check!.fixable).toBe(false);
   });
 
   it('defers to an active runtime pin instead of second-guessing PATH', () => {
-    // A dev pin redirects ahead of PATH, so PATH is not authoritative here.
+    // A pin redirects ahead of PATH, so PATH is not authoritative here.
     const check = classifyPathBinary(args({
       pathBinary: '/opt/homebrew/bin/myco',
-      pin: '/repo/packages/myco-darwin-arm64/bin/myco',
+      facts: facts({
+        pin: '/repo/packages/myco-darwin-arm64/bin/myco',
+        pinPath: '/home/u/.myco/runtime.command',
+        pinScope: 'machine',
+      }),
     }));
     expect(check?.status).toBe('ok');
     expect(check!.detail).toContain('/repo/packages/myco-darwin-arm64/bin/myco');
@@ -118,33 +125,45 @@ describe('path-bindir fixer', () => {
 
   const ctx = {} as DoctorFixContext;
 
-  it('appends the PATH export only to rc files that already exist', async () => {
+  it('writes .zshenv AND .zshrc — only .zshenv reaches non-interactive shells; path_helper demotes it in login shells', async () => {
     const home = sandboxHome(['.zshrc', '.profile']);
 
     await DOCTOR_FIXERS['path-bindir'](ctx, matched);
 
+    expect(fs.readFileSync(path.join(home, '.zshenv'), 'utf8')).toContain(`export PATH="${BIN_DIR}:$PATH"`);
     expect(fs.readFileSync(path.join(home, '.zshrc'), 'utf8')).toContain(`export PATH="${BIN_DIR}:$PATH"`);
     expect(fs.readFileSync(path.join(home, '.profile'), 'utf8')).toContain(`export PATH="${BIN_DIR}:$PATH"`);
-    // Never create an rc file the user's shell may not read.
+    // Never create a config for a shell the user may not use.
     expect(fs.existsSync(path.join(home, '.bashrc'))).toBe(false);
   });
 
-  it('is idempotent — a second run appends nothing', async () => {
-    const home = sandboxHome(['.zshrc']);
+  it('creates .zshenv when absent — it is the only zsh file reaching non-interactive shells', async () => {
+    const home = sandboxHome([]);
 
-    await DOCTOR_FIXERS['path-bindir'](ctx, matched);
-    const afterFirst = fs.readFileSync(path.join(home, '.zshrc'), 'utf8');
     const actions = await DOCTOR_FIXERS['path-bindir'](ctx, matched);
 
-    expect(fs.readFileSync(path.join(home, '.zshrc'), 'utf8')).toBe(afterFirst);
+    expect(fs.existsSync(path.join(home, '.zshenv'))).toBe(true);
+    expect(actions.join(' ')).toContain('.zshenv');
+  });
+
+  it('is idempotent — a second run appends nothing', async () => {
+    const home = sandboxHome(['.profile']);
+
+    await DOCTOR_FIXERS['path-bindir'](ctx, matched);
+    const afterFirst = fs.readFileSync(path.join(home, '.zshenv'), 'utf8');
+    const actions = await DOCTOR_FIXERS['path-bindir'](ctx, matched);
+
+    expect(fs.readFileSync(path.join(home, '.zshenv'), 'utf8')).toBe(afterFirst);
     expect(actions.join(' ')).toContain('already exported');
   });
 
-  it('reports plainly when there is no rc file to update', async () => {
-    sandboxHome([]);
+  it('emits a guarded block so repeated sourcing cannot duplicate the entry', async () => {
+    // .zshenv runs for every zsh, including nested ones.
+    const home = sandboxHome([]);
 
-    const actions = await DOCTOR_FIXERS['path-bindir'](ctx, matched);
+    await DOCTOR_FIXERS['path-bindir'](ctx, matched);
 
-    expect(actions.join(' ')).toContain('add /home/u/.myco/bin to PATH manually');
+    const written = fs.readFileSync(path.join(home, '.zshenv'), 'utf8');
+    expect(written).toContain(`*":${BIN_DIR}:"*) ;;`);
   });
 });

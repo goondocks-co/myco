@@ -14,8 +14,34 @@ import path from 'node:path';
 import type { DaemonStateAuthority } from '../daemon/daemon-state-authority.js';
 import type { DoctorCheck } from './doctor.js';
 
-/** Shell rc files the POSIX installer appends its PATH export to, in its order. */
-const RC_FILENAMES = ['.zshrc', '.bashrc', '.profile'] as const;
+/**
+ * Shell rc files the PATH export is appended to, in order.
+ *
+ * zsh reads `.zshenv` for every shell and `.zshrc` only for interactive ones,
+ * so `.zshenv` is the file that reaches non-interactive shells; it is created
+ * when absent. `.zshrc` stays a target because macOS `path_helper` rebuilds
+ * login-shell PATH after `.zshenv` runs, demoting its prepend. The rest are
+ * appended only when they already exist.
+ */
+const RC_TARGETS = [
+  { name: '.zshenv', create: true },
+  { name: '.zshrc', create: false },
+  { name: '.bashrc', create: false },
+  { name: '.profile', create: false },
+] as const;
+
+/** A PATH prepend that repeated sourcing cannot duplicate. */
+function pathExportBlock(binDir: string): string {
+  return [
+    '',
+    '# Added by Myco (myco doctor --fix).',
+    'case ":$PATH:" in',
+    `  *":${binDir}:"*) ;;`,
+    `  *) export PATH="${binDir}:$PATH" ;;`,
+    'esac',
+    '',
+  ].join('\n');
+}
 
 export type DoctorFixerId =
   | 'daemon-stale'
@@ -24,7 +50,8 @@ export type DoctorFixerId =
   | 'migration-retry'
   | 'service-reinstall'
   | 'symbiont-global-refresh'
-  | 'path-bindir';
+  | 'path-bindir'
+  | 'runtime-pin-redundant';
 
 export interface DoctorFixContext {
   vaultDir: string;
@@ -160,7 +187,12 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
     // command is gone, and buildServiceSpec throws on a missing path —
     // fall back to the running binary.
     let executable = resolveServiceExecutable(mycoHome);
-    if (!fs.existsSync(executable)) executable = process.execPath;
+    if (!fs.existsSync(executable)) {
+      // Recorded command gone: fall back to the service-unit policy (managed
+      // binary for the default home only), never a raw execPath.
+      const { resolveBinary } = await import('../runtime/binary-resolution.js');
+      executable = resolveBinary('home-scoped-managed', { kind: 'machine' }, { mycoHome }).path;
+    }
 
     let spec: import('../service/types.js').ServiceSpec;
     try {
@@ -192,10 +224,10 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
     return ['Re-ran global symbiont config refresh (rewrites Myco-owned hook groups)'];
   },
 
-  // Append the managed bin dir to PATH in the user's shell rc files — the
-  // same idempotent edit `install.sh` performs when the dir isn't already on
-  // PATH. Existence-gated per file (never creates an rc file the user's shell
-  // may not read) and content-gated on the dir string, so re-running is inert.
+  // Append the managed bin dir to PATH in shell rc files. Convenience for
+  // humans typing `myco`: binary consumers resolve pin → managed themselves
+  // and never rely on PATH. Gated on the dir string already being present, so
+  // re-running is inert.
   'path-bindir': async (_ctx, matched) => {
     const actions: string[] = [];
     const binDirs = new Set<string>();
@@ -206,15 +238,16 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
     for (const binDir of binDirs) {
       let appended = 0;
       let alreadyPresent = 0;
-      for (const rcName of RC_FILENAMES) {
-        const rcPath = path.join(os.homedir(), rcName);
+      for (const target of RC_TARGETS) {
+        const rcPath = path.join(os.homedir(), target.name);
         try {
-          if (!fs.existsSync(rcPath)) continue;
-          if (fs.readFileSync(rcPath, 'utf8').includes(binDir)) {
+          const exists = fs.existsSync(rcPath);
+          if (!exists && !target.create) continue;
+          if (exists && fs.readFileSync(rcPath, 'utf8').includes(binDir)) {
             alreadyPresent += 1;
             continue;
           }
-          fs.appendFileSync(rcPath, `\nexport PATH="${binDir}:$PATH"\n`);
+          fs.appendFileSync(rcPath, pathExportBlock(binDir));
           actions.push(`Added ${binDir} to PATH in ${rcPath}`);
           appended += 1;
         } catch (err) {
@@ -225,8 +258,31 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
         actions.push(`Restart your shell or run: export PATH="${binDir}:$PATH"`);
       } else if (alreadyPresent > 0) {
         actions.push(`${binDir} is already exported in a shell rc file — restart your shell to pick it up`);
-      } else {
-        actions.push(`No shell rc file found to update — add ${binDir} to PATH manually`);
+      }
+    }
+    return actions;
+  },
+
+  // Remove a runtime pin that names the managed binary — redundant by
+  // construction (resolution reaches the managed binary without it).
+  // Re-verifies content before removal so an operator pin written between
+  // detection and fix survives.
+  'runtime-pin-redundant': async (_ctx, matched) => {
+    const actions: string[] = [];
+    for (const check of matched) {
+      const pinPath = check.fixData?.pinPath;
+      const managedBinary = check.fixData?.managedBinary;
+      if (typeof pinPath !== 'string' || typeof managedBinary !== 'string') continue;
+      try {
+        const current = fs.readFileSync(pinPath, 'utf8').trim();
+        if (current !== managedBinary) {
+          actions.push(`Pin at ${pinPath} changed since detection — left in place`);
+          continue;
+        }
+        fs.rmSync(pinPath, { force: true });
+        actions.push(`Removed redundant runtime pin ${pinPath}`);
+      } catch (err) {
+        actions.push(`Could not remove ${pinPath}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return actions;

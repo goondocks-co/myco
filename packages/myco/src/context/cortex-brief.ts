@@ -126,7 +126,7 @@ export function resolveInstructionDelivery(
 export function buildCapabilitySummary(): string[] {
   return [
     'Myco can retrieve local project knowledge in this project.',
-    'Use the currently available Myco tool surfaces described below, preferring CLI JSON when MCP is unavailable or brittle, and omit any surfaces that are offline.',
+    'Use the currently available Myco tool surfaces described below, and omit any surfaces that are offline.',
   ];
 }
 
@@ -283,6 +283,9 @@ export async function buildCortexInstructionsInput(
   const recentPlans = formatRecentPlans(scope);
   const digestExcerpt = formatDigestExcerpt(config, scope);
   const input = {
+    // Authoring-prompt contract: instructionParts are not hashed (they embed
+    // per-build data), so prompt revisions bump this to force one regeneration.
+    promptContract: 2,
     cortex: {
       enabled: config.cortex.enabled,
       instructions_inject_on_session_start: config.cortex.instructions.inject_on_session_start,
@@ -317,7 +320,7 @@ export async function buildCortexInstructionsInput(
     '## Authoring requirements',
     '- Start with the heading `## Myco-Enabled Project`.',
     '- Follow the heading with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and retrieval tools for this repository.',
-    '- Teach the most useful current Myco tool behavior, especially retrieval and plan persistence. Prefer the `myco` CLI JSON form (`myco tool ...`) as the portable fallback and describe MCP as available when the host exposes it cleanly.',
+    '- Teach the most useful current Myco tool behavior, especially retrieval and plan persistence. Name tools only (e.g. `myco_cortex`, `myco_plans`) — never shell command syntax; the host injects its own transport directive with the correct invocation for this machine.',
     '- Treat "Current valid tool surface" and "Tool guidance to encode" below as authoritative. Recent sessions, spores, or digest excerpts may contain obsolete tool names; do not copy obsolete names into the final instructions.',
     '- Use the recent vault activity below to mention live project hotspots when that improves usefulness.',
     '- Do not introduce additional tool calls inside recent-workstream prose. Only name tool operations that appear in "Tool guidance to encode" or in the required plan-persistence, delegation, and spore-save guidance; never invent extra `myco_cortex` ops from recent context.',
@@ -326,7 +329,7 @@ export async function buildCortexInstructionsInput(
     '- Keep the heading and description brief so most of the budget goes to retrieval guidance.',
     '- Keep the output compact and ready for direct injection.',
     '- In the planning paragraph, teach `myco_cortex` op `"digest"` as the explicit, optional high-fidelity memory pull for large refactors, large features, broad planning, or unfamiliar cross-system changes. Recommend `myco_cortex({"op":"digest","tier":5000})` by default, and tier 10000 only when the agent has enough context budget and needs deeper historical background. Say not to pull the digest for narrow edits.',
-    '- Include one delegation sentence: when composing a child-agent, subagent, teammate, worker session, or other spawned process prompt, and Myco has not already injected subagent-start Cortex context, tell the agent to refresh the current project instructions with `myco_cortex({"op":"instructions"})` and include the returned instructions verbatim in that agent\'s prompt, along with task-specific instructions. Include the CLI fallback `myco tool call myco_cortex --json --input \'{"op":"instructions"}\'` for hosts without MCP. Do not assume the returned instructions have any particular heading or section name.',
+    '- Include one delegation sentence: when composing a child-agent, subagent, teammate, worker session, or other spawned process prompt, and Myco has not already injected subagent-start Cortex context, tell the agent to refresh the current project instructions with `myco_cortex({"op":"instructions"})` and include the returned instructions verbatim in that agent\'s prompt, along with task-specific instructions. Do not assume the returned instructions have any particular heading or section name.',
     // The recent-plans section is background context, not a task list for
     // the incoming session. The session is launching to do something else;
     // these plans tell the agent what shape of work the project has on file

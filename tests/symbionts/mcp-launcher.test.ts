@@ -26,6 +26,7 @@ import os from 'node:os';
  */
 
 const LAUNCHER_SOURCE = path.resolve('packages/myco/bin/myco-run');
+const RESOLUTION_SOURCE = path.resolve('packages/myco/bin/binary-resolution.cjs');
 
 interface Fixture {
   projectDir: string;
@@ -63,6 +64,7 @@ function makeFixture(): Fixture {
 
   const launcherCopy = path.join(launcherBinDir, 'myco-run');
   fs.copyFileSync(LAUNCHER_SOURCE, launcherCopy);
+  fs.copyFileSync(RESOLUTION_SOURCE, path.join(launcherBinDir, 'binary-resolution.cjs'));
   fs.chmodSync(launcherCopy, 0o755);
 
   const cliEntry = path.join(launcherBinDir, 'myco.cjs');

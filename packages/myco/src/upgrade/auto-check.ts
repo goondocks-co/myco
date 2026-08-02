@@ -41,7 +41,7 @@ import {
   versionDir,
   versionBinaryPath,
 } from '../install/managed-binary.js';
-import { releaseChannelIsManual } from '../daemon/update-checker.js';
+import { releaseChannelIsManual, resolveMycoBinary } from '../daemon/update-checker.js';
 import { isDefaultMycoHome } from '../grove/paths.js';
 import type { Logger } from '../daemon/logger.js';
 import type { JobRunContext, JobOutcome } from '../daemon/job-runner.js';
@@ -418,7 +418,7 @@ export function buildAdoptJobFn(
         localAppData,
         daemonPort,
         serviceManagedLabel,
-        mycoBinary: mycoBinary ?? 'myco',
+        mycoBinary: mycoBinary ?? resolveMycoBinary(),
         projectRoot,
         // Thread the sentinel path so the detached orchestrator clears it on
         // abort / stop-not-confirmed / crash-loop-restore (matching

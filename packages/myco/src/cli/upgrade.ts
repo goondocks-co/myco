@@ -27,6 +27,7 @@
  */
 
 import { parseStrictFlags } from './args.js';
+import { resolveBinary } from '../runtime/binary-resolution.js';
 import {
   resolveMycoBinaryUpdateRefs,
   type MycoReleaseResolverDeps,
@@ -288,7 +289,9 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   // Adopt: copy staged binary → managed path, restart daemon, health-watch.
   console.log('  Adopting…');
 
-  const mycoBinary = deps.mycoBinary ?? managedBinaryPath(home, platform, localAppData);
+  // Copy TARGET: the managed slot regardless of what currently exists there.
+  const mycoBinary = deps.mycoBinary
+    ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform, localAppData }).path;
   const projectRoot = deps.projectRoot ?? process.cwd();
   const daemonPort = deps.daemonPort ?? resolveGlobalDaemonPort();
 

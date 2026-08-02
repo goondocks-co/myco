@@ -18,6 +18,7 @@ import { managedBinaryPath } from '../../packages/myco/scripts/managed-paths.mjs
 
 const SHIM_SOURCE = path.resolve('packages/myco/bin/myco.cjs');
 const REDIRECT_SOURCE = path.resolve('packages/myco/bin/runtime-redirect.cjs');
+const RESOLUTION_SOURCE = path.resolve('packages/myco/bin/binary-resolution.cjs');
 
 /** The platform target the shim computes for this host. */
 function hostTarget(): string {
@@ -49,6 +50,7 @@ function makeFixture(): { shimPath: string; pkgRoot: string; mycoHome: string } 
   const shimPath = path.join(pkgRoot, 'bin', 'myco.cjs');
   fs.copyFileSync(SHIM_SOURCE, shimPath);
   fs.copyFileSync(REDIRECT_SOURCE, path.join(pkgRoot, 'bin', 'runtime-redirect.cjs'));
+  fs.copyFileSync(RESOLUTION_SOURCE, path.join(pkgRoot, 'bin', 'binary-resolution.cjs'));
 
   // A myco-home with no runtime.command, so the pin never short-circuits
   // resolution and each test exercises the source it set up.
@@ -75,7 +77,7 @@ function runShim(shimPath: string, mycoHome: string) {
 }
 
 describe('myco.cjs binary resolution', () => {
-  it('prefers vendor/resolved.json when the postinstall has run', () => {
+  it('prefers the managed binary over vendor/resolved.json — self-update maintains it; the tarball binary is frozen', () => {
     const { shimPath, pkgRoot, mycoHome } = makeFixture();
     const vendored = path.join(tmpRoot, 'vendored-myco');
     writeStubBinary(vendored, 'VENDOR');
@@ -85,6 +87,22 @@ describe('myco.cjs binary resolution', () => {
       JSON.stringify({ target: hostTarget(), binaryPath: vendored }),
     );
     writeStubBinary(path.join(mycoHome, 'bin', 'myco'), 'MANAGED');
+
+    const res = runShim(shimPath, mycoHome);
+
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe('MANAGED:doctor --json');
+  });
+
+  it('uses vendor/resolved.json for the pre-convergence bootstrap (no managed binary yet)', () => {
+    const { shimPath, pkgRoot, mycoHome } = makeFixture();
+    const vendored = path.join(tmpRoot, 'vendored-myco');
+    writeStubBinary(vendored, 'VENDOR');
+    fs.mkdirSync(path.join(pkgRoot, 'vendor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgRoot, 'vendor', 'resolved.json'),
+      JSON.stringify({ target: hostTarget(), binaryPath: vendored }),
+    );
 
     const res = runShim(shimPath, mycoHome);
 
@@ -182,6 +200,18 @@ describe('myco.cjs binary resolution', () => {
     expect(res.stderr).toContain(`@goondocks/myco-${hostTarget()}`);
     expect(res.stderr).toContain(path.join(mycoHome, 'bin', 'myco'));
     expect(res.stderr).toContain('install.sh');
+  });
+
+  it('maps a signal-terminated child to 128+n instead of reporting a spawn failure', () => {
+    const { shimPath, mycoHome } = makeFixture();
+    const managed = path.join(mycoHome, 'bin', 'myco');
+    fs.mkdirSync(path.dirname(managed), { recursive: true });
+    fs.writeFileSync(managed, '#!/bin/sh\nkill -INT $$\n', { mode: 0o755 });
+
+    const res = runShim(shimPath, mycoHome);
+
+    expect(res.status).toBe(130);
+    expect(res.stderr).not.toContain('could not execute');
   });
 
   it('forwards the child exit code rather than masking it', () => {
