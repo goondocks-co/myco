@@ -925,6 +925,15 @@ describe('handleUpgradeApply — revert-to-stable schema-gap guard', () => {
     (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
     const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({
       currentVersion: '0.0.0-dev+1.2.13-72-gabc1234',
+      // A dev prerelease current makes this an enteringStable path; the
+      // revert resolver must be injected or the handler hits the network.
+      resolveRevertRefs: vi.fn(async () => ({
+        assetUrl: 'https://example/myco-darwin-arm64',
+        sha256sumsUrl: 'https://example/SHA256SUMS',
+        assetName: 'myco-darwin-arm64',
+        targetVersion: '1.1.0',
+      })),
+      stageBinary: vi.fn(async () => ({ versionDir: '/x/versions/1.1.0', version: '1.1.0' })),
       readMaxStampedSchemaVersion: vi.fn(() => 76),
       readSupportedSchemaVersion: vi.fn(() => 66),
     }));
