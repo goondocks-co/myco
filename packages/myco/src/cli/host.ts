@@ -36,7 +36,7 @@ function printEnableResult(result: HostEnableResult): void {
   console.log(`  Control plane: ${result.serverUrl}`);
   console.log(`  Team storage:  ${result.servedGroveId}`);
   console.log(`  headscale:     v${result.headscaleVersion}`);
-  console.log(`  tailscale:     v${result.tailscaleVersion}`);
+  console.log(`  tailscale:     ${result.tailscaleVersion ? `v${result.tailscaleVersion}` : '(unknown)'}`);
   console.log(`  Daemon:        ${result.daemonRestarted ? 'restarted (overlay listener binding)' : 'restart pending — see notes'}`);
   for (const note of result.notes) console.log(`  NOTE: ${note}`);
 }
@@ -163,7 +163,7 @@ export async function runHostCommand(args: string[]): Promise<void> {
       : `${state.overlay_address} (no overlay port persisted — re-run \`myco host enable\`)`}`);
     console.log(`Control plane: ${state.server_url}`);
     console.log(`headscale:     v${state.headscale_version}`);
-    console.log(`tailscale:     v${state.tailscale_version}`);
+    console.log(`tailscale:     ${state.tailscale_version ? `v${state.tailscale_version}` : '(unknown)'}`);
     console.log(`Node ID:       ${state.node_id ?? '(unresolved)'}`);
     return;
   }

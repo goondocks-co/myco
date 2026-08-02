@@ -27,10 +27,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { parseSha256Sum } from '@myco/upgrade/release-assets.js';
+import { updateProvisioningManifest } from '@myco/host/overlay-provisioning-manifest.js';
 import { resolveHostControlDir } from '@myco/grove/paths.js';
 import {
   downloadCapped,
-  probeVersion,
   provisionTailscaleBinaries,
   placeExecutable,
   sha256,
@@ -90,9 +90,14 @@ export interface ProvisionedBinaries {
   tailscaleBin: string;
   /** Absolute path to the tailscaled daemon binary. */
   tailscaledBin: string;
-  /** Version provenance, recorded into host state. */
+  /** Version provenance, recorded into host state. Managed = the verified
+   *  pin; required (darwin tailscale) = null here, resolved from brew
+   *  metadata by the enable flow. */
   headscaleVersion: string;
-  tailscaleVersion: string;
+  tailscaleVersion: string | null;
+  /** Binary names whose content changed this run — the caller restarts the
+   *  supervised service(s) or convergence converged nothing (§14.4). */
+  changed: string[];
   /** How each family was obtained (audit / provenance). */
   source: { headscale: 'download'; tailscale: 'download' | 'brew' };
 }
@@ -130,7 +135,7 @@ export async function provisionOverlayBinaries(opts: ProvisionOptions): Promise<
   const log = opts.logger ?? (() => {});
   fs.mkdirSync(binDir, { recursive: true });
 
-  const headscaleBin = await provisionHeadscale(opts.target, binDir, opts.fetcher, log);
+  const headscale = await provisionHeadscale(opts.target, binDir, opts.fetcher, log);
   const tailscale = await provisionTailscaleBinaries({
     target: opts.target,
     fetcher: opts.fetcher,
@@ -140,14 +145,16 @@ export async function provisionOverlayBinaries(opts: ProvisionOptions): Promise<
     logger: log,
   });
 
-  const headscaleVersion = await probeVersion(opts.runner, headscaleBin, ['version'], HEADSCALE_VERSION);
-
+  // §14.8: the headscale version is the pin its content digest just verified
+  // — probing the binary was the fail-open path (probe failure returned the
+  // pin, so a broken binary reported "converged" forever).
   return {
-    headscaleBin,
+    headscaleBin: headscale.dest,
     tailscaleBin: tailscale.tailscaleBin,
     tailscaledBin: tailscale.tailscaledBin,
-    headscaleVersion,
+    headscaleVersion: HEADSCALE_VERSION,
     tailscaleVersion: tailscale.tailscaleVersion,
+    changed: [...headscale.changed, ...tailscale.changed],
     source: { headscale: 'download', tailscale: tailscale.source },
   };
 }
@@ -157,7 +164,7 @@ async function provisionHeadscale(
   binDir: string,
   fetcher: BinaryFetcher,
   log: (m: string) => void,
-): Promise<string> {
+): Promise<{ dest: string; changed: string[] }> {
   const dest = path.join(binDir, 'headscale');
   const assetName = headscaleAssetName(target);
 
@@ -176,8 +183,15 @@ async function provisionHeadscale(
 
   if (fs.existsSync(dest) && sha256(fs.readFileSync(dest)).toLowerCase() === expected.toLowerCase()) {
     await verifyLanded(dest);
+    // Write the manifest entry HERE too (review B2): an already-provisioned
+    // host otherwise never gains a record, and the doctor's "no provisioning
+    // record — run `myco host enable`" row becomes permanent and unfixable
+    // because this very branch re-runs on every enable.
+    updateProvisioningManifest(binDir, 'headscale', {
+      version: HEADSCALE_VERSION, sha256: expected.toLowerCase(), provisioned_at: new Date().toISOString(),
+    });
     log(`headscale ${HEADSCALE_VERSION} already provisioned at ${dest} (checksum match) — skipping download.`);
-    return dest;
+    return { dest, changed: [] };
   }
 
   const bytes = await downloadCapped(fetcher, headscaleAssetUrl(target), assetName);
@@ -188,6 +202,9 @@ async function provisionHeadscale(
 
   await placeExecutable(dest, bytes);
   await verifyLanded(dest);
+  updateProvisioningManifest(binDir, 'headscale', {
+    version: HEADSCALE_VERSION, sha256: expected.toLowerCase(), provisioned_at: new Date().toISOString(),
+  });
   log(`headscale ${HEADSCALE_VERSION} verified + placed at ${dest}`);
-  return dest;
+  return { dest, changed: ['headscale'] };
 }

@@ -424,13 +424,6 @@ export function resolveMemberTailscaledSocketPath(hostId: string): string {
  * Coexistence spec C1). Under the host control dir — and, critically, NOT the
  * vendor's `/var/lib/tailscale`. One per machine: a box serves at most one
  * Grove.
- *
- * NOTE: `host disable` does NOT currently remove this directory; it removes
- * only headscale's state dir. Removing it is specified as follow-on work
- * (spec §15) precisely because keeping it pairs a fresh control plane with a
- * stale node identity. The security consequence — a durable `serve --tcp`
- * forward surviving in here — is already handled: `hostDisable` retires the
- * forward explicitly before uninstalling the service.
  */
 export function resolveHostTailscaledStateDir(): string {
   return path.join(resolveHostControlDir(), 'tailscaled-state');
