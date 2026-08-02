@@ -37,7 +37,7 @@ function seedV75Vault(): Database {
   insertSkill.run('sk-1', 'machine-a', 'alpha', 'Alpha', 'active', 6, '.agents/skills/alpha/SKILL.md', NOW, NOW);
   db.prepare(
     `INSERT INTO content_publications (artifact_kind, artifact_id, published_generation, published_at, published_by, machine_id)
-     VALUES ('skill', 'sk-1', 3, ?, 'user', 'machine-a')`,
+     VALUES ('skill', 'sk-1', 3, ?, 'user', 'machine-old')`,
   ).run(NOW - 1000);
   // Retired skill: must NOT gain a publication row.
   insertSkill.run('sk-2', 'local', 'beta', 'Beta', 'retired', 2, '.agents/skills/beta/SKILL.md', NOW, NOW);
@@ -71,6 +71,7 @@ describe('migrateV75ToV76 — content_publications backfill to current generatio
     const pub = getPublication(db, 'sk-1');
     expect(pub?.published_generation).toBe(6);
     expect(pub?.published_by).toBe('migration:v76-backfill');
+    expect(pub?.machine_id).toBe('machine-a');
   });
 
   it('inserts a publication row for an active skill that never had one', () => {
