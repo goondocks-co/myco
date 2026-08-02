@@ -28,6 +28,19 @@ export function renderSystemdUnit(spec: ServiceSpec): string {
 
   const restart = spec.keepAlive ? 'on-failure' : 'no';
   const scope = resolveScope(spec);
+  // Linux half of the launchd-plist.ts run-as-root guard (the darwin half
+  // has existed since §13; this one was cited by the E1 spec but never
+  // written). The boot+invoking-user cell here is an ORDINARY user unit
+  // (linger supplies boot persistence) — rendered under sudo it would
+  // enroll into ROOT's user manager with root's HOME, minting a divergent
+  // machine_id and root-owned files in the user's vault. Identity comes
+  // from the INVOKING process, so refuse at render time.
+  if (scope.startAt === 'boot' && scope.runAs === 'invoking-user' && process.getuid?.() === 0) {
+    throw new Error(
+      'Refusing to render a boot+invoking-user service as root. '
+      + 'Run `myco service install` WITHOUT sudo — Myco elevates only the individual steps that need it.',
+    );
+  }
   // A system unit (boot+root) is wanted by the machine, not a user session.
   // Every other cell keeps today's exact bytes (§13.13 gate 1).
   const bootRoot = scope.startAt === 'boot' && scope.runAs === 'root';

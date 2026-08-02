@@ -31,7 +31,7 @@
  */
 import path from 'node:path';
 
-import type { ServiceSpec } from '@myco/service/types.js';
+import type { ServiceScope, ServiceSpec } from '@myco/service/types.js';
 import type { BootServiceContext } from '@myco/service/boot-backend.js';
 
 export {
@@ -53,12 +53,13 @@ export type SystemServiceContext = BootServiceContext;
 // ---------------------------------------------------------------------------
 
 /**
- * Build a {@link ServiceSpec} for an overlay binary supervised as a root
- * service. Distinct from `@myco/service`'s `buildServiceSpec` (which is
- * daemon-self-specific: it hardcodes `args:['daemon']`, MYCO_HOME env, and
- * dev-build guards). This is the generic form for an arbitrary managed
- * binary. `description` is REQUIRED here — these are the only non-daemon
- * units, and without it systemd would report them as "Myco daemon (prod)".
+ * Build a {@link ServiceSpec} for a supervised overlay binary at the
+ * caller-declared scope. Distinct from `@myco/service`'s `buildServiceSpec`
+ * (which is daemon-self-specific: it hardcodes `args:['daemon']`, MYCO_HOME
+ * env, and dev-build guards). This is the generic form for an arbitrary
+ * managed binary. `description` is REQUIRED here — these are the only
+ * non-daemon units, and without it systemd would report them as
+ * "Myco daemon (prod)".
  */
 export function buildOverlayServiceSpec(input: {
   label: string;
@@ -68,6 +69,13 @@ export function buildOverlayServiceSpec(input: {
   logDir: string;
   description: string;
   env?: Record<string, string>;
+  /** Supervision cell for the unit. The caller derives this from the
+   *  daemon's own `daemon.service_scope` (`runAs` is always
+   *  `invoking-user`) — headscale follows the daemon's scope, never a
+   *  hard-coded domain of its own. E1 spec §3.2: a boot-pinned control
+   *  plane behind a login-scoped overlay listener bought no reachability,
+   *  only a sudo prompt and an asymmetry. */
+  scope: ServiceScope;
 }): ServiceSpec {
   return {
     label: input.label,
@@ -81,7 +89,7 @@ export function buildOverlayServiceSpec(input: {
     runAtLoad: true,
     keepAlive: true,
     throttleSeconds: 10,
-    scope: { startAt: 'boot', runAs: 'root' },
+    scope: input.scope,
     description: input.description,
   };
 }
