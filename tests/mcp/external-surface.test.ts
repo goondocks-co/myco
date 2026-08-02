@@ -27,6 +27,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, test } from 'bun:test';
 import fs from 'node:fs';
+import net from 'node:net';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -42,6 +43,8 @@ import {
   ExternalMcpListener,
   constantTimeTokenEqual,
   createFunnelOffRunner,
+  createFunnelOnRunner,
+  resolveExternalMcpSocketPath,
 } from '@myco/daemon/external-listener';
 import { ExternalMcpContainmentAuthority } from '@myco/daemon/external-mcp-containment';
 import { ToolError } from '@myco/tools/error';
@@ -104,7 +107,7 @@ describe('external MCP production activation posture', () => {
     expect(routeSource).not.toContain('runFunnel');
     expect(routeSource).not.toContain('.bind(');
     const bootContainment = mainSource.indexOf(
-      "return await externalMcpContainment.containWhile('retire'",
+      "return await externalMcpContainment.containWhile('reconcile'",
     );
     const routeRegistration = mainSource.indexOf('registerTeamConfigRoutes(');
     const databaseInitialization = mainSource.indexOf('const db = initDatabase(');
@@ -190,7 +193,7 @@ describe('external MCP production activation posture', () => {
       return { stdout: '' };
     });
 
-    await expect(runner(8743)).resolves.toEqual({
+    await expect(runner({ kind: 'port', port: 8743 })).resolves.toEqual({
       ok: true,
       detail: 'confirmed no public Funnel handler targets local port 8743',
     });
@@ -239,7 +242,7 @@ describe('external MCP production activation posture', () => {
       return { stdout: '' };
     });
 
-    await expect(runner(8743)).resolves.toEqual({
+    await expect(runner({ kind: 'port', port: 8743 })).resolves.toEqual({
       ok: true,
       detail: 'confirmed no public Funnel handler targets local port 8743',
     });
@@ -275,7 +278,7 @@ describe('external MCP production activation posture', () => {
       };
     });
 
-    expect(await runner(8743)).toEqual({
+    expect(await runner({ kind: 'port', port: 8743 })).toEqual({
       ok: true,
       detail: 'confirmed no public Funnel handler targets local port 8743',
     });
@@ -296,7 +299,7 @@ describe('external MCP production activation posture', () => {
       stdout: args[1] === 'status' ? status : '',
     }));
 
-    const result = await runner(8743);
+    const result = await runner({ kind: 'port', port: 8743 });
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('Funnel remains enabled');
   });
@@ -545,7 +548,7 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     }) as typeof http.createServer;
     (http as { createServer: typeof http.createServer }).createServer = patchedCreateServer;
     try {
-      const result = await listener.bind(12345);
+      const result = await listener.bind({ kind: 'loopback', port: 12345 });
       expect(result.ok).toBe(false);
     } finally {
       (http as { createServer: typeof http.createServer }).createServer = originalCreateServer;
@@ -555,10 +558,10 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
 
   test('(d) serves /mcp only — /health and /api/* are 404, indistinguishable from any other unregistered path', async () => {
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     expect(bound.ok).toBe(true);
     if (!bound.ok) return;
-    const base = `http://127.0.0.1:${bound.port}`;
+    const base = `http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}`;
 
     for (const p of ['/health', '/api/version', '/api/team/config', '/', '/mcp-not-quite']) {
       const res = await fetch(`${base}${p}`, { headers: { authorization: `Bearer ${TOKEN}` } });
@@ -568,9 +571,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
 
   test('(c) no token -> 401', async () => {
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const res = await fetch(`http://127.0.0.1:${bound.port}/mcp`, {
+    const res = await fetch(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
@@ -580,9 +583,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
 
   test('(c) wrong token (same length) -> 401', async () => {
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const res = await fetch(`http://127.0.0.1:${bound.port}/mcp`, {
+    const res = await fetch(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${'b'.repeat(64)}` },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
@@ -592,9 +595,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
 
   test('(c) truncated token -> 401, never a 500 (the constant-time-compare obligation, exercised over real HTTP)', async () => {
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const res = await fetch(`http://127.0.0.1:${bound.port}/mcp`, {
+    const res = await fetch(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN.slice(0, 8)}` },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
@@ -605,9 +608,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
   test('(a) lists only the allowlisted tools and calls an allowlisted op end to end', async () => {
     const capturedGets: CapturedGet[] = [];
     listener = newListener(capturedGets);
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const url = new URL(`http://127.0.0.1:${bound.port}/mcp`);
+    const url = new URL(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`);
 
     const client = new Client({ name: 'external-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(url, {
@@ -631,9 +634,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
 
   test('(b) myco_spores op:save, myco_plans op:delete, myco_cortex op:maintenance_summary all refuse tool-not-found-shaped', async () => {
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const url = new URL(`http://127.0.0.1:${bound.port}/mcp`);
+    const url = new URL(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`);
     const client = new Client({ name: 'external-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers: { authorization: `Bearer ${TOKEN}`, ...scopedHeaders() } },
@@ -668,9 +671,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
 
   test('(e) toggle-off -> unbind makes the listener unreachable (connection refused)', async () => {
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const port = bound.port;
+    const port = (bound.target.kind === 'loopback' ? bound.target.port : 0);
     expect(listener.isBound).toBe(true);
 
     await listener.unbind();
@@ -685,9 +688,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
 
   test('(f) boot containment turns a persisted activation off without binding a fresh listener', async () => {
     const firstListener = newListener();
-    const firstBind = await firstListener.bind(0);
+    const firstBind = await firstListener.bind({ kind: 'loopback', port: 0 });
     if (!firstBind.ok) throw new Error('bind failed');
-    const boundPort = firstBind.port;
+    const boundPort = firstBind.target.kind === 'loopback' ? firstBind.target.port : 0;
     seedExternalMcpConfig(mycoHome, { enabled: true, port: boundPort });
     await firstListener.unbind();
 
@@ -697,9 +700,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
       mycoHome,
       stateDir: path.join(mycoHome, 'service'),
       listener,
-      runFunnelOff: async (port) => {
-        offPorts.push(port);
-        return { ok: true, detail: `off ${port}` };
+      runFunnelOff: async (target) => {
+        offPorts.push(target.kind === 'port' ? target.port : target.path);
+        return { ok: true, detail: `off ${String(target.kind === 'port' ? target.port : target.path)}` };
       },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -718,11 +721,170 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     })).rejects.toBeTruthy();
   });
 
+  describe('createFunnelOnRunner — real runner against a fake vendor CLI', () => {
+    const SOCK = '/tmp/myco-emcp-on-test.sock';
+    const statusWith = (proxy: string, opts: { https?: boolean; mount?: string; hostPort?: string } = {}) => JSON.stringify({
+      AllowFunnel: { [opts.hostPort ?? 'host.tail1234.ts.net:443']: true },
+      Web: { [opts.hostPort ?? 'host.tail1234.ts.net:443']: { Handlers: { [opts.mount ?? '/mcp']: { Proxy: proxy } } } },
+      TCP: { [(opts.hostPort ?? 'host.tail1234.ts.net:443').split(':')[1]!]: { HTTPS: opts.https ?? true } },
+    });
+    const emptyStatus = JSON.stringify({ AllowFunnel: {}, Web: {}, TCP: {} });
+
+    function runner(responses: string[], calls: string[][]) {
+      let statusIndex = 0;
+      return createFunnelOnRunner(async (args) => {
+        calls.push(args);
+        if (args[0] === 'funnel' && args[1] === 'status') {
+          const body = responses[Math.min(statusIndex, responses.length - 1)]!;
+          statusIndex += 1;
+          return { stdout: body };
+        }
+        return { stdout: '' };
+      });
+    }
+
+    it('activates when no handler exists and derives the funnel URL from the selector host-port', async () => {
+      const calls: string[][] = [];
+      const result = await runner([emptyStatus, statusWith(`unix:${SOCK}`)], calls)(
+        { kind: 'socket', path: SOCK },
+        { mount: '/mcp', publicPort: 443 },
+      );
+      expect(result).toEqual({
+        ok: true,
+        detail: 'public Funnel serves host.tail1234.ts.net:443/mcp',
+        funnelUrl: 'https://host.tail1234.ts.net/mcp',
+      });
+      expect(calls.map((args) => args[0])).toEqual(['funnel', 'funnel', 'funnel']);
+      expect(calls[1]).toEqual(['funnel', '--bg', '--yes', '--https=443', '--set-path=/mcp', `unix:${SOCK}`]);
+    });
+
+    it('is IDEMPOTENT: an already-serving handler causes no mutation at all', async () => {
+      const calls: string[][] = [];
+      const result = await runner([statusWith(`unix:${SOCK}`)], calls)(
+        { kind: 'socket', path: SOCK },
+        { mount: '/mcp', publicPort: 443 },
+      );
+      expect(result.ok).toBe(true);
+      // status, status — never a mutating invocation.
+      expect(calls.every((args) => args[1] === 'status')).toBe(true);
+    });
+
+    it('repairs drift: a handler at the mount proxying a DIFFERENT socket is re-pointed', async () => {
+      const calls: string[][] = [];
+      const result = await runner(
+        [statusWith('unix:/tmp/other.sock'), statusWith(`unix:${SOCK}`)],
+        calls,
+      )({ kind: 'socket', path: SOCK }, { mount: '/mcp', publicPort: 443 });
+      expect(result.ok).toBe(true);
+      expect(calls.some((args) => args.includes(`unix:${SOCK}`))).toBe(true);
+    });
+
+    it('fails CLOSED when the handler never appears after activation', async () => {
+      const result = await runner([emptyStatus, emptyStatus], [])(
+        { kind: 'socket', path: SOCK },
+        { mount: '/mcp', publicPort: 443 },
+      );
+      expect(result).toEqual({ ok: false, detail: 'the Funnel handler did not verify after activation' });
+    });
+
+    it('reports a vendor-CLI failure as ok:false (never throws)', async () => {
+      const failing = createFunnelOnRunner(async () => {
+        throw Object.assign(new Error('spawn tailscale ENOENT'), { code: 'ENOENT' });
+      });
+      const result = await failing({ kind: 'socket', path: SOCK }, { mount: '/mcp', publicPort: 443 });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.detail).toContain('ENOENT');
+    });
+
+    it("ignores an operator's UNRELATED Funnel entirely (foreign non-HTTPS forward must not block activation)", async () => {
+      const foreignPlusOurs = JSON.stringify({
+        AllowFunnel: { 'host.tail1234.ts.net:8443': true, 'host.tail1234.ts.net:443': true },
+        Web: {
+          'host.tail1234.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9000' } } },
+          'host.tail1234.ts.net:443': { Handlers: { '/mcp': { Proxy: `unix:${SOCK}` } } },
+        },
+        TCP: { 8443: { HTTPS: false }, 443: { HTTPS: true } },
+      });
+      const calls: string[][] = [];
+      const result = await runner([foreignPlusOurs], calls)(
+        { kind: 'socket', path: SOCK },
+        { mount: '/mcp', publicPort: 443 },
+      );
+      expect(result.ok).toBe(true);
+      expect(calls.every((args) => args[1] === 'status')).toBe(true);
+    });
+  });
+
+  test('socket path derivation: deterministic, MYCO_HOME-distinct, sun_path-guarded', () => {
+    const a = resolveExternalMcpSocketPath('/Users/x/.myco');
+    const b = resolveExternalMcpSocketPath('/Users/x/.myco-dev');
+    expect(a).toBe(resolveExternalMcpSocketPath('/Users/x/.myco'));
+    // A dev daemon and the prod daemon must never contend for one socket.
+    expect(a).not.toBe(b);
+    expect(Buffer.byteLength(a)).toBeLessThan(100);
+    expect(path.basename(path.dirname(a))).toBe('.myco-emcp');
+  });
+
+  test.skipIf(process.platform === 'win32')('(g) socket bind: serves /mcp over AF_UNIX, 0600 socket in 0700 dir', async () => {
+    listener = newListener();
+    const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-emcp-test-'));
+    const sockPath = path.join(sockDir, 'emcp.sock');
+    const bound = await listener.bind({ kind: 'socket', path: sockPath });
+    if (!bound.ok) throw new Error(`socket bind failed: ${bound.error}`);
+    expect(bound.target).toEqual({ kind: 'socket', path: sockPath });
+    expect(listener.boundTarget).toEqual({ kind: 'socket', path: sockPath });
+    expect(fs.statSync(sockPath).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(path.dirname(sockPath)).mode & 0o777).toBe(0o700);
+
+    // curl-over-unix-socket equivalent: raw HTTP over the socket.
+    const responseText = await new Promise<string>((resolve, reject) => {
+      const client = net.connect(sockPath, () => {
+        client.write('POST /nope HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n');
+      });
+      let data = '';
+      client.on('data', (chunk) => { data += String(chunk); });
+      client.on('end', () => resolve(data));
+      client.on('error', reject);
+      setTimeout(() => { client.destroy(); resolve(data); }, 3000);
+    });
+    expect(responseText).toContain('404');
+    expect(responseText).toContain('not_found');
+
+    await listener.unbind();
+    expect(fs.existsSync(sockPath)).toBe(false);
+    fs.rmSync(sockDir, { recursive: true, force: true });
+  });
+
+  test.skipIf(process.platform === 'win32')('(h) socket bind reclaims a STALE socket file but refuses a LIVE one', async () => {
+    const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-emcp-test-'));
+    const sockPath = path.join(sockDir, 'emcp.sock');
+
+    // Stale: a socket file with no owner (simulates SIGKILL residue).
+    const stale = net.createServer();
+    await new Promise<void>((resolve) => stale.listen(sockPath, resolve));
+    await new Promise<void>((resolve) => stale.close(() => resolve()));
+    fs.writeFileSync(sockPath, ''); // close() unlinks; recreate the dead inode
+    listener = newListener();
+    const reclaimed = await listener.bind({ kind: 'socket', path: sockPath });
+    expect(reclaimed.ok).toBe(true);
+    await listener.unbind();
+
+    // Live: another server owns the socket — bind must refuse, not unlink.
+    const owner = net.createServer(() => {});
+    await new Promise<void>((resolve) => owner.listen(sockPath, resolve));
+    const refused = await listener.bind({ kind: 'socket', path: sockPath });
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error).toContain('live owner');
+    expect(fs.existsSync(sockPath)).toBe(true);
+    await new Promise<void>((resolve) => owner.close(() => resolve()));
+    fs.rmSync(sockDir, { recursive: true, force: true });
+  });
+
   test('a rotated token invalidates the previous one on the very next request (no restart needed)', async () => {
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const base = `http://127.0.0.1:${bound.port}`;
+    const base = `http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}`;
 
     const before = await fetch(`${base}/mcp`, {
       method: 'POST',
@@ -752,9 +914,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
   test('wrong Grove headers (a Grove that is not the served one) refuse — never leaks another Grove on this host', async () => {
     const otherGrove = createGrove('Other', mycoHome);
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const res = await fetch(`http://127.0.0.1:${bound.port}/mcp`, {
+    const res = await fetch(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${TOKEN}`,
@@ -770,9 +932,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
   test('a body grove_id outside the served Grove is refused without revealing the target', async () => {
     const other = createGrove('Other', mycoHome);
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const url = new URL(`http://127.0.0.1:${bound.port}/mcp`);
+    const url = new URL(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`);
     const client = new Client({ name: 'external-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers: { authorization: `Bearer ${TOKEN}`, ...scopedHeaders() } },
@@ -810,9 +972,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     // tools, and an allowlisted call succeeds end to end.
     const capturedGets: CapturedGet[] = [];
     listener = newListener(capturedGets);
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const url = new URL(`http://127.0.0.1:${bound.port}/mcp`);
+    const url = new URL(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`);
 
     const client = new Client({ name: 'external-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(url, {
@@ -849,9 +1011,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     // argument every allowlisted tool already accepts (`tools/
     // call-context.ts`'s scope pivot) works with zero tenancy headers.
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const url = new URL(`http://127.0.0.1:${bound.port}/mcp`);
+    const url = new URL(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`);
     const client = new Client({ name: 'external-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
@@ -867,9 +1029,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
   test('an x-myco-project-id header naming a project NOT registered in the served Grove -> the SAME uniform 404', async () => {
     const foreignProjectId = assertGroveProjectId(createProjectId());
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const res = await fetch(`http://127.0.0.1:${bound.port}/mcp`, {
+    const res = await fetch(`http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}/mcp`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${TOKEN}`,
@@ -887,9 +1049,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
   test('a genuinely unknown x-myco-grove-id -> the SAME uniform 404 as a real-but-foreign grove_id (no existence oracle)', async () => {
     const otherGrove = createGrove('Other', mycoHome);
     listener = newListener();
-    const bound = await listener.bind(0);
+    const bound = await listener.bind({ kind: 'loopback', port: 0 });
     if (!bound.ok) throw new Error('bind failed');
-    const base = `http://127.0.0.1:${bound.port}`;
+    const base = `http://127.0.0.1:${(bound.target.kind === 'loopback' ? bound.target.port : 0)}`;
 
     const unknownRes = await fetch(`${base}/mcp`, {
       method: 'POST',

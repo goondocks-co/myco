@@ -75,8 +75,11 @@ export async function withExternalMcpContainment<T>(
     stateDir: resolveServiceDir(mycoHome),
     listener: {
       isBound: false,
-      port: 0,
+      boundTarget: null,
       async unbind() {},
+      async bind() {
+        return { ok: false, error: 'the termination authority never activates' };
+      },
     },
     runFunnelOff: defaultFunnelOffRunner,
   });
