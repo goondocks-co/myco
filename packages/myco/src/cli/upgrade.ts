@@ -239,24 +239,32 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   const platform = deps.platform ?? (process.platform as NodeJS.Platform);
   const localAppData = deps.localAppData ?? process.env.LOCALAPPDATA;
 
-  // Schema-gap guard for the two paths that intentionally skip the
-  // no-downgrade rule (explicit version, channel switch): a target whose
-  // supported storage format is below any local Grove's stamped version
-  // would refuse to start after the swap. Refused BEFORE staging — the
-  // download is pointless. Forward upgrades never trip this (a newer
-  // binary supports at least the current schema).
+  // Schema-gap guard: a target whose supported storage format is below any
+  // local Grove's stamped version would refuse to start after the swap.
+  // Refused BEFORE staging — the download is pointless.
+  //
+  // Two triggers:
+  // - version-lower target (explicit version / channel switch past the
+  //   no-downgrade rule): stamp unknown fails closed;
+  // - KNOWN stamp below the vault, regardless of version direction —
+  //   version order is not schema order when the running binary carries a
+  //   dev version (`0.0.0-dev+…` compares below every release, so a real
+  //   downgrade registers as forward). Unknown stamps stay allowed here:
+  //   a genuinely newer release has no stamp until it first boots.
   {
     const semver = await import('semver');
-    if (
-      semver.valid(refs.targetVersion)
+    const readVaultSchema = deps.readMaxStampedSchemaVersion ?? readMaxStampedSchemaVersion;
+    const readTargetSchema = deps.readSupportedSchemaVersion ?? readSupportedSchemaVersion;
+    const versionLower = semver.valid(refs.targetVersion)
       && semver.valid(currentVersion)
-      && semver.lt(refs.targetVersion, currentVersion)
-    ) {
-      const readVaultSchema = deps.readMaxStampedSchemaVersion ?? readMaxStampedSchemaVersion;
-      const readTargetSchema = deps.readSupportedSchemaVersion ?? readSupportedSchemaVersion;
+      && semver.lt(refs.targetVersion, currentVersion);
+    const targetSchema = readTargetSchema(home, platform, refs.targetVersion, localAppData);
+    if (versionLower || targetSchema !== null) {
       const vaultSchema = readVaultSchema(home);
-      const targetSchema = readTargetSchema(home, platform, refs.targetVersion, localAppData);
-      if (rollbackWouldCrossSchemaGap(vaultSchema, targetSchema)) {
+      const crossesGap = versionLower
+        ? rollbackWouldCrossSchemaGap(vaultSchema, targetSchema)
+        : vaultSchema !== null && targetSchema !== null && targetSchema < vaultSchema;
+      if (crossesGap) {
         const refusal = new SchemaGapDowngradeError(refs.targetVersion, vaultSchema!, targetSchema);
         console.error(`myco upgrade: ${refusal.message}`);
         process.exit(1);
