@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -14,20 +15,17 @@ import path from 'node:path';
 const ROOT = path.resolve(import.meta.dir, '../..');
 const SKILLS_DIR = path.join(ROOT, 'packages/myco/skills');
 
-/** Every markdown doc a user reads: repo-root files + docs/ (recursively,
- *  excluding the generated _site build output). */
+/** Every markdown doc a user reads: repo-root files + docs/. Driven by
+ *  `git ls-files` — TRACKED files only — so gitignored local content
+ *  (docs/superpowers/ specs, docs/_site build output) can never fail the
+ *  gate on a contributor's machine while CI stays green on its clean
+ *  checkout. */
 function docFiles(): string[] {
-  const out = ['README.md', 'CONTRIBUTING.md', 'AGENTS.md'];
-  const walk = (dir: string): void => {
-    for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
-      if (entry.name === '_site' || entry.name === 'node_modules') continue;
-      const rel = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(rel);
-      else if (entry.name.endsWith('.md')) out.push(rel);
-    }
-  };
-  walk('docs');
-  return out;
+  const listed = execSync(
+    "git ls-files -- README.md CONTRIBUTING.md AGENTS.md 'docs/*.md' 'docs/**/*.md'",
+    { cwd: ROOT, encoding: 'utf-8' },
+  );
+  return listed.split('\n').filter((line) => line.trim() !== '');
 }
 
 function userInvocableSkills(): Set<string> {
