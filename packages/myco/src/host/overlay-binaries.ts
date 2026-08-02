@@ -39,6 +39,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import {
+  binaryConverged,
+  makeStagingDir,
+  sha256OfFile,
+  updateProvisioningManifest,
+} from './overlay-provisioning-manifest.js';
 
 export const TAILSCALE_VERSION = '1.98.8';
 
@@ -117,10 +123,15 @@ export interface TailscaleBinaries {
   tailscaleBin: string;
   /** Absolute path to the tailscaled daemon binary. */
   tailscaledBin: string;
-  /** Version provenance (probed from the binary, falling back to the pin). */
-  tailscaleVersion: string;
+  /** Managed (Linux): the PIN, content-digest-verified — never probed (§14.8).
+   *  Required (darwin): null here; the enable flow records brew's metadata
+   *  version and the supervised binary's digest instead. */
+  tailscaleVersion: string | null;
   /** How the binaries were obtained (audit / provenance). */
   source: 'download' | 'brew';
+  /** Binary names whose CONTENT changed this run — the caller must restart
+   *  the supervised service or convergence converged nothing (§14.4). */
+  changed: string[];
 }
 
 export interface TailscaleProvisionOptions {
@@ -151,27 +162,68 @@ export async function provisionTailscaleBinaries(opts: TailscaleProvisionOptions
   const located = opts.target.os === 'darwin'
     ? await provisionTailscaleDarwin(opts.runner, opts.brewBinDirs ?? DEFAULT_BREW_BIN_DIRS, log)
     : await provisionTailscaleLinux(opts.target, opts.binDir, opts.fetcher, opts.runner, log);
-  const tailscaleVersion = await probeVersion(opts.runner, located.tailscaleBin, ['version'], TAILSCALE_VERSION);
+  // §14.8: NO tailscale-CLI version probe. Managed (Linux) = the pin the
+  // content digest just verified. Required (darwin) = brew package METADATA,
+  // null when unresolvable — unknown is reported as unknown, never the pin.
+  const tailscaleVersion = opts.target.os === 'darwin'
+    ? await resolveBrewTailscaleVersion(opts.runner, opts.brewBinDirs ?? DEFAULT_BREW_BIN_DIRS)
+    : TAILSCALE_VERSION;
   return { ...located, tailscaleVersion };
+}
+
+/**
+ * Resolve the tailscale CLI + daemon from ONE prefix (§14.6 integrity: the
+ * old independent lookups could pair binaries from DIFFERENT prefixes —
+ * probing one while supervising the other).
+ */
+function resolvePairFromOnePrefix(brewBinDirs: string[]): { tailscaleBin: string; tailscaledBin: string } | null {
+  for (const dir of brewBinDirs) {
+    const tailscaleBin = path.join(dir, 'tailscale');
+    const tailscaledBin = path.join(dir, 'tailscaled');
+    if (fs.existsSync(tailscaleBin) && fs.existsSync(tailscaledBin)) return { tailscaleBin, tailscaledBin };
+  }
+  return null;
+}
+
+/** §14.6's lifecycle-coupling disclosure — emitted at the MOMENT the coupling
+ *  is created (adoption or install), for BOTH roles (host enable and member
+ *  join run this same code). */
+function discloseRequiredCoupling(log: (m: string) => void, tailscaledBin: string): void {
+  log(
+    `tailscale on macOS is managed by YOUR Homebrew, not by Myco (resolved: ${tailscaledBin}). `
+    + 'Myco never upgrades or removes it. Removing the tailscale formula stops this overlay — and '
+    + 'because the host and every joined member on this machine resolve the SAME binary, one '
+    + '`brew uninstall tailscale` takes them all down at once.',
+  );
 }
 
 async function provisionTailscaleDarwin(
   runner: CommandRunner,
   brewBinDirs: string[],
   log: (m: string) => void,
-): Promise<{ tailscaleBin: string; tailscaledBin: string; source: 'brew' }> {
+): Promise<{ tailscaleBin: string; tailscaledBin: string; source: 'brew'; changed: string[] }> {
   // Probe for already-linked binaries FIRST — covers both a re-run (the
   // common idempotent case) and a non-interactive/headless shell where `brew`
   // isn't on PATH (spawn resolves to exit 127) but tailscale was already
   // provisioned by a prior run or out of band. No need to shell `brew` at all
-  // when the binaries are already there.
-  const existingTailscale = firstExisting(brewBinDirs.map((d) => path.join(d, 'tailscale')));
-  const existingTailscaled = firstExisting(brewBinDirs.map((d) => path.join(d, 'tailscaled')));
-  if (existingTailscale && existingTailscaled) {
-    await verifyLanded(existingTailscale);
-    await verifyLanded(existingTailscaled);
-    log(`tailscale (brew) already present at ${existingTailscaled} — skipping brew.`);
-    return { tailscaleBin: existingTailscale, tailscaledBin: existingTailscaled, source: 'brew' };
+  // when the binaries are already there. Both binaries must come from ONE
+  // prefix — a split pair means the supervised daemon and the CLI could be
+  // different versions.
+  const existingPair = resolvePairFromOnePrefix(brewBinDirs);
+  if (existingPair) {
+    await verifyLanded(existingPair.tailscaleBin);
+    await verifyLanded(existingPair.tailscaledBin);
+    discloseRequiredCoupling(log, existingPair.tailscaledBin);
+    return { ...existingPair, source: 'brew', changed: [] };
+  }
+  if (firstExisting(brewBinDirs.map((d) => path.join(d, 'tailscale')))
+    || firstExisting(brewBinDirs.map((d) => path.join(d, 'tailscaled')))) {
+    throw new Error(
+      'Found tailscale and tailscaled in DIFFERENT Homebrew prefixes (or one of the pair missing). '
+      + 'Myco refuses a split pair — the supervised daemon and the CLI must come from one prefix. '
+      + 'If the formula is not installed at all, `brew install tailscale`; otherwise `brew doctor` '
+      + '/ relink tailscale, then re-run.',
+    );
   }
 
   // A non-interactive shell (headless serve box) typically has no `brew` on
@@ -205,8 +257,9 @@ async function provisionTailscaleDarwin(
     }
   }
 
-  const tailscaleBin = firstExisting(brewBinDirs.map((d) => path.join(d, 'tailscale')));
-  const tailscaledBin = firstExisting(brewBinDirs.map((d) => path.join(d, 'tailscaled')));
+  const installedPair = resolvePairFromOnePrefix(brewBinDirs);
+  const tailscaleBin = installedPair?.tailscaleBin ?? null;
+  const tailscaledBin = installedPair?.tailscaledBin ?? null;
   if (!tailscaleBin || !tailscaledBin) {
     throw new Error(
       `tailscale/tailscaled not found after brew install (looked in ${brewBinDirs.join(', ')}). `
@@ -215,8 +268,25 @@ async function provisionTailscaleDarwin(
   }
   await verifyLanded(tailscaleBin);
   await verifyLanded(tailscaledBin);
-  log(`tailscale (brew) located: ${tailscaledBin}`);
-  return { tailscaleBin, tailscaledBin, source: 'brew' };
+  discloseRequiredCoupling(log, tailscaledBin);
+  return { tailscaleBin, tailscaledBin, source: 'brew', changed: [] };
+}
+
+/**
+ * Resolve the brew-recorded tailscale version (required mode, §14.6) —
+ * package-manager METADATA, never the tailscale CLI (§14.8 removed that
+ * probe and its X4 carve-out; brew is a `platform`-mode binary). Null on any
+ * failure: unknown is reported as unknown, never as the pin.
+ */
+export async function resolveBrewTailscaleVersion(
+  runner: CommandRunner,
+  brewBinDirs: string[],
+): Promise<string | null> {
+  const brewBin = firstExisting(brewBinDirs.map((d) => path.join(d, 'brew'))) ?? 'brew';
+  const listed = await runner.run(brewBin, ['list', '--versions', 'tailscale']);
+  if (listed.exitCode !== 0) return null;
+  const match = listed.stdout.trim().match(/^tailscale\s+(\S+)/m);
+  return match?.[1] ?? null;
 }
 
 async function provisionTailscaleLinux(
@@ -225,17 +295,21 @@ async function provisionTailscaleLinux(
   fetcher: BinaryFetcher,
   runner: CommandRunner,
   log: (m: string) => void,
-): Promise<{ tailscaleBin: string; tailscaledBin: string; source: 'download' }> {
+): Promise<{ tailscaleBin: string; tailscaledBin: string; source: 'download'; changed: string[] }> {
   const tailscaleBin = path.join(binDir, 'tailscale');
   const tailscaledBin = path.join(binDir, 'tailscaled');
-  // Idempotent: both binaries already extracted and whole → skip the re-fetch.
-  if (await pathExists(tailscaleBin) && await pathExists(tailscaledBin)) {
-    try {
-      await verifyLanded(tailscaleBin);
-      await verifyLanded(tailscaledBin);
-      log(`tailscale ${TAILSCALE_VERSION} already extracted in ${binDir} — skipping download.`);
-      return { tailscaleBin, tailscaledBin, source: 'download' };
-    } catch { /* a partial prior extraction — fall through and re-fetch */ }
+  // Convergence by CONTENT DIGEST against the provisioning manifest (§14.3):
+  // the old exist-skip trusted mere existence, so a wrong-version-but-whole
+  // binary (or one whose recorded digest was never written) stayed forever.
+  // Unknown ⇒ re-provision, never skip.
+  if (
+    binaryConverged(binDir, 'tailscale', tailscaleBin, TAILSCALE_VERSION)
+    && binaryConverged(binDir, 'tailscaled', tailscaledBin, TAILSCALE_VERSION)
+  ) {
+    await verifyLanded(tailscaleBin);
+    await verifyLanded(tailscaledBin);
+    log(`tailscale ${TAILSCALE_VERSION} converged in ${binDir} (digest match) — skipping download.`);
+    return { tailscaleBin, tailscaledBin, source: 'download', changed: [] };
   }
 
   await fs.promises.mkdir(binDir, { recursive: true });
@@ -251,21 +325,42 @@ async function provisionTailscaleLinux(
     throw new Error(`Tailscale ${tarballName} checksum mismatch (expected ${expected || '(none)'}, got ${actual}) — refusing to install.`);
   }
 
-  const tarPath = path.join(binDir, tarballName);
-  await fs.promises.writeFile(tarPath, tarball);
-  // Extract just the two binaries (they live under `tailscale_<v>_<arch>/`).
-  const extract = await runner.run('tar', ['-xzf', tarPath, '-C', binDir, '--strip-components=1',
-    `tailscale_${TAILSCALE_VERSION}_${target.arch}/tailscale`,
-    `tailscale_${TAILSCALE_VERSION}_${target.arch}/tailscaled`]);
-  if (extract.exitCode !== 0) {
-    throw new Error(`Failed to extract ${tarballName} (exit ${extract.exitCode}): ${extract.stdout.trim()}`);
+  // STAGED extraction (§14.4): never `tar` over live paths — a running
+  // executable's text segment must not be mutated in place, and a failed
+  // extraction must never leave a torn destination. Extract into a per-run
+  // staging dir, then temp+rename each binary into place.
+  const staging = makeStagingDir('ts-extract');
+  try {
+    const tarPath = path.join(staging, tarballName);
+    await fs.promises.writeFile(tarPath, tarball);
+    const extract = await runner.run('tar', ['-xzf', tarPath, '-C', staging, '--strip-components=1',
+      `tailscale_${TAILSCALE_VERSION}_${target.arch}/tailscale`,
+      `tailscale_${TAILSCALE_VERSION}_${target.arch}/tailscaled`]);
+    if (extract.exitCode !== 0) {
+      throw new Error(`Failed to extract ${tarballName} (exit ${extract.exitCode}): ${extract.stdout.trim()}`);
+    }
+    await placeExecutable(tailscaleBin, await fs.promises.readFile(path.join(staging, 'tailscale')));
+    await placeExecutable(tailscaledBin, await fs.promises.readFile(path.join(staging, 'tailscaled')));
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
   }
-  await fs.promises.chmod(tailscaleBin, 0o755);
-  await fs.promises.chmod(tailscaledBin, 0o755);
   await verifyLanded(tailscaleBin);
   await verifyLanded(tailscaledBin);
+  updateProvisioningManifest(binDir, 'tailscale', {
+    version: TAILSCALE_VERSION, sha256: sha256OfFile(tailscaleBin), provisioned_at: new Date().toISOString(),
+  });
+  updateProvisioningManifest(binDir, 'tailscaled', {
+    version: TAILSCALE_VERSION, sha256: sha256OfFile(tailscaledBin), provisioned_at: new Date().toISOString(),
+  });
+  // Superseded-artifact GC (§14.7): the old flow left every version's ~30 MB
+  // tarball in the bin dir forever. Nothing durable lives in a *.tgz/.sha256.
+  for (const entry of fs.readdirSync(binDir)) {
+    if (/^tailscale_.*\.(tgz|tgz\.sha256)$/.test(entry)) {
+      fs.rmSync(path.join(binDir, entry), { force: true });
+    }
+  }
   log(`tailscale ${TAILSCALE_VERSION} extracted to ${binDir}`);
-  return { tailscaleBin, tailscaledBin, source: 'download' };
+  return { tailscaleBin, tailscaledBin, source: 'download', changed: ['tailscale', 'tailscaled'] };
 }
 
 // ---------------------------------------------------------------------------
@@ -316,33 +411,6 @@ export function firstExisting(candidates: string[]): string | null {
   return candidates.find((p) => fs.existsSync(p)) ?? null;
 }
 
-/** Async existence check (no throw either way) — used on the Linux idempotency
- *  path so it never blocks the daemon main loop during first-time provisioning. */
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await fs.promises.access(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export async function probeVersion(
-  runner: CommandRunner,
-  bin: string,
-  args: string[],
-  fallback: string,
-): Promise<string> {
-  try {
-    const { stdout, exitCode } = await runner.run(bin, args);
-    if (exitCode !== 0) return fallback;
-    const first = stdout.split('\n').map((l) => l.trim()).find(Boolean);
-    const match = first?.match(/\d+\.\d+\.\d+/);
-    return match ? match[0] : (first || fallback);
-  } catch {
-    return fallback;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Default (real) seams

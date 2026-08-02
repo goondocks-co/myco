@@ -7,6 +7,7 @@ import path from 'node:path';
 import { hostDisable, hostEnable, HOST_TAILSCALED_LABEL, type HostEnableDeps } from '@myco/team-host/overlay.js';
 import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '@myco/team-host/binaries.js';
 import { HEADSCALE_SERVICE_LABEL } from '@myco/team-host/system-service.js';
+import { serviceLabel } from '@myco/service/labels';
 import { readHostState } from '@myco/team-host/state.js';
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { isOverlayRangeAddress } from '@myco/daemon/host-serve.js';
@@ -59,7 +60,10 @@ function overlayRunner(launchDaemonsDir: string): { runner: CommandRunner; calls
         servePorts.add(port);
         return { stdout: '', exitCode: 0 };
       }
-      if (command === 'brew' && args[0] === 'list') return { stdout: 'tailscale', exitCode: 0 };
+      if (command === 'brew' && args[0] === 'list' && args[1] === '--formula') return { stdout: 'tailscale', exitCode: 0 };
+      if (args[0] === 'list' && args[1] === '--versions' && args[2] === 'tailscale') {
+        return { stdout: 'tailscale 1.98.8\n', exitCode: 0 };
+      }
       if (args[0] === 'version') {
         return command.endsWith('headscale')
           ? { stdout: `v${HEADSCALE_VERSION}\n`, exitCode: 0 }
@@ -91,19 +95,33 @@ function fakeManager(): {
   const restarts: string[] = [];
   const installs: ServiceSpec[] = [];
   const uninstalls: string[] = [];
+  // Honest double: uninstall genuinely removes — §15's prove-gone reads
+  // status AFTER uninstall, so a fixture that stays "installed" forever
+  // would abort every disable.
+  const removed = new Set<string>();
+  const everInstalled = new Set<string>([serviceLabel(process.env.MYCO_HOME!)]);
   const manager: ServiceManager = {
     supported: true, platformName: 'launchd',
-    isInstalled: async () => true,
-    inspect: async () => null,
+    // Honest: a never-installed label is NOT installed — R-M5's existence
+    // guard (skip the proof when nothing was installed) is exercised by the
+    // never-enabled idempotency test only if this tells the truth.
+    isInstalled: async (label) => everInstalled.has(label) && !removed.has(label),
+    inspect: async (label) => (everInstalled.has(label) && !removed.has(label)
+      ? { executable: '/provisioned/bin', args: [] }
+      : null),
     install: async (spec): Promise<InstallResult> => {
       installs.push(spec);
+      removed.delete(spec.label);
+      everInstalled.add(spec.label);
       return { changed: false, supervisorReloaded: false };
     },
-    uninstall: async (label) => { uninstalls.push(label); },
+    uninstall: async (label) => { uninstalls.push(label); removed.add(label); },
     start: async () => {}, stop: async () => {},
     restart: async (l) => { restarts.push(l); },
     restartShellCommand: (l) => l,
-    status: async (): Promise<ServiceStatus> => ({ installed: true, running: true, pid: 1, lastExitCode: null, unitPath: null }),
+    status: async (label): Promise<ServiceStatus> => (everInstalled.has(label) && !removed.has(label)
+      ? { installed: true, running: true, pid: 1, lastExitCode: null, unitPath: null }
+      : { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null }),
   };
   return { manager, restarts, installs, uninstalls };
 }
@@ -258,11 +276,23 @@ describe('hostEnable / hostDisable orchestration', () => {
 
   it('disable clears host_serve, tears down both services, and removes state', async () => {
     const ips = [null as string | null, '100.64.0.5']; let i = 0;
-    const { deps: d } = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    const d = first.deps;
     await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
     expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(true);
 
-    const { deps: dd, calls, uninstalls } = deps();
+    // A live bearer exists (as after real serving) — gate 9 asserts DEC-2's
+    // credential destruction, which a bearer-less fixture proves vacuously.
+    const { createSecretsOperations: mkSecrets } = await import('@myco/config/secrets');
+    const { HOST_SERVE_BEARER_SECRET: BEARER_KEY } = await import('@myco/constants');
+    mkSecrets().writeSecret(process.env.MYCO_HOME!, BEARER_KEY, 'live-bearer-value');
+
+    // Same manager across enable→disable: the real supervisor's units
+    // persist between CLI invocations, and the honest fixture only knows
+    // what was installed through it.
+    const dis = deps({ serviceManager: d.serviceManager });
+    const { deps: dd, calls } = dis;
+    const uninstalls = first.uninstalls;
     const result = await hostDisable(dd);
 
     expect(result.cleared).toBe(true);
@@ -285,6 +315,162 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(fs.existsSync(path.join(launchDaemonsDir, `${HEADSCALE_SERVICE_LABEL}.plist`))).toBe(false);
     // State removed.
     expect(readHostState()).toBeNull();
+    // §15 GATE 9: identity, node state, socket, and CREDENTIAL are all gone —
+    // and only the INJECTED paths were touched (spec R-B3: a resolver-path
+    // removal here would delete a dogfooding developer's live socket).
+    expect(fs.existsSync(dd.hostTailscaledStateDir!)).toBe(false);
+    expect(fs.existsSync(dd.hostTailscaledSocketPath!)).toBe(false);
+    const { readSecrets } = await import('@myco/config/secrets');
+    expect(readSecrets(process.env.MYCO_HOME!)[BEARER_KEY]).toBeUndefined();
+  });
+
+  it('GATE 1 (§14.4/§14.9): a converged binary RESTARTS both supervised services, socket unlinked first, and a restart failure aborts before state is written', async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    // First enable: stand everything up.
+    const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, first.deps);
+    const enabledAt = readHostState()!.enabled_at;
+
+    // Second enable with a provisioner that reports BOTH binaries changed.
+    let socketExistedAtRestart: boolean | null = null;
+    const second = deps({
+      serviceManager: first.deps.serviceManager,
+      provisionBinaries: async () => ({
+        headscaleBin: '/tmp/hs', tailscaleBin: '/tmp/ts', tailscaledBin: '/tmp/tsd',
+        headscaleVersion: HEADSCALE_VERSION, tailscaleVersion: '1.98.8',
+        changed: ['headscale', 'tailscaled'],
+        source: { headscale: 'download' as const, tailscale: 'brew' as const },
+      }),
+    });
+    fs.writeFileSync(second.deps.hostTailscaledSocketPath!, '');
+    const origRestart = first.deps.serviceManager!.restart.bind(first.deps.serviceManager);
+    first.deps.serviceManager!.restart = async (label: string) => {
+      socketExistedAtRestart = fs.existsSync(second.deps.hostTailscaledSocketPath!);
+      await origRestart(label);
+    };
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, {
+      ...second.deps,
+      resolveOverlayIp: async () => '100.64.0.5',
+    });
+
+    // (a) tailscaled restarted via its manager; (b) headscale via the
+    // systemCtx runner argv; (c) socket unlinked BEFORE the restart.
+    // The restart flowed through the SHARED (first) manager.
+    expect(first.restarts).toContain(HOST_TAILSCALED_LABEL);
+    expect(second.calls.some((c) => c[0] === 'sudo' && c[1] === 'launchctl' && c[2] === 'kickstart' && c[3] === '-k')).toBe(true);
+    expect(socketExistedAtRestart).toBe(false);
+    expect(readHostState()!.enabled_at).toBe(enabledAt);
+
+    // (d) a throwing headscale restart fails the enable BEFORE writeHostState.
+    const stateBefore = readHostState();
+    const third = deps({
+      serviceManager: first.deps.serviceManager,
+      provisionBinaries: async () => ({
+        headscaleBin: '/tmp/hs', tailscaleBin: '/tmp/ts', tailscaledBin: '/tmp/tsd',
+        headscaleVersion: HEADSCALE_VERSION, tailscaleVersion: '9.9.9',
+        changed: ['headscale'],
+        source: { headscale: 'download' as const, tailscale: 'brew' as const },
+      }),
+      systemCtx: {
+        launchDaemonsDir,
+        stagingDir: path.join(tmp, 'staging'),
+        runner: { async run(command: string, args: string[]) {
+          if (args.includes('kickstart')) return { stdout: 'kickstart refused', exitCode: 1 };
+          return { stdout: '', exitCode: 0 };
+        } },
+      },
+    });
+    await expect(hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, {
+      ...third.deps,
+      resolveOverlayIp: async () => '100.64.0.5',
+    })).rejects.toThrow(/kickstart/);
+    expect(readHostState()).toEqual(stateBefore);
+  });
+
+  it("GATE (R-M4a): a post-uninstall status of 'unknown' is NOT proof — disable aborts and destroys nothing", async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, first.deps);
+    fs.mkdirSync(first.deps.hostTailscaledStateDir!, { recursive: true });
+
+    const dis = deps({ serviceManager: first.deps.serviceManager });
+    const origStatus = first.deps.serviceManager!.status.bind(first.deps.serviceManager);
+    let uninstalled = false;
+    first.deps.serviceManager!.uninstall = async () => { uninstalled = true; };
+    first.deps.serviceManager!.status = async (label: string) => (uninstalled && label === HOST_TAILSCALED_LABEL
+      ? { installed: false, running: 'unknown' as const, pid: null, lastExitCode: null, unitPath: null }
+      : origStatus(label));
+
+    const result = await hostDisable(dis.deps);
+
+    expect(result.cleared).toBe(false);
+    expect(result.errors.some((e) => /running \(state unknown\)/.test(e))).toBe(true);
+    expect(fs.existsSync(first.deps.hostTailscaledStateDir!)).toBe(true);
+    expect(readHostState()).not.toBeNull();
+  });
+
+  it('GATE (R-M4b): a socket that still ACCEPTS after uninstall aborts the disable — the statedir is never destroyed under a live tailscaled', async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const first = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, first.deps);
+    fs.mkdirSync(first.deps.hostTailscaledStateDir!, { recursive: true });
+    // A LIVE process still owns the control socket (uninstall "succeeded"
+    // per the supervisor, but the daemon survived — e.g. a bootout that only
+    // removed the job record).
+    fs.rmSync(first.deps.hostTailscaledSocketPath!, { force: true });
+    const net = await import('node:net');
+    const liveOwner = net.createServer(() => {});
+    await new Promise<void>((resolve) => liveOwner.listen(first.deps.hostTailscaledSocketPath!, resolve));
+    try {
+      const dis = deps({ serviceManager: first.deps.serviceManager });
+      const result = await hostDisable(dis.deps);
+
+      expect(result.cleared).toBe(false);
+      expect(result.errors.some((e) => /still accepts connections/.test(e))).toBe(true);
+      expect(fs.existsSync(first.deps.hostTailscaledStateDir!)).toBe(true);
+      expect(readHostState()).not.toBeNull();
+    } finally {
+      await new Promise<void>((resolve) => liveOwner.close(() => resolve()));
+    }
+  });
+
+  it('GATE (R-B2 write side): the darwin enable records the digest of the supervised brew binary', async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const { deps: d } = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
+
+    const { sha256OfFile } = await import('@myco/host/overlay-provisioning-manifest.js');
+    const state = readHostState()!;
+    expect(state.tailscaled_sha256).toBe(sha256OfFile(state.tailscaled_bin));
+  });
+
+  it('§15 GATE 10 (the unhappy path): a failed tailscaled uninstall keeps the statedir, host state, AND bearer — and reports loudly', async () => {
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const { deps: d } = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, d);
+    // A bearer exists (as after real serving).
+    const { createSecretsOperations } = await import('@myco/config/secrets');
+    const { HOST_SERVE_BEARER_SECRET } = await import('@myco/constants');
+    const { writeSecret } = createSecretsOperations();
+    writeSecret(process.env.MYCO_HOME!, HOST_SERVE_BEARER_SECRET, 'live-bearer-value');
+    fs.mkdirSync(d.hostTailscaledStateDir!, { recursive: true });
+    fs.writeFileSync(d.hostTailscaledSocketPath!, '');
+
+    const failing = deps({ serviceManager: d.serviceManager });
+    d.serviceManager!.uninstall = async () => { throw new Error('bootout refused'); };
+    const summaries: string[] = [];
+    const result = await hostDisable({ ...failing.deps, logger: (m) => summaries.push(m) });
+
+    expect(result.cleared).toBe(false);
+    expect(result.errors.some((e) => e.includes('bootout refused'))).toBe(true);
+    // Fail CLOSED: everything a retry (or recovery-by-re-enable) needs survives.
+    expect(fs.existsSync(d.hostTailscaledStateDir!)).toBe(true);
+    expect(fs.existsSync(d.hostTailscaledSocketPath!)).toBe(true);
+    expect(readHostState()).not.toBeNull();
+    const { readSecrets } = await import('@myco/config/secrets');
+    expect(readSecrets(process.env.MYCO_HOME!)[HOST_SERVE_BEARER_SECRET]).toBe('live-bearer-value');
+    // Loud: the abort summary names the kept state and the possibly-live forward.
+    expect(summaries.some((m) => /ABORTED/.test(m) && /forward may still be live/.test(m) && /doctor/.test(m))).toBe(true);
   });
 
   it('resolves the node id via the default headscale client, sudo\'d (no resolveNodeId override)', async () => {

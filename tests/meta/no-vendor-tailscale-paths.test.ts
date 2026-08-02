@@ -29,7 +29,7 @@
  * (like this header) is not mistaken for code.
  */
 
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, test } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -100,7 +100,13 @@ const ALLOWLIST: readonly { file: string; why: string }[] = [];
  * one of the two defects this rule cites.
  */
 const TAILSCALE_INVOCATION =
-  /\b(?:run|runCommand|execFile|execFileAsync|spawn|spawnSync)\s*\([^)]{0,200}?(?:['"`]tailscale['"`]|[\w$.]*[Tt]ailscaleBin\b)/;
+  // The negative lookahead exempts a BREW command position: `run(brewBin,
+  // ['list','--formula','tailscale'])` carries the literal formula name as an
+  // ARGUMENT to the package manager, not a tailscale CLI spawn. Everything
+  // else — `run('tailscale'…)`, `run(bins.tailscaleBin…)` — still matches,
+  // with no per-file allowlist cover (spec R-B1: any future tailscale spawn
+  // in provisioning code is an unexcused violation).
+  /\b(?:run|runCommand|execFile|execFileAsync|spawn|spawnSync)\s*\((?!\s*(?:[\w$.]*[Bb]rewBin|['"`]brew['"`]))[^)]{0,200}?(?:['"`]tailscale['"`]|[\w$.]*[Tt]ailscaleBin\b)/;
 
 /**
  * Spawning HELPERS that take a binary path as a parameter, so the spawn itself
@@ -117,16 +123,6 @@ const TAILSCALE_INVOCATION =
 const TAILSCALE_VIA_HELPER = /\bprobeVersion\s*\([^)]*[Tt]ailscaleBin\b/;
 
 const INVOCATION_ALLOWLIST: readonly { file: string; why: string }[] = [
-  {
-    file: 'packages/myco/src/host/overlay-binaries.ts',
-    why: 'probeVersion() spawns `<bin> version` on a freshly-provisioned binary. It is '
-      + 'UNSOCKETED by necessity — at provisioning time no Myco tailscaled is running, so '
-      + 'there is no socket to point at (a genuine chicken-and-egg). Benign ONLY because '
-      + '`version` reads no daemon state; it is the one tailscale subcommand that is '
-      + 'socket-independent. Do NOT widen this entry to any subcommand that queries or '
-      + 'mutates daemon state — those reach the ambient (possibly vendor) daemon. The '
-      + 'durable fix is content-addressed provisioning, which removes the probe entirely.',
-  },
   {
     file: 'packages/myco/src/daemon/external-listener.ts',
     why: 'The external-MCP Funnel runners — BOTH directions. DELIBERATE and NOT a '
@@ -395,3 +391,14 @@ describe('no-vendor-tailscale-paths matcher self-test', () => {
     expect(forbiddenMatches(stripComments(commented))).toEqual([]);
   });
 });
+describe('brew-position exemption self-tests (spec M10)', () => {
+  test('a brew invocation carrying the formula name is NOT flagged', () => {
+    expect(TAILSCALE_INVOCATION.test("runner.run(brewBin, ['list', '--formula', 'tailscale'])")).toBe(false);
+    expect(TAILSCALE_INVOCATION.test("runner.run('brew', ['list', '--versions', 'tailscale'])")).toBe(false);
+  });
+  test('a direct tailscale spawn IS still flagged — no allowlist cover remains', () => {
+    expect(TAILSCALE_INVOCATION.test("runner.run(bins.tailscaleBin, ['up'])")).toBe(true);
+    expect(TAILSCALE_INVOCATION.test("runner.run('tailscale', ['status'])")).toBe(true);
+  });
+});
+

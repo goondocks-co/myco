@@ -168,6 +168,21 @@ export async function uninstallSystemService(ctx: BootServiceContext, label: str
   throw new Error(`Team Host system services are not supported on ${platform}.`);
 }
 
+/**
+ * Restart a ROOT system service in place (§14.4's replace-and-restart other
+ * half for boot-scoped units like headscale). Driven by the caller's
+ * existing {@link BootServiceContext} — NEVER via the scoped facade, whose
+ * real-dir defaults are exactly what this module's fail-safe construction
+ * forbids reaching from orchestration code.
+ */
+export async function restartSystemService(ctx: BootServiceContext, label: string): Promise<void> {
+  if (ctxPlatform(ctx) === 'darwin') {
+    await sudo(ctx, ['launchctl', 'kickstart', '-k', `system/${label}`], `launchctl kickstart -k system/${label}`);
+    return;
+  }
+  await sudo(ctx, ['systemctl', 'restart', `${label}.service`], `systemctl restart ${label}`);
+}
+
 /** Run a `sudo <args>` step, throwing a clear error (not swallowing) on failure. */
 async function sudo(ctx: BootServiceContext, args: string[], label: string): Promise<void> {
   const res = await ctx.runner.run('sudo', args);

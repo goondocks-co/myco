@@ -529,6 +529,48 @@ export interface JoinOptions {
   label?: string;
 }
 
+/**
+ * Restart every member tailscaled whose supervised executable lives under
+ * the SHARED member bin dir (spec R-B5(c)): the dir is one-per-machine
+ * (`grove/paths.ts` resolveMemberBinDir), so converging during a join to
+ * host B would otherwise leave every other host's member daemon on the old
+ * inode indefinitely. Enumerated from the host registry; each socket is
+ * unlinked pre-restart so socket-existence means readiness (R-M2).
+ * Best-effort per host — a host whose service is absent or stopped is
+ * skipped, never failed.
+ */
+export async function restartAllMemberTailscaled(
+  serviceManager: ServiceManager,
+  lockNamespace: PerUserLockNamespace,
+  currentSocketPath: string,
+  log: (m: string) => void,
+  notes: string[],
+  /** Test seam — the registry read (enrollment plumbing is irrelevant to
+   *  the restart property this function owns). */
+  listHosts: (ns: PerUserLockNamespace) => Array<{ host_id: string }> = readHostRegistry,
+): Promise<void> {
+  const hosts = listHosts(lockNamespace);
+  for (const record of hosts) {
+    const hostLabel = memberTailscaledLabel(record.host_id);
+    const status = await serviceManager.status(hostLabel).catch(() => null);
+    if (!status?.installed || status.running !== true) continue;
+    // EVERY socket is unlinked pre-restart — including the current host's,
+    // which the recovered-commit branch immediately waits on: a surviving
+    // stale socket file makes that wait return instantly against a dead
+    // socket (the R-M2 fake-instant-ready).
+    fs.rmSync(resolveMemberTailscaledSocketPath(record.host_id), { force: true });
+    try {
+      await serviceManager.restart(hostLabel);
+      log(`member tailscaled for host ${record.host_id} restarted onto the converged binary.`);
+    } catch (err) {
+      // A stale RUNNING process is invisible to the doctor's member row (the
+      // manifest matches the on-disk bytes after a successful provision), so
+      // the failure must surface HERE, not be logged as success.
+      notes.push(`member tailscaled for host ${record.host_id} could not be restarted onto the converged binary: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 export interface MemberOverlayDeps {
   fetcher?: BinaryFetcher;
   runner?: CommandRunner;
@@ -639,6 +681,16 @@ async function joinHostLocked(
     const tailscale = await provisionTailscaleBinaries({ target, fetcher, runner, binDir, brewBinDirs: deps.brewBinDirs, logger: log });
 
     if (proxyPortReservation.recoveredCommit) {
+      // §14.4 / spec R-B5(b): an already-enrolled host is exactly where a
+      // converged binary would otherwise NEVER reach the running process —
+      // `myco join <hostId>` is the member's convergence command. All member
+      // services share one bin dir, so a change here restarts EVERY host's
+      // member tailscaled (R-B5(c)); each supervisor restarts onto the new
+      // inode. Stale sockets are unlinked first so the socket wait below
+      // means real readiness (R-M2).
+      if (tailscale.changed.length > 0) {
+        await restartAllMemberTailscaled(serviceManager, lockNamespace, socketPath, log, notes);
+      }
       const waitForSocket = deps.waitForSocket ?? defaultWaitForSocket;
       if (!(await waitForSocket(socketPath))) {
         throw new Error(
@@ -693,6 +745,23 @@ async function joinHostLocked(
       lockNamespace,
     );
     const install = await serviceManager.install(spec);
+    // Replace-and-restart (§14.4): a preexisting service whose binary just
+    // changed keeps its old inode through the byte-identical unit install —
+    // restart it. Guarded on installed state (restart throws otherwise) and
+    // skipped on first install, where `start` below runs the new binary.
+    // R-B5(c): the shared bin dir means EVERY joined host's member daemon
+    // needs the restart, not only this one — a first join to host B that
+    // converges the binary must not leave host A's daemon on the old inode.
+    if (tailscale.changed.length > 0) {
+      await restartAllMemberTailscaled(serviceManager, lockNamespace, socketPath, log, notes);
+      if (servicePreexisting) {
+        fs.rmSync(socketPath, { force: true });
+        await serviceManager.restart(label).catch(async () => {
+          // A stopped-but-installed unit can refuse kickstart; fall through to
+          // the plain start below rather than failing the join.
+        });
+      }
+    }
     const status = await serviceManager.status(label);
     // `running === false` deliberately: 'unknown' (unreadable owning
     // domain) must never trigger a blind start of a possibly-live service.

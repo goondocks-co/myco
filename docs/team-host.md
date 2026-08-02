@@ -99,7 +99,11 @@ Already installed? `myco host enable --server-url <url>` does the same enrollmen
 
 - `myco host status` — this machine's current Team Host state.
 - `myco host rotate-key` — mint a fresh one-time key and print the ready-to-paste join command for the next teammate. Runs only on the host's own machine; it's never reachable by team members over the overlay.
-- `myco host disable` — stop serving and tear down the overlay services.
+- `myco host disable` — stop serving and tear down the overlay services **completely**: the control plane, the host's overlay identity, and the credential members used to reach it are all destroyed. Re-enabling mints a fresh host identity, so teammates run `myco join` again and any external tools re-authenticate with a fresh token. If part of the teardown fails, nothing destructive happens — the state a retry needs is kept, and the command says exactly what survived.
+
+### Choosing a host platform
+
+A Linux host is the more reliable choice. On Linux, Myco fully manages the overlay client it installs — pinned version, verified content, converged automatically when you re-run `myco host enable`. On macOS, the overlay client comes from **your Homebrew** and Myco deliberately never upgrades or removes it: a `brew upgrade` can move it ahead of the version the control plane was tested with, and a `brew uninstall tailscale` stops the host (and every member session on the same machine — they share the one binary) with a silent respawn loop rather than an error. `myco doctor` flags both situations, but on macOS the fix is in your hands, not Myco's. Both platforms work; pick Linux when you can.
 
 ## How the network works
 

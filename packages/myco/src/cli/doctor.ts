@@ -984,6 +984,141 @@ function isHooksRegisteredAt(
  * of bug that has historically silently broken `myco --version` and masked
  * stale code running in the daemon. See PR #263 incident postmortem.
  */
+/**
+ * Overlay binary drift (§14.5/§14.6): pin-vs-provisioned for MANAGED
+ * binaries (offline, via the provisioning manifest — never by asking a
+ * binary its version), digest-vs-enable-record for the REQUIRED darwin
+ * tailscale. The daemon never self-converges (§14.4 restarts a supervised
+ * service); remediation is `myco host enable` (host) / `myco join` (member).
+ * Unknown is reported as UNKNOWN, never as converged.
+ */
+export interface OverlayDriftOptions {
+  /** Test seams (review round 4): isolate chunks share one process.env
+   *  across CONCURRENT files, so anything resolved through MYCO_TEAM_HOME at
+   *  call time races by construction. Tests inject; production resolves. */
+  binDir?: string;
+  state?: import('../team-host/state.js').HostState | null;
+}
+
+export async function checkOverlayBinaryDrift(
+  platform: NodeJS.Platform = process.platform,
+  opts: OverlayDriftOptions = {},
+): Promise<DoctorCheck | null> {
+  try {
+    return await checkOverlayBinaryDriftInner(platform, opts);
+  } catch {
+    // A diagnostics row must never take down diagnostics.
+    return null;
+  }
+}
+
+async function checkOverlayBinaryDriftInner(platform: NodeJS.Platform, opts: OverlayDriftOptions): Promise<DoctorCheck | null> {
+  const { readHostState } = await import('../team-host/state.js');
+  const state = opts.state !== undefined
+    ? opts.state
+    : (() => { try { return readHostState(); } catch { return null; } })();
+  const memberProblems = await memberOverlayDriftProblems(platform);
+  if (!state) {
+    if (memberProblems.length === 0) return null;
+    return { name: 'Overlay binaries', status: 'warn', detail: memberProblems.join('; '), fixable: false };
+  }
+
+  const { OVERLAY_BINARY_MODES, readProvisioningManifest, sha256OfFile } = await import('../host/overlay-provisioning-manifest.js');
+  const { HEADSCALE_VERSION, resolveHostBinDir } = await import('../team-host/binaries.js');
+  const { TAILSCALE_VERSION } = await import('../host/overlay-binaries.js');
+  const problems: string[] = [];
+  const pins: Record<string, string> = { headscale: HEADSCALE_VERSION, tailscale: TAILSCALE_VERSION, tailscaled: TAILSCALE_VERSION };
+  const binPaths: Record<string, string | undefined> = {
+    headscale: state.headscale_bin,
+    tailscale: state.tailscale_bin,
+    tailscaled: state.tailscaled_bin,
+  };
+  const manifest = readProvisioningManifest(opts.binDir ?? resolveHostBinDir());
+
+  for (const name of ['headscale', 'tailscale', 'tailscaled']) {
+    const mode = OVERLAY_BINARY_MODES[name]?.[platform];
+    if (mode === 'managed') {
+      const entry = manifest?.binaries[name];
+      const binPath = binPaths[name];
+      if (!entry || !binPath) {
+        problems.push(`${name}: no provisioning record — state unknown; run \`myco host enable\` to converge`);
+        continue;
+      }
+      if (entry.version !== pins[name]) {
+        problems.push(`${name}: provisioned ${entry.version}, this binary pins ${pins[name]} — run \`myco host enable\` to converge`);
+        continue;
+      }
+      try {
+        if (sha256OfFile(binPath) !== entry.sha256) {
+          problems.push(`${name}: on-disk content differs from its provisioning record — run \`myco host enable\` to re-provision`);
+        }
+      } catch {
+        problems.push(`${name}: on-disk binary unreadable at ${binPath} — state unknown; run \`myco host enable\``);
+      }
+    } else if (mode === 'required' && name === 'tailscaled') {
+      const binPath = binPaths[name];
+      if (!state.tailscaled_sha256 || !binPath) {
+        problems.push('tailscaled (Homebrew): no enable-time digest recorded — drift state unknown; re-run `myco host enable` to record it');
+        continue;
+      }
+      try {
+        if (sha256OfFile(binPath) !== state.tailscaled_sha256) {
+          problems.push(
+            'tailscaled (Homebrew) changed since enable (a `brew upgrade`?): the RUNNING process may still be the old version '
+            + 'against pinned headscale — restart via `myco host enable` and expect this row until then',
+          );
+        }
+      } catch {
+        problems.push(`tailscaled (Homebrew) unreadable at ${binPath} — a \`brew uninstall\`? The supervisor is respawning a missing path; re-install tailscale or run \`myco host disable\``);
+      }
+    }
+  }
+
+  problems.push(...memberProblems);
+  if (problems.length === 0) return null;
+  return { name: 'Overlay binaries', status: 'warn', detail: problems.join('; '), fixable: false };
+}
+
+/** The MEMBER half (spec Q4): the shared member bin dir is managed on Linux;
+ *  drift there means every joined host's member tailscaled is stale.
+ *  Remediation is `myco join <hostId>` (any one join converges the shared
+ *  dir and restarts every member service). */
+async function memberOverlayDriftProblems(platform: NodeJS.Platform): Promise<string[]> {
+  if (platform !== 'linux') return []; // darwin members ride the required (brew) binary
+  try {
+    const { readHostRegistry } = await import('../host/registry.js');
+    if (readHostRegistry().length === 0) return [];
+    const { readProvisioningManifest, sha256OfFile } = await import('../host/overlay-provisioning-manifest.js');
+    const { resolveMemberBinDir } = await import('../grove/paths.js');
+    const { TAILSCALE_VERSION } = await import('../host/overlay-binaries.js');
+    const binDir = resolveMemberBinDir();
+    const manifest = readProvisioningManifest(binDir);
+    const problems: string[] = [];
+    for (const name of ['tailscale', 'tailscaled']) {
+      const entry = manifest?.binaries[name];
+      const binPath = path.join(binDir, name);
+      if (!entry) {
+        problems.push(`member ${name}: no provisioning record — run \`myco join <hostId>\` to converge`);
+        continue;
+      }
+      if (entry.version !== TAILSCALE_VERSION) {
+        problems.push(`member ${name}: provisioned ${entry.version}, this binary pins ${TAILSCALE_VERSION} — run \`myco join <hostId>\``);
+        continue;
+      }
+      try {
+        if (sha256OfFile(binPath) !== entry.sha256) {
+          problems.push(`member ${name}: on-disk content differs from its provisioning record — run \`myco join <hostId>\``);
+        }
+      } catch {
+        problems.push(`member ${name}: unreadable at ${binPath} — run \`myco join <hostId>\``);
+      }
+    }
+    return problems;
+  } catch {
+    return [];
+  }
+}
+
 function checkBinaryVersionSkew(): DoctorCheck {
   const baked = getPluginVersion();
   // Walk up from the binary to @goondocks/myco core — that's the manifest
@@ -1265,6 +1400,8 @@ export async function runChecks(
   const serviceScope = await checkServiceScope();
   if (serviceScope) checks.push(serviceScope);
   checks.push(checkBinaryVersionSkew());
+  const overlayDrift = await checkOverlayBinaryDrift();
+  if (overlayDrift) checks.push(overlayDrift);
   checks.push(await checkInstallSource());
   checks.push(await checkGlobalLaunchers());
   checks.push(...await checkDetectedSymbionts());

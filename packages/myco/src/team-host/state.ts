@@ -25,7 +25,14 @@ export interface HostState {
   node_id?: string;
   headscale_user: string;
   headscale_version: string;
-  tailscale_version: string;
+  /** Managed = the verified pin; required (darwin) = brew-metadata version
+   *  or null when unresolvable — display renders `(unknown)`. */
+  tailscale_version: string | null;
+  /** Required mode (darwin): sha256 of the SUPERVISED tailscaled binary at
+   *  enable time — the doctor's offline drift signal (§14.6, digest-primary;
+   *  the version string above is advisory). Absent on managed platforms and
+   *  on pre-PR-7 records. */
+  tailscaled_sha256?: string | null;
   platform: string;
   headscale_bin: string;
   tailscale_bin: string;
