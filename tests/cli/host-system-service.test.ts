@@ -134,10 +134,12 @@ describe('system-service supervisor', () => {
     // guarding is that this root-domain module never grows it back.
     // Comment-stripped, so the header docstring EXPLAINING why the vendor
     // installer is gone does not read as the code being back.
-    const source = fs.readFileSync(
-      path.join(REPO_ROOT, 'packages/myco/src/team-host/system-service.ts'),
-      'utf-8',
-    )
+    // Scans BOTH the Team Host facade AND the moved boot backend (spec R-M7:
+    // after the §13.6 move, scanning only the thin re-export would be
+    // vacuous — the privileged mechanics live in service/boot-backend.ts).
+    const source = ['packages/myco/src/team-host/system-service.ts', 'packages/myco/src/service/boot-backend.ts']
+      .map((rel) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8'))
+      .join('\n')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .split('\n')
       .map((line) => (line.indexOf('//') === -1 ? line : line.slice(0, line.indexOf('//'))))

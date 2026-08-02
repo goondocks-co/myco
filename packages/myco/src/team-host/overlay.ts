@@ -377,6 +377,7 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   // 3. Supervise headscale as a ROOT service (the reboot lesson — never nohup).
   const headscaleSpec = buildOverlayServiceSpec({
     label: HEADSCALE_SERVICE_LABEL,
+    description: 'Myco Team Host control plane (headscale)',
     executable: bins.headscaleBin,
     args: ['serve', '--config', layout.configPath],
     workingDir: layout.stateDir,

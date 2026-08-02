@@ -154,6 +154,10 @@ export interface ApplyUpdateDeps {
   probeDaemonState: (home: string) => { version?: string } | null;
   /** Sleep helper (overridable so tests don't actually wait). */
   sleep: (ms: number) => Promise<void>;
+  /** Owning-domain resolver seam (spec R-B1). Defaults to the real
+   *  `findInstalledServiceLabel`; tests inject to prove restart routes to
+   *  the BOOT manager when the boot domain owns the unit. */
+  findInstalledService?: typeof import('../daemon/api/restart.js')['findInstalledServiceLabel'];
   /**
    * Copy the staged versioned binary onto the managed binary path (atomic
    * temp+rename). ASSUMES the daemon is already stopped. Throws on any
@@ -378,10 +382,23 @@ export async function restart(
   serviceManagedLabel: string | null | undefined,
   effectiveMycoBinary: string,
   projectRoot: string,
+  /** The MYCO_HOME whose unit is being restarted (spec N4) — never resolved
+   *  from ambient env here; the two-MYCO_HOME dogfood setup makes ambient
+   *  resolution a wrong-home hazard in detached contexts. */
+  mycoHome?: string,
 ): Promise<void> {
   if (serviceManagedLabel) {
     try {
-      await deps.getServiceManager().restart(serviceManagedLabel);
+      // OWNING domain (spec R-B1): the label alone does not say which
+      // supervisor owns it. A boot-scoped daemon restarted via the login
+      // manager kickstarts a gui/ domain with no job, falls through to a
+      // direct spawn, and races the LaunchDaemon's KeepAlive respawn — an
+      // unsupervised daemon on EVERY upgrade.
+      const resolver = deps.findInstalledService
+        ?? (await import('../daemon/api/restart.js')).findInstalledServiceLabel;
+      const owning = (await resolver(deps.getServiceManager(), mycoHome))?.manager
+        ?? deps.getServiceManager();
+      await owning.restart(serviceManagedLabel);
       return;
     } catch (err) {
       process.stderr.write(
@@ -612,7 +629,7 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
     }
     clearSentinel();
     try {
-      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
+      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot, p.home);
     } catch { /* last-resort: binary already good/restored and sentinel already cleared; swallow */ }
     return;
   }
@@ -636,7 +653,7 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
         attempt, of: ADOPT_RESTART_ATTEMPTS, target: p.targetVersion,
         service_managed_label: p.serviceManagedLabel ?? null,
       });
-      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
+      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot, p.home);
       const watch = await pollHealthForAdopt(
         deps,
         p.daemonPort,
@@ -691,13 +708,13 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
       target: p.targetVersion, restored: p.prevVersion, restart_attempts: ADOPT_RESTART_ATTEMPTS,
     });
     clearSentinel();
-    await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
+    await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot, p.home);
   } catch (err) {
     // Last resort: record the failure and attempt one final restart.
     writeError(`adopt orchestration post-copy recovery failed: ${String(err)}`);
     clearSentinel();
     try {
-      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
+      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot, p.home);
     } catch { /* nothing more we can do */ }
   }
 }

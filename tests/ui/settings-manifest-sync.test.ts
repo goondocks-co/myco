@@ -59,6 +59,12 @@ const ALLOWLIST: readonly string[] = [
   // toggle (`PUT /api/team/external-mcp/toggle`), never a generic per-field
   // Settings card. Same posture as `daemon.host_serve.` above.
   'daemon.external_mcp.',
+  // §13.4 service-scope INTENT: realized only by an operator-initiated
+  // privileged command (`myco service install`), never a Settings toggle —
+  // a UI write would change nothing until an operator elevates, which is a
+  // lying switch. Doctor + `myco service status` are the read surfaces.
+  // Same no-Settings-card posture as `daemon.host_serve.` above.
+  'daemon.service_scope',
 ];
 
 function isAllowlisted(key: string): boolean {

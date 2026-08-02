@@ -634,6 +634,15 @@ const MachineDaemonSchema = z.object({
    * Machine-owned external MCP containment state, never git-shared.
    */
   external_mcp: ExternalMcpSchema.default(() => ExternalMcpSchema.parse({})),
+  /**
+   * DECLARED INTENT for when this machine's daemon starts (Overlay
+   * Coexistence spec §13.4): `login` (today's default — starts with the user
+   * session) or `boot` (starts with the machine; realized ONLY by an
+   * operator-initiated privileged command — the daemon itself is a read-only
+   * observer of this field and never self-installs boot scope). The daemon
+   * always runs AS the invoking user; there is no root option here.
+   */
+  service_scope: z.enum(['login', 'boot']).default('login'),
 });
 
 // NOTE: the registry block (`grove.default_grove_id`) used to live
