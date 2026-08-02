@@ -156,12 +156,11 @@ export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, c
     let pin = '';
     try { pin = fs.readFileSync(pinPath, 'utf8').trim(); } catch { /* absent */ }
 
-    // Removable pins are the ones Myco itself wrote: one naming the managed
-    // binary (redundant — resolution reaches it without the pin), or the
-    // retired npm-era layout under a foreign node_modules (its target is
-    // deleted by any npm update). An ACTIVE beta managed-runtime pin
-    // (<mycoHome>/runtime/node_modules/) and every other pin carry intent
-    // and are untouched.
+    // Removable pins: one naming the managed binary (redundant — resolution
+    // reaches it without the pin), or one under a foreign node_modules (its
+    // target is deleted by any npm update). An active managed-runtime pin
+    // (<mycoHome>/runtime/node_modules/) and every other pin carry intent and
+    // are untouched.
     const normalize = (p) => p.split(path.sep).join('/');
     const managedPrefix = `${normalize(path.join(mycoHome, 'runtime'))}/node_modules/`;
     const isManagedRuntimePin = pin !== '' && normalize(pin).startsWith(managedPrefix);

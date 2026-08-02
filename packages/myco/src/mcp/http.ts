@@ -280,6 +280,10 @@ export function createStreamableMcpHttpHandler(
       return;
     }
     const { requestContext } = resolved;
+    // Overlay marking, matching chokepoint 1 (daemon/server.ts): tool
+    // handlers that shape responses by whether they cross the overlay
+    // (host-path suppression) read this flag.
+    requestContext.hostServed = overlayRequest;
 
     // Team Host served-grove filter (Task 2), chokepoint 2 of 2 (see
     // `daemon/server.ts` for chokepoint 1). `/mcp` is a raw route — it never

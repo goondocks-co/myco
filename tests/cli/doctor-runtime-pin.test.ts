@@ -25,6 +25,7 @@ function facts(overrides: Partial<ResolutionFacts> = {}): ResolutionFacts {
     pin: null,
     pinPath: null,
     pinScope: null,
+    pinRefusal: null,
     ...overrides,
   };
 }
@@ -53,6 +54,16 @@ describe('classifyRuntimePin', () => {
     expect(check!.fixable).toBe(true);
     expect(check!.fixId).toBe('runtime-pin-redundant');
     expect(check!.fixData).toEqual({ pinPath: '/home/u/.myco/runtime.command', managedBinary: MANAGED });
+  });
+
+  it('fails on a refused pin — consumers ignore it and the operator cannot tell', () => {
+    const check = classifyRuntimePin({
+      facts: facts({ pinRefusal: { pinPath: '/home/u/.myco/runtime.command', reason: 'pin file mode 0666 is writable by group/other' } }),
+      pinTargetExists: false,
+    });
+    expect(check?.status).toBe('fail');
+    expect(check!.detail).toContain('refused');
+    expect(check!.detail).toContain('0666');
   });
 
   it('fails on a dangling pin — it wins over every fallback', () => {

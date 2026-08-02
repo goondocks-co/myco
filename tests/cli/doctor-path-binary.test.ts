@@ -25,6 +25,7 @@ function facts(overrides: Partial<ResolutionFacts> = {}): ResolutionFacts {
     pin: null,
     pinPath: null,
     pinScope: null,
+    pinRefusal: null,
     ...overrides,
   };
 }

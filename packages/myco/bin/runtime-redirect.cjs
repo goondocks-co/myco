@@ -37,7 +37,7 @@ const resolution = require('./binary-resolution.cjs');
 const RUNTIME_COMMAND_FILENAME = 'runtime.command';
 const RUNTIME_HOME_FILENAME = 'runtime.home';
 
-// Trust semantics live in the shared module; this name survives for callers.
+// Delegates to the shared module's G7 check.
 function checkRuntimeCommandTrust(filePath) {
   return resolution.checkPinTrust(filePath);
 }
@@ -48,7 +48,12 @@ function readPinAt(filePath, traceRefusal) {
     if (typeof traceRefusal === 'function') traceRefusal(`${filePath}: ${trust.reason}`);
     return null;
   }
-  return resolution.readTrustedPin(filePath);
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8').trim();
+    return raw || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -69,7 +74,8 @@ function readProjectRuntimeCommand(startDir, traceRefusal) {
 }
 
 function readMachineRuntimeCommand(env, traceRefusal) {
-  const home = env.MYCO_HOME ? expandHome(env.MYCO_HOME) : path.join(os.homedir(), '.myco');
+  const raw = (env.MYCO_HOME || '').trim();
+  const home = raw ? path.resolve(resolution.expandHome(raw)) : path.join(os.homedir(), '.myco');
   const filePath = path.join(home, RUNTIME_COMMAND_FILENAME);
   const pin = readPinAt(filePath, traceRefusal);
   return pin ? { pin, source: filePath } : null;

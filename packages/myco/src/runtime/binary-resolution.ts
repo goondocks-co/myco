@@ -31,8 +31,8 @@ import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
  * - `self-exec` — commands Myco writes for later execution (hook commands, MCP
  *   configs): trusted pin → runnable managed binary → `process.execPath`.
  * - `self-exec-entry` — re-exec of the RUNNING code: `process.execPath` plus
- *   the dev-mode entry script when present. Never consults pin or managed —
- *   resolving away from the running binary would execute different code.
+ *   the dev-mode entry script when present. Never consults pin or managed:
+ *   a re-exec must run the same code that is already running.
  * - `home-scoped-managed` — OS service units: managed binary only for the
  *   default myco-home, else `process.execPath`. Never consults the pin. A
  *   non-default-home daemon keeps its own binary (home isolation).
@@ -65,6 +65,8 @@ export interface ResolutionFacts {
   pin: string | null;
   pinPath: string | null;
   pinScope: 'project' | 'machine' | null;
+  /** Trust refusal for a machine pin FILE that exists but is not honored. */
+  pinRefusal: { pinPath: string; reason: string } | null;
 }
 
 export interface ResolvedBinary {
@@ -122,8 +124,11 @@ export function checkPinTrust(
 export function readTrustedPin(filePath: string, env: ResolutionEnv = {}): string | null {
   const trust = checkPinTrust(filePath, env);
   if (!trust.ok) {
+    // A real refusal (foreign owner / group-other-writable) is warned
+    // unconditionally: a silently ignored pin is indistinguishable from no
+    // pin. A missing file is the normal no-pin state and stays silent.
     if (trust.reason !== 'pin file missing') {
-      trace(env, `ignoring pin (${trust.reason}): ${filePath}`);
+      warn(`ignoring runtime pin (${trust.reason}): ${filePath}`);
     }
     return null;
   }
@@ -180,6 +185,14 @@ export function gatherFacts(scope: PinScope, env: ResolutionEnv = {}): Resolutio
   const localAppData = 'localAppData' in env ? env.localAppData : process.env.LOCALAPPDATA;
   const managedBinary = managedBinaryPath(home, platform, localAppData);
   const layered = readLayeredPin(scope, env);
+  let pinRefusal: { pinPath: string; reason: string } | null = null;
+  if (!layered) {
+    const machinePinPath = path.join(home, MACHINE_RUNTIME_COMMAND_FILENAME);
+    const trust = checkPinTrust(machinePinPath, env);
+    if (!trust.ok && trust.reason !== 'pin file missing') {
+      pinRefusal = { pinPath: machinePinPath, reason: trust.reason };
+    }
+  }
   return {
     binDir: managedBinDir(home, platform, localAppData),
     managedBinary,
@@ -188,6 +201,7 @@ export function gatherFacts(scope: PinScope, env: ResolutionEnv = {}): Resolutio
     pin: layered?.pin ?? null,
     pinPath: layered?.pinPath ?? null,
     pinScope: layered?.pinScope ?? null,
+    pinRefusal,
   };
 }
 
@@ -224,7 +238,7 @@ export function resolveBinary(
     }
     case 'home-scoped-managed': {
       const home = env.mycoHome ?? resolveMycoHome();
-      if (isDefaultMycoHome(home) && facts.managedExists) {
+      if (isDefaultMycoHome(home) && facts.managedRunnable) {
         return done(facts.managedBinary, 'managed');
       }
       return done(execPath, 'last-resort');
@@ -241,8 +255,12 @@ export function resolveBinary(
 
 function trace(env: ResolutionEnv, message: string): void {
   if (process.env.MYCO_DEBUG_REDIRECT !== '1') return;
+  warn(`resolve: ${message}`);
+}
+
+function warn(message: string): void {
   try {
-    process.stderr.write(`[myco] resolve: ${message}\n`);
+    process.stderr.write(`[myco] ${message}\n`);
   } catch {
     // stderr unavailable
   }

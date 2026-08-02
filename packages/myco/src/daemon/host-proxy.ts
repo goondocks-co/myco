@@ -97,6 +97,10 @@ const STRIPPED_REQUEST_HEADERS = new Set([
   'origin',
   'referer',
   'cookie',
+  // The member CLI's transport declaration must not reach the host: the
+  // host would render its own binary path into the response. The member
+  // daemon's tools layer applies the directive with the member's path.
+  'x-myco-tool-transport',
   // TENANCY is the attach mapping's, never the caller's local claim — the same
   // doctrine that overwrites grove/project below. The caller's `x-myco-project-root`
   // names a MEMBER checkout path that does not exist on the host; forwarding it

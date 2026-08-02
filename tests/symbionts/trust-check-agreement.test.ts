@@ -9,12 +9,10 @@
  * SAME check shape (win32 short-circuit / uid-ownership / mode-mask).
  *
  * Copies covered:
- *   - bin/runtime-redirect.cjs             (RUNTIME_COMMAND_INSECURE_MODE_MASK)
- *   - src/symbionts/templates/myco-run.cjs (RUNTIME_COMMAND_INSECURE_MODE_MASK)
- *   - src/symbionts/templates/cline/plugin.ts   (RUNTIME_PIN_INSECURE_MODE_MASK)
- *   - src/symbionts/templates/opencode/plugin.ts (RUNTIME_PIN_INSECURE_MODE_MASK)
- *   - src/symbionts/templates/pi/plugin.ts  (RUNTIME_PIN_INSECURE_MODE_MASK)
- *   - src/daemon/update-checker.ts          (RUNTIME_COMMAND_INSECURE_MODE_MASK)
+ *   - src/runtime/binary-resolution.ts     (PIN_INSECURE_MODE_MASK — TS contract)
+ *   - bin/binary-resolution.cjs             (PIN_INSECURE_MODE_MASK — shim module)
+ *   - src/symbionts/templates/myco-run.cjs  (RUNTIME_COMMAND_INSECURE_MODE_MASK)
+ *   - src/symbionts/templates/{cline,opencode,pi}/plugin.ts (RUNTIME_PIN_INSECURE_MODE_MASK)
  */
 
 import { describe, it, expect } from 'bun:test';

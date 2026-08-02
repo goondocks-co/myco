@@ -43,7 +43,19 @@ function checkPinTrust(filePath) {
 
 // Trusted pin read: null when absent, untrusted, or empty.
 function readTrustedPin(filePath) {
-  if (!checkPinTrust(filePath).ok) return null;
+  const trust = checkPinTrust(filePath);
+  if (!trust.ok) {
+    // A real refusal is warned unconditionally: a silently ignored pin is
+    // indistinguishable from no pin. A missing file stays silent.
+    if (trust.reason !== 'pin file missing') {
+      try {
+        process.stderr.write(`[myco] ignoring runtime pin (${trust.reason}): ${filePath}\n`);
+      } catch {
+        // stderr unavailable
+      }
+    }
+    return null;
+  }
   try {
     const raw = fs.readFileSync(filePath, 'utf-8').trim();
     return raw || null;

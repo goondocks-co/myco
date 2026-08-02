@@ -77,7 +77,7 @@ function runShim(shimPath: string, mycoHome: string) {
 }
 
 describe('myco.cjs binary resolution', () => {
-  it('prefers vendor/resolved.json when the postinstall has run', () => {
+  it('prefers the managed binary over vendor/resolved.json — self-update maintains it; the tarball binary is frozen', () => {
     const { shimPath, pkgRoot, mycoHome } = makeFixture();
     const vendored = path.join(tmpRoot, 'vendored-myco');
     writeStubBinary(vendored, 'VENDOR');
@@ -87,6 +87,22 @@ describe('myco.cjs binary resolution', () => {
       JSON.stringify({ target: hostTarget(), binaryPath: vendored }),
     );
     writeStubBinary(path.join(mycoHome, 'bin', 'myco'), 'MANAGED');
+
+    const res = runShim(shimPath, mycoHome);
+
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe('MANAGED:doctor --json');
+  });
+
+  it('uses vendor/resolved.json for the pre-convergence bootstrap (no managed binary yet)', () => {
+    const { shimPath, pkgRoot, mycoHome } = makeFixture();
+    const vendored = path.join(tmpRoot, 'vendored-myco');
+    writeStubBinary(vendored, 'VENDOR');
+    fs.mkdirSync(path.join(pkgRoot, 'vendor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgRoot, 'vendor', 'resolved.json'),
+      JSON.stringify({ target: hostTarget(), binaryPath: vendored }),
+    );
 
     const res = runShim(shimPath, mycoHome);
 

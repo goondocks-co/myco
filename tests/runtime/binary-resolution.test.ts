@@ -208,7 +208,7 @@ describe('home-scoped-managed', () => {
     expect(result).toMatchObject({ path: fx.env.execPath!, source: 'last-resort' });
   });
 
-  it('default home uses the managed binary when present (existence, not executability — parity with defaultServiceExecutable)', () => {
+  it('default home uses the managed binary when runnable', () => {
     const home = path.join(os.homedir(), '.myco');
     const managed = managedBinaryPath(home, 'linux', undefined);
     fs.mkdirSync(path.dirname(managed), { recursive: true });
@@ -280,6 +280,7 @@ describe('facts', () => {
       pin: '/pinned/myco',
       pinPath,
       pinScope: 'machine',
+      pinRefusal: null,
     });
   });
 
@@ -288,6 +289,37 @@ describe('facts', () => {
     const facts = gatherFacts({ kind: 'machine' }, fx.env);
     expect(facts.managedBinary).toBe('C:\\Users\\u\\AppData\\Local\\Myco\\bin\\myco.exe');
     expect(facts.binDir).toBe('C:\\Users\\u\\AppData\\Local\\Myco\\bin');
+  });
+});
+
+describe('pin refusal fact', () => {
+  it('a refused machine pin surfaces in facts.pinRefusal', () => {
+    const fx = fixture();
+    writePin(fx, '/x/myco', 0o666);
+    const facts = gatherFacts({ kind: 'machine' }, fx.env);
+    expect(facts.pin).toBeNull();
+    expect(facts.pinRefusal?.reason).toContain('writable by group/other');
+  });
+
+  it('an absent pin leaves pinRefusal null', () => {
+    const fx = fixture();
+    expect(gatherFacts({ kind: 'machine' }, fx.env).pinRefusal).toBeNull();
+  });
+});
+
+describe('home-scoped-managed executability', () => {
+  it('skips a present-but-not-executable managed binary', () => {
+    const home = path.join(os.homedir(), '.myco');
+    const managed = managedBinaryPath(home, 'linux', undefined);
+    fs.mkdirSync(path.dirname(managed), { recursive: true });
+    fs.writeFileSync(managed, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+    try {
+      const env: ResolutionEnv = { mycoHome: home, platform: 'linux', localAppData: undefined, execPath: '/stub' };
+      const result = resolveBinary('home-scoped-managed', { kind: 'machine' }, env);
+      expect(result).toMatchObject({ path: '/stub', source: 'last-resort' });
+    } finally {
+      fs.rmSync(managed, { force: true });
+    }
   });
 });
 

@@ -258,17 +258,15 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
         actions.push(`Restart your shell or run: export PATH="${binDir}:$PATH"`);
       } else if (alreadyPresent > 0) {
         actions.push(`${binDir} is already exported in a shell rc file — restart your shell to pick it up`);
-      } else {
-        actions.push(`No shell rc file found to update — add ${binDir} to PATH manually`);
       }
     }
     return actions;
   },
 
-  // Remove a runtime pin that names the managed binary: retired-postinstall
-  // residue, redundant by construction (resolution reaches the managed binary
-  // without it). Re-verifies content before removal so an operator pin
-  // written between detection and fix survives.
+  // Remove a runtime pin that names the managed binary — redundant by
+  // construction (resolution reaches the managed binary without it).
+  // Re-verifies content before removal so an operator pin written between
+  // detection and fix survives.
   'runtime-pin-redundant': async (_ctx, matched) => {
     const actions: string[] = [];
     for (const check of matched) {

@@ -1636,9 +1636,8 @@ export async function checkPathBinary(): Promise<DoctorCheck | null> {
  *
  * The pin is an operator override that wins over every other resolution
  * source; its absence is the normal state and emits no row. A pin naming the
- * managed binary is residue from the retired npm postinstall and is
- * removable; a pin whose target is gone breaks every consumer, with no
- * fallback behind it.
+ * managed binary is redundant and removable; a pin whose target is gone
+ * breaks every consumer, with no fallback behind it.
  *
  * Pure classifier; {@link checkRuntimePin} injects the live values.
  */
@@ -1648,7 +1647,18 @@ export function classifyRuntimePin(args: {
   pinTargetExists: boolean;
 }): DoctorCheck | null {
   const { facts, pinTargetExists } = args;
-  if (!facts.pin || !facts.pinPath) return null;
+  if (!facts.pin || !facts.pinPath) {
+    if (facts.pinRefusal) {
+      return {
+        name: 'Runtime pin',
+        status: 'fail',
+        detail: `${facts.pinRefusal.pinPath} exists but is refused (${facts.pinRefusal.reason}) — `
+          + 'every consumer ignores it. Fix its ownership/permissions (0644) or remove it.',
+        fixable: false,
+      };
+    }
+    return null;
+  }
 
   if (facts.pin === facts.managedBinary) {
     return fixableCheck(

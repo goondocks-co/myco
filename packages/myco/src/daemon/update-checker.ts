@@ -70,15 +70,14 @@ export function looksLikeMycoBinary(execPath: string): boolean {
  *
  * When `process.execPath` is the myco binary itself (production install or
  * compiled binary), return it directly so the daemon restarts via the same
- * binary. Otherwise fall back to the bare `myco` command, which PATH-resolves
- * to the global install.
+ * binary. Otherwise resolve pin → managed binary → the bare command name.
  *
  * Accepts an optional `execPath` override so tests can exercise both branches
  * without depending on the test runner's own execPath.
  */
 export function resolveMycoBinary(execPath: string = process.execPath): string {
   if (looksLikeMycoBinary(execPath)) return execPath;
-  // Not running as the binary (dev tsx/bun): pin -> managed -> bare name.
+  // Not running as the binary (dev tsx/bun): pin → managed → bare name.
   return resolveBinary('instruction', { kind: 'machine' }).path;
 }
 
@@ -90,9 +89,8 @@ export function resolveMycoBinary(execPath: string = process.execPath): string {
  * When `vaultDir` is supplied, `<vaultDir>/runtime.command` is checked
  * first (project-scope pin written by `make dev-link`); the machine-scope
  * `~/.myco/runtime.command` is the fallback (written by the beta-channel
- * installer). The same layering is implemented in the CJS launcher shims
- * (`bin/myco.cjs`, `bin/myco-run`, `.agents/myco-run.cjs`) — they can't
- * import this module so the logic is mirrored.
+ * installer). The CJS entry points implement the same layering via the
+ * shared `bin/binary-resolution.cjs` module.
  */
 export function resolveRuntimeCommand(vaultDir?: string): string | null {
   if (vaultDir) {

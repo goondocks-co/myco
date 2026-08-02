@@ -62,7 +62,7 @@ describe('resolveManagedBinaryPath', () => {
       try {
         const result = resolveManagedBinaryPath(home, 'linux');
         expect(result).toBe(pin);
-        expect(result).not.toBe(managedPath.replaceAll('\\', '/'));
+        expect(result).not.toBe(path.join(home, 'bin', 'myco'));
         expect(result).not.toBe(process.execPath.replaceAll('\\', '/'));
       } finally {
         fs.rmSync(home, { recursive: true, force: true });

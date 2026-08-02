@@ -168,7 +168,7 @@ What still varies per-symbiont is **transport**, not placement:
 
 **`toolTransport` manifest field drives symbiont installer seams**: Each symbiont manifest declares `toolTransport: 'mcp' | 'cli'` (defined in `packages/myco/src/symbionts/manifest-schema.ts`, defaulting to `'mcp'`). This single field controls three installer seams:
    - `shouldProvisionMcpServer()` in `packages/myco/src/symbionts/installer.ts` — returns `false` for `cli` transport, skipping MCP server provisioning entirely
-   - `CLI_TOOL_TRANSPORT_DIRECTIVE` injection (from `packages/myco/src/context/cortex-injection-context.ts`) — injected into context when `toolTransport === 'cli'` so the agent knows to call tools via `myco tool call` instead of MCP
+   - `cliToolTransportDirective` injection (from `packages/myco/src/context/cortex-injection-context.ts`) — injected into context when `toolTransport === 'cli'` so the agent knows to call tools via `myco tool call` instead of MCP
    - `myco doctor` treatment — CLI-transport symbionts have MCP config swept/uninstalled rather than verified
 
    Always check the target symbiont's `toolTransport` when adding a new tool — a `cli` symbiont cannot receive MCP tools regardless of TOOL_DEFINITIONS placement.
