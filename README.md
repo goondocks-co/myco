@@ -142,7 +142,7 @@ myco host enable --server-url https://your-host:8080   # on the host machine
 myco join <host> --key <one-time-key> --server-url <url> --overlay-address <address>   # on a member's machine
 ```
 
-Both steps are also available from the dashboard's **Team** page — enabling a host prints a ready-to-paste join command, and joining is a form with the same four fields. Once joined, connect the projects you want the team to share (Team page, or `myco attach [path] --host <id>`). Connecting a project moves its knowledge — sessions, spores, plans, skills — to the host, which holds the single copy while the project is connected; agent tools and search route to it transparently. Disconnecting (`myco detach`) brings the full history back home in one verified transfer.
+Enabling a host is a terminal command today (it prints a ready-to-paste join command for your first teammate); joining is available from the dashboard's **Team** page as a form with the same four fields. Once joined, connect the projects you want the team to share (Team page, or `myco attach [path] --host <id>`). Connecting a project moves its knowledge — sessions, spores, plans, skills — to the host, which holds the single copy while the project is connected; agent tools and search route to it transparently. Disconnecting (`myco detach`) brings the full history back home in one verified transfer.
 
 For projects you haven't connected to a host, your local Grove databases remain the source of truth. Joined machines and the host talk over a direct, encrypted overlay connection, and each record carries a machine identity for attribution.
 
