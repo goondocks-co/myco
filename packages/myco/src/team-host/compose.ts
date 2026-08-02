@@ -10,13 +10,13 @@
  */
 import { resolveGroveDir, resolveMycoHome } from '@myco/grove/paths.js';
 import { formatOverlayAuthority } from '@myco/daemon/host-serve.js';
-import { writeSecret } from '@myco/config/secrets.js';
 import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
 import { KEYED_CLOUD_PROVIDER_ENV } from '@myco/agent/harness/provider-health.js';
 
 import { hostEnable, type HostEnableDeps, type HostEnableOptions, type HostEnableResult } from './overlay.js';
 import { mintSetupKey } from './control-plane.js';
+import { writeTeamAgentKey, maskTeamAgentKey } from './team-secret.js';
 import { readHostState } from './state.js';
 
 const VALID_TEAM_KEY_PROVIDERS = Object.keys(KEYED_CLOUD_PROVIDER_ENV) as Array<keyof typeof KEYED_CLOUD_PROVIDER_ENV>;
@@ -43,14 +43,9 @@ export function resolveTeamKeyProviderFlag(flagValue: string | undefined): keyof
   return flagValue as keyof typeof KEYED_CLOUD_PROVIDER_ENV;
 }
 
-/** First-8+last-4 masking, matching the masked-echo contract secrets are
- *  never printed in full under (server-mode design spec §5/§6). */
-export function maskTeamAgentKey(secret: string): string {
-  const PREFIX = 8;
-  const SUFFIX = 4;
-  if (secret.length <= PREFIX + SUFFIX) return '*'.repeat(secret.length);
-  return `${secret.slice(0, PREFIX)}${'*'.repeat(secret.length - PREFIX - SUFFIX)}${secret.slice(-SUFFIX)}`;
-}
+// Mask moved to team-secret.ts with the writer extraction; re-exported so
+// existing imports keep working.
+export { maskTeamAgentKey } from './team-secret.js';
 
 /** Real TTY y/N prompt. A non-TTY caller (CI, a piped install script) gets
  *  `false` — never a hang waiting on stdin. */
@@ -132,7 +127,10 @@ export async function hostEnableAndEmitJoin(
       listenAddr: options.listenAddr,
       headscaleUser: options.headscaleUser,
       keyExpiration: options.keyExpiration,
-      groveDesignation: options.groveDesignation ?? 'default',
+      // Pass-through, no silent default (rev 6): `hostEnable`'s own
+      // explicit-choice resolution owns the refusal. The `--serve` installer
+      // path is unaffected — it passes --designate-default explicitly.
+      groveDesignation: options.groveDesignation,
     },
     deps,
   );
@@ -140,26 +138,19 @@ export async function hostEnableAndEmitJoin(
   let teamAgentKeyMasked: string | null = null;
   const teamAgentKey = options.teamAgentKey?.trim();
   if (teamAgentKey) {
-    const groveDir = resolveGroveDir(enable.servedGroveId, mycoHome);
-    // Stored under the PROVIDER-STANDARD env name (never TEAM_AGENT_KEY_SECRET,
-    // which is only the CLI-flag/env-var transport name a real dispatch never
-    // reads — see TEAM_AGENT_KEY_SECRET's docstring, constants.ts). Default
-    // provider 'anthropic' per spec §5's API-key path.
-    const provider = options.teamKeyProvider ?? 'anthropic';
-    const envKey = KEYED_CLOUD_PROVIDER_ENV[provider]?.[0];
-    if (!envKey) {
-      // Unreachable in practice: `resolveTeamKeyProviderFlag` already
-      // validates `--team-key-provider` against `KEYED_CLOUD_PROVIDER_ENV`'s
-      // own keys before this composite ever runs, so `provider` is always a
-      // recognized key here. A silent `?? KEYED_CLOUD_PROVIDER_ENV.anthropic`
-      // fallback would, if this invariant were ever violated upstream, store
-      // the key under anthropic's env name while the caller believes it went
-      // to `provider` — a keyless-suppression hazard this route class exists
-      // to prevent. Fail loudly instead.
-      throw new Error(`Invariant violation: no env name registered for team key provider "${provider}" in KEYED_CLOUD_PROVIDER_ENV.`);
-    }
-    writeSecret(groveDir, envKey, teamAgentKey, deps.lockNamespace);
-    teamAgentKeyMasked = maskTeamAgentKey(teamAgentKey);
+    // ONE writer for the team key (team-secret.ts) — shared with the
+    // host-admin enable route. The provider stays defaulted to 'anthropic'
+    // HERE deliberately (documented in HOST_HELP as "default: anthropic";
+    // the installer one-liner depends on it); the API route requires an
+    // explicit provider, so new surfaces never inherit the silent default
+    // that files a non-Anthropic team's key under ANTHROPIC_API_KEY.
+    teamAgentKeyMasked = writeTeamAgentKey({
+      servedGroveId: enable.servedGroveId,
+      key: teamAgentKey,
+      provider: options.teamKeyProvider ?? 'anthropic',
+      mycoHome,
+      lockNamespace: deps.lockNamespace,
+    });
   }
 
   let shouldMint = true;

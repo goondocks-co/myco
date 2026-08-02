@@ -199,7 +199,6 @@ describe('hostEnableAndEmitJoin', () => {
         waitForSocket: async () => true,
         overlayPort: 41443,
         resolveNodeId: async () => 'node-9',
-        verifyOverlayListener: async () => true,
         // Headscale supervision flows through the scoped-manager seam. The
         // always-installed fake plus 'login' observation DELIBERATELY pins
         // the "already installed — skipping" branch: this file's subject is
