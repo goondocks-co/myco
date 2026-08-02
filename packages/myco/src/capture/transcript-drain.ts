@@ -40,6 +40,7 @@ import { assertSafeCaptureSegment, resolveMemberTranscriptDrainDir } from '../gr
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { getHostMembershipSnapshot } from '../host/registry.js';
+import { requireProjectScopedTarget } from '../host/routing.js';
 import type { RemoteTarget } from '../host/routing.js';
 import {
   nativePerUserLockNamespace,
@@ -268,7 +269,7 @@ export const defaultTranscriptTransport: TranscriptPostTransport = async (target
     // so registration-on-ingest (T1a) then admits the freshly-attached project.
     // The member sends no `x-myco-auth` — the host re-stamps its own local bearer
     // after the overlay gate. E-4 W2 T1c.
-    [REQUEST_CONTEXT_HEADERS.projectId]: String(target.projectId),
+    [REQUEST_CONTEXT_HEADERS.projectId]: requireProjectScopedTarget(target, 'transcript drain'),
     [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
     [REQUEST_CONTEXT_HEADERS.machineId]: body.machine_id,
     [REQUEST_CONTEXT_HEADERS.sessionId]: body.session_id,
@@ -430,7 +431,7 @@ export class TranscriptDrainQueue {
         host_id: target.host.host_id,
         session_id: sessionId,
         transcript_id: transcriptId,
-        project_id: target.projectId,
+        project_id: requireProjectScopedTarget(target, 'transcript drain'),
         grove_id: target.groveId,
         transcript_path: transcriptPath,
         agent,

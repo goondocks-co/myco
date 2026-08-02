@@ -63,6 +63,7 @@ import { resolveGroveBackupDir } from '../backup/location.js';
 import { detachProject, getHostMembershipSnapshot } from './registry.js';
 import { nativePerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { registerProjectInGrove } from '../grove/registry.js';
+import { requireProjectScopedTarget } from './routing.js';
 import type { RemoteTarget } from './routing.js';
 import { completeAttachParking, releaseResidencyLease, type ResidencyDaemonDeps } from './residency-transition.js';
 import {
@@ -227,7 +228,7 @@ export const defaultResidencyTransport: ResidencyPostTransport = async (target, 
     'content-type': 'application/json',
     'content-length': String(payload.length),
     [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
-    [REQUEST_CONTEXT_HEADERS.projectId]: String(target.projectId),
+    [REQUEST_CONTEXT_HEADERS.projectId]: requireProjectScopedTarget(target, 'residency drain'),
     [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
     [REQUEST_CONTEXT_HEADERS.machineId]: machineId,
   };
@@ -302,7 +303,7 @@ async function dialDetachRoute<T>(
     'content-type': 'application/json',
     'content-length': String(payload.length),
     [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
-    [REQUEST_CONTEXT_HEADERS.projectId]: String(target.projectId),
+    [REQUEST_CONTEXT_HEADERS.projectId]: requireProjectScopedTarget(target, 'residency drain'),
     [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
     [REQUEST_CONTEXT_HEADERS.machineId]: machineId,
   };
@@ -364,7 +365,7 @@ export const defaultDetachGoodbyeTransport: DetachGoodbyeTransport = async (targ
     'content-type': 'application/json',
     'content-length': String(payload.length),
     [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
-    [REQUEST_CONTEXT_HEADERS.projectId]: String(target.projectId),
+    [REQUEST_CONTEXT_HEADERS.projectId]: requireProjectScopedTarget(target, 'residency drain'),
     [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
     [REQUEST_CONTEXT_HEADERS.machineId]: machineId,
   };

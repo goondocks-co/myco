@@ -50,6 +50,13 @@ export default function App() {
         <Route path="/symbionts" element={<Symbionts />} />
         <Route path="/logs" element={<Logs />} />
         <Route path="/machine" element={<MachineDashboard />} />
+        {/* Team is MACHINE-scoped (E1 §5.4 — Chris: "always has been,
+            always will be"): hosting/membership are machine-wide, the page
+            has its own host selector, and the Grove-scoped layout both
+            injected ambient context the team carrier had to fight AND
+            redirected zero-project machines to /onboarding — making the
+            fork-first page unreachable on exactly the machine it is for. */}
+        <Route path="/team" element={<TeamPage />} />
         {/* Unified Settings page owns /settings. The wrapper binds a
             ProjectSelectionBoundary to the last-known project so substrate
             hooks (useGroveConfig, useScopedConfig) resolve the right scope
@@ -96,10 +103,9 @@ export default function App() {
       <Route path="/g/:groveSlug/settings" element={<LegacyGroveSettingsRedirect />} />
       {/* Phase 4 unifies operations under /operations; /maintenance redirects forward. */}
       <Route path="/g/:groveSlug/maintenance" element={<LegacyMaintenanceRedirect />} />
-      <Route path="/g/:groveSlug/team" element={<GroveScopedLayout />}>
-        <Route index element={<TeamPage />} />
-        <Route path="maintenance" element={<TeamMaintenanceRedirect />} />
-      </Route>
+      {/* The old Grove-scoped Team URL forwards to the machine-scoped page. */}
+      <Route path="/g/:groveSlug/team" element={<GroveTeamRedirect />} />
+      <Route path="/g/:groveSlug/team/maintenance" element={<TeamMaintenanceRedirect />} />
       <Route path="/sessions" element={<LegacyProjectRedirect suffix="/sessions" />} />
       <Route path="/sessions/:id" element={<LegacyProjectRedirect suffixFromPath />} />
       <Route path="/cortex" element={<LegacyProjectRedirect suffix="/cortex" />} />
@@ -108,7 +114,6 @@ export default function App() {
       <Route path="/agent/:id" element={<LegacyProjectRedirect suffixFromPath />} />
       <Route path="/skills" element={<LegacyProjectRedirect suffix="/skills" />} />
       <Route path="/operations" element={<LegacyGroveRedirect suffix="/operations" />} />
-      <Route path="/team" element={<LegacyGroveRedirect suffix="/team" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
     </>
@@ -180,19 +185,22 @@ function LegacyGroveRedirect({ suffix }: { suffix: string }) {
  */
 function LegacyTeamRedirect() {
   const location = useLocation();
-  const { groveSlug } = useParams();
-  if (!groveSlug) return <Navigate to="/" replace />;
-  return <Navigate to={appendSearchHash(`/g/${groveSlug}/team`, location.search, location.hash)} replace />;
+  return <Navigate to={appendSearchHash('/team', location.search, location.hash)} replace />;
+}
+
+/** Grove-scoped /g/:slug/team → machine-scoped /team (E1 §5.4), search/hash
+ *  preserved so host-selector deep links survive the move. */
+function GroveTeamRedirect() {
+  const location = useLocation();
+  return <Navigate to={appendSearchHash('/team', location.search, location.hash)} replace />;
 }
 
 /**
- * Legacy Grove-scoped /g/:slug/team/maintenance → /g/:slug/team.
+ * Legacy Grove-scoped /g/:slug/team/maintenance → machine-scoped /team.
  * Old maintenance bookmarks forward to the Team page.
  */
 function TeamMaintenanceRedirect() {
-  const { groveSlug } = useParams();
-  if (!groveSlug) return <Navigate to="/" replace />;
-  return <Navigate to={`/g/${groveSlug}/team`} replace />;
+  return <Navigate to="/team" replace />;
 }
 
 /**

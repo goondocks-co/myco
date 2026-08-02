@@ -283,7 +283,9 @@ function dialHostJson<T>(
           authorization: `Bearer ${target.bearer}`,
           [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
           [REQUEST_CONTEXT_HEADERS.groveId]: target.groveId,
-          [REQUEST_CONTEXT_HEADERS.projectId]: target.projectId,
+          // Host-carrier targets carry no project (E1 §5.3) — omit rather
+          // than stamp null; the host supports grove-scoped tenancy.
+          ...(target.projectId !== null ? { [REQUEST_CONTEXT_HEADERS.projectId]: target.projectId } : {}),
           ...(options.machineId ? { [REQUEST_CONTEXT_HEADERS.machineId]: options.machineId } : {}),
           accept: 'application/json',
           ...(bodyBytes

@@ -79,6 +79,19 @@ describe('resolveInboundProjectId', () => {
     ).toThrow(UnauthorizedRequestContextError);
   });
 
+  test('x-myco-host-id sits inside the SAME bearer gate — a destination-host switch is the most powerful one (E1 §5.3)', () => {
+    // The carrier selects which remote machine receives a write; leaving it
+    // outside CONTEXT_SWITCHING_HEADERS let a token-less request dial a
+    // joined host with the stored bearer (review RC5-4).
+    expect(() =>
+      resolveInboundProjectId(
+        { [REQUEST_CONTEXT_HEADERS.hostId]: 'host_' + 'a'.repeat(32) },
+        tmp,
+        { expectedAuthToken: 'the-daemon-token' },
+      ),
+    ).toThrow(UnauthorizedRequestContextError);
+  });
+
   test('the bearer gate passes when the switching header carries the matching token', () => {
     const projectId = createProjectId();
     const { projectId: resolved } = resolveInboundProjectId(
