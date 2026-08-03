@@ -51,7 +51,7 @@ const ALLOWLIST: readonly string[] = [
   // edited directly in config.yaml, not surfaced as a settings card.
   'daemon.port',
   // Team Host serve opt-in — operator control-plane, configured via
-  // `myco-team host enable` and the operator Team page (Task 2.1 / Phase 3),
+  // `myco host enable` and the Team page's own "Host a team" flow,
   // never a generic per-field Settings card.
   'daemon.host_serve.',
   // External read-only MCP opt-in (Task 10, server-mode design spec §7) —

@@ -46,7 +46,7 @@ function HealthStat({ label, kind }: { label: string; kind: string }) {
  * see `useHostServeStatus` for the polling behavior this null render
  * pairs with.
  */
-export function TeamHostServingCard() {
+export function TeamHostServingCard({ actions }: { actions?: React.ReactNode } = {}) {
   const { data } = useHostServeStatus();
   if (!data || data.serving !== true) return null;
 
@@ -126,6 +126,11 @@ export function TeamHostServingCard() {
         <HealthStat label="Backups" kind={health.backup} />
         <HealthStat label="Provider key" kind={health.key} />
       </dl>
+      {actions && (
+        <div className="flex flex-col gap-3 border-t border-[var(--ghost-border)] pt-4" data-testid="serving-card-actions">
+          {actions}
+        </div>
+      )}
     </Surface>
   );
 }

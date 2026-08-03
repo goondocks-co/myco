@@ -83,8 +83,9 @@ describe('ReleaseProvenanceDialog hosted-degrade', () => {
       error: outage(),
     });
     openDialog();
-    // ApiError.message surfaces the server error code (`host_unreachable (API 503)`).
-    await waitFor(() => expect(screen.getByText(/host_unreachable/)).toBeDefined());
+    // ApiError.message surfaces the refusal's HUMAN message, never the
+    // mechanism code (apiErrorMessage prefers the sibling `message`).
+    await waitFor(() => expect(screen.getByText(/down \(API 503\)/)).toBeDefined());
     expect(screen.queryByText(HOSTED_MESSAGE)).toBeNull();
   });
 });

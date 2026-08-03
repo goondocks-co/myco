@@ -29,6 +29,11 @@ export interface HostServeHealthStatus {
 
 export interface HostServeStatusServing {
   serving: true;
+  /** Observed overlay-listener bind (E1 §7 gate 4) — `serving` alone is
+   *  config-derived and survives every bind failure. `null` = not probeable. */
+  overlay_listener_bound?: boolean | null;
+  /** Daemon process start stamp — the enable flow's restart discriminator. */
+  started_at?: string | null;
   served_grove_id: string | null;
   served_grove_name: string | null;
   overlay_address: string;
@@ -44,11 +49,14 @@ export interface HostServeStatusServing {
 
 export interface HostServeStatusNotServing {
   serving: false;
+  not_serving_reason?: string;
+  overlay_listener_bound?: boolean | null;
+  started_at?: string | null;
 }
 
 export type HostServeStatusResponse = HostServeStatusServing | HostServeStatusNotServing;
 
-const HOST_SERVE_STATUS_KEY = ['host-serve-status'] as const;
+export const HOST_SERVE_STATUS_KEY = ['host-serve-status'] as const;
 
 /**
  * GET /api/host-serve/status. Interval matches the server's own 15s cache

@@ -159,7 +159,9 @@ describe('CanopyToolCallIndicator blob panel', () => {
   it('keeps the real error state on a genuine outage', () => {
     useCanopyInjectionBlobMock.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: outage() });
     wrap(<CanopyToolCallIndicator sessionId="sess-1" activity={qualifyingActivity} />);
-    expect(screen.getByText(/host_unreachable \(API 503\)/)).toBeDefined();
+    // The refusal's HUMAN message renders, never the mechanism code
+    // (apiErrorMessage prefers the sibling `message` — PR #803 review C5).
+    expect(screen.getByText(/down \(API 503\)/)).toBeDefined();
     expect(screen.queryByText(HOSTED_MESSAGE)).toBeNull();
   });
 });

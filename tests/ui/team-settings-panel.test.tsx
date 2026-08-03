@@ -131,19 +131,15 @@ mock.module('../../packages/myco/ui/src/components/providers/AdvancedModelPin', 
   AdvancedModelPin: () => null,
 }));
 
-// Controllable membership status: default mirrors a query with no data yet
-// (the shape every pre-existing test in this file ran under before the
-// External-access platform gate consulted the hook).
-const membershipStatusMock = vi.fn((): { data: unknown } => ({ data: undefined }));
-mock.module('../../packages/myco/ui/src/hooks/use-host-membership', () => ({
-  useHostMembershipStatus: () => membershipStatusMock(),
-}));
-
 import { TeamSettingsPanel } from '../../packages/myco/ui/src/components/team/TeamSettingsPanel';
 import type { TeamConfigTarget } from '../../packages/myco/ui/src/hooks/use-scoped-config';
 
-const CARRIER_TARGET: TeamConfigTarget = { carrier: { groveId: 'grove_x', projectId: 'proj_x' } };
+const CARRIER_TARGET: TeamConfigTarget = { carrier: { hostId: 'host_x' } };
 const SELF_TARGET: TeamConfigTarget = { carrier: null };
+// A carried target names the DESTINATION HOST (PR #802); grove/project ride
+// along as explicit empty so an ambient project selection can't shadow the
+// host-id branch at the server chokepoint.
+const CARRIER_HEADERS = { 'x-myco-host-id': 'host_x', 'x-myco-grove-id': '', 'x-myco-project-id': '' };
 
 function renderPanel(target: TeamConfigTarget = CARRIER_TARGET) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -176,8 +172,6 @@ beforeEach(() => {
   postJsonMock.mockReset();
   deleteJsonMock.mockReset();
   updateTaskConfigMutateMock.mockReset();
-  membershipStatusMock.mockReset();
-  membershipStatusMock.mockReturnValue({ data: undefined });
 });
 
 describe('TeamSettingsPanel', () => {
@@ -187,7 +181,7 @@ describe('TeamSettingsPanel', () => {
 
     await waitFor(() => expect(screen.getByText(/no team key configured/i)).toBeInTheDocument());
     expect(fetchJsonMock).toHaveBeenCalledWith('/team/config', expect.objectContaining({
-      headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' },
+      headers: CARRIER_HEADERS,
     }));
     expect(screen.getByText('Myco Agent')).toBeInTheDocument();
     expect(screen.getByText('Embedding')).toBeInTheDocument();
@@ -221,7 +215,7 @@ describe('TeamSettingsPanel', () => {
     await waitFor(() => expect(putJsonMock).toHaveBeenCalledWith(
       '/team/secrets/openai',
       { secret: 'sk-1234REALSECRETVALUEWXYZ' },
-      { headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' } },
+      { headers: CARRIER_HEADERS },
     ));
 
     await waitFor(() => expect(screen.getByText(/sk-1234\*+WXYZ/)).toBeInTheDocument());
@@ -245,7 +239,7 @@ describe('TeamSettingsPanel', () => {
       await waitFor(() => expect(putJsonMock).toHaveBeenCalledWith(
         '/team/secrets/anthropic',
         { secret: 'sk-ant-REALSECRETVALUEWXYZ' },
-        { headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' } },
+        { headers: CARRIER_HEADERS },
       ));
 
       await waitFor(() => expect(screen.getByText(/sk-ant-\*+WXYZ/)).toBeInTheDocument());
@@ -288,7 +282,7 @@ describe('TeamSettingsPanel', () => {
 
     await waitFor(() => expect(fetchJsonMock).toHaveBeenCalledWith(
       '/team/secrets/openai',
-      { method: 'DELETE', headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' } },
+      { method: 'DELETE', headers: CARRIER_HEADERS },
     ));
     await waitFor(() => expect(screen.queryByText(/from team secrets/i)).not.toBeInTheDocument());
   });
@@ -306,37 +300,18 @@ describe('TeamSettingsPanel', () => {
     expect(screen.getByText('Task Config')).toBeInTheDocument();
     expect(updateTaskConfigMutateMock).not.toHaveBeenCalled();
   });
-});
 
-describe('External access platform gate', () => {
-  it('hides the External access panel when the daemon reports external_mcp_supported: false', async () => {
-    membershipStatusMock.mockReturnValue({
-      data: { hosts: [], hint: null, external_mcp_supported: false },
-    });
+  it('owns no External access surface — that tab is its own panel now (E1 §5.2)', async () => {
     stubTeamConfig('ok');
     renderPanel();
 
-    // Team settings render; the External access panel does not — a live
-    // toggle whose enable can only 502 on this platform is a lying switch.
     await screen.findByText('Team settings');
+    // The whole external surface moved to `ExternalAccessPanel` (Tab 2). If
+    // any of it reappears here the page would render it TWICE once both tabs
+    // are open, each toggling a different host.
     expect(screen.queryByText('External access')).toBeNull();
-  });
-
-  it('renders the panel when the daemon reports external_mcp_supported: true', async () => {
-    membershipStatusMock.mockReturnValue({
-      data: { hosts: [], hint: null, external_mcp_supported: true },
-    });
-    stubTeamConfig('ok');
-    renderPanel();
-
-    expect(await screen.findByText('External access')).toBeTruthy();
-  });
-
-  it('renders the panel when the field is absent (older daemon fallback)', async () => {
-    membershipStatusMock.mockReturnValue({ data: { hosts: [], hint: null } });
-    stubTeamConfig('ok');
-    renderPanel();
-
-    expect(await screen.findByText('External access')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /external access/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /rotate token/i })).toBeNull();
+    expect(fetchJsonMock).not.toHaveBeenCalledWith('/team/external-mcp', expect.anything());
   });
 });

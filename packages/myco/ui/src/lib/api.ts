@@ -159,8 +159,11 @@ function isContextFreePath(path: string): boolean {
   return CONTEXT_FREE_PATHS.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
-export async function postJson<T>(path: string, body?: unknown): Promise<T> {
-  return fetchJson(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
+export async function postJson<T>(path: string, body?: unknown, init?: RequestInit): Promise<T> {
+  // `init` (headers) parity with putJson — the External-access controls
+  // carry `x-myco-host-id`, and a POST that structurally cannot carry
+  // headers was how Rotate token reached the wrong host (E1 §5.3 rev 6).
+  return fetchJson(path, { ...init, method: 'POST', body: body ? JSON.stringify(body) : undefined });
 }
 
 export async function putJson<T>(path: string, body: unknown, init?: RequestInit): Promise<T> {
@@ -231,7 +234,16 @@ function apiErrorMessage(body: unknown): string | null {
   if (typeof body !== 'object' || body === null) return null;
   if ('error' in body) {
     const error = (body as { error: unknown }).error;
-    if (typeof error === 'string') return error;
+    if (typeof error === 'string') {
+      // Flat refusal envelope ({ error: '<code>', message: '<human text>' },
+      // the host-admin/routing shape): the code is for programs — the
+      // SIBLING message is the operator guidance, and returning the code
+      // here rendered `daemon_home_unsafe (API 500)` at the user while the
+      // actionable text was discarded (PR 4 review, C5; UI-copy doctrine).
+      const sibling = 'message' in body ? (body as { message: unknown }).message : null;
+      if (typeof sibling === 'string' && sibling.length > 0) return sibling;
+      return error;
+    }
     if (typeof error === 'object' && error !== null) {
       const message = 'message' in error ? (error as { message: unknown }).message : null;
       if (typeof message === 'string' && message.length > 0) return message;
