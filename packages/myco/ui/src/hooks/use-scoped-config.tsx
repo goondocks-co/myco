@@ -30,15 +30,17 @@ export type Scope = 'project' | 'local' | 'grove' | 'machine';
 
 export interface TeamConfigTarget {
   /**
-   * The attached-project "carrier" used to route a team-write request to the
-   * right host from a MEMBER machine — `classifyRoute` resolves the
-   * destination host from THIS project's attach ref (there is no per-request
-   * host header; the wire carries a (grove, project) pair like every other
-   * scoped request). `null` targets THIS machine's own served grove directly
-   * — no carrier needed, resolved server-side from `hostServe.servedGroveId`
-   * — used when configuring a Team from the host machine itself.
+   * The DESTINATION HOST for a team-write from a MEMBER machine (E1 §5.3):
+   * the daemon resolves `x-myco-host-id` into a synthetic routing target
+   * built from the host record — which is what makes a joined host with
+   * ZERO attached projects configurable (the old attached-project-ref
+   * carrier had no ref to ride on such a host, so the write silently
+   * landed on the member's own daemon). `null` targets THIS machine's own
+   * served grove directly — no carrier needed, resolved server-side from
+   * `hostServe.servedGroveId` — used when configuring a Team from the host
+   * machine itself.
    */
-  carrier: { groveId: string; projectId: string } | null;
+  carrier: { hostId: string } | null;
 }
 
 const TeamConfigTargetContext = createContext<TeamConfigTarget | null>(null);
@@ -76,7 +78,15 @@ export function useIsTeamConfigTarget(): boolean {
  *  silently carry through and mis-route the request to the wrong host. */
 export function teamCarrierHeaders(target: TeamConfigTarget): Record<string, string> {
   return target.carrier
-    ? { 'x-myco-grove-id': target.carrier.groveId, 'x-myco-project-id': target.carrier.projectId }
+    ? {
+      'x-myco-host-id': target.carrier.hostId,
+      // Explicit-empty grove/project ALSO ride along: they override whatever
+      // ambient project-selection headers fetchJson would attach, so the
+      // host-id branch at the server chokepoint is never shadowed by a
+      // stale ambient project that happens to be attached elsewhere.
+      'x-myco-grove-id': '',
+      'x-myco-project-id': '',
+    }
     : { 'x-myco-grove-id': '', 'x-myco-project-id': '' };
 }
 
@@ -89,7 +99,7 @@ interface TeamConfigResponse {
 }
 
 function teamTargetQueryKeyPart(target: TeamConfigTarget | null): string {
-  return target?.carrier ? `${target.carrier.groveId}:${target.carrier.projectId}` : 'self';
+  return target?.carrier ? target.carrier.hostId : 'self';
 }
 
 /**
@@ -113,7 +123,7 @@ function useTeamConfig(enabled: boolean) {
   const headers = useMemo(
     () => (target ? teamCarrierHeaders(target) : {}),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [target?.carrier?.groveId, target?.carrier?.projectId],
+    [target?.carrier?.hostId],
   );
 
   const query = useQuery({

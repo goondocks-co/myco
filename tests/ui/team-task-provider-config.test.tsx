@@ -98,9 +98,13 @@ import { TaskProviderConfig } from '../../packages/myco/ui/src/components/agent/
 import { TeamConfigTargetProvider } from '../../packages/myco/ui/src/hooks/use-scoped-config';
 import type { TeamConfigTarget } from '../../packages/myco/ui/src/hooks/use-scoped-config';
 
-const CARRIER_TARGET: TeamConfigTarget = { carrier: { groveId: 'grove_x', projectId: 'proj_x' } };
+const CARRIER_TARGET: TeamConfigTarget = { carrier: { hostId: 'host_x' } };
 const SELF_TARGET: TeamConfigTarget = { carrier: null };
 const TASK_ROUTE = '/team/agent-tasks/vault-evolve/config';
+// A carried target names the DESTINATION HOST (PR #802) and pins grove/project
+// to explicit empty so an ambient project selection can't shadow the host-id
+// branch at the server chokepoint.
+const CARRIER_HEADERS = { 'x-myco-host-id': 'host_x', 'x-myco-grove-id': '', 'x-myco-project-id': '' };
 
 function stubTaskConfig() {
   fetchJsonMock.mockImplementation(async (path: string) => {
@@ -135,7 +139,7 @@ describe('TaskProviderConfig bound to a team target (per-task table, server-mode
 
     await waitFor(() => expect(fetchJsonMock).toHaveBeenCalledWith(
       TASK_ROUTE,
-      expect.objectContaining({ headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' } }),
+      expect.objectContaining({ headers: CARRIER_HEADERS }),
     ));
     expect(fetchJsonMock).not.toHaveBeenCalledWith('/agent/tasks/vault-evolve/config', expect.anything());
   });
@@ -162,7 +166,7 @@ describe('TaskProviderConfig bound to a team target (per-task table, server-mode
     await waitFor(() => expect(putJsonMock).toHaveBeenCalledWith(
       TASK_ROUTE,
       expect.any(Object),
-      { headers: { 'x-myco-grove-id': 'grove_x', 'x-myco-project-id': 'proj_x' } },
+      { headers: CARRIER_HEADERS },
     ));
     // Never the bespoke config-lock-stamped route.
     expect(putJsonMock).not.toHaveBeenCalledWith('/agent/tasks/vault-evolve/config', expect.anything(), expect.anything());
