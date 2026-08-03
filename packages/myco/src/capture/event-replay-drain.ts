@@ -61,13 +61,13 @@ import {
 } from '../grove/paths.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import { readHostMembershipSnapshots } from '../host/registry.js';
-import { requireProjectScopedTarget } from '../host/routing.js';
+import { hostDescriptorFor, requireProjectScopedTarget } from '../host/routing.js';
 import type { RemoteTarget } from '../host/routing.js';
 import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
-import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
+import { defaultDial, hostAuthority, hostProtocolCompatible } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
 import {
 
@@ -164,13 +164,7 @@ export function listAttachedReplayTargets(
         target: {
           projectId: ref.project_id as GroveProjectId,
           groveId: ref.grove_id,
-          host: {
-            host_id: record.host_id,
-            label: record.label,
-            overlay_address: record.overlay_address,
-            protocol_version: record.protocol_version,
-            proxy_port: record.proxy_port,
-          },
+          host: hostDescriptorFor(record),
           bearer,
         },
         bufferDir: resolveProjectBufferDir(ref.grove_id, ref.project_id),
@@ -336,10 +330,9 @@ export function createFsReplayStore(rootDir: string = resolveMemberEventReplayDr
  */
 function makeDefaultTransport(machineId: string): EventReplayTransport {
   return async (target, route, sessionId, body) => {
-    const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
     const payload = Buffer.from(JSON.stringify(body), 'utf-8');
     const headers: Record<string, string> = {
-      host: `${overlayHost}:${port}`,
+      host: hostAuthority(target),
       authorization: `Bearer ${target.bearer}`,
       'content-type': 'application/json',
       'content-length': String(payload.length),

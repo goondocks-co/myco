@@ -102,6 +102,35 @@ export interface RemoteTarget {
   bearer: string;
 }
 
+/** The wire-facing host fields a {@link RemoteTarget} carries — the subset of a
+ *  host record the transport reads. */
+export type RemoteHostDescriptor = RemoteTarget['host'];
+
+/**
+ * The ONE record→target projection of a host's wire fields.
+ *
+ * Every {@link RemoteTarget} builder — the capture/residency drains, the proxy's
+ * attach and host-carrier paths — must route through here. A transport field
+ * added or removed belongs in this function alone; inlining the object literal
+ * at a call site puts the transport contract in more than one place, and the
+ * drains have no compile-time link to each other that would catch the drift.
+ */
+export function hostDescriptorFor(record: {
+  host_id: string;
+  label: string;
+  overlay_address: string;
+  protocol_version: number;
+  proxy_port?: number;
+}): RemoteHostDescriptor {
+  return {
+    host_id: record.host_id,
+    label: record.label,
+    overlay_address: record.overlay_address,
+    protocol_version: record.protocol_version,
+    proxy_port: record.proxy_port,
+  };
+}
+
 /** The uniform refusal envelope. One shape; two transport serializers
  *  ({@link refusalJson} for router routes, {@link refusalMcpBody} for `/mcp`). */
 export interface RefusalPayload {
@@ -877,13 +906,7 @@ export function resolveHostCarrierTarget(
     target: {
       projectId: null,
       groveId,
-      host: {
-        host_id: record.host_id,
-        label: record.label,
-        overlay_address: record.overlay_address,
-        protocol_version: record.protocol_version,
-        proxy_port: record.proxy_port,
-      },
+      host: hostDescriptorFor(record),
       bearer,
     },
   };
@@ -922,13 +945,7 @@ export function remoteTargetFor(
     projectId,
     groveId: attach.ref.grove_id,
     root: attach.ref.root,
-    host: {
-      host_id: attach.host.host_id,
-      label: attach.host.label,
-      overlay_address: attach.host.overlay_address,
-      protocol_version: attach.host.protocol_version,
-      proxy_port: attach.host.proxy_port,
-    },
+    host: hostDescriptorFor(attach.host),
     bearer: attach.bearer,
   };
 }
