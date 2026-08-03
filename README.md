@@ -135,22 +135,22 @@ Supported symbionts include Claude Code, Cursor, Codex, Cline, Copilot, Antigrav
 
 ### Team Host
 
-Share knowledge across machines and teammates with no cloud account. One teammate's Myco becomes the team's shared home; everyone else joins it directly from the dashboard:
+Share knowledge across machines and teammates with no cloud account. One teammate's Myco becomes the team's shared home; everyone else joins it directly.
+
+Both sides start on the dashboard's **Team** page, which opens on a choice: host a team on this machine, or join one a teammate already hosts. Hosting asks for the address teammates will dial and a name for the team's storage, then stands the host up — entirely as your user, with no administrator password. Mint a one-time join key from the same page and hand it to a teammate, who pastes it into the join form on theirs.
+
+For headless machines and scripted setups, the same two actions are commands:
 
 ```bash
-myco host enable --server-url https://your-host:8080   # on the host machine
+myco host enable --server-url https://your-host:8080 --designate-fresh   # on the host machine
 myco join <host> --key <one-time-key> --server-url <url> --overlay-address <address>   # on a member's machine
 ```
 
-Enabling a host is a terminal command today (it prints a ready-to-paste join command for your first teammate); joining is available from the dashboard's **Team** page as a form with the same four fields. Once joined, connect the projects you want the team to share (Team page, or `myco attach [path] --host <id>`). Connecting a project moves its knowledge — sessions, spores, plans, skills — to the host, which holds the single copy while the project is connected; agent tools and search route to it transparently. Disconnecting (`myco detach`) brings the full history back home in one verified transfer.
+Once joined, connect the projects you want the team to share (Team page, or `myco attach [path] --host <id>`). Connecting a project moves its knowledge — sessions, spores, plans, skills — to the host, which holds the single copy while the project is connected; agent tools and search route to it transparently. Disconnecting (`myco detach`) brings the full history back home in one verified transfer.
 
 For projects you haven't connected to a host, your local Grove databases remain the source of truth. Joined machines and the host talk over a direct, encrypted overlay connection, and each record carries a machine identity for attribution.
 
-See the [Team Host docs](docs/team-host.md) for the full guide, including running a team server and the external read-only MCP endpoint for agents that aren't Myco members.
-
-### Collective
-
-The Collective — a cross-team admin layer — is not currently integrated with Myco; it's kept as a design record pending a redesign around Team Host. See the [Collective notes](docs/collective.md) for its status.
+See the [Team Host docs](docs/team-host.md) for the full guide, including hosting from the command line and the external read-only MCP endpoint for agents that aren't Myco members.
 
 ### External read-only MCP
 

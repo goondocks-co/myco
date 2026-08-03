@@ -104,7 +104,8 @@ function refuseHostAdmin(
   const platform = deps.platform ?? process.platform;
   if (platform !== 'darwin' && platform !== 'linux') {
     return refusal(422, 'host_admin_unsupported',
-      'Team hosting is not supported on this platform — this machine can join a team as a member, not host one.');
+      'Team hosting is not supported on this operating system yet — and neither is joining: '
+      + 'Myco\'s overlay client has no build for it. Everything else in Myco works normally here.');
   }
   const home = (() => { try { return os.homedir(); } catch { return ''; } })();
   if (!home || home === '/var/root' || process.getuid?.() === 0) {

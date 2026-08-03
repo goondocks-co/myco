@@ -2,7 +2,7 @@
 
 Team Host turns one teammate's Myco install into your team's shared home. Join it from any other machine, connect your projects, and every teammate's agents draw on the same team storage — search, spores, sessions, plans, and skills — over a direct, encrypted connection between your machines. No cloud account, no third-party service holding your data.
 
-> **Coming from Team Sync?** Team Sync — the earlier Cloudflare-based sync worker — is retired. Move your team to Team Host by having one teammate run a team server (see [Run a team server](#run-a-team-server) below) and everyone else joining it; there's no cloud account to provision this time. Any Team Sync worker you deployed earlier keeps running as it is, without further updates. Your local knowledge was never stored on it, so nothing is at risk either way. When you connect a project that already has local history, that history moves into team storage too — see [Connect a project](#connect-a-project).
+> **Coming from Team Sync?** Team Sync — the earlier Cloudflare-based sync worker — is retired. Move your team to Team Host by having one teammate [host a team](#host-a-team) and everyone else joining it; there's no cloud account to provision this time. Any Team Sync worker you deployed earlier keeps running as it is, without further updates. Your local knowledge was never stored on it, so nothing is at risk either way. When you connect a project that already has local history, that history moves into team storage too — see [Connect a project](#connect-a-project).
 
 ## What you get
 
@@ -10,13 +10,43 @@ Team Host turns one teammate's Myco install into your team's shared home. Join i
 - Joined machines and the host talk directly over an encrypted overlay connection, peer-to-peer where possible.
 - New spores, sessions, plans, and other knowledge on a connected project reach team storage as you work.
 - A read-only endpoint lets tools that aren't Myco members — hosted agents, automations — query team storage too.
-- Team storage is the sole copy for anything routed through it, so a serve install backs it up automatically.
+- Team storage is the sole copy for anything routed through it, so a host backs it up automatically.
 
 ## Before you start
 
 Team Host runs on **macOS and Linux**, for hosts and members alike. Windows can't take part yet — not as a host and not as a member — because the overlay client Myco provisions has no Windows build. Everything else in Myco works normally on Windows; it's team membership specifically that's unavailable.
 
-On **macOS**, Myco needs [Homebrew](https://brew.sh) to install the overlay client, on hosts and members both. The open-source overlay client ships through Homebrew on macOS and nowhere else, so `myco join` and `myco install --serve` will stop and tell you if it's missing. On Linux there's no such requirement — Myco downloads and verifies the client itself.
+On **macOS**, Myco needs [Homebrew](https://brew.sh) to install the overlay client, on hosts and members both. The open-source overlay client ships through Homebrew on macOS and nowhere else, so hosting a team and joining one both stop and tell you if it's missing. On Linux there's no such requirement — Myco downloads and verifies the client itself.
+
+## Host a team
+
+One machine holds the team's knowledge and serves everyone else. Pick a machine that's usually on — a spare box, a home server, or your own laptop to start with.
+
+Open the dashboard (`myco open`) and go to the **Team** page. It opens on a choice: host a team, or join one. Choose **Host a team** and fill in:
+
+- **Server URL** — the address teammates dial to reach this host, for example `https://your-host.example:8080`.
+- **Team storage name** — names the storage Myco creates for the team. It's fresh and dedicated; your own projects stay yours, and nothing you already have is handed to the team.
+- **Host label** (optional) — what this host is called in teammates' dashboards.
+
+Submit, and Myco stands the host up, showing each step as it goes and restarting the local service at the end. The whole thing runs as you — nothing to install first, no administrator password, on macOS and Linux alike. Refreshing the page part-way through is safe; the setup keeps running and the page picks it back up.
+
+A host set up this way is reachable while you're logged in. Run `myco service install` once afterwards to keep it serving unattended across reboots and logouts.
+
+### Invite your teammates
+
+**Mint join key** on the host's Team page produces a one-time key along with the complete `myco join …` command to hand to one teammate. It's shown once and works once, so copy it when it appears. Mint another key for each additional teammate.
+
+### Stop hosting
+
+**Stop hosting** takes this machine out of service and tears down what hosting set up: the control plane, this host's identity on the overlay, and the credential members used to reach it. The team's storage stays on this machine — start hosting again and it picks that same storage back up, history intact. The host's identity is fresh each time, so teammates join again with a new key and any external tools re-authenticate with a new token.
+
+### When the dashboard sends you to the terminal
+
+On macOS, a machine whose Myco service already starts at boot needs one step the browser can't perform, so starting and stopping hosting move to the terminal there. The page says so and points you at [hosting from the command line](#hosting-from-the-command-line).
+
+### Choosing a host platform
+
+A Linux host is the more reliable choice. On Linux, Myco fully manages the overlay client it installs — pinned version, verified content, converged automatically whenever hosting is set up again. On macOS, the overlay client comes from **your Homebrew** and Myco deliberately never upgrades or removes it: a `brew upgrade` can move it ahead of the version the control plane was tested with, and a `brew uninstall tailscale` stops the host (and every member session on the same machine — they share the one binary) with a silent respawn loop rather than an error. `myco doctor` flags both situations, but on macOS the fix is in your hands, not Myco's. Both platforms work; pick Linux when you can.
 
 ## Join a team
 
@@ -48,7 +78,7 @@ Finish (or cancel) any in-flight project move before updating either machine —
 
 ## Team settings and the agent key
 
-The Team page's settings section edits configuration for team storage itself — pick "This machine" if you're the host, or the host you want to configure if you're a member with an attached project. Provider, embedding, and per-task overrides here apply to every project connected through that host, the same forms you'd use for a single project's own settings.
+The Team page's **Settings** tab edits configuration for team storage itself. Pick which team you're configuring from the selector beside the tabs — "This machine" when you're the host, or any host you've joined, including one you haven't connected a project to yet. Provider, embedding, and per-task overrides here apply to every project connected through that host, and they're the same forms you'd use for a single project's own settings — members edit them too, not just the host.
 
 The agent that does background work against team storage needs its own provider key, separate from anything configured on individual machines. Set it once — at install time with `--team-key` (or the `MYCO_TEAM_AGENT_KEY` environment variable), or later from any member's Team page — and it lives in the host's team storage. Your own personal provider keys are never used for team work, and the team key never leaves team storage.
 
@@ -60,7 +90,7 @@ The Team page's **Capture delivery** panel shows, per host, how much captured wo
 
 Tools that never join the team's overlay — a hosted agent, an automation platform, anything that speaks [Model Context Protocol](https://modelcontextprotocol.io) — can still read team storage through a separate, read-only endpoint. It exposes exactly six tools: search, a project digest, and list/get on plans, sessions, skills, and spores — nothing that writes, and nothing beyond what's already read-only for a Myco member.
 
-The endpoint is reached over a public HTTPS URL (a Tailscale Funnel address), gated by a bearer token. Turn it on from the Team page's **External access** panel — it's off by default, even on a serving install, until someone on the team explicitly enables it. Turning it on mints the access token and shows it **once**, with a copy button — save it then, because it isn't retrievable afterward. The public address is shown when you turn it on (any time later, `tailscale funnel status` on the host machine shows it). The same panel can rotate the token; rotating shows the new value once and invalidates the old one immediately, so every tool already configured needs updating afterward. Locally, the daemon serves this endpoint from a private socket owned by your user — there is no local TCP port another process could grab. External access requires the host's machine to run Tailscale with Funnel available (macOS and Linux only). `myco doctor` flags it if external access is enabled with no token to authenticate callers.
+The endpoint is reached over a public HTTPS URL (a Tailscale Funnel address), gated by a bearer token. Turn it on from the Team page's **External access** tab — it's off by default, even on a machine that's hosting, until someone on the team explicitly enables it. Turning it on mints the access token and shows it **once**, with a copy button — save it then, because it isn't retrievable afterward. The public address appears alongside it, together with a ready-to-paste configuration block for whatever tool you're connecting (any time later, `tailscale funnel status` on the host machine shows the address). The same tab can rotate the token; rotating shows the new value once and invalidates the old one immediately, so every tool already configured needs updating afterward. Locally, the daemon serves this endpoint from a private socket owned by your user — there is no local TCP port another process could grab. External access requires the host's machine to run Tailscale with Funnel available (macOS and Linux only). `myco doctor` flags it if external access is enabled with no token to authenticate callers.
 
 Point any MCP-speaking tool at the endpoint with a bearer header, for example:
 
@@ -79,31 +109,44 @@ Point any MCP-speaking tool at the endpoint with a bearer header, for example:
 
 ## Backups
 
-Team storage is the one copy of everything routed through it, so a serve install turns on scheduled local backups for it by default — the same backup mechanism every Myco project uses, just applied automatically here. Run a backup on demand, or configure the schedule and retention, from the **Backup & Restore** section of the Settings page.
+Team storage is the one copy of everything routed through it, so a host turns on scheduled local backups for it by default — the same backup mechanism every Myco project uses, just applied automatically here. Run a backup on demand, or configure the schedule and retention, from the **Backup & Restore** section of the Settings page.
 
 If a serving machine needs replacing, restore its backup onto the replacement using the same restore flow any Myco project uses — restore supports a dry-run preview first, and preserves attribution so nothing about who-said-what is lost in the move.
 
-## Run a team server
+## Hosting from the command line
 
-Turning a machine into a Team Host is an operator action — do this on the machine you want your team to depend on.
+Setting up a headless machine, or scripting a new host? Everything the Team page does is available at the terminal.
 
-The simplest path is at install time:
+At install time, in one command:
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh -s -- --serve --server-url https://your-host:8080
 ```
 
-`--serve` requires `--server-url` — the address teammates will dial to reach this host. It designates this machine's default project storage as what it serves for the team, and prints a ready-to-paste `myco join …` command for your first teammate. This installer flag is available on macOS and Linux (see [Before you start](#before-you-start)).
+`--serve` requires `--server-url` — the address teammates will dial to reach this host. It serves this machine's default project storage, and prints a ready-to-paste `myco join …` command for your first teammate. This installer flag is available on macOS and Linux (see [Before you start](#before-you-start)).
 
-Already installed? `myco host enable --server-url <url>` does the same enrollment on an existing install. It provisions and starts the overlay networking services this machine needs to serve a team, and requires root — expect a sudo prompt. From there:
+On a machine where Myco is already installed:
+
+```bash
+myco host enable --server-url https://your-host:8080 --designate-fresh --storage-name "Team Host"
+```
+
+If the machine already has projects, that first `myco host enable` needs you to say what it should serve — Myco never hands storage you already use to a team without being told:
+
+- `--designate-fresh` creates new storage dedicated to the team. Name it with `--storage-name`.
+- `--designate-default` serves this machine's default project storage — the same choice the `--serve` installer makes.
+
+Add `--emit-join` to mint the first one-time key and print the ready-to-paste join command in the same run.
+
+Start hosting again later and Myco adopts the team storage you had before, history intact. Passing a different `--storage-name` starts new storage instead and keeps the old storage on the machine.
+
+Run this without `sudo` — the stack runs unprivileged as your user, and Myco elevates only the individual steps that need it. (On macOS, a machine whose Myco service starts at boot is the one case that asks for your password, for a single step.)
+
+From there:
 
 - `myco host status` — this machine's current Team Host state.
 - `myco host rotate-key` — mint a fresh one-time key and print the ready-to-paste join command for the next teammate. Runs only on the host's own machine; it's never reachable by team members over the overlay.
-- `myco host disable` — stop serving and tear down the overlay services **completely**: the control plane, the host's overlay identity, and the credential members used to reach it are all destroyed. Re-enabling mints a fresh host identity, so teammates run `myco join` again and any external tools re-authenticate with a fresh token. If part of the teardown fails, nothing destructive happens — the state a retry needs is kept, and the command says exactly what survived.
-
-### Choosing a host platform
-
-A Linux host is the more reliable choice. On Linux, Myco fully manages the overlay client it installs — pinned version, verified content, converged automatically when you re-run `myco host enable`. On macOS, the overlay client comes from **your Homebrew** and Myco deliberately never upgrades or removes it: a `brew upgrade` can move it ahead of the version the control plane was tested with, and a `brew uninstall tailscale` stops the host (and every member session on the same machine — they share the one binary) with a silent respawn loop rather than an error. `myco doctor` flags both situations, but on macOS the fix is in your hands, not Myco's. Both platforms work; pick Linux when you can.
+- `myco host disable` — stop serving and tear down the overlay services **completely**: the control plane, the host's overlay identity, and the credential members used to reach it are all destroyed. The team's storage stays on the machine and is picked back up if you host again, but the host identity is fresh, so teammates run `myco join` again and any external tools re-authenticate with a fresh token. If part of the teardown fails, nothing destructive happens — the state a retry needs is kept, and the command says exactly what survived.
 
 ## How the network works
 

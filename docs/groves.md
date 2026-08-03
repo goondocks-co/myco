@@ -101,7 +101,7 @@ Deleting a project is destructive and requires confirmation. When backups are en
 
 Connecting a project to a Team Host moves its knowledge to a teammate's Myco, which holds the single copy while the project is connected — the team and non-member agents query it there, and disconnecting brings the history back. For projects not connected to a host, local Grove data remains the source of truth.
 
-Use the **Team** page to join a Team Host and connect projects to it. See [Team Host](team-host.md) for the full guide.
+Use the **Team** page to host a team or join one, and to connect projects to a host. See [Team Host](team-host.md) for the full guide.
 
 ## Troubleshooting
 

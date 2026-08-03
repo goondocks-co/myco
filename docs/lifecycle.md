@@ -125,6 +125,8 @@ Then run `myco service install` from a shell that can elevate — realizing a bo
 
 On **Windows**, the service always runs at login via Task Scheduler; boot scope isn't supported there, and a `service_scope: boot` setting is reported by `myco doctor` but not realized.
 
+Hosting a team works at either scope, but the order is easier one way round: set the host up from the Team page first, then switch to boot. On macOS, once the service starts at boot, starting or stopping hosting moves to the terminal (`myco host enable` / `myco host disable`) — see [Team Host](team-host.md#hosting-from-the-command-line).
+
 ## Updates
 
 Myco runs as a single native binary and one local service serving every Grove on the machine. It keeps itself up to date:
@@ -137,7 +139,7 @@ Myco runs as a single native binary and one local service serving every Grove on
 
 All three paths end at the same state: the installed Myco binary is at the new version, and the next restart updates your local service and connected agents.
 
-Team Host operator commands (`myco host`, `myco join`, `myco attach`) live in the main binary and upgrade automatically with the rest of Myco — see [Team Host](team-host.md). If your team shares a host, update the host machine first, then members.
+Hosting a team and joining one are part of the main binary — the dashboard's Team page and the `myco host`, `myco join`, and `myco attach` commands alike — and they upgrade automatically with the rest of Myco. See [Team Host](team-host.md). If your team shares a host, update the host machine first, then members.
 
 See [Upgrading Myco](upgrade.md) for the full upgrade walkthrough.
 

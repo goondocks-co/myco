@@ -193,6 +193,6 @@ myco remove --purge   # additionally remove ~/.myco/ itself
 
 `myco remove` preserves user-pre-existing keys in shared agent config files (for example, a `[features].hooks` entry you added to `~/.codex/config.toml` yourself).
 
-## Optional Operator CLIs
+## Sharing with a team
 
-Most users only need `@goondocks/myco`. Team Host operator commands (`myco host enable`, `myco join`, `myco attach`) are already part of that package — see the [Team Host guide](team-host.md) for running a team server or joining one.
+Hosting a team and joining one both start on the dashboard's **Team** page, which opens on that choice. For headless machines and scripted setups, the same actions are commands in the main package (`myco host enable`, `myco join`, `myco attach`) — there's nothing extra to install. See the [Team Host guide](team-host.md).
