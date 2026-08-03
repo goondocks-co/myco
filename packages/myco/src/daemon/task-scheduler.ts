@@ -30,6 +30,7 @@ function resolveSchedule(
     // YAML with a thresholds shape from a different work unit.
     accelerator: configOverride.schedule.accelerator ?? yamlSchedule.accelerator,
     maxRunsPerDay: configOverride.schedule.maxRunsPerDay ?? yamlSchedule.maxRunsPerDay,
+    runWhenCold: configOverride.schedule.runWhenCold ?? yamlSchedule.runWhenCold,
   };
 }
 
@@ -85,6 +86,15 @@ export interface ScheduledJobContext {
     taskName: string,
     yamlScheduleEnabled: boolean,
   ) => boolean;
+  /**
+   * True when the project is past the cold_project_threshold_days
+   * inactivity backstop. Cold projects skip every task EXCEPT those with
+   * `runWhenCold` (catch-up work whose backlog must drain regardless of
+   * session recency — otherwise the pending hold pins the daemon awake on
+   * work the gate refuses to run). Optional — when omitted, no task is
+   * cold-gated here (the forEachProject implementation may still filter).
+   */
+  isProjectCold?: (scope: RegisteredProjectScope) => boolean;
   /** Pre-condition checks scoped to a project. */
   preConditions: Record<string, (scope: RegisteredProjectScope) => boolean>;
   /** Backlog count functions keyed by accelerator name. */
@@ -245,6 +255,11 @@ export function buildScheduledJobs(
             ? context.getTaskScheduleEnabled(projectScope, task.name, yamlEffective.enabled)
             : effective.enabled;
           if (!enabled) continue;
+
+          // Cold gate is task-aware: catch-up tasks (`runWhenCold`) drain
+          // their backlog regardless of session recency; everything else
+          // honors the cost backstop.
+          if (!effective.runWhenCold && context.isProjectCold?.(projectScope)) continue;
 
           if (context.isTaskRunning(groveId, projectId, task.name)) continue;
 

@@ -32,6 +32,7 @@ import { loadMergedConfig } from '@myco/config/loader.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectRuntimeIsForeign } from '@myco/daemon/update-checker.js';
 
 export interface CanopyDescribeBacklogContext {
   /** Grove the request is bound to; consulted for grove-wide reads. */
@@ -82,6 +83,10 @@ export function serviceableProjectIds(
   const home = mycoHome ?? resolveMycoHome();
   if (!loadGroveRecord(groveId, home)) return null;
   return listRegisteredProjects(groveId, home)
+    // A project pinned to a different MYCO_HOME is serviced by another
+    // daemon — its rows must not count toward THIS daemon's backlog (they
+    // would hold it out of deep sleep on work it will never run).
+    .filter((project) => !projectRuntimeIsForeign(resolveProjectVaultDir(project.root), home))
     .filter((project) => projectCanopyEnabled(project.root, groveId, home))
     .map((project) => project.project_id);
 }
