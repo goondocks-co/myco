@@ -627,8 +627,11 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     // empty-DERP-map failure shape), while launchd's bootstrap DOES start
     // (RunAtLoad) and its `start` verb is kickstart -k, which would SIGTERM
     // a headscale mid-SQLite-open for nothing.
+    // `running === false` deliberately (matching member-overlay.ts): 'unknown'
+    // means the owning domain is unreadable, and a blind start there could
+    // double-start a live control plane.
     const postInstall = await headscaleManager.status(HEADSCALE_SERVICE_LABEL);
-    if (postInstall.running !== true) {
+    if (postInstall.running === false) {
       await headscaleManager.start(HEADSCALE_SERVICE_LABEL);
     }
     log(`headscale supervised as a ${targetDomain}-scope service (runs as ${os.userInfo().username}).`);
@@ -674,6 +677,24 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
       logDir: path.join(layout.stateDir, 'logs'),
     }));
     log(`host tailscaled supervised unprivileged as ${HOST_TAILSCALED_LABEL} (userspace, ${tailscaledSocket}).`);
+  }
+  // Explicit start after install — the SAME requirement headscale has and the
+  // member path already honors (`member-overlay.ts`): systemd's user manager
+  // only `daemon-reload`s + `enable`s on install (`systemd.ts`), so the unit
+  // is registered but DEAD until reboot, the socket below never appears, and
+  // enable fails at the 5s wait. launchd bootstraps with RunAtLoad, which is
+  // why this only bites on Linux — and why hosting on Linux was impossible
+  // (live rig, 2026-08-03: unit `enabled; inactive (dead)`).
+  //
+  // `running === false` deliberately, never `!== true`: 'unknown' (an
+  // unreadable owning domain — the boot backend degrades to it by design)
+  // must not trigger a blind start of a possibly-live service.
+  {
+    const tailscaledStatus = await serviceManager.status(HOST_TAILSCALED_LABEL);
+    if (tailscaledStatus.running === false) {
+      await serviceManager.start(HOST_TAILSCALED_LABEL);
+      log('host tailscaled started.');
+    }
   }
   const tailscaleCli = createTailscaleCli({
     runner,
