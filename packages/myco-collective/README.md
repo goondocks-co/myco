@@ -44,7 +44,6 @@ npm update -g @goondocks/myco-collective
 ## Learn more
 
 - Main project: <https://github.com/goondocks-co/myco>
-- Collective guide: <https://github.com/goondocks-co/myco/blob/main/docs/collective.md>
 
 ## License
 

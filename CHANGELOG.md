@@ -2,6 +2,38 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-08-02
+
+### Headline
+
+**Hosting a team is now something you do in the dashboard.** The Team page opens on the choice that actually matters first — host a team, or join one — and hosting runs entirely as your user: no sudo, no administrator password, on macOS and Linux alike. A host set up this way serves while you're logged in; `myco service install` makes it survive reboots unattended.
+
+### Added
+
+#### Team hosting in the UI
+
+- **Host a team from the Team page** (#803, #800). A form takes the address teammates will dial, a name for the team's storage, and an optional host label, then stands the host up with a live step log and survives a mid-run page refresh. Team storage is created fresh for the team — existing projects are never designated silently.
+- **Mint join key and Stop hosting**, both from the same page (#803). Minting reveals a one-time key and the complete ready-to-paste `myco join …` command once. Stopping tears the host down but leaves the team's storage in place; hosting again picks that storage back up with its history intact.
+- **Zero-sudo hosting on the default path** (#799). Overlay supervision follows the local service's own scope instead of being pinned to the system domain. The one remaining elevated case is a macOS machine whose service already starts at boot; the dashboard says so and points at the CLI.
+
+#### Per-host configuration
+
+- **Three tabs on a connected Team page** (#803, #802): Team (hosts, membership, project attach, capture delivery), External access, and Settings. The host-scoped tabs target hosts by identity (#802), so a host with no projects attached yet is a first-class, fully configurable target — and members get the same editors as the host.
+- **External access** moved up into its own tab, showing the public read-only address, the one-time token reveal, token rotation, and a ready-to-paste MCP configuration block for the tool you're connecting.
+
+### Changed
+
+- **One binary-resolution contract across every consumer** (#801), so the managed binary is located the same way from the CLI, the service, and the installer paths.
+- The Team page is machine-scoped (#802) and its tab and host selection live in the URL, so a view is linkable and survives the reload the enable flow performs.
+
+### Breaking
+
+- **`myco host enable` requires an explicit designation on a machine that already has project storage.** The first enable now refuses without `--designate-fresh` (new storage dedicated to the team, named with `--storage-name`) or `--designate-default` (serve this machine's default project storage — what the `--serve` installer path does). Storage you already use is never designated for a team silently. Enabling again later adopts the team storage from before, history intact; a different `--storage-name` starts new storage and keeps the old on the machine. The `--serve` installer path is unaffected — it passes `--designate-default` itself.
+
+### Removed
+
+- **Collective documentation.** The Collective's daemon integration was retired in 1.3.0 and its guide is gone from the docs site; the dormant `@goondocks/myco-collective` package is unchanged.
+
 ## [1.3.0] - 2026-08-02
 
 ### Headline
