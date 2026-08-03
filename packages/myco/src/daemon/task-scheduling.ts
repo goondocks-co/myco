@@ -9,6 +9,7 @@ import type {
   ScheduledJobKicker,
 } from './task-scheduler.js';
 import { buildScheduledJobs, lastRunKey } from './task-scheduler.js';
+import { projectRuntimeIsForeign } from './update-checker.js';
 import type { RegisteredProjectScope } from './scope-iteration.js';
 import {
   buildTaskInstruction,
@@ -541,6 +542,12 @@ export async function registerScheduledTasks(
 
   // Per-(grove, project) cold-state log latch — emit warm/cold transition once.
   const lastColdState = new Map<string, 'warm' | 'cold' | null>();
+  // Per-(grove, project) cold decision recorded by shouldVisit each tick and
+  // consumed by the task loop's per-task gate (isProjectCold), so catch-up
+  // tasks (`runWhenCold`) run on cold projects while the rest stay paused.
+  const coldShouldSkip = new Map<string, boolean>();
+  // Foreign-runtime log latch — emit the skip reason once per transition.
+  const lastForeignByProject = new Map<string, boolean>();
   const lastConfigErrorByProject = new Map<string, string>();
 
   // Single canonical task list — tasks are project-agnostic, only their queries differ.
@@ -768,6 +775,21 @@ export async function registerScheduledTasks(
           shouldVisit: (scope) => {
             const config = resolveProjectConfig(scope);
             if (!config) return false;
+            // A project whose runtime.home pin routes to a different
+            // MYCO_HOME is served by ANOTHER daemon (dogfood split). None
+            // of this daemon's scheduled intelligence may run for it.
+            if (projectRuntimeIsForeign(scope.projectVaultDir, mycoHome)) {
+              const foreignKey = coldStateKey(scope.grove.id, scope.projectId);
+              if (lastForeignByProject.get(foreignKey) !== true) {
+                logger.info(LOG_KINDS.AGENT_RUN, 'Skipping scheduled tasks — project runtime is pinned to a different MYCO_HOME', {
+                  grove_id: scope.grove.id,
+                  project_id: scope.projectId,
+                });
+                lastForeignByProject.set(foreignKey, true);
+              }
+              return false;
+            }
+            lastForeignByProject.set(coldStateKey(scope.grove.id, scope.projectId), false);
             const enabled = config.agent.scheduled_tasks_enabled !== false;
             const enabledKey = coldStateKey(scope.grove.id, scope.projectId);
             const previousEnabled = lastEnabledByProject.get(enabledKey);
@@ -804,6 +826,11 @@ export async function registerScheduledTasks(
             }
             // Long-term cost backstop, separate from the per-project sleep
             // timer — keeps cold projects registered without burning tokens.
+            // The decision is RECORDED here rather than enforced: the task
+            // loop applies it per task so `runWhenCold` catch-up work
+            // (draining pending descriptions/embeddings) still runs — a
+            // backlog held by the gate would otherwise pin the daemon out
+            // of deep sleep on work the gate refuses to schedule.
             const thresholdDays = config.agent.cold_project_threshold_days ?? 14;
             const decision = decideColdProjectGate({
               db: scope.db,
@@ -816,7 +843,7 @@ export async function registerScheduledTasks(
               logger.info(
                 LOG_KINDS.AGENT_RUN,
                 decision.state === 'cold'
-                  ? `Project cold (${thresholdDays}d inactive) — pausing scheduled tasks`
+                  ? `Project cold (${thresholdDays}d inactive) — pausing scheduled tasks (catch-up tasks still run)`
                   : 'Project warm — resuming scheduled tasks',
                 {
                   grove_id: scope.grove.id,
@@ -826,11 +853,14 @@ export async function registerScheduledTasks(
               );
               lastColdState.set(key, decision.state);
             }
-            return decision.should_run;
+            coldShouldSkip.set(key, !decision.should_run);
+            return true;
           },
         },
       );
     },
+    isProjectCold: (scope) =>
+      coldShouldSkip.get(coldStateKey(scope.grove.id, scope.projectId)) === true,
     getTaskConfig: (scope, taskName) => {
       const config = resolveProjectConfig(scope);
       if (!config) return { schedule: { enabled: false } };

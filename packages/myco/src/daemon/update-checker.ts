@@ -118,6 +118,25 @@ export function resolveRuntimeHome(vaultDir?: string): string | null {
 }
 
 /**
+ * True when the project's layered `runtime.home` pin routes its Myco runtime
+ * to a DIFFERENT home than this process serves. A foreign-routed project
+ * (e.g. a dogfood repo pinned to `~/.myco-dev` while the prod daemon iterates
+ * its `~/.myco` registration) must not receive this daemon's intelligence
+ * work: a scan here builds canopy rows the owning runtime never describes,
+ * and the resulting permanent backlog both misleads the operations view and
+ * pins this daemon out of deep sleep. No pin — the common case — is never
+ * foreign.
+ */
+export function projectRuntimeIsForeign(
+  projectVaultDir: string,
+  mycoHome: string = resolveMycoHome(),
+): boolean {
+  const pinned = resolveRuntimeHome(projectVaultDir);
+  if (!pinned) return false;
+  return path.resolve(pinned) !== path.resolve(mycoHome);
+}
+
+/**
  * Resolve the runtime pin from a launch cwd, used by the standalone launch
  * preamble. The project-scope pin is found by a pure filesystem upward walk
  * for `<dir>/.myco/runtime.command` (first non-empty wins, stopping at the

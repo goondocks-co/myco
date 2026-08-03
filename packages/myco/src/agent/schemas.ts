@@ -165,6 +165,12 @@ export const TaskScheduleSchema = z.object({
    */
   accelerator: AcceleratorConfigSchema.optional(),
   /**
+   * Run even when the project is cold. Catch-up work (pending
+   * descriptions/embeddings) drains regardless of session recency;
+   * knowledge-generating tasks stay cold-gated by default.
+   */
+  runWhenCold: z.boolean().optional(),
+  /**
    * Hard ceiling on completed-or-failed runs of this task per
    * (grove, project) tuple in the trailing 24 hours. When the count is
    * at-or-above the ceiling, the scheduler will not dispatch another run

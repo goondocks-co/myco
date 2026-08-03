@@ -22,11 +22,13 @@
  *   never leaves a stale handle behind.
  */
 
+import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { JobRunner } from '../job-runner.js';
 import { scanProject } from '@myco/canopy/scanner/scan-project.js';
+import { projectRuntimeIsForeign } from '../update-checker.js';
 import { deltaScan } from '@myco/canopy/scanner/delta-scan.js';
 import type { CanopyScanResult } from '@myco/canopy/types.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -52,6 +54,30 @@ function logScanLimitHit(
     limit_kind: limitHit.kind,
     limit_value: limitHit.value,
   });
+}
+
+// Foreign-runtime log latch — one skip line per project per daemon lifetime,
+// not one per background tick.
+const loggedForeignSkips = new Set<string>();
+
+/**
+ * True (and logged once) when the project's `runtime.home` pin routes it to a
+ * different MYCO_HOME than this daemon serves. Scanning a foreign-routed
+ * project builds canopy rows the owning runtime never describes — a permanent
+ * phantom backlog that misleads the operations view and holds this daemon out
+ * of deep sleep. Checked at every scan entry point (initial populate,
+ * background delta, session-start delta) so no path can leak rows in.
+ */
+function skipForeignRuntimeScan(identity: CanopyRunnerIdentity, logger: DaemonLogger): boolean {
+  if (!projectRuntimeIsForeign(path.join(identity.projectRoot, '.myco'))) return false;
+  if (!loggedForeignSkips.has(identity.projectId)) {
+    loggedForeignSkips.add(identity.projectId);
+    logger.info(LOG_KINDS.CANOPY_SCAN, 'Skipping canopy scan — project runtime is pinned to a different MYCO_HOME', {
+      project_id: identity.projectId,
+      project_root: identity.projectRoot,
+    });
+  }
+  return true;
 }
 
 /**
@@ -147,6 +173,7 @@ export class CanopyDeltaScanRunner {
   }
 
   private async execute(): Promise<void> {
+    if (skipForeignRuntimeScan(this.identity, this.shared.logger)) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const exclude = this.shared.liveConfig.current.cortex.canopy.exclude;
     const db = this.shared.resolveDb(this.identity.databasePath);
@@ -312,6 +339,7 @@ export class CanopyJobsRegistry {
    * background tick.
    */
   async initialPopulate(identity: CanopyRunnerIdentity): Promise<void> {
+    if (skipForeignRuntimeScan(identity, this.shared.logger)) return;
     const db = this.shared.resolveDb(identity.databasePath);
     const row = db
       .prepare('SELECT 1 AS present FROM canopy_entries WHERE project_id = ? LIMIT 1')
@@ -329,6 +357,7 @@ export class CanopyJobsRegistry {
    * scan kicks the describe scheduler the same way a delta does.
    */
   async runFullScan(identity: CanopyRunnerIdentity): Promise<void> {
+    if (skipForeignRuntimeScan(identity, this.shared.logger)) return;
     const exclude = this.shared.liveConfig.current.cortex.canopy.exclude;
     const db = this.shared.resolveDb(identity.databasePath);
     try {

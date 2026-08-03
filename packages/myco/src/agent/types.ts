@@ -503,6 +503,14 @@ export interface TaskSchedule {
    * by `intervalSeconds`.
    */
   maxRunsPerDay?: number;
+  /**
+   * Run even when the project is cold (past the cold_project_threshold_days
+   * inactivity backstop). For catch-up work — draining pending descriptions
+   * or embeddings — the backlog must clear regardless of session recency;
+   * cold-gating it pins the daemon awake on a backlog it refuses to drain.
+   * Tasks that generate NEW knowledge stay cold-gated by default.
+   */
+  runWhenCold?: boolean;
 }
 
 /** Shape of each task YAML file (e.g., `tasks/vault-evolve.yaml`). */
