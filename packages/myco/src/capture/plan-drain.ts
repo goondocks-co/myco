@@ -39,13 +39,13 @@ import { assertSafeCaptureSegment, resolveMemberPlanDrainDir } from '../grove/pa
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import type { GroveProjectId } from '../grove/ids.js';
 import { getHostMembershipSnapshot } from '../host/registry.js';
-import { requireProjectScopedTarget } from '../host/routing.js';
+import { hostDescriptorFor, requireProjectScopedTarget } from '../host/routing.js';
 import type { RemoteTarget } from '../host/routing.js';
 import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
-import { defaultDial, hostProtocolCompatible, parseOverlayAddress } from '../daemon/host-proxy.js';
+import { defaultDial, hostAuthority, hostProtocolCompatible } from '../daemon/host-proxy.js';
 import { isPlanWriteEvent, type PlanWatchConfig } from '../daemon/plan-capture.js';
 import type { DaemonLogger } from '../daemon/logger.js';
 import {
@@ -247,10 +247,9 @@ const defaultFileReader: PlanFileReader = {
  * into another's Grove.
  */
 export const defaultPlanTransport: PlanPostTransport = async (target, body) => {
-  const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const payload = Buffer.from(JSON.stringify(body), 'utf-8');
   const headers = {
-    host: `${overlayHost}:${port}`,
+    host: hostAuthority(target),
     authorization: `Bearer ${target.bearer}`,
     'content-type': 'application/json',
     'content-length': String(payload.length),
@@ -308,13 +307,7 @@ function defaultResolveHostTarget(
   return {
     projectId: sample.project_id as GroveProjectId,
     groveId: sample.grove_id,
-    host: {
-      host_id: host.host_id,
-      label: host.label,
-      overlay_address: host.overlay_address,
-      protocol_version: host.protocol_version,
-      proxy_port: host.proxy_port,
-    },
+    host: hostDescriptorFor(host),
     bearer,
   };
 }
