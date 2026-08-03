@@ -611,6 +611,58 @@ describe('hostEnable / hostDisable orchestration', () => {
     expect(dis.calls.some((c) => c[0] === 'sudo')).toBe(false);
   });
 
+  it('LINUX HOSTING: both overlay units are explicitly STARTED after install — systemd only enables (live rig regression)', async () => {
+    // Found by the 1.3.1 live rig pass: `SystemdUserServiceManager.install`
+    // only daemon-reloads + enables, so on Linux the freshly-installed
+    // tailscaled unit sat `enabled; inactive (dead)`, its control socket
+    // never appeared, and enable died at the 5s wait — hosting on Linux was
+    // impossible. launchd bootstraps with RunAtLoad, which is why macOS
+    // hosting (all of Stage E) never saw it.
+    const started: string[] = [];
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const { deps: d } = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    const baseStart = d.serviceManager!.start.bind(d.serviceManager);
+    d.serviceManager!.start = async (label: string) => { started.push(label); return baseStart(label); };
+    // Honest systemd shape: installed + enabled, but NOT running until started.
+    const running = new Set<string>();
+    d.serviceManager!.status = async (label: string) => ({
+      installed: true,
+      running: running.has(label),
+      pid: null,
+      lastExitCode: null,
+      unitPath: null,
+    });
+    const trackedStart = d.serviceManager!.start;
+    d.serviceManager!.start = async (label: string) => { running.add(label); return trackedStart(label); };
+    d.headscaleServiceManager = d.serviceManager;
+
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh' }, d);
+
+    expect(started).toContain(HOST_TAILSCALED_LABEL);
+    expect(started).toContain(HEADSCALE_SERVICE_LABEL);
+  });
+
+  it("a service whose owning domain is UNREADABLE ('unknown') is never blind-started", async () => {
+    // The member path's rule (member-overlay.ts), now shared: `running:
+    // 'unknown'` means we could not read the owning domain — starting there
+    // could double-start a live service.
+    const started: string[] = [];
+    const ips = [null as string | null, '100.64.0.5']; let i = 0;
+    const { deps: d } = deps({ resolveOverlayIp: async () => ips[Math.min(i++, 1)] });
+    const baseStart = d.serviceManager!.start.bind(d.serviceManager);
+    d.serviceManager!.start = async (label: string) => { started.push(label); return baseStart(label); };
+    d.serviceManager!.status = async () => ({
+      installed: true, running: 'unknown' as const, pid: null, lastExitCode: null, unitPath: null,
+    });
+    d.headscaleServiceManager = d.serviceManager;
+    d.resolveHeadscaleScope = async () => 'none';
+
+    await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh' }, d);
+
+    expect(started).not.toContain(HOST_TAILSCALED_LABEL);
+    expect(started).not.toContain(HEADSCALE_SERVICE_LABEL);
+  });
+
   it('enable fails LOUD when the admin socket never appears (a dead control plane, not a hang)', async () => {
     const ips = [null as string | null, '100.64.0.5']; let i = 0;
     const { deps: d } = deps({
