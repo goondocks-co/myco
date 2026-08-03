@@ -55,6 +55,7 @@ interface FakeContextOptions {
   getRecentTaskRunCount?: ScheduledJobContext['getRecentTaskRunCount'];
   getTaskConfig?: ScheduledJobContext['getTaskConfig'];
   getTaskScheduleEnabled?: ScheduledJobContext['getTaskScheduleEnabled'];
+  isProjectCold?: ScheduledJobContext['isProjectCold'];
 }
 
 function makeContext(opts: FakeContextOptions = {}): ScheduledJobContext {
@@ -75,6 +76,7 @@ function makeContext(opts: FakeContextOptions = {}): ScheduledJobContext {
     getRecentTaskRunCount: opts.getRecentTaskRunCount,
     getTaskConfig: opts.getTaskConfig ?? (() => undefined),
     getTaskScheduleEnabled: opts.getTaskScheduleEnabled,
+    isProjectCold: opts.isProjectCold,
   };
 }
 
@@ -860,6 +862,66 @@ describe('maxRunsPerDay ceiling', () => {
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
     expect(counter).not.toHaveBeenCalled();
+    expect(runTask).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('cold-project gate (task-aware via runWhenCold)', () => {
+  it('skips tasks on a cold project by default', async () => {
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const tasks = [
+      makeTask('vault-evolve', { enabled: true, intervalSeconds: 60, runIn: ['idle'] }),
+    ];
+    const ctx = makeContext({ runTask, isProjectCold: () => true });
+    const { jobs } = buildScheduledJobs(tasks, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('runs runWhenCold catch-up tasks on a cold project', async () => {
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const tasks = [
+      makeTask('canopy-describe', { enabled: true, intervalSeconds: 60, runIn: ['idle'], runWhenCold: true }),
+      makeTask('vault-evolve', { enabled: true, intervalSeconds: 60, runIn: ['idle'] }),
+    ];
+    const ctx = makeContext({ runTask, isProjectCold: () => true });
+    const { jobs } = buildScheduledJobs(tasks, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(1);
+    expect(runTask).toHaveBeenCalledWith(expect.anything(), 'canopy-describe');
+  });
+
+  it('honors a project-config runWhenCold override on a cold project', async () => {
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const tasks = [
+      makeTask('vault-evolve', { enabled: true, intervalSeconds: 60, runIn: ['idle'] }),
+    ];
+    const ctx = makeContext({
+      runTask,
+      isProjectCold: () => true,
+      getTaskConfig: () => ({ schedule: { runWhenCold: true } }),
+    });
+    const { jobs } = buildScheduledJobs(tasks, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs everything when the project is warm', async () => {
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const tasks = [
+      makeTask('vault-evolve', { enabled: true, intervalSeconds: 60, runIn: ['idle'] }),
+    ];
+    const ctx = makeContext({ runTask, isProjectCold: () => false });
+    const { jobs } = buildScheduledJobs(tasks, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
     expect(runTask).toHaveBeenCalledTimes(1);
   });
 });

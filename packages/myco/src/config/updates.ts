@@ -84,6 +84,7 @@ interface ScheduleInput {
   runIn?: ('active' | 'idle' | 'sleep')[];
   preCondition?: 'has-unprocessed-batches' | 'has-active-skills' | 'has-approved-candidates' | 'has-skill-survey-evidence' | 'has-pending-canopy-rows';
   accelerator?: ScheduleAcceleratorInput | null;
+  runWhenCold?: boolean;
 }
 
 /** Input shape for task config updates. Null values mean "delete this field". */

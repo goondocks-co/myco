@@ -35,6 +35,11 @@ schedule:
   # descriptions fresh while the user is generating new pending rows.
   # Override in myco.yaml on shared-model setups where contention matters.
   intervalSeconds: 120
+  # Catch-up work, not knowledge generation: pending descriptions drain
+  # regardless of session recency. Without this, a cold project's backlog
+  # can never clear — while the canopy pending hold keeps the daemon out
+  # of deep sleep waiting on exactly that backlog.
+  runWhenCold: true
   runIn:
     - active
     - idle
