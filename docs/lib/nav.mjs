@@ -27,7 +27,6 @@ export const NAV = [
     group: 'Team',
     items: [
       { slug: 'team-host', title: 'Team Host' },
-      { slug: 'collective', title: 'Collective' },
     ],
   },
   {

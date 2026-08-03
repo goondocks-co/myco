@@ -54,7 +54,7 @@ The license changed from MIT to Apache 2.0 on 2026-04-29 (commit `57a9571a`). No
 
 ## Teams
 
-Team Host operator commands (`myco host`, `myco join`, `myco attach`) live in the main binary and upgrade automatically with the rest of Myco — there's no separate package for them.
+Hosting a team and joining one are part of the main binary — the dashboard's Team page and the `myco host`, `myco join`, and `myco attach` commands alike — and they upgrade automatically with the rest of Myco. There's no separate package for them.
 
 When you update Myco across a team, **update the host first, then the members**, and finish any in-flight project move before updating either machine — see [Team Host](team-host.md) for the details.
 
