@@ -51,7 +51,7 @@ import { createFsDrainStore } from '../capture/transcript-drain.js';
 import { createFsPlanDrainStore } from '../capture/plan-drain.js';
 import { createFsReplayStore } from '../capture/event-replay-drain.js';
 import type { DrainHealthCounters } from '../capture/drain-health.js';
-import { defaultDial, parseOverlayAddress } from '../daemon/host-proxy.js';
+import { defaultDial, hostAuthority } from '../daemon/host-proxy.js';
 import { readDirPresence } from '@myco/utils/presence.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
@@ -63,7 +63,7 @@ import { resolveGroveBackupDir } from '../backup/location.js';
 import { detachProject, getHostMembershipSnapshot } from './registry.js';
 import { nativePerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { registerProjectInGrove } from '../grove/registry.js';
-import { requireProjectScopedTarget } from './routing.js';
+import { hostDescriptorFor, requireProjectScopedTarget } from './routing.js';
 import type { RemoteTarget } from './routing.js';
 import { completeAttachParking, releaseResidencyLease, type ResidencyDaemonDeps } from './residency-transition.js';
 import {
@@ -220,10 +220,9 @@ export interface ResidencyDrainDeps extends ResidencyDaemonDeps {
  * machine = this member. Reads the small JSON ack.
  */
 export const defaultResidencyTransport: ResidencyPostTransport = async (target, body, machineId) => {
-  const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const payload = Buffer.from(JSON.stringify(body), 'utf-8');
   const headers = {
-    host: `${overlayHost}:${port}`,
+    host: hostAuthority(target),
     authorization: `Bearer ${target.bearer}`,
     'content-type': 'application/json',
     'content-length': String(payload.length),
@@ -276,13 +275,7 @@ const defaultResolveResidencyTarget = (
   return {
     projectId: projectId as GroveProjectId,
     groveId,
-    host: {
-      host_id: host.host_id,
-      label: host.label,
-      overlay_address: host.overlay_address,
-      protocol_version: host.protocol_version,
-      proxy_port: host.proxy_port,
-    },
+    host: hostDescriptorFor(host),
     bearer,
   };
 };
@@ -295,10 +288,9 @@ async function dialDetachRoute<T>(
   body: Record<string, unknown>,
   parse: (parsed: Record<string, unknown>, status: number) => T,
 ): Promise<T> {
-  const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const payload = Buffer.from(JSON.stringify(body), 'utf-8');
   const headers = {
-    host: `${overlayHost}:${port}`,
+    host: hostAuthority(target),
     authorization: `Bearer ${target.bearer}`,
     'content-type': 'application/json',
     'content-length': String(payload.length),
@@ -357,10 +349,9 @@ export const defaultDetachArtifactClient: DetachArtifactClient = {
 
 /** Production goodbye transport: POST the host's detach-complete route. */
 export const defaultDetachGoodbyeTransport: DetachGoodbyeTransport = async (target, machineId) => {
-  const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
   const payload = Buffer.from('{}', 'utf-8');
   const headers = {
-    host: `${overlayHost}:${port}`,
+    host: hostAuthority(target),
     authorization: `Bearer ${target.bearer}`,
     'content-type': 'application/json',
     'content-length': String(payload.length),

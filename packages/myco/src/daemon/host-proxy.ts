@@ -199,6 +199,22 @@ export interface HostProxyDeps {
   logger: ProxyLogger;
 }
 
+/**
+ * The authority a host round-trip claims in its `host:` header.
+ *
+ * This is the host's CSRF comparand (`validateOverlayRequest` demands the Host
+ * header equal the advertised authority), so it must be derived identically by
+ * every caller: the proxy's two forward paths and each capture/residency drain
+ * transport. The {@link Dialer} seam decides WHERE a request is sent; this
+ * decides what it claims to be addressed to — the other half of the same
+ * contract, and the half a caller can silently get wrong without failing to
+ * connect.
+ */
+export function hostAuthority(target: RemoteTarget): string {
+  const { host, port } = parseOverlayAddress(target.host.overlay_address);
+  return `${host}:${port}`;
+}
+
 /** Parse an overlay address (`host:port`, or a full `http://host:port` URL) into
  *  its host + port. Plain daemon HTTP rides the overlay; TLS is the overlay's
  *  job (parent design §7), so the scheme is HTTP. */
@@ -926,8 +942,7 @@ async function forwardCollectInBackground(
         await d.noteSessionEnded(target, sessionId);
       }
     }
-    const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
-    const headers = buildForwardHeaders(req, target, `${overlayHost}:${port}`, body.length);
+    const headers = buildForwardHeaders(req, target, hostAuthority(target), body.length);
     const proxyReq = await d.dial(target, { method: req.method ?? 'POST', path: req.url ?? pathname, headers });
     await new Promise<void>((resolve) => {
       let settled = false;
@@ -990,8 +1005,7 @@ async function forwardAndRelay(
   opts: ForwardAndRelayOpts,
 ): Promise<void> {
   const { target, pathname, isMcp, mcpId, bufferedBody, deps: d, routeClass } = opts;
-  const { host: overlayHost, port } = parseOverlayAddress(target.host.overlay_address);
-  const headers = buildForwardHeaders(req, target, `${overlayHost}:${port}`, bufferedBody ? bufferedBody.length : null);
+  const headers = buildForwardHeaders(req, target, hostAuthority(target), bufferedBody ? bufferedBody.length : null);
   const proxyReq = await d.dial(target, { method: req.method ?? 'GET', path: req.url ?? pathname, headers });
 
   await new Promise<void>((resolve) => {
