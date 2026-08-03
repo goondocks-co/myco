@@ -2,6 +2,12 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2] - 2026-08-03
+
+### Fixed
+
+- **The dashboard address can no longer be silently taken over by another local process** (#835). The daemon previously listened on IPv4 loopback only, leaving the IPv6 side of its port (`[::1]`) unclaimed — and browsers often try IPv6 first for `localhost`. Anything that grabbed that free side (a leftover `ssh -L` port forward, a dev tunnel) would quietly receive your dashboard traffic and present a different daemon at your production URL. The daemon now claims its port on both loopback stacks, so while it is running, any process attempting to take either side fails immediately with a clear address-in-use error. If something already holds the IPv6 side when the daemon starts, the daemon comes up normally on IPv4 and logs an error identifying the conflicting listener and how to find it.
+
 ## [1.3.1] - 2026-08-02
 
 ### Headline

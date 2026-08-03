@@ -275,6 +275,17 @@ export class DaemonServer {
    * transport-boundary gate ({@link handleOverlayRequest}) before dispatch.
    */
   private overlayServer: http.Server | null = null;
+  /**
+   * The IPv6-loopback companion listener — the SAME surface as the primary
+   * listener, bound to `[::1]` on the same port. It exists so the daemon OWNS
+   * its port on both loopback stacks: browsers commonly resolve `localhost` to
+   * `::1` first, so a `::1`-only squatter (a stray `ssh -L`, a dev tunnel that
+   * lost the IPv4 bind and silently kept the v6 side) would otherwise capture
+   * dashboard traffic addressed to this daemon. Null when IPv6 loopback is
+   * unavailable, or when the v6 side is already held — which is logged as an
+   * error, because it means localhost traffic may already be intercepted.
+   */
+  private ipv6Server: http.Server | null = null;
   private hostServe: HostServeRuntime | null;
   /** Seam for the host tailscale CLI used to manage the overlay forward.
    *  Production resolves it from recorded host state; tests inject a fake so
@@ -477,11 +488,89 @@ export class DaemonServer {
         this.startedAt = new Date().toISOString();
         this.writeDaemonJson();
         this.logger.info(LOG_KINDS.DAEMON_PORT, 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/` });
-        // Bring up the Team Host overlay listener (if host serving is enabled).
-        // It never rejects — a bind failure leaves host serving off and the
-        // loopback daemon fully up. Awaited so `start()` resolves with the
-        // overlay port set (and, in tests, before the overlay surface is hit).
-        this.startOverlayListener().then(() => resolve());
+        // Claim the port's IPv6-loopback side, then bring up the Team Host
+        // overlay listener (if host serving is enabled). Neither ever rejects —
+        // a bind failure leaves the loopback daemon fully up on IPv4. Awaited
+        // so `start()` resolves with both listeners settled (and, in tests,
+        // before either surface is hit).
+        this.startLoopbackV6Listener()
+          .then(() => this.startOverlayListener())
+          .then(() => resolve());
+      });
+    });
+  }
+
+  /**
+   * Bind the IPv6-loopback companion listener on `[::1]:<port>` — same
+   * handlers, same protective limits, same CSRF gate as the primary listener.
+   *
+   * Owning both loopback stacks is a security property, not a convenience:
+   * `localhost` resolves to `::1` before `127.0.0.1` in common browser stacks,
+   * so a port bound only on IPv4 leaves its v6 side free for any process to
+   * claim and silently receive the user's dashboard traffic — observed in the
+   * wild with `ssh -L <port>:...`, which cannot take the held IPv4 side and
+   * quietly binds only `::1` instead of failing. With this listener bound, any
+   * such claim fails loudly with EADDRINUSE in the squatting tool.
+   *
+   * Never rejects — the daemon must come up on IPv4 regardless. EADDRINUSE
+   * here is logged at error level naming the interception risk (the race is
+   * already lost to whoever holds `::1`); an unsupported/unavailable IPv6
+   * stack is merely informational, since a browser on such a machine cannot
+   * dial `::1` either.
+   */
+  private startLoopbackV6Listener(): Promise<void> {
+    return new Promise((resolve) => {
+      // Re-entry guard, same reasoning as the overlay listener's: a second
+      // overlapping start must not orphan a bound companion.
+      if (this.ipv6Server) { resolve(); return; }
+
+      const v6 = http.createServer((req, res) => {
+        this.handleRequest(req, res).catch((err) => {
+          this.logUnhandledTransportFailure('request', err);
+          try {
+            if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'internal_error' }));
+          } catch { /* socket already gone */ }
+        });
+      });
+      v6.on('upgrade', (req, socket, head) => {
+        this.handleUpgrade(req, socket, head).catch((err) => {
+          this.logUnhandledTransportFailure('upgrade', err);
+          try { socket.destroy(); } catch { /* already destroyed */ }
+        });
+      });
+      applyDaemonHttpServerLimits(v6);
+
+      const onBindError = (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          this.logger.error(
+            LOG_KINDS.DAEMON_PORT,
+            'Another process holds the daemon port on IPv6 loopback — browser traffic to localhost may be routed to IT instead of this daemon. Find and stop it: lsof -nP -iTCP:' + String(this.port) + ' -sTCP:LISTEN',
+            { bind_address: '::1', port: this.port, error: err.message },
+          );
+        } else {
+          this.logger.info(LOG_KINDS.DAEMON_PORT, 'IPv6 loopback companion listener not bound — IPv6 loopback unavailable on this machine', {
+            bind_address: '::1',
+            port: this.port,
+            code: err.code ?? null,
+            error: err.message,
+          });
+        }
+        try { v6.close(); } catch { /* not listening */ }
+        resolve();
+      };
+      v6.once('error', onBindError);
+
+      v6.listen(this.port, '::1', HTTP_LISTEN_BACKLOG, () => {
+        v6.removeListener('error', onBindError);
+        // Persistent handler so a post-bind socket error is logged rather than
+        // thrown as an unhandled 'error' event (which exits the process).
+        v6.on('error', (err) => {
+          this.logger.warn(LOG_KINDS.DAEMON_PORT, 'IPv6 loopback companion listener socket error', { error: (err as Error).message });
+        });
+        this.ipv6Server = v6;
+        this.logger.info(LOG_KINDS.DAEMON_PORT, 'IPv6 loopback companion listener bound', { bind_address: '::1', port: this.port });
+        resolve();
       });
     });
   }
@@ -749,6 +838,11 @@ export class DaemonServer {
       // where a live forward points at a port this process no longer holds.
       if (retiringPort > 0) await this.retireOverlayForward(retiringPort);
       await gracefullyCloseHttpServer(overlay, { gracePeriodMs: SERVER_STOP_FORCE_CLOSE_GRACE_MS });
+    }
+    const v6 = this.ipv6Server;
+    this.ipv6Server = null;
+    if (v6) {
+      await gracefullyCloseHttpServer(v6, { gracePeriodMs: SERVER_STOP_FORCE_CLOSE_GRACE_MS });
     }
     if (!this.server) {
       this.closeRequestDatabases();
@@ -1926,12 +2020,15 @@ function validateMutatingContentType(req: http.IncomingMessage): Rejection | nul
 
 // Node passes the listening host verbatim; some clients omit the port
 // entirely on default ports. The daemon never uses port 80, so require
-// an explicit port match. Keep the two-form allowlist tight.
+// an explicit port match. Keep the three-form allowlist tight — `[::1]`
+// is legitimate now that the IPv6-loopback companion listener serves the
+// same port.
 function isLoopbackHost(host: string, port: number): boolean {
   const portStr = String(port);
   return (
     host === `127.0.0.1:${portStr}` ||
-    host === `localhost:${portStr}`
+    host === `localhost:${portStr}` ||
+    host === `[::1]:${portStr}`
   );
 }
 
@@ -1939,7 +2036,8 @@ function isLoopbackOrigin(origin: string, port: number): boolean {
   const portStr = String(port);
   return (
     origin === `http://127.0.0.1:${portStr}` ||
-    origin === `http://localhost:${portStr}`
+    origin === `http://localhost:${portStr}` ||
+    origin === `http://[::1]:${portStr}`
   );
 }
 
