@@ -1,17 +1,21 @@
 // @vitest-environment jsdom
 
 /**
- * `HostTab` (consolidation Task D-2) — the Team page's primary Team Host
- * membership UI: join form, joined-hosts list (leave/detach), attach
- * control, and the drain-health panel. Hooks are mocked so these tests pin
- * the COMPONENT's own job — form gating, the payload each mutation is
- * called with, and what renders for a given status snapshot — independent
- * of `use-host-membership.ts`'s own wire-mapping (covered by
+ * `HostTab` — the Team page's joined-host membership content: joined-hosts
+ * list (leave/detach), attach control, drain health, and the host detail
+ * slideout; plus `JoinHostForm` (exported from the same module, mounted by
+ * the page's fork) and the `TeamPage` SHELL itself (E1 §5: fork-first when
+ * unconnected, tabs + host-id targets when connected). Hooks are mocked so
+ * these tests pin each COMPONENT's own job — form gating, the payload each
+ * mutation is called with, which target a tab hands its panel, and what
+ * renders for a given status snapshot — independent of
+ * `use-host-membership.ts`'s own wire-mapping (covered by
  * `tests/ui/use-host-membership.test.tsx`).
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PowerProvider } from '../../packages/myco/ui/src/providers/power';
 import { ApiError } from '../../packages/myco/ui/src/lib/api';
@@ -102,6 +106,25 @@ mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
   useActiveProjectSelection: () => null,
 }));
 
+// This machine's own serving state — the other half of the TeamPage shell's
+// connected/unconnected decision (`undefined` = the read hasn't settled).
+let serveFixture: unknown = { serving: false };
+
+mock.module('../../packages/myco/ui/src/hooks/use-host-serve-status', () => ({
+  useHostServeStatus: () => ({ data: serveFixture }),
+}));
+
+// The in-UI hosting control plane (HostATeamPanel + the serving card's
+// actions). Inert here: no run is ever started, so every stage below the
+// form stays unmounted and these tests keep their focus on the shell.
+mock.module('../../packages/myco/ui/src/hooks/use-host-admin', () => ({
+  useHostAdminEnable: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useHostAdminDisable: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useMintJoinKey: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useHostAdminProgress: () => ({ data: null, isFetched: false }),
+  useHostServePhase2: () => ({ data: null }),
+}));
+
 mock.module('../../packages/myco/ui/src/hooks/use-groves', () => ({
   useGroves: (options?: { includeArchived?: boolean }) => {
     useGrovesCalls.push(options);
@@ -110,7 +133,7 @@ mock.module('../../packages/myco/ui/src/hooks/use-groves', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// HostTab now always mounts TeamSettingsPanel (Task 9), which reuses
+// The TeamPage shell's Settings tab mounts TeamSettingsPanel, which reuses
 // AgentProviderCard/EmbeddingCard. Every field rendered through those forms
 // in THIS file is bound to a team target, so useIsTeamConfigTarget is fixed
 // true here (TeamConfigTargetProvider itself is stubbed to a passthrough —
@@ -131,13 +154,16 @@ const teamEffective: Record<string, unknown> = {
 let teamKeyHealth: 'ok' | 'missing_key' = 'missing_key';
 // Captures the `target` prop each TeamConfigTargetProvider mount receives —
 // lets the host-selection tests below assert which carrier a selector
-// choice actually produced, without a real React context.
-const teamTargetCalls: Array<{ carrier: { groveId: string; projectId: string } | null }> = [];
+// choice actually produced, without a real React context. The carrier names
+// a DESTINATION HOST (PR #802), which is what makes a joined host with zero
+// attached projects a configurable target.
+type CapturedTarget = { carrier: { hostId: string } | null };
+const teamTargetCalls: CapturedTarget[] = [];
 
 mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
   useIsTeamConfigTarget: () => true,
   useTeamConfigTargetOrNull: () => ({ carrier: null }),
-  TeamConfigTargetProvider: ({ target, children }: { target: { carrier: { groveId: string; projectId: string } | null }; children: unknown }) => {
+  TeamConfigTargetProvider: ({ target, children }: { target: CapturedTarget; children: unknown }) => {
     teamTargetCalls.push(target);
     return children;
   },
@@ -202,7 +228,8 @@ mock.module('../../packages/myco/ui/src/components/providers/ReasoningProfiles',
   ReasoningProfiles: () => null,
 }));
 
-import { HostTab } from '../../packages/myco/ui/src/pages/Team/HostTab';
+import { HostTab, JoinHostForm } from '../../packages/myco/ui/src/pages/Team/HostTab';
+import { TeamPage } from '../../packages/myco/ui/src/pages/Team';
 
 function renderHostTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -215,8 +242,43 @@ function renderHostTab() {
   );
 }
 
+function renderJoinHostForm(props: { collapsed?: boolean } = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <PowerProvider>
+      <QueryClientProvider client={qc}>
+        <JoinHostForm {...props} />
+      </QueryClientProvider>
+    </PowerProvider>,
+  );
+}
+
+/** Surfaces the live query string so the tab/target URL contract can be
+ *  asserted in both directions (URL → view, and click → URL). */
+function LocationProbe() {
+  return <span data-testid="location-search">{useLocation().search}</span>;
+}
+
+function renderTeamPage(initialEntry = '/team') {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <PowerProvider>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <TeamPage />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </PowerProvider>,
+  );
+}
+
 beforeEach(() => {
   statusFixture = { hosts: [], hint: null };
+  serveFixture = { serving: false };
+  // The page remembers its last host target across mounts — a leak here would
+  // let one test pick another's target.
+  localStorage.clear();
   drainFixture = { hosts: [] };
   healthFixture = { hosts: [] };
   healthIsLoading = false;
@@ -237,7 +299,7 @@ beforeEach(() => {
 
 describe('JoinHostForm', () => {
   it('disables Join host until host id, key, server URL, and overlay address are all filled', async () => {
-    renderHostTab();
+    renderJoinHostForm();
     const submit = screen.getByRole('button', { name: /join host/i });
     expect(submit).toBeDisabled();
 
@@ -252,7 +314,7 @@ describe('JoinHostForm', () => {
   });
 
   it('submits exactly the four-field join payload and shows the success message', async () => {
-    renderHostTab();
+    renderJoinHostForm();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
@@ -266,7 +328,7 @@ describe('JoinHostForm', () => {
   });
 
   it('clears the one-time key field after a successful join', async () => {
-    renderHostTab();
+    renderJoinHostForm();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
@@ -287,7 +349,7 @@ describe('JoinHostForm', () => {
         },
       });
     });
-    renderHostTab();
+    renderJoinHostForm();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
@@ -305,7 +367,7 @@ describe('JoinHostForm', () => {
     joinMutateAsync.mockImplementationOnce(async () => {
       throw new ApiError(400, { error: { code: 'join_failed', message: 'tailscaled socket did not appear (API 400)' } });
     });
-    renderHostTab();
+    renderJoinHostForm();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
@@ -313,6 +375,14 @@ describe('JoinHostForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
     await waitFor(() => expect(screen.getByTestId('host-join-error')).toHaveTextContent(/tailscaled socket did not appear/));
+  });
+
+  it('collapsed (the connected page\'s "add another" affordance) hides the form behind one control until asked', () => {
+    renderJoinHostForm({ collapsed: true });
+
+    expect(screen.queryByLabelText('Host id')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /join another team/i }));
+    expect(screen.getByLabelText('Host id')).toBeInTheDocument();
   });
 });
 
@@ -387,21 +457,26 @@ describe('Joined hosts list', () => {
     expect(detachMutateAsync.mock.calls[0]?.[0]).not.toHaveProperty('allow_no_pull');
   });
 
-  it('Leave host confirms, then calls useLeaveHost with the host id', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('Leave host opens an in-app confirmation naming the host, then calls useLeaveHost with the host id', async () => {
     statusFixture = {
       hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
     };
     renderHostTab();
 
+    // The row control only OPENS the dialog — leaving is the dialog's own
+    // confirm (same ConfirmDialog treatment as detach; no window.confirm).
     fireEvent.click(screen.getByRole('button', { name: /leave host/i }));
+    expect(leaveMutateAsync).not.toHaveBeenCalled();
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Leave "Mac Studio"\?/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Leave host' }));
+
     await waitFor(() => expect(leaveMutateAsync).toHaveBeenCalledWith('host_abc'));
-    confirmSpy.mockRestore();
   });
 
-  it('Leave host does nothing when the confirm dialog is dismissed', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  it('Leave host does nothing when the confirmation is dismissed', async () => {
     statusFixture = {
       hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
@@ -409,9 +484,11 @@ describe('Joined hosts list', () => {
     renderHostTab();
 
     fireEvent.click(screen.getByRole('button', { name: /leave host/i }));
-    await new Promise((r) => setTimeout(r, 0));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(leaveMutateAsync).not.toHaveBeenCalled();
-    confirmSpy.mockRestore();
   });
 });
 
@@ -574,8 +651,7 @@ describe('Residency round trip', () => {
     expect(within(progress).getByRole('button', { name: /cancel move/i })).toBeInTheDocument();
   });
 
-  it('Cancel move confirms, then calls residency-abort for the project', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('Cancel move confirms in-app, then calls residency-abort for the project', async () => {
     residencyFixture = { in_flight: true, direction: 'attach', phase: 'pushing', rows_pending: 3 };
     statusFixture = { hosts: [attachedHost], hint: null };
     renderHostTab();
@@ -585,12 +661,16 @@ describe('Residency round trip', () => {
     const progress = await screen.findByTestId('residency-progress-proj_x');
     fireEvent.click(within(progress).getByRole('button', { name: /cancel move/i }));
 
+    // The progress line's Cancel only opens the dialog; the abort is the
+    // dialog's own confirm (no window.confirm anywhere in this flow).
+    expect(abortMutateAsync).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel move' }));
+
     await waitFor(() => expect(abortMutateAsync).toHaveBeenCalledWith({ project_id: 'proj_x' }));
-    confirmSpy.mockRestore();
   });
 
   it('a too-late cancel on an attach shows the direction-appropriate recovery (disconnect to get data back)', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     abortMutateAsync.mockImplementationOnce(async () => {
       throw new ApiError(400, { error: { code: 'residency_abort_too_late', message: 'phase rehoming' } });
     });
@@ -602,9 +682,10 @@ describe('Residency round trip', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     const progress = await screen.findByTestId('residency-progress-proj_x');
     fireEvent.click(within(progress).getByRole('button', { name: /cancel move/i }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel move' }));
 
     await waitFor(() => expect(within(progress).getByText(/disconnect the project/)).toBeInTheDocument());
-    confirmSpy.mockRestore();
   });
 
   it('surfaces the stalled warning when the last attempt erred, without leaking the raw error into the visible line', async () => {
@@ -682,111 +763,176 @@ describe('Residency round trip', () => {
   });
 });
 
-describe('Team settings — per-host selection (Task 9)', () => {
-  it('with no joined hosts, mounts the panel targeting "This machine" and shows no selector', () => {
+// ---------------------------------------------------------------------------
+// The TeamPage SHELL (E1 §5) — fork-first when unconnected, tabs + host-id
+// targets when connected. `HostTab` above is only what Tab 1 renders.
+// ---------------------------------------------------------------------------
+
+const SERVING_FIXTURE = {
+  serving: true,
+  served_grove_id: 'grove_served', served_grove_name: 'Team Storage',
+  overlay_address: '100.64.0.9:7433', host_id: 'host_self', label: 'This Box',
+  hosted_project_count: 0,
+  external_mcp: { enabled: false, port: 0, bound: null, token_present: false },
+  bearer_present: true,
+  health: { designation: 'ok', backup: 'ok', key: 'ok', mcp_coherence: 'ok' },
+};
+
+/** A joined host with ZERO attached projects — the case the old
+ *  attached-project-ref carrier could not target at all. */
+const REFLESS_HOST = {
+  host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+  protocol_version: 1, created_at: '', projects: [],
+};
+
+describe('Team page shell — the fork', () => {
+  it('renders neither branch until BOTH the membership and serving reads have settled', () => {
+    serveFixture = undefined;
+    renderTeamPage();
+
+    expect(screen.getByText('Loading…')).toBeInTheDocument();
+    expect(screen.queryByTestId('team-fork')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('team-connected')).not.toBeInTheDocument();
+  });
+
+  it('unconnected (no joined hosts, not serving) renders the fork and NOTHING else', () => {
     statusFixture = { hosts: [], hint: null };
-    renderHostTab();
+    serveFixture = { serving: false };
+    renderTeamPage();
+
+    const fork = screen.getByTestId('team-fork');
+    expect(within(fork).getByRole('button', { name: 'Host a team' })).toBeInTheDocument();
+    expect(within(fork).getByRole('button', { name: 'Join host' })).toBeInTheDocument();
+    expect(within(fork).getByText('Join a Team Host')).toBeInTheDocument();
+
+    // No tabs, and — the whole point of the fork — no team-config surface:
+    // its first fetch used to 404 `not_serving` and render an error banner as
+    // the page's DEFAULT state.
+    expect(screen.queryByTestId('team-connected')).not.toBeInTheDocument();
+    expect(screen.queryByText('Team settings')).not.toBeInTheDocument();
+    expect(teamTargetCalls).toEqual([]);
+  });
+
+  it('serving alone (no joined hosts) counts as connected — the host operator gets the tabs', () => {
+    statusFixture = { hosts: [], hint: null };
+    serveFixture = SERVING_FIXTURE;
+    renderTeamPage();
+
+    expect(screen.getByTestId('team-connected')).toBeInTheDocument();
+    expect(screen.queryByTestId('team-fork')).not.toBeInTheDocument();
+  });
+});
+
+describe('Team page shell — tabs', () => {
+  it('offers Team / External access / Settings, with the joined-host content under Team and no target selector', () => {
+    statusFixture = { hosts: [REFLESS_HOST], hint: null };
+    renderTeamPage();
+
+    // `external_mcp_supported` absent (older daemon) reads as capable.
+    expect(screen.getByRole('tab', { name: 'Team' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'External access' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Settings' })).toBeInTheDocument();
+
+    expect(screen.getByText('1 host')).toBeInTheDocument();
+    expect(screen.getByText('Mac Studio')).toBeInTheDocument();
+    // The machine-scoped tab has nothing to target — no selector, no panel.
+    expect(screen.queryByTestId('team-target-select')).not.toBeInTheDocument();
+    expect(teamTargetCalls).toEqual([]);
+  });
+
+  it('hides the External access tab when the daemon reports external_mcp_supported: false', () => {
+    statusFixture = { hosts: [REFLESS_HOST], hint: null, external_mcp_supported: false };
+    renderTeamPage();
+
+    // A live toggle that can only 502 on this platform is a lying switch.
+    expect(screen.queryByRole('tab', { name: 'External access' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Settings' })).toBeInTheDocument();
+  });
+
+  it('falls back to the Team tab when the URL names a tab this daemon does not have', () => {
+    statusFixture = { hosts: [REFLESS_HOST], hint: null, external_mcp_supported: false };
+    renderTeamPage('/team?tab=external');
+
+    expect(screen.getByRole('tab', { name: 'Team' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('1 host')).toBeInTheDocument();
+  });
+
+  it('opens the tab named in ?tab= and writes the tab back to the URL on a click', async () => {
+    statusFixture = { hosts: [REFLESS_HOST], hint: null };
+    renderTeamPage('/team?tab=settings');
+
+    expect(screen.getByRole('tab', { name: 'Settings' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Team settings')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Team' }));
+    await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent('tab=team'));
+    expect(screen.queryByText('Team settings')).not.toBeInTheDocument();
+  });
+});
+
+describe('Team page shell — host targets', () => {
+  it('targets a joined host with ZERO attached projects — by host id, never dropped from the selector', () => {
+    statusFixture = { hosts: [REFLESS_HOST], hint: null };
+    renderTeamPage('/team?tab=settings');
+
+    const select = screen.getByTestId('team-target-select') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(['Mac Studio (host_abc)']);
+    // The carrier is the HOST — a refless host used to have no ref to ride on,
+    // so the write silently landed on this member's own daemon instead.
+    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { hostId: 'host_abc' } });
+  });
+
+  it('offers "This machine" FIRST and only while this machine is serving', () => {
+    statusFixture = { hosts: [REFLESS_HOST], hint: null };
+    serveFixture = SERVING_FIXTURE;
+    renderTeamPage('/team?tab=settings');
+
+    const select = screen.getByTestId('team-target-select') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(['This machine', 'Mac Studio (host_abc)']);
+    expect(select.value).toBe('self');
+    // "This machine" carries no host id — the daemon resolves its own served
+    // grove server-side.
+    expect(teamTargetCalls.at(-1)).toEqual({ carrier: null });
+  });
+
+  it('selecting another host re-targets the settings panel and records the choice in the URL', async () => {
+    statusFixture = {
+      hosts: [
+        REFLESS_HOST,
+        { host_id: 'host_def', label: 'Linux Box', overlay_address: 'b', proxy_port: 2, protocol_version: 1, created_at: '', projects: [] },
+      ],
+      hint: null,
+    };
+    renderTeamPage('/team?tab=settings');
+
+    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { hostId: 'host_abc' } });
+
+    fireEvent.change(screen.getByTestId('team-target-select'), { target: { value: 'host_def' } });
+
+    await waitFor(() => expect(teamTargetCalls.at(-1)).toEqual({ carrier: { hostId: 'host_def' } }));
+    expect(screen.getByTestId('location-search')).toHaveTextContent('team=host_def');
+  });
+
+  it('honors the host named in ?team= on first render — the view is linkable', () => {
+    statusFixture = {
+      hosts: [
+        REFLESS_HOST,
+        { host_id: 'host_def', label: 'Linux Box', overlay_address: 'b', proxy_port: 2, protocol_version: 1, created_at: '', projects: [] },
+      ],
+      hint: null,
+    };
+    renderTeamPage('/team?tab=settings&team=host_def');
+
+    expect((screen.getByTestId('team-target-select') as HTMLSelectElement).value).toBe('host_def');
+    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { hostId: 'host_def' } });
+  });
+
+  it('mounts the settings panel for the selected host, keyHealth and all', () => {
+    teamKeyHealth = 'ok';
+    statusFixture = { hosts: [REFLESS_HOST], hint: null };
+    renderTeamPage('/team?tab=settings');
 
     expect(screen.getByText('Team settings')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Configure team for')).not.toBeInTheDocument();
-    expect(teamTargetCalls).toEqual([{ carrier: null }]);
-  });
-
-  it('a joined host with no attached project is left out of the selector (no carrier available)', () => {
-    statusFixture = {
-      hosts: [{
-        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
-        protocol_version: 1, created_at: '', projects: [],
-      }],
-      hint: null,
-    };
-    renderHostTab();
-
-    expect(screen.queryByLabelText('Configure team for')).not.toBeInTheDocument();
-    expect(teamTargetCalls).toEqual([{ carrier: null }]);
-  });
-
-  it('a joined host with an attached project appears in the selector alongside "This machine"', () => {
-    statusFixture = {
-      hosts: [{
-        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
-        protocol_version: 1, created_at: '',
-        projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout' }],
-      }],
-      hint: null,
-    };
-    renderHostTab();
-
-    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
-    const optionLabels = Array.from(select.options).map((o) => o.textContent);
-    expect(optionLabels).toEqual(['This machine', 'Mac Studio (host_abc)']);
-    // Defaults to "This machine" — no carrier — until the operator picks a host.
-    expect(select.value).toBe('self');
-    expect(teamTargetCalls).toEqual([{ carrier: null }]);
-  });
-
-  it('prefers a non-mismatched ref as the team-settings carrier when the first ref is mismatch-flagged', () => {
-    statusFixture = {
-      hosts: [{
-        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
-        protocol_version: 1, created_at: '',
-        projects: [
-          { grove_id: 'grove_stale', project_id: 'proj_stale', root: '/checkout-stale', mismatch: 'attach_grove_mismatch' },
-          { grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: null },
-        ],
-      }],
-      hint: null,
-    };
-    renderHostTab();
-
-    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: 'host_abc' } });
-
-    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { groveId: 'grove_x', projectId: 'proj_x' } });
-  });
-
-  it('falls back to the first ref as the team-settings carrier when every ref on the host is mismatch-flagged', () => {
-    statusFixture = {
-      hosts: [{
-        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
-        protocol_version: 1, created_at: '',
-        projects: [
-          { grove_id: 'grove_stale', project_id: 'proj_stale', root: '/checkout-stale', mismatch: 'attach_grove_mismatch' },
-        ],
-      }],
-      hint: null,
-    };
-    renderHostTab();
-
-    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: 'host_abc' } });
-
-    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { groveId: 'grove_stale', projectId: 'proj_stale' } });
-  });
-
-  it('selecting a joined host switches the team target to that host\'s carrier', async () => {
-    statusFixture = {
-      hosts: [{
-        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
-        protocol_version: 1, created_at: '',
-        projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout' }],
-      }],
-      hint: null,
-    };
-    renderHostTab();
-
-    const select = screen.getByLabelText('Configure team for') as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: 'host_abc' } });
-
-    await waitFor(() => expect(select.value).toBe('host_abc'));
-    expect(teamTargetCalls.at(-1)).toEqual({ carrier: { groveId: 'grove_x', projectId: 'proj_x' } });
-  });
-
-  it('surfaces keyHealth as the status line', () => {
-    teamKeyHealth = 'ok';
-    statusFixture = { hosts: [], hint: null };
-    renderHostTab();
-
     expect(screen.getByText(/a team key is configured/i)).toBeInTheDocument();
   });
 });
@@ -986,17 +1132,19 @@ describe('Host detail slideout — attached projects', () => {
 });
 
 describe('Host detail slideout — leave flow', () => {
-  it('Leave host is reachable from the slideout and calls useLeaveHost with the host id', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('Leave host is reachable from the slideout and runs the same confirm-then-leave flow', async () => {
     statusFixture = { hosts: [hostA], hint: null };
     renderHostTab();
     fireEvent.click(screen.getByRole('button', { name: /view mac studio details/i }));
 
     const panel = screen.getByTestId('host-detail-panel');
     fireEvent.click(within(panel).getByRole('button', { name: /leave host/i }));
+    expect(leaveMutateAsync).not.toHaveBeenCalled();
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Leave host' }));
 
     await waitFor(() => expect(leaveMutateAsync).toHaveBeenCalledWith('host_a'));
-    confirmSpy.mockRestore();
   });
 });
 

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Server, Link2, AlertTriangle, Activity, Loader2 } from 'lucide-react';
 import { Panel } from '../../components/ui/panel';
 import { IconEyebrow } from '../../components/ui/icon-eyebrow';
@@ -34,8 +34,6 @@ import {
 } from '../../lib/membership-copy';
 import { useActiveProjectSelection } from '../../hooks/use-project-selection';
 import { useGroves } from '../../hooks/use-groves';
-import { TeamSettingsPanel } from '../../components/team/TeamSettingsPanel';
-import type { TeamConfigTarget } from '../../hooks/use-scoped-config';
 import {
   useHostMembershipStatus,
   useJoinHost,
@@ -87,7 +85,8 @@ function AffiliationHintBanner({ hint }: { hint: HostMembershipHint }) {
 // bearer, protocol version, label) stay CLI-only.
 // ---------------------------------------------------------------------------
 
-function JoinHostForm() {
+export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}) {
+  const [expanded, setExpanded] = useState(!collapsed);
   const join = useJoinHost();
   const status = useHostMembershipStatus();
   // Absent on an older daemon — treat as capable so the form is never disabled
@@ -121,6 +120,14 @@ function JoinHostForm() {
       setError(membershipErrorCopy(err));
     }
   };
+
+  if (!expanded) {
+    return (
+      <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+        Join another team…
+      </Button>
+    );
+  }
 
   return (
     <Panel tone="sage" eyebrow={<IconEyebrow Icon={Server}>Team Host</IconEyebrow>} title="Join a Team Host">
@@ -213,12 +220,14 @@ function ResidencyProgress({ status, projectId }: { status: ResidencyStatus; pro
   // ALLOWLIST, so a future phase defaults to not-cancelable here too.
   const cancelable = status.phase !== undefined && ABORTABLE_RESIDENCY_PHASES.has(status.phase);
 
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const handleCancel = async () => {
-    if (!window.confirm(CANCEL_MOVE_CONFIRM_COPY)) return;
     setError(null);
     try {
       await abort.mutateAsync({ project_id: projectId });
+      setCancelConfirmOpen(false);
     } catch (err) {
+      setCancelConfirmOpen(false);
       // The move can pass the point of no return between the poll and the
       // click; name the direction-appropriate recovery rather than the raw code.
       setError(
@@ -243,7 +252,7 @@ function ResidencyProgress({ status, projectId }: { status: ResidencyStatus; pro
           <button
             type="button"
             disabled={abort.isPending}
-            onClick={handleCancel}
+            onClick={() => setCancelConfirmOpen(true)}
             className="ml-auto text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50 shrink-0"
           >
             {abort.isPending ? 'Cancelling…' : 'Cancel move'}
@@ -258,6 +267,17 @@ function ResidencyProgress({ status, projectId }: { status: ResidencyStatus; pro
         </span>
       )}
       {cancelable && error && <p className="text-xs text-terracotta m-0">{error}</p>}
+      <ConfirmDialog
+        open={cancelConfirmOpen}
+        onOpenChange={setCancelConfirmOpen}
+        title="Cancel this move?"
+        description={CANCEL_MOVE_CONFIRM_COPY}
+        icon={<AlertTriangle className="h-4 w-4 text-tertiary" />}
+        confirmLabel="Cancel move"
+        onConfirm={handleCancel}
+        isPending={abort.isPending}
+        errorMessage={error}
+      />
     </div>
   );
 }
@@ -555,80 +575,6 @@ function AttachProjectPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Team settings — per-host selection (spec §6). Previously HostTab listed
-// hosts with no notion of "which host am I configuring." "This machine" is
-// always offered first (this box may itself be a Team Host); each joined
-// host with at least one attached project is offered too, using that host's
-// FIRST attach ref purely as the wire carrier that routes a team-write
-// request to it (`classifyRoute` resolves the destination host from the
-// carrier project's attach ref — there is no per-request host header). The
-// value edited is grove-wide, not project-specific, so which attached
-// project carries the request makes no functional difference — PROVIDED the
-// carrier itself still resolves. A ref flagged `mismatch` 404s the whole
-// panel (its attach record points at a Grove the host no longer serves), so
-// the carrier prefers the first non-mismatched ref and only falls back to
-// `projects[0]` when every ref on the host is flagged. A joined host with no
-// attached project yet has no carrier available and is left out — attach a
-// project to it first.
-// ---------------------------------------------------------------------------
-
-const SELF_TEAM_TARGET_ID = 'self';
-
-interface TeamSettingsOption {
-  id: string;
-  label: string;
-  target: TeamConfigTarget;
-}
-
-function teamSettingsOptions(hosts: HostMembershipHost[]): TeamSettingsOption[] {
-  const options: TeamSettingsOption[] = [
-    { id: SELF_TEAM_TARGET_ID, label: 'This machine', target: { carrier: null } },
-  ];
-  for (const host of hosts) {
-    const ref = host.projects.find((p) => p.mismatch !== 'attach_grove_mismatch') ?? host.projects[0];
-    if (!ref) continue;
-    options.push({
-      // Distinct from the plain host label used elsewhere on this page
-      // (e.g. HostCard) so the two never collide as exact-text matches.
-      id: host.host_id,
-      label: `${host.label} (${host.host_id})`,
-      target: { carrier: { groveId: ref.grove_id, projectId: ref.project_id } },
-    });
-  }
-  return options;
-}
-
-function TeamSettingsSection({ hosts }: { hosts: HostMembershipHost[] }) {
-  const options = useMemo(() => teamSettingsOptions(hosts), [hosts]);
-  const [selectedId, setSelectedId] = useState(SELF_TEAM_TARGET_ID);
-  const selected = options.find((o) => o.id === selectedId) ?? options[0]!;
-
-  return (
-    <div className="flex flex-col gap-3">
-      {options.length > 1 && (
-        <div className="flex items-center gap-2">
-          <label className={labelClass} htmlFor="team-settings-host">Configure team for</label>
-          <select
-            id="team-settings-host"
-            className={inputClass}
-            value={selected.id}
-            onChange={(e) => setSelectedId(e.target.value)}
-          >
-            {options.map((o) => (
-              <option key={o.id} value={o.id}>{o.label}</option>
-            ))}
-          </select>
-        </div>
-      )}
-      {/* Remount on target change — the reused forms hold local draft state
-          keyed to whatever grove they last loaded; a fresh mount avoids a
-          stale draft bleeding across hosts. */}
-      <TeamSettingsPanel key={selected.id} target={selected.target} />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Top-level tab — Team Host membership. Always renders (no legacy-team gate):
 // this IS the primary story now (Chris's PR #667 review direction).
 // ---------------------------------------------------------------------------
@@ -661,7 +607,6 @@ export function HostTab() {
   return (
     <div className="flex flex-col gap-4">
       {status.data?.hint && <AffiliationHintBanner hint={status.data.hint} />}
-      <JoinHostForm />
       {hosts.length > 0 && (
         <Panel
           tone="sage"
@@ -689,7 +634,6 @@ export function HostTab() {
         onTransitionStart={onTransitionStart}
       />
       {hosts.length > 0 && <DrainHealthPanel />}
-      <TeamSettingsSection hosts={hosts} />
       <SlideoutDetailPanel
         open={selectedHost !== null}
         onClose={() => setSelectedHostId(null)}

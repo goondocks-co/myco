@@ -415,11 +415,14 @@ export function useTaskConfig(taskId: string | undefined) {
   const isTeam = useIsTeamConfigTarget();
   const target = useTeamConfigTargetOrNull();
   const projectQueryKey = useProjectScopedQueryKey(['task-config', taskId]);
-  const teamQueryKey = ['team-task-config', taskId];
+  // Keyed by the TARGET too (review C7): the selector switch remounts the
+  // panel but not the cache — an unscoped key showed host A's overrides
+  // while bound to host B for a staleTime window, and a save wrote them.
+  const teamQueryKey = ['team-task-config', target?.carrier?.hostId ?? 'self', taskId];
   const headers = useMemo(
     () => (isTeam && target ? teamCarrierHeaders(target) : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isTeam, target?.carrier?.groveId, target?.carrier?.projectId],
+    [isTeam, target?.carrier?.hostId],
   );
   const path = isTeam ? `/team/agent-tasks/${taskId}/config` : `/agent/tasks/${taskId}/config`;
   return useQuery<TaskConfigResponse>({
@@ -457,7 +460,7 @@ export function useUpdateTaskConfig() {
   const headers = useMemo(
     () => (isTeam && target ? teamCarrierHeaders(target) : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isTeam, target?.carrier?.groveId, target?.carrier?.projectId],
+    [isTeam, target?.carrier?.hostId],
   );
   return useMutation<{ taskId: string; config: TaskConfigOverride | null }, Error, UpdateTaskConfigPayload>({
     mutationFn: ({ taskId, config }) => {

@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
+import { ConfirmDialog } from '../ui/confirm-dialog';
 import { useLeaveHost, type HostMembershipHost } from '../../hooks/use-host-membership';
 import { leaveHostConfirmMessage, membershipErrorCopy } from '../../lib/membership-copy';
 
@@ -18,11 +20,12 @@ export function LeaveHostControl({ host }: { host: HostMembershipHost }) {
   // it — mirroring how the Detach control gates on an in-flight move.
   const blocked = host.projects.length > 0;
 
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const handleLeave = async () => {
-    if (!window.confirm(leaveHostConfirmMessage(host.label))) return;
     setError(null);
     try {
       await leave.mutateAsync(host.host_id);
+      setConfirmOpen(false);
     } catch (err) {
       setError(membershipErrorCopy(err));
     }
@@ -37,11 +40,22 @@ export function LeaveHostControl({ host }: { host: HostMembershipHost }) {
       <button
         type="button"
         disabled={leave.isPending || blocked}
-        onClick={handleLeave}
+        onClick={() => { setError(null); setConfirmOpen(true); }}
         className="ml-auto text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50"
       >
         {leave.isPending ? 'Leaving…' : 'Leave host'}
       </button>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) setError(null); }}
+        title="Leave this host?"
+        description={leaveHostConfirmMessage(host.label)}
+        icon={<AlertTriangle className="h-4 w-4 text-tertiary" />}
+        confirmLabel="Leave host"
+        onConfirm={handleLeave}
+        isPending={leave.isPending}
+        errorMessage={error}
+      />
     </div>
   );
 }

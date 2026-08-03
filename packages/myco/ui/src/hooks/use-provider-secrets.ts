@@ -5,6 +5,13 @@ import { teamCarrierHeaders, useTeamConfigTargetOrNull } from './use-scoped-conf
 
 const PROVIDER_SECRETS_QUERY_KEY = ['provider-secrets'] as const;
 const TEAM_PROVIDER_SECRETS_QUERY_KEY = ['team-provider-secrets'] as const;
+
+/** Per-target key (review C7): staleTime Infinity + an unscoped key carried
+ *  host A's masked secret echo into host B's view — where the delete
+ *  control would then fire at B for a credential set on A. */
+function teamSecretsKey(hostId: string | null): readonly unknown[] {
+  return [...TEAM_PROVIDER_SECRETS_QUERY_KEY, hostId ?? 'self'];
+}
 const PROVIDERS_QUERY_KEY = ['providers'] as const;
 const MODELS_QUERY_KEY = ['models'] as const;
 
@@ -60,7 +67,7 @@ export function useProviderSecrets() {
     enabled: !isTeam,
   });
   const teamQuery = useQuery<ProviderSecretsResponse>({
-    queryKey: TEAM_PROVIDER_SECRETS_QUERY_KEY,
+    queryKey: teamSecretsKey(teamTarget?.carrier?.hostId ?? null),
     queryFn: () => Promise.resolve({ secrets: {} as ProviderSecretsResponse['secrets'] }),
     enabled: isTeam,
     staleTime: Infinity,
@@ -78,10 +85,11 @@ function invalidateProviderQueries(queryClient: ReturnType<typeof useQueryClient
  *  cache `useProviderSecrets` reads back in team mode. */
 function cacheTeamSecretResult(
   queryClient: ReturnType<typeof useQueryClient>,
+  hostId: string | null,
   provider: SecretProvider,
   maskedValue: string | null,
 ) {
-  queryClient.setQueryData<ProviderSecretsResponse>(TEAM_PROVIDER_SECRETS_QUERY_KEY, (prev) => ({
+  queryClient.setQueryData<ProviderSecretsResponse>(teamSecretsKey(hostId), (prev) => ({
     secrets: {
       ...(prev?.secrets ?? {}),
       [provider]: {
@@ -110,7 +118,7 @@ export function useSaveProviderSecret() {
           )
         : putJson(`/providers/secrets/${provider}`, { api_key: apiKey, scope }),
     onSuccess: (data, variables) => {
-      if (teamTarget) cacheTeamSecretResult(queryClient, variables.provider, (data as { maskedValue: string }).maskedValue);
+      if (teamTarget) cacheTeamSecretResult(queryClient, teamTarget.carrier?.hostId ?? null, variables.provider, (data as { maskedValue: string }).maskedValue);
       invalidateProviderQueries(queryClient);
     },
   });
@@ -128,7 +136,7 @@ export function useDeleteProviderSecret() {
           })
         : deleteJson(`/providers/secrets/${provider}${scope ? `?scope=${encodeURIComponent(scope)}` : ''}`),
     onSuccess: (_data, variables) => {
-      if (teamTarget) cacheTeamSecretResult(queryClient, variables.provider, null);
+      if (teamTarget) cacheTeamSecretResult(queryClient, teamTarget.carrier?.hostId ?? null, variables.provider, null);
       invalidateProviderQueries(queryClient);
     },
   });
