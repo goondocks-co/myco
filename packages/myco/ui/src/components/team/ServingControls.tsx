@@ -16,10 +16,21 @@
 
 /**
  * Team-page-only actions for THIS machine's serving card (E1 §5.2 Tab 1):
- * Mint join key (one-time reveal + ready-to-paste `myco join …`) and Stop
- * hosting. Rendered through `TeamHostServingCard`'s `actions` slot — the
- * Machine-dashboard mount passes nothing, so its recorded placement
- * (decision-ef693c71 D2) renders byte-identically.
+ * inviting a member and Stop hosting.
+ *
+ * Inviting is DISABLED in this build: the one-time key it minted was a headscale
+ * pre-auth key the daemon never validated, and the daemon-issued key that
+ * replaces it lands with the rebuilt enrollment route. The control stays visible
+ * but inert, so the capability is discoverable without appearing to work — a
+ * live-looking button that 503s on click is worse than one that says why.
+ *
+ * The mint mutation, reveal block, and error state below are deliberately kept
+ * rather than deleted: the enrollment rebuild re-enables this exact control, and
+ * the reveal is the one-time-key surface it needs back.
+ *
+ * Rendered through `TeamHostServingCard`'s `actions` slot — the Machine-dashboard
+ * mount passes nothing, so its recorded placement (decision-ef693c71 D2) renders
+ * byte-identically.
  */
 import { useState } from 'react';
 import { AlertTriangle, KeyRound, Loader2 } from 'lucide-react';
@@ -53,11 +64,11 @@ export function MintJoinKeyControl() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <Button size="sm" variant="outline" onClick={handleMint} disabled={mint.isPending}>
-          {mint.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
-          Mint join key
+        <Button size="sm" variant="outline" onClick={handleMint} disabled title="Inviting is unavailable while team connectivity is being rebuilt.">
+          <KeyRound className="mr-2 h-4 w-4" />
+          Invite a member
         </Button>
-        <span className="text-xs text-on-surface-variant">One-time key for a teammate — shown once, works once.</span>
+        <span className="text-xs text-on-surface-variant">Unavailable while team connectivity is being rebuilt.</span>
       </div>
       {minted && (
         <AccentSurface accent="sage" padded className="flex flex-col gap-2" role="status" data-testid="join-key-reveal">

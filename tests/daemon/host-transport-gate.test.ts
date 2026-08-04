@@ -25,6 +25,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
+import { teamFetch, teamSocketPath, removeSocket } from '../helpers/team-socket.js';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -50,7 +51,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   let savedMycoHome: string | undefined;
   let savedTeamHome: string | undefined;
   let loopback: string;
-  let overlay: string;
+  let teamSock: string;
   let servedGrove: GroveRecord;
   let servedProjectId: string;
   let logEntries: LogEntry[];
@@ -93,13 +94,16 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     const logger = new DaemonLogger(path.join(tmp, 'logs'));
     logger.setPersistFn((entry) => logEntries.push(entry));
 
+    teamSock = teamSocketPath();
+
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger,
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
       uiDir,
-      hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, servedGroveId: servedGrove.id },
+      hostServe: { bearer: HOST_BEARER, servedGroveId: servedGrove.id },
+      teamSocketPath: teamSock,
     });
     server.registerRoute('GET', '/api/sessions', async () => {
       sessionsHandlerCalls += 1;
@@ -116,11 +120,11 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
 
     await server.start(0);
     loopback = `http://127.0.0.1:${server.port}`;
-    overlay = `http://127.0.0.1:${server.overlayPort}`;
-  });
+    });
 
   afterEach(async () => {
     await server.stop();
+    removeSocket(teamSock);
     if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = savedMycoHome;
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
@@ -144,7 +148,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   // --- overlay CSRF: no browsers on the overlay (runs before the bearer gate) ---
 
   test('a request carrying an Origin header → 403 forbidden_origin, handler never runs — direct browser access to the overlay stays refused', async () => {
-    const res = await fetch(`${overlay}/api/sessions`, {
+    const res = await teamFetch(teamSock, `/api/sessions`, {
       headers: { Authorization: bearer(), ...v1, Origin: 'http://127.0.0.1:19666' },
     });
     expect(res.status).toBe(403);
@@ -155,20 +159,20 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   // --- blanket bearer: 401 on every route incl. raw + /mcp ---
 
   test('router route without the host bearer → 401, handler never runs', async () => {
-    const res = await fetch(`${overlay}/api/sessions`, { headers: { ...v1 } });
+    const res = await teamFetch(teamSock, `/api/sessions`, { headers: { ...v1 } });
     expect(res.status).toBe(401);
     expect((await res.json()).error).toBe('host_unauthorized');
     expect(sessionsHandlerCalls).toBe(0);
   });
 
   test('raw route (/health) without the host bearer → 401', async () => {
-    const res = await fetch(`${overlay}/health`, { headers: { ...v1 } });
+    const res = await teamFetch(teamSock, `/health`, { headers: { ...v1 } });
     expect(res.status).toBe(401);
     expect((await res.json()).error).toBe('host_unauthorized');
   });
 
   test('/mcp without the host bearer → 401, /mcp handler never runs', async () => {
-    const res = await fetch(`${overlay}/mcp`, {
+    const res = await teamFetch(teamSock, `/mcp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...v1 },
       body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 1 }),
@@ -179,7 +183,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   });
 
   test('wrong host bearer → 401', async () => {
-    const res = await fetch(`${overlay}/api/sessions`, {
+    const res = await teamFetch(teamSock, `/api/sessions`, {
       headers: { Authorization: bearer('nope'), ...v1 },
     });
     expect(res.status).toBe(401);
@@ -190,7 +194,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   // --- correct bearer + version → served through the same dispatch ---
 
   test('correct bearer + version + the designated served Grove\'s tenancy → served locally, handler runs', async () => {
-    const res = await fetch(`${overlay}/api/sessions`, {
+    const res = await teamFetch(teamSock, `/api/sessions`, {
       headers: { Authorization: bearer(), ...v1, ...servedTenancy() },
     });
     expect(res.status).toBe(200);
@@ -204,7 +208,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     // Task 2's servedGroveRefusal is what now refuses it, since the request
     // resolved no Grove at all. Full pass/refuse-by-designation coverage lives
     // in tests/daemon/host-serve-grove-filter.test.ts.
-    const res = await fetch(`${overlay}/api/sessions`, {
+    const res = await teamFetch(teamSock, `/api/sessions`, {
       headers: { Authorization: bearer(), ...v1 },
     });
     expect(res.status).toBe(404);
@@ -213,7 +217,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   });
 
   test('correct bearer + version + /mcp → the raw /mcp handler runs', async () => {
-    const res = await fetch(`${overlay}/mcp`, {
+    const res = await teamFetch(teamSock, `/mcp`, {
       method: 'POST',
       headers: { Authorization: bearer(), 'Content-Type': 'application/json', ...v1 },
       body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 1 }),
@@ -230,7 +234,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     // local context-switch auth (a failed stamp would be 401 unauthorized_context_switch).
     const projectId = assertGroveProjectId(createProjectId());
     const groveId = createGroveId();
-    const res = await fetch(`${overlay}/api/sessions`, {
+    const res = await teamFetch(teamSock, `/api/sessions`, {
       headers: {
         Authorization: bearer(),
         ...v1,
@@ -264,7 +268,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     };
     const refusalLogs = () => logEntries.filter((e) => e.kind === 'host.serve-refusal');
 
-    const res1 = await fetch(`${overlay}/api/sessions`, { headers });
+    const res1 = await teamFetch(teamSock, `/api/sessions`, { headers });
     expect(res1.status).toBe(404);
     const body1 = await res1.json();
     expect(body1.error).toBe('unknown_tenancy');
@@ -279,14 +283,14 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
 
     // An identical repeat within the throttle interval: response byte-identical
     // (Task 2 is log-lines-only, zero wire/behavior change), but no second log.
-    const res2 = await fetch(`${overlay}/api/sessions`, { headers });
+    const res2 = await teamFetch(teamSock, `/api/sessions`, { headers });
     expect(res2.status).toBe(404);
     expect(await res2.json()).toEqual(body1);
     expect(refusalLogs()).toHaveLength(1);
 
     // Once the throttle interval fully elapses, the same refusal logs again.
     fakeNow += REFUSAL_LOG_THROTTLE_INTERVAL_MS + 1;
-    const res3 = await fetch(`${overlay}/api/sessions`, { headers });
+    const res3 = await teamFetch(teamSock, `/api/sessions`, { headers });
     expect(res3.status).toBe(404);
     expect(await res3.json()).toEqual(body1);
     expect(refusalLogs()).toHaveLength(2);
@@ -311,7 +315,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   // --- version gate ---
 
   test('missing version header → 409 protocol_version_unsupported (both bounds + host header)', async () => {
-    const res = await fetch(`${overlay}/api/sessions`, { headers: { Authorization: bearer() } });
+    const res = await teamFetch(teamSock, `/api/sessions`, { headers: { Authorization: bearer() } });
     expect(res.status).toBe(409);
     expect(res.headers.get('x-myco-host-protocol')).toBe(String(HOST_PROTOCOL_VERSION));
     const body = await res.json();
@@ -322,7 +326,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   });
 
   test('version above the window → 409 with both bounds', async () => {
-    const res = await fetch(`${overlay}/api/sessions`, {
+    const res = await teamFetch(teamSock, `/api/sessions`, {
       headers: { Authorization: bearer(), 'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION + 1) },
     });
     expect(res.status).toBe(409);
@@ -333,7 +337,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   });
 
   test('version below the window → 409', async () => {
-    const res = await fetch(`${overlay}/api/sessions`, {
+    const res = await teamFetch(teamSock, `/api/sessions`, {
       headers: { Authorization: bearer(), 'x-myco-host-protocol': '0' },
     });
     expect(res.status).toBe(409);
@@ -343,13 +347,13 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   // --- /api/shutdown never overlay-served; works on localhost ---
 
   test('/api/shutdown over the overlay without bearer → 401, handler never fires', async () => {
-    const res = await fetch(`${overlay}/api/shutdown`, { method: 'POST', headers: { ...v1 } });
+    const res = await teamFetch(teamSock, `/api/shutdown`, { method: 'POST', headers: { ...v1 } });
     expect(res.status).toBe(401);
     expect(shutdownCalls).toBe(0);
   });
 
   test('/api/shutdown over the overlay WITH a valid bearer → 404 refused, handler never fires', async () => {
-    const res = await fetch(`${overlay}/api/shutdown`, {
+    const res = await teamFetch(teamSock, `/api/shutdown`, {
       method: 'POST',
       headers: { Authorization: bearer(), ...v1 },
     });
@@ -371,18 +375,21 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     expect(local.status).toBe(200);
     expect(local.headers.get('content-type')).toContain('text/html');
 
-    const remote = await fetch(`${overlay}/`, { headers: { Authorization: bearer(), ...v1 } });
+    const remote = await teamFetch(teamSock, `/`, { headers: { Authorization: bearer(), ...v1 } });
     expect(remote.status).toBe(404);
     expect((await remote.json()).error).toBe('not_found');
   });
 
   // --- bind address: never 0.0.0.0 ---
 
-  test('the overlay listener binds the overlay IP, never 0.0.0.0', async () => {
-    expect(server.overlayBoundAddress).toBe('127.0.0.1');
-    expect(server.overlayBoundAddress).not.toBe('0.0.0.0');
-    expect(server.overlayPort).toBeGreaterThan(0);
-    expect(server.overlayPort).not.toBe(server.port);
+  test('the team listener binds its socket — no TCP port, so nothing to reach it by', async () => {
+    expect(server.teamSocketPath).toBe(teamSock);
+    expect(fs.existsSync(teamSock)).toBe(true);
+    // A socket has no port: the whole class of "some other local process holds
+    // or reaches this port" is gone, which is why the Host allowlist could be.
+    // Asserted as reachability, not as a field name — the socket's directory is
+    // the boundary, so it must not be group/world accessible.
+    expect(fs.lstatSync(path.dirname(teamSock)).mode & 0o077).toBe(0);
   });
 
   // --- loopback byte-identical ---
@@ -410,6 +417,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   let savedTeamHome: string | undefined;
   let overlay: string;
   let loopback: string;
+  let teamSock: string;
   let servedGrove: GroveRecord;
   let servedProjectId: string;
 
@@ -464,12 +472,15 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     embeddingStatusCalls = 0;
     secretsFile = path.join(tmp, 'secrets.env');
 
+    teamSock = teamSocketPath();
+
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
-      hostServe: { overlayAddress: '127.0.0.1', overlayPort: 0, bearer: HOST_BEARER, servedGroveId: servedGrove.id },
+      hostServe: { bearer: HOST_BEARER, servedGroveId: servedGrove.id },
+      teamSocketPath: teamSock,
     });
 
     // localhost-only — THE credential-hijack moat. This handler is the only writer
@@ -530,12 +541,12 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     server.onShutdownRequest(async () => () => { shutdownCalls += 1; });
 
     await server.start(0);
-    overlay = `http://127.0.0.1:${server.overlayPort}`;
     loopback = `http://127.0.0.1:${server.port}`;
   });
 
   afterEach(async () => {
     await server.stop();
+    removeSocket(teamSock);
     if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = savedMycoHome;
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
@@ -560,7 +571,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   // --- THE Critical case: the provider-secret write is refused AND never written ---
 
   test('PUT /api/providers/secrets/:provider over the overlay → 404 refused; host secret NOT written', async () => {
-    const res = await fetch(`${overlay}/api/providers/secrets/openai`, {
+    const res = await teamFetch(teamSock, `/api/providers/secrets/openai`, {
       method: 'PUT',
       headers: authed({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ api_key: 'sk-attacker' }),
@@ -584,7 +595,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   });
 
   test('GET /api/providers/secrets over the overlay → 404 refused, handler never runs', async () => {
-    const res = await fetch(`${overlay}/api/providers/secrets`, { headers: authed() });
+    const res = await teamFetch(teamSock, `/api/providers/secrets`, { headers: authed() });
     expect(res.status).toBe(404);
     expect((await res.json()).error).toBe('not_found');
     expect(secretsListCalls).toBe(0);
@@ -593,7 +604,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   // --- degrade → capability-unavailable-hosted (same payload the member returns) ---
 
   test('a degrade route over the overlay → 409 capability_unavailable_hosted, handler never runs', async () => {
-    const res = await fetch(`${overlay}/api/git/status`, { headers: authed() });
+    const res = await teamFetch(teamSock, `/api/git/status`, { headers: authed() });
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toBe('capability_unavailable_hosted');
@@ -604,7 +615,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   // --- serve → STILL served (proves the backstop only ADDS refusals) ---
 
   test('a serve route over the overlay, with the designated served Grove\'s tenancy, is STILL served locally (handler runs)', async () => {
-    const res = await fetch(`${overlay}/api/sessions`, { headers: { ...authed(), ...servedTenancy() } });
+    const res = await teamFetch(teamSock, `/api/sessions`, { headers: { ...authed(), ...servedTenancy() } });
     expect(res.status).toBe(200);
     expect((await res.json()).from).toBe('handler');
     expect(sessionsCalls).toBe(1);
@@ -613,7 +624,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   // --- config-lock → config-host-authoritative (same payload the member returns) ---
 
   test('a config-lock write over the overlay → 409 config_host_authoritative, handler never runs', async () => {
-    const res = await fetch(`${overlay}/api/grove-config`, {
+    const res = await teamFetch(teamSock, `/api/grove-config`, {
       method: 'PUT',
       headers: authed({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ config: { embedding: {} } }),
@@ -626,7 +637,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   // --- config-carve → 404 (member-assembled; the scoped write mutates host config) ---
 
   test('a config-carve scoped write over the overlay → 404 refused, host config NOT written', async () => {
-    const res = await fetch(`${overlay}/api/config/scoped`, {
+    const res = await teamFetch(teamSock, `/api/config/scoped`, {
       method: 'PUT',
       headers: authed({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ scope: 'machine', patch: { daemon: { log_level: 'debug' } } }),
@@ -639,14 +650,14 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   // --- provider/model connectivity (the Major residual): machine-global, refused ---
 
   test('GET /api/providers over the overlay → 404 refused (host key-validity oracle closed), handler never runs', async () => {
-    const res = await fetch(`${overlay}/api/providers`, { headers: authed() });
+    const res = await teamFetch(teamSock, `/api/providers`, { headers: authed() });
     expect(res.status).toBe(404);
     expect((await res.json()).error).toBe('not_found');
     expect(providersListCalls).toBe(0);
   });
 
   test('POST /api/providers/test over the overlay → 404 refused; the SSRF/reachability probe never fires', async () => {
-    const res = await fetch(`${overlay}/api/providers/test`, {
+    const res = await teamFetch(teamSock, `/api/providers/test`, {
       method: 'POST',
       headers: authed({ 'Content-Type': 'application/json' }),
       // A member-supplied base_url is the SSRF lever; the handler that would dial it never runs.
@@ -660,7 +671,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   // --- database/embedding sweep: maintenance mutation degrades, read still serves ---
 
   test('POST /api/database/vacuum over the overlay → 409 capability_unavailable_hosted, handler never runs', async () => {
-    const res = await fetch(`${overlay}/api/database/vacuum`, { method: 'POST', headers: authed() });
+    const res = await teamFetch(teamSock, `/api/database/vacuum`, { method: 'POST', headers: authed() });
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toBe('capability_unavailable_hosted');
@@ -669,7 +680,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   });
 
   test('GET /api/embedding/status (a serve READ), with the designated served Grove\'s tenancy, over the overlay is STILL served (no over-refusal)', async () => {
-    const res = await fetch(`${overlay}/api/embedding/status`, { headers: { ...authed(), ...servedTenancy() } });
+    const res = await teamFetch(teamSock, `/api/embedding/status`, { headers: { ...authed(), ...servedTenancy() } });
     expect(res.status).toBe(200);
     expect((await res.json()).from).toBe('embedding-status');
     expect(embeddingStatusCalls).toBe(1);
@@ -677,18 +688,23 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
 
   // --- existing exemptions intact (the backstop does not touch raw routes) ---
 
-  test('/api/host/enroll over the overlay still works (bearer-exempt enrollment path intact)', async () => {
-    const res = await fetch(`${overlay}/api/host/enroll`, {
+  test('/api/host/enroll is NOT team-admitted — it cannot hand out the bearer', async () => {
+    // The route is bearer-EXEMPT and returns the shared serve bearer to whoever
+    // asks, because its real gate was overlay membership: a headscale pre-auth
+    // key the daemon never saw. With no overlay there is no gate, so admitting
+    // it here would publish a bearer giveaway the moment this socket is fronted
+    // by Funnel. It returns only alongside the join key that replaces that gate.
+    const res = await teamFetch(teamSock, `/api/host/enroll`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-myco-host-protocol': '1' },
-      body: JSON.stringify({ member_hostname: 'laptop', member_overlay_ip: '100.64.0.9' }),
+      body: JSON.stringify({ member_hostname: 'laptop' }),
     });
-    expect(res.status).toBe(200);
-    expect((await res.json()).bearer).toBe(HOST_BEARER);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain(HOST_BEARER);
   });
 
   test('/api/shutdown over the overlay still 404s and its handler never fires', async () => {
-    const res = await fetch(`${overlay}/api/shutdown`, { method: 'POST', headers: authed() });
+    const res = await teamFetch(teamSock, `/api/shutdown`, { method: 'POST', headers: authed() });
     expect(res.status).toBe(404);
     expect(shutdownCalls).toBe(0);
   });
@@ -703,14 +719,17 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
 describe('Team Host serve disabled → no second listener', () => {
   let tmp: string;
   let server: DaemonServer;
+  let teamSock: string;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-off-'));
+    teamSock = teamSocketPath();
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
+      teamSocketPath: teamSock,
       // no hostServe → host serving off
     });
     server.registerRoute('GET', '/api/sessions', async () => ({ body: { ok: true } }));
@@ -719,12 +738,13 @@ describe('Team Host serve disabled → no second listener', () => {
 
   afterEach(async () => {
     await server.stop();
+    removeSocket(teamSock);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  test('no overlay listener binds and the loopback listener works', async () => {
-    expect(server.overlayPort).toBe(0);
-    expect(server.overlayBoundAddress).toBeNull();
+  test('no team listener binds and the loopback listener works', async () => {
+    expect(server.teamSocketPath).toBeNull();
+    expect(fs.existsSync(teamSock)).toBe(false);
     const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`);
     expect(res.status).toBe(200);
   });

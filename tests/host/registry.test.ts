@@ -22,7 +22,6 @@ import {
   type HostRecord,
 } from '@myco/host/registry';
 import { createHostOperationLock } from '@myco/host/operation-lock';
-import { withLoopbackPortReleaseProof } from '@myco/host/loopback-port-proof';
 import {
   testPerUserLockNamespace,
   testPerUserLocksRoot,
@@ -306,9 +305,7 @@ describe('host registry', () => {
     const restoredRecord = fs.readFileSync(path.join(tmp, 'hosts', host.host_id, 'host.json'));
 
     await withHostOperationLock(host.host_id, 'leave', async (lease) => {
-      await withLoopbackPortReleaseProof(proxyPort, async (proof) => {
-        retireHostMembership(host.host_id, lease, proof, proxyPort);
-      });
+      retireHostMembership(host.host_id, lease);
     });
 
     expect(getHost(host.host_id)).toBeNull();
@@ -346,9 +343,7 @@ describe('host registry', () => {
     fs.writeFileSync(ledgerPath, '{malformed', { mode: 0o600 });
 
     await withHostOperationLock(host.host_id, 'leave', async (lease) => {
-      await withLoopbackPortReleaseProof(proxyPort, async (proof) => {
-        retireHostMembership(host.host_id, lease, proof, proxyPort);
-      });
+      retireHostMembership(host.host_id, lease);
     });
 
     expect(getHost(host.host_id)).toBeNull();

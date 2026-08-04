@@ -242,7 +242,7 @@ export interface MycoRequestContext {
   /**
    * True when this request arrived on the daemon's OVERLAY listener — i.e.
    * the run is being host-served for a remote member over the Team Host
-   * overlay (see `isOverlayRequest`, `daemon/host-serve.ts`). Stamped at the
+   * overlay (see `isTeamRequest`, `daemon/host-serve.ts`). Stamped at the
    * transport boundary (`daemon/server.ts`) from the spoofing-proof overlay
    * mark, then carried untouched to the executor's tool surface.
    *

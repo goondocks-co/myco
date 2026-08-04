@@ -111,7 +111,6 @@ describe('GET /api/host-serve/status', () => {
       served_grove_id: grove.id,
       served_grove_name: 'Served',
       hosted_project_count: 0,
-      overlay_address: '100.64.0.1:7433',
       host_id: 'host_abc',
       label: 'Mac Studio',
       external_mcp: { enabled: false, port: machine.daemon.external_mcp.port, bound: null, token_present: false },

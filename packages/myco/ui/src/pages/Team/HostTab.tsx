@@ -95,12 +95,11 @@ export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}
   const [hostRef, setHostRef] = useState('');
   const [key, setKey] = useState('');
   const [serverUrl, setServerUrl] = useState('');
-  const [overlayAddress, setOverlayAddress] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const canSubmit = overlaySupported
-    && Boolean(hostRef.trim() && key.trim() && serverUrl.trim() && overlayAddress.trim())
+    && Boolean(hostRef.trim() && key.trim() && serverUrl.trim())
     && !join.isPending;
 
   const handleJoin = async () => {
@@ -111,7 +110,6 @@ export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}
         host_ref: hostRef.trim(),
         key: key.trim(),
         server_url: serverUrl.trim(),
-        overlay_address: overlayAddress.trim(),
       });
       setSuccess(`${result.created ? 'Joined' : 'Re-joined'} ${result.host_id}${result.host_reachable ? '.' : ' — not confirmed reachable yet.'}`);
       // One-time key: never leave it sitting in a form field after use.
@@ -148,9 +146,7 @@ export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}
         <label className={labelClass} htmlFor="host-join-key">One-time key</label>
         <input id="host-join-key" type="password" className={inputClass} value={key} onChange={(e) => setKey(e.target.value)} />
         <label className={labelClass} htmlFor="host-join-server-url">Server URL</label>
-        <input id="host-join-server-url" className={inputClass} value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://headscale.example.com" />
-        <label className={labelClass} htmlFor="host-join-overlay-address">Overlay address</label>
-        <input id="host-join-overlay-address" className={inputClass} value={overlayAddress} onChange={(e) => setOverlayAddress(e.target.value)} placeholder="100.64.x.y:port" />
+        <input id="host-join-server-url" className={inputClass} value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://host.example.ts.net" />
         <div className="flex justify-end">
           <Button size="sm" disabled={!canSubmit} onClick={handleJoin}>
             {join.isPending ? 'Joining…' : 'Join host'}
@@ -415,9 +411,6 @@ function HostCard({
         <button type="button" onClick={onSelect} className="min-w-0 text-left" aria-label={`View ${host.label} details`}>
           <span className="text-sm font-medium text-on-surface">{host.label}</span>
           <div className="text-xs font-mono text-on-surface-variant break-all">{host.host_id}</div>
-          <div className="text-xs text-on-surface-variant">
-            {host.overlay_address}{host.proxy_port !== null ? ` · local proxy 127.0.0.1:${host.proxy_port}` : ''}
-          </div>
         </button>
         <Badge variant="outline">{host.projects.length} project{host.projects.length === 1 ? '' : 's'}</Badge>
       </div>

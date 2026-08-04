@@ -93,9 +93,11 @@ describe('myco join / myco leave (daemon API fallback)', () => {
     };
     await runJoin(['host_abc', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault');
 
-    const upfrontIndex = logSpy.mock.calls.findIndex((c) => String(c[0]).includes('can take up to a minute'));
+    // Keyed on the identity in the message, not its wording — the property is
+    // that SOMETHING prints before the blocking POST, so the terminal is never
+    // silent while the daemon works. The phrasing is free to change.
+    const upfrontIndex = logSpy.mock.calls.findIndex((c) => String(c[0]).includes('Joining Team Host host_abc'));
     expect(upfrontIndex).toBeGreaterThanOrEqual(0);
-    expect(String(logSpy.mock.calls[upfrontIndex]![0])).toContain('Joining Team Host host_abc');
     // Printed BEFORE the POST result renders — it is the waiting message.
     const joinedIndex = logSpy.mock.calls.findIndex((c) => String(c[0]).includes('Joined Team Host'));
     expect(upfrontIndex).toBeLessThan(joinedIndex);

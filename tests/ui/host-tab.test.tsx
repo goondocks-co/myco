@@ -42,7 +42,7 @@ if (typeof _g.NodeFilter === 'undefined' && typeof document !== 'undefined') {
 }
 
 const joinMutateAsync = vi.fn(async () => ({
-  host_id: 'host_abc', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+  host_id: 'host_abc',
   member_overlay_ip: '100.64.0.5', host_reachable: true, created: true, notes: [],
 }));
 const leaveMutateAsync = vi.fn(async () => ({ removed: true, tailscaled_removed: true, notes: [] }));
@@ -298,7 +298,7 @@ beforeEach(() => {
 });
 
 describe('JoinHostForm', () => {
-  it('disables Join host until host id, key, server URL, and overlay address are all filled', async () => {
+  it('disables Join host until host id, key, and server URL are all filled', async () => {
     renderJoinHostForm();
     const submit = screen.getByRole('button', { name: /join host/i });
     expect(submit).toBeDisabled();
@@ -308,21 +308,18 @@ describe('JoinHostForm', () => {
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
-    expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('Overlay address'), { target: { value: '100.64.0.1:7433' } });
     expect(submit).not.toBeDisabled();
   });
 
-  it('submits exactly the four-field join payload and shows the success message', async () => {
+  it('submits exactly the three-field join payload and shows the success message', async () => {
     renderJoinHostForm();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
-    fireEvent.change(screen.getByLabelText('Overlay address'), { target: { value: '100.64.0.1:7433' } });
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
     await waitFor(() => expect(joinMutateAsync).toHaveBeenCalledWith({
-      host_ref: 'host_abc', key: 'onetime', server_url: 'https://h:8080', overlay_address: '100.64.0.1:7433',
+      host_ref: 'host_abc', key: 'onetime', server_url: 'https://h:8080',
     }));
     await waitFor(() => expect(screen.getByTestId('host-join-success')).toBeInTheDocument());
   });
@@ -332,7 +329,6 @@ describe('JoinHostForm', () => {
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
-    fireEvent.change(screen.getByLabelText('Overlay address'), { target: { value: '100.64.0.1:7433' } });
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
     await waitFor(() => expect((screen.getByLabelText('One-time key') as HTMLInputElement).value).toBe(''));
@@ -353,7 +349,6 @@ describe('JoinHostForm', () => {
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
-    fireEvent.change(screen.getByLabelText('Overlay address'), { target: { value: '100.64.0.1:7433' } });
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
     await waitFor(() => expect(screen.getByTestId('host-join-error')).toHaveTextContent(/different Myco versions/));
@@ -371,7 +366,6 @@ describe('JoinHostForm', () => {
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
-    fireEvent.change(screen.getByLabelText('Overlay address'), { target: { value: '100.64.0.1:7433' } });
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
     await waitFor(() => expect(screen.getByTestId('host-join-error')).toHaveTextContent(/tailscaled socket did not appear/));
@@ -390,7 +384,7 @@ describe('Joined hosts list', () => {
   it('renders each host with its attach refs and a Detach control per project', () => {
     statusFixture = {
       hosts: [{
-        host_id: 'host_abc', label: 'Mac Studio', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+        host_id: 'host_abc', label: 'Mac Studio',
         protocol_version: 1, created_at: '2026-01-01T00:00:00Z',
         projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout' }],
       }],
@@ -407,7 +401,7 @@ describe('Joined hosts list', () => {
   it('renders a warning on a project ref whose mismatch flag is set (UX spec §2(c)) — never silent', () => {
     statusFixture = {
       hosts: [{
-        host_id: 'host_abc', label: 'Mac Studio', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+        host_id: 'host_abc', label: 'Mac Studio',
         protocol_version: 1, created_at: '2026-01-01T00:00:00Z',
         projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: 'attach_grove_mismatch' }],
       }],
@@ -424,7 +418,7 @@ describe('Joined hosts list', () => {
   it('renders no warning on a project ref whose mismatch flag is null', () => {
     statusFixture = {
       hosts: [{
-        host_id: 'host_abc', label: 'Mac Studio', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+        host_id: 'host_abc', label: 'Mac Studio',
         protocol_version: 1, created_at: '2026-01-01T00:00:00Z',
         projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: null }],
       }],
@@ -438,7 +432,7 @@ describe('Joined hosts list', () => {
   it('Detach confirms first, then calls useDetachProject with the project root + id (no allow_no_pull on the happy path)', async () => {
     statusFixture = {
       hosts: [{
-        host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+        host_id: 'host_abc', label: 'Mac Studio',
         protocol_version: 1, created_at: '',
         projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout' }],
       }],
@@ -459,7 +453,7 @@ describe('Joined hosts list', () => {
 
   it('Leave host opens an in-app confirmation naming the host, then calls useLeaveHost with the host id', async () => {
     statusFixture = {
-      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
+      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
     };
     renderHostTab();
@@ -478,7 +472,7 @@ describe('Joined hosts list', () => {
 
   it('Leave host does nothing when the confirmation is dismissed', async () => {
     statusFixture = {
-      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
+      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
     };
     renderHostTab();
@@ -501,7 +495,7 @@ describe('AttachProjectPanel', () => {
 
   it('takes an operator-typed project path (never a picker of already-locally-registered projects), and submits project_root/host_id — no grove id (the daemon sources it from the host record)', async () => {
     statusFixture = {
-      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
+      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
     };
     renderHostTab();
@@ -541,7 +535,7 @@ describe('AttachProjectPanel', () => {
       });
     });
     statusFixture = {
-      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
+      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
     };
     renderHostTab();
@@ -563,7 +557,7 @@ describe('AttachProjectPanel', () => {
 describe('DrainHealthPanel', () => {
   it('renders pending/failing counters per host per drain, with units per drain kind — including the residency drain', () => {
     statusFixture = {
-      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1, protocol_version: 1, created_at: '', projects: [] }],
+      hosts: [{ host_id: 'host_abc', label: 'Mac Studio', protocol_version: 1, created_at: '', projects: [] }],
       hint: null,
     };
     drainFixture = {
@@ -594,7 +588,7 @@ describe('DrainHealthPanel', () => {
 
 describe('Residency round trip', () => {
   const attachedHost = {
-    host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+    host_id: 'host_abc', label: 'Mac Studio',
     protocol_version: 3, created_at: '',
     projects: [{ grove_id: 'grove_x', project_id: 'proj_x', root: '/checkout', mismatch: null }],
   };
@@ -771,7 +765,7 @@ describe('Residency round trip', () => {
 const SERVING_FIXTURE = {
   serving: true,
   served_grove_id: 'grove_served', served_grove_name: 'Team Storage',
-  overlay_address: '100.64.0.9:7433', host_id: 'host_self', label: 'This Box',
+  host_id: 'host_self', label: 'This Box',
   hosted_project_count: 0,
   external_mcp: { enabled: false, port: 0, bound: null, token_present: false },
   bearer_present: true,
@@ -781,7 +775,7 @@ const SERVING_FIXTURE = {
 /** A joined host with ZERO attached projects — the case the old
  *  attached-project-ref carrier could not target at all. */
 const REFLESS_HOST = {
-  host_id: 'host_abc', label: 'Mac Studio', overlay_address: 'a', proxy_port: 1,
+  host_id: 'host_abc', label: 'Mac Studio',
   protocol_version: 1, created_at: '', projects: [],
 };
 
@@ -899,7 +893,7 @@ describe('Team page shell — host targets', () => {
     statusFixture = {
       hosts: [
         REFLESS_HOST,
-        { host_id: 'host_def', label: 'Linux Box', overlay_address: 'b', proxy_port: 2, protocol_version: 1, created_at: '', projects: [] },
+        { host_id: 'host_def', label: 'Linux Box', protocol_version: 1, created_at: '', projects: [] },
       ],
       hint: null,
     };
@@ -917,7 +911,7 @@ describe('Team page shell — host targets', () => {
     statusFixture = {
       hosts: [
         REFLESS_HOST,
-        { host_id: 'host_def', label: 'Linux Box', overlay_address: 'b', proxy_port: 2, protocol_version: 1, created_at: '', projects: [] },
+        { host_id: 'host_def', label: 'Linux Box', protocol_version: 1, created_at: '', projects: [] },
       ],
       hint: null,
     };
@@ -944,11 +938,11 @@ describe('Team page shell — host targets', () => {
 // ---------------------------------------------------------------------------
 
 const hostA = {
-  host_id: 'host_a', label: 'Mac Studio', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+  host_id: 'host_a', label: 'Mac Studio',
   protocol_version: 1, created_at: '2026-01-01T00:00:00Z', projects: [],
 };
 const hostB = {
-  host_id: 'host_b', label: 'Linux Box', overlay_address: '100.64.0.2:7433', proxy_port: 41201,
+  host_id: 'host_b', label: 'Linux Box',
   protocol_version: 1, created_at: '2026-02-02T00:00:00Z', projects: [],
 };
 
@@ -964,7 +958,6 @@ describe('Host detail slideout — selection', () => {
     const panel = screen.getByTestId('host-detail-panel');
     expect(panel).toBeInTheDocument();
     expect(within(panel).getByText('Linux Box')).toBeInTheDocument();
-    expect(within(panel).getByText('100.64.0.2:7433')).toBeInTheDocument();
   });
 
   it('closing the slideout clears the selection', () => {

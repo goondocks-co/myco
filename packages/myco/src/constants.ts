@@ -756,7 +756,7 @@ export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
  * protocol_version, bearer, …}`. It is the ONE overlay route EXEMPT from the
  * blanket bearer gate (the chicken-and-egg: enrollment is how the member obtains
  * the bearer). Gated instead by overlay reachability (`overlayBearerExempt` +
- * `isOverlayRequest`, `daemon/host-serve.ts`). The `/api/host/*` namespace is
+ * `isTeamRequest`, `daemon/host-serve.ts`). The `/api/host/*` namespace is
  * distinct from team-sync's `POST /api/team/join` (scope-map ⚑4) — they are
  * different capabilities on different transports (live host overlay vs D1 replica).
  */
@@ -795,7 +795,7 @@ export const MEMBER_OVERLAY_PROXY_PORT_BASE = 41080;
  * daemon's overlay listener binds and tailscaled's `serve --tcp` forward
  * targets. Deliberately disjoint from {@link MEMBER_OVERLAY_PROXY_PORT_BASE}
  * so a box that both serves and joins does not collide by default; allocation
- * additionally consults the member registry (`allocateHostServeOverlayPort`),
+ * additionally consults the member registry,
  * because "disjoint base" is a convenience, not the guarantee.
  */
 export const HOST_SERVE_OVERLAY_PORT_BASE = 41443;

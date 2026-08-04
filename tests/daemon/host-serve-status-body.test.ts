@@ -131,38 +131,4 @@ describe('GATE 4 — status body carries the observed listener bind + restart di
     expect(fs.existsSync(path.join(process.env.MYCO_HOME!, 'secrets.env'))).toBe(false);
   });
 
-  it('a misconfigured enable names its actual defect (invalid port), never a bare boolean', async () => {
-    fs.writeFileSync(path.join(process.env.MYCO_HOME!, 'config.yaml'), [
-      'daemon:',
-      '  host_serve:',
-      '    enabled: true',
-      "    overlay_address: '100.64.0.5'",
-    ].join('\n'));
-    const handler = createHostServeStatusHandler({ hostServe: null, mycoHome: process.env.MYCO_HOME! });
-    const body = (await handler({ body: undefined, params: {}, query: {} } as never)).body as Record<string, unknown>;
-    expect(body.not_serving_reason).toBe('invalid_overlay_port');
-  });
-});
-
-describe('GATE 7 — headscale admin calls run after the supervision step has converged', () => {
-  it('in hostEnable source order: admin-socket proof < key mint < node-id resolution', () => {
-    // The cross-PR invariant nobody owned (E1 review): PR 1 made the admin
-    // CLI unprivileged — which only works once the USER cell is up, because
-    // the user-owned admin socket is what replaces sudo. PR 2 is a
-    // reordering PR, so the ordering must be pinned, not assumed. Marker
-    // positions are stable API names, not formatting.
-    const source = fs.readFileSync(
-      path.join(import.meta.dir, '..', '..', 'packages', 'myco', 'src', 'team-host', 'overlay.ts'),
-      'utf-8',
-    );
-    const enableStart = source.indexOf('export async function hostEnable');
-    expect(enableStart).toBeGreaterThan(0);
-    const body = source.slice(enableStart);
-    const supervisionProof = body.indexOf('waitForAdminSocket');
-    const keyMint = body.indexOf('mintPreauthKey({');
-    const nodeId = body.indexOf('deps.resolveNodeId\n');
-    expect(supervisionProof).toBeGreaterThan(0);
-    expect(keyMint).toBeGreaterThan(supervisionProof);
-    expect(nodeId === -1 ? body.indexOf('deps.resolveNodeId') : nodeId).toBeGreaterThan(keyMint);
-  });
 });

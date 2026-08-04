@@ -11,7 +11,6 @@ import { clearHostState, readHostState, writeHostState, type HostState } from '@
 import { loadMachineConfig } from '@myco/config/loader.js';
 import {
   resolveHostServeConfig as resolveHostServeConfigWith,
-  isOverlayRangeAddress,
 } from '@myco/daemon/host-serve.js';
 import { SCOPE_REGISTRY } from '@myco/config/scope.js';
 import type { ServiceManager, ServiceStatus, InstallResult } from '@myco/service/types.js';
@@ -60,49 +59,34 @@ describe('writeHostServeConfig', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('writes daemon.host_serve to the machine tier with a 100.64 IP that satisfies Task 2.3', () => {
-    writeHostServeConfig({ enabled: true, overlayAddress: '100.64.0.7', overlayPort: 41443 }, process.env.MYCO_HOME);
+  it('writes daemon.host_serve to the machine tier and resolves to a live runtime', () => {
+    writeHostServeConfig({ enabled: true, hostId: 'host_abc', label: 'mac' }, process.env.MYCO_HOME);
 
     const machine = loadMachineConfig(process.env.MYCO_HOME);
     expect(machine.daemon.host_serve).toEqual({
       enabled: true,
-      overlay_address: '100.64.0.7',
-      overlay_port: 41443,
-      host_id: null,
-      label: null,
+      host_id: 'host_abc',
+      label: 'mac',
       served_grove_id: null,
       last_served_grove_id: null,
     });
 
-    // The written address satisfies Task 2.3's downstream gate...
-    expect(isOverlayRangeAddress(machine.daemon.host_serve.overlay_address)).toBe(true);
-    // ...and resolves to a live HostServeRuntime (bind address + minted bearer).
+    // There is no address to validate: the listener binds a socket derived from
+    // MYCO_HOME, so enablement carries identity and designation only.
     const runtime = resolveHostServeConfig({ machineConfig: machine, mycoHome: process.env.MYCO_HOME });
-    expect(runtime?.overlayAddress).toBe('100.64.0.7');
+    expect(runtime?.hostId).toBe('host_abc');
     expect(runtime?.bearer.length).toBeGreaterThan(0);
 
     // The write lands ONLY in the machine config file, not a project vault.
     expect(fs.existsSync(path.join(process.env.MYCO_HOME!, 'config.yaml'))).toBe(true);
   });
 
-  it('REFUSES to enable with a non-CGNAT address (would be rejected downstream)', () => {
-    expect(() => writeHostServeConfig({ enabled: true, overlayAddress: '192.168.1.9', overlayPort: 41443 }, process.env.MYCO_HOME))
-      .toThrow(/not a\s+100\.64\.0\.0\/10/);
-    expect(() => writeHostServeConfig({ enabled: true, overlayAddress: '10.0.0.4', overlayPort: 41443 }, process.env.MYCO_HOME))
-      .toThrow(/CGNAT/);
-    // Nothing was written.
-    const machine = loadMachineConfig(process.env.MYCO_HOME);
-    expect(machine.daemon.host_serve.enabled).toBe(false);
-  });
-
-  it('clears host_serve on disable (enabled:false, address null → resolves off)', () => {
-    writeHostServeConfig({ enabled: true, overlayAddress: '100.64.0.7', overlayPort: 41443 }, process.env.MYCO_HOME);
-    writeHostServeConfig({ enabled: false, overlayAddress: null }, process.env.MYCO_HOME);
+  it('clears host_serve on disable → resolves off', () => {
+    writeHostServeConfig({ enabled: true }, process.env.MYCO_HOME);
+    writeHostServeConfig({ enabled: false }, process.env.MYCO_HOME);
     const machine = loadMachineConfig(process.env.MYCO_HOME);
     expect(machine.daemon.host_serve).toEqual({
       enabled: false,
-      overlay_address: null,
-      overlay_port: null,
       host_id: null,
       label: null,
       served_grove_id: null,
@@ -120,7 +104,7 @@ describe('writeHostServeConfig', () => {
     let machine = loadMachineConfig(process.env.MYCO_HOME);
     expect(machine.daemon.host_serve.served_grove_id).toBe('grove_' + '0'.repeat(32));
 
-    writeHostServeConfig({ enabled: false, overlayAddress: null }, process.env.MYCO_HOME);
+    writeHostServeConfig({ enabled: false }, process.env.MYCO_HOME);
     machine = loadMachineConfig(process.env.MYCO_HOME);
     expect(machine.daemon.host_serve.served_grove_id).toBeNull();
   });

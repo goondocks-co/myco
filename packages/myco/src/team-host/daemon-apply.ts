@@ -2,14 +2,12 @@
  * Wire host-serve enablement into the running daemon.
  *
  * Two steps, both idempotent:
- *   1. WRITE `daemon.host_serve = { enabled, overlay_address }` to the MACHINE
- *      tier via the raw machine-tier writer. Daemon startup reads this field and
- *      binds a second overlay listener. The overlay address MUST be a 100.64/10
- *      CGNAT IP; `isOverlayRangeAddress` refuses any other address at the write
- *      boundary.
+ *   1. WRITE `daemon.host_serve = { enabled, host_id, label, served_grove_id }`
+ *      to the MACHINE tier via the raw machine-tier writer. Daemon startup reads
+ *      this field and binds the team listener on its socket.
  *   2. APPLY it by restarting the daemon. Host-serve is read once at startup
  *      (`daemon/main.ts`), so a config write alone is inert — the daemon must
- *      restart to bind (or unbind) the overlay listener. The `myco` CLI process
+ *      restart to bind (or unbind) the team listener. The `myco` CLI process
  *      running `host enable` is separate from the daemon, so restarting via the
  *      platform ServiceManager is the safe path (no self-SIGTERM). When the
  *      daemon is not service-managed we surface a manual-restart instruction
@@ -20,22 +18,12 @@
  * atomically persists the host-serve leaf without replacing sibling state.
  */
 import { updateTierConfigRaw } from '@myco/config/loader.js';
-import { isOverlayRangeAddress, isValidOverlayPort } from '@myco/daemon/host-serve.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager } from '@myco/service/types.js';
 
 export interface HostServeApply {
   enabled: boolean;
-  /** The host's 100.64/10 overlay IP when enabling; null clears it (disable). */
-  overlayAddress: string | null;
-  /**
-   * The overlay listener's loopback port / serve-forward port. REQUIRED when
-   * enabling — the daemon refuses to serve without it. This write replaces the
-   * whole `host_serve` leaf, so a field omitted here is DESTROYED; that is why
-   * it is listed explicitly rather than left to merge.
-   */
-  overlayPort?: number | null;
   /** Host identity mirrored into `host_serve` for the enrollment endpoint. */
   hostId?: string | null;
   label?: string | null;
@@ -44,23 +32,14 @@ export interface HostServeApply {
 }
 
 /**
- * Persist the host-serve enablement to the machine tier. Refuses to write an
- * enabled config whose address is not a 100.64/10 overlay IP, matching the
- * listener's downstream bind gate.
+ * Persist the host-serve enablement to the machine tier.
+ *
+ * There is no address or port to validate here any more. The team listener
+ * binds a socket path derived from `MYCO_HOME` ({@link resolveTeamSocketPath}),
+ * so enablement carries identity and designation only — what a host IS, not
+ * where it can be reached.
  */
 export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = resolveMycoHome()): void {
-  if (apply.enabled && !isValidOverlayPort(apply.overlayPort)) {
-    throw new Error(
-      `Refusing to enable host-serve: overlay_port ${JSON.stringify(apply.overlayPort ?? null)} is not a `
-      + 'valid port. Without it the daemon fails closed and never binds the overlay listener.',
-    );
-  }
-  if (apply.enabled && !isOverlayRangeAddress(apply.overlayAddress)) {
-    throw new Error(
-      `Refusing to enable host-serve: overlay_address ${JSON.stringify(apply.overlayAddress)} is not a `
-      + '100.64.0.0/10 (CGNAT) overlay IP. Members would have no address to dial.',
-    );
-  }
   updateTierConfigRaw({ kind: 'machine' }, (raw) => {
     const daemon = raw.daemon;
     if (daemon !== undefined && (daemon === null || typeof daemon !== 'object' || Array.isArray(daemon))) {
@@ -80,8 +59,6 @@ export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = r
       ...(daemon as Record<string, unknown> | undefined),
       host_serve: {
         enabled: apply.enabled,
-        overlay_address: apply.enabled ? apply.overlayAddress : null,
-        overlay_port: apply.enabled ? (apply.overlayPort ?? null) : null,
         host_id: apply.enabled ? (apply.hostId ?? null) : null,
         label: apply.enabled ? (apply.label ?? null) : null,
         served_grove_id: apply.enabled ? (apply.servedGroveId ?? null) : null,
@@ -97,7 +74,7 @@ export interface DaemonRestartResult {
 }
 
 /**
- * Restart the daemon so it re-reads host-serve and (un)binds the overlay listener.
+ * Restart the daemon so it re-reads host-serve and (un)binds the team listener.
  * Uses the platform ServiceManager (a separate-process restart — safe, no
  * self-SIGTERM). When the daemon is not installed as a service, returns
  * `restarted:false` with an operator instruction instead of throwing.
