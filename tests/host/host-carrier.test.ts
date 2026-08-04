@@ -131,6 +131,22 @@ describe('resolveHostCarrierTarget', () => {
     expect(resolved.refusal.message).not.toContain('Re-join this host with');
   });
 
+  it('a KNOWN host with no usable address is refused, not carried to an undialable target', () => {
+    // The carrier admits team-write routes, so falling through with a target
+    // that has no address would attempt a write against a host this member
+    // cannot reach — and report a network failure for a data problem. The
+    // refusal names the remedy instead.
+    const host = makeHost({ host_url: undefined });
+    writeHostRecordFixture(host);
+
+    const resolved = resolveHostCarrierTarget(host.host_id, testPerUserLockNamespace);
+
+    expect(resolved.kind).toBe('refusal');
+    if (resolved.kind !== 'refusal') throw new Error('unreachable');
+    expect(resolved.refusal.error).toBe('host_address_unusable');
+    expect(resolved.refusal.retryable).toBe(false);
+  });
+
   it('an unknown host id is a 404, not a silent local fallthrough', () => {
     const resolved = resolveHostCarrierTarget('host_' + 'f'.repeat(32), testPerUserLockNamespace);
     expect(resolved.kind).toBe('refusal');

@@ -895,6 +895,91 @@ describe('ExternalMcpContainmentAuthority', () => {
     expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
   });
 
+  // ---------------------------------------------------------------------
+  // The SECOND public surface. `additionalFunnelSockets` is how the team
+  // Funnel reaches this authority's teardown, and it had no coverage at all —
+  // which is how the boot-reconcile hole below shipped green.
+  // ---------------------------------------------------------------------
+
+  test('RECONCILE retires team-funnel residue EVEN WHEN external MCP is coherently activated', async () => {
+    // The configuration the spec singles out: a machine that serves BOTH
+    // surfaces. External MCP being intended says nothing about the team
+    // surface, and the early return that leaves external MCP alone must not
+    // also skip the team socket — a stale public URL would then survive every
+    // subsequent boot with nothing left that would ever look for it.
+    const fixture = containmentFixture({ enabled: true, port: 8743 });
+    writeSecret(fixture.home, HOST_EXTERNAL_MCP_TOKEN_SECRET, 'coherent-token', testPerUserLockNamespace);
+    const offCalls: Array<number | string> = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: 'off' };
+      },
+      additionalFunnelSockets: () => ['/tmp/myco-team-residue.sock'],
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    const result = await authority.contain('reconcile');
+
+    // External MCP is still left alone — its config survives and its own port
+    // is never driven off.
+    expect(result.enabled).toBe(true);
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
+    expect(offCalls).not.toContain(8743);
+    // But the team socket IS retired.
+    expect(offCalls).toContain('/tmp/myco-team-residue.sock');
+  });
+
+  test('RECONCILE on a machine with NO team residue never reaches the vendor CLI', async () => {
+    // The other half, and the load-bearing one: an empty return must leave a
+    // machine that never hosted completely untouched, because a non-empty one
+    // is what spawns the operator's own `tailscale`.
+    const fixture = containmentFixture({ enabled: true, port: 8743 });
+    writeSecret(fixture.home, HOST_EXTERNAL_MCP_TOKEN_SECRET, 'coherent-token', testPerUserLockNamespace);
+    const offCalls: Array<number | string> = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: 'off' };
+      },
+      additionalFunnelSockets: () => [],
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    await authority.contain('reconcile');
+
+    expect(offCalls).toEqual([]);
+  });
+
+  test('SHUTDOWN quiesces the team socket alongside external MCP', async () => {
+    const fixture = containmentFixture({ enabled: true, port: 8743, listenerPort: 8743 });
+    const offCalls: Array<number | string> = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async (target) => {
+        offCalls.push(portOf(target));
+        return { ok: true, detail: 'off' };
+      },
+      additionalFunnelSockets: () => ['/tmp/myco-team-quiesce.sock'],
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    await authority.contain('shutdown');
+
+    // Nothing answers either public URL while the daemon is down.
+    expect(offCalls).toContain('/tmp/myco-team-quiesce.sock');
+    // ...and shutdown does NOT disavow the config, so the next boot republishes.
+    expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
+  });
+
   test('RECONCILE with an enabled config but NO token drives off (incoherent)', async () => {
     const fixture = containmentFixture({ enabled: true, port: 8743, listenerPort: 8743 });
     const authority = new ExternalMcpContainmentAuthority({

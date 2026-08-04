@@ -154,12 +154,26 @@ export type ResidencyPostTransport = (
   machineId: string,
 ) => Promise<ResidencyRowsResponse>;
 
-/** Resolve the per-project host connection target (host record + bearer). */
+/**
+ * Resolve the per-project host connection target (host record + bearer).
+ *
+ * Three outcomes, not two. `null` means NO MEMBERSHIP — the record is gone.
+ * `'no_address'` means the membership is intact but carries no usable
+ * `host_url`, which needs a re-join rather than a re-attach; collapsing the two
+ * told users mid-move that their membership had vanished when it had not.
+ */
 export type ResolveResidencyTarget = (
   hostId: string,
   groveId: string,
   projectId: string,
-) => RemoteTarget | null;
+) => RemoteTarget | null | 'no_address';
+
+/** The user-facing cause for a residency step that could not resolve a target. */
+function residencyTargetFailure(hostId: string, target: null | 'no_address'): string {
+  return target === 'no_address'
+    ? `host ${hostId} has no address on this machine — re-join it to record its public URL, then retry the move`
+    : `host record for ${hostId} is missing — the move cannot proceed`;
+}
 
 /** The prepare half of the artifact protocol: report (or start) the host-side
  *  one-time build. `ready:false` is PROGRESS (the member re-polls next tick),
@@ -268,12 +282,17 @@ const defaultResolveResidencyTarget = (
   groveId: string,
   projectId: string,
   lockNamespace = nativePerUserLockNamespace,
-): RemoteTarget | null => {
+): RemoteTarget | null | 'no_address' => {
   const membership = getHostMembershipSnapshot(hostId, lockNamespace);
   if (!membership) return null;
   const { record, bearer } = membership;
   const host = hostDescriptorFor(record);
-  if (!host) return null;
+  // Distinguished from "no membership", because the two need DIFFERENT things
+  // from the user: a missing record means the membership is gone, while a
+  // record with no usable address means it is intact but unreachable and only a
+  // re-join supplies the address. Telling a user mid-move that their membership
+  // vanished sends them to undo work that is fine.
+  if (!host) return 'no_address' as const;
   return {
     projectId: projectId as GroveProjectId,
     groveId,
@@ -536,8 +555,8 @@ async function runDetachTransition(
 
   if (journal.phase === 'fetching') {
     const target = resolveTarget(journal.host_id, journal.divert_grove_id, journal.project_id);
-    if (!target) {
-      stampResidencyFailure(journal.project_id, `host record for ${journal.host_id} is missing — the move cannot proceed`, teamsHome);
+    if (!target || target === 'no_address') {
+      stampResidencyFailure(journal.project_id, residencyTargetFailure(journal.host_id, target || null), teamsHome);
       return;
     }
     if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {
@@ -703,7 +722,7 @@ async function runDetachTransition(
     // must not wait on host reachability for bookkeeping.
     let goodbyeOk = false;
     const target = resolveTarget(journal.host_id, journal.divert_grove_id, journal.project_id);
-    if (target) {
+    if (target && target !== 'no_address') {
       try { goodbyeOk = (await goodbyeTransport(target, deps.machineId)).status === 200; }
       catch { /* marker below */ }
     }
@@ -762,7 +781,7 @@ async function retryPendingGoodbyes(
     }
     try {
       const target = resolveTarget(marker.host_id, marker.grove_id, marker.project_id);
-      if (!target) {
+      if (!target || target === 'no_address') {
         // Null is NOT proof the membership is gone — a mid-rotation snapshot
         // resolves null too. Drop the marker only on positive absence of the
         // host's durable directory (leave removes it); otherwise keep it.
@@ -822,10 +841,10 @@ async function pushTransition(
   teamsHome: string | undefined,
 ): Promise<void> {
   const target = resolveTarget(journal.host_id, journal.divert_grove_id, journal.project_id);
-  if (!target) {
+  if (!target || target === 'no_address') {
     // Not a transient miss: the record only leaves the registry with the
     // membership. Stamp it so the health/stall surfaces can see the hold.
-    stampResidencyFailure(journal.project_id, `host record for ${journal.host_id} is missing — the move cannot proceed`, teamsHome);
+    stampResidencyFailure(journal.project_id, residencyTargetFailure(journal.host_id, target || null), teamsHome);
     return;
   }
   if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {

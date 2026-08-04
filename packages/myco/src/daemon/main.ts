@@ -2725,24 +2725,59 @@ export async function main(): Promise<void> {
   // Loud-but-alive, matching the external-MCP repair above: a host that cannot
   // publish still runs everything else, and the failure is recorded where the
   // Team page reads it instead of crash-looping the daemon.
+  //
+  // NOT awaited. Publishing runs the operator's vendor `tailscale` (up to three
+  // invocations, 10s each), then a DNS lookup, an HTTPS probe and a TCP
+  // control-connect — tens of seconds on a machine whose network or Tailscale
+  // is unhealthy. Awaiting it here would hold every later boot step behind
+  // that, including `syncScheduledTasks`, so a sick Funnel would starve the
+  // scheduler. Fire-and-forget, same posture as the module pre-warm below;
+  // members simply cannot reach the host until it resolves, which is already
+  // true while it is running.
   if (hostServe && server.teamSocketPath) {
     const socketPath = server.teamSocketPath;
-    const activation = await activateTeamFunnel(socketPath, { runFunnelOn: defaultFunnelOnRunner });
-    const state = readHostState();
-    if (activation.ok && activation.hostUrl) {
-      logger.info(LOG_KINDS.HOST_SERVE, 'Team Host published', { host_url: activation.hostUrl });
-      if (state && (state.host_url !== activation.hostUrl || state.funnel_error)) {
-        writeHostState({ ...state, host_url: activation.hostUrl, funnel_error: undefined });
+    void (async () => {
+      const activation = await activateTeamFunnel(socketPath, { runFunnelOn: defaultFunnelOnRunner });
+      // Read state AFTER the await: activation takes real time, and a
+      // concurrent `host enable` may have written it in the meantime.
+      //
+      // A missing state file is not a reason to discard what was observed.
+      // `resolveHostServeConfig` never consults host state, so `host_serve`
+      // enabled with no `state.json` is representable — and dropping the URL
+      // there left the dashboard telling an operator no address had been
+      // published about a host that was live on the public internet. The
+      // record is created from what we know instead.
+      const state = readHostState();
+      const base = state ?? {
+        host_id: hostServe.hostId ?? '',
+        enabled_at: new Date().toISOString(),
+        label: hostServe.label ?? undefined,
+        platform: process.platform,
+      };
+      if (!state) {
+        logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host state file was missing at publish — recreating it from the resolved config', {
+          host_id: base.host_id || null,
+        });
       }
-    } else {
-      logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host could not publish its public URL', {
-        detail: activation.detail,
+      if (activation.ok && activation.hostUrl) {
+        logger.info(LOG_KINDS.HOST_SERVE, 'Team Host published', { host_url: activation.hostUrl });
+        if (base.host_url !== activation.hostUrl || base.funnel_error) {
+          writeHostState({ ...base, host_url: activation.hostUrl, funnel_error: undefined });
+        }
+      } else {
+        logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host could not publish its public URL', {
+          detail: activation.detail,
+        });
+        // The URL is kept, not cleared: members already hold it, and a transient
+        // activation failure does not make the address wrong. The error rides
+        // alongside so the Team page can say what is broken.
+        writeHostState({ ...base, funnel_error: activation.detail });
+      }
+    })().catch((err) => {
+      logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host publish failed unexpectedly', {
+        error: err instanceof Error ? err.message : String(err),
       });
-      // The URL is kept, not cleared: members already hold it, and a transient
-      // activation failure does not make the address wrong. The error rides
-      // alongside so the Team page can say what is broken.
-      if (state) writeHostState({ ...state, funnel_error: activation.detail });
-    }
+    });
   }
 
   // Clear any update-in-progress sentinel left by the orchestrator

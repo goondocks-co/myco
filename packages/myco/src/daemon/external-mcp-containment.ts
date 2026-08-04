@@ -28,6 +28,8 @@ import {
 import { readSecrets } from '@myco/config/secrets.js';
 import {
   EXTERNAL_MCP_DEFAULT_PORT,
+  EXTERNAL_MCP_FUNNEL_PORT,
+  EXTERNAL_MCP_MOUNT,
   HOST_EXTERNAL_MCP_TOKEN_SECRET,
 } from '@myco/constants.js';
 import {
@@ -684,7 +686,7 @@ export class ExternalMcpContainmentAuthority {
 
         const funnel = await runFunnelOn(
           { kind: 'socket', path: deps.socketPath },
-          { mount: '/mcp', publicPort: 443 },
+          { mount: EXTERNAL_MCP_MOUNT, publicPort: EXTERNAL_MCP_FUNNEL_PORT },
         );
         if (!funnel.ok) return await recover(`could not activate the public Funnel: ${funnel.detail}`);
 
@@ -954,11 +956,21 @@ export class ExternalMcpContainmentAuthority {
     // token) is INTENDED — leave it alone and report it; the boot re-bind
     // phase (main.ts, same lock) re-establishes the listener and Funnel.
     // Anything less coherent falls through to the fail-closed drive-off.
+    //
+    // "Leave it alone" is about EXTERNAL MCP's OWN exposure, and this early
+    // return once meant the team surface was never looked at on exactly the
+    // machine that runs both — a host with external MCP enabled and team-funnel
+    // residue kept a stale public URL through every boot, with nothing left
+    // that would ever check. The team sockets are therefore retired FIRST and
+    // the early return happens after: the two surfaces are independent, so one
+    // being intended says nothing about the other. Everything about external
+    // MCP below is still skipped.
     if (operation === 'reconcile' && explicitExternalMcpConfig && externalMcp.enabled && tokenPresent) {
+      await runTargets([], this.additionalSockets());
       return {
         enabled: true,
         port: externalMcp.port,
-        funnel: [],
+        funnel,
       };
     }
     const brownfieldEvidenceWithoutPort = !explicitExternalMcpConfig

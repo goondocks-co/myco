@@ -462,10 +462,12 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
   // never hosted must not touch it at all. Same rule containment uses, for the
   // same reason.
   //
-  // A failure here does NOT block the disable: hosting is what the operator
-  // asked to turn off. It is reported, and `myco doctor`'s residue detector is
-  // the catch-all for a URL that outlived its host.
+  // A failure here does NOT abort the disable, but it DOES hold back the two
+  // writes that erase the evidence — see `withdrawn` below. Serving stops
+  // either way (the daemon restarts and unbinds the socket); what is preserved
+  // is the ability to find a URL that outlived its host.
   const exposedSockets = teamFunnelContainmentSockets({ mycoHome, intent: 'quiesce' });
+  let withdrawn = true;
   for (const socketPath of exposedSockets) {
     await step('withdraw public URL', async () => {
       const withdraw = deps.withdrawFunnel
@@ -476,6 +478,7 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
       const result = await withdraw(socketPath);
       log(result.detail);
       if (!result.ok) {
+        withdrawn = false;
         throw new Error(
           `${result.detail} The public URL may still be advertised — run \`myco doctor\` to check for leftover exposure.`,
         );
@@ -483,10 +486,25 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
     });
   }
 
-  await step('clear host_serve config', async () => {
-    writeHostServeConfig({ enabled: false }, mycoHome);
-  });
-  await step('clear host state', async () => { clearHostState(); });
+  if (withdrawn) {
+    await step('clear host_serve config', async () => {
+      writeHostServeConfig({ enabled: false }, mycoHome);
+    });
+    await step('clear host state', async () => { clearHostState(); });
+  } else {
+    // The ordering above exists so a live URL is never stranded with nothing on
+    // disk to find it by — and clearing anyway on the failure branch would do
+    // precisely that. `host_serve.enabled` and the host state file are the ONLY
+    // evidence the boot sweep's `retire` intent keys on, so they stay until the
+    // withdrawal actually confirms. The next boot retries; a re-run of `host
+    // disable` retries; and the daemon restart below still stops this machine
+    // serving in the meantime.
+    const warning = 'Host serving state was KEPT so the leftover public URL can still be found and '
+      + 'withdrawn — re-run `myco host disable` once Tailscale is reachable. This machine stops '
+      + 'serving regardless when the daemon restarts.';
+    log(`WARNING: ${warning}`);
+    errors.push(warning);
+  }
   await step('clear serve bearer', async () => {
     const { deleteSecrets } = await import('@myco/config/secrets.js');
     const { HOST_SERVE_BEARER_SECRET } = await import('@myco/constants.js');

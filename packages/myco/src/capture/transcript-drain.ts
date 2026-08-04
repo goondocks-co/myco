@@ -49,6 +49,12 @@ import {
 import { deriveTranscriptId, MAX_TRANSCRIPT_PUSH_BYTES } from '../host/routed-transcript.js';
 import { defaultDial, hostAuthority, hostProtocolCompatible } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
+import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
+
+/** How often to repeat the "nothing dialable for these entries" warn per host.
+ *  Throttled because the drain ticks continuously and the condition persists
+ *  until a re-join — one line per interval, not one per tick. */
+const DRAIN_UNRESOLVED_LOG_INTERVAL_MS = 10 * 60 * 1000;
 import {
   clearDrainFailure,
   recordDrainFailure,
@@ -612,7 +618,20 @@ export class TranscriptDrainQueue {
     if (entries.length === 0) return { processed: 0, remaining: 0 };
 
     const t = target ?? this.resolveHostTarget(hostId, entries[0]);
-    if (!t) return { processed: 0, remaining: entries.length }; // host record gone; leave entries
+    if (!t) {
+      // No membership, or a membership with no usable address. Either way there
+      // is nothing to dial and the entries stay PENDING — never dropped. Said
+      // out loud (throttled) because silence here was indistinguishable from a
+      // drain that had nothing to do, while the sibling version-skew case below
+      // has always warned.
+      if (shouldLogOncePerInterval(`drain.unresolved:${hostId}`, DRAIN_UNRESOLVED_LOG_INTERVAL_MS)) {
+        this.logger?.warn('capture.transcript-drain', 'no dialable host for pending entries — they stay queued', {
+          host_id: hostId,
+          pending: entries.length,
+        });
+      }
+      return { processed: 0, remaining: entries.length };
+    }
 
     // A version-incompatible host never self-heals by retry — skip (the entries
     // stay pending; the drain re-checks after an upgrade + reconnect).

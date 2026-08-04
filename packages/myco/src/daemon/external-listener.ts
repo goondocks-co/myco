@@ -70,7 +70,7 @@ import { createMcpProtocolServer } from '../mcp/server.js';
 import { createExternalTools } from '../mcp/external-surface.js';
 import { readSecrets } from '../config/secrets.js';
 import { resolveMycoHome } from '../grove/paths.js';
-import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../constants.js';
+import { EXTERNAL_MCP_MOUNT, HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../constants.js';
 import { describeFunnelTarget } from './external-mcp-containment.js';
 import type { FunnelOnRunner } from './external-mcp-containment.js';
 import { physicalPathIdentity } from '../utils/physical-path-identity.js';
@@ -80,10 +80,9 @@ import { applyDaemonHttpServerLimits, DAEMON_HTTP_LISTEN_BACKLOG, gracefullyClos
 import type { Logger } from './logger.js';
 import type { FunnelOffRunner } from './external-mcp-containment.js';
 
-/** The external read-only MCP Funnel's mount. Unlike the team surface (root,
- *  {@link TEAM_FUNNEL_MOUNT}) this is a path mount, and Funnel strips it before
- *  proxying — the listener re-adds it, see the dispatch note below. */
-export const EXTERNAL_MCP_PATH = '/mcp';
+/** This listener's mount. Re-exported from the shared constant so the Funnel
+ *  activation sites and the dispatch check below cannot drift apart. */
+export const EXTERNAL_MCP_PATH = EXTERNAL_MCP_MOUNT;
 
 /**
  * The local endpoint the listener binds. Sockets are the activation shape

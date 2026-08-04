@@ -412,7 +412,15 @@ function HostCard({
           <span className="text-sm font-medium text-on-surface">{host.label}</span>
           <div className="text-xs font-mono text-on-surface-variant break-all">{host.host_id}</div>
         </button>
-        <Badge variant="outline">{host.projects.length} project{host.projects.length === 1 ? '' : 's'}</Badge>
+        <div className="flex shrink-0 items-center gap-2">
+          {/* A host with no address is unreachable, full stop — it is not a
+              cosmetic gap, and the row must say so where a user is choosing
+              between hosts rather than only inside the detail slideout. */}
+          {!host.host_url && (
+            <Badge variant="destructive" data-testid="host-row-rejoin">Re-join required</Badge>
+          )}
+          <Badge variant="outline">{host.projects.length} project{host.projects.length === 1 ? '' : 's'}</Badge>
+        </div>
       </div>
       {(host.projects.length > 0 || showOrphanedProgress) && (
         <div className="flex flex-col gap-1">
