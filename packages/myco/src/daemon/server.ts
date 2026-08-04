@@ -1129,7 +1129,7 @@ export class DaemonServer {
             // (routing-layer §6.3). Neither a proxy nor the local resolver is correct
             // here (§6.3, §1.1) — the member assembles. The scoped PUT needs its body.
             const carveBody = isWriteMethod(req.method) ? await readBody(req) : undefined;
-            await handleAttachedConfigRequest(req, res, match.pathname, decision.target, carveBody, {
+            await handleAttachedConfigRequest(req, res, match.pathname, decision.attach, decision.target, carveBody, {
               dial: defaultDial,
               logger: proxyLoggerFrom(this.logger, LOG_KINDS.SERVER_ERROR),
               lockNamespace: this.lockNamespace,

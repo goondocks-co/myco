@@ -169,7 +169,20 @@ export type RouteDecision =
   | { kind: 'remote'; target: RemoteTarget; classification: RouteClassification }
   | { kind: 'degraded'; refusal: RefusalPayload }
   | { kind: 'config_locked'; refusal: RefusalPayload }
-  | { kind: 'config_carve'; target: RemoteTarget; classification: RouteClassification };
+  /** `target` is null when the host has no usable address: the grove tier is
+   *  unavailable, exactly as it is when the host is unreachable, and the
+   *  handler takes its existing degrade path rather than dialing. */
+  | {
+    kind: 'config_carve';
+    /** Null when the host has no usable address: the grove tier is unavailable,
+     *  exactly as it is when the host is unreachable, and the handler takes its
+     *  existing degrade path rather than dialing. */
+    target: RemoteTarget | null;
+    /** The attached project + its host, resolvable WITHOUT a dial — the
+     *  member-side tiers need these even when `target` is null. */
+    attach: { projectId: GroveProjectId; host: { host_id: string; label: string } };
+    classification: RouteClassification;
+  };
 
 /**
  * Refusal for a capability that is unavailable for hosted (attached) projects.
@@ -763,24 +776,38 @@ export function classifyRoute(input: {
     case 'localhost-only':
       return { kind: 'local' };
     case 'config-carve':
+      // NOT refused when the host has no address — and the difference from the
+      // three below is the point. `config-carve` is member-side ASSEMBLY: the
+      // machine/project/personal tiers resolve from this member's own disk and
+      // only the grove tier is host-sourced, so a missing address makes ONE
+      // tier unavailable. That is the same situation as an unreachable host,
+      // which this handler already degrades (grove → defaults, once-warn).
+      // Refusing outright would break a purely local config read because a
+      // remote tier could not be fetched.
+      return {
+        kind: 'config_carve',
+        target: remoteTargetFor(input.projectId, attach),
+        attach: {
+          projectId: input.projectId,
+          host: { host_id: attach.host.host_id, label: attach.host.label },
+        },
+        classification,
+      };
     case 'team-write':
     case 'serve':
     case 'collect': {
-      // Every remote stamp needs the same thing — a dialable target — so the
-      // no-address refusal is decided ONCE here rather than per case. A project
-      // attached to a host whose address is unusable must not fall back to
-      // serving locally: the project's data lives on the host, and answering
-      // from an empty local Grove would look like success.
+      // These three CARRY the project's data, so a host with no usable address
+      // is refused rather than served: the project's Grove lives on the host,
+      // and answering from an empty local one would look like success to a user
+      // whose data is simply out of reach.
       const target = remoteTargetFor(input.projectId, attach);
       if (!target) {
         return { kind: 'degraded', refusal: hostAddressUnusable(attach.host.label) };
       }
-      // `team-write` is named in the same group deliberately (server-mode
-      // design spec §6): a member Team page write proxies to the host exactly
-      // as serve/collect do.
-      return classification.stamp === 'config-carve'
-        ? { kind: 'config_carve', target, classification }
-        : { kind: 'remote', target, classification };
+      // `team-write` is named alongside them deliberately (server-mode design
+      // spec §6): a member Team page write proxies to the host exactly as
+      // serve/collect do.
+      return { kind: 'remote', target, classification };
     }
   }
 }
