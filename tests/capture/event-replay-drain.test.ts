@@ -45,6 +45,7 @@ import { listGroves } from '@myco/grove/registry';
 import type { RemoteTarget } from '@myco/host/routing';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 
 const MACHINE = 'alice_a1b2c3d4';
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -61,10 +62,10 @@ const PROJ_B = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 /** A recording transport with a per-call status hook (default 200 = ack). */
 function recordingSink() {
-  const calls: Array<{ hostId: string; proxyPort?: number; route: string; sessionId: string; body: Record<string, unknown> }> = [];
+  const calls: Array<{ hostId: string; hostUrl: string; route: string; sessionId: string; body: Record<string, unknown> }> = [];
   let statusFor: (callNo: number) => number = () => 200;
   const transport: EventReplayTransport = async (t, route, sessionId, body) => {
-    calls.push({ hostId: t.host.host_id, proxyPort: t.host.proxy_port, route, sessionId, body });
+    calls.push({ hostId: t.host.host_id, hostUrl: t.host.host_url, route, sessionId, body });
     return { status: statusFor(calls.length) };
   };
   return { transport, calls, setStatus(fn: (callNo: number) => number) { statusFor = fn; } };
@@ -116,16 +117,15 @@ function memStore(): ReplayStore {
   };
 }
 
-function mkTarget(opts: { hostId: string; groveId: string; projectId: string; proxyPort?: number; overlay?: string; bufferDir: string }): AttachedReplayTarget {
+function mkTarget(opts: { hostId: string; groveId: string; projectId: string; hostUrl?: string; bufferDir: string }): AttachedReplayTarget {
   const target: RemoteTarget = {
     projectId: opts.projectId as RemoteTarget['projectId'],
     groveId: opts.groveId,
     host: {
       host_id: opts.hostId,
       label: 'H',
-      overlay_address: opts.overlay ?? '127.0.0.1:9',
-      protocol_version: 1,
-      proxy_port: opts.proxyPort,
+      host_url: opts.hostUrl ?? 'https://host-a.tailnet.ts.net:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
     },
     bearer: 'bearer-x',
   };
@@ -286,7 +286,7 @@ describe('at-least-once (prune/advance only after ack)', () => {
 // ---------------------------------------------------------------------------
 
 describe('multi-host', () => {
-  test('two attached projects on two hosts drain to their OWN host + proxy_port', async () => {
+  test('two attached projects on two hosts drain to their OWN host URL', async () => {
     const buf = memBuffer();
     buf.append('/buf/a', 'sa', evt({ session_id: 'sa' }));
     buf.append('/buf/b', 'sb', evt({ session_id: 'sb' }));
@@ -294,8 +294,8 @@ describe('multi-host', () => {
     const q = new EventReplayDrainQueue({
       machineId: MACHINE, store: memStore(), transport: sink.transport, bufferReader: buf.reader,
       listTargets: () => [
-        mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, proxyPort: 4111, bufferDir: '/buf/a' }),
-        mkTarget({ hostId: HOST_B, groveId: GROVE_B, projectId: PROJ_B, proxyPort: 4222, bufferDir: '/buf/b' }),
+        mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, hostUrl: 'https://team-a.tailnet.ts.net:8443', bufferDir: '/buf/a' }),
+        mkTarget({ hostId: HOST_B, groveId: GROVE_B, projectId: PROJ_B, hostUrl: 'https://team-b.tailnet.ts.net:8443', bufferDir: '/buf/b' }),
       ],
     });
 
@@ -305,9 +305,9 @@ describe('multi-host', () => {
     const b = sink.calls.filter((c) => c.hostId === HOST_B);
     expect(a).toHaveLength(1);
     expect(b).toHaveLength(1);
-    expect(a[0].proxyPort).toBe(4111);
+    expect(a[0].hostUrl).toBe('https://team-a.tailnet.ts.net:8443');
     expect(a[0].sessionId).toBe('sa');
-    expect(b[0].proxyPort).toBe(4222);
+    expect(b[0].hostUrl).toBe('https://team-b.tailnet.ts.net:8443');
     expect(b[0].sessionId).toBe('sb');
   });
 
@@ -733,6 +733,7 @@ describe('default transport wire shape', () => {
   let server: http.Server;
   let port: number;
   const seen: Array<{ method?: string; url?: string; headers: http.IncomingHttpHeaders; body: string }> = [];
+  let edge: FunnelEdge;
   let reply = 200;
 
   beforeEach(async () => {
@@ -749,17 +750,23 @@ describe('default transport wire shape', () => {
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     port = (server.address() as AddressInfo).port;
+    // The default transport dials HTTPS, so the fixture sits behind a real TLS
+    // edge — the same shape a host's socket sits behind a Funnel.
+    edge = await startFunnelEdge({ port });
   });
-  afterEach(async () => { await new Promise<void>((r) => server.close(() => r())); });
+  afterEach(async () => {
+    await edge.close();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
 
   test('POSTs to the captured route with the host bearer, protocol + tenancy headers, and a stripped body', async () => {
     const buf = memBuffer();
     buf.append('/buf/a', 'sess-1', evt({ prompt: 'wire' }));
     const store = memStore();
-    // Default transport (no `transport` dep) → dials 127.0.0.1:port directly (no proxy_port).
+    // Default transport (no `transport` dep) → the production HTTPS dial.
     const q = createEventReplayDrainQueue({
       machineId: MACHINE, store, bufferReader: buf.reader,
-      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, overlay: `127.0.0.1:${port}`, bufferDir: '/buf/a' })],
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, hostUrl: edge.url, bufferDir: '/buf/a' })],
     });
 
     await q.drainAll();
@@ -784,7 +791,7 @@ describe('default transport wire shape', () => {
     reply = 503;
     const q = createEventReplayDrainQueue({
       machineId: MACHINE, store, bufferReader: buf.reader,
-      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, overlay: `127.0.0.1:${port}`, bufferDir: '/buf/a' })],
+      listTargets: () => [mkTarget({ hostId: HOST_A, groveId: GROVE_A, projectId: PROJ_A, hostUrl: edge.url, bufferDir: '/buf/a' })],
     });
     await q.drainAll();
     expect(seen).toHaveLength(1);
@@ -827,7 +834,7 @@ describe('never-materialize + attach-registry enumeration (real fs)', () => {
   }
   function registerAttached(): void {
     writeHostRecordFixture({
-      host_id: HOST_A, label: 'H', overlay_address: '127.0.0.1:9', protocol_version: 1,
+      host_id: HOST_A, label: 'H', host_url: 'https://host-a.tailnet.ts.net:8443', protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(), projects: [{ grove_id: GROVE_A, project_id: PROJ_A, root: '/member/checkout' }],
     });
     writeHostSecret(HOST_A, HOST_BEARER_SECRET, 'bearer-x');

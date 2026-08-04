@@ -30,6 +30,7 @@ import { resolveProjectGroveBinding } from '@myco/grove/binding.js';
 import { resolveProjectBufferDirFromRoot } from '@myco/capture/buffer-location.js';
 import { startResidencyJournal } from '@myco/host/residency-journal.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 let home: string;
 let teamHome: string;
@@ -184,8 +185,8 @@ describe('residency suppression — binding repair', () => {
     // it) — a settled attached project with no transition in flight.
     const hostGrove = createGroveId();
     writeHostRecordFixture({
-      host_id: createHostId(), label: 'h', overlay_address: '100.64.0.1:7433',
-      protocol_version: 3, served_grove_id: hostGrove, created_at: new Date().toISOString(),
+      host_id: createHostId(), label: 'h', host_url: 'https://host-a.tailnet.ts.net:8443',
+      protocol_version: HOST_PROTOCOL_VERSION, served_grove_id: hostGrove, created_at: new Date().toISOString(),
       projects: [{ grove_id: hostGrove, project_id: projectId, root: path.dirname(vaultDir) }],
     });
 

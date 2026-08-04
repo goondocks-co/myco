@@ -58,6 +58,7 @@ import {
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
 import { ROUTED_DETACH_ARTIFACT_PATH, ROUTED_DETACH_COMPLETE_PATH, ROUTED_RESIDENCY_ROWS_PATH } from './residency-journal.js';
+import { isValidHostUrl } from './host-url.js';
 
 /** The scope-map stamp a route carries. See the module docstring. */
 export type RouteStamp = 'serve' | 'collect' | 'degrade' | 'config-lock' | 'config-carve' | 'team-write' | 'localhost-only';
@@ -90,12 +91,10 @@ export interface RemoteTarget {
   host: {
     host_id: string;
     label: string;
-    overlay_address: string;
+    /** The host's public HTTPS origin — the whole dial input. See
+     *  `HostRecord.host_url`. */
+    host_url: string;
     protocol_version: number;
-    /** When set, the proxy dials through the local userspace-tailscaled HTTP
-     *  CONNECT proxy (`--outbound-http-proxy-listen`) at `127.0.0.1:<proxy_port>`
-     *  instead of a direct TCP connect to `overlay_address`. */
-    proxy_port?: number;
   };
   /** Host bearer, read from the host record's secrets.env. Swapped in for the
    *  caller's local bearer before forwarding; never observable by the caller. */
@@ -106,6 +105,16 @@ export interface RemoteTarget {
  *  host record the transport reads. */
 export type RemoteHostDescriptor = RemoteTarget['host'];
 
+/** A host record as the transport reads it — the input side of
+ *  {@link hostDescriptorFor}. `host_url` is optional HERE and required on the
+ *  descriptor: that difference is the projection's whole job. */
+export interface DialableHostRecord {
+  host_id: string;
+  label: string;
+  host_url?: string;
+  protocol_version: number;
+}
+
 /**
  * The ONE record→target projection of a host's wire fields.
  *
@@ -114,20 +123,31 @@ export type RemoteHostDescriptor = RemoteTarget['host'];
  * added or removed belongs in this function alone; inlining the object literal
  * at a call site puts the transport contract in more than one place, and the
  * drains have no compile-time link to each other that would catch the drift.
+ *
+ * Returns **null** for a record with no usable `host_url`. That record is not a
+ * degraded target to try anyway — it carries no address at all, and the
+ * nullable return is what forces each caller to say what it does about that
+ * (refuse the route, skip the drain entry, render "re-join required") instead
+ * of dialing `undefined` and reporting a network failure for a data problem.
  */
-export function hostDescriptorFor(record: {
-  host_id: string;
-  label: string;
-  overlay_address: string;
-  protocol_version: number;
-  proxy_port?: number;
-}): RemoteHostDescriptor {
+export function hostDescriptorFor(record: DialableHostRecord): RemoteHostDescriptor | null {
+  if (!isValidHostUrl(record.host_url)) return null;
   return {
     host_id: record.host_id,
     label: record.label,
-    overlay_address: record.overlay_address,
+    host_url: record.host_url,
     protocol_version: record.protocol_version,
-    proxy_port: record.proxy_port,
+  };
+}
+
+/** The refusal a host with no usable address produces. Non-retryable: no
+ *  amount of retrying supplies an address the record does not have. */
+export function hostAddressUnusable(label: string): RefusalPayload {
+  return {
+    status: 409,
+    error: 'host_address_unusable',
+    message: `Host "${label}" has no usable address on this member — re-join the host to record its public URL.`,
+    retryable: false,
   };
 }
 
@@ -743,16 +763,25 @@ export function classifyRoute(input: {
     case 'localhost-only':
       return { kind: 'local' };
     case 'config-carve':
-      return { kind: 'config_carve', target: remoteTargetFor(input.projectId, attach), classification };
     case 'team-write':
-      // Member Team page write against the served grove — proxied to the host
-      // (server-mode design spec §6), same shape as serve/collect. Named
-      // explicitly (not folded into the case below) so this behavior is a
-      // deliberate decision, not an accident of a shared case label.
-      return { kind: 'remote', target: remoteTargetFor(input.projectId, attach), classification };
     case 'serve':
-    case 'collect':
-      return { kind: 'remote', target: remoteTargetFor(input.projectId, attach), classification };
+    case 'collect': {
+      // Every remote stamp needs the same thing — a dialable target — so the
+      // no-address refusal is decided ONCE here rather than per case. A project
+      // attached to a host whose address is unusable must not fall back to
+      // serving locally: the project's data lives on the host, and answering
+      // from an empty local Grove would look like success.
+      const target = remoteTargetFor(input.projectId, attach);
+      if (!target) {
+        return { kind: 'degraded', refusal: hostAddressUnusable(attach.host.label) };
+      }
+      // `team-write` is named in the same group deliberately (server-mode
+      // design spec §6): a member Team page write proxies to the host exactly
+      // as serve/collect do.
+      return classification.stamp === 'config-carve'
+        ? { kind: 'config_carve', target, classification }
+        : { kind: 'remote', target, classification };
+    }
   }
 }
 
@@ -901,12 +930,16 @@ export function resolveHostCarrierTarget(
       };
     }
   }
+  const host = hostDescriptorFor(record);
+  if (!host) {
+    return { kind: 'refusal', refusal: hostAddressUnusable(record.label) };
+  }
   return {
     kind: 'target',
     target: {
       projectId: null,
       groveId,
-      host: hostDescriptorFor(record),
+      host,
       bearer,
     },
   };
@@ -936,16 +969,18 @@ export function requireProjectScopedTarget(target: RemoteTarget, channel: string
 export function remoteTargetFor(
   projectId: GroveProjectId,
   attach: {
-    host: { host_id: string; label: string; overlay_address: string; protocol_version: number; proxy_port?: number };
+    host: DialableHostRecord;
     ref: { grove_id: string; root?: string };
     bearer: string;
   },
-): RemoteTarget {
+): RemoteTarget | null {
+  const host = hostDescriptorFor(attach.host);
+  if (!host) return null;
   return {
     projectId,
     groveId: attach.ref.grove_id,
     root: attach.ref.root,
-    host: hostDescriptorFor(attach.host),
+    host,
     bearer: attach.bearer,
   };
 }

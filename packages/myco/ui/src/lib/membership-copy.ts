@@ -76,13 +76,13 @@ export function leaveHostConfirmMessage(hostLabel: string): string {
   // Only the no-attached-projects path can reach this confirm: the Leave
   // control disables itself while projects are attached (the server refuses
   // that leave outright), so the message never has to explain detach-first.
-  return `Leave "${hostLabel}"? This removes this host's overlay connection from this machine.`;
+  return `Leave "${hostLabel}"? This removes this host's address and credential from this machine.`;
 }
 
 /**
  * Reachability copy for the host detail slideout's live health read
  * (E-4 W1 Task T5, decision-ef693c71 D3) — `null` from the wire is "not
- * confirmable" (no proxy port on record to dial, never a false negative),
+ * confirmable" (no usable address on record to dial, never a false negative),
  * distinct from a probe that ran and came back `false`.
  */
 export type HostReachabilityDisplayState = 'checking' | 'reachable' | 'unreachable' | 'not_confirmable';
@@ -93,6 +93,18 @@ export const HOST_REACHABILITY_COPY: Record<HostReachabilityDisplayState, string
   unreachable: 'Unreachable',
   not_confirmable: 'Not confirmed reachable',
 };
+
+/**
+ * The address a member holds for a host, or the reason there is none.
+ *
+ * A missing address is not a cosmetic gap: it is the whole dial input, so the
+ * host cannot be reached at all and the only fix is a re-join. Rendering it as
+ * blank or "unknown" would read as a display quirk rather than the broken
+ * membership it is.
+ */
+export function hostAddressCopy(hostUrl: string | null | undefined): string {
+  return hostUrl?.trim() || 'No address on record — re-join this host.';
+}
 
 /** Short reachability suffix for the attach panel's host `<select>` options —
  *  read-only against whatever the health query already has cached (never

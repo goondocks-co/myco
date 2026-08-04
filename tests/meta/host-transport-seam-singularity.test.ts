@@ -16,8 +16,11 @@
  * to introduce silently by pinning the two chokepoints:
  *   - `hostDescriptorFor` (`host/routing.ts`) is the only record→descriptor
  *     projection;
- *   - `parseOverlayAddress` is consumed only inside `daemon/host-proxy.ts`, whose
- *     `hostAuthority` and `defaultDial` are the authority and dial seams.
+ *   - `parseHostUrl` (`host/host-url.ts`) is consumed for TRANSPORT purposes only
+ *     inside `daemon/host-proxy.ts`, whose `hostAuthority` and `defaultDial` are
+ *     the authority and dial seams. (The probe and the record writer parse it
+ *     too — they validate an address rather than dial one — so the gate names
+ *     them explicitly rather than pretending the parser has one caller.)
  *
  * Static source scan (node:fs), no daemon boot — same shape as
  * `tests/meta/route-stamp-completeness.test.ts`.
@@ -55,9 +58,21 @@ const SOURCES = walkTypescript(SRC_ROOT).map((full) => ({
 
 describe('host transport seam singularity', () => {
   it('derives the host: header authority only inside the transport seam module', () => {
+    // The address parser has three legitimate homes: the seam that DIALS with
+    // it, the module that DEFINES it, and the registry that refuses to record
+    // an address it cannot parse. A fourth caller means someone is deriving a
+    // dial target outside the seam again — the exact drift this gate exists to
+    // stop — so new entries here are a deliberate, reviewed act.
+    const ADDRESS_PARSE_ALLOWED = new Set([
+      TRANSPORT_SEAM_MODULE,
+      'packages/myco/src/host/host-url.ts',
+      'packages/myco/src/host/registry.ts',
+      'packages/myco/src/host/routing.ts',
+    ]);
+
     const offenders = SOURCES
-      .filter((file) => file.rel !== TRANSPORT_SEAM_MODULE)
-      .filter((file) => /\bparseOverlayAddress\b/.test(file.text))
+      .filter((file) => !ADDRESS_PARSE_ALLOWED.has(file.rel))
+      .filter((file) => /\b(?:parseHostUrl|isValidHostUrl)\b/.test(file.text))
       .map((file) => file.rel);
 
     expect(offenders).toEqual([]);
@@ -67,10 +82,10 @@ describe('host transport seam singularity', () => {
     // What distinguishes a descriptor from the other shapes carrying these
     // fields is NESTING: a descriptor is the value of a `host:` key, whereas a
     // host record, an enrollment payload, and an API status body all assign
-    // `overlay_address` at their own top level. Keying on the nesting is what
-    // keeps this gate specific to the construction it governs — matching the
-    // field names alone flags five legitimate non-descriptor shapes.
-    const NESTED_DESCRIPTOR_LITERAL = /host:\s*\{(?:[^{}]|\{[^{}]*\})*?overlay_address:/s;
+    // `host_url` at their own top level. Keying on the nesting is what keeps
+    // this gate specific to the construction it governs — matching the field
+    // name alone flags five legitimate non-descriptor shapes.
+    const NESTED_DESCRIPTOR_LITERAL = /host:\s*\{(?:[^{}]|\{[^{}]*\})*?host_url:/s;
 
     const offenders = SOURCES
       .filter((file) => file.rel !== DESCRIPTOR_MODULE)

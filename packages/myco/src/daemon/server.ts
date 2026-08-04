@@ -141,9 +141,10 @@ export interface DaemonServerConfig {
   runtimeCache?: GroveRuntimeCache;
   /**
    * Team Host serve enablement (Task 2.3). When present, the server binds a
-   * SECOND listener on `overlayAddress` where every request passes the
-   * transport-boundary gate (blanket bearer + version + shutdown refusal). When
-   * `null`/omitted, host serving is off and only the loopback listener binds.
+   * SECOND listener on a private unix socket where every request passes the
+   * transport-boundary gate (Origin refusal + blanket bearer + fail-closed raw
+   * route admission + version window). When `null`/omitted, host serving is off
+   * and only the loopback listener binds.
    * Resolved by `resolveHostServeConfig` (machine config + bearer) in main.ts.
    */
   hostServe?: HostServeRuntime | null;
@@ -235,20 +236,6 @@ export function classifyRequest(
   return value === 'active' ? 'interaction' : 'passive';
 }
 
-/**
- * The overlay listener's bind address. ALWAYS loopback: `overlay_address` is
- * an advertised identity, not a local interface — userspace-networking mode
- * creates no TUN, so the 100.64 address is not bindable on this host at all.
- * Reachability comes from tailscaled's `serve --tcp` forward, which is the
- * only network path to this listener. Hardcoded so no config value can widen
- * the bind (server-mode design spec §9, as restated by the coexistence
- * amendment: never a wildcard, never a non-loopback address).
- */
-
-/** How long to wait for the host tailscaled control socket before wiring the
- *  overlay forward. On a reboot the daemon usually wins the race against its
- *  own user-domain agent, so this is the common path, not the rare one. */
-
 export class DaemonServer {
   port = 0;
   readonly version: string;
@@ -256,10 +243,10 @@ export class DaemonServer {
   uiDevProxyTarget: string | null;
   private server: http.Server | null = null;
   /**
-   * The Team Host overlay listener — a SECOND HTTP server bound to the host's
-   * overlay interface address (never 0.0.0.0). Null unless host serving is
-   * enabled AND the overlay bind succeeds. Every request here passes the
-   * transport-boundary gate ({@link handleTeamRequest}) before dispatch.
+   * The Team Host listener — a SECOND HTTP server bound to a private unix
+   * socket, never a TCP port. Null unless host serving is enabled AND the bind
+   * succeeds. Every request here passes the transport-boundary gate
+   * ({@link handleTeamRequest}) before dispatch.
    */
   private teamServer: http.Server | null = null;
   /** The bound team socket path, or null while unbound. */
@@ -277,9 +264,6 @@ export class DaemonServer {
    */
   private ipv6Server: http.Server | null = null;
   private hostServe: HostServeRuntime | null;
-  /** Seam for the host tailscale CLI used to manage the overlay forward.
-   *  Production resolves it from recorded host state; tests inject a fake so
-   *  the real bind/stop ordering is exercised rather than modelled. */
   /** Capture-side proxy deps (transcript-drain flush + collect enqueue) threaded
    *  into `handleAttachedRequest` for attached projects. See {@link DaemonServerConfig}. */
   private hostProxyDeps: Partial<HostProxyDeps>;
@@ -460,7 +444,7 @@ export class DaemonServer {
         this.writeDaemonJson();
         this.logger.info(LOG_KINDS.DAEMON_PORT, 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/` });
         // Claim the port's IPv6-loopback side, then bring up the Team Host
-        // overlay listener (if host serving is enabled). Neither ever rejects —
+        // listener (if host serving is enabled). Neither ever rejects —
         // a bind failure leaves the loopback daemon fully up on IPv4. Awaited
         // so `start()` resolves with both listeners settled (and, in tests,
         // before either surface is hit).
@@ -726,18 +710,17 @@ export class DaemonServer {
   }
 
   /**
-   * The Team Host transport-boundary gate — runs on the overlay listener ONLY,
+   * The Team Host transport-boundary gate — runs on the TEAM listener ONLY,
    * BEFORE raw-route dispatch and BEFORE the router (spec §9). Order:
-   *   1. overlay CSRF (Host is the overlay address; Origin is refused — no
-   *      browsers on the overlay) + the shared mutating-body content-type check;
-   *   2. blanket bearer — EVERY overlay request (router, raw, `/mcp`) or 401;
-   *   3. lifecycle refusal — `/api/shutdown` (operator control plane) is 404 over
-   *      the overlay regardless of a valid bearer. Checked AFTER the bearer so a
-   *      no-bearer request still gets 401 on every route, and the shutdown handler
-   *      is never invoked either way;
+   *   1. Origin refusal (daemon↔daemon traffic never sets one) + the shared
+   *      mutating-body content-type check;
+   *   2. blanket bearer — EVERY team request (router, raw, `/mcp`) or 401;
+   *   3. raw-route admission — fail closed: a raw route is 404 here unless it is
+   *      explicitly admitted, regardless of a valid bearer. Checked AFTER the
+   *      bearer so an unauthenticated caller cannot map the admitted set;
    *   4. version window — else 409 `protocol_version_unsupported` (both bounds).
-   * On pass, the local daemon bearer is stamped and the request is marked overlay,
-   * then it flows into the SAME dispatch as a localhost request.
+   * On pass, the local daemon bearer is stamped and the request is marked as a
+   * team request, then it flows into the SAME dispatch as a localhost request.
    */
   private async handleTeamRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const versionHeader = { 'X-Myco-Api-Version': this.version };

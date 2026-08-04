@@ -22,6 +22,7 @@ import { PlanDrainQueue, type PlanDrainStore, type PlanDrainEntry, type PlanFile
 import { ABSENT, present } from '@myco/utils/presence.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const createDrainHealthHandler = (deps: DrainHealthRouteDeps) =>
   createDrainHealthHandlerWith({
@@ -36,8 +37,8 @@ function host(hostId: string, label: string): HostRecord {
   return {
     host_id: hostId,
     label,
-    overlay_address: '127.0.0.1:9',
-    protocol_version: 1,
+    host_url: 'https://host-a.tailnet.ts.net:8443',
+    protocol_version: HOST_PROTOCOL_VERSION,
     created_at: new Date().toISOString(),
     projects: [],
   };
@@ -180,7 +181,7 @@ describe('GET /api/team-host/drain-health', () => {
     const target: RemoteTarget = {
       projectId: 'proj_0123456789abcdef0123456789abcdef' as RemoteTarget['projectId'],
       groveId: 'grove_0123456789abcdef0123456789abcdef',
-      host: { host_id: HOST_A, label: 'H', overlay_address: '127.0.0.1:9', protocol_version: 1 },
+      host: { host_id: HOST_A, label: 'H', host_url: 'https://host-a.tailnet.ts.net:8443', protocol_version: HOST_PROTOCOL_VERSION },
       bearer: 'b',
     };
 

@@ -59,6 +59,11 @@ import { resolveTeamHostHintState, teamHostHintMessage } from '../../host/hint.j
 import { joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
 import type { ResidencyStatus } from '../../host/residency-transition.js';
 import { membershipErrorCode } from '../../host/membership-error.js';
+import {
+  probeHostReachability,
+  type HostReachability,
+  type HostUnreachableReason,
+} from '../../host/host-url.js';
 import { readHostRegistry, recordHostProtocolVersion, type HostRecord } from '../../host/registry.js';
 import type { DaemonLogger } from '../logger.js';
 import type { RouteHandler, RouteRegistrar, RouteResponse } from '../router.js';
@@ -136,9 +141,7 @@ function num(value: unknown): number | undefined {
 }
 
 const JOIN_OPTION_STRING_FIELDS = [
-  'server_url',
-  'hostname',
-  'overlay_address',
+  'host_url',
   'bearer',
   'host_id',
   'label',
@@ -190,9 +193,7 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
     const options: JoinOptions = {
       hostRef,
       key,
-      serverUrl: str(body.server_url),
-      hostname: str(body.hostname),
-      overlayAddress: body.overlay_address as string | undefined,
+      hostUrl: str(body.host_url),
       bearer: body.bearer as string | undefined,
       protocolVersion: num(body.protocol_version),
       hostId: str(body.host_id),
@@ -220,9 +221,7 @@ export function createHostMembershipJoinHandler(deps: HostMembershipRouteDeps): 
         status: 200,
         body: {
           host_id: result.hostId,
-          overlay_address: result.overlayAddress,
-          proxy_port: result.proxyPort,
-          member_overlay_ip: result.memberOverlayIp,
+          host_url: result.hostUrl,
           host_reachable: result.hostReachable,
           created: result.created,
           notes: result.notes,
@@ -252,7 +251,7 @@ export function createHostMembershipLeaveHandler(deps: HostMembershipRouteDeps):
       evictHealthCache?.(hostRef);
       return {
         status: 200,
-        body: { removed: result.removed, tailscaled_removed: result.tailscaledRemoved, notes: result.notes },
+        body: { removed: result.removed, notes: result.notes },
       };
     } catch (err) {
       return failure('leave_failed', err);
@@ -351,8 +350,7 @@ export function createHostMembershipStatusHandler(deps: HostMembershipRouteDeps 
       return {
         host_id: record.host_id,
         label: record.label,
-        overlay_address: record.overlay_address,
-        proxy_port: record.proxy_port ?? null,
+        host_url: record.host_url ?? null,
         protocol_version: record.protocol_version,
         served_grove_id: record.served_grove_id ?? null,
         created_at: record.created_at,
@@ -465,15 +463,21 @@ export function classifyHostProtocolSkew(hostProtocolVersion: number): HostProto
 interface HostHealthEntry {
   host_id: string;
   label: string;
+  /** `null` means NOT CONFIRMABLE (no usable address on record), never "down". */
   reachable: boolean | null;
+  /** Which failure this is, when unreachable — the field the UI keys its
+   *  remedy off. Null when reachable or not confirmable. */
+  reason: HostUnreachableReason | null;
+  /** One sentence naming the failure and what to do about it. */
+  detail: string;
   checked_at: string;
   protocol_skew: HostProtocolSkew;
 }
 
 export interface HostMembershipHealthRouteDeps {
-  /** Test seam: override the reachability + live-version probe (default the real
-   *  host dial). Absent until the member transport lands (PR B). */
-  checkReachable?: (hostId: string) => Promise<{ reachable: boolean; protocolVersion: number | null }>;
+  /** Test seam: override the reachability probe. Default is the real HTTPS
+   *  probe of the host's public URL ({@link probeHostReachability}). */
+  probe?: (record: HostRecord) => Promise<HostReachability>;
   /** Test seam: override the registry read. */
   readRegistry?: typeof readHostRegistry;
   /** Test seam: override the probe TTL (default {@link HOST_HEALTH_CACHE_TTL_MS}). */
@@ -511,7 +515,7 @@ export type HostMembershipHealthHandler = RouteHandler & {
 };
 
 export function createHostMembershipHealthHandler(deps: HostMembershipHealthRouteDeps = {}): HostMembershipHealthHandler {
-  const checkReachable = deps.checkReachable ?? null;
+  const probe = deps.probe ?? ((record: HostRecord) => probeHostReachability(record.host_url));
   const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const readRegistry = deps.readRegistry ?? (() => readHostRegistry(lockNamespace));
   const ttlMs = deps.ttlMs ?? HOST_HEALTH_CACHE_TTL_MS;
@@ -528,24 +532,32 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
     if (running) return running;
 
     const promise = (async (): Promise<HostHealthEntry> => {
-      // Mirrors doctor's own concurrent-probe shape (`cli/doctor.ts`
-      // checkTeamHostReachability): no proxy port on record means there is
-      // nothing to dial — `null` ("not confirmable"), never a false negative.
-      // Reachability is NOT CONFIRMABLE on this build: the probe dialed the
-      // host through the member's local CONNECT proxy, and that path is gone
-      // until the member transport is rebuilt on the host's public URL. `null`
-      // is the honest answer — the same value a host with nothing to dial has
-      // always reported — never a false negative that would read as "host down".
+      // `reachable: null` is reserved for NOT CONFIRMABLE — a record with no
+      // usable address. It is not a synonym for down: a member that cannot
+      // form a request has learned nothing about the host, and reporting a
+      // host failure for a member-side data problem sends the user to fix the
+      // wrong machine.
       let reachable: boolean | null = null;
+      let reason: HostUnreachableReason | null = null;
+      let detail: string;
       let observedVersion: number | null = null;
-      if (checkReachable) {
-        try {
-          const probe = await checkReachable(host.host_id);
-          reachable = probe.reachable;
-          observedVersion = probe.protocolVersion;
-        } catch {
+      try {
+        const result = await probe(host);
+        detail = result.detail;
+        if (result.state === 'reachable') {
+          reachable = true;
+          observedVersion = result.protocolVersion;
+        } else if (result.state === 'unreachable') {
           reachable = false;
+          reason = result.reason;
         }
+      } catch (error) {
+        // The probe is individually bounded and does not reject in practice;
+        // this is the same fail-closed shape doctor uses so one bad host never
+        // takes down the whole fan-out.
+        reachable = false;
+        reason = 'network_unreachable';
+        detail = `Reachability check failed: ${error instanceof Error ? error.message : String(error)}.`;
       }
       // Persist a host that upgraded since join (monotonic — never a probe
       // downgrade), so the residency gates classify + refuse against the host's
@@ -558,6 +570,8 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
         host_id: host.host_id,
         label: host.label,
         reachable,
+        reason,
+        detail,
         checked_at: new Date(now()).toISOString(),
         protocol_skew: classifyHostProtocolSkew(effectiveVersion),
       };

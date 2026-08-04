@@ -90,7 +90,6 @@ export function HostATeamPanel({ collapsed = false }: { collapsed?: boolean }) {
   const overlaySupported = status.data?.overlay_supported !== false;
   const enable = useHostAdminEnable();
   const [expanded, setExpanded] = useState(!collapsed);
-  const [serverUrl, setServerUrl] = useState('');
   const [storageName, setStorageName] = useState('');
   const [label, setLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -132,13 +131,12 @@ export function HostATeamPanel({ collapsed = false }: { collapsed?: boolean }) {
   // — the copy says so — it only frees this form.
   const dismissable = run !== null && !done;
 
-  const canSubmit = overlaySupported && Boolean(serverUrl.trim()) && !enable.isPending && run === null;
+  const canSubmit = overlaySupported && !enable.isPending && run === null;
 
   const handleEnable = async () => {
     setError(null);
     try {
       const res = await enable.mutateAsync({
-        server_url: serverUrl.trim(),
         ...(storageName.trim() ? { storage_name: storageName.trim() } : {}),
         ...(label.trim() ? { label: label.trim() } : {}),
       });
@@ -163,8 +161,9 @@ export function HostATeamPanel({ collapsed = false }: { collapsed?: boolean }) {
       <p className="text-xs text-on-surface-variant m-0 mb-3">
         Turn this machine into your team’s host — it stores the team’s shared knowledge and serves
         your teammates. Best on an always-on machine. Runs entirely as your user; nothing to install, no
-        administrator password. This host is reachable while you’re logged in — to make it survive
-        reboots unattended, run <code className="font-mono">myco service install</code> afterwards.
+        administrator password. Myco publishes the address teammates dial through your Tailscale; you’ll
+        see it here once hosting starts. This host is reachable while you’re logged in — to make it
+        survive reboots unattended, run <code className="font-mono">myco service install</code> afterwards.
       </p>
       {!overlaySupported && (
         <p className="text-xs text-terracotta-text m-0 mb-3">
@@ -173,9 +172,6 @@ export function HostATeamPanel({ collapsed = false }: { collapsed?: boolean }) {
       )}
       {run === null ? (
         <div className="flex flex-col gap-2">
-          <label className={labelClass} htmlFor="host-enable-server-url">Server URL</label>
-          <input id="host-enable-server-url" className={inputClass} value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://your-host.example:8080" />
-          <p className="text-xs text-on-surface-variant m-0">The address teammates dial to reach this host.</p>
           <label className={labelClass} htmlFor="host-enable-storage-name">Team storage name</label>
           <input id="host-enable-storage-name" className={inputClass} value={storageName} onChange={(e) => setStorageName(e.target.value)} placeholder="Team Host" />
           <p className="text-xs text-on-surface-variant m-0">

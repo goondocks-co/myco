@@ -20,6 +20,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import YAML from 'yaml';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 
 import {
   handleAttachedConfigRequest,
@@ -30,6 +31,7 @@ import { defaultDial, __resetVersionMismatchLogForTests } from '@myco/daemon/hos
 import { type HostRecord } from '@myco/host/registry';
 import { HOST_PROTOCOL_HEADER } from '@myco/constants';
 import type { RemoteTarget } from '@myco/host/routing';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const HOST_BEARER = 'host-bearer-secret';
 
@@ -48,6 +50,8 @@ let projectRoot: string;
 let vaultDir: string;
 let fixture: http.Server;
 let fixturePort: number;
+let edge: FunnelEdge;
+let hostUrl: string;
 let member: http.Server;
 let memberPort: number;
 let groveResponder: (req: http.IncomingMessage, res: http.ServerResponse) => void;
@@ -61,8 +65,8 @@ function target(): RemoteTarget {
     host: {
       host_id: 'host_0123456789abcdef0123456789abcdef',
       label: 'Mac Studio',
-      overlay_address: `127.0.0.1:${fixturePort}`,
-      protocol_version: 1,
+      host_url: hostUrl,
+      protocol_version: HOST_PROTOCOL_VERSION,
     },
     bearer: HOST_BEARER,
   };
@@ -130,6 +134,10 @@ beforeEach(async () => {
   };
   fixture = http.createServer((req, res) => groveResponder(req, res));
   fixturePort = await listen(fixture);
+  // `defaultDial` is HTTPS, so the fixture "host" sits behind a real TLS edge —
+  // the same shape a host's socket sits behind its Funnel.
+  edge = await startFunnelEdge({ port: fixturePort });
+  hostUrl = edge.url;
 
   member = http.createServer(async (req, res) => {
     const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
@@ -147,6 +155,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await close(member);
+  await edge.close();
   await close(fixture);
   fs.rmSync(mycoHome, { recursive: true, force: true });
   fs.rmSync(teamHome, { recursive: true, force: true });
@@ -209,8 +218,8 @@ describe('handleAttachedConfigRequest — reads', () => {
     writeHostRecordFixture({
       host_id: t.host.host_id,
       label: t.host.label,
-      overlay_address: t.host.overlay_address,
-      protocol_version: 1,
+      host_url: t.host.host_url,
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: t.groveId, project_id: t.projectId, root: projectRoot }],
     } satisfies HostRecord);

@@ -233,7 +233,7 @@ describe('mutations', () => {
 
   it('useJoinHost posts the full JoinHostInput to /host-membership/join', async () => {
     postJsonMock.mockResolvedValue({
-      host_id: 'host_abc', overlay_address: 'a', proxy_port: 1, member_overlay_ip: 'ip', host_reachable: true, created: true, notes: [],
+      host_id: 'host_abc', host_url: 'https://host-a.tailnet.ts.net:8443', host_reachable: true, created: true, notes: [],
     });
     const { result } = renderHook(() => useJoinHost(), { wrapper });
 
@@ -246,7 +246,7 @@ describe('mutations', () => {
   });
 
   it('useLeaveHost posts { host_ref } to /host-membership/leave', async () => {
-    postJsonMock.mockResolvedValue({ removed: true, tailscaled_removed: true, notes: [] });
+    postJsonMock.mockResolvedValue({ removed: true, notes: [] });
     const { result } = renderHook(() => useLeaveHost(), { wrapper });
 
     result.current.mutate('host_abc');

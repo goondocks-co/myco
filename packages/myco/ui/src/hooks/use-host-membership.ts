@@ -37,6 +37,9 @@ export interface HostMembershipProjectRef {
 export interface HostMembershipHost {
   host_id: string;
   label: string;
+  /** The address this member dials. `null` means the record has none — the
+   *  host is unreachable until a re-join records one. */
+  host_url: string | null;
   protocol_version: number;
   /** The host's self-reported served Grove (protocol v2). `null` when the
    *  host predates served-grove designation or hasn't designated one yet. */
@@ -107,8 +110,8 @@ function useInvalidateHostMembershipStatus() {
 export interface JoinHostInput {
   host_ref: string;
   key: string;
-  server_url?: string;
-  hostname?: string;
+  /** The host's public URL, shared alongside the one-time key. */
+  host_url?: string;
   bearer?: string;
   protocol_version?: number;
   host_id?: string;
@@ -117,7 +120,8 @@ export interface JoinHostInput {
 
 export interface JoinHostResponse {
   host_id: string;
-  member_overlay_ip: string;
+  /** The address this member will dial the host at, as recorded. */
+  host_url: string;
   host_reachable: boolean;
   created: boolean;
   notes: string[];
@@ -127,10 +131,10 @@ export interface JoinHostResponse {
   steps?: string[];
 }
 
-/** POST /api/host-membership/join — the Team page's join form. Provisions a
- *  userspace tailscaled + enrolls over the overlay; can take real seconds
- *  (no client-side timeout override needed here — `fetchJson` uses the
- *  browser's own fetch, which has no default timeout). */
+/** POST /api/host-membership/join — the Team page's join form. Enrolls against
+ *  the host's public URL; can take real seconds (no client-side timeout
+ *  override needed here — `fetchJson` uses the browser's own fetch, which has
+ *  no default timeout). */
 export function useJoinHost() {
   const invalidate = useInvalidateHostMembershipStatus();
   return useMutation({
@@ -259,10 +263,21 @@ export function useDrainHealth() {
 // Live health (E-4 W1 Task T4a's probe — first UI consumer, Task T5)
 // ---------------------------------------------------------------------------
 
+export type HostUnreachableReason =
+  | 'address_changed'
+  | 'port_blocked'
+  | 'network_unreachable'
+  | 'host_not_serving';
+
 export interface HostHealthEntry {
   host_id: string;
   label: string;
   reachable: boolean | null;
+  /** Which failure, when unreachable. Absent on an older daemon. */
+  reason?: HostUnreachableReason | null;
+  /** One sentence naming the failure and the remedy. Absent on an older
+   *  daemon, which is why every consumer falls back to the state copy. */
+  detail?: string;
   checked_at: string;
   protocol_skew: 'none' | 'host_newer' | 'host_older';
 }

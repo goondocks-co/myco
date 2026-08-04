@@ -120,7 +120,7 @@ describe('membershipErrorCopy', () => {
 describe('leaveHostConfirmMessage (host detail slideout + HostCard, Task T5)', () => {
   it('confirms a plain leave — the attached-projects case never reaches this confirm (the control disables)', () => {
     const copy = leaveHostConfirmMessage('Mac Studio');
-    expect(copy).toBe('Leave "Mac Studio"? This removes this host\'s overlay connection from this machine.');
+    expect(copy).toBe('Leave "Mac Studio"? This removes this host\'s address and credential from this machine.');
     expect(copy).not.toContain('Detach');
     expect(copy).not.toContain('detaches');
   });

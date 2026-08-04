@@ -7,7 +7,7 @@
  * plan capture writes to the host's Grove DB. The member's proxy is byte-opaque,
  * so it cannot inject the file's content into the `/events` body — plan content
  * therefore rides its OWN companion channel (`POST /routed-capture/plan`) through
- * that host's `proxy_port`, exactly parallel to the transcript-content drain
+ * that host's public URL, exactly parallel to the transcript-content drain
  * (`capture/transcript-drain.ts`, C1) but SIMPLER: a plan file is small and read
  * WHOLE, so there is no byte offset — the high-water is the CONTENT HASH the host
  * last acked. A re-push of unchanged content is a member-side no-op; on the host,
@@ -107,7 +107,7 @@ export interface PlanChunkResponse {
 }
 
 /** The POST transport seam — the ONE side effect that leaves the machine. Tests
- *  inject a fake host; production POSTs through the host's `proxy_port` via
+ *  inject a fake host; production POSTs to the host's public URL via
  *  {@link defaultPlanTransport}. */
 export type PlanPostTransport = (
   target: RemoteTarget,
@@ -303,11 +303,16 @@ function defaultResolveHostTarget(
 ): RemoteTarget | null {
   const membership = getHostMembershipSnapshot(hostId, lockNamespace);
   if (!membership) return null;
-  const { record: host, bearer } = membership;
+  const { record, bearer } = membership;
+  const host = hostDescriptorFor(record);
+  // No usable address is the same answer as no membership — there is nothing
+  // to dial. The entry stays pending rather than being recorded as a host
+  // failure, because the host did not fail: this member has no way to reach it.
+  if (!host) return null;
   return {
     projectId: sample.project_id as GroveProjectId,
     groveId: sample.grove_id,
-    host: hostDescriptorFor(host),
+    host,
     bearer,
   };
 }

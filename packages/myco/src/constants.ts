@@ -729,17 +729,26 @@ export const HOSTED_PROJECT_PRUNE_TTL_MS = 14 * MS_PER_DAY;
  *         name to the member's real name. A member gates a with-history attach on
  *         a recorded host protocol ≥ 3 (RESIDENCY_MIN_HOST_PROTOCOL) — the
  *         lockstep bump: update the host before members.
+ *   - v4: the transport itself changed. A host is reached at its public
+ *         `host_url` over HTTPS instead of an overlay address on a private
+ *         tailnet, so a v3 member holds a dial address that resolves nowhere.
+ *         This is the one version step that is not additive, which is why
+ *         HOST_MIN_COMPAT_VERSION rises to meet it.
  */
-export const HOST_PROTOCOL_VERSION = 3;
+export const HOST_PROTOCOL_VERSION = 4;
 /**
  * Oldest host protocol a member still talks to (inclusive window with
- * HOST_PROTOCOL_VERSION). Stays at 1: the v2 addition (enrollment
- * self-reports `served_grove_id`) is additive, not breaking — an updated
- * member talking to a v1 host simply gets no `served_grove_id` in the
- * enrollment payload and surfaces `host_predates_served_grove` at attach
- * time rather than being version-gated out of joining at all.
+ * HOST_PROTOCOL_VERSION).
+ *
+ * Raised 1 → 4 with the transport change, and raising it is the whole point:
+ * both gates test the INCLUSIVE window (host `host-serve.ts`, member
+ * `host-proxy.ts` `hostProtocolCompatible`), so bumping only the current
+ * version would WIDEN the accepted range to [1,4] and let a pre-transport
+ * member pass a gate designed to stop it — then time out against an overlay
+ * address nothing answers. A refusal at the version gate is loud and
+ * non-retryable; a dial into a dead tailnet is neither.
  */
-export const HOST_MIN_COMPAT_VERSION = 1;
+export const HOST_MIN_COMPAT_VERSION = 4;
 
 /**
  * Request header carrying the member's Team-Host protocol version on every
@@ -751,14 +760,15 @@ export const HOST_MIN_COMPAT_VERSION = 1;
 export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
 
 /**
- * The host-side enrollment endpoint (Task 2.4). A joining member — already on the
- * overlay — POSTs here through its local proxy to receive `{overlay_address,
- * protocol_version, bearer, …}`. It is the ONE overlay route EXEMPT from the
- * blanket bearer gate (the chicken-and-egg: enrollment is how the member obtains
- * the bearer). Gated instead by overlay reachability (`overlayBearerExempt` +
- * `isTeamRequest`, `daemon/host-serve.ts`). The `/api/host/*` namespace is
- * distinct from team-sync's `POST /api/team/join` (scope-map ⚑4) — they are
- * different capabilities on different transports (live host overlay vs D1 replica).
+ * The host-side enrollment endpoint (Task 2.4). A joining member POSTs here at
+ * the host's public URL to receive `{protocol_version, bearer, …}`. It is the
+ * one team route EXEMPT from the blanket bearer gate (the chicken-and-egg:
+ * enrollment is how the member obtains the bearer), which is exactly why it is
+ * NOT in `TEAM_ADMITTED_RAW_ROUTES` on this build: its old gate was overlay
+ * membership, and with the overlay gone, publishing it would hand the bearer to
+ * anyone. It is re-admitted only alongside the daemon-validated single-use key.
+ * The `/api/host/*` namespace is distinct from team-sync's `POST /api/team/join`
+ * (scope-map ⚑4) — different capabilities on different transports.
  */
 export const HOST_ENROLL_ROUTE = '/api/host/enroll';
 
@@ -773,32 +783,33 @@ export const HOST_ENROLL_ROUTE = '/api/host/enroll';
 export const ENROLLMENT_RETRY_BACKOFFS_MS = [2000, 4000] as const;
 
 /**
- * Base for the local HTTP-CONNECT proxy port each joined host's userspace
- * tailscaled exposes (`--outbound-http-proxy-listen=localhost:<port>`), recorded
- * on that host's {@link HostRecord} as `proxy_port` and dialed by
- * `daemon/host-proxy.ts`'s CONNECT tunnel (`connectViaHttpProxy`). The mechanism
- * is HTTP-CONNECT, NOT SOCKS5 — chosen to MATCH what Task 1.3's proxy dials.
+ * The public port a Team Host's Funnel serves on.
  *
- * MULTI-HOST: a member runs one tailscaled PER host (each host is its own tailnet
- * that independently hands out `100.64.0.0/10`, so overlay addresses can collide),
- * so each host's outbound listener needs a DISTINCT port — the `proxy_port` is what
- * selects the right tailnet's tailscaled for a dial even when `overlay_address`
- * collides. Ports are allocated from this base (lowest free not already used by
- * another host record) and PERSISTED on the host record so the proxy's dial stays
- * stable across restarts. High + uncommon to avoid colliding with a developer's own
- * local proxy; listeners are localhost-bound and member-initiated.
+ * Tailscale Funnel permits exactly three public ports — 443, 8443, 10000 — so
+ * this is a choice among three, not a free parameter. Team takes 8443 and the
+ * external read-only MCP surface keeps 443 ({@link EXTERNAL_MCP_FUNNEL_PORT}):
+ * a host is someone's real machine, and 443 is the port its OTHER services are
+ * most likely to want. Two Myco funnels also cannot share a public port at
+ * different mounts — Funnel routes by longest path prefix, so a member's `/mcp`
+ * would land on the external-MCP socket, whose token and allowlist are
+ * different — which makes the split structural rather than a preference.
+ *
+ * Accepted cost: a member behind 443-only egress cannot reach a host. The
+ * health probe names that case specifically rather than reporting a generic
+ * unreachable — see `describeHostReachability` (`host/host-url.ts`).
  */
-export const MEMBER_OVERLAY_PROXY_PORT_BASE = 41080;
+export const TEAM_FUNNEL_PORT = 8443;
 
-/**
- * Base for THIS machine's host-serve overlay port — the loopback port the
- * daemon's overlay listener binds and tailscaled's `serve --tcp` forward
- * targets. Deliberately disjoint from {@link MEMBER_OVERLAY_PROXY_PORT_BASE}
- * so a box that both serves and joins does not collide by default; allocation
- * additionally consults the member registry,
- * because "disjoint base" is a convenience, not the guarantee.
- */
-export const HOST_SERVE_OVERLAY_PORT_BASE = 41443;
+/** The public port the external read-only MCP Funnel serves on. Shipped at 443
+ *  before team hosting needed a public port; kept there so no advertised URL
+ *  moves. See {@link TEAM_FUNNEL_PORT} for why the two cannot share one. */
+export const EXTERNAL_MCP_FUNNEL_PORT = 443;
+
+/** The team Funnel's mount. ROOT, and load-bearing: the member→host contract
+ *  keys on exact pathnames (`ROUTE_RULES`, `SERVE_DEFAULT_ROUTES`), and any
+ *  non-root mount makes Funnel strip its prefix before the request reaches the
+ *  listener — every pathname rewritten, the whole stamp table missing. */
+export const TEAM_FUNNEL_MOUNT = '/';
 
 /**
  * Member→host proxy timeouts (the host-proxy forwarder, `daemon/host-proxy.ts`).

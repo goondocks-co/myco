@@ -166,7 +166,7 @@ describe('GroveDashboard', () => {
       serving: true,
       served_grove_id: 'g1',
       served_grove_name: 'Test Grove',
-      overlay_address: '100.64.1.2',
+      host_url: 'https://host-c.tailnet.ts.net:8443',
       host_id: 'host_abc',
       label: 'Mac Studio',
       external_mcp: { enabled: false, port: 4919, bound: null, token_present: false },

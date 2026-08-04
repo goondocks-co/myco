@@ -55,6 +55,8 @@ export function TeamHostServingCard({ actions }: { actions?: React.ReactNode } =
     served_grove_name: servedGroveName,
     host_id: hostId,
     label,
+    host_url: hostUrl,
+    funnel_error: funnelError,
     hosted_project_count: hostedProjectCount,
     external_mcp: externalMcp,
     bearer_present: bearerPresent,
@@ -86,6 +88,17 @@ export function TeamHostServingCard({ actions }: { actions?: React.ReactNode } =
         </p>
       )}
 
+      {/* Serving without a published address means teammates cannot reach this
+          machine at all — a strictly worse state than "needs attention" on
+          storage, and invisible unless it is said out loud. */}
+      {!hostUrl && (
+        <p className="font-sans text-xs text-secondary m-0" data-testid="team-host-no-address">
+          {funnelError
+            ? `Teammates can’t reach this host yet: ${funnelError}`
+            : 'Teammates can’t reach this host yet — no public address has been published.'}
+        </p>
+      )}
+
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
         <Stat
           label="Team storage"
@@ -107,6 +120,11 @@ export function TeamHostServingCard({ actions }: { actions?: React.ReactNode } =
               {hostId && <div className="font-mono text-xs text-on-surface-variant">{hostId}</div>}
             </>
           }
+        />
+        <Stat
+          label="Address teammates dial"
+          value={hostUrl ?? 'Not published'}
+          mono={Boolean(hostUrl)}
         />
         <Stat label="Hosted projects" value={hostedProjectCount} />
         <Stat label="Bearer token" value={bearerPresent ? 'Set' : 'Missing'} />

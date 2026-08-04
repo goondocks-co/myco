@@ -26,6 +26,7 @@ import {
   findProjectByRoot,
 } from '@myco/grove/registry';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const ensureProjectRegistered = (
   projectRoot: string,
@@ -40,8 +41,8 @@ function makeHost(hostId: string): HostRecord {
   return {
     host_id: hostId,
     label: 'Mac Studio',
-    overlay_address: '100.64.0.1:7433',
-    protocol_version: 1,
+    host_url: 'https://host-a.tailnet.ts.net:8443',
+    protocol_version: HOST_PROTOCOL_VERSION,
     created_at: new Date().toISOString(),
     projects: [],
   };

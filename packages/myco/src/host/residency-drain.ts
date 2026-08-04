@@ -271,11 +271,13 @@ const defaultResolveResidencyTarget = (
 ): RemoteTarget | null => {
   const membership = getHostMembershipSnapshot(hostId, lockNamespace);
   if (!membership) return null;
-  const { record: host, bearer } = membership;
+  const { record, bearer } = membership;
+  const host = hostDescriptorFor(record);
+  if (!host) return null;
   return {
     projectId: projectId as GroveProjectId,
     groveId,
-    host: hostDescriptorFor(host),
+    host,
     bearer,
   };
 };

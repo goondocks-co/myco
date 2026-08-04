@@ -26,6 +26,7 @@ import {
 import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import { classifyRoute as classifyRouteWith, classifyRouteStamp, groveTierWriteRefusal } from '@myco/host/routing';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
@@ -37,8 +38,8 @@ function seedAttached(): { projectId: GroveProjectId; groveId: string; host: Hos
   const host: HostRecord = {
     host_id: createHostId(),
     label: 'Mac Studio',
-    overlay_address: '100.64.0.1:7433',
-    protocol_version: 1,
+    host_url: 'https://host-a.tailnet.ts.net:8443',
+    protocol_version: HOST_PROTOCOL_VERSION,
     created_at: new Date().toISOString(),
     projects: [{ grove_id: groveId, project_id: projectId }],
   };

@@ -35,13 +35,14 @@ import { resolveHostCarrierTarget } from '@myco/host/routing.js';
 import type { HostRecord } from '@myco/host/registry.js';
 import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 function makeHost(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
     host_id: createHostId(),
     label: 'Mac Studio',
-    overlay_address: '100.64.0.1:7433',
-    protocol_version: 2,
+    host_url: 'https://host-a.tailnet.ts.net:8443',
+    protocol_version: HOST_PROTOCOL_VERSION,
     served_grove_id: createGroveId(),
     created_at: new Date().toISOString(),
     projects: [],

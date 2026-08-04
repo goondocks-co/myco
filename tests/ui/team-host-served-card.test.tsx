@@ -28,7 +28,7 @@ const SERVING_FIXTURE: HostServeStatusResponse = {
   serving: true,
   served_grove_id: 'grove_1',
   served_grove_name: 'Home Lab',
-  overlay_address: '100.64.1.2',
+  host_url: 'https://host-c.tailnet.ts.net:8443',
   host_id: 'host_abc',
   label: 'Mac Studio',
   external_mcp: { enabled: true, port: 4919, bound: true, token_present: true },

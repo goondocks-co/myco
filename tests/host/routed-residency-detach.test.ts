@@ -443,7 +443,7 @@ describe('host-serve status cache invalidation', () => {
       // A real (default) config so the full status body computes; a frozen `now`
       // and long TTL so only the epoch — not time — can drop the cache.
       const handler = createHostServeStatusHandler({
-        hostServe: { servedGroveId: null, overlayAddress: '', hostId: null, label: null, bearer: '' } as never,
+        hostServe: { servedGroveId: null, hostId: null, label: null, bearer: '' } as never,
         loadMachineConfig: (h: string) => { count += 1; return loadMachineConfig(h); },
         now: () => 1_000,
         ttlMs: 100_000,

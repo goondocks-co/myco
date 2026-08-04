@@ -66,9 +66,11 @@ export async function withExternalMcpContainment<T>(
   const [
     { ExternalMcpContainmentAuthority },
     { defaultFunnelOffRunner },
+    { teamFunnelContainmentSockets },
   ] = await Promise.all([
     import('../daemon/external-mcp-containment.js'),
     import('../daemon/external-listener.js'),
+    import('../team-host/funnel.js'),
   ]);
   const authority = new ExternalMcpContainmentAuthority({
     mycoHome,
@@ -82,6 +84,10 @@ export async function withExternalMcpContainment<T>(
       },
     },
     runFunnelOff: defaultFunnelOffRunner,
+    // A host that is going down must stop answering its public URL, exactly as
+    // external MCP does — `shutdown` quiesces serving without disavowing the
+    // config, so the next boot republishes.
+    additionalFunnelSockets: () => teamFunnelContainmentSockets({ mycoHome, intent: 'quiesce' }),
   });
   return await authority.containWhile('shutdown', async () => await continuation());
 }

@@ -80,7 +80,7 @@ function makeHost(protocol = 3): HostRecord {
   return {
     host_id: createHostId(),
     label: 'Mac Studio',
-    overlay_address: '100.64.0.1:7433',
+    host_url: 'https://host-a.tailnet.ts.net:8443',
     protocol_version: protocol,
     served_grove_id: createGroveId(),
     created_at: new Date().toISOString(),
@@ -103,7 +103,7 @@ function targetResolver(protocol = 3): ResolveResidencyTarget {
   return (hostId, groveId, projectId): RemoteTarget => ({
     projectId: projectId as GroveProjectId,
     groveId,
-    host: { host_id: hostId, label: 'h', overlay_address: '100.64.0.1:7433', protocol_version: protocol },
+    host: { host_id: hostId, label: 'h', host_url: 'https://host-a.tailnet.ts.net:8443', protocol_version: protocol },
     bearer: 'bearer',
   });
 }

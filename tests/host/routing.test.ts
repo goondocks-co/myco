@@ -33,6 +33,7 @@ import {
   refusalMcpBody,
 } from '@myco/host/routing';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
@@ -44,8 +45,8 @@ function seedAttached(overrides: Partial<HostRecord> = {}): { projectId: GrovePr
   const host: HostRecord = {
     host_id: createHostId(),
     label: 'Mac Studio',
-    overlay_address: '100.64.0.1:7433',
-    protocol_version: 1,
+    host_url: 'https://host-a.tailnet.ts.net:8443',
+    protocol_version: HOST_PROTOCOL_VERSION,
     created_at: new Date().toISOString(),
     projects: [{ grove_id: groveId, project_id: projectId }],
     ...overrides,
@@ -100,8 +101,8 @@ describe('classifyRoute', () => {
     expect(decision.target.host).toEqual({
       host_id: host.host_id,
       label: 'Mac Studio',
-      overlay_address: '100.64.0.1:7433',
-      protocol_version: 1,
+      host_url: 'https://host-a.tailnet.ts.net:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
     });
     expect(decision.classification.stamp).toBe('serve');
   });
