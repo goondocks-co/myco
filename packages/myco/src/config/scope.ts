@@ -42,7 +42,7 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   // Team Host serve opt-in — machine-locked (nobody-shares-it): a machine either
   // hosts or it does not, and the overlay address is a machine-specific network
   // fact, never git-shared nor resolved cross-machine. Longest-prefix covers both
-  // `daemon.host_serve.enabled` and `daemon.host_serve.overlay_address`.
+  // `daemon.host_serve.enabled` and its sibling host-serve leaves.
   'daemon.host_serve': { home: 'machine', overridableBy: [] },
   // External read-only MCP opt-in (Task 10, server-mode design spec §7) —
   // machine-locked for the same reason as `host_serve`: a per-machine daemon

@@ -37,8 +37,6 @@ import { createHostServeStatusHandler } from '@myco/daemon/api/host-serve-status
 import type { HostServeRuntime } from '@myco/daemon/host-serve.js';
 
 const RUNTIME: HostServeRuntime = {
-  overlayAddress: '100.64.0.5',
-  overlayPort: 41443,
   bearer: 'bearer-value',
   hostId: 'host_' + 'a'.repeat(32),
   label: 'testhost',
@@ -91,7 +89,7 @@ describe('GATE 4 — status body carries the observed listener bind + restart di
       'daemon:',
       '  host_serve:',
       '    enabled: true',
-      "    overlay_address: '100.64.0.5'",
+      "    host_url: 'https://host-e.tailnet.ts.net:8443'",
       '    overlay_port: 41443',
     ].join('\n'));
     const pending = createHostServeStatusHandler({
@@ -113,7 +111,7 @@ describe('GATE 4 — status body carries the observed listener bind + restart di
       'daemon:',
       '  host_serve:',
       '    enabled: true',
-      "    overlay_address: '100.64.0.5'",
+      "    host_url: 'https://host-e.tailnet.ts.net:8443'",
       '    overlay_port: 41443',
     ].join('\n'));
     let loads = 0;

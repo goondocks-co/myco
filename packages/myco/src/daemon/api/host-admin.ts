@@ -145,7 +145,6 @@ async function withJobTimeout<T>(job: Promise<T>, onTimeout: () => void): Promis
 }
 
 interface EnableBody {
-  server_url?: unknown;
   label?: unknown;
   storage_name?: unknown;
   team_provider_key?: unknown;

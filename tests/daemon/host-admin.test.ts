@@ -38,8 +38,6 @@ import type { HostEnableResult } from '@myco/team-host/overlay.js';
 
 const ENABLE_RESULT: HostEnableResult = {
   hostId: 'host_' + 'a'.repeat(32),
-  overlayAddress: '100.64.0.5',
-  overlayPort: 41443,
   serverUrl: 'https://host.example:8080',
   headscaleVersion: '0.29.2',
   tailscaleVersion: '1.98.8',

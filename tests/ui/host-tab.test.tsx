@@ -43,9 +43,9 @@ if (typeof _g.NodeFilter === 'undefined' && typeof document !== 'undefined') {
 
 const joinMutateAsync = vi.fn(async () => ({
   host_id: 'host_abc',
-  member_overlay_ip: '100.64.0.5', host_reachable: true, created: true, notes: [],
+  host_reachable: true, created: true, notes: [],
 }));
-const leaveMutateAsync = vi.fn(async () => ({ removed: true, tailscaled_removed: true, notes: [] }));
+const leaveMutateAsync = vi.fn(async () => ({ removed: true, notes: [] }));
 const attachMutateAsync = vi.fn(async () => ({
   project_id: 'proj_x', grove_id: 'grove_x', host_id: 'host_abc', host_label: 'Mac Studio',
   root: '/checkout', already_attached: false, notes: [],
@@ -298,7 +298,7 @@ beforeEach(() => {
 });
 
 describe('JoinHostForm', () => {
-  it('disables Join host until host id, key, and server URL are all filled', async () => {
+  it('disables Join host until host id, key, and the host address are all filled', async () => {
     renderJoinHostForm();
     const submit = screen.getByRole('button', { name: /join host/i });
     expect(submit).toBeDisabled();
@@ -307,7 +307,7 @@ describe('JoinHostForm', () => {
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
     expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
+    fireEvent.change(screen.getByLabelText('Host address'), { target: { value: 'https://h.tailnet.ts.net:8443' } });
     expect(submit).not.toBeDisabled();
   });
 
@@ -315,11 +315,11 @@ describe('JoinHostForm', () => {
     renderJoinHostForm();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
+    fireEvent.change(screen.getByLabelText('Host address'), { target: { value: 'https://h.tailnet.ts.net:8443' } });
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
     await waitFor(() => expect(joinMutateAsync).toHaveBeenCalledWith({
-      host_ref: 'host_abc', key: 'onetime', server_url: 'https://h:8080',
+      host_ref: 'host_abc', key: 'onetime', host_url: 'https://h.tailnet.ts.net:8443',
     }));
     await waitFor(() => expect(screen.getByTestId('host-join-success')).toBeInTheDocument());
   });
@@ -328,7 +328,7 @@ describe('JoinHostForm', () => {
     renderJoinHostForm();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
+    fireEvent.change(screen.getByLabelText('Host address'), { target: { value: 'https://h.tailnet.ts.net:8443' } });
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
     await waitFor(() => expect((screen.getByLabelText('One-time key') as HTMLInputElement).value).toBe(''));
@@ -348,7 +348,7 @@ describe('JoinHostForm', () => {
     renderJoinHostForm();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
+    fireEvent.change(screen.getByLabelText('Host address'), { target: { value: 'https://h.tailnet.ts.net:8443' } });
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
     await waitFor(() => expect(screen.getByTestId('host-join-error')).toHaveTextContent(/different Myco versions/));
@@ -365,7 +365,7 @@ describe('JoinHostForm', () => {
     renderJoinHostForm();
     fireEvent.change(screen.getByLabelText('Host id'), { target: { value: 'host_abc' } });
     fireEvent.change(screen.getByLabelText('One-time key'), { target: { value: 'onetime' } });
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
+    fireEvent.change(screen.getByLabelText('Host address'), { target: { value: 'https://h.tailnet.ts.net:8443' } });
     fireEvent.click(screen.getByRole('button', { name: /join host/i }));
 
     await waitFor(() => expect(screen.getByTestId('host-join-error')).toHaveTextContent(/tailscaled socket did not appear/));

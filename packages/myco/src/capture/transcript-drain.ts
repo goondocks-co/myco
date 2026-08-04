@@ -6,7 +6,7 @@
  * Under Team Host a routed session's transcript file lives on the member's disk,
  * but the miner runs on the host (where the Grove DB is). This module ships the
  * transcript's append-only byte-deltas to the host materializer endpoint
- * (`POST /routed-capture/transcript`) through that host's `proxy_port`, so the
+ * (`POST /routed-capture/transcript`) to that host's public URL, so the
  * host has a current file to mine.
  *
  * The design is deliberately the transcript analog of the DB-free EventBuffer
@@ -102,7 +102,7 @@ export interface TranscriptChunkResponse {
 
 /** The POST transport seam — the ONE side effect that leaves the machine. Tests
  *  inject a fake host honoring the C2 offset contract; production POSTs through
- *  the host's `proxy_port` via {@link defaultTranscriptTransport}. */
+ *  the host's public URL via {@link defaultTranscriptTransport}. */
 export type TranscriptPostTransport = (
   target: RemoteTarget,
   body: TranscriptChunkRequest,
@@ -250,7 +250,7 @@ const defaultFileReader: TranscriptFileReader = {
  * Production transport: POST the delta to the host's `/routed-capture/transcript`
  * through the SAME dial primitive the byte-opaque proxy uses ({@link defaultDial}
  * — direct for a kernel-mode member, or CONNECT-tunneled through the host's
- * `proxy_port`), attaching the host bearer + protocol-version header exactly as
+ * public URL), attaching the host bearer + protocol-version header exactly as
  * the collect forwarder does. Reads and parses the small JSON ack.
  */
 export const defaultTranscriptTransport: TranscriptPostTransport = async (target, body) => {
@@ -314,11 +314,13 @@ function defaultResolveHostTarget(
 ): RemoteTarget | null {
   const membership = getHostMembershipSnapshot(hostId, lockNamespace);
   if (!membership) return null;
-  const { record: host, bearer } = membership;
+  const { record, bearer } = membership;
+  const host = hostDescriptorFor(record);
+  if (!host) return null;
   return {
     projectId: sample.project_id as GroveProjectId,
     groveId: sample.grove_id,
-    host: hostDescriptorFor(host),
+    host,
     bearer,
   };
 }

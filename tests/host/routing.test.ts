@@ -33,6 +33,7 @@ import {
   refusalMcpBody,
 } from '@myco/host/routing';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const classifyRoute = (input: Parameters<typeof classifyRouteWith>[0]) =>
@@ -44,8 +45,8 @@ function seedAttached(overrides: Partial<HostRecord> = {}): { projectId: GrovePr
   const host: HostRecord = {
     host_id: createHostId(),
     label: 'Mac Studio',
-    overlay_address: '100.64.0.1:7433',
-    protocol_version: 1,
+    host_url: 'https://host-a.tailnet.ts.net:8443',
+    protocol_version: HOST_PROTOCOL_VERSION,
     created_at: new Date().toISOString(),
     projects: [{ grove_id: groveId, project_id: projectId }],
     ...overrides,
@@ -100,8 +101,8 @@ describe('classifyRoute', () => {
     expect(decision.target.host).toEqual({
       host_id: host.host_id,
       label: 'Mac Studio',
-      overlay_address: '100.64.0.1:7433',
-      protocol_version: 1,
+      host_url: 'https://host-a.tailnet.ts.net:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
     });
     expect(decision.classification.stamp).toBe('serve');
   });
@@ -189,6 +190,39 @@ describe('classifyRoute', () => {
 
   // config-carve routing + the groveTierWriteRefusal gate are covered in the
   // canonical tree (tests/host/attached-config-routing.test.ts, run by npm test).
+
+  // A host record with NO usable address. The two stamps below MUST diverge,
+  // and conflating them is a live bug class in both directions: refusing
+  // config-carve breaks a Settings read whose machine and project tiers are on
+  // local disk, and degrading serve/collect would answer a data read from an
+  // empty local Grove — which looks like success to a user whose data is on
+  // the host.
+  describe('a host with no usable address', () => {
+    test('DATA routes are refused, never served from an empty local Grove', () => {
+      const { projectId } = seedAttached({ host_url: undefined });
+      const decision = classifyRoute({ method: 'GET', pathname: '/api/sessions', projectId });
+      expect(decision.kind).toBe('degraded');
+      expect(decision.kind === 'degraded' && decision.refusal.error).toBe('host_address_unusable');
+      // NOT 'local': falling through to a local read is the failure mode.
+      expect(decision.kind).not.toBe('local');
+    });
+
+    test('a team-write is refused for the same reason', () => {
+      const { projectId } = seedAttached({ host_url: undefined });
+      const decision = classifyRoute({ method: 'PUT', pathname: '/api/team/config', projectId });
+      expect(decision.kind).toBe('degraded');
+    });
+
+    test('config-carve is NOT refused — it degrades the grove tier and assembles the rest', () => {
+      const { projectId } = seedAttached({ host_url: undefined });
+      const decision = classifyRoute({ method: 'GET', pathname: '/api/config/merged', projectId });
+      expect(decision.kind).toBe('config_carve');
+      // No target to dial, but the attach identity the member-side tiers need
+      // still rides along — that separation is what makes the degrade possible.
+      expect(decision.kind === 'config_carve' && decision.target).toBeNull();
+      expect(decision.kind === 'config_carve' && decision.attach.projectId).toBe(projectId);
+    });
+  });
 });
 
 describe('classifyRouteStamp — scope-map coverage spot-checks', () => {

@@ -38,6 +38,7 @@ import {
 import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -59,7 +60,8 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
   let authToken: string;
   let hostServer: http.Server;
   let hostHits: HostHit[];
-  let overlayAddress: string;
+  let hostUrl: string;
+  let edge: FunnelEdge;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dispatch-'));
@@ -79,7 +81,10 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
     });
     const hostPort = await new Promise<number>((resolve) =>
       hostServer.listen(0, '127.0.0.1', () => resolve((hostServer.address() as AddressInfo).port)));
-    overlayAddress = `127.0.0.1:${hostPort}`;
+    // The member dials a REAL public origin: a TLS edge in front of the
+    // fixture host, exactly as Funnel fronts a real host's socket.
+    edge = await startFunnelEdge({ port: hostPort });
+    hostUrl = edge.url;
 
     dbOpens = 0;
     sessionsHandlerCalls = 0;
@@ -127,6 +132,7 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
   afterEach(async () => {
     await server.stop();
     (hostServer as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+    await edge.close();
     await new Promise<void>((resolve) => hostServer.close(() => resolve()));
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
     else process.env.MYCO_TEAM_HOME = savedTeamHome;
@@ -141,8 +147,8 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
     const host: HostRecord = {
       host_id: createHostId(),
       label: 'Mac Studio',
-      overlay_address: overlayAddress,
-      protocol_version: 1,
+      host_url: hostUrl,
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: groveId, project_id: projectId }],
     };
@@ -158,8 +164,8 @@ describe('attach short-circuit at router dispatch (chokepoint 1)', () => {
     const host: HostRecord = {
       host_id: createHostId(),
       label: 'Mac Studio',
-      overlay_address: overlayAddress,
-      protocol_version: 1,
+      host_url: hostUrl,
+      protocol_version: HOST_PROTOCOL_VERSION,
       served_grove_id: servedGroveId,
       created_at: new Date().toISOString(),
       projects: [],

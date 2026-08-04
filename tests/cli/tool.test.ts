@@ -22,6 +22,8 @@ import { HOST_BEARER_SECRET } from '@myco/constants.js';
 import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const CLI_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -396,6 +398,7 @@ describe('myco tool CLI — attached (Team Host) project', () => {
   let member: http.Server;
   let hostFixture: http.Server;
   let hostRequests: Array<{ method: string; body: string; headers: http.IncomingHttpHeaders }>;
+  let edge: FunnelEdge;
   let savedHome: string | undefined;
   let savedTeamHome: string | undefined;
   let written: string[];
@@ -457,12 +460,15 @@ describe('myco tool CLI — attached (Team Host) project', () => {
     const hostPort = await new Promise<number>((resolve) => {
       hostFixture.listen(0, '127.0.0.1', () => resolve((hostFixture.address() as { port: number }).port));
     });
+    // The member dials the host over real HTTPS, so the fixture sits behind a
+    // TLS edge exactly as a host's socket sits behind its Funnel.
+    edge = await startFunnelEdge({ port: hostPort });
 
     writeHostRecordFixture({
       host_id: HOST_ID,
       label: 'Fixture Host',
-      overlay_address: `127.0.0.1:${hostPort}`,
-      protocol_version: 1,
+      host_url: edge.url,
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: GROVE_ID, project_id: PROJECT_ID, root: projectRoot }],
     });
@@ -509,6 +515,7 @@ describe('myco tool CLI — attached (Team Host) project', () => {
   afterEach(() => {
     process.stdout.write = originalStdoutWrite;
     member.close();
+    void edge.close();
     hostFixture.close();
     if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME; else process.env.MYCO_TEAM_HOME = savedTeamHome;
@@ -545,6 +552,10 @@ describe('myco tool CLI — attached (Team Host) project', () => {
     // envelope) so the SDK client classifies it as a proper McpError — id:null
     // made the SDK throw a ~3.4KB ZodError before any classification, which
     // the CLI then dumped verbatim.
+    // The host is UNREACHABLE, which means the member's dial must fail — so
+    // the public edge goes down with the origin behind it. Closing only the
+    // origin would leave the edge relaying a 502, a different failure.
+    await edge.close();
     await new Promise<void>((resolve) => hostFixture.close(() => resolve()));
 
     await run(['call', 'myco_search', '--json', '--input', '{"query":"host probe"}'], vaultDir);

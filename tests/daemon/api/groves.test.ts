@@ -354,7 +354,7 @@ describe('Grove discovery API — attached-project merge (E-4 local-view)', () =
     const record: HostRecord = {
       host_id: createGroveId().replace('grove_', 'host_'),
       label,
-      overlay_address: '100.64.0.2:7777',
+      host_url: 'https://host-b.tailnet.ts.net:8443',
       protocol_version: 1,
       created_at: new Date().toISOString(),
       projects,

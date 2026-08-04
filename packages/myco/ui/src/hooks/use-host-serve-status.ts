@@ -38,6 +38,11 @@ export interface HostServeStatusServing {
   served_grove_name: string | null;
   host_id: string | null;
   label: string | null;
+  /** The public address teammates dial. Null until the host has successfully
+   *  published one — which is what makes it reachable at all. */
+  host_url?: string | null;
+  /** Why publishing did not succeed, when it did not. */
+  funnel_error?: string | null;
   /** Projects members have attached to the served Grove (registration-on-ingest
    *  rows; honest immediately after a detach deregisters — Phase F T3). */
   hosted_project_count: number;

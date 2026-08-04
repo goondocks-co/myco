@@ -139,16 +139,19 @@ export interface FunnelOffResult {
  * A local endpoint the public Funnel may proxy to. Ports are the legacy
  * (pre-socket) exposure shape and remain first-class so historical state
  * stays containable; sockets are the activation-era shape.
+ *
+ * Surface-neutral: the external read-only MCP socket and the Team Host socket
+ * are both Funnel targets, activated and torn down by the same runners.
  */
-export type ExternalMcpFunnelTarget =
+export type FunnelTarget =
   | { kind: 'port'; port: number }
   | { kind: 'socket'; path: string };
 
-export function describeFunnelTarget(target: ExternalMcpFunnelTarget): string {
+export function describeFunnelTarget(target: FunnelTarget): string {
   return target.kind === 'port' ? `local port ${target.port}` : `local socket ${target.path}`;
 }
 
-export type FunnelOffRunner = (target: ExternalMcpFunnelTarget) => Promise<FunnelOffResult>;
+export type FunnelOffRunner = (target: FunnelTarget) => Promise<FunnelOffResult>;
 
 export interface FunnelOnResult {
   ok: boolean;
@@ -168,6 +171,20 @@ export interface ExternalMcpContainmentAuthorityOptions {
   stateDir: string;
   listener: ExternalMcpListenerControl;
   runFunnelOff: FunnelOffRunner;
+  /**
+   * Funnel targets this authority must ALSO drive off, beyond the external-MCP
+   * listener's own — today, the Team Host socket.
+   *
+   * Two public surfaces exist now, and containment that saw only one would
+   * leave the other published: a machine that stops hosting keeps a live URL
+   * fronting a socket nothing binds, and a daemon that shuts down keeps
+   * answering (badly) while it is down. Supplied as a callback rather than a
+   * static list because the answer changes with host config, and it must
+   * return EMPTY on a machine that has no evidence of ever hosting — a
+   * non-empty return makes `requiresContainment` true, which is what reaches
+   * the vendor `tailscale` CLI. A clean machine must still never spawn it.
+   */
+  additionalFunnelSockets?: () => string[];
   /** The activation inverse of `runFunnelOff`. Optional: shutdown/termination
    *  authorities never activate. `enable` fails cleanly when absent. */
   runFunnelOn?: FunnelOnRunner;
@@ -482,7 +499,7 @@ async function withExternalMcpContainment<T>(
   }
 }
 
-function funnelOffFailure(target: ExternalMcpFunnelTarget, detail: string): Error {
+function funnelOffFailure(target: FunnelTarget, detail: string): Error {
   return new ExternalMcpContainmentError(
     `Tailscale Funnel-off was not confirmed for ${describeFunnelTarget(target)}: ${detail}`,
   );
@@ -490,7 +507,7 @@ function funnelOffFailure(target: ExternalMcpFunnelTarget, detail: string): Erro
 
 async function runFunnelOffBounded(
   runner: FunnelOffRunner,
-  target: ExternalMcpFunnelTarget,
+  target: FunnelTarget,
   timeoutMs: number,
 ): Promise<FunnelOffResult> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -571,10 +588,23 @@ export class ExternalMcpContainmentAuthority {
     return bound?.kind === 'loopback' ? [bound.port] : [];
   }
 
-  /** The listener's bound socket path, if any — socket-shaped reconcile input. */
+  /** The listener's bound socket path, if any — socket-shaped reconcile input,
+   *  PLUS any other Myco Funnel surface this authority is responsible for. */
   private listenerSockets(): string[] {
     const bound = this.options.listener.boundTarget;
-    return bound?.kind === 'socket' ? [bound.path] : [];
+    const own = bound?.kind === 'socket' ? [bound.path] : [];
+    return [...new Set([...own, ...this.additionalSockets()])];
+  }
+
+  private additionalSockets(): string[] {
+    try {
+      return this.options.additionalFunnelSockets?.() ?? [];
+    } catch {
+      // A failure to enumerate the other surface must not wedge external-MCP
+      // containment — which is the one that owns this authority's config
+      // writes. The team funnel is then left to the next boot's sweep.
+      return [];
+    }
   }
 
   /**
@@ -688,7 +718,7 @@ export class ExternalMcpContainmentAuthority {
       ports: number[],
       sockets: string[] = [],
     ): Promise<void> => {
-      const targets: ExternalMcpFunnelTarget[] = [
+      const targets: FunnelTarget[] = [
         ...ports.map((port) => ({ kind: 'port', port } as const)),
         ...sockets.map((socket) => ({ kind: 'socket', path: socket } as const)),
       ];
@@ -957,12 +987,17 @@ export class ExternalMcpContainmentAuthority {
       await runTargets(unresolvedIntent.ports, unresolvedIntent.sockets);
       throw new ExternalMcpContainmentPortRecoveryError();
     }
+    // The team term [M3]: without it, a machine whose ONLY public surface is
+    // Team Host short-circuits out of the sweep entirely and its Funnel is
+    // never seen — the gap is invisible precisely because every other term
+    // here is about external MCP.
     const requiresContainment = operation === 'disable'
       || externalMcp.enabled
       || explicitExternalMcpConfig
       || tokenPresent
       || this.options.listener.isBound
-      || additionalPorts.length > 0;
+      || additionalPorts.length > 0
+      || this.additionalSockets().length > 0;
     if (!requiresContainment) {
       return {
         enabled: false,

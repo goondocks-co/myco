@@ -25,7 +25,8 @@ import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { createGrove } from '@myco/grove/registry.js';
 import { createGroveId, createHostId, createProjectId } from '@myco/grove/ids.js';
 import { codedMembershipError } from '@myco/host/membership-error.js';
-import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
+import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
+import type { HostReachability } from '@myco/host/host-url.js';
 import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { RESIDENCY_MIN_HOST_PROTOCOL } from '@myco/host/residency-journal.js';
 import {
@@ -70,8 +71,7 @@ function makeHost(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
     host_id: createHostId(),
     label: 'Mac Studio',
-    overlay_address: '100.64.0.1:7433',
-    proxy_port: 41200,
+    host_url: 'https://host-a.tailnet.ts.net:8443',
     protocol_version: 1,
     created_at: new Date().toISOString(),
     projects: [],
@@ -87,9 +87,7 @@ describe('POST /api/host-membership/join', () => {
         seen = options;
         return {
           hostId: options.hostId ?? options.hostRef,
-          overlayAddress: '100.64.0.1:7433',
-          proxyPort: 41200,
-          memberOverlayIp: '100.64.0.5',
+          hostUrl: options.hostUrl ?? '',
           hostReachable: true,
           created: true,
           notes: ['note-1'],
@@ -98,20 +96,19 @@ describe('POST /api/host-membership/join', () => {
     });
 
     const res = await handler(req({
-      host_ref: 'host_abc', key: 'onetime', server_url: 'https://h:8080',
-      hostname: 'my-mac', overlay_address: '100.64.0.1:7433', bearer: 'b',
+      host_ref: 'host_abc', key: 'onetime',
+      host_url: 'https://host-a.tailnet.ts.net:8443', bearer: 'b',
       protocol_version: 1, host_id: 'host_abc', label: 'Mac Studio',
     }));
 
     expect(seen).toEqual({
-      hostRef: 'host_abc', key: 'onetime', serverUrl: 'https://h:8080',
-      hostname: 'my-mac', overlayAddress: '100.64.0.1:7433', bearer: 'b',
-      protocolVersion: 1, hostId: 'host_abc', label: 'Mac Studio',
+      hostRef: 'host_abc', key: 'onetime', hostUrl: 'https://host-a.tailnet.ts.net:8443',
+      bearer: 'b', protocolVersion: 1, hostId: 'host_abc', label: 'Mac Studio',
     });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      host_id: 'host_abc', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
-      member_overlay_ip: '100.64.0.5', host_reachable: true, created: true, notes: ['note-1'],
+      host_id: 'host_abc', host_url: 'https://host-a.tailnet.ts.net:8443',
+      host_reachable: true, created: true, notes: ['note-1'],
       steps: [],
     });
   });
@@ -122,7 +119,7 @@ describe('POST /api/host-membership/join', () => {
         deps?.logger?.('Provisioning Tailscale for darwin/arm64…');
         deps?.logger?.('Joining the overlay with the one-time key…');
         return {
-          hostId: options.hostRef, overlayAddress: 'a', proxyPort: 1,
+          hostId: options.hostRef, proxyPort: 1,
           memberOverlayIp: 'ip', hostReachable: true, created: true, notes: [],
         };
       },
@@ -146,9 +143,7 @@ describe('POST /api/host-membership/join', () => {
   });
 
   test.each([
-    ['server_url', {}],
-    ['hostname', []],
-    ['overlay_address', {}],
+    ['host_url', {}],
     ['bearer', {}],
     ['protocol_version', '3'],
     ['host_id', 3],
@@ -173,7 +168,6 @@ describe('POST /api/host-membership/join', () => {
         seen = options;
         return {
           hostId: options.hostRef,
-          overlayAddress: '100.64.0.1:7433',
           proxyPort: 41200,
           memberOverlayIp: '100.64.0.5',
           hostReachable: false,
@@ -244,7 +238,7 @@ describe('POST /api/host-membership/leave', () => {
     const res = await handler(req({ host_ref: 'host_abc' }));
     expect(seenHostRef).toBe('host_abc');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ removed: true, tailscaled_removed: true, notes: [] });
+    expect(res.body).toEqual({ removed: true, notes: [] });
   });
 
   test('missing host_ref is rejected client-side', async () => {
@@ -259,7 +253,7 @@ describe('POST /api/host-membership/leave', () => {
     });
     const res = await handler(req({ host_ref: 'unknown' }));
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ removed: false, tailscaled_removed: false, notes: [] });
+    expect(res.body).toEqual({ removed: false, notes: [] });
   });
 });
 
@@ -491,8 +485,8 @@ describe('GET /api/host-membership/status', () => {
     const res = await handler(req({}, {}));
     expect(res.body).toEqual({
       hosts: [{
-        host_id: host.host_id, label: host.label, overlay_address: host.overlay_address,
-        proxy_port: host.proxy_port, protocol_version: host.protocol_version,
+        host_id: host.host_id, label: host.label, host_url: host.host_url,
+        protocol_version: host.protocol_version,
         served_grove_id: null, created_at: host.created_at,
         projects: [{
           grove_id: groveId, project_id: projectId, root: '/checkout',
@@ -631,9 +625,15 @@ describe('GET /api/host-membership/status', () => {
 
 describe('classifyHostProtocolSkew', () => {
   test('within [HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION] → none', () => {
-    expect(classifyHostProtocolSkew(1)).toBe('none');
-    expect(classifyHostProtocolSkew(2)).toBe('none');
+    expect(classifyHostProtocolSkew(HOST_MIN_COMPAT_VERSION)).toBe('none');
     expect(classifyHostProtocolSkew(HOST_PROTOCOL_VERSION)).toBe('none');
+  });
+
+  test('below HOST_MIN_COMPAT_VERSION → host_older, which the transport change made reachable', () => {
+    // Not hypothetical any more: min-compat rose to meet the transport bump, so
+    // every pre-4 host classifies here rather than passing a widened window.
+    expect(classifyHostProtocolSkew(HOST_MIN_COMPAT_VERSION - 1)).toBe('host_older');
+    expect(classifyHostProtocolSkew(3)).toBe('host_older');
   });
 
   test('above HOST_PROTOCOL_VERSION → host_newer (this member needs myco update)', () => {
@@ -657,7 +657,7 @@ describe('GET /api/host-membership/health', () => {
     let called = false;
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [],
-      checkReachable: async () => { called = true; return { reachable: true, protocolVersion: null }; },
+      probe: async () => { called = true; return { state: 'reachable', protocolVersion: null, detail: 'ok' }; },
     });
     const res = await handler(req({}));
     expect(res.status).toBe(200);
@@ -665,26 +665,30 @@ describe('GET /api/host-membership/health', () => {
     expect(called).toBe(false);
   });
 
-  test('with no probe injected, every host reports reachable: null — never a false "down"', async () => {
-    // The default is deliberately probe-less until the member transport is
-    // rebuilt. `null` says "not confirmable"; `false` would blame the host for
-    // what is a missing client.
-    const host = makeHost({});
+  test('a host with NO usable address reports reachable: null — never a false "down"', async () => {
+    // `null` means not confirmable, and it is reserved for exactly this: a
+    // member that cannot even form a request has learned nothing about the
+    // host. Reporting `false` would blame the host for a member-side data
+    // problem and send the user to the wrong machine.
+    const host = { ...makeHost({}), host_url: undefined };
     const handler = createHostMembershipHealthHandler({ readRegistry: () => [host] });
     const res = await handler(req({}));
-    const body = res.body as { hosts: { host_id: string; reachable: boolean | null }[] };
-    expect(body.hosts).toEqual([expect.objectContaining({ host_id: host.host_id, reachable: null })]);
+    const body = res.body as { hosts: { host_id: string; reachable: boolean | null; detail: string }[] };
+    expect(body.hosts[0]).toMatchObject({ host_id: host.host_id, reachable: null });
+    expect(body.hosts[0]!.detail).toContain('Re-join');
   });
 
   test('probes every joined host concurrently and reports protocol_skew + checked_at', async () => {
     const seen: string[] = [];
-    const hostReachable = makeHost({ protocol_version: 1 });
+    const hostReachable = makeHost({ protocol_version: HOST_PROTOCOL_VERSION });
     const hostUnreachable = makeHost({ protocol_version: HOST_PROTOCOL_VERSION + 1 });
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [hostReachable, hostUnreachable],
-      checkReachable: async (hostId) => {
+      probe: async ({ host_id: hostId }) => {
         seen.push(hostId);
-        return { reachable: hostId === hostReachable.host_id, protocolVersion: null };
+        return hostId === hostReachable.host_id
+          ? { state: 'reachable' as const, protocolVersion: null, detail: 'answered' }
+          : { state: 'unreachable' as const, reason: 'host_not_serving' as const, detail: 'nothing behind the edge' };
       },
       now: () => 1_700_000_000_000,
     });
@@ -704,10 +708,10 @@ describe('GET /api/host-membership/health', () => {
   });
 
   test('a probe that rejects classifies reachable: false (fail-closed), never throws out of the handler', async () => {
-    const host = makeHost({ proxy_port: 1 });
+    const host = makeHost();
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
-      checkReachable: async () => { throw new Error('ECONNRESET'); },
+      probe: async () => { throw new Error('ECONNRESET'); },
     });
     const res = await handler(req({}));
     const body = res.body as { hosts: { reachable: boolean | null }[] };
@@ -715,12 +719,12 @@ describe('GET /api/host-membership/health', () => {
   });
 
   test('TTL cache: a second call within the TTL returns the cached result with ZERO new probe invocations', async () => {
-    const host = makeHost({ proxy_port: 1 });
+    const host = makeHost();
     let callCount = 0;
     let clock = 1_700_000_000_000;
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
-      checkReachable: async () => { callCount += 1; return { reachable: true, protocolVersion: null }; },
+      probe: async () => { callCount += 1; return { state: 'reachable', protocolVersion: null, detail: 'ok' }; },
       now: () => clock,
       ttlMs: 15_000,
     });
@@ -739,12 +743,12 @@ describe('GET /api/host-membership/health', () => {
   });
 
   test('single-flight: two overlapping requests for the same host share ONE in-flight probe', async () => {
-    const host = makeHost({ proxy_port: 1 });
+    const host = makeHost();
     let callCount = 0;
-    const gate = deferred<{ reachable: boolean; protocolVersion: number | null }>();
+    const gate = deferred<HostReachability>();
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
-      checkReachable: async () => { callCount += 1; return gate.promise; },
+      probe: async () => { callCount += 1; return gate.promise; },
     });
 
     const first = handler(req({}));
@@ -753,7 +757,7 @@ describe('GET /api/host-membership/health', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(callCount).toBe(1);
 
-    gate.resolve({ reachable: true, protocolVersion: null });
+    gate.resolve({ state: 'reachable', protocolVersion: null, detail: 'answered' });
     const [res1, res2] = await Promise.all([first, second]);
     expect(callCount).toBe(1);
     expect((res1.body as { hosts: { reachable: boolean | null }[] }).hosts[0]!.reachable).toBe(true);
@@ -761,12 +765,12 @@ describe('GET /api/host-membership/health', () => {
   });
 
   test('evictHost clears both the cache AND an in-flight probe entry for that host only', async () => {
-    const hostA = makeHost({ host_id: 'host_a', proxy_port: 1 });
-    const hostB = makeHost({ host_id: 'host_b', proxy_port: 1 });
+    const hostA = makeHost({ host_id: 'host_a' });
+    const hostB = makeHost({ host_id: 'host_b' });
     let callCount = 0;
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [hostA, hostB],
-      checkReachable: async () => { callCount += 1; return { reachable: true, protocolVersion: null }; },
+      probe: async () => { callCount += 1; return { state: 'reachable', protocolVersion: null, detail: 'ok' }; },
     });
 
     await handler(req({}));
@@ -802,34 +806,35 @@ describe('health probe — records a host upgrade so residency gates stop dead-e
   });
 
   test('a probe that observes a HIGHER protocol version persists it (monotonic) — the residency gate then passes', async () => {
-    const host = makeHost({ protocol_version: 2, proxy_port: 1 }); // recorded at join = 2
+    const host = makeHost({ protocol_version: 2 }); // recorded at join = 2
     writeHostRecordFixture(host);
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
-      checkReachable: async () => ({ reachable: true, protocolVersion: 3 }), // host has upgraded to 3
+      // The host has upgraded since this member joined.
+      probe: async () => ({ state: 'reachable', protocolVersion: HOST_PROTOCOL_VERSION + 1, detail: 'ok' }),
     });
 
     const res = await handler(req({}));
 
     // Persisted, so the residency gate (recorded >= RESIDENCY_MIN_HOST_PROTOCOL) now passes.
-    expect(getHost(host.host_id)?.protocol_version).toBe(3);
+    expect(getHost(host.host_id)?.protocol_version).toBe(HOST_PROTOCOL_VERSION + 1);
     expect(getHost(host.host_id)!.protocol_version).toBeGreaterThanOrEqual(RESIDENCY_MIN_HOST_PROTOCOL);
     // Skew is classified from the fresh version.
     const body = res.body as { hosts: { protocol_skew: string }[] };
-    expect(body.hosts[0].protocol_skew).toBe('none');
+    expect(body.hosts[0].protocol_skew).toBe('host_newer');
   });
 
   test('a probe that observes a LOWER version never downgrades the record', async () => {
-    const host = makeHost({ protocol_version: 3, proxy_port: 1 });
+    const host = makeHost({ protocol_version: HOST_PROTOCOL_VERSION });
     writeHostRecordFixture(host);
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [host],
-      checkReachable: async () => ({ reachable: true, protocolVersion: 1 }),
+      probe: async () => ({ state: 'reachable', protocolVersion: 1, detail: 'ok' }),
     });
 
     await handler(req({}));
 
-    expect(getHost(host.host_id)?.protocol_version).toBe(3); // unchanged — a transient low reading never strands the member
+    expect(getHost(host.host_id)?.protocol_version).toBe(HOST_PROTOCOL_VERSION); // unchanged — a transient low reading never strands the member
   });
 });
 
@@ -866,8 +871,8 @@ describe('Health cache eviction on leave (family c, E-4 W2 Task 7)', () => {
   });
 
   test('registerHostMembershipRoutes wires the SAME health-handler instance into leave — end to end: health → leave → re-probed; other hosts keep their TTL', async () => {
-    const hostA = makeHost({ host_id: 'host_a', proxy_port: 1 });
-    const hostB = makeHost({ host_id: 'host_b', proxy_port: 1 });
+    const hostA = makeHost({ host_id: 'host_a' });
+    const hostB = makeHost({ host_id: 'host_b' });
     let callCount = 0;
     const routes = new Map<string, (req: RouteRequest) => Promise<unknown>>();
     const registrar = {
@@ -878,7 +883,7 @@ describe('Health cache eviction on leave (family c, E-4 W2 Task 7)', () => {
 
     registerHostMembershipRoutes(registrar, {
       readRegistry: () => [hostA, hostB],
-      checkReachable: async () => { callCount += 1; return { reachable: true, protocolVersion: null }; },
+      probe: async () => { callCount += 1; return { state: 'reachable', protocolVersion: null, detail: 'ok' }; },
       leave: async (hostRef) => ({ removed: true, tailscaledRemoved: true, notes: [`left ${hostRef}`] }),
     });
 

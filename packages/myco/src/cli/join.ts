@@ -4,7 +4,7 @@
  *
  * Thin argv parsing + human-readable output over the daemon API
  * (`POST /api/host-membership/join|leave`, `daemon/api/host-membership.ts`),
- * which itself wraps {@link joinHost}/{@link leaveHost}
+ * which itself wraps `joinHost`/`leaveHost`
  * (`host/member-overlay.ts`). Chris's PR #667 review direction: membership
  * "should frankly be only the UI and API, with the CLI being a secondary
  * fallback" — this file used to call `joinHost`/`leaveHost` in-process; it now
@@ -19,25 +19,20 @@
  */
 import { connectToGlobalDaemon, connectToRunningDaemon, daemonErrorMessage, parseFlags } from './shared.js';
 
-const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> --server-url <headscale-url> --overlay-address <100.64.x.y:port>
+const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> --host-url <https://host.tailnet.ts.net:8443>
 
-Enrolls THIS machine with a Team Host: it provisions a userspace tailscaled as a
-per-user service (NO root), joins the host's overlay with the single-use key, then
-enrolls with the host daemon over the overlay to receive the shared bearer, and
-records the host so attached projects route to it. Re-running converges.
+Enrolls THIS machine with a Team Host and records it, so attached projects route
+there. Re-running converges.
 
 Options:
-  --key <k>              REQUIRED. The single-use pre-auth key the host operator minted.
-  --server-url <url>     Headscale control-plane URL (required unless already on the overlay).
-  --overlay-address <100.64.x.y:port>
-                         REQUIRED. The host daemon's overlay address to dial for enrollment.
-                         A NON-SECRET the operator shares alongside the one-time key; the
-                         secret bearer is fetched over the overlay, never handed out-of-band.
-  --hostname <name>      This member's node name on the tailnet (default: this machine's hostname).
+  --key <k>          REQUIRED. The single-use key the host operator minted.
+  --host-url <url>   REQUIRED. The host's public HTTPS address. A NON-SECRET the
+                     operator shares alongside the key; the secret bearer comes
+                     back over that address, never handed out separately.
 
-Manual bridge (skip the automatic overlay handshake — a host without the enrollment
-endpoint, or debugging): pass the bearer explicitly and it is used as-is:
-  --bearer <serve-bearer>   The shared host serve-bearer (selects the manual bridge).
+Manual bridge (skip enrollment — a host without the enrollment endpoint, or
+debugging): pass the bearer explicitly and it is used as-is:
+  --bearer <serve-bearer>   The host serve-bearer (selects the manual bridge).
   --host-id <id>  --label <name>  --protocol-version <n>   (optional overrides)
 
 This is a fallback surface — joining a host from the Team page (daemon dashboard)
@@ -47,20 +42,17 @@ is the primary path; this command drives the same daemon API.
 const LEAVE_HELP = `Usage: myco leave <host>
 
 Detaches this machine from a Team Host: removes the stored host record + bearer
-(and its attach refs). When no other host remains, the userspace tailscaled
-service is torn down too. Idempotent.
+(and its attach refs). Idempotent.
 `;
 
-// join provisions binaries + does a real overlay round trip; leave mostly
-// tears down local state. Both dwarf the daemon client's 2s request default.
+// join makes a real network round trip to the host; leave only touches local
+// state. Both dwarf the daemon client's 2s request default.
 const JOIN_TIMEOUT_MS = 60_000;
 const LEAVE_TIMEOUT_MS = 20_000;
 
 interface JoinResponseBody {
   host_id: string;
-  overlay_address: string;
-  proxy_port: number;
-  member_overlay_ip: string;
+  host_url: string;
   host_reachable: boolean;
   created: boolean;
   notes: string[];
@@ -73,7 +65,6 @@ interface JoinResponseBody {
 
 interface LeaveResponseBody {
   removed: boolean;
-  tailscaled_removed: boolean;
   notes: string[];
 }
 
@@ -92,32 +83,28 @@ export async function runJoin(args: string[], vaultDir: string): Promise<void> {
     process.exit(2);
   }
 
-  // Daemon preflight BEFORE anything key-consuming. The join burns the
-  // single-use overlay key at the `tailscale up` step, daemon-side; a daemon
-  // spawned as a side effect of this command can die mid-join after the key
-  // is consumed (E-5 Linux validation burned two keys this way). Refusing
-  // up front when no daemon is already running costs nothing.
+  // Daemon preflight BEFORE anything key-consuming: the key is single-use and
+  // enrollment spends it daemon-side, so a daemon spawned as a side effect of
+  // this command that dies mid-join burns the key for nothing. Refusing up
+  // front when no daemon is already running costs nothing.
   const client = await connectToRunningDaemon(
     vaultDir,
-    'join needs the local daemon running BEFORE it spends the single-use key — the overlay\n'
-    + 'join consumes the key even when a later step fails. Start the daemon first\n'
+    'join needs the local daemon running BEFORE it spends the single-use key —\n'
+    + 'enrollment consumes the key even when a later step fails. Start the daemon first\n'
     + '(`myco service install`, or `myco daemon` under a supervisor for a headless box)\n'
     + 'and re-run join. The key has NOT been used.',
   );
 
-  // The daemon runs the whole join (binary provisioning, overlay join,
-  // enrollment) before answering — up to JOIN_TIMEOUT_MS of silence from the
-  // operator's seat. Say so up front; the per-step log is replayed from the
-  // response's `steps` once the join completes.
+  // The daemon runs the whole enrollment before answering — up to
+  // JOIN_TIMEOUT_MS of silence from the operator's seat. Say so up front; the
+  // per-step log is replayed from the response's `steps` once it completes.
   console.log(`Joining Team Host ${hostRef} — this build cannot join yet — the member transport is being rebuilt`);
 
   const protocolVersionRaw = flags.get('protocol-version');
   const result = await client.post('/api/host-membership/join', {
     host_ref: hostRef,
     key,
-    server_url: flags.get('server-url'),
-    hostname: flags.get('hostname'),
-    overlay_address: flags.get('overlay-address'),
+    host_url: flags.get('host-url'),
     bearer: flags.get('bearer'),
     protocol_version: protocolVersionRaw ? Number(protocolVersionRaw) : undefined,
     host_id: flags.get('host-id'),
@@ -134,9 +121,8 @@ export async function runJoin(args: string[], vaultDir: string): Promise<void> {
       // may yet complete (and the key may already be consumed), so steer the
       // operator to converge with a re-run, not to mint a fresh key blind.
       console.error('join failed: the daemon did not respond within the join window.');
-      console.error('  A first-time join downloads and provisions overlay binaries and can outlast this timeout —');
-      console.error('  the daemon may still be completing it. Re-run the SAME join command: a node already on the');
-      console.error('  overlay is skipped, not re-keyed. Mint a fresh key only if the re-run reports "authkey already used".');
+      console.error('  The daemon may still be completing it, and the key may already be spent. Re-run the SAME');
+      console.error('  join command to converge; mint a fresh key only if the re-run reports the key was used.');
     }
     process.exit(1);
   }
@@ -144,9 +130,7 @@ export async function runJoin(args: string[], vaultDir: string): Promise<void> {
   const body = result.data as JoinResponseBody;
   for (const step of body.steps ?? []) console.log(`  ${step}`);
   console.log(`\n${body.created ? 'Joined' : 'Re-joined'} Team Host ${body.host_id}.`);
-  console.log(`  Host overlay:  ${body.overlay_address}`);
-  console.log(`  Local proxy:   127.0.0.1:${body.proxy_port} (HTTP-CONNECT)`);
-  console.log(`  Member IP:     ${body.member_overlay_ip}`);
+  console.log(`  Host address:  ${body.host_url}`);
   console.log(`  Reachable:     ${body.host_reachable ? 'yes' : 'not confirmed (verify with `myco doctor`)'}`);
   for (const note of body.notes) console.log(`  NOTE: ${note}`);
 }
@@ -174,6 +158,5 @@ export async function runLeave(args: string[], vaultDir: string): Promise<void> 
     return;
   }
   console.log(`Left Team Host ${hostRef}.`);
-  if (body.tailscaled_removed) console.log('  Userspace tailscaled service torn down (no hosts remain).');
   for (const note of body.notes) console.log(`  NOTE: ${note}`);
 }

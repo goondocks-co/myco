@@ -509,10 +509,11 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
 
 /**
  * Team Host serve opt-in (machine tier, under `daemon.host_serve`). `enabled`
- * gates the second overlay listener; `overlay_address` is the host's overlay
- * interface IP the listener binds (the 100.64/10 utun address). Both default
- * to the off state so a fresh machine never serves. Validated for bindability
- * at daemon start (never a wildcard/0.0.0.0 bind).
+ * gates the team listener — a unix socket the daemon binds under `MYCO_HOME`.
+ * There is no address leaf: the socket path is derived, and the PUBLIC address
+ * is whatever the tailnet reports when the Funnel activates, recorded as an
+ * observation in host state rather than configured here. Defaults to the off
+ * state so a fresh machine never serves.
  */
 const HostServeSchema = z.object({
   enabled: z.boolean().default(false),
@@ -599,15 +600,13 @@ const MachineDaemonSchema = z.object({
   check_interval_hours: z.number().positive().max(8760).default(6),
   /**
    * Team Host — this machine's opt-in to serving its Grove(s) to member daemons
-   * over the private overlay (Task 2.3). Machine tier because host-serve is a
-   * per-machine daemon mechanic (like `port`/`log_level`): a machine either hosts
-   * or it does not, the overlay address is a machine-specific network fact, and
-   * the setting is never git-shared nor resolved cross-machine (config-lock §6:
-   * machine tier is the "nobody shares it" tier). `myco-team host enable` (Task
-   * 2.1) writes this; the daemon reads it once at startup. When `enabled` is true
-   * and `overlay_address` is a valid bind IP, the daemon binds a SECOND listener
-   * on that address (never 0.0.0.0, never a LAN IP) where every request requires
-   * the host bearer. Absent/invalid address → host-serve stays off with one log.
+   * (Task 2.3). Machine tier because host-serve is a per-machine daemon mechanic
+   * (like `port`/`log_level`): a machine either hosts or it does not, and the
+   * setting is never git-shared nor resolved cross-machine (config-lock §6:
+   * machine tier is the "nobody shares it" tier). `myco host enable` writes
+   * this; the daemon reads it once at startup. When `enabled` is true the daemon
+   * binds the team listener on a private unix socket where every request
+   * requires the host bearer, and publishes it behind a Tailscale Funnel.
    */
   host_serve: HostServeSchema.default(() => HostServeSchema.parse({})),
   /**
