@@ -22,13 +22,6 @@ import {
   hostEnableAndEmitJoin,
   type ComposeEnableDeps,
 } from '@myco/team-host/compose.js';
-import {
-  headscaleAssetName,
-  headscaleAssetUrl,
-  HEADSCALE_VERSION,
-  type BinaryFetcher,
-  type CommandRunner,
-} from '@myco/team-host/binaries.js';
 import type { ServiceManager, ServiceStatus, InstallResult } from '@myco/service/types.js';
 
 import { loadMachineConfig, saveMachineConfig, loadGroveConfig, saveGroveConfig } from '@myco/config/loader.js';
@@ -171,42 +164,16 @@ describe('hostEnableAndEmitJoin', () => {
    * produce a `preauthkeys create` call on that second call).
    */
   function buildDeps(overrides: Partial<ComposeEnableDeps> = {}): { deps: ComposeEnableDeps; calls: string[] } {
+    // The binary/service/overlay fakes this harness carried are gone with the
+    // machinery they doubled. What remains is the team-key write and the
+    // backup-defaults seeding, which is what every surviving case here asserts.
     const calls: string[] = [];
-    const inner = baseRunner();
-    const runner: CommandRunner = {
-      async run(command, args) {
-        calls.push([command, ...args].join(' '));
-        return inner.run(command, args);
-      },
-    };
-    const ips = [null as string | null, '100.64.0.5'];
-    let call = 0;
     return {
       calls,
       deps: {
-        fetcher: fetcher(),
-        runner,
+        mycoHome: home(),
         platform: 'darwin',
-        arch: 'arm64',
-        serviceManager: fakeManager(),
-        brewBinDirs: [brewDir],
-        systemCtx: { launchDaemonsDir, stagingDir: path.join(os.tmpdir(), 'myco-serve-flow-staging') },
-        resolveOverlayIp: async () => ips[Math.min(call++, ips.length - 1)],
-        // No real tailscaled is installed by the fake ServiceManager, so its
-        // control socket never appears; skip the bounded wait.
-        hostTailscaledSocketPath: path.join(os.tmpdir(), 'myco-serve-flow-ts', 'host.sock'),
-        hostTailscaledStateDir: path.join(os.tmpdir(), 'myco-serve-flow-ts', 'state'),
-        waitForSocket: async () => true,
-        overlayPort: 41443,
-        resolveNodeId: async () => 'node-9',
-        // Headscale supervision flows through the scoped-manager seam. The
-        // always-installed fake plus 'login' observation DELIBERATELY pins
-        // the "already installed — skipping" branch: this file's subject is
-        // compose/join emission, not supervision (the install/refusal
-        // branches are exercised by host-enable.test.ts's honest doubles).
-        headscaleServiceManager: fakeManager(),
-        resolveHeadscaleScope: async () => 'login',
-        waitForAdminSocket: async () => true,
+        restartDaemon: async () => ({ restarted: true, detail: 'restarted (fake)' }),
         logger: () => {},
         lockNamespace: testPerUserLockNamespace,
         ...overrides,
@@ -214,83 +181,20 @@ describe('hostEnableAndEmitJoin', () => {
     };
   }
 
-  const OPTS = { serverUrl: 'https://host.example:8080', hostname: 'testhost' };
+  const OPTS = { hostname: 'testhost' };
 
   // -------------------------------------------------------------------------
   // (a) complete join command
   // -------------------------------------------------------------------------
 
-  it('(a) composite enable emits a complete, ready-to-paste join command', async () => {
-    const { deps } = buildDeps();
-    const result = await hostEnableAndEmitJoin(OPTS, deps);
-
-    expect(result.joinCommand).not.toBeNull();
-    const parts = result.joinCommand!.split(' ');
-    expect(parts[0]).toBe('myco');
-    expect(parts[1]).toBe('join');
-    expect(parts[2]).toBe(result.enable.hostId);
-    expect(parts[3]).toBe('--key');
-    expect(parts[4]).toBeTruthy();
-    expect(parts[5]).toBe('--server-url');
-    expect(parts[6]).toBe(result.enable.serverUrl);
-    expect(parts[7]).toBe('--overlay-address');
-    expect(parts[8]).toMatch(new RegExp(`^${result.enable.overlayAddress}:\\d+$`));
-    expect(parts).toHaveLength(9);
-  });
 
   // -------------------------------------------------------------------------
   // (b) re-run prompts before minting a fresh key
   // -------------------------------------------------------------------------
 
-  it('(b) fresh (never-enabled) machine never prompts, even with confirmRemint injected', async () => {
-    const { deps } = buildDeps();
-    let confirmCalled = false;
-    const confirmRemint = async () => { confirmCalled = true; return true; };
-    const result = await hostEnableAndEmitJoin(OPTS, { ...deps, confirmRemint });
 
-    expect(confirmCalled).toBe(false);
-    expect(result.joinCommand).not.toBeNull();
-  });
 
-  it('(b) re-run — decline skips the re-mint: no fresh key, no join command', async () => {
-    const { deps, calls } = buildDeps();
-    await hostEnableAndEmitJoin(OPTS, deps);
 
-    calls.length = 0;
-    let confirmMessage: string | undefined;
-    const confirmRemint = async (message: string) => { confirmMessage = message; return false; };
-    const second = await hostEnableAndEmitJoin(OPTS, { ...deps, confirmRemint });
-
-    expect(confirmMessage).toBeDefined();
-    expect(second.joinCommand).toBeNull();
-    expect(calls.some((c) => c.includes('preauthkeys create'))).toBe(false);
-  });
-
-  it('(b) re-run — confirming mints exactly one fresh key and emits a new join command', async () => {
-    const { deps, calls } = buildDeps();
-    const first = await hostEnableAndEmitJoin(OPTS, deps);
-
-    calls.length = 0;
-    let confirmed = false;
-    const confirmRemint = async () => { confirmed = true; return true; };
-    const second = await hostEnableAndEmitJoin(OPTS, { ...deps, confirmRemint });
-
-    expect(confirmed).toBe(true);
-    expect(second.joinCommand).not.toBeNull();
-    expect(second.enable.servedGroveId).toBe(first.enable.servedGroveId); // designation immutable across re-runs
-    expect(calls.filter((c) => c.includes('preauthkeys create'))).toHaveLength(1);
-  });
-
-  it('default confirm (no seam injected) declines on a non-TTY re-run — never hangs', async () => {
-    const { deps } = buildDeps();
-    await hostEnableAndEmitJoin(OPTS, deps);
-
-    // No confirmRemint override — falls back to the real TTY prompt, which
-    // returns false immediately on a non-TTY test runner (never blocks on
-    // stdin). This is the exact behavior a piped `curl | sh` re-run relies on.
-    const second = await hostEnableAndEmitJoin(OPTS, deps);
-    expect(second.joinCommand).toBeNull();
-  });
 
   // -------------------------------------------------------------------------
   // (c) designation seeds backup config on the served grove

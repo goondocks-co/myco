@@ -56,7 +56,7 @@ import {
   type DetachOptions,
 } from '../../host/attach-command.js';
 import { resolveTeamHostHintState, teamHostHintMessage } from '../../host/hint.js';
-import { dialHostHealth, joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
+import { joinHost, leaveHost, type JoinOptions } from '../../host/member-overlay.js';
 import type { ResidencyStatus } from '../../host/residency-transition.js';
 import { membershipErrorCode } from '../../host/membership-error.js';
 import { readHostRegistry, recordHostProtocolVersion, type HostRecord } from '../../host/registry.js';
@@ -472,8 +472,8 @@ interface HostHealthEntry {
 
 export interface HostMembershipHealthRouteDeps {
   /** Test seam: override the reachability + live-version probe (default the real
-   *  overlay dial, {@link dialHostHealth}). */
-  checkReachable?: typeof dialHostHealth;
+   *  host dial). Absent until the member transport lands (PR B). */
+  checkReachable?: (hostId: string) => Promise<{ reachable: boolean; protocolVersion: number | null }>;
   /** Test seam: override the registry read. */
   readRegistry?: typeof readHostRegistry;
   /** Test seam: override the probe TTL (default {@link HOST_HEALTH_CACHE_TTL_MS}). */
@@ -511,7 +511,7 @@ export type HostMembershipHealthHandler = RouteHandler & {
 };
 
 export function createHostMembershipHealthHandler(deps: HostMembershipHealthRouteDeps = {}): HostMembershipHealthHandler {
-  const checkReachable = deps.checkReachable ?? dialHostHealth;
+  const checkReachable = deps.checkReachable ?? null;
   const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const readRegistry = deps.readRegistry ?? (() => readHostRegistry(lockNamespace));
   const ttlMs = deps.ttlMs ?? HOST_HEALTH_CACHE_TTL_MS;
@@ -531,13 +531,16 @@ export function createHostMembershipHealthHandler(deps: HostMembershipHealthRout
       // Mirrors doctor's own concurrent-probe shape (`cli/doctor.ts`
       // checkTeamHostReachability): no proxy port on record means there is
       // nothing to dial — `null` ("not confirmable"), never a false negative.
-      let reachable: boolean | null;
+      // Reachability is NOT CONFIRMABLE on this build: the probe dialed the
+      // host through the member's local CONNECT proxy, and that path is gone
+      // until the member transport is rebuilt on the host's public URL. `null`
+      // is the honest answer — the same value a host with nothing to dial has
+      // always reported — never a false negative that would read as "host down".
+      let reachable: boolean | null = null;
       let observedVersion: number | null = null;
-      if (host.proxy_port === undefined) {
-        reachable = null;
-      } else {
+      if (checkReachable) {
         try {
-          const probe = await checkReachable(host.overlay_address, host.proxy_port);
+          const probe = await checkReachable(host.host_id);
           reachable = probe.reachable;
           observedVersion = probe.protocolVersion;
         } catch {

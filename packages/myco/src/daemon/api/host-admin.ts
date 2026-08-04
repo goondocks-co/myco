@@ -61,10 +61,8 @@
 import os from 'node:os';
 
 import { loadMachineConfig } from '@myco/config/loader.js';
-import { formatOverlayAuthority } from '../host-serve.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { hostDisable, hostEnable, type HostEnableDeps } from '@myco/team-host/overlay.js';
-import { mintSetupKey, NotAHostError } from '@myco/team-host/control-plane.js';
 import { readHostState } from '@myco/team-host/state.js';
 import { writeTeamAgentKey } from '@myco/team-host/team-secret.js';
 import { resolveTeamKeyProviderFlag } from '@myco/team-host/compose.js';
@@ -87,7 +85,6 @@ export interface HostAdminRouteDeps {
   /** Test seams. */
   runHostEnable?: typeof hostEnable;
   runHostDisable?: typeof hostDisable;
-  runMintSetupKey?: typeof mintSetupKey;
   hostEnableDeps?: Partial<HostEnableDeps>;
 }
 
@@ -160,10 +157,6 @@ export function createHostAdminEnableHandler(deps: HostAdminRouteDeps): RouteHan
     const refused = refuseHostAdmin(deps, { forMutation: true });
     if (refused) return refused;
     const body = (req.body ?? {}) as EnableBody;
-    const serverUrl = typeof body.server_url === 'string' ? body.server_url.trim() : '';
-    if (!serverUrl) {
-      return refusal(400, 'invalid_request', 'server_url is required — the address members dial to reach the control plane.');
-    }
     // A PRESENT but non-string key is a refusal, not a silent drop — the
     // same silent-credential-loss class the provider requirement exists to
     // prevent (diff review N8).
@@ -214,7 +207,6 @@ export function createHostAdminEnableHandler(deps: HostAdminRouteDeps): RouteHan
       const job = (async () => {
         const result = await run(
           {
-            serverUrl,
             hostname: typeof body.label === 'string' && body.label.trim() ? body.label.trim() : undefined,
             // ALWAYS fresh on this route (§4.1): 'default' resolves the
             // machine's existing default Grove — on a personal machine that
@@ -340,25 +332,19 @@ export function createHostAdminMintJoinKeyHandler(deps: HostAdminRouteDeps): Rou
     const state = readHostState();
     const machine = loadMachineConfig(deps.mycoHome ?? resolveMycoHome());
     const hostServe = machine.daemon.host_serve;
-    if (!state || !hostServe.enabled || !hostServe.overlay_address || !hostServe.overlay_port) {
+    if (!state || !hostServe.enabled) {
       return refusal(409, 'not_a_host', 'This machine is not serving as a Team Host — enable hosting first.');
     }
-    try {
-      const mint = deps.runMintSetupKey ?? mintSetupKey;
-      const key = await mint({ expiration });
-      // Same shape as the compose emitter — the OVERLAY authority, never the
-      // daemon's canonical port (members dial the overlay).
-      const joinCommand = `myco join ${state.host_id} --key ${key} --server-url ${state.server_url} `
-        + `--overlay-address ${formatOverlayAuthority(hostServe.overlay_address, hostServe.overlay_port)}`;
-      // ONE-TIME reveal: the key is returned once and never persisted by the
-      // daemon; the UI renders it RedactedField-style.
-      return { status: 200, body: { join_command: joinCommand, key, expires: expiration } };
-    } catch (err) {
-      if (err instanceof NotAHostError) {
-        return refusal(409, 'not_a_host', err.message);
-      }
-      return refusal(500, 'mint_failed', err instanceof Error ? err.message : String(err));
-    }
+    // Join-key minting is unavailable on this build. The key used to be a
+    // headscale pre-auth key consumed by the member's `tailscale up` — the
+    // daemon never saw it, and overlay membership, not the key, was the real
+    // admission gate. The daemon-issued single-use key that replaces it lands
+    // with the rebuilt enrollment route, so there is nothing to mint here yet.
+    return refusal(
+      503,
+      'join_unavailable',
+      'Inviting a member is unavailable on this build: team enrollment is being rebuilt on the public host URL.',
+    );
   };
 }
 

@@ -665,28 +665,26 @@ describe('GET /api/host-membership/health', () => {
     expect(called).toBe(false);
   });
 
-  test('a host with no proxy_port on record → reachable: null, the probe is never invoked (doctor\'s "not confirmable" branch)', async () => {
-    let called = false;
-    const host = makeHost({ proxy_port: undefined });
-    const handler = createHostMembershipHealthHandler({
-      readRegistry: () => [host],
-      checkReachable: async () => { called = true; return { reachable: true, protocolVersion: null }; },
-    });
+  test('with no probe injected, every host reports reachable: null — never a false "down"', async () => {
+    // The default is deliberately probe-less until the member transport is
+    // rebuilt. `null` says "not confirmable"; `false` would blame the host for
+    // what is a missing client.
+    const host = makeHost({});
+    const handler = createHostMembershipHealthHandler({ readRegistry: () => [host] });
     const res = await handler(req({}));
     const body = res.body as { hosts: { host_id: string; reachable: boolean | null }[] };
     expect(body.hosts).toEqual([expect.objectContaining({ host_id: host.host_id, reachable: null })]);
-    expect(called).toBe(false);
   });
 
   test('probes every joined host concurrently and reports protocol_skew + checked_at', async () => {
-    const seen: { address: string; port: number }[] = [];
-    const hostReachable = makeHost({ overlay_address: '100.64.0.1:7433', proxy_port: 1, protocol_version: 1 });
-    const hostUnreachable = makeHost({ overlay_address: '100.64.0.2:7433', proxy_port: 2, protocol_version: HOST_PROTOCOL_VERSION + 1 });
+    const seen: string[] = [];
+    const hostReachable = makeHost({ protocol_version: 1 });
+    const hostUnreachable = makeHost({ protocol_version: HOST_PROTOCOL_VERSION + 1 });
     const handler = createHostMembershipHealthHandler({
       readRegistry: () => [hostReachable, hostUnreachable],
-      checkReachable: async (address, port) => {
-        seen.push({ address, port });
-        return { reachable: address === hostReachable.overlay_address, protocolVersion: null };
+      checkReachable: async (hostId) => {
+        seen.push(hostId);
+        return { reachable: hostId === hostReachable.host_id, protocolVersion: null };
       },
       now: () => 1_700_000_000_000,
     });

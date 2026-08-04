@@ -142,9 +142,6 @@ const INVOCATION_ALLOWLIST: readonly { file: string; why: string }[] = [
 
 const INVOCATION_ALLOWLISTED_FILES = new Set(INVOCATION_ALLOWLIST.map((e) => e.file));
 
-/** The module that owns socketed invocation — exempt by definition. */
-const TAILSCALE_CLI_MODULE = 'packages/myco/src/host/tailscale-cli.ts';
-
 const ALLOWLISTED_FILES = new Set(ALLOWLIST.map((entry) => entry.file));
 
 // ---------------------------------------------------------------------------
@@ -258,11 +255,11 @@ describe('no-vendor-tailscale-paths meta gate (X4)', () => {
     }
   });
 
-  it('no source file spawns the tailscale CLI outside host/tailscale-cli.ts', () => {
+  it('no source file spawns the tailscale CLI outside the allowlisted Funnel runner', () => {
     const offenders: { file: string; line: number; text: string }[] = [];
     for (const absPath of listSourceFiles(SRC_ROOT)) {
       const rel = relPosix(absPath);
-      if (rel === TAILSCALE_CLI_MODULE || INVOCATION_ALLOWLISTED_FILES.has(rel)) continue;
+      if (INVOCATION_ALLOWLISTED_FILES.has(rel)) continue;
       const code = stripComments(fs.readFileSync(absPath, 'utf8'));
       const lines = code.split('\n');
       lines.forEach((line, i) => {

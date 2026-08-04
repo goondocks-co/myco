@@ -17,6 +17,7 @@
  * Hermetic: MYCO_HOME / MYCO_TEAM_HOME are fresh tmpdirs per test.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { teamFetch, teamSocketPath, removeSocket } from '../helpers/team-socket.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -54,6 +55,7 @@ function sessionCount(dbPath: string, projectId: string): number {
 
 describe('host registration-on-ingest (overlay integration)', () => {
   let tmp: string;
+  let teamSock: string;
   let mycoHome: string;
   let savedMycoHome: string | undefined;
   let savedTeamHome: string | undefined;
@@ -89,9 +91,9 @@ describe('host registration-on-ingest (overlay integration)', () => {
   const SERVE_READ_ROUTE = '/api/register-ingest-serve-probe';
 
   async function buildHostServer(servedGroveId: string | undefined): Promise<DaemonServer> {
+
+    teamSock = teamSocketPath();
     const hostServe: HostServeRuntime = {
-      overlayAddress: '127.0.0.1',
-      overlayPort: 0,
       bearer: HOST_BEARER,
       servedGroveId,
     };
@@ -103,6 +105,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
       daemonStateAuthority: stubAuthority,
       hostServe,
       lockNamespace: testPerUserLockNamespace,
+      teamSocketPath: teamSock,
     });
 
     // Two collect-stamped handlers (real ROUTE_RULES stamps) that write a
@@ -141,7 +144,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
     const server = await buildHostServer(servedGrove.id);
     const projectId = assertGroveProjectId(createProjectId());
 
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/sessions/register`, {
+    const res = await teamFetch(teamSock, `/sessions/register`, {
       method: 'POST',
       headers: overlayHeaders({
         'content-type': 'application/json',
@@ -168,7 +171,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
     const server = await buildHostServer(servedGrove.id);
     const projectId = assertGroveProjectId(createProjectId());
 
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/routed-capture/transcript`, {
+    const res = await teamFetch(teamSock, `/routed-capture/transcript`, {
       method: 'POST',
       headers: overlayHeaders({
         'content-type': 'application/json',
@@ -192,7 +195,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
     const server = await buildHostServer(servedGrove.id);
     const projectId = assertGroveProjectId(createProjectId());
 
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/sessions/register`, {
+    const res = await teamFetch(teamSock, `/sessions/register`, {
       method: 'POST',
       headers: overlayHeaders({
         'content-type': 'application/json',
@@ -220,7 +223,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
     const server = await buildHostServer(servedGrove.id);
     const projectId = assertGroveProjectId(createProjectId());
 
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}${SERVE_READ_ROUTE}`, {
+    const res = await teamFetch(teamSock, `${SERVE_READ_ROUTE}`, {
       headers: overlayHeaders({
         'x-myco-grove-id': servedGrove.id,
         'x-myco-project-id': projectId,
@@ -239,7 +242,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
     const server = await buildHostServer(servedGrove.id);
     const projectId = assertGroveProjectId(createProjectId());
 
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/sessions/register`, {
+    const res = await teamFetch(teamSock, `/sessions/register`, {
       method: 'POST',
       headers: overlayHeaders({
         'content-type': 'application/json',
@@ -260,7 +263,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
     const server = await buildHostServer(servedGrove.id);
     const projectId = assertGroveProjectId(createProjectId());
 
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/sessions/register`, {
+    const res = await teamFetch(teamSock, `/sessions/register`, {
       method: 'POST',
       headers: overlayHeaders({
         'content-type': 'application/json',

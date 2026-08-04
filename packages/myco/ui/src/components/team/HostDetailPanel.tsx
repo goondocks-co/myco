@@ -73,7 +73,6 @@ export function HostDetailPanel({ host }: HostDetailPanelProps) {
 
       <Panel tone="sage" title="Identity">
         <dl className="flex flex-col gap-1.5 m-0">
-          <DefRow term="Overlay address">{host.overlay_address}</DefRow>
           <DefRow term="Joined">{new Date(host.created_at).toLocaleDateString()}</DefRow>
         </dl>
       </Panel>

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
+import { physicalPathIdentity } from '../utils/physical-path-identity.js';
 import { assertGroveEraId, isGroveEraId } from './ids.js';
 
 /**
@@ -442,6 +443,42 @@ export function resolveHostTailscaledSocketPath(): string {
   if (Buffer.byteLength(preferred) < 100) return preferred;
   const uid = process.getuid?.() ?? 0;
   return path.join('/tmp', `myco-td-${uid}-host.sock`);
+}
+
+/**
+ * The Team Host listener's `AF_UNIX` socket — the ONLY local endpoint the public
+ * Funnel handler proxies to, and the only way team traffic enters this daemon.
+ *
+ * A socket rather than a loopback port is what makes the public surface
+ * containable: a TCP port is reachable by every local process and by anything
+ * that can reach the interface, so the old overlay listener had to distinguish
+ * members from local callers by a `Host` header string. A socket has no port to
+ * squat and no address to spoof — reachability is filesystem permission on a
+ * `0700` directory — so admission reduces to the token.
+ *
+ * HOME-anchored and SHORT for the same macOS `sun_path` 104-byte cap that
+ * governs {@link resolveMemberTailscaledSocketPath}: a `MYCO_HOME`-derived path
+ * silently breaks `bind()` on a deep home. The tag is derived from the home's
+ * physical identity so two daemons on one machine (a dogfood daemon beside
+ * production) never collide on one socket.
+ */
+export function resolveTeamSocketPath(mycoHome = resolveMycoHome()): string {
+  const tag = crypto.createHash('sha256').update(physicalPathIdentity(mycoHome)).digest('hex').slice(0, 10);
+  const preferred = path.join(resolveHomeDir(), '.myco-team-sock', `${tag}.sock`);
+  if (Buffer.byteLength(preferred) < 100) return preferred;
+  // The fallback keeps its own directory rather than dropping the socket
+  // straight into the temp root: the listener locks the socket's PARENT down to
+  // 0700, and that must be a directory Myco owns. Pointing it at a shared temp
+  // root would try to restrict the whole thing.
+  const uid = process.getuid?.() ?? 0;
+  const fallback = path.join(os.tmpdir(), `myco-team-${uid}`, `${tag}.sock`);
+  if (Buffer.byteLength(fallback) >= 100) {
+    throw new Error(
+      `No AF_UNIX path under 104 bytes is available for the Team Host socket (tried ${preferred} and ${fallback}). `
+      + 'Both derive from HOME and TMPDIR respectively, so shorten one of those.',
+    );
+  }
+  return fallback;
 }
 
 export function resolveGroveMetadataPath(groveId: string, mycoHome = resolveMycoHome()): string {

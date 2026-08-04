@@ -190,7 +190,7 @@ describe('host-admin routes', () => {
     expect((res.body as { message: string }).message).toContain('team_key_provider');
   });
 
-  it('mint-join-key: not_a_host without serving state; one-time reveal with the overlay authority when serving', async () => {
+  it('mint-join-key: not_a_host without serving state; refused while the invite flow is rebuilt when serving', async () => {
     const bare = await createHostAdminMintJoinKeyHandler(deps())(request({}));
     expect(bare.status).toBe(409);
     expect((bare.body as { error: string }).error).toBe('not_a_host');
@@ -199,30 +199,23 @@ describe('host-admin routes', () => {
       'daemon:',
       '  host_serve:',
       '    enabled: true',
-      "    overlay_address: '100.64.0.5'",
-      '    overlay_port: 41443',
     ].join('\n'));
     writeHostState({
       host_id: 'host_' + 'a'.repeat(32),
       enabled_at: new Date().toISOString(),
-      server_url: 'https://host.example:8080',
-      overlay_address: '100.64.0.5',
-      headscale_user: 'myco-host',
-      headscale_version: '0.29.2',
-      tailscale_version: '1.98.8',
+      label: 'test-host',
       platform: 'darwin',
-      headscale_bin: '/bin/hs',
-      tailscale_bin: '/bin/ts',
-      tailscaled_bin: '/bin/tsd',
     });
+
+    // The key this minted was a headscale pre-auth key the daemon never saw or
+    // validated — overlay membership, not the key, was the real admission gate.
+    // Until the daemon-issued single-use key exists, refusing is the only honest
+    // answer: handing back a key that admits nobody would look like success.
     const res = await createHostAdminMintJoinKeyHandler(deps())(request({ expiration: '2h' }));
-    expect(res.status).toBe(200);
-    const body = res.body as { join_command: string; key: string; expires: string };
-    expect(body.key).toBe('one-time-key-value');
-    expect(body.expires).toBe('2h');
-    expect(body.join_command).toContain('myco join host_');
-    expect(body.join_command).toContain('--overlay-address 100.64.0.5:41443');
-    expect(body.join_command).toContain('--key one-time-key-value');
+    expect(res.status).toBe(503);
+    expect((res.body as { error: string }).error).toBe('join_unavailable');
+    expect(res.body).not.toHaveProperty('key');
+    expect(res.body).not.toHaveProperty('join_command');
   });
 
   it('disable: terminal state before restart, same as enable', async () => {

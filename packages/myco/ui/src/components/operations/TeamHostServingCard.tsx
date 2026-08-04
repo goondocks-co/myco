@@ -53,7 +53,6 @@ export function TeamHostServingCard({ actions }: { actions?: React.ReactNode } =
   const {
     served_grove_id: servedGroveId,
     served_grove_name: servedGroveName,
-    overlay_address: overlayAddress,
     host_id: hostId,
     label,
     hosted_project_count: hostedProjectCount,
@@ -100,7 +99,6 @@ export function TeamHostServingCard({ actions }: { actions?: React.ReactNode } =
           }
         />
         <Stat label="Team storage ID" value={servedGroveId ?? '—'} mono />
-        <Stat label="Overlay address" value={overlayAddress} mono />
         <Stat
           label="Host"
           value={

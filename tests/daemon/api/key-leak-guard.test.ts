@@ -12,6 +12,7 @@
  * the web-page exfiltration path; this test guards the last mile.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from 'bun:test';
+import { teamFetch, teamSocketPath, removeSocket } from '../../helpers/team-socket.js';
 import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,6 +43,8 @@ import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { createSecretsOperations, readSecrets } from '@myco/config/secrets.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+
+let teamSock: string;
 
 const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
 
@@ -135,7 +138,10 @@ describe('cross-route API key leak guard', () => {
     logger = new DaemonLogger(path.join(tmpVault, 'logs'));
     setupTestDb();
 
+    teamSock = teamSocketPath();
+
     server = new DaemonServer({
+      teamSocketPath: teamSock,
       vaultDir: tmpVault,
       logger,
       lockNamespace: testPerUserLockNamespace,
@@ -180,6 +186,7 @@ describe('cross-route API key leak guard', () => {
 
   afterAll(async () => {
     await server.stop();
+    removeSocket(teamSock);
     logger.close();
     teardownTestDb();
     fs.rmSync(tmpVault, { recursive: true, force: true });
@@ -320,12 +327,12 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
     registerProjectInGrove(grove.id, { projectId, projectName: 'Served project', projectRoot }, home);
 
     const hostServe: HostServeRuntime = {
-      overlayAddress: '127.0.0.1',
-      overlayPort: 0,
       bearer: HOST_BEARER,
       servedGroveId: grove.id,
     };
+    teamSock = teamSocketPath();
     overlayServer = new DaemonServer({
+      teamSocketPath: teamSock,
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: new DaemonLogger(path.join(tmp, 'host-logs')),
       hostServe,
@@ -389,9 +396,8 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
     writeSecret(resolveGroveDir(grove.id, process.env.MYCO_HOME!), 'ANTHROPIC_API_KEY', TEAM_SENTINEL_EXISTING);
     writeSecret(process.env.MYCO_HOME!, HOST_EXTERNAL_MCP_TOKEN_SECRET, EXTERNAL_MCP_SENTINEL);
 
-    const base = `http://127.0.0.1:${overlayServer.overlayPort}`;
 
-    const enableRes = await fetch(`${base}/api/team/external-mcp/toggle`, {
+    const enableRes = await teamFetch(teamSock, `/api/team/external-mcp/toggle`, {
       method: 'PUT',
       headers: { ...overlayHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify({ enabled: true }),
@@ -405,7 +411,7 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
     // Rotate is one of exactly TWO sanctioned reveal channels (enable-mint is
     // the other): the response carries the NEW raw value once, never the old
     // one, and the store is updated atomically.
-    const rotateRes = await fetch(`${base}/api/team/mcp-token/rotate`, {
+    const rotateRes = await teamFetch(teamSock, `/api/team/mcp-token/rotate`, {
       method: 'POST',
       headers: overlayHeaders(),
     });
@@ -447,7 +453,7 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
         init.headers = { ...init.headers, 'content-type': 'application/json' };
         init.body = JSON.stringify(r.body);
       }
-      const res = await fetch(`${base}${r.path}`, init);
+      const res = await teamFetch(teamSock, `${r.path}`, init);
       const text = await res.text();
       expect(text, `${r.method} ${r.path} leaked the existing team key`).not.toContain(TEAM_SENTINEL_EXISTING);
       expect(text, `${r.method} ${r.path} leaked the new team key`).not.toContain(TEAM_SENTINEL_NEW);
@@ -460,9 +466,8 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
   });
 
   it('pins the masked-secret shape (first-8+last-4) on the PUT response — the merge gate\'s echo contract', async () => {
-    const base = `http://127.0.0.1:${overlayServer.overlayPort}`;
     const secret = 'sk-ant-shape-pin-ABCDEFGHIJKLMNOPQRSTUVWX9999';
-    const res = await fetch(`${base}/api/team/secrets/anthropic`, {
+    const res = await teamFetch(teamSock, `/api/team/secrets/anthropic`, {
       method: 'PUT',
       headers: { ...overlayHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify({ secret }),

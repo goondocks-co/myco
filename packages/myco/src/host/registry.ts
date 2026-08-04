@@ -58,10 +58,6 @@ import {
   assertHostOperationLease,
   type HostOperationLease,
 } from './operation-lock.js';
-import {
-  assertLoopbackPortReleaseProof,
-  type LoopbackPortReleaseProof,
-} from './loopback-port-proof.js';
 
 const HOST_REGISTRY_LOCK_DIR_MODE = 0o700;
 const HOST_REGISTRY_LOCK_RETRIES = 8;
@@ -790,61 +786,6 @@ function assertClaimMatchesIntent(
  * A retry adopts the exact durable generation and claim token until the
  * enrollment is committed or retired.
  */
-/**
- * THIS machine's `daemon.host_serve.overlay_port` for `mycoHome`, or null when
- * it is not serving / has none. The home is threaded rather than ambient: this
- * repo deliberately runs a dogfood daemon beside prod under two MYCO_HOMEs, so
- * reading the ambient home would consult the WRONG config — breaking
- * idempotency (a re-run adopts the other home's port) and allowing a collision
- * with the port that home already serves. Never throws: an unreadable or malformed machine config
- * must not break member enrollment, and the worst case of returning null is
- * the pre-existing behaviour (the two namespaces not seeing each other).
- */
-function readHostServeOverlayPort(mycoHome?: string): number | null {
-  try {
-    const port = loadMachineConfig(mycoHome).daemon.host_serve.overlay_port;
-    return isValidProxyPort(port) ? port : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Allocate THIS machine's host-serve overlay port — the loopback port the
- * daemon's overlay listener binds and the `serve --tcp` forward targets.
- *
- * Lives HERE, beside {@link reserveHostProxyPort}, deliberately: one module
- * owns the machine's loopback-port namespace. A second, independent allocator
- * elsewhere is the two-records-one-fact shape that produced the stranded-lease
- * class — each allocator would be blind to the other's ports.
- *
- * Idempotent: an existing valid `overlay_port` is returned unchanged, so a
- * re-run of `host enable` keeps serving on the port members already recorded.
- */
-export function allocateHostServeOverlayPort(
-  mycoHome?: string,
-  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
-): number {
-  return withHostRegistryTransaction(lockNamespace, () => {
-    const existing = readHostServeOverlayPort(mycoHome);
-    if (existing !== null) return existing;
-
-    const used = new Set<number>();
-    for (const record of readHostRegistryUnlocked()) {
-      if (isValidProxyPort(record.proxy_port)) used.add(record.proxy_port);
-    }
-    for (const claim of readHostProxyPortClaimsUnlocked()) {
-      if (isValidProxyPort(claim.proxy_port)) used.add(claim.proxy_port);
-    }
-    let port = HOST_SERVE_OVERLAY_PORT_BASE;
-    while (used.has(port)) port += 1;
-    if (!isValidProxyPort(port)) {
-      throw new Error('No host-serve overlay port is available.');
-    }
-    return port;
-  });
-}
-
 export function reserveHostProxyPort(
   hostId: string,
   preferredPort?: number,
@@ -955,12 +896,9 @@ export function reserveHostProxyPort(
     for (const claim of readHostProxyPortClaimsUnlocked()) {
       if (claim.host_id !== hostId) notePortOwner(claim.proxy_port, claim.host_id);
     }
-    // THIS machine's own host-serve overlay port, when it also serves. That
-    // port lives in machine config, not the host registry, so without this the
-    // two loopback-port namespaces cannot see each other and a `myco join` on a
-    // serving box can hand a member the exact port the host already serves on.
-    const servedOverlayPort = readHostServeOverlayPort();
-    if (servedOverlayPort !== null) notePortOwner(servedOverlayPort, 'host-serve');
+    // A serving host no longer holds a loopback port of its own — it binds a
+    // socket — so the two namespaces cannot collide and there is nothing to
+    // cross-check here.
     const usedByOtherHosts = new Set(portOwners.keys());
 
     let proxyPort: number;
@@ -1126,10 +1064,8 @@ export function markHostEnrollmentTeardownPending(
 
 export function abandonHostEnrollment(
   reservation: HostProxyPortReservation,
-  proof: LoopbackPortReleaseProof,
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
-  assertLoopbackPortReleaseProof(proof, reservation.proxyPort);
   withHostRegistryTransaction(lockNamespace, () => {
     const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
     assertReservationMatchesIntent(reservation, intent);
@@ -1291,11 +1227,13 @@ export function inspectHostMembershipForLeave(
       if (!(error instanceof HostJoinStateCorruptError)) throw error;
       corrupt = true;
     }
+    // A record/claim proxy-port disagreement no longer blocks a leave. Nothing
+    // downstream consumes the port — the member runs no tailscaled to release
+    // it — so refusing here only stranded a member carrying legacy 1.3.x state
+    // with a mismatch. Same dead-gate class as the guard removed from
+    // `retireHostMembership`, one frame up.
     const recordPort = isValidProxyPort(record?.proxy_port) ? record.proxy_port : null;
     const claimPort = claim?.proxy_port ?? null;
-    if (recordPort !== null && claimPort !== null && recordPort !== claimPort) {
-      throw new HostJoinStateCorruptError(hostId, 'leave found conflicting proxy-port identities');
-    }
     const ledgerPath = generationLedgerPath(hostId);
     let ledger: HostGenerationLedger | null = null;
     try {
@@ -1320,8 +1258,6 @@ export function inspectHostMembershipForLeave(
 export function retireHostMembership(
   hostId: string,
   lease: HostOperationLease,
-  proof: LoopbackPortReleaseProof,
-  trustedProxyPort?: number,
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   assertHostOperationLease(lease, hostId, 'leave');
@@ -1330,23 +1266,18 @@ export function retireHostMembership(
     try { record = readHostRecordUnlocked(hostId); } catch (error) {
       if (!(error instanceof HostJoinStateCorruptError)) throw error;
     }
-    const recordPort = record?.proxy_port;
+    // The claim is still read: its generation feeds the ledger high-water below,
+    // which is the atomic bearer-commit mechanism and outlives the overlay.
+    //
+    // What is gone is the proxy-port identity this used to derive and refuse on.
+    // That guard proved the member's tailscaled had released its CONNECT-proxy
+    // port before the reservation was retired; with no tailscaled and no port it
+    // only refused a leave whose record and claim were both missing — so a member
+    // with corrupt state could never leave, for no remaining reason.
     let claim: HostProxyPortClaim | null = null;
     try { claim = readHostProxyPortClaimUnlocked(hostId); } catch (error) {
       if (!(error instanceof HostJoinStateCorruptError)) throw error;
     }
-    const proxyPort = isValidProxyPort(recordPort)
-      ? recordPort
-      : claim?.proxy_port ?? trustedProxyPort;
-    if (!proxyPort) {
-      throw new HostJoinStateCorruptError(hostId, 'leave has no trustworthy proxy-port identity');
-    }
-    if (isValidProxyPort(recordPort)
-      && claim
-      && claim.proxy_port !== recordPort) {
-      throw new HostJoinStateCorruptError(hostId, 'leave found conflicting proxy-port identities');
-    }
-    assertLoopbackPortReleaseProof(proof, proxyPort);
     let ledger: HostGenerationLedger | null = null;
     try {
       ledger = readGenerationLedgerUnlocked(hostId);
@@ -1693,8 +1624,7 @@ export function createHostRegistryOperations(lockNamespace: PerUserLockNamespace
       markHostEnrollmentTeardownPending(reservation, lockNamespace),
     abandonHostEnrollment: (
       reservation: HostProxyPortReservation,
-      proof: LoopbackPortReleaseProof,
-    ) => abandonHostEnrollment(reservation, proof, lockNamespace),
+    ) => abandonHostEnrollment(reservation, lockNamespace),
     persistEnrollmentMembership: (
       enrollment: EnrollmentHostRecord,
       bearer: string,
@@ -1707,15 +1637,7 @@ export function createHostRegistryOperations(lockNamespace: PerUserLockNamespace
     retireHostMembership: (
       hostId: string,
       lease: HostOperationLease,
-      proof: LoopbackPortReleaseProof,
-      trustedProxyPort?: number,
-    ) => retireHostMembership(
-      hostId,
-      lease,
-      proof,
-      trustedProxyPort,
-      lockNamespace,
-    ),
+    ) => retireHostMembership(hostId, lease, lockNamespace),
     attachProject: (
       hostId: string,
       ref: AttachRef,
