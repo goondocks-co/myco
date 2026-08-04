@@ -25,7 +25,7 @@ let hostMembershipHint: { host_id: string; state: string; message: string } | nu
 // A joined host is what makes the page connected — the shell renders the fork
 // instead until either this read has a host or the machine is serving.
 const JOINED_HOST = {
-  host_id: 'host_abc', label: 'Mac Studio', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
+  host_id: 'host_abc', label: 'Mac Studio', host_url: 'https://host-a.tailnet.ts.net:8443',
   protocol_version: 1, created_at: '2026-01-01T00:00:00Z', projects: [],
 };
 

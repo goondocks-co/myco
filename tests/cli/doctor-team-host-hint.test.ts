@@ -35,7 +35,7 @@ function makeHost(hostId: string): HostRecord {
   return {
     host_id: hostId,
     label: 'Mac Studio',
-    overlay_address: '100.64.0.1:7433',
+    host_url: 'https://host-a.tailnet.ts.net:8443',
     protocol_version: 1,
     created_at: new Date().toISOString(),
     projects: [],

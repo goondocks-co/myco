@@ -8,7 +8,9 @@
 
 import { DaemonServer } from './server.js';
 import { resolveHostServeConfig } from './host-serve.js';
-import { ExternalMcpListener, defaultFunnelOffRunner, defaultFunnelOnRunner, resolveExternalMcpSocketPath } from './external-listener.js';
+import { EXTERNAL_MCP_PATH, ExternalMcpListener, defaultFunnelOffRunner, defaultFunnelOnRunner, resolveExternalMcpSocketPath } from './external-listener.js';
+import { activateTeamFunnel, teamFunnelContainmentSockets } from '@myco/team-host/funnel.js';
+import { readHostState, writeHostState } from '@myco/team-host/state.js';
 import {
   ExternalMcpContainmentAuthority,
   type ExternalMcpListenerControl,
@@ -186,6 +188,7 @@ import {
   epochSeconds,
   EXTERNAL_MCP_ACTIVATION_POSTURE,
   EXTERNAL_MCP_ACTIVE_POSTURE,
+  EXTERNAL_MCP_FUNNEL_PORT,
 } from '../constants.js';
 import { RESTART_REASON_FILENAME } from '../constants/update.js';
 import { drainUpdateEvents } from '../upgrade/update-events.js';
@@ -801,6 +804,10 @@ export async function main(): Promise<void> {
     listener: externalMcpListenerControl,
     runFunnelOff: defaultFunnelOffRunner,
     runFunnelOn: defaultFunnelOnRunner,
+    // A team Funnel left behind by a crashed `host disable` — hosting off, the
+    // socket gone, the public URL still live. An ENABLED host contributes
+    // nothing here; its Funnel is verified after the listener binds, below.
+    additionalFunnelSockets: () => teamFunnelContainmentSockets({ mycoHome, intent: 'retire' }),
   });
   return await externalMcpContainment.containWhile('reconcile', async (externalMcpBootState) => {
   const reconciledHostBearers = reconcileHostRollbackBearers();
@@ -1421,7 +1428,7 @@ export async function main(): Promise<void> {
     } else {
       const funnelRepair = await defaultFunnelOnRunner(
         { kind: 'socket', path: externalMcpSocketPath },
-        { mount: '/mcp', publicPort: 443 },
+        { mount: EXTERNAL_MCP_PATH, publicPort: EXTERNAL_MCP_FUNNEL_PORT },
       );
       if (!funnelRepair.ok) {
         logger.warn(LOG_KINDS.EXTERNAL_MCP, 'External MCP Funnel verify/repair failed at boot', {
@@ -2705,6 +2712,38 @@ export async function main(): Promise<void> {
   });
 
   logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: bootstrapVaultDir, port: server.port });
+
+  // Team Host: publish the team socket, and PROVE it serves.
+  //
+  // Placed after start() because the socket has to exist first, and it is the
+  // daemon that binds it — `myco host enable` writes the config and restarts;
+  // it cannot activate a Funnel onto a socket that does not exist yet. Running
+  // here every boot also makes activation self-healing: an operator who renamed
+  // their machine, or whose serve config was cleared out of band, gets the URL
+  // re-established and re-recorded rather than silently serving nobody.
+  //
+  // Loud-but-alive, matching the external-MCP repair above: a host that cannot
+  // publish still runs everything else, and the failure is recorded where the
+  // Team page reads it instead of crash-looping the daemon.
+  if (hostServe && server.teamSocketPath) {
+    const socketPath = server.teamSocketPath;
+    const activation = await activateTeamFunnel(socketPath, { runFunnelOn: defaultFunnelOnRunner });
+    const state = readHostState();
+    if (activation.ok && activation.hostUrl) {
+      logger.info(LOG_KINDS.HOST_SERVE, 'Team Host published', { host_url: activation.hostUrl });
+      if (state && (state.host_url !== activation.hostUrl || state.funnel_error)) {
+        writeHostState({ ...state, host_url: activation.hostUrl, funnel_error: undefined });
+      }
+    } else {
+      logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host could not publish its public URL', {
+        detail: activation.detail,
+      });
+      // The URL is kept, not cleared: members already hold it, and a transient
+      // activation failure does not make the address wrong. The error rides
+      // alongside so the Team page can say what is broken.
+      if (state) writeHostState({ ...state, funnel_error: activation.detail });
+    }
+  }
 
   // Clear any update-in-progress sentinel left by the orchestrator
   // that triggered this restart. If the sentinel's target version

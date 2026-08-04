@@ -80,7 +80,7 @@ import { getSkillRecord } from '@myco/db/queries/skill-records.js';
 import { assertGroveProjectId, projectScope, type ProjectScope } from '@myco/grove/ids.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context.js';
-import { remoteTargetFor, type RemoteTarget } from '@myco/host/routing.js';
+import { hostAddressUnusable, remoteTargetFor, type RemoteTarget } from '@myco/host/routing.js';
 import { writePublishedSkillFile, syncPublishedSkillSymlinks } from '@myco/skills/publication.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import type { Dialer, ProxyLogger } from '../host-proxy.js';
@@ -694,11 +694,18 @@ export function createContentClaimMaterializeHandler(deps: ContentClaimMateriali
 
     if (context.source === 'attached') {
       const { attach } = context;
-      let target: RemoteTarget;
+      let target: RemoteTarget | null;
       try {
         target = remoteTargetFor(assertGroveProjectId(projectId), attach);
       } catch {
         return { status: 404, body: errorBody('project_not_registered', `Malformed project id ${projectId}`) };
+      }
+      if (!target) {
+        // The artifact lives on the host, so materializing locally would
+        // produce an empty tree that looks like success. Refuse and name the
+        // remedy instead.
+        const refusal = hostAddressUnusable(attach.host.label);
+        return { status: refusal.status, body: errorBody(refusal.error, refusal.message) };
       }
       const source = remoteClaimSource(target, deps.dial, deps.logger, deps.machineId);
       const outcome = await materializeContentClaim(claimId, currentRoot, source, deps.logger);

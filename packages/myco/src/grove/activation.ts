@@ -212,7 +212,7 @@ export function activateProjectMigration(
   const attach = resolveAttachForProjectRoot(projectRoot, input.lockNamespace);
   if (attach) {
     throw new Error(
-      `Project is served by host ${attach.host.label} (${attach.host.overlay_address}); `
+      `Project is served by host ${attach.host.label} (${attach.host.host_url ?? 'no recorded address'}); `
       + 'refusing to activate a local Grove migration for an attached project. '
       + 'Detach it from the host first, then migrate locally.',
     );

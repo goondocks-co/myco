@@ -34,6 +34,7 @@ import { seedGroveBackupDefaults } from '@myco/backup/service.js';
 import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager } from '@myco/service/types.js';
 import { restartDaemonForHostServe, writeHostServeConfig } from './daemon-apply.js';
+import { deactivateTeamFunnel, teamFunnelContainmentSockets, teamHostingPreflight } from './funnel.js';
 import { clearHostState, readHostState, writeHostState } from './state.js';
 
 export interface HostEnableOptions {
@@ -68,6 +69,11 @@ export interface HostEnableOptions {
 export interface HostEnableDeps {
   mycoHome?: string;
   platform?: NodeJS.Platform;
+  /** Test seam: override the Tailscale-build preflight. */
+  preflight?: typeof teamHostingPreflight;
+  /** Withdraw the host's public URL (disable only). Default: the vendor
+   *  Funnel-off runner against this machine's team socket. */
+  withdrawFunnel?: (socketPath: string) => Promise<{ ok: boolean; detail: string }>;
   serviceManager?: ServiceManager;
   /** Restart THIS machine's Myco daemon so it (un)binds the team listener.
    *  Default: `restartDaemonForHostServe` via the platform manager. The
@@ -335,6 +341,17 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   const label = sanitizeHostname(options.hostname ?? os.hostname());
   const controlDir = resolveHostControlDir();
 
+  // Transport preflight — refuse BEFORE any durable write, for the same reason
+  // the designation checks below do: a machine whose Tailscale cannot serve a
+  // unix socket will never publish a URL, and finding that out after the config
+  // is written and the daemon has restarted turns a clear "install the other
+  // Tailscale" into a half-enabled host the operator has to tear down.
+  //
+  // One-sided by construction — it refuses what it recognizes and stays quiet
+  // otherwise. The activation probe at boot is what actually gates serving.
+  const refusal = (deps.preflight ?? teamHostingPreflight)({ platform });
+  if (refusal) throw new Error(refusal);
+
   // Designation preflight — refuse BEFORE any durable write (E1 §4.1 rev 6):
   // the explicit-choice requirement and a storage-name collision are user
   // errors, and surfacing them after a partial enable converts a typo into a
@@ -380,6 +397,9 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
     enabled_at: existingState?.enabled_at ?? new Date().toISOString(),
     label,
     platform,
+    // The URL is NOT written here. It is not something this machine chooses —
+    // it is what the tailnet reports when the Funnel activates, which happens
+    // after the restart below, on the daemon that owns the socket.
   });
 
   // TERMINAL: restart the daemon to bind the team listener. Last on purpose —
@@ -430,6 +450,38 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
   const step = async (label: string, run: () => Promise<void>): Promise<void> => {
     try { await run(); } catch (err) { errors.push(`${label}: ${(err as Error).message}`); }
   };
+
+  // FIRST, and before any state is cleared: a host that stops hosting must stop
+  // being publicly addressable. Ordering is the point — the config and state
+  // cleared below are the only evidence that a Funnel was ever activated, so
+  // withdrawing after clearing them would strand a live public URL in front of
+  // a socket nothing binds, with nothing left on disk to find it by.
+  //
+  // Gated on that same evidence, and the gate is load-bearing: withdrawing runs
+  // the operator's vendor `tailscale` CLI, and `host disable` on a machine that
+  // never hosted must not touch it at all. Same rule containment uses, for the
+  // same reason.
+  //
+  // A failure here does NOT block the disable: hosting is what the operator
+  // asked to turn off. It is reported, and `myco doctor`'s residue detector is
+  // the catch-all for a URL that outlived its host.
+  const exposedSockets = teamFunnelContainmentSockets({ mycoHome, intent: 'quiesce' });
+  for (const socketPath of exposedSockets) {
+    await step('withdraw public URL', async () => {
+      const withdraw = deps.withdrawFunnel
+        ?? (async (socket: string) => {
+          const { defaultFunnelOffRunner } = await import('@myco/daemon/external-listener.js');
+          return await deactivateTeamFunnel(socket, defaultFunnelOffRunner);
+        });
+      const result = await withdraw(socketPath);
+      log(result.detail);
+      if (!result.ok) {
+        throw new Error(
+          `${result.detail} The public URL may still be advertised — run \`myco doctor\` to check for leftover exposure.`,
+        );
+      }
+    });
+  }
 
   await step('clear host_serve config', async () => {
     writeHostServeConfig({ enabled: false }, mycoHome);

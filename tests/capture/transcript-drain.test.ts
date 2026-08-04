@@ -45,6 +45,8 @@ import { createHostRegistryOperations, type HostRecord } from '@myco/host/regist
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { HOST_BEARER_SECRET } from '@myco/constants';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const MACHINE = 'alice_a1b2c3d4';
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -79,15 +81,14 @@ function memFiles() {
 }
 
 /** A fake host honoring the C2 offset contract, per host_id. Records every POST
- *  with the dial target so multi-host / proxy_port routing is assertable. */
+ *  with the dial target so multi-host routing is assertable. */
 function multiFakeHost() {
   const contents = new Map<string, Buffer>();
-  const calls: Array<{ hostId: string; proxyPort?: number; overlay: string; body: TranscriptChunkRequest }> = [];
+  const calls: Array<{ hostId: string; hostUrl: string; body: TranscriptChunkRequest }> = [];
   const transport: TranscriptPostTransport = async (target, body) => {
     calls.push({
       hostId: target.host.host_id,
-      proxyPort: target.host.proxy_port,
-      overlay: target.host.overlay_address,
+      hostUrl: target.host.host_url,
       body,
     });
     const cur = contents.get(target.host.host_id) ?? Buffer.alloc(0);
@@ -123,16 +124,15 @@ function memStore(): DrainStore {
   };
 }
 
-function target(opts: { hostId?: string; proxyPort?: number; overlay?: string; projectId?: string } = {}): RemoteTarget {
+function target(opts: { hostId?: string; hostUrl?: string; projectId?: string } = {}): RemoteTarget {
   return {
     projectId: (opts.projectId ?? 'proj_0123456789abcdef0123456789abcdef') as RemoteTarget['projectId'],
     groveId: 'grove_0123456789abcdef0123456789abcdef',
     host: {
       host_id: opts.hostId ?? HOST_A,
       label: 'H',
-      overlay_address: opts.overlay ?? '127.0.0.1:9',
-      protocol_version: 1,
-      proxy_port: opts.proxyPort,
+      host_url: opts.hostUrl ?? 'https://host-a.tailnet.ts.net:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
     },
     bearer: 'b',
   };
@@ -244,11 +244,14 @@ describe('409 offset_gap + idempotent re-drain', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multi-host — distinct proxy_port dial targets
+// Multi-team — a member belongs to several teams at once, and each host's
+// traffic must go to THAT host. Under the URL transport there is no shared
+// tunnel or port allocator to keep them apart: the only thing separating two
+// teams is that each host record carries its own address and its own bearer.
 // ---------------------------------------------------------------------------
 
 describe('multi-host', () => {
-  test('two attached projects on two hosts drain through their OWN proxy_port', async () => {
+  test('two attached projects on two hosts drain to their OWN host URL', async () => {
     const files = memFiles();
     files.set('/a.jsonl', 'a1\na2\n', 1);
     files.set('/b.jsonl', 'b1\nb2\n', 2);
@@ -256,8 +259,8 @@ describe('multi-host', () => {
     const store = memStore();
     const q = new TranscriptDrainQueue({ machineId: MACHINE, store, transport: host.transport, fileReader: files.reader, ...noThrottle });
 
-    const tA = target({ hostId: HOST_A, proxyPort: 4111, overlay: '127.0.0.1:1', projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
-    const tB = target({ hostId: HOST_B, proxyPort: 4222, overlay: '127.0.0.1:2', projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' });
+    const tA = target({ hostId: HOST_A, hostUrl: 'https://team-a.tailnet.ts.net:8443', projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    const tB = target({ hostId: HOST_B, hostUrl: 'https://team-b.tailnet.ts.net:8443', projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' });
     q.noteCollect(tA, { session_id: 'sa', transcript_path: '/a.jsonl' });
     q.noteCollect(tB, { session_id: 'sb', transcript_path: '/b.jsonl' });
     await q.flushBeforeForward(tA);
@@ -265,10 +268,10 @@ describe('multi-host', () => {
 
     expect(host.content(HOST_A)).toBe('a1\na2\n');
     expect(host.content(HOST_B)).toBe('b1\nb2\n');
-    const portsA = new Set(host.calls.filter((c) => c.hostId === HOST_A).map((c) => c.proxyPort));
-    const portsB = new Set(host.calls.filter((c) => c.hostId === HOST_B).map((c) => c.proxyPort));
-    expect([...portsA]).toEqual([4111]);
-    expect([...portsB]).toEqual([4222]);
+    const urlsA = new Set(host.calls.filter((c) => c.hostId === HOST_A).map((c) => c.hostUrl));
+    const urlsB = new Set(host.calls.filter((c) => c.hostId === HOST_B).map((c) => c.hostUrl));
+    expect([...urlsA]).toEqual(['https://team-a.tailnet.ts.net:8443']);
+    expect([...urlsB]).toEqual(['https://team-b.tailnet.ts.net:8443']);
   });
 });
 
@@ -651,8 +654,10 @@ describe('chokepoint 1 (router dispatch) threads the capture deps', () => {
     const host: HostRecord = {
       host_id: createHostId(),
       label: 'Mac Studio',
-      overlay_address: '127.0.0.1:59', // dead port: the background forward fails AFTER flush
-      protocol_version: 1,
+      // A name that cannot resolve: the background forward fails at the dial,
+      // AFTER the flush — which is the ordering under test.
+      host_url: 'https://host-that-does-not-resolve.invalid:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
@@ -682,8 +687,10 @@ describe('chokepoint 1 (router dispatch) threads the capture deps', () => {
     const host: HostRecord = {
       host_id: createHostId(),
       label: 'Mac Studio',
-      overlay_address: '127.0.0.1:59', // dead port: the background forward fails AFTER flush
-      protocol_version: 1,
+      // A name that cannot resolve: the background forward fails at the dial,
+      // AFTER the flush — which is the ordering under test.
+      host_url: 'https://host-that-does-not-resolve.invalid:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
@@ -712,7 +719,8 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
   let memberPort: number;
   let hostServer: http.Server;
   let hostHits: number;
-  let overlayAddress: string;
+  let hostUrl: string;
+  let edge2: FunnelEdge;
   let dialCalls: number;
   let cp2FlushCalls: number;
   let cp2NoteCalls: number;
@@ -742,7 +750,8 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
     });
     const hostPort = await new Promise<number>((resolve) =>
       hostServer.listen(0, '127.0.0.1', () => resolve((hostServer.address() as AddressInfo).port)));
-    overlayAddress = `127.0.0.1:${hostPort}`;
+    edge2 = await startFunnelEdge({ port: hostPort });
+    hostUrl = edge2.url;
 
     const handler = createStreamableMcpHttpHandler(vaultDir, {
       lockNamespace: testPerUserLockNamespace,
@@ -769,6 +778,7 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
   afterEach(async () => {
     (member as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
     (hostServer as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+    await edge2.close();
     await new Promise<void>((resolve) => member.close(() => resolve()));
     await new Promise<void>((resolve) => hostServer.close(() => resolve()));
     if (savedTeam === undefined) delete process.env.MYCO_TEAM_HOME;
@@ -783,8 +793,8 @@ describe('chokepoint 2 (/mcp) threads the capture deps', () => {
     const host: HostRecord = {
       host_id: createHostId(),
       label: 'Mac Studio',
-      overlay_address: overlayAddress,
-      protocol_version: 1,
+      host_url: hostUrl,
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
@@ -964,6 +974,7 @@ describe('drain health (consolidation Task C-5)', () => {
 describe('defaultTranscriptTransport (wire headers)', () => {
   let server: http.Server;
   let received: { method?: string; url?: string; headers: http.IncomingHttpHeaders } | null;
+  let edge: FunnelEdge;
 
   beforeEach(async () => {
     received = null;
@@ -976,15 +987,18 @@ describe('defaultTranscriptTransport (wire headers)', () => {
       });
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    // The default transport dials HTTPS, so the fixture sits behind a real TLS
+    // edge — the same shape a host's socket sits behind a Funnel.
+    edge = await startFunnelEdge({ port: (server.address() as AddressInfo).port });
   });
   afterEach(async () => {
+    await edge.close();
     (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   test('POSTs /routed-capture/transcript with the tenancy claims (project/grove/machine/session) + host bearer, no x-myco-auth', async () => {
-    const port = (server.address() as AddressInfo).port;
-    const t = target({ overlay: `127.0.0.1:${port}` });
+    const t = target({ hostUrl: edge.url });
     const res = await defaultTranscriptTransport(t, {
       machine_id: MACHINE, session_id: 'sess-42', transcript_id: 'tid-1', base_offset: 0, bytes: Buffer.from('abcd').toString('base64'),
     });

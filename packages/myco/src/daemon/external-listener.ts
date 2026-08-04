@@ -74,13 +74,16 @@ import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../constants.js';
 import { describeFunnelTarget } from './external-mcp-containment.js';
 import type { FunnelOnRunner } from './external-mcp-containment.js';
 import { physicalPathIdentity } from '../utils/physical-path-identity.js';
-import type { ExternalMcpFunnelTarget } from './external-mcp-containment.js';
+import type { FunnelTarget } from './external-mcp-containment.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { applyDaemonHttpServerLimits, DAEMON_HTTP_LISTEN_BACKLOG, gracefullyCloseHttpServer, classifyRequest, type RequestClass } from './server.js';
 import type { Logger } from './logger.js';
 import type { FunnelOffRunner } from './external-mcp-containment.js';
 
-const EXTERNAL_MCP_PATH = '/mcp';
+/** The external read-only MCP Funnel's mount. Unlike the team surface (root,
+ *  {@link TEAM_FUNNEL_MOUNT}) this is a path mount, and Funnel strips it before
+ *  proxying — the listener re-adds it, see the dispatch note below. */
+export const EXTERNAL_MCP_PATH = '/mcp';
 
 /**
  * The local endpoint the listener binds. Sockets are the activation shape
@@ -559,7 +562,7 @@ function publicPortFromHostPort(hostPort: string): number {
   return port;
 }
 
-function proxyMatchesTarget(proxy: string, target: ExternalMcpFunnelTarget): boolean {
+function proxyMatchesTarget(proxy: string, target: FunnelTarget): boolean {
   if (target.kind === 'socket') {
     // Serve reports a unix-socket proxy with the absolute path embedded in
     // the proxy string (exact rendering pinned by the live rig validation);
@@ -581,7 +584,7 @@ function proxyMatchesTarget(proxy: string, target: ExternalMcpFunnelTarget): boo
 
 function readFunnelStatus(
   rawStatus: string,
-  target: ExternalMcpFunnelTarget,
+  target: FunnelTarget,
 ): FunnelStatusSnapshot {
   const parsed = JSON.parse(rawStatus) as unknown;
   const config = mapping(parsed, 'Funnel status');
@@ -636,6 +639,35 @@ function readFunnelStatus(
 }
 
 /**
+ * The `--set-path` argument for a mount, or NOTHING for a root mount.
+ *
+ * Root-mounting is not `--set-path=/`: passing a mount at all is what makes
+ * Funnel strip that prefix before proxying, and the team surface depends on
+ * pathnames arriving byte-identical (`ROUTE_RULES` keys on exact paths, so a
+ * rewritten pathname misses the entire stamp table). Omitting the flag is the
+ * mechanism, which is why it is a shared helper rather than an inline
+ * conditional at each of the three call sites — an on-runner and an off-runner
+ * that disagree about this leave a handler nothing can remove.
+ */
+function mountArgsFor(mount: string): string[] {
+  return mount === '/' ? [] : [`--set-path=${mount}`];
+}
+
+/**
+ * The public URL a Funnel selector serves.
+ *
+ * `<name>:443` renders without a port (the default every client assumes) and
+ * any other port MUST keep it — a team host on 8443 whose URL claimed 443 would
+ * be handed to members as an address that reaches the external-MCP surface, or
+ * nothing at all.
+ */
+function funnelUrlFor(hostPort: string, mount: string): string {
+  const host = hostPort.replace(/:443$/, '');
+  const path = mount === '/' ? '' : mount;
+  return `https://${host}${path}`;
+}
+
+/**
  * Converts each affected host-port to tailnet-only Serve before removing the
  * handler that targets the known local port, then verifies both facts.
  */
@@ -648,12 +680,13 @@ export function createFunnelOffRunner(
       const beforeStatus = readFunnelStatus(before.stdout, target);
       const selectors = beforeStatus.selectors;
       for (const selector of selectors) {
+        const mountArgs = mountArgsFor(selector.mount);
         await runCommand([
           'serve',
           '--bg',
           '--yes',
           `--https=${selector.publicPort}`,
-          `--set-path=${selector.mount}`,
+          ...mountArgs,
           selector.proxy,
         ]);
         await runCommand([
@@ -661,7 +694,7 @@ export function createFunnelOffRunner(
           '--bg',
           '--yes',
           `--https=${selector.publicPort}`,
-          `--set-path=${selector.mount}`,
+          ...mountArgs,
           'off',
         ]);
       }
@@ -736,7 +769,7 @@ export function createFunnelOnRunner(
           '--bg',
           '--yes',
           `--https=${opts.publicPort}`,
-          `--set-path=${opts.mount}`,
+          ...mountArgsFor(opts.mount),
           `unix:${target.path}`,
         ]);
       }
@@ -746,11 +779,10 @@ export function createFunnelOnRunner(
       if (!selector || !snapshot.allowedHostPorts.has(selector.hostPort)) {
         return { ok: false, detail: 'the Funnel handler did not verify after activation' };
       }
-      const host = selector.hostPort.replace(/:443$/, '');
       return {
         ok: true,
         detail: `public Funnel serves ${selector.hostPort}${selector.mount}`,
-        funnelUrl: `https://${host}${selector.mount}`,
+        funnelUrl: funnelUrlFor(selector.hostPort, selector.mount),
       };
     } catch (error) {
       return {

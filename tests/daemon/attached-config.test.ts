@@ -20,6 +20,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import YAML from 'yaml';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 
 import {
   handleAttachedConfigRequest,
@@ -30,6 +31,7 @@ import { defaultDial, __resetVersionMismatchLogForTests } from '@myco/daemon/hos
 import { type HostRecord } from '@myco/host/registry';
 import { HOST_PROTOCOL_HEADER } from '@myco/constants';
 import type { RemoteTarget } from '@myco/host/routing';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const HOST_BEARER = 'host-bearer-secret';
 
@@ -48,21 +50,32 @@ let projectRoot: string;
 let vaultDir: string;
 let fixture: http.Server;
 let fixturePort: number;
+let edge: FunnelEdge;
+let hostUrl: string;
 let member: http.Server;
 let memberPort: number;
 let groveResponder: (req: http.IncomingMessage, res: http.ServerResponse) => void;
 let warns: Array<[string, unknown]>;
 let errors: Array<[string, unknown]>;
 
-function target(): RemoteTarget {
+/** Set to make `target()` return null — a host record with no usable address. */
+let hostAddressMissing = false;
+
+const ATTACH = {
+  projectId: 'proj_0123456789abcdef0123456789abcdef' as RemoteTarget['projectId'],
+  host: { host_id: 'host_0123456789abcdef0123456789abcdef', label: 'Mac Studio' },
+};
+
+function target(): RemoteTarget | null {
+  if (hostAddressMissing) return null;
   return {
     projectId: 'proj_0123456789abcdef0123456789abcdef' as RemoteTarget['projectId'],
     groveId: 'grove_0123456789abcdef0123456789abcdef',
     host: {
       host_id: 'host_0123456789abcdef0123456789abcdef',
       label: 'Mac Studio',
-      overlay_address: `127.0.0.1:${fixturePort}`,
-      protocol_version: 1,
+      host_url: hostUrl,
+      protocol_version: HOST_PROTOCOL_VERSION,
     },
     bearer: HOST_BEARER,
   };
@@ -103,6 +116,7 @@ async function request(
 }
 
 beforeEach(async () => {
+  hostAddressMissing = false;
   savedMycoHome = process.env.MYCO_HOME;
   mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-ac-home-'));
   process.env.MYCO_HOME = mycoHome;
@@ -130,6 +144,10 @@ beforeEach(async () => {
   };
   fixture = http.createServer((req, res) => groveResponder(req, res));
   fixturePort = await listen(fixture);
+  // `defaultDial` is HTTPS, so the fixture "host" sits behind a real TLS edge —
+  // the same shape a host's socket sits behind its Funnel.
+  edge = await startFunnelEdge({ port: fixturePort });
+  hostUrl = edge.url;
 
   member = http.createServer(async (req, res) => {
     const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
@@ -140,13 +158,14 @@ beforeEach(async () => {
       const raw = Buffer.concat(chunks).toString('utf-8');
       body = raw ? JSON.parse(raw) : {};
     }
-    await handleAttachedConfigRequest(req, res, pathname, target(), body, deps());
+    await handleAttachedConfigRequest(req, res, pathname, ATTACH, target(), body, deps());
   });
   memberPort = await listen(member);
 });
 
 afterEach(async () => {
   await close(member);
+  await edge.close();
   await close(fixture);
   fs.rmSync(mycoHome, { recursive: true, force: true });
   fs.rmSync(teamHome, { recursive: true, force: true });
@@ -192,6 +211,37 @@ describe('handleAttachedConfigRequest — reads', () => {
     expect(degradeWarns.length).toBe(1);
   });
 
+  test('a host with NO address on record degrades the grove tier — it does NOT refuse a local config read', async () => {
+    // The distinction this pins: `config-carve` is member-side ASSEMBLY, so an
+    // absent host address makes ONE tier unavailable, not the whole request.
+    // Refusing here would break the Settings page for a member whose machine
+    // and project tiers are sitting on local disk and perfectly readable — and
+    // it is the same outcome as an unreachable host, which already degrades.
+    hostAddressMissing = true;
+    writeMachineConfig({ daemon: { log_level: 'warn' } });
+    writeProjectConfig({ cortex: { enabled: false } });
+
+    const res = await request('GET', '/api/config/merged');
+
+    expect(res.status).toBe(200);
+    expect(res.json.embedding.provider).toBe('ollama'); // grove tier → defaults
+    expect(res.json.daemon.log_level).toBe('warn');     // machine tier, local disk
+    expect(res.json.cortex.enabled).toBe(false);        // project tier, local disk
+    // Degraded loudly, and the message names the remedy rather than describing
+    // a network that is fine.
+    const degradeWarns = warns.filter(([m]) => m.includes('host unreachable for grove-tier config'));
+    expect(degradeWarns).toHaveLength(1);
+    expect(JSON.stringify(degradeWarns[0]![1])).toContain('re-join');
+  });
+
+  test('a host with no address still serves the purely LOCAL config read untouched', async () => {
+    hostAddressMissing = true;
+    writeProjectConfig({ cortex: { enabled: false } });
+    const res = await request('GET', '/api/config');
+    expect(res.status).toBe(200);
+    expect(res.json.cortex.enabled).toBe(false);
+  });
+
   test('no x-myco-project-root AND no attach-record root → 400', async () => {
     // Fresh empty attach registry (no seeded record) → the fallback finds no
     // root either, so the request is refused.
@@ -209,8 +259,8 @@ describe('handleAttachedConfigRequest — reads', () => {
     writeHostRecordFixture({
       host_id: t.host.host_id,
       label: t.host.label,
-      overlay_address: t.host.overlay_address,
-      protocol_version: 1,
+      host_url: t.host.host_url,
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: t.groveId, project_id: t.projectId, root: projectRoot }],
     } satisfies HostRecord);

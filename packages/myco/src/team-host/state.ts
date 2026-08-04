@@ -25,6 +25,19 @@ export interface HostState {
   /** Host node label surfaced to members at enrollment. */
   label?: string;
   platform: string;
+  /**
+   * The public URL this host currently serves, learned from the tailnet at
+   * Funnel activation and re-verified at every boot. NOT operator-configured:
+   * the name is `<machine>.<tailnet>.ts.net`, which only Tailscale knows and
+   * which changes if either is renamed — so it is recorded here as an
+   * observation, and the boot that observes something different overwrites it.
+   * Absent until the first successful activation.
+   */
+  host_url?: string;
+  /** Why the last activation attempt did not publish a URL, when it did not.
+   *  Kept so the Team page can explain an unreachable host instead of showing
+   *  a blank address. Cleared on success. */
+  funnel_error?: string;
 }
 
 export function hostStatePath(): string {

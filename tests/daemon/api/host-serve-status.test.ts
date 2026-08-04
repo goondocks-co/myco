@@ -93,8 +93,6 @@ describe('GET /api/host-serve/status', () => {
     }, home);
 
     const runtime: HostServeRuntime = {
-      overlayAddress: '100.64.0.1',
-      overlayPort: 7433,
       bearer: 'test-host-serve-bearer',
       hostId: 'host_abc',
       label: 'Mac Studio',
@@ -113,6 +111,11 @@ describe('GET /api/host-serve/status', () => {
       hosted_project_count: 0,
       host_id: 'host_abc',
       label: 'Mac Studio',
+      // Serving with no published address: the listener may be bound and the
+      // config valid, and teammates still cannot reach this machine. The
+      // operator dashboard has to be able to show that state.
+      host_url: null,
+      funnel_error: null,
       external_mcp: { enabled: false, port: machine.daemon.external_mcp.port, bound: null, token_present: false },
       bearer_present: true,
       health: { designation: 'ok', backup: 'stale', key: 'not_applicable', mcp_coherence: 'not_enabled' },
@@ -128,8 +131,7 @@ describe('GET /api/host-serve/status', () => {
     }, home);
 
     // Zero to start.
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
-      overlayPort: 7433, bearer: 'b', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { bearer: 'b', servedGroveId: grove.id };
     const before = await createHostServeStatusHandler({ hostServe: runtime, mycoHome: home })(req());
     expect((before.body as { hosted_project_count: number }).hosted_project_count).toBe(0);
 
@@ -158,8 +160,7 @@ describe('GET /api/host-serve/status', () => {
       daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: null } },
     }, home);
 
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
-      overlayPort: 7433, bearer: 'b' };
+    const runtime: HostServeRuntime = { bearer: 'b' };
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home });
     const res = await handler(req());
     const body = res.body as { served_grove_id: string | null; served_grove_name: string | null; health: { designation: string } };
@@ -180,8 +181,7 @@ describe('GET /api/host-serve/status', () => {
     // resolved at boot, when the grove presumably still existed — it can
     // legitimately diverge from the on-disk classifier's fresh read, which is
     // exactly the scenario this route exists to surface.
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
-      overlayPort: 7433, bearer: 'b', servedGroveId: danglingGroveId };
+    const runtime: HostServeRuntime = { bearer: 'b', servedGroveId: danglingGroveId };
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home });
     const res = await handler(req());
     const body = res.body as { served_grove_id: string; served_grove_name: string | null; health: { designation: string } };
@@ -197,8 +197,7 @@ describe('GET /api/host-serve/status', () => {
       ...machine,
       daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id } },
     }, home);
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
-      overlayPort: 7433, bearer: 'b', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { bearer: 'b', servedGroveId: grove.id };
 
     const boundHandler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home, externalMcp: { listener: { isBound: true } } });
     const boundRes = await boundHandler(req());
@@ -220,8 +219,7 @@ describe('GET /api/host-serve/status', () => {
       ...machine,
       daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id } },
     }, home);
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
-      overlayPort: 7433, bearer: '   ', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { bearer: '   ', servedGroveId: grove.id };
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home });
     const res = await handler(req());
     expect((res.body as { bearer_present: boolean }).bearer_present).toBe(false);
@@ -249,9 +247,7 @@ describe('GET /api/host-serve/status', () => {
     const TOKEN_SENTINEL = 'sk-sentinel-external-mcp-token-ZYXWVUTSRQ9876';
     writeSecret(home, HOST_EXTERNAL_MCP_TOKEN_SECRET, TOKEN_SENTINEL);
 
-    const runtime: HostServeRuntime = {
-      overlayAddress: '100.64.0.1',
-      overlayPort: 7433, bearer: BEARER_SENTINEL, servedGroveId: grove.id,
+    const runtime: HostServeRuntime = { bearer: BEARER_SENTINEL, servedGroveId: grove.id,
     };
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home });
     const res = await handler(req());
@@ -292,8 +288,7 @@ describe('GET /api/host-serve/status', () => {
     const ISOLATION_SENTINEL = 'sk-test-isolation-guard';
     writeSecret(resolveGroveDir(grove.id, home), 'ANTHROPIC_API_KEY', ISOLATION_SENTINEL);
 
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
-      overlayPort: 7433, bearer: 'b', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { bearer: 'b', servedGroveId: grove.id };
     let clock = 1_700_000_000_000;
     const handler = createHostServeStatusHandler({ hostServe: runtime, mycoHome: home, now: () => clock, ttlMs: 15_000 });
 
@@ -327,8 +322,7 @@ describe('GET /api/host-serve/status', () => {
       daemon: { ...machine.daemon, host_serve: { ...machine.daemon.host_serve, enabled: true, served_grove_id: grove.id } },
     }, home);
 
-    const runtime: HostServeRuntime = { overlayAddress: '100.64.0.1',
-      overlayPort: 7433, bearer: 'b', servedGroveId: grove.id };
+    const runtime: HostServeRuntime = { bearer: 'b', servedGroveId: grove.id };
     let loadCount = 0;
     let clock = 1_700_000_000_000;
     const handler = createHostServeStatusHandler({

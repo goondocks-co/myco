@@ -20,6 +20,7 @@ import { deriveTranscriptId } from '@myco/host/routed-transcript.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { clearProjectManifestCache, ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const HOST_A = 'host_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const { attachProject } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -34,9 +35,8 @@ function host(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
     host_id: HOST_A,
     label: 'mac-studio',
-    overlay_address: '127.0.0.1:9',
-    protocol_version: 1,
-    proxy_port: 39123,
+    host_url: 'https://host-a.tailnet.ts.net:8443',
+    protocol_version: HOST_PROTOCOL_VERSION,
     created_at: new Date().toISOString(),
     projects: [],
     ...overrides,
@@ -63,15 +63,26 @@ describe('checkTeamHostReachability', () => {
     expect(await checkTeamHostReachability()).toEqual([]);
   });
 
-  test('a joined host is listed, and liveness is reported as uncheckable rather than failed', async () => {
-    writeHostRecordFixture(host());
+  test('a joined host whose address does not resolve is named as a re-join, not a generic failure', async () => {
+    // `.invalid` is reserved and cannot resolve, so this exercises the real
+    // probe's DNS branch. What the row must not say is "unreachable": a name
+    // that no longer resolves means the host was renamed and the stored URL is
+    // dead, which only a re-join fixes — a different action from every other
+    // failure this check can report.
+    writeHostRecordFixture(host({ host_url: 'https://renamed-away.invalid:8443' }));
     const checks = await checkTeamHostReachability();
     expect(checks).toHaveLength(1);
     expect(checks[0].name).toBe('Team Host');
-    // Not 'ok' (nothing was proven) and not a failure claim either — the member
-    // transport is absent, which is a client gap, never evidence the host is down.
     expect(checks[0].status).toBe('warn');
-    expect(checks[0].detail).toContain('reachability cannot be checked');
+    expect(checks[0].detail).toContain('re-join');
+  });
+
+  test('a host with NO address on record is reported as needing a re-join, never probed', async () => {
+    writeHostRecordFixture({ ...host(), host_url: undefined });
+    const checks = await checkTeamHostReachability();
+    expect(checks).toHaveLength(1);
+    expect(checks[0].status).toBe('warn');
+    expect(checks[0].detail).toContain('Re-join');
   });
 
   test('multiple hosts each get their own row, named only on the first', async () => {
@@ -210,11 +221,11 @@ describe('checkDatabase / checkCaptureFlow — attached project hosted finding',
     writeHostRecordFixture({
       host_id: HOST_A,
       label: 'mac-studio',
-      overlay_address: '127.0.0.1:9',
-      protocol_version: 1,
+      host_url: 'https://host-a.tailnet.ts.net:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [],
-      // No proxy_port on record — checkTeamHostReachability's own
+      // No usable address on record — the probe's own
       // "not confirmable" branch, so runChecks() dials no network here.
     });
     attachProject(HOST_A, { grove_id: 'grove_x', project_id: manifest.project.id });

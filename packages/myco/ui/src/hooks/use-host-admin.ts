@@ -65,7 +65,6 @@ export interface MintJoinKeyResponse {
 export function useHostAdminEnable() {
   return useMutation({
     mutationFn: (body: {
-      server_url: string;
       label?: string;
       storage_name?: string;
       team_provider_key?: string;

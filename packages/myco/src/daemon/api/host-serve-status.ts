@@ -19,7 +19,7 @@
  * boot-resolved {@link HostServeRuntime} `daemon/main.ts` already threads into
  * `team-config.ts`'s `teamWriteDeps` (`resolveHostServeConfig`, evaluated
  * once at daemon startup) — reused here rather than re-parsing
- * `daemon.host_serve` from disk, so `overlay_address`/`host_id`/`label`/
+ * `daemon.host_serve` from disk, so `host_id`/`label`/
  * `served_grove_id`/`bearer_present` reflect what this RUNNING daemon
  * actually enforces (the same values `servedGroveRefusal` gates on), not a
  * possibly-newer on-disk value that needs a restart to take effect (mirrors
@@ -37,6 +37,7 @@ import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../../constants.js';
 import { resolveMycoHome } from '../../grove/paths.js';
 import { loadGroveRecord } from '../../grove/registry.js';
 import { countHostedProjects } from '../../host/hosted-projects.js';
+import { readHostState } from '../../team-host/state.js';
 import {
   classifyHostServeRefusalReadOnly,
   type HostServeRefusalReason,
@@ -109,6 +110,13 @@ interface HostServeStatusBody {
   hosted_project_count: number;
   host_id: string | null;
   label: string | null;
+  /** The public URL this host serves, as observed at the last Funnel
+   *  activation. Null until one has succeeded — a serving daemon with a bound
+   *  listener and no URL is reachable by nobody, which is a state the operator
+   *  dashboard has to be able to show. */
+  host_url: string | null;
+  /** Why the last activation did not publish a URL, when it did not. */
+  funnel_error: string | null;
   external_mcp: {
     enabled: boolean;
     port: number;
@@ -210,6 +218,10 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
     const mcpCoherence = resolveExternalMcpCoherence(machine, mycoHome);
 
     const existingToken = readSecrets(mycoHome)[HOST_EXTERNAL_MCP_TOKEN_SECRET];
+    // Read fresh rather than from the boot-resolved runtime: the URL is
+    // WRITTEN after boot (activation runs once the listener is bound), so a
+    // boot-time snapshot would report null for the whole first process life.
+    const hostState = readHostState();
 
     const body: HostServeStatusBody = {
       serving: true,
@@ -220,6 +232,8 @@ export function createHostServeStatusHandler(deps: HostServeStatusRouteDeps): Ro
       hosted_project_count: servedGroveId ? countHostedProjects(servedGroveId, mycoHome) : 0,
       host_id: runtime.hostId ?? null,
       label: runtime.label ?? null,
+      host_url: hostState?.host_url ?? null,
+      funnel_error: hostState?.funnel_error ?? null,
       external_mcp: {
         enabled: machine.daemon.external_mcp.enabled,
         port: machine.daemon.external_mcp.port,

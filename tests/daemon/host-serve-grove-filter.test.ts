@@ -43,7 +43,7 @@ import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js'
 // ---------------------------------------------------------------------------
 
 function runtime(servedGroveId?: string): HostServeRuntime {
-  return { overlayAddress: '127.0.0.1', bearer: 'test-bearer', servedGroveId };
+  return { bearer: 'test-bearer', servedGroveId };
 }
 
 describe('servedGroveRefusal (pure)', () => {

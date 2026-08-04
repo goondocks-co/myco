@@ -80,9 +80,9 @@ function AffiliationHintBanner({ hint }: { hint: HostMembershipHint }) {
 }
 
 // ---------------------------------------------------------------------------
-// Join form — host id + key + server URL + overlay address (the stable
-// member-side wire contract). Advanced overrides (hostname, manual-bridge
-// bearer, protocol version, label) stay CLI-only.
+// Join form — host id + one-time key + the host's public URL (the whole
+// member-side wire contract now: an address and a credential). Advanced
+// overrides (bearer, protocol version, label) stay CLI-only.
 // ---------------------------------------------------------------------------
 
 export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}) {
@@ -94,12 +94,12 @@ export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}
   const overlaySupported = status.data?.overlay_supported !== false;
   const [hostRef, setHostRef] = useState('');
   const [key, setKey] = useState('');
-  const [serverUrl, setServerUrl] = useState('');
+  const [hostUrl, setHostUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const canSubmit = overlaySupported
-    && Boolean(hostRef.trim() && key.trim() && serverUrl.trim())
+    && Boolean(hostRef.trim() && key.trim() && hostUrl.trim())
     && !join.isPending;
 
   const handleJoin = async () => {
@@ -109,7 +109,7 @@ export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}
       const result = await join.mutateAsync({
         host_ref: hostRef.trim(),
         key: key.trim(),
-        server_url: serverUrl.trim(),
+        host_url: hostUrl.trim(),
       });
       setSuccess(`${result.created ? 'Joined' : 'Re-joined'} ${result.host_id}${result.host_reachable ? '.' : ' — not confirmed reachable yet.'}`);
       // One-time key: never leave it sitting in a form field after use.
@@ -130,7 +130,7 @@ export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}
   return (
     <Panel tone="sage" eyebrow={<IconEyebrow Icon={Server}>Team Host</IconEyebrow>} title="Join a Team Host">
       <p className="text-xs text-on-surface-variant m-0 mb-3">
-        Enroll this machine with a Team Host using the one-time key and overlay address a host operator shared
+        Enroll this machine with a Team Host using the one-time key and public address a host operator shared
         with you. The host id is used exactly as typed — Myco can't verify it until the join completes.
       </p>
       {!overlaySupported && (
@@ -145,8 +145,8 @@ export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}
         <input id="host-join-id" className={inputClass} value={hostRef} onChange={(e) => setHostRef(e.target.value)} placeholder="host_…" />
         <label className={labelClass} htmlFor="host-join-key">One-time key</label>
         <input id="host-join-key" type="password" className={inputClass} value={key} onChange={(e) => setKey(e.target.value)} />
-        <label className={labelClass} htmlFor="host-join-server-url">Server URL</label>
-        <input id="host-join-server-url" className={inputClass} value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://host.example.ts.net" />
+        <label className={labelClass} htmlFor="host-join-host-url">Host address</label>
+        <input id="host-join-host-url" className={inputClass} value={hostUrl} onChange={(e) => setHostUrl(e.target.value)} placeholder="https://host.example.ts.net:8443" />
         <div className="flex justify-end">
           <Button size="sm" disabled={!canSubmit} onClick={handleJoin}>
             {join.isPending ? 'Joining…' : 'Join host'}

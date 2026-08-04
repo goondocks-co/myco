@@ -47,6 +47,8 @@ import { createHostRegistryOperations, type HostRecord } from '@myco/host/regist
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { HOST_BEARER_SECRET } from '@myco/constants';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const MACHINE = 'alice_a1b2c3d4';
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -83,11 +85,11 @@ function memFiles() {
 /** A fake host recording every plan POST with its dial target — including the
  *  target's TENANCY (projectId/groveId), so cross-tenant routing is assertable. */
 function fakeHost() {
-  const calls: Array<{ hostId: string; proxyPort?: number; projectId: string; groveId: string; body: PlanChunkRequest }> = [];
+  const calls: Array<{ hostId: string; hostUrl: string; projectId: string; groveId: string; body: PlanChunkRequest }> = [];
   const transport: PlanPostTransport = async (target, body) => {
     calls.push({
       hostId: target.host.host_id,
-      proxyPort: target.host.proxy_port,
+      hostUrl: target.host.host_url,
       projectId: String(target.projectId),
       groveId: target.groveId,
       body,
@@ -111,7 +113,7 @@ function memStore(): PlanDrainStore {
   };
 }
 
-function target(opts: { hostId?: string; proxyPort?: number; overlay?: string; projectId?: string; groveId?: string; root?: string } = {}): RemoteTarget {
+function target(opts: { hostId?: string; hostUrl?: string; projectId?: string; groveId?: string; root?: string } = {}): RemoteTarget {
   return {
     projectId: (opts.projectId ?? 'proj_0123456789abcdef0123456789abcdef') as RemoteTarget['projectId'],
     groveId: opts.groveId ?? 'grove_0123456789abcdef0123456789abcdef',
@@ -119,9 +121,8 @@ function target(opts: { hostId?: string; proxyPort?: number; overlay?: string; p
     host: {
       host_id: opts.hostId ?? HOST_A,
       label: 'H',
-      overlay_address: opts.overlay ?? '127.0.0.1:9',
-      protocol_version: 1,
-      proxy_port: opts.proxyPort,
+      host_url: opts.hostUrl ?? 'https://host-a.tailnet.ts.net:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
     },
     bearer: 'b',
   };
@@ -286,24 +287,24 @@ describe('per-request root scoping (non-anchor attached project)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multi-host — distinct proxy_port dial targets
+// Multi-team — each host's pushes go to THAT host's own address
 // ---------------------------------------------------------------------------
 
 describe('multi-host', () => {
-  test('two attached projects on two hosts push through their OWN proxy_port', async () => {
+  test('two attached projects on two hosts push to their OWN host URL', async () => {
     const files = memFiles();
     files.set('/plans/a.md', 'A');
     files.set('/plans/b.md', 'B');
     const host = fakeHost();
     const q = new PlanDrainQueue({ machineId: MACHINE, planWatchConfig: WATCH, store: memStore(), transport: host.transport, fileReader: files.reader, ...noThrottle });
-    const tA = target({ hostId: HOST_A, proxyPort: 4111, projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
-    const tB = target({ hostId: HOST_B, proxyPort: 4222, projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' });
+    const tA = target({ hostId: HOST_A, hostUrl: 'https://team-a.tailnet.ts.net:8443', projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    const tB = target({ hostId: HOST_B, hostUrl: 'https://team-b.tailnet.ts.net:8443', projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' });
     q.noteCollect(tA, planEvent('sa', '/plans/a.md'));
     q.noteCollect(tB, planEvent('sb', '/plans/b.md'));
     await q.flushBeforeForward(tA);
     await q.flushBeforeForward(tB);
-    expect(new Set(host.calls.filter((c) => c.hostId === HOST_A).map((c) => c.proxyPort))).toEqual(new Set([4111]));
-    expect(new Set(host.calls.filter((c) => c.hostId === HOST_B).map((c) => c.proxyPort))).toEqual(new Set([4222]));
+    expect(new Set(host.calls.filter((c) => c.hostId === HOST_A).map((c) => c.hostUrl))).toEqual(new Set(['https://team-a.tailnet.ts.net:8443']));
+    expect(new Set(host.calls.filter((c) => c.hostId === HOST_B).map((c) => c.hostUrl))).toEqual(new Set(['https://team-b.tailnet.ts.net:8443']));
   });
 });
 
@@ -658,6 +659,7 @@ describe('deep-sleep hold', () => {
 describe('defaultPlanTransport (wire headers)', () => {
   let server: http.Server;
   let received: { method?: string; url?: string; headers: http.IncomingHttpHeaders; body: string } | null;
+  let edge: FunnelEdge;
 
   beforeEach(async () => {
     received = null;
@@ -671,15 +673,18 @@ describe('defaultPlanTransport (wire headers)', () => {
       });
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    // The default transport dials HTTPS, so the fixture sits behind a real TLS
+    // edge — the same shape a host's socket sits behind a Funnel.
+    edge = await startFunnelEdge({ port: (server.address() as AddressInfo).port });
   });
   afterEach(async () => {
+    await edge.close();
     (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   test('POSTs /routed-capture/plan with the tenancy claims (project/grove/machine/session) + host bearer', async () => {
-    const port = (server.address() as AddressInfo).port;
-    const t = target({ overlay: `127.0.0.1:${port}` });
+    const t = target({ hostUrl: edge.url });
     const res = await defaultPlanTransport(t, {
       machine_id: MACHINE, session_id: 'sess-42', plan_path: '/plans/x.md', content: '# hi',
     });
@@ -757,8 +762,10 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
     const rec: HostRecord = {
       host_id: createHostId(),
       label: 'Mac Studio',
-      overlay_address: '127.0.0.1:59', // dead port: the background /events forward fails AFTER the note/flush
-      protocol_version: 1,
+      // A name that cannot resolve: the background /events forward fails at the
+      // dial, AFTER the note/flush — which is the ordering under test.
+      host_url: 'https://host-that-does-not-resolve.invalid:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };
@@ -792,8 +799,10 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
     const rec: HostRecord = {
       host_id: createHostId(),
       label: 'Mac Studio',
-      overlay_address: '127.0.0.1:59', // dead port: the background forward fails AFTER flush
-      protocol_version: 1,
+      // A name that cannot resolve: the background forward fails at the dial,
+      // AFTER the flush — which is the ordering under test.
+      host_url: 'https://host-that-does-not-resolve.invalid:8443',
+      protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
     };

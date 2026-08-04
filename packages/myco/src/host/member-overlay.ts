@@ -1,53 +1,32 @@
 /**
- * `myco join <host>` / `myco leave <host>` orchestration for the member side
- * of the Team Host overlay.
+ * `myco join <host>` / `myco leave <host>` — the member side of team membership.
  *
- * A member machine runs standard Myco. To route an attached project to a host it
- * must (1) stand up a userspace `tailscaled` and join the host's overlay, then
- * (2) write the `HostRecord` (+ bearer) consumed by `daemon/host-proxy.ts`.
- * This module does both, behind injectable seams so
- * the whole flow unit-tests with no network, no launchctl, and no real join.
+ * A member holds two things per host: its public URL and a bearer. Both arrive
+ * from one enrollment call to that URL; there is no network to stand up first,
+ * no local process per host, and nothing to provision.
  *
- * MULTI-HOST — one tailscaled PER host. Each host runs its OWN Headscale, i.e. its
- * own single tailnet, and each tailnet independently hands out `100.64.0.0/10` —
- * so two joined hosts can BOTH be `100.64.0.1`. A single tailscaled binds exactly
- * one `--login-server`, so the member runs one userspace tailscaled PER host, each
- * keyed by host_id with its own short socket, its own statedir (under that host's
- * registry dir), its own LaunchAgent label, and its own outbound-proxy listener on
- * a DISTINCT port. That `proxy_port` — persisted on the host record and reused on
- * restart — is what selects the right tailnet's tailscaled for a dial even when
- * `overlay_address` collides (the proxy dials `CONNECT <overlay_address> via
- * localhost:<proxy_port>`, so distinct ports fully disambiguate).
+ * This module used to run a userspace tailscaled PER host, because each host was
+ * its own Headscale tailnet and each tailnet independently handed out
+ * `100.64.0.0/10` — two joined hosts could both be `100.64.0.1`, so a member
+ * needed a separate tailscaled (own socket, own statedir, own LaunchAgent, own
+ * CONNECT-proxy port) just to disambiguate a dial. Public URLs are globally
+ * unique, so multi-host membership needs no disambiguation mechanism at all:
+ * N teams is N (URL, bearer) pairs in the registry.
  *
- * SUPERVISION SHAPE — a per-user LaunchAgent, with no root access. The host's
- * tailscaled runs as a root system daemon so it survives reboot-before-login.
- * A member needs the overlay only while it is logged in and using Myco, so its
- * userspace tailscaled uses `@myco/service`'s user-domain manager
- * (`gui/<uid>` LaunchAgent on macOS, `systemd --user` on Linux). So this reuses
- * `getServiceManager()` directly; it never shells `sudo`, one LaunchAgent per host.
+ * MULTI-TEAM is the reason the shape matters. A machine can belong to several
+ * teams at once and every request goes through the member's own daemon, which
+ * selects among host records per request. Each record carries its own URL and
+ * its own bearer in its own generation file, so teams share no credential and
+ * revoking one leaves the others untouched.
  *
- * DIAL MECHANISM — HTTP CONNECT, matching the proxy. `defaultDial` tunnels
- * through a local HTTP-CONNECT proxy at `127.0.0.1:<proxy_port>`
- * (`connectViaHttpProxy`). So each host's tailscaled exposes an
- * `--outbound-http-proxy-listen=localhost:<port>` listener (NOT `--socks5-server`)
- * and that port is recorded as `HostRecord.proxy_port`.
+ * JOIN IS NOT REBUILT HERE. Enrollment is being rewritten around a daemon-minted
+ * single-use key (the overlay-era key was a Headscale pre-auth key the daemon
+ * never saw), and until that lands `joinHost` refuses rather than writing a
+ * membership no key ever authorized.
  *
- * IDEMPOTENT: a re-join of the same host converges — the LaunchAgent install is a
- * content-compare no-op, THIS host's already-joined node (a resolvable 100.64 IP
- * on THIS host's socket) skips the single-use key `up`, the persisted `proxy_port`
- * is reused, and the existing `HostRecord` is UPDATED (its attached projects
- * preserved), never duplicated.
+ * IDEMPOTENT: a re-join of the same host converges — the existing `HostRecord`
+ * is UPDATED, its attached projects preserved, never duplicated.
  */
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-import { getServiceManager } from '@myco/service/manager.js';
-import type {
-  InstalledServiceCommand,
-  ServiceManager,
-  ServiceSpec,
-} from '@myco/service/types.js';
 import { isGroveEraId } from '@myco/grove/ids.js';
 
 import {
@@ -61,14 +40,6 @@ import {
   HOST_PROXY_HEADERS_TIMEOUT_MS,
 } from '../constants.js';
 import {
-  memberHostTag,
-  resolveHostDir,
-  resolveMemberBinDir,
-  resolveMemberOverlayDir,
-  resolveMemberTailscaledSocketPath,
-  resolveMemberTailscaledStateDir,
-} from '../grove/paths.js';
-import {
   withHostOperationLock,
   type HostOperationLease,
 } from './operation-lock.js';
@@ -80,36 +51,10 @@ import {
 import { codedMembershipError } from './membership-error.js';
 import { listResidencyJournals } from './residency-journal.js';
 import {
-  abandonHostEnrollment,
-  advanceHostEnrollmentPhase,
-  getHost,
   inspectHostMembershipForLeave,
-  isValidObservedHostProtocolVersion,
-  markHostEnrollmentTeardownPending,
-  persistEnrollmentMembership,
   readHostRegistry,
-  releaseHostProxyPort,
-  reserveHostProxyPort,
   retireHostMembership,
-  type AttachRef,
-  type EnrollmentHostRecord,
-  type HostProxyPortReservation,
 } from '@myco/host/registry.js';
-
-/** The member userspace-tailscaled LaunchAgent label PREFIX. The per-host label
- *  appends a short host tag (`memberTailscaledLabel`) so each joined host gets its
- *  own agent — distinct from the root labels (`com.tailscale.tailscaled` /
- *  `co.goondocks.myco-tailscaled`) so a machine can be both without a collision. */
-export const MEMBER_TAILSCALED_LABEL_PREFIX = 'co.goondocks.myco-member-tailscaled';
-
-/** This host's userspace-tailscaled LaunchAgent label. */
-export function memberTailscaledLabel(hostId: string): string {
-  return `${MEMBER_TAILSCALED_LABEL_PREFIX}.${memberHostTag(hostId)}`;
-}
-
-/** How long `join` waits for a freshly-started tailscaled to bind its socket
- *  before `tailscale up` (the start→up race). Bounded, then a clear error. */
-export const MEMBER_TAILSCALED_SOCKET_TIMEOUT_MS = 5000;
 
 // ---------------------------------------------------------------------------
 // Enrollment seam
@@ -149,17 +94,10 @@ export interface EnrollmentContext {
   serverUrl?: string;
   /** The one-time key the operator passed (single-use). */
   oneTimeKey: string;
-  /** This member's node name on the tailnet. */
-  memberHostname: string;
-  /** This member's own resolved 100.64 overlay IP on THIS host's tailnet (post-join). */
-  memberOverlayIp: string;
-  /** The host's overlay address to dial for enrollment (`100.64.x.y:<daemon-port>`) —
-   *  a NON-SECRET the operator hands the joiner alongside the one-time key. The
-   *  SECRET bearer comes back in the enrollment response, never out-of-band. */
-  overlayAddress?: string;
-  /** THIS host's local HTTP-CONNECT proxy port — the tunnel the real enroll client
-   *  dials through (the same `proxy_port` the routing proxy later uses). */
-  proxyPort?: number;
+  /** The host's public URL to dial for enrollment — a NON-SECRET the operator
+   *  hands the joiner alongside the one-time key. The SECRET bearer comes back
+   *  in the enrollment response, never out-of-band. */
+  hostUrl?: string;
   /** Stable, durable request correlation for repeatable enrollment. */
   enrollmentNonce?: string;
   // --- manual enrollment context ---
@@ -291,12 +229,11 @@ function validateEnrollment(
   return parseEnrollmentResponse(enrollment, identityFallback);
 }
 
-/** How the real client puts an enrollment request on the wire. Injectable so tests
- *  can drive a fixture host without a live CONNECT proxy. Returns the raw status +
- *  body so the client owns parsing + the version-skew (409) mapping. */
+/** How the real client puts an enrollment request on the wire. Injectable so a
+ *  test can drive a fixture host. Returns the raw status + body so the client
+ *  owns parsing + the version-skew (409) mapping. */
 export type EnrollmentTransport = (input: {
-  overlayAddress: string;
-  proxyPort: number;
+  hostUrl: string;
   path: string;
   headers: Record<string, string>;
   body: string;
@@ -358,26 +295,20 @@ export interface JoinOptions {
   /** The `<host>` positional — a host_id (matches the affiliation hint's
    *  `myco join <host_id>`). */
   hostRef: string;
-  /** The one-time pre-auth key the operator passed (single-use). */
+  /** The host's public URL, handed to the joiner alongside the key. A
+   *  NON-secret: it is the address, not the credential. */
+  hostUrl?: string;
+  /** The one-time key the host operator minted (single-use). */
   key: string;
-  /** Headscale control-plane URL (`--server-url`). Required to join a NOT-yet-
-   *  joined overlay; omittable when this host is already joined. */
-  serverUrl?: string;
-  /** Member node name on the tailnet. Default: sanitized `os.hostname()`. */
-  hostname?: string;
-  overlayAddress?: string;
-  bearer?: string;
-  protocolVersion?: number;
   /** Canonical host_id override (when the positional is not itself the id). */
   hostId?: string;
+  bearer?: string;
+  protocolVersion?: number;
   label?: string;
 }
 
 export interface MemberOverlayDeps {
   platform?: NodeJS.Platform;
-  /** USER-domain service manager. Default `getServiceManager()` (LaunchAgent /
-   *  systemd --user) — NEVER a root/system manager. */
-  serviceManager?: ServiceManager;
   enrollmentClient?: EnrollmentClient;
   /** Override the team home the residency-journal gate reads (tests). */
   teamsHome?: string;
@@ -390,9 +321,7 @@ export interface MemberOverlayDeps {
 
 export interface JoinResult {
   hostId: string;
-  overlayAddress: string;
-  proxyPort: number;
-  memberOverlayIp: string;
+  hostUrl: string;
   hostReachable: boolean;
   /** True when this join created the record; false when it converged an existing one. */
   created: boolean;
@@ -435,18 +364,14 @@ export async function joinHost(_options: JoinOptions, _deps: MemberOverlayDeps =
 
 export interface LeaveResult {
   removed: boolean;
-  /** True when THIS host's tailscaled LaunchAgent was torn down. */
-  tailscaledRemoved: boolean;
   notes: string[];
 }
 
 /**
- * Detach this machine from a host: tear down ONLY this host's tailscaled instance
- * (its LaunchAgent + socket), then remove its HostRecord (+ bearer + attach refs +
- * statedir). Every OTHER joined host — its own tailscaled, record, and bearer — is
- * untouched. An interrupted pre-enrollment join is also removed when its durable
- * host directory remains. Idempotent: a host with no record or provisioning
- * state is a no-op, and an absent LaunchAgent / socket tolerates the miss.
+ * Detach this machine from a host: remove its HostRecord, bearer, and attach
+ * refs. Every OTHER joined host is untouched. An interrupted pre-enrollment
+ * join is also removed when its durable host directory remains. Idempotent: a
+ * host with no state is a no-op.
  */
 export async function leaveHost(hostRef: string, deps: MemberOverlayDeps = {}): Promise<LeaveResult> {
   if (!hostRef?.trim()) throw new Error('leave requires a <host> — the host_id to detach from.');
@@ -457,30 +382,6 @@ export async function leaveHost(hostRef: string, deps: MemberOverlayDeps = {}): 
     (lease) => leaveHostLocked(hostId, deps, lease),
     deps.lockNamespace ?? nativePerUserLockNamespace,
   );
-}
-
-function installedMemberProxyPort(
-  args: readonly string[],
-  expectedStateDir: string,
-): number | null {
-  if (!args.includes(`--statedir=${expectedStateDir}`)) return null;
-  const listeners = args
-    .filter((arg) => arg.startsWith('--outbound-http-proxy-listen='))
-    .map((arg) => arg.slice('--outbound-http-proxy-listen='.length));
-  if (listeners.length !== 1) return null;
-  const match = listeners[0]!.match(/^localhost:([0-9]+)$/);
-  if (!match) return null;
-  const port = Number(match[1]);
-  return Number.isSafeInteger(port) && port >= 1 && port <= 65_535 ? port : null;
-}
-
-function installedCommandMatchesSpec(
-  installed: InstalledServiceCommand,
-  expected: ServiceSpec,
-): boolean {
-  return installed.executable === expected.executable
-    && installed.args.length === expected.args.length
-    && installed.args.every((arg, index) => arg === expected.args[index]);
 }
 
 async function leaveHostLocked(
@@ -495,7 +396,7 @@ async function leaveHostLocked(
   const inspection = inspectHostMembershipForLeave(hostId, lease, lockNamespace);
   if (!inspection.statePresent) {
     log(`Not joined to host ${hostId} — nothing to remove.`);
-    return { removed: false, tailscaledRemoved: false, notes };
+    return { removed: false, notes };
   }
 
   // Leaving destroys the bearer and every attach ref for this host, and the
@@ -536,15 +437,6 @@ async function leaveHostLocked(
   const remaining = readHostRegistry(lockNamespace).length;
   if (remaining > 0) log(`${remaining} other host(s) still joined — their membership is untouched.`);
 
-  return { removed: true, tailscaledRemoved: false, notes };
+  return { removed: true, notes };
 }
 
-// ---------------------------------------------------------------------------
-// Spec + default seams
-// ---------------------------------------------------------------------------
-
-/** Reduce an arbitrary hostname to a tailnet-safe label. */
-function sanitizeHostname(name: string): string {
-  const clean = name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-  return clean || 'myco-member';
-}

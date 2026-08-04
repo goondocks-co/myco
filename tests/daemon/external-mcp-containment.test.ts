@@ -333,7 +333,7 @@ interface FakeListener {
   unbind(): Promise<void>;
 }
 
-function portOf(target: import('@myco/daemon/external-mcp-containment.js').ExternalMcpFunnelTarget): number | string {
+function portOf(target: import('@myco/daemon/external-mcp-containment.js').FunnelTarget): number | string {
   return target.kind === 'port' ? target.port : target.path;
 }
 
@@ -1173,8 +1173,6 @@ describe('ExternalMcpContainmentAuthority', () => {
     fs.unlinkSync(path.join(fixture.home, 'config.yaml'));
     writeHostServeConfig({
       enabled: true,
-      overlayAddress: '100.64.0.10',
-      overlayPort: 41443,
     }, fixture.home);
     const offCalls: number[] = [];
     const authority = new ExternalMcpContainmentAuthority({

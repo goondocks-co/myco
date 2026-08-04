@@ -140,19 +140,19 @@ export async function checkTeamHostReachability(
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Promise<DoctorCheck[]> {
   const { readHostRegistry } = await import('../host/registry.js');
+  const { probeHostReachability } = await import('../host/host-url.js');
   const hosts = readHostRegistry(lockNamespace);
   if (hosts.length === 0) return [];
 
-  // Liveness is NOT probed on this build. The probe dialed each host through
-  // that host's own tailscaled CONNECT proxy, and no member transport exists
-  // until it is rebuilt on the host's public URL. Listing the membership
-  // without asserting reachability is the honest report; claiming "unreachable"
-  // would name a host failure for what is a missing client.
-  return hosts.map((host, index): DoctorCheck => ({
+  // Probed concurrently: a member in several teams should not wait out one
+  // slow host serially. Each probe is individually bounded.
+  const results = await Promise.all(
+    hosts.map(async (host) => ({ host, result: await probeHostReachability(host.host_url) })),
+  );
+  return results.map(({ host, result }, index): DoctorCheck => ({
     name: index === 0 ? 'Team Host' : '',
-    status: 'warn',
-    detail: `${host.label} (${host.host_id}): joined, but reachability cannot be checked on this build — `
-      + 'the member transport is being rebuilt.',
+    status: result.state === 'reachable' ? 'ok' : 'warn',
+    detail: `${host.label} (${host.host_id}): ${result.detail}`,
     fixable: false,
   }));
 }
@@ -336,6 +336,7 @@ export async function checkTeamHostDrainHealth(
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Promise<DoctorCheck[]> {
   const { readHostRegistry } = await import('../host/registry.js');
+  const { probeHostReachability } = await import('../host/host-url.js');
   const hosts = readHostRegistry(lockNamespace);
   if (hosts.length === 0) return [];
 

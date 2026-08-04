@@ -58,13 +58,13 @@ describe('myco join / myco leave (daemon API fallback)', () => {
     fakeDaemon.postResult = {
       ok: true,
       data: {
-        host_id: 'host_abc', overlay_address: '100.64.0.1:7433', proxy_port: 41200,
-        member_overlay_ip: '100.64.0.5', host_reachable: true, created: true, notes: [],
+        host_id: 'host_abc', host_url: 'https://host-a.tailnet.ts.net:8443',
+        host_reachable: true, created: true, notes: [],
       },
     };
 
     await runJoin(
-      ['host_abc', '--key', 'onetime', '--server-url', 'https://h:8080', '--hostname', 'my-mac'],
+      ['host_abc', '--key', 'onetime', '--host-url', 'https://host-a.tailnet.ts.net:8443'],
       '/tmp/vault',
     );
 
@@ -72,7 +72,7 @@ describe('myco join / myco leave (daemon API fallback)', () => {
     const call = fakeDaemon.postCalls[0]!;
     expect(call.endpoint).toBe('/api/host-membership/join');
     expect(call.body).toMatchObject({
-      host_ref: 'host_abc', key: 'onetime', server_url: 'https://h:8080', hostname: 'my-mac',
+      host_ref: 'host_abc', key: 'onetime', host_url: 'https://host-a.tailnet.ts.net:8443',
     });
     expect(call.timeoutMs).toBeGreaterThan(2000); // join dwarfs the default 2s client timeout
   });
@@ -80,18 +80,18 @@ describe('myco join / myco leave (daemon API fallback)', () => {
   it('join prints "Joined" for a fresh host and "Re-joined" for a converging one', async () => {
     fakeDaemon.postResult = {
       ok: true,
-      data: { host_id: 'h', overlay_address: 'a', proxy_port: 1, member_overlay_ip: 'ip', host_reachable: true, created: false, notes: [] },
+      data: { host_id: 'h', host_url: 'https://host-a.tailnet.ts.net:8443', host_reachable: true, created: false, notes: [] },
     };
-    await runJoin(['h', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault');
+    await runJoin(['h', '--key', 'k', '--host-url', 'https://h.tailnet.ts.net:8443'], '/tmp/vault');
     expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Re-joined'))).toBe(true);
   });
 
   it('join announces itself up front — the daemon runs the whole enrollment before answering, so the terminal must not sit silent', async () => {
     fakeDaemon.postResult = {
       ok: true,
-      data: { host_id: 'host_abc', overlay_address: 'a', proxy_port: 1, member_overlay_ip: 'ip', host_reachable: true, created: true, notes: [] },
+      data: { host_id: 'host_abc', host_url: 'https://host-a.tailnet.ts.net:8443', host_reachable: true, created: true, notes: [] },
     };
-    await runJoin(['host_abc', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault');
+    await runJoin(['host_abc', '--key', 'k', '--host-url', 'https://h.tailnet.ts.net:8443'], '/tmp/vault');
 
     // Keyed on the identity in the message, not its wording — the property is
     // that SOMETHING prints before the blocking POST, so the terminal is never
@@ -107,12 +107,12 @@ describe('myco join / myco leave (daemon API fallback)', () => {
     fakeDaemon.postResult = {
       ok: true,
       data: {
-        host_id: 'host_abc', overlay_address: 'a', proxy_port: 1, member_overlay_ip: 'ip',
+        host_id: 'host_abc', host_url: 'https://host-a.tailnet.ts.net:8443',
         host_reachable: true, created: true, notes: [],
         steps: ['Provisioning Tailscale for darwin/arm64…', 'Joining the overlay with the one-time key…'],
       },
     };
-    await runJoin(['host_abc', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault');
+    await runJoin(['host_abc', '--key', 'k', '--host-url', 'https://h.tailnet.ts.net:8443'], '/tmp/vault');
 
     expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Provisioning Tailscale'))).toBe(true);
     expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Joining the overlay with the one-time key'))).toBe(true);
@@ -121,9 +121,9 @@ describe('myco join / myco leave (daemon API fallback)', () => {
   it('join tolerates a steps-less response (daemon mid-upgrade) without failing', async () => {
     fakeDaemon.postResult = {
       ok: true,
-      data: { host_id: 'h', overlay_address: 'a', proxy_port: 1, member_overlay_ip: 'ip', host_reachable: true, created: true, notes: [] },
+      data: { host_id: 'h', host_url: 'https://host-a.tailnet.ts.net:8443', host_reachable: true, created: true, notes: [] },
     };
-    await runJoin(['h', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault');
+    await runJoin(['h', '--key', 'k', '--host-url', 'https://h.tailnet.ts.net:8443'], '/tmp/vault');
     expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Joined Team Host'))).toBe(true);
   });
 
@@ -161,7 +161,7 @@ describe('myco join / myco leave (daemon API fallback)', () => {
       throw new Error('__exit__');
     }) as never);
 
-    await expect(runJoin(['h', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault')).rejects.toThrow('__exit__');
+    await expect(runJoin(['h', '--key', 'k', '--host-url', 'https://h.tailnet.ts.net:8443'], '/tmp/vault')).rejects.toThrow('__exit__');
     expect(fakeDaemon.postCalls).toHaveLength(0);
     expect(fakeDaemon.ensureRunningCalls).toBe(0);
     expect(errSpy.mock.calls.some((c) => String(c[0]).includes('The key has NOT been used'))).toBe(true);
@@ -175,24 +175,26 @@ describe('myco join / myco leave (daemon API fallback)', () => {
       throw new Error('__exit__');
     }) as never);
 
-    await expect(runJoin(['h', '--key', 'k', '--server-url', 'https://h:8080'], '/tmp/vault')).rejects.toThrow('__exit__');
+    await expect(runJoin(['h', '--key', 'k', '--host-url', 'https://h.tailnet.ts.net:8443'], '/tmp/vault')).rejects.toThrow('__exit__');
     const errText = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(errText).toContain('did not respond within the join window');
-    expect(errText).toContain('Re-run the SAME join command');
-    expect(errText).toContain('authkey already used');
+    // The steer that matters: converge with the SAME command rather than
+    // burning a second key on a join that may already have succeeded.
+    expect(errText).toContain('Re-run the SAME');
+    expect(errText).toContain('mint a fresh key only if');
 
     exitSpy.mockRestore();
   });
 
   it('leave POSTs { host_ref } and reports removal', async () => {
-    fakeDaemon.postResult = { ok: true, data: { removed: true, tailscaled_removed: true, notes: ['n1'] } };
+    fakeDaemon.postResult = { ok: true, data: { removed: true, notes: ['n1'] } };
     await runLeave(['host_abc'], '/tmp/vault');
     expect(fakeDaemon.postCalls[0]).toMatchObject({ endpoint: '/api/host-membership/leave', body: { host_ref: 'host_abc' } });
     expect(logSpy.mock.calls.some((c) => String(c[0]).includes('Left Team Host host_abc'))).toBe(true);
   });
 
   it('leave on an unknown host reports "nothing to remove" without exiting non-zero', async () => {
-    fakeDaemon.postResult = { ok: true, data: { removed: false, tailscaled_removed: false, notes: [] } };
+    fakeDaemon.postResult = { ok: true, data: { removed: false, notes: [] } };
     await runLeave(['host_xyz'], '/tmp/vault');
     expect(logSpy.mock.calls.some((c) => String(c[0]).includes('nothing to remove'))).toBe(true);
   });

@@ -22,11 +22,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { loadMachineConfig } from '@myco/config/loader.js';
 
-import {
-  HOST_BEARER_SECRET,
-  HOST_SERVE_OVERLAY_PORT_BASE,
-  MEMBER_OVERLAY_PROXY_PORT_BASE,
-} from '@myco/constants.js';
+import { HOST_BEARER_SECRET } from '@myco/constants.js';
+import { isValidHostUrl } from './host-url.js';
 import {
   assertValidSecretEntry,
   readSecretsFile as readExactSecretsFile,
@@ -62,15 +59,14 @@ import {
 const HOST_REGISTRY_LOCK_DIR_MODE = 0o700;
 const HOST_REGISTRY_LOCK_RETRIES = 8;
 const HOST_REGISTRY_LOCK_NAMESPACE = 'hosts-registry';
-const HOST_PROXY_PORT_CLAIM_FILENAME = 'proxy-port-claim.json';
+const HOST_ENROLLMENT_CLAIM_FILENAME = 'enrollment-claim.json';
 const HOST_ENROLLMENT_INTENT_FILENAME = 'enrollment-intent.json';
 const HOST_BEARERS_DIRNAME = 'bearers';
 const HOST_GENERATIONS_DIRNAME = 'host-generations';
-const HOST_PROXY_PORT_CLAIM_MODE = 0o600;
+const HOST_ENROLLMENT_CLAIM_MODE = 0o600;
 const HOST_PRIVATE_DIR_MODE = 0o700;
 const HOST_ENROLLMENT_STATE_MODE = 0o600;
 const HOST_ENROLLMENT_SCHEMA_VERSION = 1;
-const MAX_TCP_PORT = 65_535;
 
 export interface AttachRef {
   grove_id: string;
@@ -109,8 +105,18 @@ export interface AttachRef {
 export interface HostRecord {
   host_id: string;
   label: string;
-  overlay_address: string;
-  proxy_port?: number;
+  /**
+   * The host's public HTTPS origin — its Tailscale Funnel URL, e.g.
+   * `https://box.tailnet.ts.net:8443`. The ONE dial input: there is no overlay
+   * to resolve an address against and no second route to the host, so a record
+   * whose URL has gone stale is not degraded, it is unusable, and every surface
+   * that renders a host says "re-join required" rather than "unknown".
+   *
+   * Optional in the TYPE only so a record written before this field existed
+   * still parses into something the UI can explain; nothing writes it absent.
+   * Validated by {@link isValidHostUrl} at every write.
+   */
+  host_url?: string;
   protocol_version: number;
   /**
    * The host's self-reported served Grove (enrollment protocol v2,
@@ -131,36 +137,50 @@ export interface HostRecord {
   bearer_generation?: number;
 }
 
-export type EnrollmentHostRecord = Omit<HostRecord, 'projects' | 'proxy_port'>;
+export type EnrollmentHostRecord = Omit<HostRecord, 'projects'>;
 
-export interface HostProxyPortReservation {
+/**
+ * One membership-commit attempt: the generation a join will commit under, and
+ * the tokens proving this attempt is the one that reserved it.
+ *
+ * This used to also carry a loopback CONNECT-proxy port, because a member ran a
+ * tailscaled per host and each needed a distinct local port. It reserves only a
+ * GENERATION now — the atomic-commit half of the same mechanism, which the
+ * bearer files are keyed by and which is what makes a re-join replace a
+ * membership rather than half-overwrite one.
+ */
+export interface HostEnrollmentReservation {
   hostId: string;
-  proxyPort: number;
   claimId: string;
   generation: number;
   baseGeneration: number | null;
   enrollmentNonce: string;
   phase: HostEnrollmentPhase;
-  serviceOwned: boolean;
   /** True when reservation recovery found this generation already committed. */
   recoveredCommit: boolean;
 }
 
-interface HostProxyPortClaim {
+interface HostEnrollmentClaim {
   host_id: string;
-  proxy_port: number;
   claim_id: string;
   generation: number;
   base_generation: number | null;
   enrollment_nonce: string;
 }
 
+/**
+ * Where a join attempt got to, so a crash mid-enrollment resumes or tears down
+ * deterministically rather than leaving a half-membership.
+ *
+ * The overlay-era phases (`service_preparing`, `service_ready`,
+ * `overlay_joining`, `overlay_joined`) tracked provisioning and starting this
+ * host's own userspace tailscaled and bringing its node onto the tailnet. A
+ * member runs no process for a host now, so those states have nothing to
+ * describe: what remains is reserving a generation, being mid-enrollment, and
+ * holding a credential not yet committed.
+ */
 export type HostEnrollmentPhase =
   | 'reserved'
-  | 'service_preparing'
-  | 'service_ready'
-  | 'overlay_joining'
-  | 'overlay_joined'
   | 'enrolling'
   | 'credential_staged'
   | 'teardown_pending';
@@ -179,12 +199,8 @@ interface HostEnrollmentIntent {
   /** null=new membership, 0=legacy committed membership, positive=generation base. */
   base_generation: number | null;
   enrollment_nonce: string;
-  proxy_port: number;
   claim_id: string;
   phase: HostEnrollmentPhase;
-  service_preexisting: boolean | null;
-  service_owned_generation: number | null;
-  service_label: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -259,10 +275,15 @@ function isHostRecordShape(value: unknown): value is HostRecord {
     || Number.isSafeInteger(enrollmentGeneration)
       && Number(enrollmentGeneration) > 0
       && enrollmentGeneration === bearerGeneration;
+  // `host_url` is checked for SHAPE when present but is not required here: a
+  // record whose URL is missing or malformed must still LOAD, so the Team page
+  // and `myco doctor` can say "re-join required" about it. Dropping it at parse
+  // time would make an unusable host indistinguishable from one that was never
+  // joined — the failure would be invisible instead of explained.
   return typeof record.host_id === 'string'
     && record.host_id.length > 0
     && typeof record.label === 'string'
-    && typeof record.overlay_address === 'string'
+    && (record.host_url === undefined || typeof record.host_url === 'string')
     && Number.isSafeInteger(record.protocol_version)
     && typeof record.created_at === 'string'
     && Array.isArray(record.projects)
@@ -606,22 +627,17 @@ function writeHostRecordUnlocked(record: HostRecord): void {
   );
 }
 
-function hostProxyPortClaimPath(hostId: string): string {
-  return path.join(resolveHostDir(hostId), HOST_PROXY_PORT_CLAIM_FILENAME);
+function hostEnrollmentClaimPath(hostId: string): string {
+  return path.join(resolveHostDir(hostId), HOST_ENROLLMENT_CLAIM_FILENAME);
 }
 
-function isValidProxyPort(value: unknown): value is number {
-  return Number.isInteger(value) && Number(value) > 0 && Number(value) <= MAX_TCP_PORT;
-}
-
-function parseHostProxyPortClaim(value: unknown, hostId: string): HostProxyPortClaim {
+function parseHostEnrollmentClaim(value: unknown, hostId: string): HostEnrollmentClaim {
   if (!value || typeof value !== 'object') {
-    throw new Error(`Invalid proxy-port claim for host ${hostId}: expected an object.`);
+    throw new Error(`Invalid enrollment claim for host ${hostId}: expected an object.`);
   }
   const claim = value as Record<string, unknown>;
   const baseGeneration = claim.base_generation;
   if (claim.host_id !== hostId
-    || !isValidProxyPort(claim.proxy_port)
     || typeof claim.claim_id !== 'string'
     || claim.claim_id.length === 0
     || !Number.isSafeInteger(claim.generation)
@@ -630,35 +646,23 @@ function parseHostProxyPortClaim(value: unknown, hostId: string): HostProxyPortC
       || Number.isSafeInteger(baseGeneration) && Number(baseGeneration) >= 0)
     || typeof claim.enrollment_nonce !== 'string'
     || !/^[a-f0-9]{32,}$/.test(claim.enrollment_nonce)) {
-    throw new HostJoinStateCorruptError(hostId, 'invalid proxy-port claim');
+    throw new HostJoinStateCorruptError(hostId, 'invalid enrollment claim');
   }
-  return claim as unknown as HostProxyPortClaim;
+  return claim as unknown as HostEnrollmentClaim;
 }
 
-function readHostProxyPortClaimUnlocked(hostId: string): HostProxyPortClaim | null {
-  const parsed = readPrivateJsonFileUnlocked(hostProxyPortClaimPath(hostId), hostId);
-  return parsed === null ? null : parseHostProxyPortClaim(parsed, hostId);
+function readHostEnrollmentClaimUnlocked(hostId: string): HostEnrollmentClaim | null {
+  const parsed = readPrivateJsonFileUnlocked(hostEnrollmentClaimPath(hostId), hostId);
+  return parsed === null ? null : parseHostEnrollmentClaim(parsed, hostId);
 }
 
-function readHostProxyPortClaimsUnlocked(): HostProxyPortClaim[] {
-  const hostsDir = resolveHostsDir();
-  if (!fs.existsSync(hostsDir)) return [];
-  const claims: HostProxyPortClaim[] = [];
-  for (const entry of fs.readdirSync(hostsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const claim = readHostProxyPortClaimUnlocked(entry.name);
-    if (claim) claims.push(claim);
-  }
-  return claims;
-}
-
-function writeHostProxyPortClaimUnlocked(claim: HostProxyPortClaim): void {
+function writeHostEnrollmentClaimUnlocked(claim: HostEnrollmentClaim): void {
   ensurePrivateDirectoryDurable(resolveHostsDir());
   ensurePrivateDirectoryDurable(resolveHostDir(claim.host_id));
   atomicWriteFileSync(
-    hostProxyPortClaimPath(claim.host_id),
+    hostEnrollmentClaimPath(claim.host_id),
     JSON.stringify(claim, null, 2),
-    { mode: HOST_PROXY_PORT_CLAIM_MODE, durable: true },
+    { mode: HOST_ENROLLMENT_CLAIM_MODE, durable: true },
   );
 }
 
@@ -673,12 +677,8 @@ function removeHostDirIfEmptyUnlocked(hostId: string): void {
 
 const ENROLLMENT_PHASE_ORDER: Readonly<Record<Exclude<HostEnrollmentPhase, 'teardown_pending'>, number>> = {
   reserved: 0,
-  service_preparing: 1,
-  service_ready: 2,
-  overlay_joining: 3,
-  overlay_joined: 4,
-  enrolling: 5,
-  credential_staged: 6,
+  enrolling: 1,
+  credential_staged: 2,
 };
 
 function parseHostEnrollmentIntent(value: unknown, hostId: string): HostEnrollmentIntent {
@@ -696,16 +696,10 @@ function parseHostEnrollmentIntent(value: unknown, hostId: string): HostEnrollme
       || Number.isSafeInteger(baseGeneration) && Number(baseGeneration) >= 0)
     || typeof intent.enrollment_nonce !== 'string'
     || !/^[a-f0-9]{32,}$/.test(intent.enrollment_nonce)
-    || !isValidProxyPort(intent.proxy_port)
     || typeof intent.claim_id !== 'string'
     || intent.claim_id.length === 0
     || typeof phase !== 'string'
     || !(phase === 'teardown_pending' || Object.hasOwn(ENROLLMENT_PHASE_ORDER, phase))
-    || !(intent.service_preexisting === null || typeof intent.service_preexisting === 'boolean')
-    || !(intent.service_owned_generation === null
-      || Number.isSafeInteger(intent.service_owned_generation)
-        && Number(intent.service_owned_generation) === Number(intent.generation))
-    || !(intent.service_label === null || typeof intent.service_label === 'string')
     || typeof intent.created_at !== 'string'
     || typeof intent.updated_at !== 'string') {
     throw new HostJoinStateCorruptError(hostId, 'enrollment intent has an invalid shape');
@@ -731,29 +725,26 @@ function writeHostEnrollmentIntentUnlocked(intent: HostEnrollmentIntent): void {
 function reservationFromIntent(
   intent: HostEnrollmentIntent,
   recoveredCommit = false,
-): HostProxyPortReservation {
+): HostEnrollmentReservation {
   return {
     hostId: intent.host_id,
-    proxyPort: intent.proxy_port,
     claimId: intent.claim_id,
     generation: intent.generation,
     baseGeneration: intent.base_generation,
     enrollmentNonce: intent.enrollment_nonce,
     phase: intent.phase,
-    serviceOwned: intent.service_owned_generation === intent.generation,
     recoveredCommit,
   };
 }
 
 function assertReservationMatchesIntent(
-  reservation: HostProxyPortReservation,
+  reservation: HostEnrollmentReservation,
   intent: HostEnrollmentIntent | null,
 ): asserts intent is HostEnrollmentIntent {
   if (!intent
     || intent.host_id !== reservation.hostId
     || intent.generation !== reservation.generation
     || intent.claim_id !== reservation.claimId
-    || intent.proxy_port !== reservation.proxyPort
     || intent.enrollment_nonce !== reservation.enrollmentNonce
     || intent.base_generation !== reservation.baseGeneration) {
     throw new HostJoinStateCorruptError(
@@ -764,45 +755,45 @@ function assertReservationMatchesIntent(
 }
 
 function assertClaimMatchesIntent(
-  claim: HostProxyPortClaim | null,
+  claim: HostEnrollmentClaim | null,
   intent: HostEnrollmentIntent,
-): asserts claim is HostProxyPortClaim {
+): asserts claim is HostEnrollmentClaim {
   if (!claim
     || claim.host_id !== intent.host_id
     || claim.generation !== intent.generation
     || claim.claim_id !== intent.claim_id
-    || claim.proxy_port !== intent.proxy_port
     || claim.base_generation !== intent.base_generation
     || claim.enrollment_nonce !== intent.enrollment_nonce) {
     throw new HostJoinStateCorruptError(
       intent.host_id,
-      'enrollment intent no longer matches its durable proxy-port claim',
+      'enrollment intent no longer matches its durable claim',
     );
   }
 }
 
 /**
- * Reserve a stable member proxy port before provisioning starts.
+ * Reserve the generation a join attempt will commit under.
+ *
  * A retry adopts the exact durable generation and claim token until the
- * enrollment is committed or retired.
+ * enrollment is committed or retired — which is what makes a re-join replace a
+ * membership atomically instead of interleaving a new bearer with an old
+ * record. The generation fence (ledger `last_allocated` /
+ * `retired_through`) is the ordering authority; the claim and intent are the
+ * two durable witnesses that let a crashed attempt be told apart from a
+ * committed one.
  */
-export function reserveHostProxyPort(
+export function reserveHostEnrollment(
   hostId: string,
-  preferredPort?: number,
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
-): HostProxyPortReservation {
+): HostEnrollmentReservation {
   return withHostRegistryTransaction(lockNamespace, () => {
-    if (preferredPort !== undefined && !isValidProxyPort(preferredPort)) {
-      throw new Error(`Invalid proxy port ${preferredPort}; expected an integer from 1 through ${MAX_TCP_PORT}.`);
-    }
-
     reconcileDurableRemovalTombstonesSync(resolveHostsDir());
     reconcileDurableRemovalTombstonesSync(generationLedgerDir());
     const existingSnapshot = readHostMembershipSnapshotUnlocked(hostId);
     const existing = existingSnapshot?.record ?? null;
     let ledger = readGenerationLedgerUnlocked(hostId);
     const currentIntent = readHostEnrollmentIntentUnlocked(hostId);
-    const currentClaim = readHostProxyPortClaimUnlocked(hostId);
+    const currentClaim = readHostEnrollmentClaimUnlocked(hostId);
     const committedGeneration = existing?.enrollment_generation ?? (existing ? 0 : null);
 
     if (currentIntent) {
@@ -813,28 +804,15 @@ export function reserveHostProxyPort(
       }
       if (currentIntent.generation === existing?.enrollment_generation) {
         assertClaimMatchesIntent(currentClaim, currentIntent);
-        if (currentIntent.proxy_port !== existing.proxy_port) {
-          throw new HostJoinStateCorruptError(hostId, 'committed residue has a conflicting proxy port');
-        }
-        if (preferredPort !== undefined && preferredPort !== currentIntent.proxy_port) {
-          throw new Error(
-            `Host ${hostId} is already assigned proxy port ${currentIntent.proxy_port}, not ${preferredPort}.`,
-          );
-        }
         repairLegacyHostBearerFromRecordUnlocked(existing, lockNamespace);
         const recovery = reservationFromIntent(currentIntent, true);
         durableRemovePathSync(hostEnrollmentIntentPath(hostId));
-        durableRemovePathSync(hostProxyPortClaimPath(hostId));
+        durableRemovePathSync(hostEnrollmentClaimPath(hostId));
         return recovery;
       } else {
         assertClaimMatchesIntent(currentClaim, currentIntent);
         if (currentIntent.base_generation !== committedGeneration) {
           throw new HostJoinStateCorruptError(hostId, 'enrollment intent base is not the committed generation');
-        }
-        if (preferredPort !== undefined && preferredPort !== currentIntent.proxy_port) {
-          throw new Error(
-            `Host ${hostId} already claims proxy port ${currentIntent.proxy_port}, not ${preferredPort}.`,
-          );
         }
         return reservationFromIntent(currentIntent);
       }
@@ -844,90 +822,26 @@ export function reserveHostProxyPort(
       if (!ledger
         || currentClaim.generation > ledger.last_allocated_generation
         || currentClaim.generation <= ledger.retired_through_generation) {
-        throw new HostJoinStateCorruptError(hostId, 'orphan proxy-port claim is outside its generation fence');
+        throw new HostJoinStateCorruptError(hostId, 'orphan enrollment claim is outside its generation fence');
       }
       if (currentClaim.generation === existing?.enrollment_generation) {
         if (!existingSnapshot?.bearer) {
           throw new HostJoinStateCorruptError(hostId, 'committed claim has no matching bearer');
         }
-        if (currentClaim.proxy_port !== existing.proxy_port) {
-          throw new HostJoinStateCorruptError(hostId, 'committed claim has a conflicting proxy port');
-        }
-        if (preferredPort !== undefined && preferredPort !== currentClaim.proxy_port) {
-          throw new Error(
-            `Host ${hostId} is already assigned proxy port ${currentClaim.proxy_port}, not ${preferredPort}.`,
-          );
-        }
         repairLegacyHostBearerFromRecordUnlocked(existing, lockNamespace);
-        const recovery: HostProxyPortReservation = {
+        const recovery: HostEnrollmentReservation = {
           hostId,
-          proxyPort: currentClaim.proxy_port,
           claimId: currentClaim.claim_id,
           generation: currentClaim.generation,
           baseGeneration: currentClaim.base_generation,
           enrollmentNonce: currentClaim.enrollment_nonce,
           phase: 'credential_staged',
-          serviceOwned: false,
           recoveredCommit: true,
         };
-        durableRemovePathSync(hostProxyPortClaimPath(hostId));
+        durableRemovePathSync(hostEnrollmentClaimPath(hostId));
         return recovery;
       }
-      durableRemovePathSync(hostProxyPortClaimPath(hostId));
-    }
-
-    const portOwners = new Map<number, string>();
-    const notePortOwner = (proxyPort: number, ownerHostId: string): void => {
-      const priorOwner = portOwners.get(proxyPort);
-      if (priorOwner && priorOwner !== ownerHostId) {
-        throw new Error(
-          `Proxy port ${proxyPort} is assigned to both host ${priorOwner} and host ${ownerHostId}.`,
-        );
-      }
-      portOwners.set(proxyPort, ownerHostId);
-    };
-    for (const record of readHostRegistryUnlocked()) {
-      if (record.host_id === hostId || record.proxy_port === undefined) continue;
-      if (!isValidProxyPort(record.proxy_port)) {
-        throw new Error(`Host ${record.host_id} has invalid persisted proxy port ${record.proxy_port}.`);
-      }
-      notePortOwner(record.proxy_port, record.host_id);
-    }
-    for (const claim of readHostProxyPortClaimsUnlocked()) {
-      if (claim.host_id !== hostId) notePortOwner(claim.proxy_port, claim.host_id);
-    }
-    // A serving host no longer holds a loopback port of its own — it binds a
-    // socket — so the two namespaces cannot collide and there is nothing to
-    // cross-check here.
-    const usedByOtherHosts = new Set(portOwners.keys());
-
-    let proxyPort: number;
-    if (existing?.proxy_port !== undefined) {
-      if (!isValidProxyPort(existing.proxy_port)) {
-        throw new Error(`Host ${hostId} has invalid persisted proxy port ${existing.proxy_port}.`);
-      }
-      if (usedByOtherHosts.has(existing.proxy_port)) {
-        throw new Error(
-          `Proxy port ${existing.proxy_port} is assigned to host ${hostId} and another host.`,
-        );
-      }
-      if (preferredPort !== undefined && preferredPort !== existing.proxy_port) {
-        throw new Error(
-          `Host ${hostId} is already assigned proxy port ${existing.proxy_port}, not ${preferredPort}.`,
-        );
-      }
-      proxyPort = existing.proxy_port;
-    } else if (preferredPort !== undefined) {
-      if (usedByOtherHosts.has(preferredPort)) {
-        throw new Error(`Proxy port ${preferredPort} is already reserved by another host.`);
-      }
-      proxyPort = preferredPort;
-    } else {
-      proxyPort = MEMBER_OVERLAY_PROXY_PORT_BASE;
-      while (usedByOtherHosts.has(proxyPort)) proxyPort += 1;
-      if (!isValidProxyPort(proxyPort)) {
-        throw new Error('No member proxy port is available.');
-      }
+      durableRemovePathSync(hostEnrollmentClaimPath(hostId));
     }
 
     const generation = (ledger?.last_allocated_generation ?? 0) + 1;
@@ -940,15 +854,14 @@ export function reserveHostProxyPort(
     writeGenerationLedgerUnlocked(ledger);
 
     const enrollmentNonce = randomBytes(16).toString('hex');
-    const claim: HostProxyPortClaim = {
+    const claim: HostEnrollmentClaim = {
       host_id: hostId,
-      proxy_port: proxyPort,
       claim_id: randomUUID(),
       generation,
       base_generation: committedGeneration,
       enrollment_nonce: enrollmentNonce,
     };
-    writeHostProxyPortClaimUnlocked(claim);
+    writeHostEnrollmentClaimUnlocked(claim);
     const now = new Date().toISOString();
     const intent: HostEnrollmentIntent = {
       schema_version: HOST_ENROLLMENT_SCHEMA_VERSION,
@@ -956,12 +869,8 @@ export function reserveHostProxyPort(
       generation,
       base_generation: committedGeneration,
       enrollment_nonce: enrollmentNonce,
-      proxy_port: proxyPort,
       claim_id: claim.claim_id,
       phase: 'reserved',
-      service_preexisting: null,
-      service_owned_generation: null,
-      service_label: null,
       created_at: now,
       updated_at: now,
     };
@@ -974,8 +883,8 @@ export function reserveHostProxyPort(
  * Release only the exact active claim represented by `reservation`.
  * Committed reservations and stale attempt tokens are no-ops.
  */
-export function releaseHostProxyPort(
-  reservation: HostProxyPortReservation,
+export function releaseHostEnrollment(
+  reservation: HostEnrollmentReservation,
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   withHostRegistryTransaction(lockNamespace, () => {
@@ -983,7 +892,6 @@ export function releaseHostProxyPort(
     if (!intent
       || intent.generation !== reservation.generation
       || intent.claim_id !== reservation.claimId
-      || intent.proxy_port !== reservation.proxyPort
       || intent.enrollment_nonce !== reservation.enrollmentNonce
       || intent.base_generation !== reservation.baseGeneration) return;
     if (intent.phase !== 'reserved') {
@@ -992,38 +900,33 @@ export function releaseHostProxyPort(
         `cannot release an enrollment in phase ${intent.phase} without verified teardown`,
       );
     }
-    const claim = readHostProxyPortClaimUnlocked(reservation.hostId);
+    const claim = readHostEnrollmentClaimUnlocked(reservation.hostId);
     if (!claim
       || claim.generation !== reservation.generation
       || claim.claim_id !== reservation.claimId
-      || claim.proxy_port !== reservation.proxyPort
       || claim.base_generation !== reservation.baseGeneration
       || claim.enrollment_nonce !== reservation.enrollmentNonce) return;
     durableRemovePathSync(hostEnrollmentIntentPath(reservation.hostId));
-    durableRemovePathSync(hostProxyPortClaimPath(reservation.hostId));
+    durableRemovePathSync(hostEnrollmentClaimPath(reservation.hostId));
     removeHostDirIfEmptyUnlocked(reservation.hostId);
   });
 }
 
 export function advanceHostEnrollmentPhase(
-  reservation: HostProxyPortReservation,
+  reservation: HostEnrollmentReservation,
   phase: Exclude<HostEnrollmentPhase, 'teardown_pending'>,
-  service?: { preexisting: boolean; label: string },
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
-): HostProxyPortReservation {
+): HostEnrollmentReservation {
   return withHostRegistryTransaction(lockNamespace, () => {
     const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
     assertReservationMatchesIntent(reservation, intent);
-    const claim = readHostProxyPortClaimUnlocked(reservation.hostId);
+    const claim = readHostEnrollmentClaimUnlocked(reservation.hostId);
     assertClaimMatchesIntent(claim, intent);
     const ledger = readGenerationLedgerUnlocked(reservation.hostId);
     if (!ledger
       || intent.generation > ledger.last_allocated_generation
       || intent.generation <= ledger.retired_through_generation) {
       throw new HostJoinStateCorruptError(reservation.hostId, 'intent is outside its generation fence');
-    }
-    if (phase === 'service_preparing' && !service) {
-      throw new Error('service_preparing requires the preexisting-service observation and label');
     }
     const currentOrder = intent.phase === 'teardown_pending'
       ? Number.POSITIVE_INFINITY
@@ -1033,13 +936,6 @@ export function advanceHostEnrollmentPhase(
     const updated: HostEnrollmentIntent = {
       ...intent,
       phase,
-      service_preexisting: intent.service_preexisting ?? service?.preexisting ?? null,
-      service_owned_generation: service
-        ? (intent.service_preexisting === null
-          ? (service.preexisting ? null : intent.generation)
-          : intent.service_owned_generation)
-        : intent.service_owned_generation,
-      service_label: intent.service_label ?? service?.label ?? null,
       updated_at: new Date().toISOString(),
     };
     writeHostEnrollmentIntentUnlocked(updated);
@@ -1048,7 +944,7 @@ export function advanceHostEnrollmentPhase(
 }
 
 export function markHostEnrollmentTeardownPending(
-  reservation: HostProxyPortReservation,
+  reservation: HostEnrollmentReservation,
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   withHostRegistryTransaction(lockNamespace, () => {
@@ -1062,29 +958,37 @@ export function markHostEnrollmentTeardownPending(
   });
 }
 
+/**
+ * Discard a failed join's reservation.
+ *
+ * Eligibility used to also require that this attempt OWNED the service it
+ * provisioned — automatic cleanup could not be allowed to remove state some
+ * earlier, still-live tailscaled depended on. There is no service, so what
+ * remains is the part that was never about services: never discard an attempt
+ * that has already staged a credential (it may be committed), and never
+ * discard one layered over an existing membership (`base_generation !== null`)
+ * — that is a re-join, and tearing it down silently would take the previous
+ * membership with it.
+ */
 export function abandonHostEnrollment(
-  reservation: HostProxyPortReservation,
+  reservation: HostEnrollmentReservation,
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   withHostRegistryTransaction(lockNamespace, () => {
     const intent = readHostEnrollmentIntentUnlocked(reservation.hostId);
     assertReservationMatchesIntent(reservation, intent);
-    const claim = readHostProxyPortClaimUnlocked(reservation.hostId);
+    const claim = readHostEnrollmentClaimUnlocked(reservation.hostId);
     assertClaimMatchesIntent(claim, intent);
-    const phaseOrder = intent.phase === 'teardown_pending'
-      ? ENROLLMENT_PHASE_ORDER.service_ready
-      : ENROLLMENT_PHASE_ORDER[intent.phase];
-    if (phaseOrder >= ENROLLMENT_PHASE_ORDER.overlay_joining
-      || intent.base_generation !== null
-      || intent.service_preexisting !== false
-      || intent.service_owned_generation !== intent.generation) {
+    if (intent.phase === 'credential_staged'
+      || intent.phase === 'teardown_pending'
+      || intent.base_generation !== null) {
       throw new HostJoinStateCorruptError(
         reservation.hostId,
         'enrollment state is not eligible for automatic teardown cleanup',
       );
     }
     durableRemovePathSync(hostEnrollmentIntentPath(reservation.hostId));
-    durableRemovePathSync(hostProxyPortClaimPath(reservation.hostId));
+    durableRemovePathSync(hostEnrollmentClaimPath(reservation.hostId));
     removeHostDirIfEmptyUnlocked(reservation.hostId);
   });
 }
@@ -1092,12 +996,22 @@ export function abandonHostEnrollment(
 function persistEnrollmentMembershipUnlocked(
   enrollment: EnrollmentHostRecord,
   bearer: string,
-  reservation: HostProxyPortReservation,
+  reservation: HostEnrollmentReservation,
   lockNamespace: PerUserLockNamespace,
 ): EnrollmentMembershipResult {
   if (reservation.hostId !== enrollment.host_id) {
     throw new Error(
-      `Proxy-port reservation for host ${reservation.hostId} cannot enroll host ${enrollment.host_id}.`,
+      `Enrollment reservation for host ${reservation.hostId} cannot enroll host ${enrollment.host_id}.`,
+    );
+  }
+  // A host with no dial address is not a degraded membership, it is an
+  // unusable one: every drain, probe, and proxy call downstream treats a
+  // record as a live target. Refuse at the commit rather than write a
+  // membership that can only fail later, opaquely.
+  if (!isValidHostUrl(enrollment.host_url)) {
+    throw new HostJoinStateCorruptError(
+      enrollment.host_id,
+      `enrollment carries no usable host_url (${JSON.stringify(enrollment.host_url ?? null)})`,
     );
   }
   assertValidSecretEntry(HOST_BEARER_SECRET, bearer);
@@ -1106,7 +1020,7 @@ function persistEnrollmentMembershipUnlocked(
   }
   const intent = readHostEnrollmentIntentUnlocked(enrollment.host_id);
   assertReservationMatchesIntent(reservation, intent);
-  const claim = readHostProxyPortClaimUnlocked(enrollment.host_id);
+  const claim = readHostEnrollmentClaimUnlocked(enrollment.host_id);
   assertClaimMatchesIntent(claim, intent);
   const ledger = readGenerationLedgerUnlocked(enrollment.host_id);
   if (!ledger
@@ -1152,7 +1066,6 @@ function persistEnrollmentMembershipUnlocked(
     : existing?.served_grove_id;
   const record: HostRecord = {
     ...enrollment,
-    proxy_port: reservation.proxyPort,
     ...(servedGroveId !== undefined ? { served_grove_id: servedGroveId } : {}),
     created_at: existing?.created_at ?? enrollment.created_at,
     projects: existing?.projects ?? [],
@@ -1169,7 +1082,7 @@ function persistEnrollmentMembershipUnlocked(
     throw new HostJoinStateCorruptError(record.host_id, 'published enrollment did not verify');
   }
   durableRemovePathSync(hostEnrollmentIntentPath(record.host_id));
-  durableRemovePathSync(hostProxyPortClaimPath(record.host_id));
+  durableRemovePathSync(hostEnrollmentClaimPath(record.host_id));
   return { record, created: existing === null };
 }
 
@@ -1180,7 +1093,7 @@ function persistEnrollmentMembershipUnlocked(
 export function persistEnrollmentMembership(
   enrollment: EnrollmentHostRecord,
   bearer: string,
-  reservation: HostProxyPortReservation,
+  reservation: HostEnrollmentReservation,
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): EnrollmentMembershipResult {
   return withHostRegistryTransaction(
@@ -1191,7 +1104,6 @@ export function persistEnrollmentMembership(
 
 export interface HostLeaveInspection {
   record: HostRecord | null;
-  proxyPort: number | null;
   statePresent: boolean;
   corrupt: boolean;
 }
@@ -1220,20 +1132,15 @@ export function inspectHostMembershipForLeave(
         record = null;
       }
     }
-    let claim: HostProxyPortClaim | null = null;
+    // The claim is read only to surface corruption — a leave never needs its
+    // contents, and a member whose claim will not parse must still be able to
+    // leave.
     try {
-      claim = readHostProxyPortClaimUnlocked(hostId);
+      readHostEnrollmentClaimUnlocked(hostId);
     } catch (error) {
       if (!(error instanceof HostJoinStateCorruptError)) throw error;
       corrupt = true;
     }
-    // A record/claim proxy-port disagreement no longer blocks a leave. Nothing
-    // downstream consumes the port — the member runs no tailscaled to release
-    // it — so refusing here only stranded a member carrying legacy 1.3.x state
-    // with a mismatch. Same dead-gate class as the guard removed from
-    // `retireHostMembership`, one frame up.
-    const recordPort = isValidProxyPort(record?.proxy_port) ? record.proxy_port : null;
-    const claimPort = claim?.proxy_port ?? null;
     const ledgerPath = generationLedgerPath(hostId);
     let ledger: HostGenerationLedger | null = null;
     try {
@@ -1245,7 +1152,6 @@ export function inspectHostMembershipForLeave(
     const hostDir = resolveHostDir(hostId);
     return {
       record,
-      proxyPort: recordPort ?? claimPort,
       statePresent: fs.existsSync(hostDir)
         || fs.existsSync(ledgerPath) && ledger === null
         || ledger !== null
@@ -1274,8 +1180,8 @@ export function retireHostMembership(
     // port before the reservation was retired; with no tailscaled and no port it
     // only refused a leave whose record and claim were both missing — so a member
     // with corrupt state could never leave, for no remaining reason.
-    let claim: HostProxyPortClaim | null = null;
-    try { claim = readHostProxyPortClaimUnlocked(hostId); } catch (error) {
+    let claim: HostEnrollmentClaim | null = null;
+    try { claim = readHostEnrollmentClaimUnlocked(hostId); } catch (error) {
       if (!(error instanceof HostJoinStateCorruptError)) throw error;
     }
     let ledger: HostGenerationLedger | null = null;
@@ -1611,24 +1517,23 @@ export function createHostRegistryOperations(lockNamespace: PerUserLockNamespace
     getHost: (hostId: string) => getHost(hostId, lockNamespace),
     getHostMembershipSnapshot: (hostId: string) =>
       getHostMembershipSnapshot(hostId, lockNamespace),
-    reserveHostProxyPort: (hostId: string, preferredPort?: number) =>
-      reserveHostProxyPort(hostId, preferredPort, lockNamespace),
-    releaseHostProxyPort: (reservation: HostProxyPortReservation) =>
-      releaseHostProxyPort(reservation, lockNamespace),
+    reserveHostEnrollment: (hostId: string) =>
+      reserveHostEnrollment(hostId, lockNamespace),
+    releaseHostEnrollment: (reservation: HostEnrollmentReservation) =>
+      releaseHostEnrollment(reservation, lockNamespace),
     advanceHostEnrollmentPhase: (
-      reservation: HostProxyPortReservation,
+      reservation: HostEnrollmentReservation,
       phase: Exclude<HostEnrollmentPhase, 'teardown_pending'>,
-      service?: { preexisting: boolean; label: string },
-    ) => advanceHostEnrollmentPhase(reservation, phase, service, lockNamespace),
-    markHostEnrollmentTeardownPending: (reservation: HostProxyPortReservation) =>
+    ) => advanceHostEnrollmentPhase(reservation, phase, lockNamespace),
+    markHostEnrollmentTeardownPending: (reservation: HostEnrollmentReservation) =>
       markHostEnrollmentTeardownPending(reservation, lockNamespace),
     abandonHostEnrollment: (
-      reservation: HostProxyPortReservation,
+      reservation: HostEnrollmentReservation,
     ) => abandonHostEnrollment(reservation, lockNamespace),
     persistEnrollmentMembership: (
       enrollment: EnrollmentHostRecord,
       bearer: string,
-      reservation: HostProxyPortReservation,
+      reservation: HostEnrollmentReservation,
     ) => persistEnrollmentMembership(enrollment, bearer, reservation, lockNamespace),
     inspectHostMembershipForLeave: (
       hostId: string,
@@ -1664,8 +1569,8 @@ export const hostRegistry = {
   reconcileHostRollbackBearers,
   getHost,
   getHostMembershipSnapshot,
-  reserveHostProxyPort,
-  releaseHostProxyPort,
+  reserveHostEnrollment,
+  releaseHostEnrollment,
   advanceHostEnrollmentPhase,
   markHostEnrollmentTeardownPending,
   abandonHostEnrollment,

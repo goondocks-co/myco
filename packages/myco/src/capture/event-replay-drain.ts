@@ -101,7 +101,7 @@ export interface AttachedReplayTarget {
 }
 
 /** The re-forward transport seam — the ONE side effect that leaves the machine.
- *  Tests inject a fake host sink; production POSTs through the host's `proxy_port`
+ *  Tests inject a fake host sink; production POSTs to the host's public URL
  *  ({@link defaultEventReplayTransport}). Resolves the host's HTTP status; a 2xx is
  *  the ack that advances the high-water. */
 export type EventReplayTransport = (
@@ -157,6 +157,11 @@ export function listAttachedReplayTargets(
 ): AttachedReplayTarget[] {
   const out: AttachedReplayTarget[] = [];
   for (const { record, bearer } of readHostMembershipSnapshots(lockNamespace)) {
+    const host = hostDescriptorFor(record);
+    // A host with no usable address contributes NO targets — its entries stay
+    // buffered and pending. Skipping the whole record (rather than every other
+    // host with it) is why this is a per-record decision inside the loop.
+    if (!host) continue;
     for (const ref of record.projects) {
       out.push({
         hostId: record.host_id,
@@ -164,7 +169,7 @@ export function listAttachedReplayTargets(
         target: {
           projectId: ref.project_id as GroveProjectId,
           groveId: ref.grove_id,
-          host: hostDescriptorFor(record),
+          host,
           bearer,
         },
         bufferDir: resolveProjectBufferDir(ref.grove_id, ref.project_id),
@@ -320,7 +325,7 @@ export function createFsReplayStore(rootDir: string = resolveMemberEventReplayDr
 /**
  * Production transport: re-forward one buffered body to the host `route` through
  * the SAME dial primitive the byte-opaque proxy uses ({@link defaultDial} — direct
- * for a kernel-mode member, or CONNECT-tunneled through the host's `proxy_port`),
+ * to the host's public URL),
  * attaching the host bearer + protocol-version header exactly as the live collect
  * forward does, plus the tenancy headers the host resolves the hosted Grove from
  * (project/grove/machine/session). `hostServed` is derived host-side from the

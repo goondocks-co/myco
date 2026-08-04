@@ -32,6 +32,7 @@ import { createGroveId, createProjectId } from '@myco/grove/ids.js';
 import { type HostRecord } from '@myco/host/registry.js';
 import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 /** A local display Grove owned by this daemon, plus an attached project (host
  *  ref only, NO local Grove row — the never-materialize shape). */
@@ -41,8 +42,8 @@ function seedAttachedProject(mycoHome: string): { localGroveId: string; attached
   const record: HostRecord = {
     host_id: createGroveId().replace('grove_', 'host_'),
     label: 'Mac Studio',
-    overlay_address: '100.64.0.2:7777',
-    protocol_version: 1,
+    host_url: 'https://host-b.tailnet.ts.net:8443',
+    protocol_version: HOST_PROTOCOL_VERSION,
     created_at: new Date().toISOString(),
     projects: [
       {

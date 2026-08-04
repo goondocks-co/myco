@@ -98,7 +98,7 @@ describe('writeHostServeConfig', () => {
 
   it('disable CLEARS served_grove_id (spec §8 — a stale designation must not survive disable → re-enable)', () => {
     writeHostServeConfig(
-      { enabled: true, overlayAddress: '100.64.0.7', overlayPort: 41443, servedGroveId: 'grove_' + '0'.repeat(32) },
+      { enabled: true, servedGroveId: 'grove_' + '0'.repeat(32) },
       process.env.MYCO_HOME,
     );
     let machine = loadMachineConfig(process.env.MYCO_HOME);
@@ -158,7 +158,7 @@ describe('host state record', () => {
     host_id: 'host_' + '0'.repeat(32),
     enabled_at: '2026-07-07T00:00:00.000Z',
     server_url: 'https://host:8080',
-    overlay_address: '100.64.0.1',
+    host_url: 'https://host-a.tailnet.ts.net:8443',
     headscale_user: 'myco-host',
     headscale_version: '0.29.2',
     tailscale_version: '1.98.8',

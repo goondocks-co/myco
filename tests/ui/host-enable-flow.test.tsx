@@ -83,7 +83,7 @@ describe('HostATeamPanel state machine', () => {
     }));
     respond = () => new Error('should not be called for an expired run');
     render(wrap(<HostATeamPanel />));
-    expect(screen.getByLabelText('Server URL')).toBeInTheDocument();
+    expect(screen.getByLabelText('Team storage name')).toBeInTheDocument();
     expect(localStorage.getItem(RUN_KEY)).toBeNull();
   });
 
@@ -91,7 +91,7 @@ describe('HostATeamPanel state machine', () => {
     localStorage.setItem(RUN_KEY, '"5"');
     respond = () => new Error('should not be called');
     render(wrap(<HostATeamPanel />));
-    expect(screen.getByLabelText('Server URL')).toBeInTheDocument();
+    expect(screen.getByLabelText('Team storage name')).toBeInTheDocument();
   });
 
   it('B1: a job that FAILED before any restart shows the error step AND a Dismiss that frees the form', async () => {
@@ -103,12 +103,11 @@ describe('HostATeamPanel state machine', () => {
       throw new Error(`unexpected ${path}`);
     };
     render(wrap(<HostATeamPanel />));
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
     fireEvent.click(screen.getByRole('button', { name: 'Host a team' }));
     await waitFor(() => expect(screen.getByTestId('host-enable-steps')).toBeInTheDocument());
     expect(screen.getByText(/tailscale up exploded/)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('host-enable-dismiss'));
-    expect(screen.getByLabelText('Server URL')).toBeInTheDocument();
+    expect(screen.getByLabelText('Team storage name')).toBeInTheDocument();
     expect(localStorage.getItem(RUN_KEY)).toBeNull();
   });
 
@@ -121,7 +120,6 @@ describe('HostATeamPanel state machine', () => {
       throw new Error(`unexpected ${path}`);
     };
     render(wrap(<HostATeamPanel />));
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
     fireEvent.click(screen.getByRole('button', { name: 'Host a team' }));
     await waitFor(() => expect(screen.getByText(/waiting for the host to come up/)).toBeInTheDocument());
     expect(screen.getByTestId('host-enable-dismiss')).toBeInTheDocument();
@@ -135,14 +133,13 @@ describe('HostATeamPanel state machine', () => {
       throw new Error(`unexpected ${path}`);
     };
     render(wrap(<HostATeamPanel />));
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
     fireEvent.click(screen.getByRole('button', { name: 'Host a team' }));
     await waitFor(() => expect(screen.getByText('This machine is now serving your team.')).toBeInTheDocument());
     expect(screen.getByTestId('host-enable-done')).toBeInTheDocument();
     // Marker cleared by effect, not render-body side effect.
     await waitFor(() => expect(localStorage.getItem(RUN_KEY)).toBeNull());
     fireEvent.click(screen.getByTestId('host-enable-done'));
-    expect(screen.getByLabelText('Server URL')).toBeInTheDocument();
+    expect(screen.getByLabelText('Team storage name')).toBeInTheDocument();
   });
 
   it('C3: FAIL CLOSED — serving+bound with a MISSING started_at never completes (the discriminator cannot be vacuous)', async () => {
@@ -154,7 +151,6 @@ describe('HostATeamPanel state machine', () => {
       throw new Error(`unexpected ${path}`);
     };
     render(wrap(<HostATeamPanel />));
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
     fireEvent.click(screen.getByRole('button', { name: 'Host a team' }));
     await waitFor(() => expect(screen.getByTestId('host-enable-progress')).toBeInTheDocument());
     // Give Phase 2 a poll cycle; success must NOT appear.
@@ -178,7 +174,6 @@ describe('HostATeamPanel state machine', () => {
       throw new Error(`unexpected ${path}`);
     };
     render(wrap(<HostATeamPanel />));
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
     fireEvent.click(screen.getByRole('button', { name: 'Host a team' }));
     // The transient failure must not latch: the poll continues (2s interval —
     // waitFor with a generous timeout observes the recovery).
@@ -195,7 +190,6 @@ describe('HostATeamPanel state machine', () => {
       throw new Error(`unexpected ${path}`);
     };
     render(wrap(<HostATeamPanel />));
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://h:8080' } });
     fireEvent.click(screen.getByRole('button', { name: 'Host a team' }));
     await waitFor(() => expect(screen.getByTestId('host-enable-error')).toBeInTheDocument());
     expect(screen.getByTestId('host-enable-error').textContent).toContain('terminal');

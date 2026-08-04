@@ -153,7 +153,7 @@ describe('(a) classifyRoute: team-write routes to the host for an attached proje
     const host: HostRecord = {
       host_id: createHostId(),
       label: 'Test Host',
-      overlay_address: '127.0.0.1:9',
+      host_url: 'https://host-a.tailnet.ts.net:8443',
       protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: groveId, project_id: projectId }],
@@ -450,7 +450,7 @@ describe('(c) PUT /api/team/config writes the served grove tier via the single w
 
   function deps(): { hostServe: HostServeRuntime; mycoHome: string } {
     return {
-      hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id },
+      hostServe: { bearer: 'b', servedGroveId: grove.id },
       mycoHome: home(),
     };
   }
@@ -523,7 +523,7 @@ describe('(per-task c) PUT /api/team/agent-tasks/:id/config writes the served gr
 
   function deps(): { hostServe: HostServeRuntime; mycoHome: string } {
     return {
-      hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id },
+      hostServe: { bearer: 'b', servedGroveId: grove.id },
       mycoHome: home(),
     };
   }
@@ -600,7 +600,7 @@ describe('(d) PUT/DELETE /api/team/secrets/:provider — masked-echo-only', () =
 
   function deps(): { hostServe: HostServeRuntime; mycoHome: string } {
     return {
-      hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id },
+      hostServe: { bearer: 'b', servedGroveId: grove.id },
       mycoHome: home(),
     };
   }
@@ -949,7 +949,7 @@ describe('resolveServedGroveKeyHealthIsolated: never leaves residue in process.e
     expect(process.env[sentinelKey]).toBeUndefined();
 
     await handlePutTeamConfig(
-      { hostServe: { overlayAddress: '127.0.0.1', bearer: 'b', servedGroveId: grove.id }, mycoHome: home() },
+      { hostServe: { bearer: 'b', servedGroveId: grove.id }, mycoHome: home() },
       { patch: { agent: { provider: { type: 'anthropic' } } } },
     );
     resolveServedGroveKeyHealthIsolated(loadMachineConfig(home()), home());

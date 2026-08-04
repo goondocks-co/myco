@@ -101,7 +101,11 @@ describe('external MCP production activation posture', () => {
     const mainSource = fs.readFileSync(path.join(sourceRoot, 'main.ts'), 'utf-8');
 
     expect(listenerSource).toContain("'status', '--json'");
-    expect(listenerSource).toContain('`--set-path=${selector.mount}`');
+    // The mount is passed through `mountArgsFor`, which emits `--set-path` for
+    // a path mount and NOTHING for root — the on- and off-runners must agree,
+    // or an off-runner addresses a handler the on-runner never created.
+    expect(listenerSource).toContain('mountArgsFor(selector.mount)');
+    expect(listenerSource).toContain('mountArgsFor(opts.mount)');
     expect(listenerSource).not.toContain("String(port), 'off'");
     expect(listenerSource).not.toContain('defaultFunnelRunner');
     expect(routeSource).not.toContain('runFunnel');
@@ -158,12 +162,14 @@ describe('external MCP production activation posture', () => {
       calls.push(args);
       if (args[1] === 'status') return { stdout: JSON.stringify(config) };
       if (args.at(-1) !== 'off') {
+        // A ROOT-mounted handler is addressed with no `--set-path` at all —
+        // the same argv shape that created it. `--set-path=/` would name a
+        // mount the on-runner never wrote.
         expect(args).toEqual([
           'serve',
           '--bg',
           '--yes',
           '--https=443',
-          '--set-path=/',
           'http://127.0.0.1:8743',
         ]);
         config = {
@@ -176,7 +182,6 @@ describe('external MCP production activation posture', () => {
           '--bg',
           '--yes',
           '--https=443',
-          '--set-path=/',
           'off',
         ]);
         config = {
@@ -199,15 +204,8 @@ describe('external MCP production activation posture', () => {
     });
     expect(calls).toEqual([
       ['funnel', 'status', '--json'],
-      [
-        'serve',
-        '--bg',
-        '--yes',
-        '--https=443',
-        '--set-path=/',
-        'http://127.0.0.1:8743',
-      ],
-      ['serve', '--bg', '--yes', '--https=443', '--set-path=/', 'off'],
+      ['serve', '--bg', '--yes', '--https=443', 'http://127.0.0.1:8743'],
+      ['serve', '--bg', '--yes', '--https=443', 'off'],
       ['funnel', 'status', '--json'],
     ]);
   });
@@ -533,7 +531,7 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
   });
 
   function hostServe(): HostServeRuntime {
-    return { overlayAddress: '127.0.0.1', bearer: 'unused-here', servedGroveId: grove.id };
+    return { bearer: 'unused-here', servedGroveId: grove.id };
   }
 
   function newListener(capturedGets: CapturedGet[] = []): ExternalMcpListener {

@@ -694,7 +694,7 @@ export interface HostEnrollmentPayload {
 
 /**
  * Build the enrollment response from the resolved host-serve runtime + the actual
- * bound overlay port (`server.overlayPort`, known only after listen). The bearer is
+ * bound team socket (known only after listen). The bearer is
  * `runtime.bearer` — the exact value {@link resolveHostServeBearer} minted/read at
  * config resolution, so there is one bearer per host, delivered here unchanged.
  */

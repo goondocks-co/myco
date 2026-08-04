@@ -135,7 +135,11 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   });
 
   const bearer = (token = HOST_BEARER) => `Bearer ${token}`;
-  const v1 = { 'x-myco-host-protocol': '1' };
+  // A member speaking the CURRENT protocol. Pinned to the constant rather than
+  // a literal: the version gate tests an inclusive window, so a hardcoded old
+  // number silently converts every test in this file into a version-mismatch
+  // test the moment the window moves.
+  const v1 = { 'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION) };
   // The designated served Grove's tenancy headers — a real member request to a
   // grove-resolving route always carries these; Task 2's servedGroveRefusal
   // refuses any grove-resolving overlay request without them (or naming a
@@ -557,7 +561,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
 
   const authed = (extra: Record<string, string> = {}): Record<string, string> => ({
     Authorization: `Bearer ${HOST_BEARER}`,
-    'x-myco-host-protocol': '1',
+    'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION),
     ...extra,
   });
   // The designated served Grove's tenancy — required on 'serve'-stamped routes

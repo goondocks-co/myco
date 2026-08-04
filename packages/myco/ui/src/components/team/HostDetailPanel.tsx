@@ -9,6 +9,7 @@ import { useGroves } from '../../hooks/use-groves';
 import {
   HOST_DETAIL_NO_PROJECTS_COPY,
   HOST_REACHABILITY_COPY,
+  hostAddressCopy,
   protocolSkewNote,
   type HostReachabilityDisplayState,
 } from '../../lib/membership-copy';
@@ -74,6 +75,11 @@ export function HostDetailPanel({ host }: HostDetailPanelProps) {
       <Panel tone="sage" title="Identity">
         <dl className="flex flex-col gap-1.5 m-0">
           <DefRow term="Joined">{new Date(host.created_at).toLocaleDateString()}</DefRow>
+          <DefRow term="Address">
+            <span className={host.host_url ? 'font-mono break-all' : 'text-terracotta-text'}>
+              {hostAddressCopy(host.host_url)}
+            </span>
+          </DefRow>
         </dl>
       </Panel>
 
@@ -107,6 +113,14 @@ export function HostDetailPanel({ host }: HostDetailPanelProps) {
           <ReachabilityIcon className={reachability === 'checking' ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} aria-hidden />
           {HOST_REACHABILITY_COPY[reachability]}
         </Badge>
+        {/* The badge says WHETHER; this says why and what to do — a blocked
+            port, a renamed host, and a host that is simply down all read the
+            same otherwise, and only one of them is the user's to fix. */}
+        {healthEntry?.detail && reachability !== 'checking' && (
+          <p className="text-xs text-on-surface-variant mt-2 mb-0" data-testid="host-detail-reachability-detail">
+            {healthEntry.detail}
+          </p>
+        )}
       </Panel>
 
       <Panel tone="sage" title="Capture delivery">

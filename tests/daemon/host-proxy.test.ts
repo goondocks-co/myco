@@ -17,13 +17,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
+import { parseHostUrl } from '@myco/host/host-url.js';
 
 import { JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   handleAttachedRequest,
   isCanopyMcpCall,
   mcpRequestIdFromBody,
-  parseOverlayAddress,
   hostProtocolCompatible,
   __resetVersionMismatchLogForTests,
   type HostProxyDeps,
@@ -37,7 +38,7 @@ import { resolveProjectBufferDir } from '@myco/grove/paths';
 import { listGroves } from '@myco/grove/registry';
 import { readEventId } from '@myco/capture/event-id';
 import { REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context';
-import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants';
+import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants';
 
 const HOST_BEARER = 'host-bearer-secret';
 
@@ -96,16 +97,24 @@ function createMember(getConfig: () => { target: RemoteTarget; classification: R
   return server;
 }
 
-function makeTarget(fixturePort: number, opts: { protocolVersion?: number; proxyPort?: number } = {}): RemoteTarget {
+/**
+ * A target pointing at the fixture through a REAL HTTPS edge.
+ *
+ * The forwarder's job is to build one upstream request and relay its response,
+ * and the dial it uses is `https.request` — so the fixture sits behind a TLS
+ * edge here rather than being dialed as plain loopback HTTP. Everything these
+ * tests assert (headers, timeouts, streaming, refusals) then rides the
+ * transport that actually ships.
+ */
+function makeTarget(hostUrl: string, opts: { protocolVersion?: number } = {}): RemoteTarget {
   return {
     projectId: 'proj_0123456789abcdef0123456789abcdef' as RemoteTarget['projectId'],
     groveId: 'grove_0123456789abcdef0123456789abcdef',
     host: {
       host_id: 'host_0123456789abcdef0123456789abcdef',
       label: 'Mac Studio',
-      overlay_address: `127.0.0.1:${fixturePort}`,
-      protocol_version: opts.protocolVersion ?? 1,
-      proxy_port: opts.proxyPort,
+      host_url: hostUrl,
+      protocol_version: opts.protocolVersion ?? HOST_PROTOCOL_VERSION,
     },
     bearer: HOST_BEARER,
   };
@@ -143,6 +152,8 @@ describe('host-proxy forwarder', () => {
   let savedTeamHome: string | undefined;
   let fixture: ReturnType<typeof createFixture>;
   let fixturePort: number;
+  let edge: FunnelEdge;
+  let hostUrl: string;
   let member: http.Server;
   let memberPort: number;
   let config: { target: RemoteTarget; classification: RouteClassification; deps?: Partial<HostProxyDeps> };
@@ -159,8 +170,10 @@ describe('host-proxy forwarder', () => {
 
     fixture = createFixture();
     fixturePort = await listen(fixture.server);
+    edge = await startFunnelEdge({ port: fixturePort });
+    hostUrl = edge.url;
     config = {
-      target: makeTarget(fixturePort),
+      target: makeTarget(hostUrl),
       classification: { capability: 'Knowledge serving', stamp: 'serve' },
     };
     member = createMember(() => config);
@@ -172,6 +185,7 @@ describe('host-proxy forwarder', () => {
     // relay left mid-flight by a test can't hang server.close().
     (member as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
     (fixture.server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+    await edge.close();
     await close(member);
     await close(fixture.server);
     if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
@@ -182,18 +196,36 @@ describe('host-proxy forwarder', () => {
 
   const memberUrl = (p: string) => `http://127.0.0.1:${memberPort}${p}`;
 
+  /**
+   * Take the host down as a member experiences it: the member's dial must
+   * FAIL, which means the public edge goes with the origin behind it. Closing
+   * only the origin leaves the edge relaying a 502 — a real state, but a
+   * different one ("published, not serving"), and the tests below are about a
+   * host the member cannot reach at all.
+   */
+  const takeHostDown = async (): Promise<void> => {
+    await close(fixture.server);
+    await edge.close();
+  };
+
   // --- pure helpers ---
 
-  test('parseOverlayAddress handles host:port and URL forms', () => {
-    expect(parseOverlayAddress('100.64.0.1:7433')).toEqual({ host: '100.64.0.1', port: 7433 });
-    expect(parseOverlayAddress('http://host.example:9000')).toEqual({ host: 'host.example', port: 9000 });
-    expect(parseOverlayAddress('bare-host')).toEqual({ host: 'bare-host', port: 80 });
-  });
 
   test('hostProtocolCompatible enforces the inclusive [min,max] window', () => {
-    expect(hostProtocolCompatible(1)).toBe(true);
-    expect(hostProtocolCompatible(0)).toBe(false);
-    expect(hostProtocolCompatible(99)).toBe(false);
+    expect(hostProtocolCompatible(HOST_MIN_COMPAT_VERSION)).toBe(true);
+    expect(hostProtocolCompatible(HOST_PROTOCOL_VERSION)).toBe(true);
+    expect(hostProtocolCompatible(HOST_MIN_COMPAT_VERSION - 1)).toBe(false);
+    expect(hostProtocolCompatible(HOST_PROTOCOL_VERSION + 1)).toBe(false);
+  });
+
+  test('the transport bump refuses a pre-transport host, not just an ancient one', () => {
+    // The reason MIN_COMPAT rose with the version rather than staying at 1:
+    // both gates test the INCLUSIVE window, so bumping only the current version
+    // would WIDEN the range and admit a v3 host — one whose recorded address is
+    // an overlay IP that resolves nowhere. A loud refusal beats a silent
+    // timeout, and this is the assertion that keeps it loud.
+    expect(hostProtocolCompatible(3)).toBe(false);
+    expect(HOST_MIN_COMPAT_VERSION).toBe(HOST_PROTOCOL_VERSION);
   });
 
   test('isCanopyMcpCall keys on tool name + op/type selector only', () => {
@@ -251,7 +283,12 @@ describe('host-proxy forwarder', () => {
     expect(got.headers['x-myco-auth']).toBeUndefined();
     expect(got.headers.authorization).toBe(`Bearer ${HOST_BEARER}`);
     expect(got.headers[HOST_PROTOCOL_HEADER]).toBe(String(HOST_PROTOCOL_VERSION));
-    expect(got.headers.host).toBe(`127.0.0.1:${fixturePort}`);
+    // The Host the MEMBER claimed, captured at the edge before it rewrote the
+    // header the way Funnel does. This is `hostAuthority(target)`, and it must
+    // match the recorded `host_url` — it is the TLS/SNI name the connection is
+    // routed by, so a wrong value fails to REACH the host rather than being
+    // refused by it.
+    expect(edge.seenHosts).toContain(parseHostUrl(hostUrl).authority);
   });
 
   test('serve route stamps the MEMBER machine id when the inbound request carries none; a caller-supplied one is preserved verbatim', async () => {
@@ -509,9 +546,7 @@ describe('host-proxy forwarder', () => {
 
   test('collect route with host DOWN: still buffers, still acks buffered:true, no hang', async () => {
     config.classification = { capability: 'Collection', stamp: 'collect' };
-    // Point at a closed port (host unreachable).
-    await close(fixture.server);
-    config.target = makeTarget(fixturePort); // same port, now dead
+    await takeHostDown();
 
     const started = Date.now();
     const res = await fetch(memberUrl('/events'), {
@@ -540,13 +575,13 @@ describe('host-proxy forwarder', () => {
       bufferAppend: () => { throw new Error('disk unavailable'); },
     };
     const failingHostId = 'host_fedcba9876543210fedcba9876543210';
-    const target = makeTarget(fixturePort);
+    const target = makeTarget(hostUrl);
     config.target = { ...target, host: { ...target.host, host_id: failingHostId } };
     __resetLogThrottleForTests();
 
     process.on('unhandledRejection', onRejection);
     try {
-      await close(fixture.server);
+      await takeHostDown();
 
       const started = Date.now();
       const res = await fetch(memberUrl('/events'), {
@@ -643,8 +678,7 @@ describe('host-proxy forwarder', () => {
 
   test('unreachable non-collect route → prompt 503 host_unreachable, no hang', async () => {
     config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
-    await close(fixture.server);
-    config.target = makeTarget(fixturePort); // dead port
+    await takeHostDown();
 
     const started = Date.now();
     const res = await fetch(memberUrl('/api/spores'));
@@ -662,7 +696,7 @@ describe('host-proxy forwarder', () => {
   test('stored-version mismatch → 409 host_protocol_mismatch WITHOUT dialing, logged once per host', async () => {
     const cap = capturingLogger();
     config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
-    config.target = makeTarget(fixturePort, { protocolVersion: 99 });
+    config.target = makeTarget(hostUrl, { protocolVersion: 99 });
     config.deps = { logger: cap.logger };
 
     const res1 = await fetch(memberUrl('/api/spores'));
@@ -866,8 +900,7 @@ describe('host-proxy forwarder', () => {
 
   test('/mcp host unreachable → refusal echoes the request id and parses under JSONRPCMessageSchema', async () => {
     config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
-    await close(fixture.server);
-    config.target = makeTarget(fixturePort); // same port, now dead
+    await takeHostDown();
 
     const res = await fetch(memberUrl('/mcp'), {
       method: 'POST',
@@ -886,8 +919,7 @@ describe('host-proxy forwarder', () => {
 
   test('/mcp unparseable request keeps id: null (JSON-RPC spec; no SDK client ever sends one)', async () => {
     config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
-    await close(fixture.server);
-    config.target = makeTarget(fixturePort); // dead port
+    await takeHostDown();
 
     const res = await fetch(memberUrl('/mcp'), {
       method: 'POST',
@@ -903,7 +935,7 @@ describe('host-proxy forwarder', () => {
 
   test('/mcp stored-version mismatch → refusal echoes the request id, never dials', async () => {
     config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
-    config.target = makeTarget(fixturePort, { protocolVersion: 99 });
+    config.target = makeTarget(hostUrl, { protocolVersion: 99 });
 
     const res = await fetch(memberUrl('/mcp'), {
       method: 'POST',
@@ -975,32 +1007,4 @@ describe('host-proxy forwarder', () => {
     expect(parsed.error).toBeUndefined();
   });
 
-  // --- dial seam: CONNECT proxy ---
-
-  test('proxy_port routes the dial through the local HTTP CONNECT proxy', async () => {
-    // A minimal HTTP CONNECT proxy that tunnels to the requested authority.
-    const proxy = http.createServer();
-    proxy.on('connect', (req, clientSocket, head) => {
-      const [h, p] = (req.url ?? '').split(':');
-      const upstream = net.connect(Number(p), h, () => {
-        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-        if (head.length) upstream.write(head);
-        upstream.pipe(clientSocket);
-        clientSocket.pipe(upstream);
-      });
-      upstream.on('error', () => clientSocket.destroy());
-    });
-    const proxyPort = await new Promise<number>((resolve) => proxy.listen(0, '127.0.0.1', () => resolve((proxy.address() as AddressInfo).port)));
-
-    config.classification = { capability: 'Knowledge serving', stamp: 'serve' };
-    config.target = makeTarget(fixturePort, { proxyPort });
-    fixture.setResponder((_req, res) => { res.writeHead(200); res.end('via-proxy'); });
-
-    const res = await fetch(memberUrl('/api/spores'));
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe('via-proxy');
-    // The request reached the fixture through the CONNECT tunnel.
-    expect(fixture.requests).toHaveLength(1);
-    await new Promise<void>((r) => proxy.close(() => r()));
-  });
 });

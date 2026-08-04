@@ -38,6 +38,7 @@ import {
 } from '../constants.js';
 import { loadAttachedMergedConfig } from '../config/loader.js';
 import { enumerateLeafPaths } from '../config/leaf-paths.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 import { resolveProjectVaultDir } from '../grove/paths.js';
 import { resolveAttach } from '../host/registry.js';
@@ -209,7 +210,11 @@ async function computeResponse(
   req: http.IncomingMessage,
   pathname: string,
   vaultDir: string,
-  target: RemoteTarget,
+  /** Null when the host record carries no usable address: the grove tier is
+   *  unavailable, and every path below that needs it degrades exactly as it
+   *  does for a host that is simply unreachable. */
+  target: RemoteTarget | null,
+  attachedHost: { host_id: string; label: string },
   body: unknown,
   deps: AttachedConfigDeps,
 ): Promise<RouteResponse> {
@@ -227,6 +232,11 @@ async function computeResponse(
         let versionSkew = false;
         const config = await loadAttachedMergedConfig(vaultDir, {
           fetchGroveDoc: async () => {
+            // No address on record is not a dial that failed — it is a dial
+            // that cannot be attempted. Same OUTCOME (no grove tier), and it
+            // reaches the same degrade below, but the message names the remedy
+            // instead of describing a network that is fine.
+            if (!target) throw new Error('this host has no address on record — re-join it');
             const result = await fetchHostGroveConfig(target, deps.dial, deps.logger);
             versionSkew = result.versionSkew;
             return result.doc;
@@ -235,11 +245,11 @@ async function computeResponse(
             // A version skew already fired its own loud, once-per-host log inside
             // fetchHostGroveConfig — don't ALSO warn "unreachable" for it.
             if (versionSkew) return;
-            if (warnedUnreachableHosts.has(target.host.host_id)) return;
-            warnedUnreachableHosts.add(target.host.host_id);
+            if (warnedUnreachableHosts.has(attachedHost.host_id)) return;
+            warnedUnreachableHosts.add(attachedHost.host_id);
             deps.logger.warn('host unreachable for grove-tier config — merged view degraded to grove defaults', {
-              host_id: target.host.host_id,
-              host_label: target.host.label,
+              host_id: attachedHost.host_id,
+              host_label: attachedHost.label,
               error: err instanceof Error ? err.message : undefined,
             });
           },
@@ -283,7 +293,13 @@ export async function handleAttachedConfigRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   pathname: string,
-  target: RemoteTarget,
+  /** The attached project and the host serving it. Carried separately from
+   *  `target` because the member-side tiers resolve WITHOUT a dial — a host
+   *  with no usable address still has a project root, a vault, and a machine
+   *  tier to assemble from. */
+  attach: { projectId: GroveProjectId | null; host: { host_id: string; label: string } },
+  /** Null when the host has no usable address. See {@link computeResponse}. */
+  target: RemoteTarget | null,
   body: unknown,
   deps: AttachedConfigDeps,
 ): Promise<void> {
@@ -291,9 +307,9 @@ export async function handleAttachedConfigRequest(
   // config_carve — the carrier admits team-write routes), so a null
   // projectId cannot legitimately reach the attach lookup.
   const projectRoot = readHeader(req, REQUEST_CONTEXT_HEADERS.projectRoot)
-    ?? (target.projectId !== null
+    ?? (attach.projectId !== null
       ? resolveAttach(
-        target.projectId,
+        attach.projectId,
         deps.lockNamespace ?? nativePerUserLockNamespace,
       )?.ref.root
       : undefined);
@@ -304,11 +320,11 @@ export async function handleAttachedConfigRequest(
   const vaultDir = resolveProjectVaultDir(projectRoot);
 
   try {
-    const response = await computeResponse(req, pathname, vaultDir, target, body, deps);
+    const response = await computeResponse(req, pathname, vaultDir, target, attach.host, body, deps);
     respondJson(res, response);
   } catch (err) {
     deps.logger.error('attached config request failed', {
-      host_id: target.host.host_id,
+      host_id: attach.host.host_id,
       path: pathname,
       error: err instanceof Error ? err.message : String(err),
     });

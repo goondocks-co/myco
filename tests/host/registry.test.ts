@@ -22,6 +22,7 @@ import {
   type HostRecord,
 } from '@myco/host/registry';
 import { createHostOperationLock } from '@myco/host/operation-lock';
+import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import {
   testPerUserLockNamespace,
   testPerUserLocksRoot,
@@ -36,7 +37,7 @@ const {
   readHostRegistry,
   readHostSecrets,
   recordHostProtocolVersion,
-  reserveHostProxyPort,
+  reserveHostEnrollment,
   retireHostMembership,
   resolveAttach,
   writeHostSecret,
@@ -59,8 +60,8 @@ function makeHost(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
     host_id: createHostId(),
     label: 'Mac Studio',
-    overlay_address: '100.64.0.1:7433',
-    protocol_version: 1,
+    host_url: 'https://host-a.tailnet.ts.net:8443',
+    protocol_version: HOST_PROTOCOL_VERSION,
     created_at: new Date().toISOString(),
     projects: [],
     ...overrides,
@@ -109,7 +110,7 @@ describe('host registry', () => {
     expect(all[0].label).toBe('Mac Studio');
     expect(all[0].projects).toEqual([ref]);
 
-    expect(getHost(host.host_id)?.overlay_address).toBe('100.64.0.1:7433');
+    expect(getHost(host.host_id)?.host_url).toBe('https://host-a.tailnet.ts.net:8443');
   });
 
   test('protocol refresh rejects invalid values without corrupting the record and remains monotonic', () => {
@@ -299,7 +300,7 @@ describe('host registry', () => {
 
   test('leave retirement fences a restored legacy record after deleting its secrets', async () => {
     const proxyPort = await findFreeLoopbackPort();
-    const host = makeHost({ proxy_port: proxyPort });
+    const host = makeHost();
     writeHostRecordFixture(host);
     writeHostSecret(host.host_id, HOST_BEARER_SECRET, 'a-bearer-token');
     const restoredRecord = fs.readFileSync(path.join(tmp, 'hosts', host.host_id, 'host.json'));
@@ -324,15 +325,14 @@ describe('host registry', () => {
   });
 
   test('leave repairs a malformed generation ledger before retiring the membership', async () => {
-    const proxyPort = await findFreeLoopbackPort();
-    const host = makeHost({ proxy_port: proxyPort });
-    const reservation = reserveHostProxyPort(host.host_id, proxyPort);
+    const host = makeHost();
+    const reservation = reserveHostEnrollment(host.host_id);
     advanceHostEnrollmentPhase(reservation, 'enrolling');
     persistEnrollmentMembership(
       {
         host_id: host.host_id,
         label: host.label,
-        overlay_address: host.overlay_address,
+        host_url: host.host_url,
         protocol_version: host.protocol_version,
         created_at: host.created_at,
       },
