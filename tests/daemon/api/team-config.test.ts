@@ -16,6 +16,7 @@
  * Hermetic: MYCO_HOME / MYCO_TEAM_HOME are fresh tmpdirs per test.
  */
 import { writeHostRecordFixture } from '../../helpers/host-registry-fixture.js';
+import { teamFetch, teamSocketPath, removeSocket } from '../../helpers/team-socket.js';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -64,6 +65,8 @@ import type { RouteRequest } from '@myco/daemon/router';
 import { ExternalMcpContainmentBusyError } from '@myco/daemon/external-mcp-containment';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 import { seedExternalMcpConfig } from '../../helpers/external-mcp-config-fixture.js';
+
+let teamSock: string;
 
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
@@ -282,14 +285,14 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   async function buildHostServer(servedGroveId: string | undefined): Promise<DaemonServer> {
     const hostServe: HostServeRuntime = {
-      overlayAddress: '127.0.0.1',
-      overlayPort: 0,
       bearer: HOST_BEARER,
       servedGroveId,
     };
     const hostVaultDir = path.join(tmp, 'host-anchor', '.myco');
     const logger = new DaemonLogger(path.join(tmp, 'host-logs'));
+    teamSock = teamSocketPath();
     const server = new DaemonServer({
+      teamSocketPath: teamSock,
       vaultDir: hostVaultDir,
       logger,
       daemonStateAuthority: stubAuthority,
@@ -312,7 +315,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   test('GET /api/team/config: the served grove passes through', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/config`, {
+    const res = await teamFetch(teamSock, `/api/team/config`, {
       headers: overlayHeaders({ 'x-myco-grove-id': servedGrove.id, 'x-myco-project-id': servedProjectId }),
     });
     expect(res.status).toBe(200);
@@ -322,7 +325,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   test('GET /api/team/config: a foreign (personal) grove is refused 404, never touches the personal grove', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/config`, {
+    const res = await teamFetch(teamSock, `/api/team/config`, {
       headers: overlayHeaders({ 'x-myco-grove-id': personalGrove.id, 'x-myco-project-id': personalProjectId }),
     });
     expect(res.status).toBe(404);
@@ -332,7 +335,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   test('GET /api/team/config: no grove header resolves null grove -> refused (fail-closed, not fail-open)', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/config`, {
+    const res = await teamFetch(teamSock, `/api/team/config`, {
       headers: overlayHeaders(),
     });
     expect(res.status).toBe(404);
@@ -340,7 +343,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   test('GET /api/team/config: host has no designation -> refused for every grove', async () => {
     const server = await buildHostServer(undefined);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/config`, {
+    const res = await teamFetch(teamSock, `/api/team/config`, {
       headers: overlayHeaders({ 'x-myco-grove-id': servedGrove.id, 'x-myco-project-id': servedProjectId }),
     });
     expect(res.status).toBe(404);
@@ -364,7 +367,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   test('GET /api/team/agent-tasks/vault-evolve/config: the served grove passes through', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/agent-tasks/vault-evolve/config`, {
+    const res = await teamFetch(teamSock, `/api/team/agent-tasks/vault-evolve/config`, {
       headers: overlayHeaders({ 'x-myco-grove-id': servedGrove.id, 'x-myco-project-id': servedProjectId }),
     });
     expect(res.status).toBe(200);
@@ -374,7 +377,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   test('GET /api/team/agent-tasks/vault-evolve/config: a foreign (personal) grove is refused 404', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/agent-tasks/vault-evolve/config`, {
+    const res = await teamFetch(teamSock, `/api/team/agent-tasks/vault-evolve/config`, {
       headers: overlayHeaders({ 'x-myco-grove-id': personalGrove.id, 'x-myco-project-id': personalProjectId }),
     });
     expect(res.status).toBe(404);
@@ -384,7 +387,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   test('GET /api/team/agent-tasks/vault-evolve/config: no grove header resolves null grove -> refused', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/agent-tasks/vault-evolve/config`, {
+    const res = await teamFetch(teamSock, `/api/team/agent-tasks/vault-evolve/config`, {
       headers: overlayHeaders(),
     });
     expect(res.status).toBe(404);
@@ -392,7 +395,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   test('GET /api/team/agent-tasks/vault-evolve/config: host has no designation -> refused for every grove', async () => {
     const server = await buildHostServer(undefined);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/api/team/agent-tasks/vault-evolve/config`, {
+    const res = await teamFetch(teamSock, `/api/team/agent-tasks/vault-evolve/config`, {
       headers: overlayHeaders({ 'x-myco-grove-id': servedGrove.id, 'x-myco-project-id': servedProjectId }),
     });
     expect(res.status).toBe(404);
@@ -730,7 +733,6 @@ describe('external MCP routes — fail-closed activation and containment-only di
   function deps(): TeamConfigRouteDeps {
     return {
       hostServe: {
-        overlayAddress: '127.0.0.1',
         bearer: 'b',
         servedGroveId: grove.id,
       },

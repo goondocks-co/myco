@@ -2,13 +2,10 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
-import { createTailscaleCli, type TailscaleCli } from '../host/tailscale-cli.js';
-import { realCommandRunner } from '../host/overlay-binaries.js';
-import { resolveHostTailscaledSocketPath } from '../grove/paths.js';
-import { readHostState } from '../team-host/state.js';
-import { reconcileOverlayForward, retireOverlayForward, retireUnheldOverlayForwards } from './overlay-forward.js';
+import { resolveTeamSocketPath } from '../grove/paths.js';
 import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile, resolveEmbeddedAsset } from './static.js';
@@ -44,12 +41,11 @@ import { SchemaVersionTooNewError } from '@myco/db/schema.js';
 import { PreMigrationCheckpointError } from '@myco/backup/pre-migration-checkpoint.js';
 import {
   buildHostEnrollmentPayload,
-  isBindableOverlayAddress,
-  isOverlayRequest,
-  markOverlayRequest,
+  isTeamRequest,
+  markTeamRequest,
   overlayBearerExempt,
   overlayBearerRejection,
-  overlayLifecycleRefused,
+  teamRawRouteAdmitted,
   overlayVersionRejection,
   servedGroveRefusal,
   type HostServeRuntime,
@@ -106,15 +102,8 @@ export interface DaemonServerConfig {
    *  takeover-handshake predicate reads it (eviction.ts). Defaults to the
    *  static `retired` value for callers (tests) that never activate. */
   externalMcpPosture?: () => string;
-  /** Override the host tailscale CLI used for overlay-forward management
-   *  (tests). Production resolves it from recorded host state. */
-  hostTailscaleCliFactory?: () => TailscaleCli | null;
-  /** Override the host tailscaled control-socket path used by the
-   *  overlay-forward wire (tests). Production resolves it from grove paths. */
-  hostTailscaledSocketPath?: string;
-  /** Override the socket wait before wiring the overlay forward (tests), so a
-   *  guard regression fails on an ASSERTION rather than a harness timeout. */
-  hostTailscaledSocketTimeoutMs?: number;
+  /** Override the team listener's socket path (tests inject a short temp path). */
+  teamSocketPath?: string;
   /**
    * Capability for mutating `daemon.json`. The ONLY way the server
    * writes state. Required for production callers; tests that don't
@@ -255,12 +244,10 @@ export function classifyRequest(
  * the bind (server-mode design spec §9, as restated by the coexistence
  * amendment: never a wildcard, never a non-loopback address).
  */
-const OVERLAY_BIND_ADDRESS = '127.0.0.1';
 
 /** How long to wait for the host tailscaled control socket before wiring the
  *  overlay forward. On a reboot the daemon usually wins the race against its
  *  own user-domain agent, so this is the common path, not the rare one. */
-const OVERLAY_FORWARD_SOCKET_TIMEOUT_MS = 10_000;
 
 export class DaemonServer {
   port = 0;
@@ -272,9 +259,12 @@ export class DaemonServer {
    * The Team Host overlay listener — a SECOND HTTP server bound to the host's
    * overlay interface address (never 0.0.0.0). Null unless host serving is
    * enabled AND the overlay bind succeeds. Every request here passes the
-   * transport-boundary gate ({@link handleOverlayRequest}) before dispatch.
+   * transport-boundary gate ({@link handleTeamRequest}) before dispatch.
    */
-  private overlayServer: http.Server | null = null;
+  private teamServer: http.Server | null = null;
+  /** The bound team socket path, or null while unbound. */
+  teamSocketPath: string | null = null;
+  private readonly teamSocketPathOverride: string | null;
   /**
    * The IPv6-loopback companion listener — the SAME surface as the primary
    * listener, bound to `[::1]` on the same port. It exists so the daemon OWNS
@@ -290,27 +280,10 @@ export class DaemonServer {
   /** Seam for the host tailscale CLI used to manage the overlay forward.
    *  Production resolves it from recorded host state; tests inject a fake so
    *  the real bind/stop ordering is exercised rather than modelled. */
-  private readonly hostTailscaleCliFactory: (() => TailscaleCli | null) | null;
-  private readonly hostTailscaledSocketPathOverride: string | null;
-  private readonly hostTailscaledSocketTimeoutMs: number;
   /** Capture-side proxy deps (transcript-drain flush + collect enqueue) threaded
    *  into `handleAttachedRequest` for attached projects. See {@link DaemonServerConfig}. */
   private hostProxyDeps: Partial<HostProxyDeps>;
   private lockNamespace: PerUserLockNamespace;
-  /** The overlay listener's bound port (0 until it binds). Public so tests /
-   *  enrollment can read the port the overlay surface is reachable on. */
-  overlayPort = 0;
-  /** The overlay listener's actually-bound address (null until it binds).
-   *  Public so enrollment records the real address and tests can assert the
-   *  bind is the overlay IP and never a wildcard/0.0.0.0. */
-  overlayBoundAddress: string | null = null;
-  /** In-flight overlay-forward wiring, awaited by {@link stop} so a shutdown
-   *  can never race a wire into existence AFTER the retire. */
-  private overlayForwardWire: Promise<void> | null = null;
-  /** Bumped whenever the overlay listener goes down. A wire that started under
-   *  an older generation refuses to touch tailscaled — the daemon no longer
-   *  holds the port, so it has no right to point a forward at it. */
-  private overlayForwardGeneration = 0;
   private vaultDir: string;
   private stateAuthority: DaemonStateAuthority;
   private logger: DaemonLogger;
@@ -369,9 +342,7 @@ export class DaemonServer {
     this.runtimeCache = config.runtimeCache ?? new GroveRuntimeCache();
     this.ownsRuntimeCache = config.runtimeCache === undefined;
     this.hostServe = config.hostServe ?? null;
-    this.hostTailscaleCliFactory = config.hostTailscaleCliFactory ?? null;
-    this.hostTailscaledSocketPathOverride = config.hostTailscaledSocketPath ?? null;
-    this.hostTailscaledSocketTimeoutMs = config.hostTailscaledSocketTimeoutMs ?? OVERLAY_FORWARD_SOCKET_TIMEOUT_MS;
+    this.teamSocketPathOverride = config.teamSocketPath ?? null;
     this.hostProxyDeps = config.hostProxyDeps ?? {};
     this.lockNamespace = config.lockNamespace ?? nativePerUserLockNamespace;
     this.version = getPluginVersion();
@@ -400,7 +371,7 @@ export class DaemonServer {
    *  status route's `serving` flag alone is config-derived and survives
    *  every bind failure — this is the observed half of E1 §7 gate 4. */
   isOverlayListenerBound(): boolean {
-    return this.overlayServer !== null;
+    return this.teamServer !== null;
   }
 
   /** Process start stamp (ISO) — the status route's restart discriminator:
@@ -494,7 +465,7 @@ export class DaemonServer {
         // so `start()` resolves with both listeners settled (and, in tests,
         // before either surface is hit).
         this.startLoopbackV6Listener()
-          .then(() => this.startOverlayListener())
+          .then(() => this.startTeamListener())
           .then(() => resolve());
       });
     });
@@ -576,268 +547,167 @@ export class DaemonServer {
   }
 
   /**
-   * Bind the Team Host overlay listener — a SECOND HTTP server on the host's
-   * overlay interface address ONLY (never 0.0.0.0, never a LAN IP). Every request
-   * on it passes {@link handleOverlayRequest}'s transport-boundary gate before
-   * dispatch. No-op (and never throws) when host serving is off; a bind failure
-   * (overlay IP not up / TUN not attached) logs once and leaves host serving off
-   * — never a crash, never a wider fallback bind (Task 2.3 item 1).
+   * Bind the Team Host listener on its `AF_UNIX` socket ({@link resolveTeamSocketPath}).
+   * Every request on it passes {@link handleTeamRequest}'s transport-boundary
+   * gate before dispatch. No-op (and never throws) when host serving is off; a
+   * bind failure logs once and leaves host serving off — never a crash.
+   *
+   * A socket, not a port. The listener this replaces bound a loopback TCP port
+   * that a `tailscale serve --tcp` forward bridged to the overlay, which meant
+   * the port was reachable by every local process and the gate had to tell
+   * members from local callers by comparing a `Host` header string. A socket has
+   * no port to squat and no address to spoof — reachability is filesystem
+   * permission on a `0700` directory — so the Host comparison is gone and
+   * admission rests on the bearer alone.
+   *
+   * A STALE socket file is reclaimed (a bind onto an existing path fails with
+   * EADDRINUSE even when no process holds it), but a LIVE one never is: the
+   * connect probe distinguishes them, and failing toward "live" keeps two
+   * daemons sharing a home from stealing each other's listener.
    */
-  private startOverlayListener(): Promise<void> {
+  private startTeamListener(): Promise<void> {
     return new Promise((resolve) => {
-      // Re-entry guard. A second call while already bound would hit EADDRINUSE
-      // on a port THIS process holds, and the squatted branch would then retire
-      // our own forward and null `overlayServer` — orphaning the still-listening
-      // first server so `stop()` can never close it.
-      if (this.overlayServer) { resolve(); return; }
+      // Re-entry guard: a second call while already bound would orphan the
+      // still-listening first server so `stop()` could never close it.
+      if (this.teamServer) { resolve(); return; }
 
       const hostServe = this.hostServe;
-      // NOT SERVING IS A CONVERGENCE TARGET, not merely an absence of action.
-      // The rule is bidirectional: a forward may exist only while this process
-      // holds the port, so every path that ends with us NOT holding it must
-      // retire whatever is there. Wiring-only enforced half the rule and left a
-      // durable forward delivering member bearers to whatever binds the port.
-      if (!hostServe) { void this.retireAllOverlayForwards().finally(() => resolve()); return; }
+      if (!hostServe) { resolve(); return; }
 
-      const address = hostServe.overlayAddress;
-      if (!isBindableOverlayAddress(address)) {
-        this.logger.warn(LOG_KINDS.HOST_SERVE, 'Refusing to bind Team Host overlay listener on a non-advertisable address — host serving stays off', {
-          overlay_address: address,
-        });
-        void this.retireAllOverlayForwards().finally(() => resolve());
+      if (process.platform === 'win32') {
+        this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host serving is not available on Windows — host serving stays off');
+        resolve();
         return;
       }
 
-      // Members dial `<overlay_ip>:<overlay_port>`; a `tailscale serve --tcp`
-      // forward carries that to THIS loopback listener. The bind address is
-      // hardcoded loopback — since the coexistence move to userspace
-      // networking there is no TUN interface to bind, and `overlay_address` is
-      // an ADVERTISED identity rather than a local address. There is no
-      // `?? this.port` fallback: without a persisted port the runtime never
-      // resolves (`resolveHostServeConfig`), because falling back to the
-      // canonical port collides with the loopback listener below.
-      const overlayPort = hostServe.overlayPort;
+      void (async () => {
+        let socketPath: string;
+        try {
+          // Resolution itself can throw — no short-enough AF_UNIX path exists, or
+          // `physicalPathIdentity` hits EACCES/ELOOP walking the home. It has to
+          // be inside this try: an escaping throw leaves `start()`'s promise
+          // chain unsettled and the daemon never finishes starting, which is a
+          // strictly worse outcome than the degraded one this whole block exists
+          // to produce ("host serving stays off", daemon up).
+          socketPath = this.teamSocketPathOverride ?? resolveTeamSocketPath();
+          const dir = path.dirname(socketPath);
+          fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+          // The directory is the containment boundary, so refuse to serve from
+          // one this user does not own or that anyone else can write. mkdir with
+          // `recursive` silently accepts a pre-existing directory — including a
+          // symlink another local user planted — so verify rather than assume.
+          const dirStat = fs.lstatSync(dir);
+          const uid = process.getuid?.() ?? dirStat.uid;
+          if (!dirStat.isDirectory() || dirStat.uid !== uid) {
+            this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host socket directory is not a directory this user owns — host serving stays off', { dir });
+            resolve();
+            return;
+          }
+          fs.chmodSync(dir, 0o700);
+          if ((fs.lstatSync(dir).mode & 0o077) !== 0) {
+            this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host socket directory is group/world accessible — host serving stays off', { dir });
+            resolve();
+            return;
+          }
+        } catch (err) {
+          this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host socket could not be prepared — host serving stays off', {
+            error: (err as Error).message,
+          });
+          resolve();
+          return;
+        }
 
-      const overlay = http.createServer((req, res) => {
-        this.handleOverlayRequest(req, res).catch((err) => {
-          this.logUnhandledTransportFailure('request', err);
-          try {
-            if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'internal_error' }));
-          } catch { /* socket already gone */ }
+        const team = http.createServer((req, res) => {
+          this.handleTeamRequest(req, res).catch((err) => {
+            this.logUnhandledTransportFailure('request', err);
+            try {
+              if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'internal_error' }));
+            } catch { /* socket already gone */ }
+          });
         });
-      });
-      // The overlay carries only daemon↔daemon API traffic — no WebSocket, no
-      // Vite dev proxy. Destroy any upgrade attempt outright.
-      overlay.on('upgrade', (_req, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
-      applyDaemonHttpServerLimits(overlay);
+        // The team surface carries only daemon↔daemon API traffic — no
+        // WebSocket, no Vite dev proxy. Destroy any upgrade attempt outright.
+        team.on('upgrade', (_req, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
+        applyDaemonHttpServerLimits(team);
 
-      const onBindError = (err: NodeJS.ErrnoException) => {
-        // EADDRINUSE is the SIGKILL residual: a durable forward may still be
-        // sending member traffic — bearer tokens included — to whatever now
-        // holds this port. Retire the forward and stay off, loudly. Anything
-        // less turns "leaks until the next start" into "leaks forever".
-        const squatted = err.code === 'EADDRINUSE';
-        this.logger.warn(
-          LOG_KINDS.HOST_SERVE,
-          squatted
-            ? 'Team Host overlay port is held by another process — host serving stays OFF and the overlay forward is being retired so member traffic is not delivered to it'
-            : 'Team Host overlay listener failed to bind — host serving stays off',
-          {
-            bind_address: OVERLAY_BIND_ADDRESS,
-            overlay_address: address,
-            port: overlayPort,
+        const onBound = () => {
+          team.removeListener('error', onBindError);
+          // Keep a persistent error handler so a post-bind socket error is
+          // logged rather than thrown as an unhandled 'error' event.
+          team.on('error', (err) => {
+            this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host listener socket error', { error: (err as Error).message });
+          });
+          try { fs.chmodSync(socketPath, 0o600); } catch { /* best-effort; the 0700 dir is the gate */ }
+          this.teamServer = team;
+          this.teamSocketPath = socketPath;
+          this.logger.info(LOG_KINDS.HOST_SERVE, 'Team Host listener bound', { socket: socketPath });
+          resolve();
+        };
+
+        // BIND FIRST, reclaim only on EADDRINUSE.
+        //
+        // Probing the path and then unlinking what looks stale is a TOCTOU: two
+        // daemons sharing a MYCO_HOME both probe (nothing bound yet), the first
+        // binds, and the second unlinks the winner's live inode and binds its
+        // own — the listener theft the probe existed to prevent. bind() is the
+        // only atomic claim available, so the probe runs only after the kernel
+        // has told us something already holds the path.
+        //
+        // This NARROWS the race rather than closing it: the window between the
+        // probe returning "stale" and the unlink is still unguarded, so a third
+        // daemon reclaiming in that gap can still have its live inode unlinked.
+        // Reaching that needs a stale socket AND two daemons racing the reclaim.
+        // The fully atomic shape is bind-to-temp then rename() over the target;
+        // not taken here because the remaining window requires a crash to have
+        // left a stale socket in the first place.
+        let reclaimed = false;
+        const onBindError = (err: NodeJS.ErrnoException) => {
+          if (err.code === 'EADDRINUSE' && !reclaimed) {
+            reclaimed = true;
+            void (async () => {
+              if (await socketHasLiveOwner(socketPath)) {
+                this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host socket has a live owner — host serving stays off', { socket: socketPath });
+                try { team.close(); } catch { /* never listened */ }
+                resolve();
+                return;
+              }
+              try { fs.unlinkSync(socketPath); } catch { /* raced; the retry reports it */ }
+              team.listen(socketPath, HTTP_LISTEN_BACKLOG, onBound);
+            })();
+            return;
+          }
+          this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host listener failed to bind — host serving stays off', {
+            socket: socketPath,
             error: err.message,
             code: err.code ?? null,
-          },
-        );
-        try { overlay.close(); } catch { /* not listening */ }
-        // The listener is not up, so no in-flight wire may touch tailscaled.
-        this.overlayForwardGeneration += 1;
-        // Only clear the registration if it is still OURS: two overlapping
-        // starts can both pass the re-entry guard, and the loser must not
-        // clobber the winner's registration — the exact orphan the guard exists
-        // to prevent.
-        if (this.overlayServer === overlay) this.overlayServer = null;
-        // EVERY bind failure ends with us not holding the port, so every one
-        // retires. EADDRINUSE is only the loudest case: an EMFILE under fd
-        // pressure leaves the port held by NOBODY while the forward stays live.
-        if (!squatted) { void this.retireAllOverlayForwards().finally(() => resolve()); return; }
-        // Await the retire before resolving: on this path another process is
-        // already holding the port, so a forward left in place is actively
-        // delivering member bearer tokens to it. `.finally` — NOT `.then` —
-        // because this sits on the daemon's boot path, and "never rejects" is
-        // not the same as "always settles": resolving only on success would
-        // wedge boot if the retire ever failed to settle.
-        void this.retireOverlayForward(overlayPort).finally(() => resolve());
-      };
-      overlay.once('error', onBindError);
+          });
+          try { team.close(); } catch { /* not listening */ }
+          if (this.teamServer === team) this.teamServer = null;
+          resolve();
+        };
+        team.on('error', onBindError);
 
-      overlay.listen(overlayPort, OVERLAY_BIND_ADDRESS, HTTP_LISTEN_BACKLOG, () => {
-        overlay.removeListener('error', onBindError);
-        // Keep a persistent error handler so a post-bind socket error is logged
-        // rather than thrown as an unhandled 'error' event (which exits the process).
-        overlay.on('error', (err) => {
-          this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host overlay listener socket error', { error: (err as Error).message });
-        });
-        const addr = overlay.address() as { address: string; port: number } | null;
-        this.overlayServer = overlay;
-        this.overlayPort = addr?.port ?? overlayPort;
-        this.overlayBoundAddress = addr?.address ?? address;
-        // Report BOTH: the bind is loopback, but an operator reading only that
-        // would read a healthy host as broken. The advertised pair is what
-        // members actually dial.
-        this.logger.info(LOG_KINDS.HOST_SERVE, 'Team Host overlay listener bound', {
-          bind_address: this.overlayBoundAddress,
-          port: this.overlayPort,
-          advertised: `${address}:${this.overlayPort}`,
-        });
-        // The bind IS the ownership proof, so the forward is wired only now —
-        // never while the port is unowned. Reconciles rather than adds, so a
-        // superseded port's durable forward cannot outlive it.
-        this.overlayForwardWire = this.wireOverlayForward(this.overlayPort, this.overlayForwardGeneration)
-          .catch(() => {}); // stored, not awaited here — an unhandled rejection exits under Bun
-        resolve();
-      });
+        team.listen(socketPath, HTTP_LISTEN_BACKLOG, onBound);
+
+      })();
     });
   }
 
-  /**
-   * Resolve a {@link TailscaleCli} bound to THIS machine's host tailscaled, or
-   * null when the host has no recorded overlay state (never enabled, or torn
-   * down). Null is not an error — it just means there is no forward to manage.
-   */
-  private resolveHostTailscaleCli(): TailscaleCli | null {
-    if (this.hostTailscaleCliFactory) return this.hostTailscaleCliFactory();
-    const state = readHostState();
-    if (!state?.tailscale_bin) return null;
-    return createTailscaleCli({
-      runner: realCommandRunner,
-      tailscaleBin: state.tailscale_bin,
-      socketPath: this.hostTailscaledSocketPathOverride ?? resolveHostTailscaledSocketPath(),
-    });
-  }
-
-  /**
-   * Converge the overlay forward on `port` after a successful bind.
-   *
-   * Waits for tailscaled's control socket first: on a reboot the daemon
-   * commonly starts BEFORE its user-domain tailscaled agent, so an immediate
-   * `tailscale serve` would fail on the likely ordering rather than the
-   * unlucky one. A failure here is loud, never best-effort — silently
-   * proceeding yields a bound listener with no forward, which is a durable
-   * outage that `/api/host-serve/status` would still report as healthy.
-   */
-  private async wireOverlayForward(port: number, generation: number): Promise<void> {
-    const cli = this.resolveHostTailscaleCliSafe();
-    if (!cli) return;
-    try {
-      const socketPath = this.hostTailscaledSocketPathOverride ?? resolveHostTailscaledSocketPath();
-      const deadline = Date.now() + this.hostTailscaledSocketTimeoutMs;
-      while (!fs.existsSync(socketPath) && Date.now() < deadline) {
-        if (generation !== this.overlayForwardGeneration) return;
-        await new Promise((r) => setTimeout(r, 200));
-      }
-      // The listener may have gone down while we waited for the socket. Wiring
-      // now would leave a live forward aimed at a port this process no longer
-      // holds — the exact leak the bind-is-the-proof rule exists to prevent.
-      if (generation !== this.overlayForwardGeneration) return;
-      await reconcileOverlayForward(cli, port, this.logger);
-    } catch (err) {
-      this.logger.warn(
-        LOG_KINDS.HOST_SERVE,
-        'Overlay forward could not be wired — the listener is bound but UNREACHABLE from the tailnet. '
-        + 'Check the host tailscaled service, then re-run `myco host enable`.',
-        { port, error: (err as Error).message },
-      );
-    }
-  }
-
-  /**
-   * Converge this machine's tailscaled on the invariant: no forward may point
-   * at a port nothing holds. Used on every path that ends with this process
-   * not holding an overlay port, where the specific port may be unknown.
-   *
-   * It retires only UNHELD ports. Host state is machine-global (`~/.myco-team`,
-   * independent of `MYCO_HOME`), so several daemons share one tailscaled —
-   * retiring every forward we could see would tear down a SIBLING's live one,
-   * which on a box running dogfood beside prod would happen on every boot.
-   * Never throws.
-   */
-  private async retireAllOverlayForwards(): Promise<void> {
-    const cli = this.resolveHostTailscaleCliSafe();
-    if (!cli) return;
-    await retireUnheldOverlayForwards(cli, this.logger);
-  }
-
-  /** {@link resolveHostTailscaleCli}, but never throws — `createTailscaleCli`
-   *  rejects an empty socket path by design, and these callers are on the
-   *  boot/shutdown paths where a throw would skip the work that follows. */
-  private resolveHostTailscaleCliSafe(): TailscaleCli | null {
-    try { return this.resolveHostTailscaleCli(); } catch { return null; }
-  }
-
-  /** Remove the overlay forward for `port`. Never throws — teardown must not
-   *  be blocked by a tailscaled that is already gone. */
-  private async retireOverlayForward(port: number): Promise<void> {
-    const cli = this.resolveHostTailscaleCliSafe();
-    if (!cli) return;
-    try {
-      await retireOverlayForward(cli, port);
-      this.logger.info(LOG_KINDS.HOST_SERVE, 'Overlay forward retired', { port });
-    } catch (err) {
-      this.logger.warn(
-        LOG_KINDS.HOST_SERVE,
-        'Overlay forward could not be retired — it may still route member traffic to this port',
-        { port, error: (err as Error).message },
-      );
-    }
-  }
-
-  /**
-   * Retire this machine's overlay forwards, WITHOUT the rest of shutdown. The
-   * listener itself is closed later by `stop()`; removing the forward is what
-   * actually severs member reachability, since it is the only network path in. Called at the very top of the shutdown
-   * sequence because everything after it can block past the supervisor's kill
-   * timeout, and a forward that outlives the process keeps routing member
-   * traffic to a port nothing holds. Idempotent and never throws — `stop()`
-   * still retires as a backstop.
-   */
-  async retireOverlayExposure(): Promise<void> {
-    this.overlayForwardGeneration += 1;
-    const inFlightWire = this.overlayForwardWire;
-    this.overlayForwardWire = null;
-    if (inFlightWire) await inFlightWire.catch(() => {});
-
-    // OUR port is retired explicitly, not through the unheld filter: we are
-    // shutting down but still holding it, so a liveness probe would (rightly)
-    // report it held and skip it. Knowing the port is exactly what entitles us
-    // to remove its forward.
-    if (this.overlayPort > 0) await this.retireOverlayForward(this.overlayPort);
-    // Then converge anything else pointing at a port nobody holds.
-    await this.retireAllOverlayForwards();
-  }
 
   async stop(): Promise<void> {
     // No daemon.json unlink — see reconcileExistingDaemon for cleanup ownership.
-    const overlay = this.overlayServer;
-    const retiringPort = this.overlayPort;
+    const team = this.teamServer;
+    const teamSocket = this.teamSocketPath;
     // Claim the fields BEFORE any await, so a concurrent stop() sees them
-    // already taken and does not close or retire a second time.
-    this.overlayServer = null;
-    // Invalidate any in-flight wire FIRST, then await it, so the retire below
-    // cannot be undone by a wire that was already waiting on the socket.
-    this.overlayForwardGeneration += 1;
-    const inFlightWire = this.overlayForwardWire;
-    this.overlayForwardWire = null;
-    if (inFlightWire) await inFlightWire.catch(() => {});
-    this.overlayBoundAddress = null;
-    this.overlayPort = 0;
-    if (overlay) {
-      // Retire the forward BEFORE releasing the port, so there is no instant
-      // where a live forward points at a port this process no longer holds.
-      if (retiringPort > 0) await this.retireOverlayForward(retiringPort);
-      await gracefullyCloseHttpServer(overlay, { gracePeriodMs: SERVER_STOP_FORCE_CLOSE_GRACE_MS });
+    // already taken and does not close a second time.
+    this.teamServer = null;
+    this.teamSocketPath = null;
+    if (team) {
+      await gracefullyCloseHttpServer(team, { gracePeriodMs: SERVER_STOP_FORCE_CLOSE_GRACE_MS });
+      // Node removes the socket file on close; sweep defensively so a stale
+      // inode never outlives the bind and blocks the next one.
+      if (teamSocket) { try { fs.unlinkSync(teamSocket); } catch { /* already gone */ } }
     }
     const v6 = this.ipv6Server;
     this.ipv6Server = null;
@@ -869,48 +739,60 @@ export class DaemonServer {
    * On pass, the local daemon bearer is stamped and the request is marked overlay,
    * then it flows into the SAME dispatch as a localhost request.
    */
-  private async handleOverlayRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  private async handleTeamRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const versionHeader = { 'X-Myco-Api-Version': this.version };
     const hostServe = this.hostServe;
     if (!hostServe) {
-      // Unreachable in practice (the overlay listener only runs when hostServe is
+      // Unreachable in practice (the team listener only runs when hostServe is
       // set), but fail closed rather than serve unauthenticated.
-      this.writeOverlayRefusal(res, 503, { error: 'host_serve_unavailable' }, versionHeader);
+      this.writeTeamRefusal(res, 503, { error: 'host_serve_unavailable' }, versionHeader);
       return;
     }
     const pathname = new URL(req.url!, 'http://localhost').pathname;
 
-    // (1) Overlay CSRF: narrow Host allowlist + no-Origin, then shared content-type.
-    const csrf = validateOverlayRequest(req, hostServe.overlayAddress, this.overlayPort);
+    // (1) Origin refusal + the shared mutating-body content-type check. There is
+    // no Host allowlist any more: the listener binds a socket, so there is no
+    // port for a local process to reach and no address to compare against. The
+    // Origin rule is now load-bearing rather than incidental — it is what keeps
+    // a browser from driving this surface cross-origin.
+    const csrf = validateTeamRequest(req);
     if (csrf) {
-      this.writeOverlayRefusal(res, csrf.status, { error: csrf.error }, versionHeader);
+      this.writeTeamRefusal(res, csrf.status, { error: csrf.error }, versionHeader);
       return;
     }
 
-    // (2) Blanket bearer — EXCEPT the ONE enrollment route (spec §8/§9). A member
-    // obtains the bearer THERE, so gating enrollment behind the bearer is a
-    // chicken-and-egg deadlock; overlay membership is its trust boundary instead.
-    // The exemption is surgical (overlayBearerExempt matches only that exact path)
-    // and the route's own handler re-asserts overlay provenance, so a no-bearer
-    // request to ANY OTHER overlay route still 401s here.
+    // (2) Blanket bearer — EXCEPT the ONE enrollment route. A member obtains the
+    // bearer THERE, so gating enrollment behind the bearer is a chicken-and-egg
+    // deadlock. The exemption is surgical (matches only that exact path).
     if (!overlayBearerExempt(pathname)) {
       const bearerRejection = overlayBearerRejection(req, hostServe.bearer);
       if (bearerRejection) {
-        this.writeOverlayRefusal(res, bearerRejection.status, bearerRejection.body, versionHeader, bearerRejection.headers);
+        this.writeTeamRefusal(res, bearerRejection.status, bearerRejection.body, versionHeader, bearerRejection.headers);
         return;
       }
     }
 
-    // (3) Lifecycle/operator raw routes are never overlay-served.
-    if (overlayLifecycleRefused(pathname)) {
-      this.writeOverlayRefusal(res, 404, { error: 'not_found', message: 'This route is served on localhost only, not over the overlay.' }, versionHeader);
+    // (3) RAW-ROUTE ADMISSION — fail closed. Raw routes bypass the router and
+    // therefore `classifyRouteStamp` entirely, so they get no scope-map class
+    // and no `overlayHostStampRefusal` backstop. On a surface published to the
+    // public internet the default must be refusal: a raw route is unreachable
+    // here unless it is named in the admitted set. This replaces a deny-list
+    // that named only `/api/shutdown`, under which every raw route added later
+    // was served to members by default.
+    //
+    // Ordered AFTER the bearer deliberately. Refusing first would answer an
+    // unauthenticated caller 404-vs-401 by route, handing anyone who can reach
+    // the socket a map of which raw routes this host admits. Behind the bearer,
+    // every route answers 401 to a caller without one.
+    if (this.rawRoutes.has(pathname) && !teamRawRouteAdmitted(pathname)) {
+      this.writeTeamRefusal(res, 404, { error: 'not_found', message: 'This route is served on localhost only.' }, versionHeader);
       return;
     }
 
     // (4) Version window.
     const versionRejection = overlayVersionRejection(req);
     if (versionRejection) {
-      this.writeOverlayRefusal(res, versionRejection.status, versionRejection.body, versionHeader, versionRejection.headers);
+      this.writeTeamRefusal(res, versionRejection.status, versionRejection.body, versionHeader, versionRejection.headers);
       return;
     }
 
@@ -920,11 +802,11 @@ export class DaemonServer {
     // so the host-resident Grove resolves exactly as a local context-switch would.
     // Tenancy headers (project/grove/machine) remain claims, per v1's flat trust.
     req.headers[REQUEST_CONTEXT_AUTH_HEADER] = this.authToken;
-    markOverlayRequest(req);
+    markTeamRequest(req);
     await this.handleRequest(req, res);
   }
 
-  private writeOverlayRefusal(
+  private writeTeamRefusal(
     res: http.ServerResponse,
     status: number,
     body: Record<string, unknown>,
@@ -937,12 +819,12 @@ export class DaemonServer {
 
   /**
    * The listener-appropriate CSRF gate. Overlay requests were fully validated by
-   * {@link handleOverlayRequest} (bearer, version, lifecycle refusal, and the
+   * {@link handleTeamRequest} (bearer, version, lifecycle refusal, and the
    * overlay Host/Origin gate) before delegating here, so they skip the loopback
    * gate; loopback requests get {@link validateLoopbackRequest} unchanged.
    */
   private csrfRejection(req: http.IncomingMessage): Rejection | null {
-    return isOverlayRequest(req) ? null : validateLoopbackRequest(req, this.port);
+    return isTeamRequest(req) ? null : validateLoopbackRequest(req, this.port);
   }
 
   private registerDefaultRoutes(): void {
@@ -1028,29 +910,17 @@ export class DaemonServer {
 
     // Team Host enrollment (Task 2.4) — the ONE overlay route exempt from the
     // blanket bearer gate (a member obtains the bearer HERE; see the surgical
-    // exemption in handleOverlayRequest + HOST_ENROLL_ROUTE). A raw route because
+    // exemption in handleTeamRequest + HOST_ENROLL_ROUTE). A raw route because
     // enrollment needs no Grove/DB/tenancy — it returns machine-scoped host facts.
     this.registerRawRoute(HOST_ENROLL_ROUTE, async (req, res) => {
-      // OVERLAY-ONLY is the enrollment gate: because the bearer check is
-      // skipped, this route MUST refuse any caller that did not arrive on the
-      // overlay listener.
-      //
-      // READ THE BOUNDARY LITERALLY. This comment used to say "a localhost/LAN
-      // hit is never marked overlay", and that is NO LONGER TRUE: since the
-      // coexistence move to userspace networking the overlay listener binds
-      // 127.0.0.1, so a local process that dials it IS marked overlay and DOES
-      // reach this route — which hands back the serve-bearer. The honest
-      // boundary is "arrived on the overlay listener, which is loopback; a
-      // local process is inside it."
-      //
-      // Scoped honestly: pre-C1 a local process could dial the TUN address for
-      // the same payload, so this is a widened window, not a new class, and it
-      // is local-process-only — `validateOverlayRequest` 403s anything
-      // carrying `Origin` and `isOverlayHost` demands `overlay_ip:P`, so there
-      // is no browser path. What bounds it is port ownership: the daemon wires
-      // the inbound forward only while it holds the port (`overlay-forward.ts`).
-      // Do not reason from locality here; reason from that.
-      if (!isOverlayRequest(req)) {
+      // TEAM-LISTENER-ONLY, and currently unreachable by design: the route is
+      // not in the team raw-route allowlist (`teamRawRouteAdmitted`), because it
+      // is bearer-exempt and returns the shared serve bearer. Its admission gate
+      // used to be overlay membership; there is no replacement until the
+      // daemon-validated join key lands, and it is re-admitted in that same
+      // change. The bound on this route is filesystem permission on the socket
+      // directory — reason from that, not from locality.
+      if (!isTeamRequest(req)) {
         res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
         res.end(JSON.stringify({ error: 'not_found', message: 'Host enrollment is served over the overlay only.' }));
         return;
@@ -1074,7 +944,7 @@ export class DaemonServer {
       let memberInfo: Record<string, unknown> = {};
       try { memberInfo = (await readBody(req)) as Record<string, unknown>; } catch { /* log without it */ }
 
-      const payload = buildHostEnrollmentPayload(hostServe, this.overlayPort);
+      const payload = buildHostEnrollmentPayload(hostServe);
       const enrollmentNonce = memberInfo.enrollment_nonce;
       const responsePayload = typeof enrollmentNonce === 'string'
         && /^[a-f0-9]{32,}$/.test(enrollmentNonce)
@@ -1157,7 +1027,7 @@ export class DaemonServer {
       // the user visits can still POST cross-origin. Reject requests whose
       // Host or Origin headers disagree with the loopback listener; block
       // non-JSON mutating bodies so text/plain CSRF cannot slip JSON through.
-      // (Overlay requests were already gated by handleOverlayRequest — see
+      // (Overlay requests were already gated by handleTeamRequest — see
       // csrfRejection.)
       const rejection = this.csrfRejection(req);
       if (rejection) {
@@ -1182,7 +1052,7 @@ export class DaemonServer {
         // host-authoritative/member-assembled config) BEFORE the route is served.
         // serve/collect fall through to local dispatch, so this only ADDS refusals —
         // it never enters the remote/proxy branch.
-        if (isOverlayRequest(req)) {
+        if (isTeamRequest(req)) {
           const overlayRefusal = overlayHostStampRefusal(req.method!, match.pathname);
           if (overlayRefusal) {
             this.writeRefusal(res, overlayRefusal, versionHeader);
@@ -1208,7 +1078,7 @@ export class DaemonServer {
         // a Grove has that Grove's projects as LOCAL registry rows, and attachProject
         // refuses to attach a project with a local Grove row — ProjectRegisteredLocallyError
         // — so resolveAttach can never match a host's own served project.)
-        if (!isOverlayRequest(req)) {
+        if (!isTeamRequest(req)) {
           // Resolve tenancy cheaply and route BEFORE the body is read and BEFORE any
           // local Grove/DB resolution — the proxy pipes the raw request stream, and
           // an attached project must never open a local Grove DB. A non-attached
@@ -1294,7 +1164,7 @@ export class DaemonServer {
         // working tree the host lacks. False for every local (loopback) request.
         const requestContext = {
           ...this.resolveRouteRequestContext(match.params, req.headers),
-          hostServed: isOverlayRequest(req),
+          hostServed: isTeamRequest(req),
         };
         // Team Host served-grove filter (Task 2), chokepoint 1 of 2 (see
         // `mcp/http.ts` for chokepoint 2). The bearer/lifecycle/version gate
@@ -1303,12 +1173,12 @@ export class DaemonServer {
         // could send `x-myco-grove-id` naming ANY Grove this host owns,
         // including the operator's own personal Groves. Runs immediately
         // after the Grove context resolves, before any handler/DB touch.
-        if (isOverlayRequest(req)) {
+        if (isTeamRequest(req)) {
           const groveRefusal = this.hostServe
             ? servedGroveRefusal(this.hostServe, requestContext.groveId)
             // Unreachable in practice (the overlay listener — and hence
-            // isOverlayRequest — only marks requests when hostServe is set),
-            // but fail closed exactly like handleOverlayRequest's own
+            // isTeamRequest — only marks requests when hostServe is set),
+            // but fail closed exactly like handleTeamRequest's own
             // null-hostServe branch, never serve unauthenticated.
             : { status: 503, body: { error: 'host_serve_unavailable' } };
           if (groveRefusal) {
@@ -1328,7 +1198,7 @@ export class DaemonServer {
                 served_grove_id: servedGroveId,
               });
             }
-            this.writeOverlayRefusal(res, groveRefusal.status, groveRefusal.body, versionHeader, groveRefusal.headers);
+            this.writeTeamRefusal(res, groveRefusal.status, groveRefusal.body, versionHeader, groveRefusal.headers);
             return;
           }
         }
@@ -1366,7 +1236,7 @@ export class DaemonServer {
           pathname: match.pathname,
           headers: req.headers,
           requestContext,
-          isOverlay: isOverlayRequest(req),
+          isOverlay: isTeamRequest(req),
         });
         const requestDb = this.databaseForRequestContext(requestContext);
         const result = requestDb
@@ -1406,7 +1276,7 @@ export class DaemonServer {
           // capture-drain retry reissues the identical refused request every
           // daemon tick; an unthrottled warn here would be a log storm, not
           // observability (Task 2, E-4 W2).
-          if (isOverlayRequest(req)) {
+          if (isTeamRequest(req)) {
             const groveHeaderValue = readHeader(req.headers, REQUEST_CONTEXT_HEADERS.groveId);
             const projectHeaderValue = readHeader(req.headers, REQUEST_CONTEXT_HEADERS.projectId);
             const throttleKey = `unknown_tenancy:${groveHeaderValue ?? ''}:${projectHeaderValue ?? ''}:${pathname}`;
@@ -1486,7 +1356,7 @@ export class DaemonServer {
     // localhost-only operator surface; no browsers on the overlay). An overlay
     // request that matched no API route (static asset, dashboard SPA, dev proxy)
     // is never served — 404 before the UI/static/dev-proxy fallthrough below.
-    if (isOverlayRequest(req)) {
+    if (isTeamRequest(req)) {
       res.writeHead(404, { 'Content-Type': 'application/json', 'X-Myco-Api-Version': this.version });
       res.end(JSON.stringify({ error: 'not_found' }));
       return;
@@ -1965,31 +1835,23 @@ export function validateLoopbackRequest(
 }
 
 /**
- * The overlay listener's CSRF-equivalent gate (Team Host, spec §9). Narrower
- * than loopback: it accepts ONLY the overlay address as the request Host (for
- * daemon-API calls), and it rejects ANY request carrying an Origin header —
- * daemon↔daemon proxy traffic never sets Origin, so a present Origin means a
- * browser, which is not a supported overlay client (members use their local UI).
- * The mutating-body content-type rule is shared with loopback so a request the
- * member proxied is dispatched byte-identically to how the host would receive it
- * locally. The blanket bearer + version + lifecycle-refusal checks run separately
- * (handleOverlayRequest) — this is only the Host/Origin/content-type layer.
+ * The team listener's CSRF gate.
+ *
+ * There is no Host allowlist here, and its absence is deliberate. The overlay
+ * listener bound a loopback TCP port that any local process could reach, so
+ * `Host: <overlay_ip>:<port>` was the only thing separating a member's request
+ * from a local one — a string comparison doing structural work. The team
+ * listener binds an `AF_UNIX` socket in a `0700` directory, so reachability is
+ * a filesystem permission and there is no port to squat; admission rests on the
+ * bearer, and the mount-time `Host` header is whatever the Funnel edge rewrote
+ * it to, which is not a value this daemon can predict or verify.
+ *
+ * `Origin` is still refused outright. Daemon↔daemon traffic never sets it, so
+ * its presence means a browser is driving this surface — and with the Host
+ * check gone this rule is now the only thing standing between a cross-origin
+ * page and the team API.
  */
-export function validateOverlayRequest(
-  req: http.IncomingMessage,
-  overlayAddress: string,
-  overlayPort: number,
-): Rejection | null {
-  // REQUIRE the header, don't merely validate it when present. The overlay
-  // listener binds plain loopback now, so `overlay_ip:P` in the Host header is
-  // the only thing distinguishing a member's request from a local process
-  // dialling the same port — and a request that simply omits Host would have
-  // skipped the check entirely. A real member always sends it (the CONNECT
-  // proxy preserves it; measured on the rig).
-  const host = req.headers.host;
-  if (!host || !isOverlayHost(host, overlayAddress, overlayPort)) {
-    return { status: 403, error: 'forbidden_host' };
-  }
+export function validateTeamRequest(req: http.IncomingMessage): Rejection | null {
   if (req.headers.origin) {
     return { status: 403, error: 'forbidden_origin' };
   }
@@ -2041,11 +1903,29 @@ function isLoopbackOrigin(origin: string, port: number): boolean {
   );
 }
 
-// The overlay listener binds exactly the overlay IP on the daemon's port, so the
-// only legitimate Host is that address (with or without the explicit port — the
-// member's proxy sends `<overlay_ip>:<port>`). A bare-IP Host is also accepted.
-function isOverlayHost(host: string, overlayAddress: string, port: number): boolean {
-  return host === `${overlayAddress}:${String(port)}` || host === overlayAddress;
+
+/**
+ * Probe whether a socket file has a live owner. Fail toward LIVE: only
+ * ECONNREFUSED/ENOENT prove staleness — any other error (EACCES, a full
+ * backlog, a reset) or a hung connect means we must NOT unlink, because
+ * unlinking a socket another daemon is serving silently steals its listener.
+ * Bounded so a wedged filesystem cannot hang the bind.
+ */
+async function socketHasLiveOwner(socketPath: string): Promise<boolean> {
+  return await new Promise((resolve) => {
+    const probe = net.connect(socketPath);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (alive: boolean) => {
+      if (timer !== undefined) clearTimeout(timer);
+      try { probe.destroy(); } catch { /* already gone */ }
+      resolve(alive);
+    };
+    timer = setTimeout(() => done(true), 2_000);
+    probe.once('connect', () => done(true));
+    probe.once('error', (err: NodeJS.ErrnoException) => {
+      done(!(err.code === 'ECONNREFUSED' || err.code === 'ENOENT'));
+    });
+  });
 }
 
 /**

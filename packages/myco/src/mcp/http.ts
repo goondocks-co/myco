@@ -15,7 +15,7 @@ import {
 } from '../grove/request-context.js';
 import { classifyRoute, refusalMcpBody } from '../host/routing.js';
 import { handleAttachedRequest, proxyLoggerFrom, type HostProxyDeps } from '../daemon/host-proxy.js';
-import { isOverlayRequest, servedGroveRefusal, type HostServeRuntime } from '../daemon/host-serve.js';
+import { isTeamRequest, servedGroveRefusal, type HostServeRuntime } from '../daemon/host-serve.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '../constants.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
@@ -59,7 +59,7 @@ export interface StreamableMcpHttpHandlerOptions {
    * single-homed filter would leave the full mixed-op MCP tool surface
    * (including `myco_spores`/`myco_plans` writes) open against any Grove the
    * host owns. `null`/omitted on a non-host daemon — the overlay branch below
-   * never runs there (no overlay listener, so `isOverlayRequest` is always
+   * never runs there (no overlay listener, so `isTeamRequest` is always
    * false), so the filter is inert rather than misapplied.
    */
   hostServe?: HostServeRuntime | null;
@@ -164,7 +164,7 @@ export function createStreamableMcpHttpHandler(
   const client = options.client ?? new DaemonClient(vaultDir);
   const lockNamespace = options.lockNamespace ?? nativePerUserLockNamespace;
   return async (req, res) => {
-    const overlayRequest = isOverlayRequest(req);
+    const overlayRequest = isTeamRequest(req);
     let callContextConstraint: { allowedGroveId: string } | undefined;
 
     // Team Host chokepoint 2: the raw /mcp route bypasses route dispatch and
@@ -299,7 +299,7 @@ export function createStreamableMcpHttpHandler(
       const servedGroveId = options.hostServe?.servedGroveId;
       const groveRefusal = options.hostServe
         ? servedGroveRefusal(options.hostServe, requestContext.groveId)
-        // Unreachable in practice (isOverlayRequest only marks requests when
+        // Unreachable in practice (isTeamRequest only marks requests when
         // the daemon's overlay listener — which requires hostServe — is
         // what admitted them), but fail closed rather than dispatch.
         : { status: 503, body: { error: 'host_serve_unavailable' } };

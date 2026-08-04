@@ -20,6 +20,8 @@ const RESIDENCY_ABORT_TOO_LATE_GENERIC =
 const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
   project_registered_locally:
     "This project already has local Myco data on this machine — attaching a project with existing local history isn't available yet.",
+  join_unavailable:
+    'Joining a team is temporarily unavailable in this build while team connectivity is being rebuilt. Nothing was changed on this machine.',
   project_attached_to_other_host:
     'This project is already attached to another host. Detach it from that host first — its host card above has a Detach control.',
   not_joined:

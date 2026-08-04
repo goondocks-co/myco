@@ -36,7 +36,6 @@ export interface HostServeStatusServing {
   started_at?: string | null;
   served_grove_id: string | null;
   served_grove_name: string | null;
-  overlay_address: string;
   host_id: string | null;
   label: string | null;
   /** Projects members have attached to the served Grove (registration-on-ingest

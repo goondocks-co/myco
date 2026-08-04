@@ -12,13 +12,13 @@ import path from 'node:path';
 
 import {
   DESIGNATION_INTENT_FILENAME,
+  hostDisable,
   hostEnable,
   resolveServedGroveDesignation,
   type HostEnableDeps,
 } from '@myco/team-host/overlay.js';
-import { headscaleAssetName, headscaleAssetUrl, HEADSCALE_VERSION, type BinaryFetcher, type CommandRunner } from '@myco/team-host/binaries.js';
-import { HEADSCALE_SERVICE_LABEL } from '@myco/team-host/system-service.js';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader.js';
+import { readHostState } from '@myco/team-host/state.js';
 import { resolveServedGroveDesignationHealth } from '@myco/daemon/host-serve.js';
 import { checkServedGroveDesignation } from '@myco/cli/doctor.js';
 import {
@@ -184,106 +184,37 @@ describe('hostEnable designation wiring', () => {
   let launchDaemonsDir: string;
   let brewDir: string;
 
-  const sha256 = (b: Uint8Array) => crypto.createHash('sha256').update(b).digest('hex');
-  const bytes = (s: string) => new TextEncoder().encode(s);
-  const HEADSCALE_BYTES = bytes('#!/fake headscale\n');
-  const TARGET = { os: 'darwin' as const, arch: 'arm64' as const };
-
   beforeEach(() => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-designation-hostenable-'));
-    launchDaemonsDir = path.join(tmp, 'LaunchDaemons');
-    brewDir = path.join(tmp, 'brew');
-    fs.mkdirSync(brewDir, { recursive: true });
-    fs.writeFileSync(path.join(brewDir, 'tailscale'), 'ts', { mode: 0o755 });
-    fs.writeFileSync(path.join(brewDir, 'tailscaled'), 'tsd', { mode: 0o755 });
+    fs.mkdtempSync(path.join(os.tmpdir(), 'myco-designation-hostenable-'));
   });
 
-  function fetcher(): BinaryFetcher {
-    const routes: Record<string, Uint8Array> = {
-      [headscaleAssetUrl(TARGET)]: HEADSCALE_BYTES,
-      [`https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/checksums.txt`]:
-        bytes(`${sha256(HEADSCALE_BYTES)}  ${headscaleAssetName(TARGET)}\n`),
-    };
-    return { async download(url) { const b = routes[url]; if (!b) throw new Error(`404 ${url}`); return b; } };
-  }
-
-  function overlayRunner(): { runner: CommandRunner } {
-    const tailscaledPlist = path.join(launchDaemonsDir, 'com.tailscale.tailscaled.plist');
-    const runner: CommandRunner = {
-      async run(command, args) {
-        const joined = [command, ...args].join(' ');
-        if (command === 'brew' && args[0] === 'list') return { stdout: 'tailscale', exitCode: 0 };
-        if (args[0] === 'version') {
-          return command.endsWith('headscale')
-            ? { stdout: `v${HEADSCALE_VERSION}\n`, exitCode: 0 }
-            : { stdout: '1.98.8\n', exitCode: 0 };
-        }
-        if (joined.includes('users create')) return { stdout: '{"id":"1","name":"myco-host"}', exitCode: 0 };
-        if (joined.includes('users list')) return { stdout: '[{"id":"1","name":"myco-host"}]', exitCode: 0 };
-        if (joined.includes('preauthkeys create')) return { stdout: '{"key":"onetimekeyvalue123"}', exitCode: 0 };
-        if (joined.includes('nodes list')) return { stdout: '[{"id":"9","name":"testhost"}]', exitCode: 0 };
-        if (command === 'sudo' && args[0] === 'install') {
-          fs.mkdirSync(path.dirname(args[args.length - 1]), { recursive: true });
-          fs.copyFileSync(args[args.length - 2], args[args.length - 1]);
-        }
-        if (command === 'sudo' && args[0] === 'rm') fs.rmSync(args[args.length - 1], { force: true });
-        if (joined.includes('install-system-daemon')) { fs.mkdirSync(launchDaemonsDir, { recursive: true }); fs.writeFileSync(tailscaledPlist, 'plist'); }
-        if (joined.includes('uninstall-system-daemon')) fs.rmSync(tailscaledPlist, { force: true });
-        return { stdout: '', exitCode: 0 };
-      },
-    };
-    return { runner };
-  }
-
-  function fakeManager(): { manager: ServiceManager; restarts: string[] } {
-    const restarts: string[] = [];
-    const manager: ServiceManager = {
-      supported: true, platformName: 'launchd',
-      isInstalled: async () => true,
-      inspect: async () => null,
-      install: async (): Promise<InstallResult> => ({ changed: false, supervisorReloaded: false }),
-      uninstall: async () => {}, start: async () => {}, stop: async () => {},
-      restart: async (l) => { restarts.push(l); },
-      restartShellCommand: (l) => l,
-      status: async (): Promise<ServiceStatus> => ({ installed: true, running: true, pid: 1, lastExitCode: null, unitPath: null }),
-    };
-    return { manager, restarts };
-  }
-
+  // `hostEnable` no longer provisions binaries, renders a control plane, or
+  // installs services, so the harness that faked all three is gone with them.
+  // What survives is the only side effect these tests ever asserted on:
+  // designation, persisted to machine config.
   function deps(overrides: Partial<HostEnableDeps> = {}): HostEnableDeps {
-    const { runner } = overlayRunner();
-    const { manager } = fakeManager();
-    const ips = [null as string | null, '100.64.0.5'];
-    let call = 0;
     return {
-      fetcher: fetcher(),
-      runner,
+      mycoHome: home(),
       platform: 'darwin',
-      arch: 'arm64',
-      serviceManager: manager,
-      brewBinDirs: [brewDir],
-      systemCtx: { launchDaemonsDir, stagingDir: path.join(os.tmpdir(), 'myco-designation-staging') },
-      resolveOverlayIp: async () => ips[Math.min(call++, ips.length - 1)],
-      // The fake ServiceManager installs no real tailscaled, so its control
-      // socket never appears; skip the bounded wait.
-      hostTailscaledSocketPath: path.join(os.tmpdir(), 'myco-designation-ts', 'host.sock'),
-      hostTailscaledStateDir: path.join(os.tmpdir(), 'myco-designation-ts', 'state'),
-      waitForSocket: async () => true,
-      overlayPort: 41443,
-      resolveNodeId: async () => 'node-9',
-      // Headscale runs at the daemon's scope via the scoped manager; the
-      // fake never binds a real admin socket, so short-circuit the health
-      // proof and pin the observed scope to the fake's installed state.
-      headscaleServiceManager: manager,
-      resolveHeadscaleScope: async () => ((await manager.isInstalled(HEADSCALE_SERVICE_LABEL)) ? 'login' : 'none'),
-      waitForAdminSocket: async () => true,
+      restartDaemon: async () => ({ restarted: true, detail: 'restarted (fake)' }),
       logger: () => {},
       ...overrides,
     };
   }
 
+  it('disable is idempotent on a machine that never enabled — clears nothing, reports success', async () => {
+    // Teardown used to have to stop two services and prove them gone before
+    // destroying identity. It is now three disk writes, so "never enabled" and
+    // "enabled then torn down" converge on the same state rather than the
+    // never-enabled case tripping a prove-gone gate with nothing to prove.
+    const result = await hostDisable(deps());
+    expect(result.cleared).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(readHostState()).toBeNull();
+  });
+
   it('(a) enable with no designation designates the default Grove and persists it', async () => {
-    const result = await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, deps());
+    const result = await hostEnable({ hostname: 'testhost' }, deps());
 
     expect(result.servedGroveId).toBeDefined();
     const machine = loadMachineConfig(home());
@@ -296,12 +227,12 @@ describe('hostEnable designation wiring', () => {
   });
 
   it('(b) re-run after the default pointer moves keeps the original designation and surfaces a warning note', async () => {
-    const first = await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, deps());
+    const first = await hostEnable({ hostname: 'testhost' }, deps());
 
     const otherGrove = createGrove('Personal', home());
     setDefaultGrove(otherGrove.id, home());
 
-    const second = await hostEnable({ serverUrl: 'https://host.example:8080', hostname: 'testhost' }, deps());
+    const second = await hostEnable({ hostname: 'testhost' }, deps());
 
     expect(second.servedGroveId).toBe(first.servedGroveId);
     const machine = loadMachineConfig(home());
@@ -313,7 +244,7 @@ describe('hostEnable designation wiring', () => {
     const personalDefault = ensureDefaultGrove(home()); // a pre-existing personal default Grove
 
     const result = await hostEnable(
-      { serverUrl: 'https://host.example:8080', hostname: 'testhost', groveDesignation: 'fresh' },
+      { hostname: 'testhost', groveDesignation: 'fresh' },
       deps(),
     );
 

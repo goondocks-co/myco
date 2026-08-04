@@ -17,6 +17,7 @@
  * Hermetic: `MYCO_HOME` / `MYCO_TEAM_HOME` are fresh tmpdirs per test.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { teamFetch, teamSocketPath, removeSocket, socketFetch } from '../helpers/team-socket.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -97,6 +98,7 @@ function mockDaemonClient(): DaemonClient {
 
 describe('dual-homed served-grove fail-closed filter (overlay integration)', () => {
   let tmp: string;
+  let teamSock: string;
   let mycoHome: string;
   let savedMycoHome: string | undefined;
   let savedTeamHome: string | undefined;
@@ -177,9 +179,8 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
    * knowledge-serving router routes chokepoint 1 protects.
    */
   async function buildHostServer(servedGroveId: string | undefined): Promise<DaemonServer> {
+    teamSock = teamSocketPath();
     const hostServe: HostServeRuntime = {
-      overlayAddress: '127.0.0.1',
-      overlayPort: 0,
       bearer: HOST_BEARER,
       servedGroveId,
     };
@@ -192,6 +193,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       daemonStateAuthority: stubAuthority,
       hostServe,
       lockNamespace: testPerUserLockNamespace,
+      teamSocketPath: teamSock,
     });
     server.registerRoute('GET', PROBE_ROUTE, async (req) => ({
       body: { ok: true, groveId: req.requestContext?.groveId ?? null },
@@ -222,7 +224,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
   test('(a) router route: a bearer-holding member naming the operator\'s personal Grove is refused 404', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, {
+    const res = await teamFetch(teamSock, `${PROBE_ROUTE}`, {
       headers: overlayHeaders({
         'x-myco-grove-id': personalGrove.id,
         'x-myco-project-id': personalProjectId,
@@ -237,7 +239,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
   test('(b) /mcp: a bearer-holding member naming the personal Grove is refused 404 before any tools/list dispatch', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, {
+    const res = await teamFetch(teamSock, `/mcp`, {
       method: 'POST',
       headers: overlayHeaders({
         'content-type': 'application/json',
@@ -255,7 +257,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
   test('(c) router route: no grove header resolves a null Grove and is refused (null branch closed, not fail-open)', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, {
+    const res = await teamFetch(teamSock, `${PROBE_ROUTE}`, {
       headers: overlayHeaders(),
     });
     expect(res.status).toBe(404);
@@ -270,7 +272,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     // legacy_vault soft-fail gate) yet groveId stays null — the resolved-
     // context-has-no-grove branch, not the no-designation branch.
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, {
+    const res = await teamFetch(teamSock, `/mcp`, {
       method: 'POST',
       headers: overlayHeaders({
         'content-type': 'application/json',
@@ -287,7 +289,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
   test('(d) router route: the designated served Grove passes through to the real handler', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, {
+    const res = await teamFetch(teamSock, `${PROBE_ROUTE}`, {
       headers: overlayHeaders({
         'x-myco-grove-id': servedGrove.id,
         'x-myco-project-id': servedProjectId,
@@ -303,8 +305,9 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     const server = await buildHostServer(servedGrove.id);
     const client = new Client({ name: 'served-grove-filter-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${server.overlayPort}/mcp`),
+      new URL('http://myco-team.local/mcp'),
       {
+        fetch: socketFetch(teamSock),
         requestInit: {
           headers: overlayHeaders({
             'x-myco-grove-id': servedGrove.id,
@@ -323,8 +326,9 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     const server = await buildHostServer(servedGrove.id);
     const client = new Client({ name: 'served-grove-filter-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${server.overlayPort}/mcp`),
+      new URL('http://myco-team.local/mcp'),
       {
+        fetch: socketFetch(teamSock),
         requestInit: {
           headers: overlayHeaders({
             'x-myco-grove-id': servedGrove.id,
@@ -362,7 +366,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     expect(bare.status).toBe(200);
 
     // The operator's own local admin surface must reach the "personal" Grove
-    // freely from loopback — this filter is scoped to isOverlayRequest(req)
+    // freely from loopback — this filter is scoped to isTeamRequest(req)
     // and must never leak into the non-overlay local dispatch path.
     const withPersonalGrove = await fetch(`http://127.0.0.1:${server.port}${PROBE_ROUTE}`, {
       headers: {
@@ -406,7 +410,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
   test('(f) no served_grove_id designation: every grove-resolving overlay router request is refused', async () => {
     const server = await buildHostServer(undefined);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, {
+    const res = await teamFetch(teamSock, `${PROBE_ROUTE}`, {
       headers: overlayHeaders({
         'x-myco-grove-id': servedGrove.id,
         'x-myco-project-id': servedProjectId,
@@ -417,7 +421,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
   test('(f) no served_grove_id designation: every grove-resolving overlay /mcp request is refused', async () => {
     const server = await buildHostServer(undefined);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, {
+    const res = await teamFetch(teamSock, `/mcp`, {
       method: 'POST',
       headers: overlayHeaders({
         'content-type': 'application/json',
@@ -441,7 +445,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
   test('(g) /mcp: an overlay request hitting the legacy-vault branch is refused with the uniform 404 (no vault_dir leak)', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, {
+    const res = await teamFetch(teamSock, `/mcp`, {
       method: 'POST',
       headers: overlayHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
@@ -480,7 +484,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       'x-myco-project-id': personalProjectId,
     });
 
-    const res1 = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, { headers });
+    const res1 = await teamFetch(teamSock, `${PROBE_ROUTE}`, { headers });
     expect(res1.status).toBe(404);
     const body1 = await res1.json();
     expect(body1.error).toBe('not_found');
@@ -494,7 +498,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
     // An identical repeat within the throttle interval: response byte-identical,
     // no second log line (Task 2 is log-lines-only, zero wire/behavior change).
-    const res2 = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, { headers });
+    const res2 = await teamFetch(teamSock, `${PROBE_ROUTE}`, { headers });
     expect(res2.status).toBe(404);
     expect(await res2.json()).toEqual(body1);
     expect(refusalLogs()).toHaveLength(1);
@@ -502,7 +506,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
   test('(h) router route: the null-grove refusal branch also logs (throttled)', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}${PROBE_ROUTE}`, {
+    const res = await teamFetch(teamSock, `${PROBE_ROUTE}`, {
       headers: overlayHeaders(),
     });
     expect(res.status).toBe(404);
@@ -523,7 +527,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     });
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
 
-    const res1 = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, { method: 'POST', headers, body });
+    const res1 = await teamFetch(teamSock, `/mcp`, { method: 'POST', headers, body });
     expect(res1.status).toBe(404);
     expect(refusalLogs()).toHaveLength(1);
     const [entry] = refusalLogs();
@@ -533,20 +537,20 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     expect(entry.served_grove_id).toBe(servedGrove.id);
 
     // Repeat within the interval: throttled (silent).
-    const res2 = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, { method: 'POST', headers, body });
+    const res2 = await teamFetch(teamSock, `/mcp`, { method: 'POST', headers, body });
     expect(res2.status).toBe(404);
     expect(refusalLogs()).toHaveLength(1);
 
     // Once the interval elapses, the same refusal logs again.
     fakeNow += REFUSAL_LOG_THROTTLE_INTERVAL_MS + 1;
-    const res3 = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, { method: 'POST', headers, body });
+    const res3 = await teamFetch(teamSock, `/mcp`, { method: 'POST', headers, body });
     expect(res3.status).toBe(404);
     expect(refusalLogs()).toHaveLength(2);
   });
 
   test('(h) /mcp: the null-grove refusal branch also logs (chokepoint 2)', async () => {
     const server = await buildHostServer(servedGrove.id);
-    const res = await fetch(`http://127.0.0.1:${server.overlayPort}/mcp`, {
+    const res = await teamFetch(teamSock, `/mcp`, {
       method: 'POST',
       headers: overlayHeaders({ 'content-type': 'application/json', 'x-myco-project-id': servedProjectId }),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),

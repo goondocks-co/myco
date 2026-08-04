@@ -100,7 +100,7 @@ export interface HostedRegistrationOutcome {
 
 /**
  * The registration-on-ingest decision + write. Gated on ALL of (the caller
- * supplies `isOverlayRequest` by only calling this for overlay requests):
+ * supplies `isTeamRequest` by only calling this for overlay requests):
  *   2. host serving a designated grove (`servedGroveId` non-null);
  *   3. the route is `collect`-stamped;
  *   4. the raw grove header equals `servedGroveId` (read with the resolver's

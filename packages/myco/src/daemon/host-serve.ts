@@ -54,37 +54,17 @@ import { missingKeyReason } from '../agent/harness/provider-health.js';
 /** The resolved host-serve enablement passed to `DaemonServer`. `null` means
  *  host serving is OFF and no second listener binds. */
 export interface HostServeRuntime {
-  /**
-   * The host's overlay identity — the 100.64/10 address members DIAL. NOT a
-   * bind address: since the coexistence move to userspace networking there is
-   * no TUN interface to bind, so the listener binds loopback and a
-   * `tailscale serve --tcp` forward bridges the overlay to it. Still
-   * load-bearing as the advertised address and the Host-header comparand.
-   */
-  overlayAddress: string;
-  /**
-   * The port the overlay listener binds on loopback AND that the serve forward
-   * exposes overlay-side. REQUIRED — {@link resolveHostServeConfig} refuses to
-   * serve without it. It is deliberately not optional-with-a-fallback: falling
-   * back to the daemon's canonical port makes the overlay listener collide with
-   * the loopback listener, whose EADDRINUSE is swallowed into a single warn
-   * while `/api/host-serve/status` keeps reporting `serving: true`.
-   */
-  overlayPort: number;
-  /** The host bearer every overlay request must present (`Authorization: Bearer`). */
+  /** The host bearer every team request must present (`Authorization: Bearer`). */
   bearer: string;
-  /** The host's control-plane id (`myco-team` `HostState.host_id`), surfaced from
-   *  `host_serve` config so the enrollment endpoint can self-report it. Absent on a
-   *  host enabled before Task 2.4 wrote it — the member falls back to its own ref. */
+  /** The host's control-plane id, surfaced from `host_serve` config so the
+   *  enrollment endpoint can self-report it. */
   hostId?: string;
-  /** Human-readable host label (the host's tailnet node name). Same provenance +
-   *  fallback as {@link hostId}. */
+  /** Human-readable host label. Same provenance + fallback as {@link hostId}. */
   label?: string;
   /** The one Grove this host serves (`host_serve.served_grove_id`), surfaced so
-   *  {@link servedGroveRefusal} can refuse any overlay request whose resolved
+   *  {@link servedGroveRefusal} can refuse any team request whose resolved
    *  Grove doesn't match. Absent when the designation is unset (null) — a
-   *  fail-closed outcome the filter enforces, not this module (see
-   *  {@link resolveHostServeConfig}). */
+   *  fail-closed outcome the filter enforces, not this module. */
   servedGroveId?: string;
 }
 
@@ -97,83 +77,33 @@ export interface OverlayGateRefusal {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay request mark
+// Team request mark
 // ---------------------------------------------------------------------------
 //
-// A request that arrived on the overlay listener is tagged here so the shared
+// A request that arrived on the team listener is tagged here so the shared
 // dispatch (`server.ts handleRequest`, `mcp/http.ts`) can branch on it WITHOUT
 // re-deriving the listener: it skips attach classification (a host serves its
 // own Groves locally and must NEVER re-proxy — the circular-proxy defense),
-// skips the loopback CSRF gate (the overlay gate already validated it), and
-// refuses the static/UI surface (the overlay carries only the daemon API). A
-// WeakSet keys on the request object itself — no header spoofing surface, no
+// skips the loopback CSRF gate (the team gate already validated it), and
+// refuses the static/UI surface (the team surface carries only the daemon API).
+// A WeakSet keys on the request object itself — no header spoofing surface, no
 // leak (entries are collected with the request).
 
-const overlayRequests = new WeakSet<http.IncomingMessage>();
+const teamRequests = new WeakSet<http.IncomingMessage>();
 
-/** Tag a request as having arrived on the overlay listener. */
-export function markOverlayRequest(req: http.IncomingMessage): void {
-  overlayRequests.add(req);
+/** Tag a request as having arrived on the team listener. */
+export function markTeamRequest(req: http.IncomingMessage): void {
+  teamRequests.add(req);
 }
 
-/** True when a request arrived on the overlay listener (see the note above). */
-export function isOverlayRequest(req: http.IncomingMessage): boolean {
-  return overlayRequests.has(req);
+/** True when a request arrived on the team listener (see the note above). */
+export function isTeamRequest(req: http.IncomingMessage): boolean {
+  return teamRequests.has(req);
 }
 
 // ---------------------------------------------------------------------------
 // Enablement + bearer
 // ---------------------------------------------------------------------------
-
-/**
- * True when `address` is a non-empty host this machine may ADVERTISE as its
- * overlay identity. Despite the historical name it no longer gates a bind: the
- * listener binds loopback (`OVERLAY_BIND_ADDRESS`), because userspace
- * networking creates no TUN and the 100.64 address is not bindable here at
- * all. It still gates what goes on the wire, and `isOverlayHost` compares
- * incoming Host headers against it, so the wildcard/scheme rejections below
- * remain load-bearing. Rejects every wildcard / any-interface form: a host that
- * advertised `0.0.0.0`/`::` would tell members to dial an address that is not an
- * identity, and would defeat the transport-boundary model that §9 originally
- * expressed as "MUST bind the overlay interface only" — restated by the
- * coexistence amendment as "never a wildcard or non-loopback bind, and the only
- * network path in is the overlay". Also rejects an embedded scheme, since this
- * is a bare host, not a URL.
- */
-export function isBindableOverlayAddress(address: string | null | undefined): boolean {
-  if (!address) return false;
-  const a = address.trim();
-  if (!a) return false;
-  const wildcards = new Set(['0.0.0.0', '::', '0:0:0:0:0:0:0:0', '*', '[::]', '[::0]']);
-  if (wildcards.has(a)) return false;
-  if (a.includes('://')) return false;
-  return true;
-}
-
-/**
- * True when `address` is within the overlay's private address space — the
- * Tailscale/Headscale CGNAT range 100.64.0.0/10 (IPv4). A host advertises an
- * overlay-space address ONLY: a LAN (192.168/16, 10/8) or public IP is never a
- * valid overlay identity. This is the stricter, config-boundary assertion
- * (enforced in {@link resolveHostServeConfig}, where the untrusted config value
- * enters) — distinct from {@link isBindableOverlayAddress}, which is the
- * permissive wildcard/shape guard a hermetic fixture can satisfy with a
- * loopback address.
- *
- * IPv4-only by design of record (the overlay-design + spike consistently describe
- * "100.x IPs"). If Task 2.1 ever records the Tailscale IPv6 ULA address instead,
- * add the `fd7a:115c:a1e0::/48` branch here — the rejection log below names the
- * required range so that failure is self-explaining.
- */
-export function isOverlayRangeAddress(address: string | null | undefined): boolean {
-  if (!isBindableOverlayAddress(address)) return false;
-  const v4 = (address as string).trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!v4) return false;
-  const octets = v4.slice(1, 5).map(Number);
-  if (octets.some((o) => o > 255)) return false;
-  // 100.64.0.0/10 → first octet 100, second octet in [64, 127].
-  return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
-}
 
 /**
  * Read the machine-scoped host-serve bearer, minting + persisting a fresh 256-bit
@@ -234,19 +164,12 @@ interface HostServeLogger {
  * designation is NOT dangling — it still resolves; the dispatch filter
  * (Task 2) is what makes an undesignated host serve nothing.
  */
-/** True for a port number the overlay listener may bind. */
-export function isValidOverlayPort(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535;
-}
-
 /** Why an enabled-looking config still yields no serving runtime. One reason
  *  per refusal branch below; consumed by the status route's `serving: false`
  *  body so the UI renders the daemon's actual diagnosis instead of a bare
  *  boolean (E1 §4.1, review RC3). */
 export type HostServeRefusalReason =
   | 'disabled'
-  | 'invalid_overlay_address'
-  | 'invalid_overlay_port'
   | 'dangling_served_grove'
   | 'grove_registry_unreadable'
   | 'bearer_unavailable';
@@ -282,8 +205,6 @@ export function classifyHostServeRefusalReadOnly(options: {
 }): Exclude<HostServeRefusalReason, 'bearer_unavailable'> | null {
   const hostServe = options.machineConfig.daemon.host_serve;
   if (!hostServe?.enabled) return 'disabled';
-  if (!isOverlayRangeAddress(hostServe.overlay_address)) return 'invalid_overlay_address';
-  if (!isValidOverlayPort(hostServe.overlay_port)) return 'invalid_overlay_port';
   const servedGroveId = hostServe.served_grove_id?.trim() || undefined;
   if (servedGroveId) {
     const mycoHome = options.mycoHome ?? resolveMycoHome();
@@ -304,31 +225,6 @@ export function classifyHostServeConfig(options: {
 }): HostServeClassification {
   const hostServe = options.machineConfig.daemon.host_serve;
   if (!hostServe?.enabled) return { reason: 'disabled' };
-
-  const address = hostServe.overlay_address;
-  if (!isOverlayRangeAddress(address)) {
-    options.logger?.warn(
-      LOG_KINDS.HOST_SERVE,
-      'Team Host serve is enabled but overlay_address is absent or not a 100.64/10 (CGNAT) overlay address — host serving stays off',
-      { overlay_address: address ?? null },
-    );
-    return { reason: 'invalid_overlay_address' };
-  }
-
-  // Fail CLOSED on a missing/invalid port rather than falling back to the
-  // daemon's canonical port: that fallback binds the overlay listener at the
-  // address the loopback listener already holds, and the resulting EADDRINUSE
-  // is swallowed into one warn while status still reports `serving: true`.
-  const overlayPort = hostServe.overlay_port;
-  if (!isValidOverlayPort(overlayPort)) {
-    options.logger?.warn(
-      LOG_KINDS.HOST_SERVE,
-      'Team Host serve is enabled but overlay_port is absent or out of range — host serving stays off. '
-      + 'Re-run `myco host enable` to allocate and persist one.',
-      { overlay_port: overlayPort ?? null },
-    );
-    return { reason: 'invalid_overlay_port' };
-  }
 
   const mycoHome = options.mycoHome ?? resolveMycoHome();
 
@@ -366,8 +262,6 @@ export function classifyHostServeConfig(options: {
     );
     return {
       runtime: {
-        overlayAddress: (address as string).trim(),
-        overlayPort,
         bearer,
         hostId: hostServe.host_id ?? undefined,
         label: hostServe.label ?? undefined,
@@ -645,19 +539,45 @@ export function overlayBearerRejection(
 }
 
 /**
- * Lifecycle/operator raw routes that are the host's LOCALHOST control plane and
- * are NEVER part of the overlay-served surface (spec §9: "operator control plane
- * = host localhost only"). `/api/shutdown` mutates daemon lifecycle; a member
- * daemon must never be able to drain the host. Refused (404 — not part of this
- * listener's surface) regardless of a valid bearer. `/health` and `/api/version`
- * are read-only liveness/version probes and stay bearer+version-gated so a member
- * can confirm reachability.
+ * The raw routes the TEAM listener serves. An allowlist: anything not named
+ * here is 404 on the team surface, including raw routes added later.
  */
-const OVERLAY_REFUSED_LIFECYCLE_ROUTES = new Set<string>(['/api/shutdown']);
+const TEAM_ADMITTED_RAW_ROUTES: ReadonlySet<string> = new Set<string>([
+  '/health', // reachability probe — a member confirms the host answers
+  '/api/version', // version probe
+  '/mcp', // the hosted MCP surface; gated downstream by servedGroveRefusal
+  // NOT admitted: `/api/host/enroll`. It is bearer-EXEMPT and returns the shared
+  // serve bearer to whoever asks, because its real admission gate was overlay
+  // membership — a headscale pre-auth key the daemon never saw. With the overlay
+  // gone that gate does not exist, so admitting the route here would publish a
+  // bearer giveaway the moment this socket is fronted by Funnel. It is re-admitted
+  // together with the daemon-validated single-use join key that replaces it, in
+  // the same change — never before.
+]);
 
-/** True when `pathname` is an operator/lifecycle raw route the overlay refuses. */
-export function overlayLifecycleRefused(pathname: string): boolean {
-  return OVERLAY_REFUSED_LIFECYCLE_ROUTES.has(pathname);
+/**
+ * Whether a RAW route (one registered outside the router, and therefore never
+ * classified by `classifyRouteStamp`) may be served on the team listener.
+ *
+ * This is an allowlist, and the inversion is the point. The overlay gate this
+ * replaces was a deny-list naming `/api/shutdown`, which meant a raw route added
+ * later was served to members by default and had to be remembered into the deny
+ * set. On a listener whose surface is published to the public internet, the
+ * default must be refusal: a new raw route is unreachable here until it is
+ * named above, and the reviewer of the PR that adds it has to make that call
+ * explicitly.
+ *
+ * Router routes are not covered here — they carry scope-map stamps and are
+ * refused by class in `overlayHostStampRefusal` (`host/routing.ts`).
+ */
+export function teamRawRouteAdmitted(pathname: string): boolean {
+  return TEAM_ADMITTED_RAW_ROUTES.has(pathname);
+}
+
+/** The raw routes the team listener serves — exported so the meta gate can
+ *  assert this set against the daemon's actual raw-route registrations. */
+export function teamAdmittedRawRoutes(): ReadonlySet<string> {
+  return TEAM_ADMITTED_RAW_ROUTES;
 }
 
 // ---------------------------------------------------------------------------
@@ -738,7 +658,7 @@ export function servedGroveRefusal(
  * minted you a one-time admission key and you completed overlay admission (spec §8),
  * so **overlay membership IS the enrollment trust boundary** (spec §9: two gates —
  * overlay admission + bearer; enrollment sits behind the first). The route handler
- * (`daemon/server.ts`) additionally asserts overlay provenance (`isOverlayRequest`)
+ * (`daemon/server.ts`) additionally asserts overlay provenance (`isTeamRequest`)
  * and 404s any localhost/non-overlay hit, so the exemption never widens the
  * localhost surface.
  *
@@ -758,10 +678,8 @@ export function overlayBearerExempt(pathname: string): boolean {
 export interface HostEnrollmentPayload {
   host_id: string;
   label: string;
-  /** `<host 100.64 IP>:<daemon overlay port>` — the address the member's proxy dials. */
-  overlay_address: string;
   protocol_version: number;
-  /** The shared host serve-bearer (the secret enrollment delivers over the overlay). */
+  /** The shared host serve-bearer (the secret enrollment delivers to a joiner). */
   bearer: string;
   /**
    * This host's one served Grove (protocol v2, server-mode design spec §2).
@@ -775,30 +693,15 @@ export interface HostEnrollmentPayload {
 }
 
 /**
- * THE one producer of the `<overlay-ip>:<port>` authority members dial.
- *
- * Every surface that tells someone which address to reach this host on goes
- * through here — the enrollment payload, the emitted `myco join` command, the
- * CLI status/enable printouts, and the host-serve status API. Before this
- * existed each derived its own, and several composed the DAEMON's canonical
- * port instead of the overlay port, which silently handed members an address
- * that cannot answer.
- */
-export function formatOverlayAuthority(overlayAddress: string, overlayPort: number): string {
-  return `${overlayAddress}:${overlayPort}`;
-}
-
-/**
  * Build the enrollment response from the resolved host-serve runtime + the actual
  * bound overlay port (`server.overlayPort`, known only after listen). The bearer is
  * `runtime.bearer` — the exact value {@link resolveHostServeBearer} minted/read at
  * config resolution, so there is one bearer per host, delivered here unchanged.
  */
-export function buildHostEnrollmentPayload(runtime: HostServeRuntime, overlayPort: number): HostEnrollmentPayload {
+export function buildHostEnrollmentPayload(runtime: HostServeRuntime): HostEnrollmentPayload {
   return {
     host_id: runtime.hostId ?? '',
     label: runtime.label ?? '',
-    overlay_address: formatOverlayAuthority(runtime.overlayAddress, overlayPort),
     protocol_version: HOST_PROTOCOL_VERSION,
     bearer: runtime.bearer,
     served_grove_id: runtime.servedGroveId ?? null,

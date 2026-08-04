@@ -1,13 +1,18 @@
 /**
- * Host state record (Task 2.1) — the durable "this machine is a Team Host"
- * marker at `~/.myco-team/host/state.json`. Records version provenance, the
- * assigned overlay IP, the headscale node/user, and the provisioned binary
- * paths so a re-run of `host enable` can converge (each step checks already-done)
- * and `host disable` knows exactly what to tear down.
+ * Host state record — the durable "this machine is a Team Host" marker at
+ * `~/.myco-team/host/state.json`. It carries only the identity a host keeps
+ * across enables: its `host_id`, when it was first enabled, and the label
+ * members see.
+ *
+ * It used to also record an overlay IP, headscale node/user, and provisioned
+ * binary paths, because tearing the host down meant knowing which processes and
+ * files to remove. A host now runs no processes of its own and provisions no
+ * binaries — it serves a socket the daemon already owns — so there is nothing
+ * left here for disable to consult.
  *
  * Pure disk read/write, atomic temp+rename (same discipline as the team/host
  * registries). No secrets live here — the host bearer stays in the machine
- * `secrets.env` (Task 2.3's `resolveHostServeBearer`).
+ * `secrets.env` ({@link resolveHostServeBearer}).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,26 +22,9 @@ import { resolveHostControlDir } from '@myco/grove/paths.js';
 export interface HostState {
   host_id: string;
   enabled_at: string;
-  /** The address members dial to reach the control plane (`server_url`). */
-  server_url: string;
-  /** The host's assigned 100.64/10 overlay IP (what the daemon overlay listener binds). */
-  overlay_address: string;
-  /** Headscale node id for the host node, once resolved. */
-  node_id?: string;
-  headscale_user: string;
-  headscale_version: string;
-  /** Managed = the verified pin; required (darwin) = brew-metadata version
-   *  or null when unresolvable — display renders `(unknown)`. */
-  tailscale_version: string | null;
-  /** Required mode (darwin): sha256 of the SUPERVISED tailscaled binary at
-   *  enable time — the doctor's offline drift signal (§14.6, digest-primary;
-   *  the version string above is advisory). Absent on managed platforms and
-   *  on pre-PR-7 records. */
-  tailscaled_sha256?: string | null;
+  /** Host node label surfaced to members at enrollment. */
+  label?: string;
   platform: string;
-  headscale_bin: string;
-  tailscale_bin: string;
-  tailscaled_bin: string;
 }
 
 export function hostStatePath(): string {

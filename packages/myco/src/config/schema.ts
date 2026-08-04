@@ -517,35 +517,6 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
 const HostServeSchema = z.object({
   enabled: z.boolean().default(false),
   /**
-   * The host's overlay identity — the 100.64/10 address members DIAL. Since
-   * the coexistence move to userspace networking there is no TUN interface, so
-   * this is NOT a bind address: the overlay listener binds loopback and a
-   * `tailscale serve --tcp` forward bridges the overlay to it. This value is
-   * still load-bearing — it is what the enrollment payload advertises and what
-   * the overlay Host-header check compares against.
-   */
-  overlay_address: z.string().nullable().default(null),
-  /**
-   * The port the overlay listener binds on loopback AND that the serve forward
-   * exposes overlay-side — one number, both sides. Required whenever `enabled`
-   * (enforced at boot by `resolveHostServeConfig`, which refuses to serve
-   * without it rather than falling back to the daemon's canonical port: that
-   * fallback collides the overlay listener with the loopback listener and
-   * reports healthy while every member is dead).
-   *
-   * Allocated through the same module that owns member proxy ports, so the ONE
-   * allocator that hands out loopback ports on this machine sees it —
-   * otherwise a later `myco join` on a box that both serves and joins can hand
-   * a member the port the host already serves on.
-   *
-   * Stable once allocated: it changes only across a `host disable` (which
-   * nulls it) followed by a re-enable. There is no way to re-point a serving
-   * host at a different port, so a port that is permanently squatted by
-   * another process requires a disable/re-enable cycle to escape.
-   */
-  overlay_port: z.number().int().min(1).max(65535).nullable()
-    .default(null),
-  /**
    * The host's control-plane id + label (`myco-team` `HostState`), mirrored here so
    * the daemon's enrollment endpoint (Task 2.4) can self-report them to a joining
    * member. Machine-local, non-secret; written by `myco-team host enable`. Nullable

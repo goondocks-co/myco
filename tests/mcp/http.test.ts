@@ -10,7 +10,7 @@ import {
 } from '@myco/mcp/http.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/grove/request-context.js';
-import { markOverlayRequest } from '@myco/daemon/host-serve.js';
+import { markTeamRequest } from '@myco/daemon/host-serve.js';
 import { managedBinaryPath } from '@myco/install/managed-binary.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
@@ -138,7 +138,7 @@ describe('streamable HTTP MCP', () => {
         hostServe: { servedGroveId: grove.id },
       });
       const url = await listen((req, res) => {
-        markOverlayRequest(req);
+        markTeamRequest(req);
         void handler(req, res);
       });
       const requestContext = resolveLegacyRequestContext(vaultDir, {

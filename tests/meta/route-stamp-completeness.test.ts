@@ -37,6 +37,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ROUTE_RULES, SERVE_DEFAULT_ROUTES, matchRouteRule, type RouteRule } from '@myco/host/routing';
+import { teamAdmittedRawRoutes } from '@myco/daemon/host-serve';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
@@ -50,14 +51,14 @@ const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const KNOWN_RAW_ROUTES: ReadonlySet<string> = new Set<string>([
   '/health', // liveness — bearer+version gated over the overlay
   '/api/version', // version probe — bearer+version gated
-  '/api/shutdown', // lifecycle — overlayLifecycleRefused (404 over the overlay)
+  '/api/shutdown', // lifecycle — NOT team-admitted, so 404 on the team listener
   '/mcp', // bypasses classifyRouteStamp entirely; gated by the dual-homed
           // served-grove filter (servedGroveRefusal, Task 2) at its own
           // chokepoint in mcp/http.ts — the host serves ONLY its one
           // designated served_grove_id over the overlay, never "any Grove
           // this host owns" (see daemon/server.ts's router chokepoint for
           // the mirror check)
-  '/api/host/enroll', // bearer-EXEMPT enrollment; overlay-only (constant-registered)
+  '/api/host/enroll', // bearer-EXEMPT enrollment; team-listener-only (constant-registered)
 ]);
 
 // ---------------------------------------------------------------------------
@@ -398,5 +399,61 @@ describe('ROUTE_RULES staleness gate self-test', () => {
 
   it('the fixture stale set is exactly the shadowed wildcard, nothing else', () => {
     expect(stale).toEqual([shadowedWildcard]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Team-listener raw-route admission
+// ---------------------------------------------------------------------------
+
+describe('team listener raw-route admission', () => {
+  it('admits only raw routes that are named, and every admitted route is real', () => {
+    // Raw routes never reach `classifyRouteStamp`, so the scope-map gives them
+    // no class and `overlayHostStampRefusal` no opinion. On a surface published
+    // to the public internet the default has to be refusal — which means the
+    // admitted set is the whole gate, and it must stay a strict subset of the
+    // routes the daemon actually registers.
+    const admitted = teamAdmittedRawRoutes();
+    for (const route of admitted) {
+      expect(
+        KNOWN_RAW_ROUTES.has(route),
+        `team listener admits ${route}, which is not a registered raw route — `
+        + 'either the route was removed and the admission is now dead, or it is a router route '
+        + 'that does not belong in this set.',
+      ).toBe(true);
+    }
+
+    // The operator control plane must never be reachable from the team surface:
+    // a member daemon draining its host is the one lifecycle action no bearer
+    // should buy.
+    expect(admitted.has('/api/shutdown')).toBe(false);
+
+    // Every raw route carries an explicit, recorded decision about whether the
+    // team surface serves it. A new raw route trips the count pin above, which
+    // forces a KNOWN_RAW_ROUTES entry, which trips THIS map — and recording
+    // `false` (the safe default) is a passing answer. The previous form asserted
+    // the un-admitted set equalled exactly ['/api/shutdown'], which failed on the
+    // safe outcome and could only be greened by admitting the new route: a gate
+    // that pushed the next author toward exposure.
+    const TEAM_DECISIONS: Record<string, boolean> = {
+      '/health': true, // liveness — a member confirms the host answers
+      '/api/version': true, // version probe
+      '/mcp': true, // hosted MCP; narrowed downstream by servedGroveRefusal
+      '/api/shutdown': false, // operator control plane; a member must never drain its host
+      '/api/host/enroll': false, // bearer-EXEMPT and returns the shared bearer —
+                                 // admit only alongside the join-key gate that replaces
+                                 // overlay membership as its admission story
+    };
+
+    expect(
+      Object.keys(TEAM_DECISIONS).sort(),
+      'a raw route exists with no recorded team-surface decision — add it to TEAM_DECISIONS '
+      + 'with true (served to members) or false (localhost only).',
+    ).toEqual([...KNOWN_RAW_ROUTES].sort());
+
+    expect(
+      [...admitted].sort(),
+      'the team listener admits a different set than TEAM_DECISIONS records.',
+    ).toEqual(Object.entries(TEAM_DECISIONS).filter(([, v]) => v).map(([k]) => k).sort());
   });
 });

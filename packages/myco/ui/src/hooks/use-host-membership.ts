@@ -37,8 +37,6 @@ export interface HostMembershipProjectRef {
 export interface HostMembershipHost {
   host_id: string;
   label: string;
-  overlay_address: string;
-  proxy_port: number | null;
   protocol_version: number;
   /** The host's self-reported served Grove (protocol v2). `null` when the
    *  host predates served-grove designation or hasn't designated one yet. */
@@ -111,7 +109,6 @@ export interface JoinHostInput {
   key: string;
   server_url?: string;
   hostname?: string;
-  overlay_address?: string;
   bearer?: string;
   protocol_version?: number;
   host_id?: string;
@@ -120,8 +117,6 @@ export interface JoinHostInput {
 
 export interface JoinHostResponse {
   host_id: string;
-  overlay_address: string;
-  proxy_port: number;
   member_overlay_ip: string;
   host_reachable: boolean;
   created: boolean;
@@ -146,7 +141,6 @@ export function useJoinHost() {
 
 export interface LeaveHostResponse {
   removed: boolean;
-  tailscaled_removed: boolean;
   notes: string[];
 }
 

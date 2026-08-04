@@ -20,6 +20,10 @@
  */
 
 export type MembershipErrorCode =
+  /** Joining is unavailable on this build: the member transport is being
+   *  rebuilt on the host's public URL, so there is nothing to dial. Coded so
+   *  the browser renders mapped copy instead of CLI-voiced prose. */
+  | 'join_unavailable'
   | 'project_registered_locally'
   | 'project_attached_to_other_host'
   | 'not_joined'

@@ -140,44 +140,21 @@ export async function checkTeamHostReachability(
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Promise<DoctorCheck[]> {
   const { readHostRegistry } = await import('../host/registry.js');
-  const { defaultCheckHostReachable } = await import('../host/member-overlay.js');
-
   const hosts = readHostRegistry(lockNamespace);
   if (hosts.length === 0) return [];
 
-  // Probe every host CONCURRENTLY: each probe is individually bounded
-  // (HOST_PROXY_CONNECT_TIMEOUT_MS inside defaultCheckHostReachable) and each
-  // host rides its own tailscaled/proxy-port, so N joined hosts cost one
-  // probe-timeout worst case, not N of them serialized. `reachable: null`
-  // marks the no-proxy-port case (nothing to probe).
-  const probed = await Promise.all(hosts.map(async (host): Promise<{ host: typeof hosts[number]; reachable: boolean | null }> => {
-    if (host.proxy_port === undefined) return { host, reachable: null };
-    try {
-      return { host, reachable: await defaultCheckHostReachable(host.overlay_address, host.proxy_port) };
-    } catch {
-      return { host, reachable: false };
-    }
+  // Liveness is NOT probed on this build. The probe dialed each host through
+  // that host's own tailscaled CONNECT proxy, and no member transport exists
+  // until it is rebuilt on the host's public URL. Listing the membership
+  // without asserting reachability is the honest report; claiming "unreachable"
+  // would name a host failure for what is a missing client.
+  return hosts.map((host, index): DoctorCheck => ({
+    name: index === 0 ? 'Team Host' : '',
+    status: 'warn',
+    detail: `${host.label} (${host.host_id}): joined, but reachability cannot be checked on this build — `
+      + 'the member transport is being rebuilt.',
+    fixable: false,
   }));
-
-  return probed.map(({ host, reachable }, index): DoctorCheck => {
-    const name = index === 0 ? 'Team Host' : '';
-    if (reachable === null) {
-      return {
-        name,
-        status: 'warn',
-        detail: `${host.label} (${host.host_id}): no local proxy port on record — re-join with \`myco join\` to repair`,
-        fixable: false,
-      };
-    }
-    return {
-      name,
-      status: reachable ? 'ok' : 'warn',
-      detail: reachable
-        ? `${host.label} (${host.host_id}) reachable over the overlay`
-        : `${host.label} (${host.host_id}) not reachable over the overlay — check the host daemon is running and the overlay connection is up`,
-      fixable: false,
-    };
-  });
 }
 
 /**
@@ -206,136 +183,6 @@ export async function checkServedGroveDesignation(mycoHome?: string): Promise<Do
       `served_grove_id ${health.servedGroveId} names no Grove on this machine — a dangling designation. `
       + 'Team Host serving stays off until this is resolved: restore the Grove from backup, or '
       + 'disable and re-enable Team Host serving to designate a different one.',
-    fixable: false,
-  };
-}
-
-/**
- * The overlay forward — the ONLY network path to the daemon's overlay
- * listener since the coexistence move to userspace networking (spec §8.3).
- *
- * WHY THIS CHECK EXISTS: before C1 the listener bound the 100.64 TUN address,
- * so a successful bind was itself evidence that the overlay was up. Now the
- * listener binds loopback — which always succeeds, even with tailscaled dead
- * or uninstalled — and reachability depends on a SECOND piece of state living
- * inside tailscaled: the `serve --tcp` forward. That state can be absent while
- * everything else reports healthy, so a host can advertise an address no
- * member can reach, with nothing failing. This is the replacement evidence.
- *
- * Machine-global. Reports in BOTH directions: whether a serving host is
- * reachable, and — the direction that actually leaks — whether a forward
- * exists for a port this machine does not hold.
- */
-export async function checkOverlayForward(mycoHome?: string): Promise<DoctorCheck | null> {
-  const { loadMachineConfig } = await import('../config/loader.js');
-  const { readHostState } = await import('../team-host/state.js');
-  const { resolveHostTailscaledSocketPath } = await import('../grove/paths.js');
-  const { createTailscaleCli } = await import('../host/tailscale-cli.js');
-  const { realCommandRunner } = await import('../host/overlay-binaries.js');
-  const { readServeTcpPorts, isPortHeld } = await import('../daemon/overlay-forward.js');
-
-  const hostServe = loadMachineConfig(mycoHome).daemon.host_serve;
-  const state = readHostState();
-
-  // NOT-SERVING IS THE DANGEROUS DIRECTION, so it cannot be an early return.
-  // A forward aimed at a port nothing holds keeps delivering member requests —
-  // bearer tokens included — to whatever binds that port next. Returning null
-  // here reported "healthy" for exactly the states that produce one.
-  if (!hostServe.enabled) {
-    if (!state?.tailscale_bin) return null;
-    let strayPorts: number[];
-    try {
-      strayPorts = await readServeTcpPorts(createTailscaleCli({
-        runner: realCommandRunner,
-        tailscaleBin: state.tailscale_bin,
-        socketPath: resolveHostTailscaledSocketPath(),
-      }));
-    } catch {
-      return null; // tailscaled is gone; nothing can be forwarding
-    }
-    // Only an UNHELD port is a leak. A held one belongs to something — another
-    // daemon on this machine, a member proxy — and claiming otherwise would be
-    // asserting a fact this check never verified.
-    const heldFlags = await Promise.all(strayPorts.map((p) => isPortHeld(p)));
-    const unheld = strayPorts.filter((_p, i) => !heldFlags[i]);
-    if (unheld.length === 0) return null;
-    return {
-      name: 'Team Host',
-      status: 'warn',
-      detail:
-        `Team Host serving is OFF, but the overlay still forwards ${unheld.join(', ')} to this machine `
-        + 'with nothing listening on those ports — so anything that binds one receives team traffic. '
-        + 'Run `myco host disable` to clear them.',
-      fixable: false,
-    };
-  }
-
-  const port = hostServe.overlay_port;
-  if (port === null) {
-    return {
-      name: 'Team Host',
-      status: 'warn',
-      detail:
-        'Team Host serving is enabled but no overlay port is recorded, so the daemon fails closed and '
-        + 'never binds the overlay listener. Re-run `myco host enable` to allocate one.',
-      fixable: false,
-    };
-  }
-
-  if (!state?.tailscale_bin) {
-    return {
-      name: 'Team Host',
-      status: 'warn',
-      detail:
-        'Team Host serving is enabled but there is no recorded overlay state on this machine, so the '
-        + 'inbound forward cannot be verified. Re-run `myco host enable`.',
-      fixable: false,
-    };
-  }
-
-  let ports: number[];
-  try {
-    ports = await readServeTcpPorts(createTailscaleCli({
-      runner: realCommandRunner,
-      tailscaleBin: state.tailscale_bin,
-      socketPath: resolveHostTailscaledSocketPath(),
-    }));
-  } catch (err) {
-    return {
-      name: 'Team Host',
-      status: 'warn',
-      detail:
-        'Could not read the overlay forward from the host networking service '
-        + `(${(err as Error).message}). Members cannot reach this host while it is down — `
-        + 'check the service, then re-run `myco host enable`.',
-      fixable: false,
-    };
-  }
-
-  // A stray forward BESIDE the right one is still a live channel to an unheld
-  // port, so "the right one exists" is not sufficient.
-  const strayCandidates = ports.filter((p) => p !== port);
-  const strayHeld = await Promise.all(strayCandidates.map((p) => isPortHeld(p)));
-  const strayUnheld = strayCandidates.filter((_p, i) => !strayHeld[i]);
-  if (ports.includes(port)) {
-    if (strayUnheld.length === 0) return null;
-    return {
-      name: 'Team Host',
-      status: 'warn',
-      detail:
-        `The overlay forwards ${strayUnheld.join(', ')} in addition to the port this host serves (${port}), `
-        + 'with nothing listening on the extra port(s) — so anything that binds one receives team traffic. '
-        + 'Re-run `myco host enable` to reconcile.',
-      fixable: false,
-    };
-  }
-  return {
-    name: 'Team Host',
-    status: 'warn',
-    detail:
-      `The overlay listener is bound on port ${port}, but no inbound forward points at it`
-      + (ports.length > 0 ? ` (found ${ports.join(', ')} instead)` : '')
-      + '. This host is advertising an address no member can reach. Re-run `myco host enable` to restore it.',
     fixable: false,
   };
 }
@@ -1027,141 +874,6 @@ function isHooksRegisteredAt(
  * of bug that has historically silently broken `myco --version` and masked
  * stale code running in the daemon. See PR #263 incident postmortem.
  */
-/**
- * Overlay binary drift (§14.5/§14.6): pin-vs-provisioned for MANAGED
- * binaries (offline, via the provisioning manifest — never by asking a
- * binary its version), digest-vs-enable-record for the REQUIRED darwin
- * tailscale. The daemon never self-converges (§14.4 restarts a supervised
- * service); remediation is `myco host enable` (host) / `myco join` (member).
- * Unknown is reported as UNKNOWN, never as converged.
- */
-export interface OverlayDriftOptions {
-  /** Test seams (review round 4): isolate chunks share one process.env
-   *  across CONCURRENT files, so anything resolved through MYCO_TEAM_HOME at
-   *  call time races by construction. Tests inject; production resolves. */
-  binDir?: string;
-  state?: import('../team-host/state.js').HostState | null;
-}
-
-export async function checkOverlayBinaryDrift(
-  platform: NodeJS.Platform = process.platform,
-  opts: OverlayDriftOptions = {},
-): Promise<DoctorCheck | null> {
-  try {
-    return await checkOverlayBinaryDriftInner(platform, opts);
-  } catch {
-    // A diagnostics row must never take down diagnostics.
-    return null;
-  }
-}
-
-async function checkOverlayBinaryDriftInner(platform: NodeJS.Platform, opts: OverlayDriftOptions): Promise<DoctorCheck | null> {
-  const { readHostState } = await import('../team-host/state.js');
-  const state = opts.state !== undefined
-    ? opts.state
-    : (() => { try { return readHostState(); } catch { return null; } })();
-  const memberProblems = await memberOverlayDriftProblems(platform);
-  if (!state) {
-    if (memberProblems.length === 0) return null;
-    return { name: 'Overlay binaries', status: 'warn', detail: memberProblems.join('; '), fixable: false };
-  }
-
-  const { OVERLAY_BINARY_MODES, readProvisioningManifest, sha256OfFile } = await import('../host/overlay-provisioning-manifest.js');
-  const { HEADSCALE_VERSION, resolveHostBinDir } = await import('../team-host/binaries.js');
-  const { TAILSCALE_VERSION } = await import('../host/overlay-binaries.js');
-  const problems: string[] = [];
-  const pins: Record<string, string> = { headscale: HEADSCALE_VERSION, tailscale: TAILSCALE_VERSION, tailscaled: TAILSCALE_VERSION };
-  const binPaths: Record<string, string | undefined> = {
-    headscale: state.headscale_bin,
-    tailscale: state.tailscale_bin,
-    tailscaled: state.tailscaled_bin,
-  };
-  const manifest = readProvisioningManifest(opts.binDir ?? resolveHostBinDir());
-
-  for (const name of ['headscale', 'tailscale', 'tailscaled']) {
-    const mode = OVERLAY_BINARY_MODES[name]?.[platform];
-    if (mode === 'managed') {
-      const entry = manifest?.binaries[name];
-      const binPath = binPaths[name];
-      if (!entry || !binPath) {
-        problems.push(`${name}: no provisioning record — state unknown; run \`myco host enable\` to converge`);
-        continue;
-      }
-      if (entry.version !== pins[name]) {
-        problems.push(`${name}: provisioned ${entry.version}, this binary pins ${pins[name]} — run \`myco host enable\` to converge`);
-        continue;
-      }
-      try {
-        if (sha256OfFile(binPath) !== entry.sha256) {
-          problems.push(`${name}: on-disk content differs from its provisioning record — run \`myco host enable\` to re-provision`);
-        }
-      } catch {
-        problems.push(`${name}: on-disk binary unreadable at ${binPath} — state unknown; run \`myco host enable\``);
-      }
-    } else if (mode === 'required' && name === 'tailscaled') {
-      const binPath = binPaths[name];
-      if (!state.tailscaled_sha256 || !binPath) {
-        problems.push('tailscaled (Homebrew): no enable-time digest recorded — drift state unknown; re-run `myco host enable` to record it');
-        continue;
-      }
-      try {
-        if (sha256OfFile(binPath) !== state.tailscaled_sha256) {
-          problems.push(
-            'tailscaled (Homebrew) changed since enable (a `brew upgrade`?): the RUNNING process may still be the old version '
-            + 'against pinned headscale — restart via `myco host enable` and expect this row until then',
-          );
-        }
-      } catch {
-        problems.push(`tailscaled (Homebrew) unreadable at ${binPath} — a \`brew uninstall\`? The supervisor is respawning a missing path; re-install tailscale or run \`myco host disable\``);
-      }
-    }
-  }
-
-  problems.push(...memberProblems);
-  if (problems.length === 0) return null;
-  return { name: 'Overlay binaries', status: 'warn', detail: problems.join('; '), fixable: false };
-}
-
-/** The MEMBER half (spec Q4): the shared member bin dir is managed on Linux;
- *  drift there means every joined host's member tailscaled is stale.
- *  Remediation is `myco join <hostId>` (any one join converges the shared
- *  dir and restarts every member service). */
-async function memberOverlayDriftProblems(platform: NodeJS.Platform): Promise<string[]> {
-  if (platform !== 'linux') return []; // darwin members ride the required (brew) binary
-  try {
-    const { readHostRegistry } = await import('../host/registry.js');
-    if (readHostRegistry().length === 0) return [];
-    const { readProvisioningManifest, sha256OfFile } = await import('../host/overlay-provisioning-manifest.js');
-    const { resolveMemberBinDir } = await import('../grove/paths.js');
-    const { TAILSCALE_VERSION } = await import('../host/overlay-binaries.js');
-    const binDir = resolveMemberBinDir();
-    const manifest = readProvisioningManifest(binDir);
-    const problems: string[] = [];
-    for (const name of ['tailscale', 'tailscaled']) {
-      const entry = manifest?.binaries[name];
-      const binPath = path.join(binDir, name);
-      if (!entry) {
-        problems.push(`member ${name}: no provisioning record — run \`myco join <hostId>\` to converge`);
-        continue;
-      }
-      if (entry.version !== TAILSCALE_VERSION) {
-        problems.push(`member ${name}: provisioned ${entry.version}, this binary pins ${TAILSCALE_VERSION} — run \`myco join <hostId>\``);
-        continue;
-      }
-      try {
-        if (sha256OfFile(binPath) !== entry.sha256) {
-          problems.push(`member ${name}: on-disk content differs from its provisioning record — run \`myco join <hostId>\``);
-        }
-      } catch {
-        problems.push(`member ${name}: unreadable at ${binPath} — run \`myco join <hostId>\``);
-      }
-    }
-    return problems;
-  } catch {
-    return [];
-  }
-}
-
 function checkBinaryVersionSkew(): DoctorCheck {
   const baked = getPluginVersion();
   // Walk up from the binary to @goondocks/myco core — that's the manifest
@@ -1410,62 +1122,6 @@ export async function checkServiceScope(
     ? `both a login and a boot unit exist for ${label} — two supervisors will fight over one daemon; run \`myco service install\` to converge on the declared scope (${intent})`
     : `daemon.service_scope is '${intent}' but the installed unit is ${observed === 'none' ? 'missing' : `'${observed}'-scoped`} — run \`myco service install\` from a shell that can elevate`;
   return { name: 'Service scope', status: 'warn', detail, fixable: false };
-}
-
-/**
- * E1 §7 gate 2's runtime half: headscale follows the daemon's scope, and
- * this row is what fails when the two units drift apart. Covers BOTH the
- * legacy root cell ("pre-1.3.1 supervision; no in-place migration — tear
- * down and re-enable") and the dangerous both-domains state.
- */
-export async function checkHeadscaleScope(mycoHome?: string): Promise<DoctorCheck | null> {
-  const home = mycoHome ?? resolveMycoHome();
-  let report: import('../team-host/scope-converge.js').HeadscaleScopeReport;
-  try {
-    const { classifyHeadscaleScope } = await import('../team-host/scope-converge.js');
-    report = await classifyHeadscaleScope(home);
-  } catch {
-    return null;
-  }
-  switch (report.verdict) {
-    case 'not-serving':
-    case 'converged':
-      return null;
-    case 'missing':
-      return {
-        name: 'Team Host control plane scope',
-        status: 'warn',
-        detail: 'host serving is enabled but no headscale unit is installed in any domain — run `myco host enable` to converge.',
-        fixable: false,
-      };
-    case 'legacy-root':
-      return {
-        name: 'Team Host control plane scope',
-        status: 'warn',
-        detail: 'headscale is supervised as a legacy root service (pre-1.3.1). Every admin call against its '
-          + 'root-owned socket fails unprivileged — members cannot be added. There is no in-place migration: '
-          + 'run `myco host disable` then `myco host enable` (the teardown needs sudo on both platforms).',
-        fixable: false,
-      };
-    case 'both':
-      return {
-        name: 'Team Host control plane scope',
-        status: 'fail',
-        detail: 'headscale units exist in BOTH supervision domains — two supervisors over one database. '
-          + 'Run `myco host disable` (removes both) then `myco host enable`.',
-        fixable: false,
-      };
-    case 'drift':
-      return {
-        name: 'Team Host control plane scope',
-        status: 'warn',
-        detail: `headscale is '${report.observed}'-scoped but daemon.service_scope calls for '${report.targetDomain}' — `
-          + 'run `myco service install` to carry it to the daemon\'s scope.',
-        fixable: false,
-      };
-    default:
-      return null;
-  }
 }
 
 async function checkService(): Promise<DoctorCheck> {
@@ -1724,8 +1380,6 @@ export async function runChecks(
   checks.push(...await checkResidencyTransitions());
   const servedGroveDesignation = await checkServedGroveDesignation();
   if (servedGroveDesignation) checks.push(servedGroveDesignation);
-  const overlayForward = await checkOverlayForward();
-  if (overlayForward) checks.push(overlayForward);
   const servedGroveBackupStaleness = await checkServedGroveBackupStaleness();
   if (servedGroveBackupStaleness) checks.push(servedGroveBackupStaleness);
   const servedGroveKeyHealth = await checkServedGroveKeyHealth(undefined, lockNamespace);
@@ -1767,13 +1421,9 @@ export async function runChecks(
   checks.push(await checkService());
   const serviceScope = await checkServiceScope();
   if (serviceScope) checks.push(serviceScope);
-  const headscaleScope = await checkHeadscaleScope();
-  if (headscaleScope) checks.push(headscaleScope);
   checks.push(checkBinaryVersionSkew());
   const updateResidue = await checkUpdateResidue();
   if (updateResidue) checks.push(updateResidue);
-  const overlayDrift = await checkOverlayBinaryDrift();
-  if (overlayDrift) checks.push(overlayDrift);
   checks.push(await checkInstallSource());
   checks.push(await checkGlobalLaunchers());
   checks.push(...await checkDetectedSymbionts());

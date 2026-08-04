@@ -12,7 +12,7 @@
  * run the writers against a tree it doesn't have, violating B1 (the host
  * never writes a member tree). `host/routing.ts` stamps it `localhost-only`
  * instead: never proxied, always dispatched on whichever daemon received the
- * request. Because of that stamp, `isOverlayRequest` is always false for a
+ * request. Because of that stamp, `isTeamRequest` is always false for a
  * request that reaches this handler — `requestContext.hostServed` is
  * structurally always false here (a genuine overlay-origin request is
  * refused earlier, at the transport boundary, by `overlayHostStampRefusal`).

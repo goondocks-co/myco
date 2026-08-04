@@ -13,10 +13,8 @@
  * operator product. `myco-team host ...` now only points here.
  */
 import { hostDisable, hostEnable, type HostEnableOptions, type HostEnableResult } from '../team-host/overlay.js';
-import { mintSetupKey } from '../team-host/control-plane.js';
 import { readHostState } from '../team-host/state.js';
 import { loadMachineConfig } from '../config/loader.js';
-import { formatOverlayAuthority } from '../daemon/host-serve.js';
 import {
   hostEnableAndEmitJoin,
   resolveTeamKeyProviderFlag,
@@ -32,12 +30,9 @@ function flagMap(args: string[]): Map<string, string> {
 function printEnableResult(result: HostEnableResult): void {
   console.log('\nTeam Host enabled.');
   console.log(`  Host ID:       ${result.hostId}`);
-  console.log(`  Overlay:       ${formatOverlayAuthority(result.overlayAddress, result.overlayPort)}  (what members dial)`);
-  console.log(`  Control plane: ${result.serverUrl}`);
+  console.log(`  Label:         ${result.label}`);
   console.log(`  Team storage:  ${result.servedGroveId}`);
-  console.log(`  headscale:     v${result.headscaleVersion}`);
-  console.log(`  tailscale:     ${result.tailscaleVersion ? `v${result.tailscaleVersion}` : '(unknown)'}`);
-  console.log(`  Daemon:        ${result.daemonRestarted ? 'restarted (overlay listener binding)' : 'restart pending — see notes'}`);
+  console.log(`  Daemon:        ${result.daemonRestarted ? 'restarted (team listener binding)' : 'restart pending — see notes'}`);
   for (const note of result.notes) console.log(`  NOTE: ${note}`);
 }
 
@@ -108,17 +103,8 @@ export async function runHostCommand(args: string[]): Promise<void> {
       process.exit(1);
     }
     const flags = flagMap(rest);
-    const serverUrl = flags.get('server-url');
-    if (!serverUrl) {
-      console.error('host enable requires --server-url <https://host:8080>.');
-      process.exit(2);
-    }
     const enableOptions: HostEnableOptions = {
-      serverUrl,
       hostname: flags.get('hostname'),
-      listenAddr: flags.get('listen-addr'),
-      headscaleUser: flags.get('user'),
-      keyExpiration: flags.get('key-expiration'),
       groveDesignation: flags.has('designate-default') ? 'default' : (flags.has('designate-fresh') ? 'fresh' : undefined),
       storageName: flags.get('storage-name'),
     };
@@ -193,32 +179,17 @@ export async function runHostCommand(args: string[]): Promise<void> {
     }
     console.log(`Host ID:       ${state.host_id}`);
     console.log(`Enabled:       ${state.enabled_at}`);
-    // Read the port from machine config: HostState records the address only,
-    // and an operator who cannot see the port cannot hand out a join command.
-    const servePort = loadMachineConfig().daemon.host_serve.overlay_port;
-    console.log(`Overlay:       ${servePort !== null
-      ? formatOverlayAuthority(state.overlay_address, servePort)
-      : `${state.overlay_address} (no overlay port persisted — re-run \`myco host enable\`)`}`);
-    console.log(`Control plane: ${state.server_url}`);
-    console.log(`headscale:     v${state.headscale_version}`);
-    console.log(`tailscale:     ${state.tailscale_version ? `v${state.tailscale_version}` : '(unknown)'}`);
-    console.log(`Node ID:       ${state.node_id ?? '(unresolved)'}`);
+    console.log(`Label:         ${state.label ?? '(unset)'}`);
+    console.log(`Team storage:  ${loadMachineConfig().daemon.host_serve.served_grove_id ?? '(undesignated)'}`);
     return;
   }
 
   if (subcommand === 'rotate-key') {
-    const flags = flagMap(rest);
-    const key = await mintSetupKey({ expiration: flags.get('expiration') });
-    console.log('One-time setup key (hand this to the joiner — it works once):');
-    console.log(`\n  ${key}\n`);
-    const state = readHostState();
-    const servePort = loadMachineConfig().daemon.host_serve.overlay_port;
-    const authority = state && servePort !== null
-      ? formatOverlayAuthority(state.overlay_address, servePort)
-      : '<host-100.64-ip:port>';
-    console.log(`The joiner runs:  myco join ${state?.host_id ?? '<host>'} --key <key> `
-      + `--server-url ${state?.server_url ?? '<headscale-url>'} --overlay-address ${authority}`);
-    return;
+    console.error(
+      'host rotate-key is unavailable on this build: the one-time join key was a headscale pre-auth key, '
+      + 'and the daemon-issued key that replaces it lands with the rebuilt enrollment route.',
+    );
+    process.exit(2);
   }
 
   console.error(`Unknown host command: ${subcommand}`);

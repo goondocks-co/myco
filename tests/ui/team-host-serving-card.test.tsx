@@ -29,7 +29,6 @@ const SERVING_FIXTURE: HostServeStatusResponse = {
   serving: true,
   served_grove_id: 'grove_1',
   served_grove_name: 'Home Lab',
-  overlay_address: '100.64.1.2',
   host_id: 'host_abc',
   label: 'Mac Studio',
   external_mcp: { enabled: false, port: 4919, bound: null, token_present: false },
@@ -61,7 +60,6 @@ describe('TeamHostServingCard', () => {
     expect(screen.getByText('Serving')).toBeInTheDocument();
     expect(screen.getByText('Home Lab')).toBeInTheDocument();
     expect(screen.getByText('grove_1')).toBeInTheDocument();
-    expect(screen.getByText('100.64.1.2')).toBeInTheDocument();
     expect(screen.getByText('Mac Studio')).toBeInTheDocument();
     expect(screen.getByText('host_abc')).toBeInTheDocument();
     expect(screen.getByText('Set')).toBeInTheDocument(); // bearer_present

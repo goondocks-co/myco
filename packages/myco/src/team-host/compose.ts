@@ -9,13 +9,11 @@
  * network, no sudo, and no real TTY.
  */
 import { resolveGroveDir, resolveMycoHome } from '@myco/grove/paths.js';
-import { formatOverlayAuthority } from '@myco/daemon/host-serve.js';
 import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
 import { KEYED_CLOUD_PROVIDER_ENV } from '@myco/agent/harness/provider-health.js';
 
 import { hostEnable, type HostEnableDeps, type HostEnableOptions, type HostEnableResult } from './overlay.js';
-import { mintSetupKey } from './control-plane.js';
 import { writeTeamAgentKey, maskTeamAgentKey } from './team-secret.js';
 import { readHostState } from './state.js';
 
@@ -122,15 +120,12 @@ export async function hostEnableAndEmitJoin(
 
   const enable = await hostEnable(
     {
-      serverUrl: options.serverUrl,
       hostname: options.hostname,
-      listenAddr: options.listenAddr,
-      headscaleUser: options.headscaleUser,
-      keyExpiration: options.keyExpiration,
       // Pass-through, no silent default (rev 6): `hostEnable`'s own
       // explicit-choice resolution owns the refusal. The `--serve` installer
       // path is unaffected — it passes --designate-default explicitly.
       groveDesignation: options.groveDesignation,
+      storageName: options.storageName,
     },
     deps,
   );
@@ -153,23 +148,11 @@ export async function hostEnableAndEmitJoin(
     });
   }
 
-  let shouldMint = true;
-  if (alreadyEnabled) {
-    const confirm = deps.confirmRemint ?? defaultConfirmRemint;
-    shouldMint = await confirm('Team Host is already enabled on this machine. Mint a fresh one-time join key?');
-  }
-  if (!shouldMint) {
-    return { enable, joinCommand: null, teamAgentKeyMasked };
-  }
-
-  const key = await mintSetupKey({ expiration: options.setupKeyExpiration }, { runner: deps.runner });
-  // The OVERLAY port, not the daemon's canonical port. These differ since the
-  // coexistence move to userspace networking, and emitting the daemon port
-  // here handed every member an address that cannot answer — the first
-  // enrollment dial fails outright.
-  const joinCommand = `myco join ${enable.hostId} --key ${key} --server-url ${enable.serverUrl} `
-    + `--overlay-address ${formatOverlayAuthority(enable.overlayAddress, enable.overlayPort)}`;
-  return { enable, joinCommand, teamAgentKeyMasked };
+  // No join command yet. It used to carry the headscale server URL and the
+  // host's overlay authority — both gone — and the one-time key it embedded
+  // was a headscale pre-auth key the daemon never validated. The invite flow
+  // returns with the rebuilt enrollment route and the host's public URL.
+  return { enable, joinCommand: null, teamAgentKeyMasked };
 }
 
 // Re-exported so `cli/host.ts` can re-print the composite's own vocabulary

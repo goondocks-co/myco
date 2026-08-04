@@ -109,7 +109,7 @@ export async function runJoin(args: string[], vaultDir: string): Promise<void> {
   // enrollment) before answering — up to JOIN_TIMEOUT_MS of silence from the
   // operator's seat. Say so up front; the per-step log is replayed from the
   // response's `steps` once the join completes.
-  console.log(`Joining Team Host ${hostRef} — provisioning the overlay and enrolling; this can take up to a minute…`);
+  console.log(`Joining Team Host ${hostRef} — this build cannot join yet — the member transport is being rebuilt`);
 
   const protocolVersionRaw = flags.get('protocol-version');
   const result = await client.post('/api/host-membership/join', {

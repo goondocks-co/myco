@@ -63,50 +63,18 @@ describe('checkTeamHostReachability', () => {
     expect(await checkTeamHostReachability()).toEqual([]);
   });
 
-  test('a host with no proxy_port on record warns to re-join, without probing', async () => {
-    writeHostRecordFixture(host({ proxy_port: undefined }));
-    const checks = await checkTeamHostReachability();
-    expect(checks).toHaveLength(1);
-    expect(checks[0].status).toBe('warn');
-    expect(checks[0].detail).toContain('myco join');
-  });
-
-  test('a reachable host reports ok', async () => {
-    mock.module('@myco/host/member-overlay.js', () => ({
-      defaultCheckHostReachable: async () => true,
-    }));
+  test('a joined host is listed, and liveness is reported as uncheckable rather than failed', async () => {
     writeHostRecordFixture(host());
     const checks = await checkTeamHostReachability();
     expect(checks).toHaveLength(1);
     expect(checks[0].name).toBe('Team Host');
-    expect(checks[0].status).toBe('ok');
-    expect(checks[0].detail).toContain('reachable');
-  });
-
-  test('an unreachable host reports warn', async () => {
-    mock.module('@myco/host/member-overlay.js', () => ({
-      defaultCheckHostReachable: async () => false,
-    }));
-    writeHostRecordFixture(host());
-    const checks = await checkTeamHostReachability();
-    expect(checks).toHaveLength(1);
+    // Not 'ok' (nothing was proven) and not a failure claim either — the member
+    // transport is absent, which is a client gap, never evidence the host is down.
     expect(checks[0].status).toBe('warn');
-    expect(checks[0].detail).toContain('not reachable');
-  });
-
-  test('a probe that throws is treated as unreachable, not a crash', async () => {
-    mock.module('@myco/host/member-overlay.js', () => ({
-      defaultCheckHostReachable: async () => { throw new Error('boom'); },
-    }));
-    writeHostRecordFixture(host());
-    const checks = await checkTeamHostReachability();
-    expect(checks[0].status).toBe('warn');
+    expect(checks[0].detail).toContain('reachability cannot be checked');
   });
 
   test('multiple hosts each get their own row, named only on the first', async () => {
-    mock.module('@myco/host/member-overlay.js', () => ({
-      defaultCheckHostReachable: async () => true,
-    }));
     writeHostRecordFixture(host({ host_id: HOST_A, label: 'a' }));
     writeHostRecordFixture(host({ host_id: 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', label: 'b' }));
     const checks = await checkTeamHostReachability();

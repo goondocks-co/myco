@@ -34,11 +34,6 @@ describe('runHostCommand argv handling', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('enable without --server-url exits 2 before any orchestration', async () => {
-    await expect(runHostCommand(['enable', '--hostname', 'x'])).rejects.toThrow('exit(2)');
-    expect(err.join('\n')).toMatch(/requires --server-url/);
-  });
-
   it('status reports not-a-host when no state exists', async () => {
     await runHostCommand(['status']);
     expect(out.join('\n')).toMatch(/not a Team Host/);
