@@ -90,6 +90,11 @@ describeTeamTransport('content claim materialize over the real member -> host tr
 // Production has exactly this property (a member enrolls with its own
 // `getMachineId()`), and splitting it in a fixture makes the member look like
 // it is impersonating another machine — which the token binding refuses.
+//
+// CONSEQUENCE: host and member share one process, so this is also the host's
+// own fallback identity, and `claimed_by === CLAIMING_MACHINE` cannot tell a
+// travelled stamp from a host default. The discriminating gate is on the gate
+// path — see `tests/daemon/team-member-tokens.test.ts`.
 let CLAIMING_MACHINE: string;
 const NON_HOLDER_MACHINE = 'not-the-claim-holder';
 let memberToken: string;

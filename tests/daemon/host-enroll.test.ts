@@ -27,7 +27,9 @@ import { readHostActionLog } from '@myco/host/action-log';
 import { HOST_PROTOCOL_VERSION } from '@myco/constants';
 import { mintJoinKey } from '@myco/team-host/join-keys';
 import { authenticateMemberToken, listMembers } from '@myco/team-host/member-tokens';
+import { realEnrollmentClient } from '@myco/host/member-overlay';
 import { teamFetch, teamSocketPath } from '../helpers/team-socket.js';
+import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const HOST_BEARER = 'test-host-serve-bearer-0123456789abcdef';
@@ -133,6 +135,38 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
     expect(listMembers().map((m) => m.machine_id)).toEqual([MEMBER_MACHINE]);
   });
 
+  test('a member CANNOT evict another by asserting their machine_id', async () => {
+    // The eviction this refuses: `machine_id` is self-asserted wire data, and
+    // issuance replaces the record matching it. Silently replacing would hand
+    // every invited member the operator's own revocation lever.
+    const alice = await enroll({ key: mintJoinKey().key, machine_id: MEMBER_MACHINE });
+    const aliceToken = ((await alice.json()) as { bearer: string }).bearer;
+
+    const mallory = await enroll({
+      key: mintJoinKey().key,
+      machine_id: MEMBER_MACHINE,
+      member_hostname: 'mallory-box',
+    });
+
+    expect(mallory.status).toBe(409);
+    expect(((await mallory.json()) as { error: string }).error).toBe('machine_already_enrolled');
+    // Alice still works, and the roster still shows HER.
+    expect(authenticateMemberToken(aliceToken).ok).toBe(true);
+    expect(listMembers()).toHaveLength(1);
+    expect(listMembers()[0]?.label).not.toBe('mallory-box');
+  });
+
+  test('a malformed machine_id is refused, never stored', async () => {
+    // Validated with the same rule the path resolvers enforce downstream, at
+    // the boundary where it is first believed — it lands in the roster and the
+    // action log long before it reaches a path.
+    for (const machine_id of ['../escape', 'has/slash', 'has\nnewline', '.', '..', 'x'.repeat(200)]) {
+      const res = await enroll({ key: mintJoinKey().key, machine_id });
+      expect(res.status).toBe(401);
+    }
+    expect(listMembers()).toEqual([]);
+  });
+
   test('an EXPIRED key is refused, and indistinguishably from an invalid one', async () => {
     const minted = mintJoinKey({ ttlMs: 1, now: () => Date.now() - 60_000 });
     const expired = await enroll({ key: minted.key, machine_id: MEMBER_MACHINE });
@@ -222,6 +256,77 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
 });
 
 /**
+ * The REAL transport, over a REAL TLS edge.
+ *
+ * Every other enrollment test injects an `EnrollmentTransport`, so the shipped
+ * `defaultEnrollmentTransport` had zero coverage — and it did not work at all
+ * under Bun, the runtime Myco ships. `req`'s `'close'` fires BEFORE the response
+ * body's `'end'` there (Node fires it after), so the connection-lost backstop
+ * rejected every enrollment the host had already answered 200. Nothing behind an
+ * injected seam can see that; only the real `https.request` can.
+ *
+ * The 401 case is here for the same reason: it is a REFUSAL that must arrive as
+ * a refusal, not as a transport error. Under the defect both looked identical.
+ */
+describeTeamTransport('enrollment over the real transport', () => {
+  let tmp: string;
+  let server: DaemonServer;
+  let edge: FunnelEdge;
+  let savedTeamHome: string | undefined;
+
+  beforeEach(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-enroll-real-'));
+    savedTeamHome = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_TEAM_HOME = tmp;
+    const socketPath = teamSocketPath('enroll-real');
+    server = new DaemonServer({
+      vaultDir: path.join(tmp, 'vault'),
+      logger: new DaemonLogger(path.join(tmp, 'logs')),
+      daemonStateAuthority: stubAuthority,
+      teamSocketPath: socketPath,
+      hostServe: { bearer: HOST_BEARER, hostId: HOST_ID, label: HOST_LABEL },
+      lockNamespace: testPerUserLockNamespace,
+    });
+    await server.start(0);
+    edge = await startFunnelEdge(socketPath);
+  });
+
+  afterEach(async () => {
+    await edge.close();
+    await server.stop();
+    if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = savedTeamHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const ctx = (key: string) => ({
+    hostId: HOST_ID,
+    hostRef: HOST_ID,
+    oneTimeKey: key,
+    hostUrl: edge.url,
+    machineId: MEMBER_MACHINE,
+    memberHostname: 'alices-mac',
+  });
+
+  test('a real join RESOLVES and yields a working per-member token', async () => {
+    const minted = mintJoinKey();
+    const result = await realEnrollmentClient.enroll(ctx(minted.key));
+
+    expect(result.host_id).toBe(HOST_ID);
+    expect(result.bearer).not.toBe(HOST_BEARER);
+    const auth = authenticateMemberToken(result.bearer);
+    expect(auth.ok).toBe(true);
+    expect(auth.ok && auth.machineId).toBe(MEMBER_MACHINE);
+  });
+
+  test('a refused join surfaces the REFUSAL, not a transport error', async () => {
+    await expect(realEnrollmentClient.enroll(ctx('never-was-a-key')))
+      .rejects.toThrow(/refused this join key/);
+    expect(listMembers()).toEqual([]);
+  });
+});
+
+/**
  * Single-use, across PROCESSES.
  *
  * Not testable in one process: `consumeJoinKey` is synchronous, so it cannot
@@ -239,21 +344,27 @@ describe('join keys are single-use across processes', () => {
       const minted = mintJoinKey();
       const spender = path.join(import.meta.dir, '..', 'helpers', 'join-key-spender.ts');
 
-      const spend = (worker: string) => new Promise<boolean>((resolve) => {
+      // Reports the child's EXIT too: a child that failed to start would
+      // otherwise read as a clean refusal, and `[winner, crashed]` would
+      // satisfy "exactly one" without the property ever being exercised.
+      const spend = (worker: string) => new Promise<{ ok: boolean; exit: number | null }>((resolve) => {
         const child = spawn(process.execPath, [spender, tmp, minted.key, worker], {
           stdio: ['ignore', 'pipe', 'ignore'],
         });
         let out = '';
         child.stdout.on('data', (chunk) => { out += String(chunk); });
-        child.on('close', () => {
-          try { resolve((JSON.parse(out) as { ok: boolean }).ok === true); } catch { resolve(false); }
+        child.on('close', (exit) => {
+          try { resolve({ ok: (JSON.parse(out) as { ok: boolean }).ok === true, exit }); }
+          catch { resolve({ ok: false, exit: exit ?? -1 }); }
         });
       });
 
-      const [a, b] = await Promise.all([spend('a'), spend('b')]);
+      const results = await Promise.all([spend('a'), spend('b')]);
 
+      // BOTH children must have actually run and answered.
+      expect(results.map((r) => r.exit)).toEqual([0, 0]);
       // Exactly one. Without the store lock this is both, ~96% of the time.
-      expect([a, b].filter(Boolean)).toHaveLength(1);
+      expect(results.filter((r) => r.ok)).toHaveLength(1);
     } finally {
       if (saved === undefined) delete process.env.MYCO_TEAM_HOME;
       else process.env.MYCO_TEAM_HOME = saved;

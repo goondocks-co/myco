@@ -46,7 +46,15 @@ const HOST_BEARER = 'test-content-claims-host-bearer';
 // so the member's proxy stamps its own — and the token is bound to that same
 // identity, exactly as production issues it. A literal here would make the
 // fixture a member impersonating another machine, which the binding now
-// (correctly) refuses.
+// (correctly) refuses; substituting one fails the browser-shaped case below.
+//
+// CONSEQUENCE, stated because it bounds what these assertions prove: host and
+// member share one process here, so this value is ALSO the host's own fallback
+// identity. `claimed_by === CLAIMING_MACHINE` therefore cannot distinguish "the
+// member's identity travelled the hop" from "the host defaulted to itself".
+// That distinction is gated where it belongs, on the gate path itself —
+// `tests/daemon/team-member-tokens.test.ts` asserts the RESOLVED context
+// identity is the token's and explicitly NOT `getMachineId()`.
 let CLAIMING_MACHINE: string;
 let grove: ReturnType<typeof createGrove>;
 

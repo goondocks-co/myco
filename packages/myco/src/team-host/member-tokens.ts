@@ -120,12 +120,40 @@ export interface IssuedMemberToken {
 }
 
 /**
+ * Upper bound on a stored `machine_id`. Real ones are `{user}_{8-hex}`; this
+ * is generous room for a long username, not a guess at the format. It exists
+ * because the value is self-asserted at enrollment and then lands in the
+ * operator's roster and the action log.
+ */
+export const MAX_MACHINE_ID_LENGTH = 128;
+
+/** Thrown when a machine that ALREADY holds a live token enrolls again. */
+export class MemberAlreadyEnrolledError extends Error {
+  readonly code = 'machine_already_enrolled';
+  constructor(machineId: string) {
+    super(`Machine ${machineId} already has access.`);
+    this.name = 'MemberAlreadyEnrolledError';
+  }
+}
+
+/**
  * Issue a token for a member, bound to the machine_id it asserted.
  *
- * A RE-JOIN from the same machine_id REPLACES that member's token rather than
- * adding a second one. Two live tokens for one machine would mean revoking a
- * member does not actually remove them — the operator revokes the row they can
- * see and the older credential keeps working.
+ * REFUSES if that machine already holds a LIVE token. `machine_id` at
+ * enrollment is self-asserted wire data, and this function replaces any record
+ * matching it — so silently replacing would let any member holding a valid join
+ * key evict any other member by asserting their id, locking them out while the
+ * operator's roster just shows one row where there were two. Revocation is the
+ * operator's lever; refusing here is what keeps it theirs.
+ *
+ * A REVOKED record does not block re-joining — that is the intended path back
+ * in, and replacing it keeps one row per machine. Two live tokens for one
+ * machine would mean revoking the row an operator can see leaves an older
+ * credential working.
+ *
+ * The check and the write share one lock: split apart, two concurrent
+ * enrollments for the same machine would both pass the check and the second
+ * would still evict the first.
  */
 export function issueMemberToken(
   machineId: string,
@@ -142,6 +170,9 @@ export function issueMemberToken(
   };
   return withMembersLock(() => {
     const file = readFile();
+    if (file.members.some((m) => m.machine_id === machineId && !m.revoked_at)) {
+      throw new MemberAlreadyEnrolledError(machineId);
+    }
     writeFile({
       schema_version: 1,
       members: [...file.members.filter((m) => m.machine_id !== machineId), record],
@@ -217,11 +248,27 @@ export function revokeMember(id: string, opts: { now?: () => number } = {}): boo
   });
 }
 
-/** Record liveness for the operator view. Best-effort and never on the
- *  critical path: a failure here must not fail an authenticated request. */
+/** How stale `last_seen_at` may get before a request refreshes it. */
+export const MEMBER_SEEN_COALESCE_MS = 60_000;
+
+/**
+ * Record liveness for the operator view.
+ *
+ * Called on EVERY authenticated request, so it coalesces: a write rewrites the
+ * whole roster under the same lock every gate path takes, and doing that per
+ * request would put a serialized file write on the hot path to save a field
+ * nothing reads more precisely than "recently". Within the window this is a
+ * read and nothing more.
+ *
+ * Best-effort by construction — a failure here must never fail an
+ * authenticated request.
+ */
 export function noteMemberSeen(id: string, opts: { now?: () => number } = {}): void {
   try {
     const now = opts.now?.() ?? Date.now();
+    const existing = readFile().members.find((m) => m.id === id);
+    if (!existing) return;
+    if (existing.last_seen_at && now - Date.parse(existing.last_seen_at) < MEMBER_SEEN_COALESCE_MS) return;
     withMembersLock(() => {
       const file = readFile();
       if (!file.members.some((m) => m.id === id)) return;

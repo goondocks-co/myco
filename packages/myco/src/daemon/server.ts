@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
-import { resolveTeamSocketPath } from '../grove/paths.js';
+import { isSafeCaptureSegment, resolveTeamSocketPath } from '../grove/paths.js';
 import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile, resolveEmbeddedAsset } from './static.js';
@@ -29,7 +29,13 @@ import {
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
 import { createAuthThrottle, delay } from '../team-host/auth-throttle.js';
 import { consumeJoinKey } from '../team-host/join-keys.js';
-import { issueMemberToken } from '../team-host/member-tokens.js';
+import {
+  issueMemberToken,
+  MAX_MACHINE_ID_LENGTH,
+  MemberAlreadyEnrolledError,
+  noteMemberSeen,
+  type IssuedMemberToken,
+} from '../team-host/member-tokens.js';
 import { classifyRoute, classifyRouteStamp, overlayHostStampRefusal, refusalJson, resolveHostCarrierTarget, type RefusalPayload } from '../host/routing.js';
 import {
   nativePerUserLockNamespace,
@@ -773,15 +779,27 @@ export class DaemonServer {
       }
       this.teamAuthThrottle.noteSuccess();
       member = auth.member;
+      // Liveness for the operator's member list. Coalesced internally, so this
+      // is a read on all but the first request in each window.
+      noteMemberSeen(member!.id);
 
-      // (2b) Identity is the TOKEN's, not the caller's header. Absent → stamped
-      // from the token below; present-and-different → refused, never silently
-      // overwritten (see `teamMachineIdRejection`).
+      // (2b) Identity is the TOKEN's, not the caller's header.
+      // Present-and-different → refused, never silently overwritten (see
+      // `teamMachineIdRejection`).
       const identityRejection = teamMachineIdRejection(req, member!);
       if (identityRejection) {
         this.writeTeamRefusal(res, identityRejection.status, identityRejection.body, versionHeader, identityRejection.headers);
         return;
       }
+
+      // Absent or blank → STAMPED from the token. Without this the header is
+      // simply missing downstream, where `resolveRequestContext` falls back to
+      // the HOST's own machine id — so omitting the header attributes a
+      // member's rows to the host, achieving by default exactly the
+      // misattribution the 409 above refuses when it is claimed outright.
+      // Unconditional: a matching header makes this a no-op, and the only other
+      // case reaching here is absent/blank.
+      req.headers[REQUEST_CONTEXT_HEADERS.machineId] = member!.machineId;
     }
 
     // (3) RAW-ROUTE ADMISSION — fail closed. Raw routes bypass the router and
@@ -962,12 +980,28 @@ export class DaemonServer {
         return;
       }
 
-      let body: Record<string, unknown> = {};
-      try { body = (await readBody(req)) as Record<string, unknown>; } catch { /* refused below */ }
+      // `JSON.parse` yields `null` for the body `null`, and a bare `null`
+      // survives the cast — so normalise to `{}` rather than letting the field
+      // reads below throw. An uncaught throw here escapes as a 500, which both
+      // distinguishes this shape from every other malformed one (the route
+      // stops being uniform) and skips the throttle entirely, leaving a free
+      // un-metered probe.
+      let parsed: unknown;
+      try { parsed = await readBody(req); } catch { /* refused below */ }
+      const body: Record<string, unknown> = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
 
       const presentedKey = typeof body.key === 'string' ? body.key.trim() : '';
       const machineId = typeof body.machine_id === 'string' ? body.machine_id.trim() : '';
-      if (!presentedKey || !machineId) {
+      // Validated with the SAME rule the path resolvers enforce downstream
+      // (`isSafeCaptureSegment`), at the boundary where it is first believed
+      // rather than at the point it would escape a directory. A `machine_id` is
+      // `{user}_{hash}`; anything with separators, `..`, control characters, or
+      // unbounded length is not one, and storing it verbatim would put it in the
+      // operator's roster and the action log.
+      const machineIdUsable = isSafeCaptureSegment(machineId) && machineId.length <= MAX_MACHINE_ID_LENGTH;
+      if (!presentedKey || !machineIdUsable) {
         // Same 401 shape as a bad key: a caller must not learn from the
         // response whether it got the FORM right, only whether it got in.
         await delay(this.teamAuthThrottle.noteFailure());
@@ -993,9 +1027,25 @@ export class DaemonServer {
       // The key is spent; issue this member's own token, bound to the
       // machine_id it just asserted. That binding is the trust-on-first-use
       // anchor every later request is checked against.
-      const issued = issueMemberToken(machineId, {
-        label: typeof body.member_hostname === 'string' ? body.member_hostname : undefined,
-      });
+      let issued: IssuedMemberToken;
+      try {
+        issued = issueMemberToken(machineId, {
+          label: typeof body.member_hostname === 'string' ? body.member_hostname : undefined,
+        });
+      } catch (error) {
+        if (!(error instanceof MemberAlreadyEnrolledError)) throw error;
+        // A DISTINCT status from the 401s above, deliberately: this caller
+        // presented a genuinely valid key, so the uniform-refusal reasoning
+        // (do not reveal whether a key was ever real) does not apply, and
+        // telling the operator "revoke it first" is the whole point.
+        this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host enrollment refused', { reason: 'machine_already_enrolled' });
+        res.writeHead(409, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({
+          error: 'machine_already_enrolled',
+          message: 'That machine already has access to this host. Revoke its current access first, then join again.',
+        }));
+        return;
+      }
 
       const payload = buildHostEnrollmentPayload(hostServe, issued.token);
       const enrollmentNonce = body.enrollment_nonce;

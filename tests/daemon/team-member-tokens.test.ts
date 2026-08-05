@@ -17,8 +17,15 @@ import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { HOST_PROTOCOL_VERSION } from '@myco/constants';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
-import { issueMemberToken, listMembers, revokeMember } from '@myco/team-host/member-tokens';
+import {
+  authenticateMemberToken,
+  issueMemberToken,
+  listMembers,
+  MemberAlreadyEnrolledError,
+  revokeMember,
+} from '@myco/team-host/member-tokens';
 import { createAuthThrottle } from '@myco/team-host/auth-throttle';
+import { getMachineId } from '@myco/machine-id';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { teamFetch, teamSocketPath } from '../helpers/team-socket.js';
 
@@ -37,6 +44,9 @@ describeTeamTransport('per-member tokens on the team listener', () => {
   let servedGrove: GroveRecord;
   let servedProjectId: string;
   let handlerCalls: number;
+  /** The machine id the daemon RESOLVED for the last request — the value rows
+   *  are attributed to. Asserting the status alone cannot see this. */
+  let resolvedMachineIds: string[];
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-tokens-'));
@@ -62,6 +72,7 @@ describeTeamTransport('per-member tokens on the team listener', () => {
     );
 
     handlerCalls = 0;
+    resolvedMachineIds = [];
     socketPath = teamSocketPath('mt-host');
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
@@ -70,6 +81,7 @@ describeTeamTransport('per-member tokens on the team listener', () => {
       teamSocketPath: socketPath,
       hostServe: { bearer: HOST_BEARER, hostId: 'hostid-abc', label: 'host', servedGroveId: servedGrove.id },
       lockNamespace: testPerUserLockNamespace,
+      onRequestContext: (ctx) => { resolvedMachineIds.push(ctx.machineId); },
     });
     server.registerRoute('GET', '/api/sessions', async () => {
       handlerCalls += 1;
@@ -141,12 +153,26 @@ describeTeamTransport('per-member tokens on the team listener', () => {
     expect((await get(bob.token)).status).toBe(200);
   });
 
-  test('a RE-JOIN replaces the machine\'s token — the old one stops working', async () => {
-    // Two live tokens for one machine would mean revoking the row an operator
-    // can see leaves an older credential working.
+  test('re-issuing for a machine that ALREADY has access is REFUSED', async () => {
+    // Replacing silently would let any member holding a valid join key evict
+    // any other member by asserting their machine_id — the operator's roster
+    // would show one row where there were two, with the evicted member locked
+    // out. Revocation is the operator's lever.
     const first = issueMemberToken(MACHINE);
-    const second = issueMemberToken(MACHINE);
+    expect(() => issueMemberToken(MACHINE)).toThrow(MemberAlreadyEnrolledError);
 
+    // And the incumbent is untouched.
+    expect((await get(first.token)).status).toBe(200);
+    expect(listMembers().filter((m) => m.machine_id === MACHINE)).toHaveLength(1);
+  });
+
+  test('after REVOCATION the same machine can re-join, and the old token stays dead', async () => {
+    // The way back in. One row per machine, so revoking the row an operator
+    // can see never leaves an older credential working.
+    const first = issueMemberToken(MACHINE);
+    revokeMember(first.id);
+
+    const second = issueMemberToken(MACHINE);
     expect((await get(second.token)).status).toBe(200);
     expect((await get(first.token)).status).toBe(401);
     expect(listMembers().filter((m) => m.machine_id === MACHINE)).toHaveLength(1);
@@ -157,11 +183,60 @@ describeTeamTransport('per-member tokens on the team listener', () => {
   // silent overwrite as correct.
   // -------------------------------------------------------------------------
 
-  test('ABSENT machine-id header → request proceeds under the TOKEN\'s identity', async () => {
+  test('ABSENT machine-id header → rows are attributed to the TOKEN\'s machine', async () => {
+    // Asserting 200 alone would pass with this property entirely absent: a
+    // member that omits the header still gets served, it just gets attributed
+    // to whatever `resolveRequestContext` falls back to — the HOST's own
+    // machine id. So assert the RESOLVED identity, and assert it is not the
+    // host's, which is the value the defect produced.
     const issued = issueMemberToken(MACHINE);
     const res = await get(issued.token);
+
     expect(res.status).toBe(200);
     expect(handlerCalls).toBe(1);
+    expect(resolvedMachineIds).toEqual([MACHINE]);
+    expect(resolvedMachineIds[0]).not.toBe(getMachineId());
+  });
+
+  test('BLANK machine-id header → the same, not the host\'s identity', async () => {
+    // An empty header trims to undefined, so it takes the absent path rather
+    // than the mismatch path — the evasion the 409 does not see.
+    const issued = issueMemberToken(MACHINE);
+    const res = await get(issued.token, { 'x-myco-machine-id': '' });
+
+    expect(res.status).toBe(200);
+    expect(resolvedMachineIds).toEqual([MACHINE]);
+  });
+
+  test('a member REVOKED on one host stays admitted on another', async () => {
+    // Spec §3.3: revocation must be per-HOST, not per-machine. A member
+    // attached to two hosts holds two tokens, and losing access to one team
+    // must not silently remove it from the other.
+    //
+    // Gated at the credential layer rather than through two live listeners:
+    // `memberTokensPath()` resolves from the ambient team home on every
+    // request, so two servers in one process would share one roster and the
+    // test would prove nothing about isolation. Two homes IS the production
+    // shape — a host's roster lives under its own machine's control dir.
+    const homeA = path.join(tmp, 'host-a');
+    const homeB = path.join(tmp, 'host-b');
+
+    process.env.MYCO_TEAM_HOME = homeA;
+    const onA = issueMemberToken(MACHINE);
+    process.env.MYCO_TEAM_HOME = homeB;
+    const onB = issueMemberToken(MACHINE);
+
+    // Distinct credentials, as two independent enrollments must produce.
+    expect(onA.token).not.toBe(onB.token);
+
+    process.env.MYCO_TEAM_HOME = homeA;
+    expect(revokeMember(onA.id)).toBe(true);
+    expect(authenticateMemberToken(onA.token).ok).toBe(false);
+
+    process.env.MYCO_TEAM_HOME = homeB;
+    expect(authenticateMemberToken(onB.token).ok).toBe(true);
+    // And host A's revocation left no mark on host B's roster.
+    expect(listMembers().filter((m) => m.revoked)).toEqual([]);
   });
 
   test('MISMATCHED machine-id header → 409, and the handler never runs', async () => {

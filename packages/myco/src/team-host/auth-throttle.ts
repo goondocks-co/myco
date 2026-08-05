@@ -3,14 +3,25 @@
  *
  * Neither listener had one. That was defensible behind a tailnet, where the
  * listener's own docstring said token entropy was the entire defence — and it
- * is thin on a URL anyone can reach. 256 bits is not brute-forcible, but "not
- * brute-forcible" is a statement about the token, not about what an unbounded
- * stream of failed attempts costs the host: every one reaches disk (the member
- * store is re-read per request, deliberately) and every one is a syscall the
- * host performs for a caller who has proven nothing.
+ * is thin on a URL anyone can reach.
  *
- * WHAT THIS IS NOT. There is no per-source dimension, because there is no
- * source to key on: the listener answers a unix socket and every request
+ * WHAT THIS ACTUALLY BOUNDS: the RATE OF SEQUENTIAL GUESSING. Each failure past
+ * the free allowance makes the NEXT answer slower, so a caller working through
+ * candidate tokens in order is throttled to a crawl. That is the attack a
+ * public URL invites and the one this is for.
+ *
+ * WHAT IT DOES NOT BOUND, stated plainly because an earlier draft of this
+ * comment claimed otherwise: it does not reduce the work a failed request
+ * costs. The member store is re-read per request (deliberately — that re-read
+ * is the revocation guarantee), and that read has ALREADY happened by the time
+ * the delay runs. Against a caller issuing failures in PARALLEL the throttle
+ * reduces nothing and in fact holds each request's socket and timer for up to
+ * {@link MAX_BACKOFF_MS}, so concurrent resource use goes UP, not down. Bounding
+ * that would take a cap on in-flight failed auths, which is a separate
+ * mechanism and not this one. The ceiling here is what keeps the cost finite.
+ *
+ * WHAT THIS IS NOT, part two. There is no per-source dimension, because there is
+ * no source to key on: the listener answers a unix socket and every request
  * arrives from the local Funnel process, so a remote address would be a
  * constant. The throttle is therefore GLOBAL over failures, and the tradeoff is
  * explicit — a hostile caller can slow down a legitimate member's first attempt

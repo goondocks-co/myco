@@ -52,7 +52,7 @@ import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
-import { codedMembershipError } from './membership-error.js';
+import { codedMembershipError, membershipErrorCode } from './membership-error.js';
 import { listResidencyJournals } from './residency-journal.js';
 import {
   abandonHostEnrollment,
@@ -260,9 +260,21 @@ export type EnrollmentTransport = (input: {
  */
 export const defaultEnrollmentTransport: EnrollmentTransport = async (input) => {
   const https = await import('node:https');
-  const { parseHostUrl } = await import('./host-url.js');
   const { hostname, port } = parseHostUrl(input.hostUrl);
   return await new Promise((resolve, reject) => {
+    let settled = false;
+    let responded = false;
+    const succeed = (value: { status: number; body: string }): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+
     const req = https.request({
       protocol: 'https:',
       hostname,
@@ -273,20 +285,38 @@ export const defaultEnrollmentTransport: EnrollmentTransport = async (input) => 
       path: input.path,
       headers: { ...input.headers, 'content-length': Buffer.byteLength(input.body) },
     }, (res) => {
+      responded = true;
       const chunks: Buffer[] = [];
       res.on('data', (c: Buffer) => chunks.push(c));
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }));
+      res.on('end', () => succeed({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }));
+      // A connection that dies MID-body: `req`'s `'close'` can no longer be the
+      // signal (see below), so the response stream carries it instead.
+      res.once('aborted', () => fail(new Error('enrollment connection closed before the response completed')));
+      res.once('error', fail);
     });
-    // Settle on every path. The probe in `host-url.ts` documents why this is
-    // spelled out rather than left to `destroy(err)`: under Bun that emits no
-    // `'error'`, and an enrollment that never settles hangs `myco join`.
+    // Settle on every path, and settle ONCE.
+    //
+    // `destroy(err)` emits no `'error'` under Bun, so the timeout rejects
+    // itself. The subtler half: `req`'s `'close'` is NOT a lost-connection
+    // signal on either runtime. Node fires it after a completed response; Bun
+    // fires it BEFORE the response body's `'end'`. Rejecting there
+    // unconditionally fails every enrollment on the runtime Myco ships —
+    // including ones the host answered 200, which burns the single-use key and
+    // leaves a member the user can never authenticate as. So `'close'` only
+    // means failure when no response ever arrived; a response that starts and
+    // then dies is `res`'s `'aborted'`, and the timer backstops both.
     const timer = setTimeout(() => {
-      reject(new Error('enrollment request timed out'));
+      fail(new Error('enrollment request timed out'));
       req.destroy();
     }, HOST_PROXY_HEADERS_TIMEOUT_MS);
-    req.once('response', () => clearTimeout(timer));
-    req.once('error', reject);
-    req.once('close', () => reject(new Error('enrollment connection closed before a response')));
+    if (typeof timer.unref === 'function') timer.unref();
+    const clear = (): void => { clearTimeout(timer); };
+    req.once('response', clear);
+    req.once('error', (error: Error) => { clear(); fail(error); });
+    req.once('close', () => {
+      clear();
+      if (!responded) fail(new Error('enrollment connection closed before a response'));
+    });
     req.write(input.body);
     req.end();
   });
@@ -324,6 +354,15 @@ export function createEnrollmentClient(transport: EnrollmentTransport = defaultE
         );
       }
       if (response.status === 409) {
+        // 409 carries TWO distinct refusals, and telling a user to update Myco
+        // when the real problem is that their machine already has access sends
+        // them down a road with no fix at the end of it.
+        if (readRefusalCode(response.body) === 'machine_already_enrolled') {
+          throw codedMembershipError(
+            'machine_already_enrolled',
+            'This machine already has access to that host. Ask the host operator to revoke it first, then join again.',
+          );
+        }
         throw codedMembershipError(
           'protocol_mismatch',
           'This machine and the host are running different Myco versions — update both to the same release, then join again.',
@@ -353,6 +392,24 @@ export const realEnrollmentClient: EnrollmentClient = createEnrollmentClient();
  *  `deps.sleep` so retry backoff never costs real wall-clock time. */
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The `error` field of a refusal body, when it has one. Best-effort: a refusal
+ *  that is not JSON is still a refusal, it just carries no discriminator. */
+function readRefusalCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    return typeof parsed?.error === 'string' ? parsed.error : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Refusals the HOST decided. Retrying one re-asks a settled question. */
+const NON_RETRYABLE_ENROLLMENT_CODES = new Set<string>([
+  'host_enroll_rejected',
+  'protocol_mismatch',
+  'machine_already_enrolled',
+]);
+
 /**
  * Bounded retry-with-backoff around a single {@link EnrollmentClient.enroll} call
  * — only the transport call is retried, nothing before or after it in
@@ -372,6 +429,12 @@ async function enrollWithRetry(
     try {
       return await client.enroll(ctx);
     } catch (err) {
+      // A DECIDED refusal is not a transport hiccup. The host answered, and it
+      // will answer identically next time: a spent or expired key stays spent,
+      // a version mismatch stays mismatched, an already-enrolled machine stays
+      // enrolled. Retrying only makes the user wait 6s for the same answer and
+      // re-POSTs a spent key twice.
+      if (NON_RETRYABLE_ENROLLMENT_CODES.has(membershipErrorCode(err) ?? '')) throw err;
       if (attempt >= backoffs.length) throw err;
       const delayMs = backoffs[attempt]!;
       log(`Enrollment attempt ${attempt + 1} failed (${(err as Error).message}) — retrying in ${delayMs}ms…`);
