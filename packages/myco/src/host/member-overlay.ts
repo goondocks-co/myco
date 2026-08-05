@@ -27,7 +27,11 @@
  * IDEMPOTENT: a re-join of the same host converges — the existing `HostRecord`
  * is UPDATED, its attached projects preserved, never duplicated.
  */
+import os from 'node:os';
+
 import { isGroveEraId } from '@myco/grove/ids.js';
+import { getMachineId } from '../machine-id.js';
+import { parseHostUrl, probeHostReachability } from './host-url.js';
 
 import {
   ENROLLMENT_RETRY_BACKOFFS_MS,
@@ -51,8 +55,12 @@ import {
 import { codedMembershipError } from './membership-error.js';
 import { listResidencyJournals } from './residency-journal.js';
 import {
+  abandonHostEnrollment,
+  advanceHostEnrollmentPhase,
   inspectHostMembershipForLeave,
+  persistEnrollmentMembership,
   readHostRegistry,
+  reserveHostEnrollment,
   retireHostMembership,
 } from '@myco/host/registry.js';
 
@@ -90,14 +98,18 @@ export interface EnrollmentContext {
   hostId: string;
   /** The `<host>` positional as typed. */
   hostRef: string;
-  /** Headscale control-plane URL (from `--server-url`). */
-  serverUrl?: string;
-  /** The one-time key the operator passed (single-use). */
+  /** The one-time key the operator passed (single-use, daemon-validated). */
   oneTimeKey: string;
   /** The host's public URL to dial for enrollment — a NON-SECRET the operator
-   *  hands the joiner alongside the one-time key. The SECRET bearer comes back
+   *  hands the joiner alongside the one-time key. The SECRET token comes back
    *  in the enrollment response, never out-of-band. */
   hostUrl?: string;
+  /** This machine's id, asserted at enrollment. The host binds the issued token
+   *  to it, so it becomes the trust-on-first-use anchor every later request is
+   *  checked against — not a per-request claim. */
+  machineId: string;
+  /** This member's hostname, for the operator's member list. Non-secret. */
+  memberHostname?: string;
   /** Stable, durable request correlation for repeatable enrollment. */
   enrollmentNonce?: string;
   // --- manual enrollment context ---
@@ -239,22 +251,103 @@ export type EnrollmentTransport = (input: {
   body: string;
 }) => Promise<{ status: number; body: string }>;
 
-/** The default enrollment client used by `join` unless a caller injects one. */
 /**
- * Enrollment has no transport on this build. The member reached the host's
- * enrollment route through the overlay's CONNECT proxy, and that path is gone;
- * the HTTPS transport that replaces it arrives with the Funnel URL, which is
- * the first thing a member has to dial. Joining fails loudly rather than
- * writing a host record with no reachable address.
+ * The default enrollment transport: one HTTPS POST to the host's public URL.
+ *
+ * No tunnel, no local proxy, no per-host process — the whole reason the member
+ * side got simpler. The request carries the one-time join key and this
+ * machine's id; the response carries this member's own token.
  */
-export const realEnrollmentClient: EnrollmentClient = {
-  async enroll(): Promise<EnrollmentResult> {
-    throw new Error(
-      'Joining a team host is unavailable on this build: the member transport is being rebuilt on the '
-      + 'public host URL. No host record was written.',
-    );
-  },
+export const defaultEnrollmentTransport: EnrollmentTransport = async (input) => {
+  const https = await import('node:https');
+  const { parseHostUrl } = await import('./host-url.js');
+  const { hostname, port } = parseHostUrl(input.hostUrl);
+  return await new Promise((resolve, reject) => {
+    const req = https.request({
+      protocol: 'https:',
+      hostname,
+      port,
+      method: 'POST',
+      // Origin-form by construction — `path` is a constant here, and the dial
+      // seam refuses anything else for the reason recorded in `defaultDial`.
+      path: input.path,
+      headers: { ...input.headers, 'content-length': Buffer.byteLength(input.body) },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }));
+    });
+    // Settle on every path. The probe in `host-url.ts` documents why this is
+    // spelled out rather than left to `destroy(err)`: under Bun that emits no
+    // `'error'`, and an enrollment that never settles hangs `myco join`.
+    const timer = setTimeout(() => {
+      reject(new Error('enrollment request timed out'));
+      req.destroy();
+    }, HOST_PROXY_HEADERS_TIMEOUT_MS);
+    req.once('response', () => clearTimeout(timer));
+    req.once('error', reject);
+    req.once('close', () => reject(new Error('enrollment connection closed before a response')));
+    req.write(input.body);
+    req.end();
+  });
 };
+
+/** The default enrollment client used by `join` unless a caller injects one. */
+export function createEnrollmentClient(transport: EnrollmentTransport = defaultEnrollmentTransport): EnrollmentClient {
+  return {
+    async enroll(ctx: EnrollmentContext): Promise<EnrollmentResult> {
+      if (!ctx.hostUrl) {
+        throw enrollmentFailure('Joining a host needs its public address (--host-url).');
+      }
+      const body = JSON.stringify({
+        key: ctx.oneTimeKey,
+        machine_id: ctx.machineId,
+        member_hostname: ctx.memberHostname,
+        ...(ctx.enrollmentNonce ? { enrollment_nonce: ctx.enrollmentNonce } : {}),
+      });
+      const response = await transport({
+        hostUrl: ctx.hostUrl,
+        path: HOST_ENROLL_ROUTE,
+        headers: {
+          'content-type': 'application/json',
+          [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
+        },
+        body,
+      });
+
+      if (response.status === 401) {
+        // Non-retryable: the key is single-use and expiring, so a refusal will
+        // refuse identically next time. Retrying would only burn the backoff.
+        throw codedMembershipError(
+          'host_enroll_rejected',
+          'The host refused this join key — it may be expired, already used, or revoked. Ask the host operator for a new one.',
+        );
+      }
+      if (response.status === 409) {
+        throw codedMembershipError(
+          'protocol_mismatch',
+          'This machine and the host are running different Myco versions — update both to the same release, then join again.',
+        );
+      }
+      if (response.status !== 200) {
+        throw enrollmentFailure(`Host enrollment failed with HTTP ${response.status}.`);
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(response.body);
+      } catch {
+        throw enrollmentFailure('Host enrollment returned a response Myco could not read.');
+      }
+      return validateEnrollment(parsed as EnrollmentResult, {
+        hostId: ctx.hostId,
+        label: ctx.label ?? ctx.hostRef,
+        enrollmentNonce: ctx.enrollmentNonce,
+      });
+    },
+  };
+}
+
+export const realEnrollmentClient: EnrollmentClient = createEnrollmentClient();
 
 /** Default backoff wait — a plain `setTimeout` wrapped as a Promise. Tests inject
  *  `deps.sleep` so retry backoff never costs real wall-clock time. */
@@ -310,6 +403,8 @@ export interface JoinOptions {
 export interface MemberOverlayDeps {
   platform?: NodeJS.Platform;
   enrollmentClient?: EnrollmentClient;
+  /** Test seam: this machine's id (production reads the real one). */
+  machineId?: string;
   /** Override the team home the residency-journal gate reads (tests). */
   teamsHome?: string;
   /** Backoff wait between enrollment retry attempts (tests inject a no-real-wait
@@ -333,30 +428,104 @@ export interface JoinResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Join a team host.
+ * Join a team host: spend a one-time key at its public URL, and record what
+ * comes back.
  *
- * Unavailable on this build. Joining used to mean provisioning a userspace
- * tailscaled for this host, reserving a loopback CONNECT-proxy port, bringing
- * the node onto the host's tailnet with a one-time key, and only then enrolling
- * through that tunnel — every step of which existed to create the network the
- * member dialed. That network is gone, and the HTTPS transport that replaces it
- * needs the host's public URL, which is the first thing a joining member has to
- * be given.
+ * The whole operation is one HTTPS round trip plus a registry write. It used to
+ * provision a userspace tailscaled for this host, reserve a loopback
+ * CONNECT-proxy port, bring the node onto the host's tailnet with a pre-auth
+ * key, and only then enroll through that tunnel — every step existing to create
+ * the network the member dialed. None of that is here because none of it is
+ * needed.
  *
- * This fails loudly and writes nothing rather than recording a host with no
- * reachable address: a host record whose address does not resolve is worse than
- * no record, because every drain and probe downstream treats it as a live target.
+ * ATOMIC. The membership is committed under a reserved generation
+ * (`reserveHostEnrollment` → `persistEnrollmentMembership`), so a crash
+ * mid-join leaves either the previous membership or none — never a record
+ * whose token and address came from different attempts. A re-join replaces the
+ * record and preserves its attached projects.
  */
-export async function joinHost(_options: JoinOptions, _deps: MemberOverlayDeps = {}): Promise<JoinResult> {
-  // Coded, so the browser renders mapped copy rather than this CLI-voiced prose
-  // (`ui/src/lib/membership-copy.ts` keys on the code).
-  throw codedMembershipError(
-    'join_unavailable',
-    'Joining a team host is unavailable on this build: the member transport is being rebuilt on the '
-    + 'public host URL. No host record was written.',
-  );
-}
+export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {}): Promise<JoinResult> {
+  const log = deps.logger ?? ((m: string) => console.log(m));
+  const hostRef = options.hostRef?.trim();
+  if (!hostRef) throw new Error('join requires a <host> — the host_id the operator gave you.');
+  if (!options.key?.trim()) {
+    throw codedMembershipError('host_enroll_failed', 'join requires the one-time key the host operator minted.');
+  }
+  const hostUrl = options.hostUrl?.trim();
+  if (!hostUrl) {
+    throw codedMembershipError(
+      'host_enroll_failed',
+      'join requires the host\'s public address (--host-url) — the operator shares it alongside the key.',
+    );
+  }
+  // Refuse an unusable address HERE rather than writing a record that can only
+  // fail later: every drain and probe downstream treats a record as a live
+  // target, so a bad address is worse than no membership.
+  try {
+    parseHostUrl(hostUrl);
+  } catch (err) {
+    throw codedMembershipError('host_enroll_failed', (err as Error).message);
+  }
 
+  const hostId = options.hostId?.trim() || hostRef;
+  const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
+  const machineId = deps.machineId ?? getMachineId();
+
+  const reservation = reserveHostEnrollment(hostId, lockNamespace);
+  try {
+    const client = deps.enrollmentClient ?? realEnrollmentClient;
+    log(`Enrolling with ${hostUrl}…`);
+    const enrollment = await enrollWithRetry(
+      client,
+      {
+        hostId,
+        hostRef,
+        oneTimeKey: options.key.trim(),
+        hostUrl,
+        machineId,
+        memberHostname: os.hostname(),
+        enrollmentNonce: reservation.enrollmentNonce,
+        label: options.label,
+      },
+      deps.sleep ?? defaultSleep,
+      log,
+    );
+
+    const staged = advanceHostEnrollmentPhase(reservation, 'enrolling', lockNamespace);
+    const result = persistEnrollmentMembership(
+      {
+        host_id: enrollment.host_id,
+        label: enrollment.label,
+        host_url: hostUrl,
+        protocol_version: enrollment.protocol_version,
+        created_at: new Date().toISOString(),
+        ...(Object.hasOwn(enrollment, 'served_grove_id')
+          ? { served_grove_id: enrollment.served_grove_id }
+          : {}),
+      },
+      enrollment.bearer,
+      staged,
+      lockNamespace,
+    );
+    log(`${result.created ? 'Joined' : 'Re-joined'} ${result.record.host_id}.`);
+
+    const reachability = await probeHostReachability(hostUrl);
+    return {
+      hostId: result.record.host_id,
+      hostUrl,
+      hostReachable: reachability.state === 'reachable',
+      created: result.created,
+      notes: reachability.state === 'reachable' ? [] : [reachability.detail],
+    };
+  } catch (err) {
+    // Discard the reservation so a failed join does not fence the next attempt
+    // behind a generation nothing committed. Only eligible states are
+    // discarded — `abandonHostEnrollment` refuses once a credential is staged,
+    // because that one may already be committed.
+    try { abandonHostEnrollment(reservation, lockNamespace); } catch { /* left for a later converge */ }
+    throw err;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // leave

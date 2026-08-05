@@ -47,11 +47,13 @@ import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js
 import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove/ids.js';
 import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { teamFetch, teamSocketPath } from '../helpers/team-socket.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { issueTestMemberToken } from '../helpers/member-token.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -83,6 +85,15 @@ describeTeamTransport('content claim materialize over the real member -> host tr
   let edge: FunnelEdge;
   let socketPath: string;
 
+// ONE identity for the member, everywhere: the id its routes are registered
+// with, the id its token is bound to, and the id holding the seeded claim.
+// Production has exactly this property (a member enrolls with its own
+// `getMachineId()`), and splitting it in a fixture makes the member look like
+// it is impersonating another machine — which the token binding refuses.
+let CLAIMING_MACHINE: string;
+const NON_HOLDER_MACHINE = 'not-the-claim-holder';
+let memberToken: string;
+
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cclaim-mat-overlay-'));
     savedMycoHome = process.env.MYCO_HOME;
@@ -92,6 +103,10 @@ describeTeamTransport('content claim materialize over the real member -> host tr
     fs.mkdirSync(mycoHome, { recursive: true });
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    CLAIMING_MACHINE = getMachineId();
+    memberToken = issueTestMemberToken(CLAIMING_MACHINE);
     const fakeHome = path.join(tmp, 'user-home');
     fs.mkdirSync(fakeHome, { recursive: true });
     process.env.HOME = fakeHome;
@@ -138,10 +153,10 @@ describeTeamTransport('content claim materialize over the real member -> host tr
       artifactId: 'skill-1',
       generation: 1,
       projectId,
-      claimedBy: 'attached-member-machine',
+      claimedBy: CLAIMING_MACHINE,
       claimedAt: now,
       expiresAt: now + 3600,
-      machineId: 'attached-member-machine',
+      machineId: CLAIMING_MACHINE,
     });
     if (!created.ok) throw new Error('test setup: unexpected already_claimed conflict');
     claimId = created.row.id;
@@ -210,7 +225,9 @@ describeTeamTransport('content claim materialize over the real member -> host tr
       projects: [{ grove_id: grove.id, project_id: projectId, root: memberProjectRoot }],
     };
     writeHostRecordFixture(hostBearerRecord);
-    writeHostSecret(hostBearerRecord.host_id, HOST_BEARER_SECRET, HOST_BEARER);
+    // The member's stored credential is its ISSUED token — the shared host
+    // bearer is no longer accepted.
+    writeHostSecret(hostBearerRecord.host_id, HOST_BEARER_SECRET, memberToken);
     saveProjectManifest(resolveProjectVaultDir(memberProjectRoot), { project: { id: projectId } });
 
     // --- member daemon: loopback only, no local Grove DB for this project ---
@@ -228,7 +245,7 @@ describeTeamTransport('content claim materialize over the real member -> host tr
     // `handleRequest`) runs at all — for an attached project this `serve`-stamped
     // GET is then proxied to the host rather than invoking this local handler
     // (see the inventory-through-the-proxy test at the bottom of this file).
-    registerContentClaimRoutes(memberServer, { machineId: 'attached-member-machine', logger: memberLogger });
+    registerContentClaimRoutes(memberServer, { machineId: CLAIMING_MACHINE, logger: memberLogger });
     registerContentClaimMaterializeRoute(memberServer, {
       cache: memberCache,
       dial: defaultDial,
@@ -238,7 +255,7 @@ describeTeamTransport('content claim materialize over the real member -> host tr
       // (`REQUEST_CONTEXT_HEADERS.machineId`), and the host's holder gate
       // (`content-claims.ts`'s `loadActiveHeldClaim`) requires it to equal
       // `claim.claimed_by`.
-      machineId: 'attached-member-machine',
+      machineId: CLAIMING_MACHINE,
       mycoHome,
       lockNamespace: testPerUserLockNamespace,
     });
@@ -430,6 +447,9 @@ describeTeamTransport('content claim materialize over the real member -> host tr
       warn(message: string, meta?: Record<string, unknown>): void { warnings.push({ message, meta }); },
       error(): void { /* unused */ },
     };
+    // Its own credential: the stored host secret is what the dial carries, so
+    // it is swapped to the non-holder's token for this case.
+    writeHostSecret(hostBearerRecord.host_id, HOST_BEARER_SECRET, issueTestMemberToken(NON_HOLDER_MACHINE));
     const nonHolderLogger = new DaemonLogger(path.join(tmp, 'non-holder-logs'));
     const nonHolderServer = new DaemonServer({
       vaultDir: path.join(tmp, 'non-holder-anchor', '.myco'),
@@ -442,7 +462,11 @@ describeTeamTransport('content claim materialize over the real member -> host tr
       cache: nonHolderCache,
       dial: defaultDial,
       logger: spyLogger,
-      machineId: 'not-the-claim-holder', // != claimed_by -> the host's holder gate 403s the mark dial
+      // A DIFFERENT machine, so it carries its OWN token bound to that
+      // identity — a member cannot present someone else's. The host therefore
+      // ACCEPTS the request and refuses it at the holder gate, which is the
+      // 403 this case is about.
+      machineId: NON_HOLDER_MACHINE,
       mycoHome,
       lockNamespace: testPerUserLockNamespace,
     });
@@ -507,7 +531,7 @@ describeTeamTransport('content claim materialize over the real member -> host tr
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${HOST_BEARER}`,
+        authorization: `Bearer ${memberToken}`,
         'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION),
         'x-myco-grove-id': groveId,
         'x-myco-project-id': projectId,
@@ -577,7 +601,7 @@ describeTeamTransport('content claim materialize over the real member -> host tr
       id: claimId,
       state: 'active',
       generation: 1,
-      claimed_by: 'attached-member-machine',
+      claimed_by: CLAIMING_MACHINE,
     });
   });
 
@@ -592,7 +616,7 @@ describeTeamTransport('content claim materialize over the real member -> host tr
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${HOST_BEARER}`,
+        authorization: `Bearer ${memberToken}`,
         'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION),
         'x-myco-grove-id': groveId,
         'x-myco-project-id': projectId,

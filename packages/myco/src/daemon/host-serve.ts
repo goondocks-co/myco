@@ -50,6 +50,8 @@ import { timingSafeStringEqual } from '../grove/request-context.js';
 import { isAutoBackupDue } from '../backup/service.js';
 import { getMachineId } from '../machine-id.js';
 import { missingKeyReason } from '../agent/harness/provider-health.js';
+import { authenticateMemberToken } from '../team-host/member-tokens.js';
+import { REQUEST_CONTEXT_HEADERS } from '../grove/request-context.js';
 
 /** The resolved host-serve enablement passed to `DaemonServer`. `null` means
  *  host serving is OFF and no second listener binds. */
@@ -515,27 +517,85 @@ function parseBearer(header: string | string[] | undefined): string | null {
  * the same primitive the daemon-token gate uses. Missing/wrong → 401. The single
  * transport-boundary admission gate (spec §9).
  */
-export function overlayBearerRejection(
-  req: http.IncomingMessage,
-  bearer: string,
-): OverlayGateRefusal | null {
+export interface TeamAuthOutcome {
+  refusal: OverlayGateRefusal | null;
+  /** The authenticated member, present only when `refusal` is null. */
+  member: { id: string; machineId: string } | null;
+}
+
+/** The 401 every unauthenticated team request gets — one shape, so a caller
+ *  cannot distinguish "no token" from "wrong token" from "revoked". */
+function unauthorized(): OverlayGateRefusal {
+  return {
+    status: 401,
+    // Stamp the host's live protocol version even on the unauthenticated
+    // refusal — the member's reachability probe (no token) reads it here to
+    // learn a host that has upgraded since join, so its recorded version can
+    // catch up without a re-join (the version is public, like an API-version
+    // header; the 409 version gate already echoes it to authenticated callers).
+    headers: { [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION) },
+    body: {
+      error: 'host_unauthorized',
+      message: 'Requests to a Team Host require a member token.',
+    },
+  };
+}
+
+/**
+ * Authenticate a team request against the PER-MEMBER token store.
+ *
+ * The shared host bearer is no longer accepted, and that removal is the point
+ * rather than a side effect: every member already holds it, so leaving it in
+ * the accepted set would mean revoking one member changes nothing for anyone
+ * who kept a copy — per-member revocation would be decorative. Cutover
+ * therefore invalidates existing members by design.
+ *
+ * Returns the matched member so the caller can bind identity to it
+ * ({@link teamMachineIdRejection}) instead of trusting a per-request header.
+ */
+export function teamAuthOutcome(req: http.IncomingMessage): TeamAuthOutcome {
   const presented = parseBearer(req.headers.authorization);
-  if (!presented || !timingSafeStringEqual(presented, bearer)) {
-    return {
-      status: 401,
-      // Stamp the host's live protocol version even on the unauthenticated
-      // refusal — the member's reachability probe (no bearer) reads it here to
-      // learn a host that has upgraded since join, so its recorded version can
-      // catch up without a re-join (the version is public, like an API-version
-      // header; the 409 version gate already echoes it to authenticated callers).
-      headers: { [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION) },
-      body: {
-        error: 'host_unauthorized',
-        message: 'Overlay requests to a Team Host require the host bearer.',
-      },
-    };
-  }
-  return null;
+  if (!presented) return { refusal: unauthorized(), member: null };
+  const auth = authenticateMemberToken(presented);
+  if (!auth.ok) return { refusal: unauthorized(), member: null };
+  return { refusal: null, member: { id: auth.id, machineId: auth.machineId } };
+}
+
+/**
+ * Bind the request's machine identity to the token's.
+ *
+ * `x-myco-machine-id` is not a context-switching header, so it has always been
+ * an unauthenticated per-request claim that flowed straight into every
+ * `machine_id` column. The token carries the machine_id its member asserted at
+ * enrollment — a trust-on-first-use anchor — so:
+ *
+ *   - **absent header → stamp from the token.** Nothing is lost; the caller
+ *     simply did not repeat what the host already knows.
+ *   - **present and MISMATCHED → 409, and no row written.** Not a silent
+ *     overwrite. `machine_id` regenerates when `~/.myco/machine_id` is lost
+ *     (reinstall, home wipe, new account) and can be baked wrong by the
+ *     `gh`-timeout fallback — this repo has already run a backfill for that
+ *     class. Overwriting would attribute rows forever to an identity that no
+ *     longer exists, with no error anywhere. Divergence from a TOFU anchor is a
+ *     re-join event, so it is surfaced as one.
+ */
+export function teamMachineIdRejection(
+  req: http.IncomingMessage,
+  member: { machineId: string },
+): OverlayGateRefusal | null {
+  const raw = req.headers[REQUEST_CONTEXT_HEADERS.machineId];
+  const claimed = Array.isArray(raw) ? raw[0] : raw;
+  if (claimed === undefined || claimed === '') return null;
+  if (claimed === member.machineId) return null;
+  return {
+    status: 409,
+    headers: { [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION) },
+    body: {
+      error: 'machine_identity_mismatch',
+      message: 'This member token was issued to a different machine identity — re-join this host to re-establish it.',
+      retryable: false,
+    },
+  };
 }
 
 /**
@@ -546,13 +606,15 @@ const TEAM_ADMITTED_RAW_ROUTES: ReadonlySet<string> = new Set<string>([
   '/health', // reachability probe — a member confirms the host answers
   '/api/version', // version probe
   '/mcp', // the hosted MCP surface; gated downstream by servedGroveRefusal
-  // NOT admitted: `/api/host/enroll`. It is bearer-EXEMPT and returns the shared
-  // serve bearer to whoever asks, because its real admission gate was overlay
-  // membership — a headscale pre-auth key the daemon never saw. With the overlay
-  // gone that gate does not exist, so admitting the route here would publish a
-  // bearer giveaway the moment this socket is fronted by Funnel. It is re-admitted
-  // together with the daemon-validated single-use join key that replaces it, in
-  // the same change — never before.
+  // ADMITTED, and only because it now carries its own gate. This route is
+  // exempt from the per-member token check (a member obtains its token here),
+  // so its admission depends entirely on the daemon-minted single-use join key
+  // being validated IN the request — `consumeJoinKey`, `daemon/server.ts`.
+  // Before that key existed the route returned the SHARED bearer to any caller
+  // and its only real boundary was tailnet membership, which is why it stayed
+  // un-admitted through the PR that published this socket. If the key check is
+  // ever removed or weakened, this entry must come out in the same change.
+  HOST_ENROLL_ROUTE,
 ]);
 
 /**
@@ -698,12 +760,24 @@ export interface HostEnrollmentPayload {
  * `runtime.bearer` — the exact value {@link resolveHostServeBearer} minted/read at
  * config resolution, so there is one bearer per host, delivered here unchanged.
  */
-export function buildHostEnrollmentPayload(runtime: HostServeRuntime): HostEnrollmentPayload {
+/**
+ * The enrollment response.
+ *
+ * `bearer` is now the member's OWN token, minted for this enrollment and passed
+ * in — never `runtime.bearer`, the shared host secret. The field keeps its name
+ * because it is the member's wire contract (it is stored under
+ * `HOST_BEARER_SECRET` and sent as `Authorization: Bearer`), but what travels
+ * is per-member and individually revocable.
+ */
+export function buildHostEnrollmentPayload(
+  runtime: HostServeRuntime,
+  memberToken: string,
+): HostEnrollmentPayload {
   return {
     host_id: runtime.hostId ?? '',
     label: runtime.label ?? '',
     protocol_version: HOST_PROTOCOL_VERSION,
-    bearer: runtime.bearer,
+    bearer: memberToken,
     served_grove_id: runtime.servedGroveId ?? null,
   };
 }

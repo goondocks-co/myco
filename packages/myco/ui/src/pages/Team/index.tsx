@@ -45,7 +45,7 @@ import { SubtabPill } from '../../components/ui/subtab-pill';
 import { TeamHostServingCard } from '../../components/operations/TeamHostServingCard';
 import { ExternalAccessPanel } from '../../components/team/ExternalAccessPanel';
 import { TeamSettingsPanel } from '../../components/team/TeamSettingsPanel';
-import { DisableHostControl, MintJoinKeyControl } from '../../components/team/ServingControls';
+import { DisableHostControl, MemberAccessControl, MintJoinKeyControl } from '../../components/team/ServingControls';
 import type { TeamConfigTarget } from '../../hooks/use-scoped-config';
 import { useHostMembershipStatus } from '../../hooks/use-host-membership';
 import { useHostServeStatus } from '../../hooks/use-host-serve-status';
@@ -181,7 +181,7 @@ export function TeamPage() {
 
       {tab === 'team' && (
         <div className="flex flex-col gap-4">
-          <TeamHostServingCard actions={<><MintJoinKeyControl /><DisableHostControl /></>} />
+          <TeamHostServingCard actions={<><MintJoinKeyControl /><MemberAccessControl /><DisableHostControl /></>} />
           <HostTab />
           {/* "Add another" affordances — the fork panels collapsed (§5.2). */}
           <div className="flex flex-wrap gap-2">

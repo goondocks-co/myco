@@ -440,9 +440,13 @@ describe('team listener raw-route admission', () => {
       '/api/version': true, // version probe
       '/mcp': true, // hosted MCP; narrowed downstream by servedGroveRefusal
       '/api/shutdown': false, // operator control plane; a member must never drain its host
-      '/api/host/enroll': false, // bearer-EXEMPT and returns the shared bearer —
-                                 // admit only alongside the join-key gate that replaces
-                                 // overlay membership as its admission story
+      // ADMITTED, and the condition is recorded because it is the whole reason
+      // this entry may be true: the route is exempt from the per-member token
+      // gate, so it is safe on a public surface ONLY while it validates a
+      // daemon-minted single-use join key in the request (`consumeJoinKey`).
+      // Weaken or remove that check and this must go back to false in the same
+      // change — it returns a credential to whoever asks.
+      '/api/host/enroll': true,
     };
 
     expect(
