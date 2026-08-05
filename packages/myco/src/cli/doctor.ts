@@ -966,6 +966,82 @@ export async function checkUpdateResidue(
   };
 }
 
+/**
+ * Overlay residue — state left by a machine that hosted or joined over the
+ * per-host networking stack.
+ *
+ * A member reaches a host at one public HTTPS URL, so nothing on either side
+ * runs a networking daemon, provisions binaries, or keeps node state. A machine
+ * that did leaves those files behind, and nothing else will ever look at them
+ * again: they are not read, not migrated, and not cleaned by leaving a host.
+ *
+ * SPLIT DELIBERATELY. Myco-owned DATA directories are safe to delete outright
+ * and `--fix` removes them. A SERVICE UNIT is only reported: a plist or unit
+ * file can still be loaded, and unlinking it leaves a running orphan with no
+ * supervisor entry — worse than leaving it alone. The detail names the unit and
+ * what to run.
+ *
+ * Returns null when the machine is clean, so a healthy doctor prints no row.
+ */
+export async function checkOverlayResidue(opts: {
+  teamsHome?: string;
+  homeDir?: string;
+  serviceUnitDir?: string;
+} = {}): Promise<DoctorCheck | null> {
+  const { resolveTeamsHome } = await import('../grove/paths.js');
+  const teamsHome = opts.teamsHome ?? resolveTeamsHome();
+  const homeDir = opts.homeDir ?? os.homedir();
+
+  const dataPaths = [
+    path.join(homeDir, '.myco-ts'),
+    path.join(teamsHome, 'host', 'headscale'),
+    path.join(teamsHome, 'host', 'bin'),
+    path.join(teamsHome, 'host', 'tailscaled-state'),
+    path.join(teamsHome, 'member', 'bin'),
+  ];
+  // Per-host node state, one dir per joined host.
+  try {
+    for (const entry of fs.readdirSync(path.join(teamsHome, 'hosts'), { withFileTypes: true })) {
+      if (entry.isDirectory()) dataPaths.push(path.join(teamsHome, 'hosts', entry.name, 'tailscaled-state'));
+    }
+  } catch { /* no hosts dir — nothing joined */ }
+
+  const foundData = dataPaths.filter((p) => fs.existsSync(p));
+
+  // A unit is Myco's only if its name ties Myco to the networking stack —
+  // never a bare `tailscaled`, which is the user's own Tailscale install and
+  // must not be reported as ours.
+  const unitDir = opts.serviceUnitDir ?? (await import('../service/paths.js')).resolveServiceUnitDir();
+  let foundUnits: string[] = [];
+  try {
+    foundUnits = fs.readdirSync(unitDir)
+      .filter((name) => /myco/i.test(name) && /(tailscaled|headscale)/i.test(name))
+      .map((name) => path.join(unitDir, name));
+  } catch { /* no unit dir on this platform/box */ }
+
+  if (foundData.length === 0 && foundUnits.length === 0) return null;
+
+  const parts: string[] = [];
+  if (foundData.length > 0) {
+    parts.push(`${foundData.length} leftover director${foundData.length === 1 ? 'y' : 'ies'} from per-host networking (${foundData.join(', ')})`);
+  }
+  if (foundUnits.length > 0) {
+    parts.push(
+      `${foundUnits.length} leftover service unit(s) — remove by hand so a loaded unit is unloaded first: ${foundUnits.join(', ')}`,
+    );
+  }
+
+  const base = {
+    name: 'Team transport',
+    status: 'warn' as const,
+    detail: `${parts.join('; ')}. Nothing reads these.`,
+  };
+  // Only the data half is fixable. A run with units but no data still reports.
+  return foundData.length > 0
+    ? fixableCheck(base, 'overlay-residue', { paths: foundData })
+    : { ...base, fixable: false };
+}
+
 export async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
   const serviceState = resolveDaemonServiceState(vaultDir, { env: process.env });
   const daemonFile = serviceState.statePath;
@@ -1424,6 +1500,8 @@ export async function runChecks(
   checks.push(checkBinaryVersionSkew());
   const updateResidue = await checkUpdateResidue();
   if (updateResidue) checks.push(updateResidue);
+  const overlayResidue = await checkOverlayResidue();
+  if (overlayResidue) checks.push(overlayResidue);
   checks.push(await checkInstallSource());
   checks.push(await checkGlobalLaunchers());
   checks.push(...await checkDetectedSymbionts());
