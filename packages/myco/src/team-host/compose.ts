@@ -14,6 +14,7 @@ import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
 import { KEYED_CLOUD_PROVIDER_ENV } from '@myco/agent/harness/provider-health.js';
 
 import { hostEnable, type HostEnableDeps, type HostEnableOptions, type HostEnableResult } from './serving.js';
+import { mintJoinKey, parseJoinKeyTtlMs } from './join-keys.js';
 import { writeTeamAgentKey, maskTeamAgentKey } from './team-secret.js';
 import { readHostState } from './state.js';
 
@@ -75,7 +76,7 @@ export interface ComposeEnableOptions extends HostEnableOptions {
    * when `teamAgentKey` is supplied.
    */
   teamKeyProvider?: keyof typeof KEYED_CLOUD_PROVIDER_ENV;
-  /** One-time setup-key lifetime for the emitted join command. Default: `mintSetupKey`'s own default (`'1h'`). */
+  /** One-time setup-key lifetime for the emitted join command. Default `'1h'`, clamped by {@link parseJoinKeyTtlMs}. */
   setupKeyExpiration?: string;
 }
 
@@ -89,6 +90,9 @@ export interface ComposeEnableDeps extends HostEnableDeps {
    * with a fresh mint.
    */
   confirmRemint?: (message: string) => Promise<boolean>;
+  /** Wait for the daemon to publish this host's address. Injected by tests so
+   *  the composite runs with no daemon and no wall-clock wait. */
+  waitForHostUrl?: (timeoutMs: number) => Promise<string | null>;
 }
 
 export interface ComposeEnableResult {
@@ -148,11 +152,57 @@ export async function hostEnableAndEmitJoin(
     });
   }
 
-  // No join command yet. It used to carry the headscale server URL and the
-  // host's overlay authority — both gone — and the one-time key it embedded
-  // was a headscale pre-auth key the daemon never validated. The invite flow
-  // returns with the rebuilt enrollment route and the host's public URL.
-  return { enable, joinCommand: null, teamAgentKeyMasked };
+  // A re-run is a deliberate act: this machine already had a host, so an
+  // automatic mint would hand out a second live invitation every time the
+  // installer path was repeated.
+  if (alreadyEnabled) {
+    const confirm = deps.confirmRemint ?? defaultConfirmRemint;
+    const proceed = await confirm(
+      'This machine is already a Team Host. Mint a fresh one-time join key to invite another member?',
+    );
+    if (!proceed) return { enable, joinCommand: null, teamAgentKeyMasked };
+  }
+
+  // The address is published by the DAEMON once it has activated the public
+  // endpoint, which happens after the restart `hostEnable` just triggered — so
+  // it is not on disk yet at this point and has to be waited for. Announced,
+  // because this is the one step that can take a minute and silence would read
+  // as a hang.
+  const log = deps.logger ?? (() => {});
+  log('Waiting for this host to publish its address…');
+  const waitForHostUrl = deps.waitForHostUrl ?? defaultWaitForHostUrl;
+  const hostUrl = await waitForHostUrl(HOST_URL_PUBLISH_TIMEOUT_MS);
+  if (!hostUrl) {
+    // No key is minted. A key without an address is half an invitation, and the
+    // member cannot tell which half is missing — the same reason the mint route
+    // refuses. The operator re-runs `myco host rotate-key` once the address is
+    // up, which `myco host status` reports.
+    log('This host has not published an address yet — run `myco host rotate-key` once `myco host status` shows one.');
+    return { enable, joinCommand: null, teamAgentKeyMasked };
+  }
+
+  const minted = mintJoinKey({ ttlMs: parseJoinKeyTtlMs(options.setupKeyExpiration ?? '1h') });
+  return {
+    enable,
+    joinCommand: `myco join ${enable.hostId} --host-url ${hostUrl} --key ${minted.key}`,
+    teamAgentKeyMasked,
+  };
+}
+
+/** How long to wait for the daemon to publish this host's address before
+ *  giving up on emitting a join command. The daemon restarts as the terminal
+ *  step of enable and activates the endpoint on the way back up. */
+const HOST_URL_PUBLISH_TIMEOUT_MS = 90_000;
+
+/** Poll the host state record for the published address. */
+async function defaultWaitForHostUrl(timeoutMs: number): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const url = readHostState()?.host_url;
+    if (url) return url;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
 }
 
 // Re-exported so `cli/host.ts` can re-print the composite's own vocabulary

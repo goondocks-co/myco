@@ -63,7 +63,7 @@ import os from 'node:os';
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { hostDisable, hostEnable, type HostEnableDeps } from '@myco/team-host/serving.js';
-import { DEFAULT_JOIN_KEY_TTL_MS, listJoinKeys, mintJoinKey, revokeJoinKey } from '@myco/team-host/join-keys.js';
+import { listJoinKeys, mintJoinKey, parseJoinKeyTtlMs, revokeJoinKey } from '@myco/team-host/join-keys.js';
 import { listMembers, revokeMember } from '@myco/team-host/member-tokens.js';
 import { readHostState } from '@myco/team-host/state.js';
 import { writeTeamAgentKey } from '@myco/team-host/team-secret.js';
@@ -322,27 +322,6 @@ export function createHostAdminDisableHandler(deps: HostAdminRouteDeps): RouteHa
   };
 }
 
-/** Shortest key an operator can mint. Below this the key expires before it can
- *  be read out of the UI and handed over — `'0m'` mints one that is already
- *  dead. */
-const MIN_JOIN_KEY_TTL_MS = 60_000;
-/** Longest. A join key is a bearer credential that mints another credential;
- *  `'3650d'` is a standing invitation, not an expiring one. */
-const MAX_JOIN_KEY_TTL_MS = 7 * 86_400_000;
-
-/** Parse the operator's `expiration` (`'30m'`, `'2h'`, `'1d'`) into ms,
- *  CLAMPED to a usable window. Falls back to the module default rather than
- *  throwing — an unparseable value should mint a short-lived key, not fail the
- *  invite. */
-function parseExpirationMs(expiration: string): number {
-  const match = expiration.match(/^(\d+)\s*([mhd])$/i);
-  if (!match) return DEFAULT_JOIN_KEY_TTL_MS;
-  const value = Number(match[1]);
-  const unit = match[2].toLowerCase();
-  const scale = unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
-  return Math.min(Math.max(value * scale, MIN_JOIN_KEY_TTL_MS), MAX_JOIN_KEY_TTL_MS);
-}
-
 export function createHostAdminMintJoinKeyHandler(deps: HostAdminRouteDeps): RouteHandler {
   return async (req): Promise<RouteResponse> => {
     // Minting is unprivileged at EVERY scope post-re-scope (the admin socket
@@ -372,7 +351,7 @@ export function createHostAdminMintJoinKeyHandler(deps: HostAdminRouteDeps): Rou
         'This host has no public address yet — it must finish publishing before you can invite a member.',
       );
     }
-    const minted = mintJoinKey({ ttlMs: parseExpirationMs(expiration) });
+    const minted = mintJoinKey({ ttlMs: parseJoinKeyTtlMs(expiration) });
     return {
       status: 200,
       body: {

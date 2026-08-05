@@ -134,6 +134,27 @@ function prune(keys: JoinKeyRecord[], now: number): JoinKeyRecord[] {
   });
 }
 
+/** Shortest key an operator can mint. Below this the key expires before it can
+ *  be read out of the UI and handed over — `'0m'` mints one that is already
+ *  dead. */
+export const MIN_JOIN_KEY_TTL_MS = 60_000;
+/** Longest. A join key is a bearer credential that mints another credential;
+ *  `'3650d'` is a standing invitation, not an expiring one. */
+export const MAX_JOIN_KEY_TTL_MS = 7 * 86_400_000;
+
+/** Parse the operator's `expiration` (`'30m'`, `'2h'`, `'1d'`) into ms,
+ *  CLAMPED to a usable window. Falls back to the module default rather than
+ *  throwing — an unparseable value should mint a short-lived key, not fail the
+ *  invite. */
+export function parseJoinKeyTtlMs(expiration: string): number {
+  const match = expiration.match(/^(\d+)\s*([mhd])$/i);
+  if (!match) return DEFAULT_JOIN_KEY_TTL_MS;
+  const value = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const scale = unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
+  return Math.min(Math.max(value * scale, MIN_JOIN_KEY_TTL_MS), MAX_JOIN_KEY_TTL_MS);
+}
+
 export interface MintedJoinKey {
   id: string;
   /** The RAW key. Returned once, never stored, never logged. */

@@ -5,24 +5,23 @@
  * from one enrollment call to that URL; there is no network to stand up first,
  * no local process per host, and nothing to provision.
  *
- * This module used to run a userspace tailscaled PER host, because each host was
- * its own Headscale tailnet and each tailnet independently handed out
- * `100.64.0.0/10` — two joined hosts could both be `100.64.0.1`, so a member
- * needed a separate tailscaled (own socket, own statedir, own LaunchAgent, own
- * CONNECT-proxy port) just to disambiguate a dial. Public URLs are globally
- * unique, so multi-host membership needs no disambiguation mechanism at all:
- * N teams is N (URL, bearer) pairs in the registry.
+ * JOIN spends a daemon-minted single-use key at the host's URL and stores what
+ * comes back: this member's OWN token, bound by the host to the machine_id
+ * asserted at enrollment. The token is never handed out of band — only the URL
+ * and the key are, and the key is spent the first time it is used.
  *
- * MULTI-TEAM is the reason the shape matters. A machine can belong to several
- * teams at once and every request goes through the member's own daemon, which
- * selects among host records per request. Each record carries its own URL and
- * its own bearer in its own generation file, so teams share no credential and
- * revoking one leaves the others untouched.
+ * LEAVE tells the host first (`resignFromHost`), so the host releases its record
+ * for this machine, then retires the local one. Best-effort in that order: a
+ * host that is unreachable must not be able to hold a member in a membership it
+ * is trying to leave, so the local retirement happens regardless and the caller
+ * gets a note.
  *
- * JOIN IS NOT REBUILT HERE. Enrollment is being rewritten around a daemon-minted
- * single-use key (the overlay-era key was a Headscale pre-auth key the daemon
- * never saw), and until that lands `joinHost` refuses rather than writing a
- * membership no key ever authorized.
+ * MULTI-TEAM is why the shape matters. A machine can belong to several teams at
+ * once and every request goes through the member's own daemon, which selects
+ * among host records per request. Public URLs are globally unique, so nothing
+ * has to disambiguate a dial. Each record carries its own URL and its own token
+ * in its own generation file, so teams share no credential and revoking one
+ * leaves the others untouched.
  *
  * IDEMPOTENT: a re-join of the same host converges — the existing `HostRecord`
  * is UPDATED, its attached projects preserved, never duplicated.
