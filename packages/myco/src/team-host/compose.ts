@@ -13,7 +13,7 @@ import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.j
 import { TEAM_AGENT_KEY_SECRET } from '@myco/constants.js';
 import { KEYED_CLOUD_PROVIDER_ENV } from '@myco/agent/harness/provider-health.js';
 
-import { hostEnable, type HostEnableDeps, type HostEnableOptions, type HostEnableResult } from './overlay.js';
+import { hostEnable, type HostEnableDeps, type HostEnableOptions, type HostEnableResult } from './serving.js';
 import { writeTeamAgentKey, maskTeamAgentKey } from './team-secret.js';
 import { readHostState } from './state.js';
 

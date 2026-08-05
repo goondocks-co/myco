@@ -16,7 +16,7 @@ import {
   hostEnable,
   resolveServedGroveDesignation,
   type HostEnableDeps,
-} from '@myco/team-host/overlay.js';
+} from '@myco/team-host/serving.js';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader.js';
 import { readHostState } from '@myco/team-host/state.js';
 import { resolveServedGroveDesignationHealth } from '@myco/daemon/host-serve.js';

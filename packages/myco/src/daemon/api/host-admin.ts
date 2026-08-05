@@ -62,7 +62,7 @@ import os from 'node:os';
 
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
-import { hostDisable, hostEnable, type HostEnableDeps } from '@myco/team-host/overlay.js';
+import { hostDisable, hostEnable, type HostEnableDeps } from '@myco/team-host/serving.js';
 import { DEFAULT_JOIN_KEY_TTL_MS, listJoinKeys, mintJoinKey, revokeJoinKey } from '@myco/team-host/join-keys.js';
 import { listMembers, revokeMember } from '@myco/team-host/member-tokens.js';
 import { readHostState } from '@myco/team-host/state.js';
