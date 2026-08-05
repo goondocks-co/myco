@@ -169,7 +169,11 @@ export type JoinKeyRejection =
   | 'invalid'
   | 'expired'
   | 'already_used'
-  | 'revoked';
+  | 'revoked'
+  /** The key was GOOD; a caller-supplied precondition refused. Distinct from
+   *  every other reason because the key is left unspent — and because the
+   *  caller may answer it differently, having proven it holds a real key. */
+  | 'precondition';
 
 export type JoinKeyCheck =
   | { ok: true; id: string }
@@ -187,10 +191,17 @@ export type JoinKeyCheck =
  * Comparison is constant-time over fixed-length digests. The scan is over every
  * candidate rather than short-circuiting on the first match, so the time taken
  * does not reveal *which* key matched or how many exist.
+ *
+ * `precondition` runs only once the key is PROVEN GOOD, and its failure leaves
+ * the key unspent. That ordering is the point: a condition checked before the
+ * key would answer callers who hold no key at all, turning whatever it inspects
+ * into an oracle anyone reaching the public URL can read. Checked here, the
+ * answer costs a valid unspent key to obtain. It must not take a lock of its
+ * own — this runs inside one.
  */
 export function consumeJoinKey(
   presented: string,
-  opts: { machineId?: string; now?: () => number } = {},
+  opts: { machineId?: string; now?: () => number; precondition?: () => boolean } = {},
 ): JoinKeyCheck {
   const now = opts.now?.() ?? Date.now();
   return withJoinKeysLock((): JoinKeyCheck => {
@@ -213,6 +224,11 @@ export function consumeJoinKey(
   if (matched.revoked_at) return { ok: false, reason: 'revoked' };
   if (matched.used_at) return { ok: false, reason: 'already_used' };
   if (Date.parse(matched.expires_at) <= now) return { ok: false, reason: 'expired' };
+
+  // The key is good. Only now may a precondition see anything — and refusing
+  // here leaves it unspent, so a caller turned away for a reason that is not
+  // their fault keeps their invite.
+  if (opts.precondition && !opts.precondition()) return { ok: false, reason: 'precondition' };
 
   const consumed: JoinKeyRecord = {
     ...matched,

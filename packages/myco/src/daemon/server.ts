@@ -1055,31 +1055,35 @@ export class DaemonServer {
         return;
       }
 
-      // Collision checked BEFORE the key is spent — the same ordering the
-      // `machine_id` validation above already gets right. The authoritative
-      // check is still the one inside `issueMemberToken`'s lock (this one can
-      // race); this exists so the common case does not COST the operator an
-      // invite. A caller refused here has presented a valid key and done
-      // nothing wrong: the usual way to reach it is re-joining a host that
-      // still holds a record for this machine.
-      if (hasLiveMember(machineId)) {
-        this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host enrollment refused', { reason: 'machine_already_enrolled' });
-        res.writeHead(409, { 'Content-Type': 'application/json', ...versionHeader });
-        res.end(JSON.stringify({
-          error: 'machine_already_enrolled',
-          message: 'That machine already has access to this host. Revoke its current access first, then join again.',
-        }));
-        return;
-      }
-
       // Validated AND consumed in one operation — see `consumeJoinKey`. The
       // specific rejection reason is deliberately not echoed: valid-but-expired
       // and never-existed answer identically, so the route is not an oracle for
       // which keys were ever real.
-      const check = consumeJoinKey(presentedKey, { machineId });
+      //
+      // The already-enrolled check rides in as a PRECONDITION rather than
+      // running ahead of this call. Ahead of it, it would answer callers who
+      // hold no key at all — an unauthenticated probe for whether a given
+      // machine has access to this host, on a URL anyone can reach. Inside, the
+      // key must be proven good first, and a precondition failure leaves it
+      // unspent, so a legitimate re-join still does not cost an invite.
+      const check = consumeJoinKey(presentedKey, {
+        machineId,
+        precondition: () => !hasLiveMember(machineId),
+      });
       if (!check.ok) {
+        // Metered like every other refusal on this route: the precondition
+        // answer is cheap to ask repeatedly once a caller holds one valid key,
+        // and metering bounds enumeration to the same crawl as guessing.
         await delay(this.teamAuthThrottle.noteFailure());
         this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host enrollment refused', { reason: check.reason });
+        if (check.reason === 'precondition') {
+          res.writeHead(409, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify({
+            error: 'machine_already_enrolled',
+            message: 'That machine already has access to this host. Revoke its current access first, then join again.',
+          }));
+          return;
+        }
         res.writeHead(401, { 'Content-Type': 'application/json', ...versionHeader });
         res.end(JSON.stringify({ error: 'enrollment_unauthorized', message: 'Enrollment requires a valid one-time join key.' }));
         return;

@@ -168,6 +168,23 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
     expect(listMembers()).toEqual([]);
   });
 
+  test('NO ORACLE: without a valid key, "is this machine enrolled?" is unanswerable', async () => {
+    // The already-enrolled refusal necessarily reveals whether a machine has
+    // access. That answer must cost a valid unspent key — checked ahead of the
+    // key it would answer anyone who can reach the public URL, which on a
+    // Funnel is everyone.
+    await enroll({ key: mintJoinKey().key, machine_id: MEMBER_MACHINE });
+
+    // MEMBER_MACHINE is enrolled; 'nobody_00000000' is not. With a junk key,
+    // both must answer identically — otherwise the difference IS the oracle.
+    const enrolled = await enroll({ key: 'not-a-real-key', machine_id: MEMBER_MACHINE });
+    const absent = await enroll({ key: 'not-a-real-key', machine_id: 'nobody_00000000' });
+
+    expect(enrolled.status).toBe(401);
+    expect(absent.status).toBe(401);
+    expect(await enrolled.json()).toEqual(await absent.json());
+  });
+
   test('a refused collision does NOT spend the key', async () => {
     // The caller presented a valid key and did nothing wrong — the usual way
     // to reach this is re-joining a host that still holds a record for this
