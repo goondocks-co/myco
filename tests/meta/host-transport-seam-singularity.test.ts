@@ -58,11 +58,13 @@ const SOURCES = walkTypescript(SRC_ROOT).map((full) => ({
 
 describe('host transport seam singularity', () => {
   it('derives the host: header authority only inside the transport seam module', () => {
-    // The address parser has three legitimate homes: the seam that DIALS with
-    // it, the module that DEFINES it, and the registry that refuses to record
-    // an address it cannot parse. A fourth caller means someone is deriving a
-    // dial target outside the seam again — the exact drift this gate exists to
-    // stop — so new entries here are a deliberate, reviewed act.
+    // The address parser has FOUR legitimate homes: the seam that DIALS with
+    // it, the module that DEFINES it, the registry that refuses to record an
+    // address it cannot parse, and the routing module that projects a record
+    // into a dial target. A fifth means someone is deriving a dial target
+    // outside the seam again — the drift this gate exists to stop — so new
+    // entries are a deliberate, reviewed act. Keep this count honest: a
+    // rationale that no longer describes the list is how an allowlist rots.
     const ADDRESS_PARSE_ALLOWED = new Set([
       TRANSPORT_SEAM_MODULE,
       'packages/myco/src/host/host-url.ts',

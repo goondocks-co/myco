@@ -70,7 +70,7 @@ import { createMcpProtocolServer } from '../mcp/server.js';
 import { createExternalTools } from '../mcp/external-surface.js';
 import { readSecrets } from '../config/secrets.js';
 import { resolveMycoHome } from '../grove/paths.js';
-import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../constants.js';
+import { EXTERNAL_MCP_MOUNT, HOST_EXTERNAL_MCP_TOKEN_SECRET } from '../constants.js';
 import { describeFunnelTarget } from './external-mcp-containment.js';
 import type { FunnelOnRunner } from './external-mcp-containment.js';
 import { physicalPathIdentity } from '../utils/physical-path-identity.js';
@@ -80,10 +80,9 @@ import { applyDaemonHttpServerLimits, DAEMON_HTTP_LISTEN_BACKLOG, gracefullyClos
 import type { Logger } from './logger.js';
 import type { FunnelOffRunner } from './external-mcp-containment.js';
 
-/** The external read-only MCP Funnel's mount. Unlike the team surface (root,
- *  {@link TEAM_FUNNEL_MOUNT}) this is a path mount, and Funnel strips it before
- *  proxying — the listener re-adds it, see the dispatch note below. */
-export const EXTERNAL_MCP_PATH = '/mcp';
+/** This listener's mount. Re-exported from the shared constant so the Funnel
+ *  activation sites and the dispatch check below cannot drift apart. */
+export const EXTERNAL_MCP_PATH = EXTERNAL_MCP_MOUNT;
 
 /**
  * The local endpoint the listener binds. Sockets are the activation shape
@@ -761,8 +760,16 @@ export function createFunnelOnRunner(
       // socket, do NOT touch the operator's serve config again — the
       // sanctioned mutation stays tied to genuine state changes (enable, or
       // repairing a genuinely-missing handler at boot), not every start.
+      // Matched on mount AND public port. Mount alone was enough while the
+      // port was a fixed 443 — it stopped being enough once the activated port
+      // became the member's recorded address: a handler for this socket at the
+      // same mount on a DIFFERENT port would satisfy the check, activation
+      // would be skipped, and that other port would flow through
+      // `funnelUrlFor` into every member's `host_url`.
       const existing = readFunnelStatus((await runCommand(['funnel', 'status', '--json'])).stdout, target);
-      const existingSelector = existing.selectors.find((candidate) => candidate.mount === opts.mount);
+      const matchesRequested = (candidate: FunnelWebSelector): boolean =>
+        candidate.mount === opts.mount && candidate.publicPort === opts.publicPort;
+      const existingSelector = existing.selectors.find(matchesRequested);
       if (!existingSelector || !existing.allowedHostPorts.has(existingSelector.hostPort)) {
         await runCommand([
           'funnel',
@@ -775,7 +782,7 @@ export function createFunnelOnRunner(
       }
       const status = await runCommand(['funnel', 'status', '--json']);
       const snapshot = readFunnelStatus(status.stdout, target);
-      const selector = snapshot.selectors.find((candidate) => candidate.mount === opts.mount);
+      const selector = snapshot.selectors.find(matchesRequested);
       if (!selector || !snapshot.allowedHostPorts.has(selector.hostPort)) {
         return { ok: false, detail: 'the Funnel handler did not verify after activation' };
       }

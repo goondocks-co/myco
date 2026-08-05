@@ -969,6 +969,14 @@ export function markHostEnrollmentTeardownPending(
  * discard one layered over an existing membership (`base_generation !== null`)
  * — that is a re-join, and tearing it down silently would take the previous
  * membership with it.
+ *
+ * `teardown_pending` IS eligible, and must stay so:
+ * {@link markHostEnrollmentTeardownPending} exists to set exactly that phase
+ * ahead of this call, so refusing it makes the mark-then-discard sequence — the
+ * only reason the mark exists — a guaranteed throw. The pre-transport code
+ * reached the same conclusion by arithmetic (`teardown_pending` mapped below
+ * the cutoff); saying it directly is what keeps the pair honest now that the
+ * phases it was ordered against are gone.
  */
 export function abandonHostEnrollment(
   reservation: HostEnrollmentReservation,
@@ -979,9 +987,7 @@ export function abandonHostEnrollment(
     assertReservationMatchesIntent(reservation, intent);
     const claim = readHostEnrollmentClaimUnlocked(reservation.hostId);
     assertClaimMatchesIntent(claim, intent);
-    if (intent.phase === 'credential_staged'
-      || intent.phase === 'teardown_pending'
-      || intent.base_generation !== null) {
+    if (intent.phase === 'credential_staged' || intent.base_generation !== null) {
       throw new HostJoinStateCorruptError(
         reservation.hostId,
         'enrollment state is not eligible for automatic teardown cleanup',

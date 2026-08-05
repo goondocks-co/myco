@@ -213,6 +213,42 @@ describe('hostEnable designation wiring', () => {
     expect(readHostState()).toBeNull();
   });
 
+  it('a FAILED URL withdrawal KEEPS the evidence — the leftover exposure stays findable', async () => {
+    // The ordering exists so a live public URL is never stranded with nothing
+    // on disk to point at it. Clearing on the failure branch would strand
+    // exactly that: `host_serve.enabled` and the host state file are the only
+    // things the boot sweep's retire intent keys on, so a transient Tailscale
+    // failure would publish a URL forever with no mechanism left to find it.
+    await hostEnable({ hostname: 'testhost' }, deps());
+    expect(readHostState()).not.toBeNull();
+
+    const result = await hostDisable(deps({
+      withdrawFunnel: async () => ({ ok: false, detail: 'tailscale is not reachable' }),
+    }));
+
+    // Reported, not silent.
+    expect(result.cleared).toBe(false);
+    expect(result.errors.join(' ')).toContain('KEPT');
+    // And the evidence survives, so the next attempt can still find the URL.
+    expect(loadMachineConfig(home()).daemon.host_serve.enabled).toBe(true);
+    expect(readHostState()).not.toBeNull();
+    // Serving still stops: the daemon restart is what unbinds the socket.
+    expect(result.daemonRestarted).toBe(true);
+  });
+
+  it('a SUCCESSFUL withdrawal clears the evidence as before', async () => {
+    await hostEnable({ hostname: 'testhost' }, deps());
+
+    const result = await hostDisable(deps({
+      withdrawFunnel: async () => ({ ok: true, detail: 'withdrawn' }),
+    }));
+
+    expect(result.cleared).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(loadMachineConfig(home()).daemon.host_serve.enabled).toBe(false);
+    expect(readHostState()).toBeNull();
+  });
+
   it('(a) enable with no designation designates the default Grove and persists it', async () => {
     const result = await hostEnable({ hostname: 'testhost' }, deps());
 

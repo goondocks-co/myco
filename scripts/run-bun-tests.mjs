@@ -117,6 +117,40 @@ const WEDGE_RETRIES = Number(process.env.MYCO_RUNNER_WEDGE_RETRIES ?? 3);
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/**
+ * Warn when the Bun running the suite is not the Bun that ships.
+ *
+ * CI and the release build take their Bun from `.bun-version`; a developer's
+ * is whatever is on PATH. That difference is invisible and it hides real bugs:
+ * `node:http`/`node:https` behaviour varies BETWEEN Bun versions as well as
+ * between Bun and Node, and the transport reasons about those semantics. Three
+ * defects in the team transport were of exactly this shape — a probe that
+ * never settles, a timer that never arms, a teardown that never fires — each
+ * correct under Node and wrong under the shipping runtime.
+ *
+ * A warning, not a failure: a mismatched Bun is usually fine, and blocking
+ * local runs over it would cost more than it saves. The point is that nobody
+ * should be able to read a green local suite and not know which runtime
+ * produced it.
+ */
+function warnOnBunVersionSkew() {
+  const running = process.versions?.bun;
+  if (!running) return;
+  let pinned;
+  try {
+    pinned = fs.readFileSync(path.join(REPO, '.bun-version'), 'utf-8').trim();
+  } catch {
+    return; // no pin to compare against
+  }
+  if (!pinned || pinned === running) return;
+  console.warn(
+    `[run-bun-tests] WARNING: running Bun ${running}, but .bun-version pins ${pinned} — `
+    + 'CI and the release binary use the pinned one. Runtime behaviour differs between Bun '
+    + 'versions, so a green run here is not proof of a green run there.',
+  );
+}
+warnOnBunVersionSkew();
+
 const FAST_EXCLUDES = [
   'tests/integration/',
   'tests/smoke/',

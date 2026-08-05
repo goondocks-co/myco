@@ -228,10 +228,48 @@ export function hostAuthority(target: RemoteTarget): string {
  * None of that machinery has anything to connect to now: the host is a public
  * HTTPS origin, which every runtime's client can dial directly.
  */
+/**
+ * The one shape a request target may take on this hop: origin-form.
+ *
+ * Not a style rule — it is the whole of the anti-exfiltration property, and it
+ * has to be enforced HERE because neither of the two things that look like they
+ * enforce it actually do under the runtime Myco ships.
+ *
+ * `https.request(origin + path)` reparses, so `'https://host:8443' + '@evil/'`
+ * yields origin `https://evil` with the real host demoted to userinfo. Moving to
+ * the options form (`{hostname, port, path}`) looks like it fixes that — under
+ * Node it does, because llhttp refuses a target whose first byte is `@` and the
+ * options form pins the authority. **Bun does neither.** With `hostname` and
+ * `port` set correctly, Bun still opens the connection to an authority embedded
+ * in `path`: measured, `path: '@127.0.0.1:<evil>/events'` reaches `<evil>`
+ * while `req.host`/`req.port` report the real target. Myco ships as a Bun
+ * binary, so a guard that relies on Node's parser guards nothing.
+ *
+ * Since this hop attaches the host bearer (`buildForwardHeaders`), an
+ * off-origin dial is bearer exfiltration. `Dialer` is a public seam and places
+ * no constraint on `opts.path`, so the check belongs at the dial, not in the
+ * discipline of callers.
+ */
+function assertOriginFormPath(path: string): void {
+  // `//host/x` is a protocol-relative authority; `/x` is a path. Everything
+  // that is not unambiguously the latter is refused.
+  if (!path.startsWith('/') || path.startsWith('//')) {
+    throw new Error(
+      `Refusing to dial a host with a non-origin-form request target (${JSON.stringify(path.slice(0, 80))}): `
+      + 'a request target that can carry an authority could move this bearer-carrying request off the host.',
+    );
+  }
+}
+
 export const defaultDial: Dialer = (target, opts) => {
-  const { origin } = parseHostUrl(target.host.host_url);
-  return https.request(`${origin}${opts.path}`, {
+  const { hostname, port } = parseHostUrl(target.host.host_url);
+  assertOriginFormPath(opts.path);
+  return https.request({
+    protocol: 'https:',
+    hostname,
+    port,
     method: opts.method,
+    path: opts.path,
     headers: opts.headers,
   });
 };
@@ -862,14 +900,22 @@ async function forwardAndRelay(
     const finish = () => { if (!settled) { settled = true; resolve(); } };
 
     // Connect bound: destroy the dial if the socket never connects in time.
+    //
+    // Armed UNCONDITIONALLY, and cleared on connect. It used to arm only when
+    // `socket.connecting` was truthy, which reads as an optimisation and is a
+    // runtime assumption: Bun reports `connecting === false` on the 'socket'
+    // event, so on the runtime Myco ships the timer was never armed at all and
+    // `HOST_PROXY_CONNECT_TIMEOUT_MS` was a documented bound that did not
+    // exist. Arming always is correct under both — an already-connected socket
+    // fires 'connect'/'close' and clears it.
     proxyReq.on('socket', (socket) => {
-      if (!('connecting' in socket) || (socket as Socket).connecting) {
-        const connectTimer = setTimeout(() => {
-          proxyReq.destroy(new Error('connect_timeout'));
-        }, HOST_PROXY_CONNECT_TIMEOUT_MS);
-        socket.once('connect', () => clearTimeout(connectTimer));
-        socket.once('close', () => clearTimeout(connectTimer));
-      }
+      const connectTimer = setTimeout(() => {
+        proxyReq.destroy(new Error('connect_timeout'));
+      }, HOST_PROXY_CONNECT_TIMEOUT_MS);
+      socket.once('connect', () => clearTimeout(connectTimer));
+      socket.once('close', () => clearTimeout(connectTimer));
+      proxyReq.once('response', () => clearTimeout(connectTimer));
+      proxyReq.once('error', () => clearTimeout(connectTimer));
     });
 
     // Headers bound: destroy if no response headers arrive in time.
@@ -877,10 +923,23 @@ async function forwardAndRelay(
       proxyReq.destroy(new Error('headers_timeout'));
     }, HOST_PROXY_HEADERS_TIMEOUT_MS);
 
-    // Client hung up BEFORE the response finished → tear down the upstream leg
-    // (mirrors mcp/http.ts res.on('close')). Guard on `writableEnded` so a
-    // normal completion's 'close' doesn't destroy an already-finished relay.
-    res.on('close', () => { if (!res.writableEnded) proxyReq.destroy(); });
+    // Client hung up BEFORE the response finished → tear down the upstream leg.
+    // Guard on `writableEnded` so a normal completion's teardown does not
+    // destroy an already-finished relay.
+    //
+    // Listens on the REQUEST as well as the response, because `res.on('close')`
+    // alone does not fire under Bun — measured: on a mid-response client
+    // disconnect Bun emits `req:aborted`, `req:error`, `req:close` and never
+    // `res:close`, so the upstream leg outlived the abandoned client and kept
+    // pulling bytes from the host. Node emits both.
+    const tearDownUpstream = (): void => {
+      if (!res.writableEnded) proxyReq.destroy();
+    };
+    res.on('close', tearDownUpstream);
+    // `'aborted'` and NOT `'close'`: the request stream closes on every normal
+    // completion too (immediately, for a bodyless GET), so listening on it
+    // destroyed the upstream leg mid-relay. `'aborted'` is disconnect-specific.
+    req.on('aborted', tearDownUpstream);
 
     proxyReq.on('response', (proxyRes) => {
       clearTimeout(headersTimer);

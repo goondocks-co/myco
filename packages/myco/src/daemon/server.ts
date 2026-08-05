@@ -838,13 +838,23 @@ export class DaemonServer {
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
-      res.end(JSON.stringify({
-        myco: true,
-        version: this.version,
-        external_mcp_activation: this.externalMcpPosture?.() ?? EXTERNAL_MCP_ACTIVATION_POSTURE,
-        pid: process.pid,
-        uptime: process.uptime(),
-      }));
+      // NARROWED on the team surface. This route is admitted to
+      // `TEAM_ADMITTED_RAW_ROUTES` so a member can confirm its host answers —
+      // and a member needs the status code, nothing else. The local body
+      // carries operator diagnostics (this machine's pid and uptime, and its
+      // external-MCP posture, which has nothing to do with team membership);
+      // handing those to every bearer holder over the public internet is
+      // disclosure with no consumer. `myco` + `version` is what a reachability
+      // check reads.
+      res.end(JSON.stringify(isTeamRequest(req)
+        ? { myco: true, version: this.version }
+        : {
+          myco: true,
+          version: this.version,
+          external_mcp_activation: this.externalMcpPosture?.() ?? EXTERNAL_MCP_ACTIVATION_POSTURE,
+          pid: process.pid,
+          uptime: process.uptime(),
+        }));
     });
     this.registerRawRoute('/api/version', async (req, res) => {
       if (req.method !== 'GET') {

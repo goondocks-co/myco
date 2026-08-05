@@ -17,6 +17,7 @@ import {
   createFsRoutedTranscriptStore,
   createRoutedTranscriptHandler,
   decideChunkAction,
+  MAX_TRANSCRIPT_PUSH_BYTES,
   deriveTranscriptId,
   type RoutedTranscriptStore,
 } from '@myco/host/routed-transcript';
@@ -203,6 +204,46 @@ describe('POST /routed-capture/transcript handler (C2 wire contract)', () => {
     expect(res.body).toMatchObject({ ok: true, action: 'append', size: Buffer.byteLength(payload, 'utf-8') });
     // Byte-exact round-trip through base64.
     expect(store.bytesFor('alice_a1b2c3d4/sess-1/tx_00000000000000000000000000000001').toString('utf-8')).toBe(payload);
+  });
+
+  test('an over-cap chunk is refused 413 and NOTHING is written', async () => {
+    // The cap is enforced on BOTH sides now. Producer-only was fine while this
+    // route was reachable from a private tailnet; the effective ceiling for a
+    // write that lands in the operator's home directory and is retained
+    // indefinitely must not be the 8 MB body limit — five times the documented
+    // cap — now that the surface is the public internet and one shared bearer
+    // reaches it.
+    const store = memoryStore();
+    const handler = createRoutedTranscriptHandler(store);
+    const oversized = Buffer.alloc(MAX_TRANSCRIPT_PUSH_BYTES + 1, 0x61);
+
+    const res = await handler(req({
+      machine_id: 'm_1',
+      session_id: 'sess-big',
+      transcript_id: 'tx_0000000000000000000000000000000b',
+      base_offset: 0,
+      bytes: oversized.toString('base64'),
+    }));
+
+    expect(res.status).toBe(413);
+    expect(res.body).toMatchObject({ ok: false, error: 'chunk_too_large', max_bytes: MAX_TRANSCRIPT_PUSH_BYTES });
+    expect(store.bytesFor('m_1/sess-big/tx_0000000000000000000000000000000b')).toHaveLength(0);
+  });
+
+  test('a chunk exactly AT the cap is accepted — the bound is inclusive', async () => {
+    const store = memoryStore();
+    const handler = createRoutedTranscriptHandler(store);
+    const atCap = Buffer.alloc(MAX_TRANSCRIPT_PUSH_BYTES, 0x62);
+
+    const res = await handler(req({
+      machine_id: 'm_1',
+      session_id: 'sess-at-cap',
+      transcript_id: 'tx_0000000000000000000000000000000c',
+      base_offset: 0,
+      bytes: atCap.toString('base64'),
+    }));
+
+    expect(res.status).toBe(200);
   });
 
   test('a gap returns 409 { ok:false, error:offset_gap, size }', async () => {

@@ -352,10 +352,25 @@ export function createStreamableMcpHttpHandler(
       sessionIdGenerator: undefined,
     });
 
-    res.on('close', () => {
+    // Per-request transport + protocol server: both MUST be closed when the
+    // client goes away, or each abandoned request leaks a pair.
+    //
+    // Listens on the REQUEST as well, because `res.on('close')` alone does not
+    // fire under Bun — measured: a mid-response client disconnect emits
+    // `req:aborted` / `req:close` and never `res:close`. That was a local-only
+    // leak before; `/mcp` is now an admitted route on the team listener, so a
+    // caller who opens a relay and hangs up repeatedly leaks a transport and a
+    // server per request on someone else's host. Idempotent — closing twice is
+    // a no-op — so listening on several events is safe.
+    const closeSession = (): void => {
       void transport.close();
       void server.close();
-    });
+    };
+    res.on('close', closeSession);
+    // `'aborted'` and NOT `'close'`: the request stream closes on every normal
+    // completion, so listening on it would tear the transport down before the
+    // response is written. `'aborted'` fires only on a real disconnect.
+    req.on('aborted', closeSession);
 
     await server.connect(transport);
     await transport.handleRequest(req, res);

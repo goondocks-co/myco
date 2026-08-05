@@ -29,7 +29,9 @@ import {
 } from '../helpers/per-user-lock-namespace.js';
 
 const {
+  abandonHostEnrollment,
   advanceHostEnrollmentPhase,
+  markHostEnrollmentTeardownPending,
   attachProject,
   detachProject,
   getHost,
@@ -396,5 +398,33 @@ describe('host registry', () => {
 
     const rawSecrets = fs.readFileSync(path.join(hostDir, 'secrets.env'), 'utf-8');
     expect(rawSecrets).toContain(bearer);
+  });
+});
+
+describe('enrollment teardown (the mark/discard pair PR 3 rebuilds on)', () => {
+  test('mark-then-abandon works — the mark exists for exactly this sequence', () => {
+    // These two are a PAIR: `markHostEnrollmentTeardownPending` sets a phase
+    // whose only purpose is to be discarded by `abandonHostEnrollment`. Making
+    // that phase ineligible turned the sequence into a guaranteed throw — inert
+    // while nothing calls the reservation API, and therefore exactly the kind of
+    // thing found the hard way once enrollment is rebuilt on top of it.
+    const host = makeHost();
+    const reservation = reserveHostEnrollment(host.host_id);
+
+    markHostEnrollmentTeardownPending(reservation);
+    expect(() => abandonHostEnrollment(reservation)).not.toThrow();
+
+    // Discarded: a fresh reserve allocates a NEW generation rather than
+    // adopting the abandoned one.
+    const next = reserveHostEnrollment(host.host_id);
+    expect(next.generation).toBeGreaterThan(reservation.generation);
+  });
+
+  test('a STAGED credential is never discarded — it may already be committed', () => {
+    const host = makeHost();
+    const reservation = reserveHostEnrollment(host.host_id);
+    const staged = advanceHostEnrollmentPhase(reservation, 'credential_staged');
+
+    expect(() => abandonHostEnrollment(staged)).toThrow();
   });
 });

@@ -171,40 +171,80 @@ export type TeamFunnelContainmentIntent =
   | 'retire';
 
 /**
- * The team Funnel targets containment must drive off on this machine, or
+ * Which containment intent a given operation implies for the team surface.
+ *
+ * Exists as a named function, rather than a conditional at each wiring site,
+ * because getting it wrong is invisible: one authority instance serves both the
+ * boot reconcile and the daemon's own graceful shutdown, and a site that picked
+ * an intent once — at construction — answered the boot question for both. The
+ * shutdown then withdrew nothing and a stopped host kept its public URL. Every
+ * `additionalFunnelSockets` wiring derives its intent HERE.
+ */
+export function teamFunnelIntentFor(
+  operation: 'retire' | 'reconcile' | 'disable' | 'shutdown',
+): TeamFunnelContainmentIntent {
+  // Only a shutdown is "stop serving what is currently published". Boot
+  // reconcile, an explicit disable, and a retire are all "remove exposure that
+  // should not exist" — an enabled host's Funnel is intended in each.
+  return operation === 'shutdown' ? 'quiesce' : 'retire';
+}
+
+/**
+ * The team Funnel targets containment must drive off for THIS `MYCO_HOME`, or
  * NOTHING.
  *
  * The empty return is the important case. A non-empty result makes
  * `requiresContainment` true, and that is what reaches the operator's vendor
- * `tailscale` CLI; a machine that has never hosted must never spawn it.
+ * `tailscale` CLI; a daemon that has never hosted must never spawn it.
  *
- * `retire` deliberately returns empty for a machine that IS hosting: that
- * exposure is intended. The residue it does catch is the crashed-disable shape
- * — hosting off, host state still on disk — which is otherwise invisible,
- * because a socket nobody binds still has a live URL in front of it.
+ * SCOPING IS THE SUBTLE PART. The socket path is derived from `MYCO_HOME`, so
+ * the evidence has to be too, or the two describe different machines. Host
+ * state (`~/.myco-team`) is deliberately machine-GLOBAL and shared by every
+ * daemon on the box — reading it here made a second daemon (the two-MYCO_HOME
+ * dogfood setup) conclude it had hosted because the FIRST one had, then hand
+ * back its own unrelated socket path: the vendor CLI spawned on a daemon that
+ * never hosted, and the residue it was looking for went unfound. Both signals
+ * therefore come from the mycoHome-scoped machine config: `enabled` for what is
+ * published now, `last_served_grove_id` (written by disable) for what this home
+ * published before.
  */
 export function teamFunnelContainmentSockets(deps: {
   mycoHome: string;
   intent: TeamFunnelContainmentIntent;
   hostServeEnabled?: () => boolean;
-  hostStatePresent?: () => boolean;
+  /** Did THIS `MYCO_HOME` ever host? See the scoping note above. */
+  hostedBefore?: () => boolean;
   resolveSocketPath?: (mycoHome: string) => string;
 }): string[] {
-  const hostServeEnabled = deps.hostServeEnabled
-    ?? (() => {
-      try {
-        return loadMachineConfig(deps.mycoHome).daemon.host_serve.enabled === true;
-      } catch {
-        // Unreadable config is not evidence of absence — a machine mid-edit may
-        // still be publishing. Fall through to the state-file check.
-        return false;
-      }
-    });
-  const hostStatePresent = deps.hostStatePresent ?? (() => readHostState() !== null);
-  const enabled = hostServeEnabled();
-  const hosted = enabled || hostStatePresent();
-  if (!hosted) return [];
-  if (deps.intent === 'retire' && enabled) return [];
+  const readHostServe = (): { enabled: boolean; hostedBefore: boolean } => {
+    try {
+      const hostServe = loadMachineConfig(deps.mycoHome).daemon.host_serve;
+      return {
+        enabled: hostServe.enabled === true,
+        hostedBefore: typeof hostServe.last_served_grove_id === 'string'
+          && hostServe.last_served_grove_id.length > 0,
+      };
+    } catch {
+      // Unreadable config is not evidence of absence — but it is also not
+      // evidence of exposure, and guessing "hosted" here would reach the
+      // vendor CLI on a machine mid-edit. Fail toward doing nothing.
+      return { enabled: false, hostedBefore: false };
+    }
+  };
+  const config = readHostServe();
+  const enabled = deps.hostServeEnabled?.() ?? config.enabled;
+  const hostedBefore = deps.hostedBefore?.() ?? config.hostedBefore;
+
+  if (deps.intent === 'quiesce') {
+    // Stopping: withdraw whatever this home is currently publishing.
+    if (!enabled) return [];
+  } else {
+    // Boot: retire exposure that should NOT exist. An enabled host's Funnel is
+    // intended and is verified after the listener binds; what this catches is
+    // the crashed-disable shape, where hosting is off but this home hosted
+    // before and may still have a live handler.
+    if (enabled || !hostedBefore) return [];
+  }
   return [(deps.resolveSocketPath ?? resolveTeamSocketPath)(deps.mycoHome)];
 }
 

@@ -863,6 +863,35 @@ describe('never-materialize + attach-registry enumeration (real fs)', () => {
     expect(listGroves(tmpHome)).toHaveLength(0);
   });
 
+  test('a host with no usable address yields NO targets, and its buffered events are KEPT', async () => {
+    // Data preservation is the contract being pinned. A record without an
+    // address cannot be dialed, so it contributes no targets — but the buffer
+    // must survive untouched, because a re-join makes those events deliverable
+    // again. Dropping them (or forwarding them somewhere) would be the failure.
+    writeBuffer();
+    writeHostRecordFixture({
+      host_id: HOST_A, label: 'H', protocol_version: HOST_PROTOCOL_VERSION,
+      created_at: new Date().toISOString(), projects: [{ grove_id: GROVE_A, project_id: PROJ_A, root: '/member/checkout' }],
+    });
+    writeHostSecret(HOST_A, HOST_BEARER_SECRET, 'bearer-x');
+
+    expect(listAttachedReplayTargets()).toHaveLength(0);
+
+    const sink = recordingSink();
+    const q = createEventReplayDrainQueue({
+      machineId: MACHINE,
+      transport: sink.transport,
+      lockNamespace: testPerUserLockNamespace,
+    });
+    await q.drainAll();
+
+    expect(sink.calls).toHaveLength(0);
+    // The buffered events are still on disk, still unacked — recoverable.
+    const dir = resolveProjectBufferDir(GROVE_A, PROJ_A);
+    expect(fs.existsSync(path.join(dir, 'sess-1.jsonl'))).toBe(true);
+    expect(createFsReplayStore().get(HOST_A, 'sess-1')?.acked_count ?? 0).toBe(0);
+  });
+
   test('the real enumeration reads the attach registry — a buffered project NOT attached is never drained (local path untouched, no double-forward)', async () => {
     writeBuffer(); // buffer on disk...
     // ...but NO host/attach registered. The registry-driven enumeration yields nothing.
