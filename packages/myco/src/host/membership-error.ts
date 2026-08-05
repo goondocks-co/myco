@@ -34,6 +34,10 @@ export type MembershipErrorCode =
    *  host response body is NEVER carried onto the message (it can echo host
    *  internals), only the numeric status. */
   | 'host_enroll_rejected'
+  /** This machine already holds a live token on that host. A decided refusal,
+   *  not a transport failure: the way back in is for the operator to revoke
+   *  the existing access first, so retrying re-asks a settled question. */
+  | 'machine_already_enrolled'
   /** Enrollment failed for any other non-success reason: a non-2xx status
    *  other than the 409 protocol-mismatch and the 401/403 auth-rejection
    *  above, or a 200 whose body was unreadable/incomplete. Surfaced by the

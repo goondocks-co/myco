@@ -65,6 +65,7 @@ import type { RouteRequest } from '@myco/daemon/router';
 import { ExternalMcpContainmentBusyError } from '@myco/daemon/external-mcp-containment';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 import { seedExternalMcpConfig } from '../../helpers/external-mcp-config-fixture.js';
+import { issueTestMemberToken } from '../../helpers/member-token.js';
 
 let teamSock: string;
 
@@ -125,6 +126,9 @@ function withHermeticHomes(): { home: () => string; tmp: () => string } {
     fs.mkdirSync(home, { recursive: true });
     process.env.MYCO_HOME = home;
     process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    memberToken = issueTestMemberToken();
     clearGroveRegistryCaches();
   });
 
@@ -143,6 +147,8 @@ function withHermeticHomes(): { home: () => string; tmp: () => string } {
 // ---------------------------------------------------------------------------
 // (a) member-side classify routes team-write to the host for attached context
 // ---------------------------------------------------------------------------
+
+let memberToken: string;
 
 describe('(a) classifyRoute: team-write routes to the host for an attached project', () => {
   const { tmp } = withHermeticHomes();
@@ -248,6 +254,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
     fs.mkdirSync(home, { recursive: true });
     process.env.MYCO_HOME = home;
     process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
+    memberToken = issueTestMemberToken();
     clearGroveRegistryCaches();
     servers = [];
 
@@ -307,7 +314,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
 
   function overlayHeaders(extra: Record<string, string> = {}): Record<string, string> {
     return {
-      authorization: `Bearer ${HOST_BEARER}`,
+      authorization: `Bearer ${memberToken}`,
       [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
       ...extra,
     };

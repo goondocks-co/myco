@@ -23,6 +23,7 @@ import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
+import { issueTestMemberToken } from '../helpers/member-token.js';
 import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 
 const CLI_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -56,6 +57,8 @@ function mockDaemonClient(digestHeaders: http.IncomingHttpHeaders[] = []): Daemo
     delete: (async () => ({ ok: true, data: {} })) as DaemonClient['delete'],
   } as unknown as DaemonClient;
 }
+
+let memberToken: string;
 
 describe('myco tool CLI', () => {
   // Mkdtemp root, removed in afterEach.
@@ -449,6 +452,9 @@ describe('myco tool CLI — attached (Team Host) project', () => {
     savedTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = teamHome;
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    memberToken = issueTestMemberToken();
 
     // An attached project's local manifest carries ONLY a project id — never
     // a local Grove binding (the never-materialize invariant; the real
@@ -472,7 +478,7 @@ describe('myco tool CLI — attached (Team Host) project', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: GROVE_ID, project_id: PROJECT_ID, root: projectRoot }],
     });
-    writeHostSecret(HOST_ID, HOST_BEARER_SECRET, HOST_BEARER);
+    writeHostSecret(HOST_ID, HOST_BEARER_SECRET, memberToken);
 
     // The LOCAL daemon: the real `/mcp` handler. For an attached project
     // every request short-circuits to the host BEFORE `client` is ever

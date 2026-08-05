@@ -59,6 +59,10 @@ const KNOWN_RAW_ROUTES: ReadonlySet<string> = new Set<string>([
           // this host owns" (see daemon/server.ts's router chokepoint for
           // the mirror check)
   '/api/host/enroll', // bearer-EXEMPT enrollment; team-listener-only (constant-registered)
+  '/api/host/resign', // member surrenders its OWN access; team-listener-only,
+                      // and NOT bearer-exempt — it sits behind the per-member
+                      // token gate and revokes the id that gate resolved, so
+                      // the credential presented IS the authorization
 ]);
 
 // ---------------------------------------------------------------------------
@@ -294,11 +298,15 @@ describe('route-stamp completeness gate', () => {
     // keep a stale entry indefinitely. Assert the full set both ways, mirroring
     // the SERVE_DEFAULT_ROUTES staleness check above.
     //
-    // '/api/host/enroll' is registered via the HOST_ENROLL_ROUTE constant, so
-    // REGISTER_RAW_LITERAL_RE never captures it (see the scanner note above) —
-    // exclude it from the literal-set comparison; the call-site COUNT check
-    // above still accounts for it.
-    const CONSTANT_REGISTERED_RAW_ROUTES: ReadonlySet<string> = new Set(['/api/host/enroll']);
+    // '/api/host/enroll' and '/api/host/resign' are registered via the
+    // HOST_ENROLL_ROUTE / HOST_RESIGN_ROUTE constants, so
+    // REGISTER_RAW_LITERAL_RE never captures them (see the scanner note above) —
+    // exclude them from the literal-set comparison; the call-site COUNT check
+    // above still accounts for them.
+    const CONSTANT_REGISTERED_RAW_ROUTES: ReadonlySet<string> = new Set([
+      '/api/host/enroll',
+      '/api/host/resign',
+    ]);
     const expectedLiterals = new Set([...KNOWN_RAW_ROUTES].filter((p) => !CONSTANT_REGISTERED_RAW_ROUTES.has(p)));
     const actualLiterals = new Set(scan.rawLiteralPaths);
 
@@ -440,9 +448,20 @@ describe('team listener raw-route admission', () => {
       '/api/version': true, // version probe
       '/mcp': true, // hosted MCP; narrowed downstream by servedGroveRefusal
       '/api/shutdown': false, // operator control plane; a member must never drain its host
-      '/api/host/enroll': false, // bearer-EXEMPT and returns the shared bearer —
-                                 // admit only alongside the join-key gate that replaces
-                                 // overlay membership as its admission story
+      // ADMITTED, and the condition is recorded because it is the whole reason
+      // this entry may be true: the route is exempt from the per-member token
+      // gate, so it is safe on a public surface ONLY while it validates a
+      // daemon-minted single-use join key in the request (`consumeJoinKey`).
+      // Weaken or remove that check and this must go back to false in the same
+      // change — it returns a credential to whoever asks.
+      '/api/host/enroll': true,
+      // ADMITTED, and safe for the opposite reason to enrollment above: this
+      // one is NOT bearer-exempt. It is reached only after the per-member token
+      // gate and acts solely on the member id that gate resolved, so a caller
+      // can only ever surrender the access it already holds. If it is ever made
+      // exempt, or ever accepts a member id from the request, it becomes a way
+      // to revoke someone else and must go back to false in the same change.
+      '/api/host/resign': true,
     };
 
     expect(

@@ -63,6 +63,8 @@ import os from 'node:os';
 import { loadMachineConfig } from '@myco/config/loader.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { hostDisable, hostEnable, type HostEnableDeps } from '@myco/team-host/overlay.js';
+import { DEFAULT_JOIN_KEY_TTL_MS, listJoinKeys, mintJoinKey, revokeJoinKey } from '@myco/team-host/join-keys.js';
+import { listMembers, revokeMember } from '@myco/team-host/member-tokens.js';
 import { readHostState } from '@myco/team-host/state.js';
 import { writeTeamAgentKey } from '@myco/team-host/team-secret.js';
 import { resolveTeamKeyProviderFlag } from '@myco/team-host/compose.js';
@@ -320,6 +322,27 @@ export function createHostAdminDisableHandler(deps: HostAdminRouteDeps): RouteHa
   };
 }
 
+/** Shortest key an operator can mint. Below this the key expires before it can
+ *  be read out of the UI and handed over — `'0m'` mints one that is already
+ *  dead. */
+const MIN_JOIN_KEY_TTL_MS = 60_000;
+/** Longest. A join key is a bearer credential that mints another credential;
+ *  `'3650d'` is a standing invitation, not an expiring one. */
+const MAX_JOIN_KEY_TTL_MS = 7 * 86_400_000;
+
+/** Parse the operator's `expiration` (`'30m'`, `'2h'`, `'1d'`) into ms,
+ *  CLAMPED to a usable window. Falls back to the module default rather than
+ *  throwing — an unparseable value should mint a short-lived key, not fail the
+ *  invite. */
+function parseExpirationMs(expiration: string): number {
+  const match = expiration.match(/^(\d+)\s*([mhd])$/i);
+  if (!match) return DEFAULT_JOIN_KEY_TTL_MS;
+  const value = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const scale = unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
+  return Math.min(Math.max(value * scale, MIN_JOIN_KEY_TTL_MS), MAX_JOIN_KEY_TTL_MS);
+}
+
 export function createHostAdminMintJoinKeyHandler(deps: HostAdminRouteDeps): RouteHandler {
   return async (req): Promise<RouteResponse> => {
     // Minting is unprivileged at EVERY scope post-re-scope (the admin socket
@@ -334,16 +357,76 @@ export function createHostAdminMintJoinKeyHandler(deps: HostAdminRouteDeps): Rou
     if (!state || !hostServe.enabled) {
       return refusal(409, 'not_a_host', 'This machine is not serving as a Team Host — enable hosting first.');
     }
-    // Join-key minting is unavailable on this build. The key used to be a
-    // headscale pre-auth key consumed by the member's `tailscale up` — the
-    // daemon never saw it, and overlay membership, not the key, was the real
-    // admission gate. The daemon-issued single-use key that replaces it lands
-    // with the rebuilt enrollment route, so there is nothing to mint here yet.
-    return refusal(
-      503,
-      'join_unavailable',
-      'Inviting a member is unavailable on this build: team enrollment is being rebuilt on the public host URL.',
-    );
+    // The key is DAEMON-minted now: single-use, expiring, hashed at rest, and
+    // validated by this daemon at enrollment. The old one was a headscale
+    // pre-auth key the daemon never saw, where tailnet membership — not the
+    // key — was the real admission gate.
+    const hostUrl = readHostState()?.host_url;
+    if (!hostUrl) {
+      // A key is useless without an address to spend it at, and handing over a
+      // half-invitation is worse than refusing: the member cannot tell which
+      // half is missing.
+      return refusal(
+        409,
+        'host_not_published',
+        'This host has no public address yet — it must finish publishing before you can invite a member.',
+      );
+    }
+    const minted = mintJoinKey({ ttlMs: parseExpirationMs(expiration) });
+    return {
+      status: 200,
+      body: {
+        // The raw key crosses the wire exactly once, here. It is not stored and
+        // cannot be recovered — a lost key is replaced, never re-read.
+        key: minted.key,
+        expires: minted.expires_at,
+        join_command: `myco join ${state.host_id} --host-url ${hostUrl} --key ${minted.key}`,
+      },
+    };
+  };
+}
+
+/**
+ * `GET /api/host-admin/members` — who can reach this host, and which invitations
+ * are outstanding.
+ *
+ * Minting used to create user-reachable state with no list, no revoke, and no
+ * expiry view: an operator could hand out keys and had no way to see what they
+ * had issued or take it back. Neither shape here ever exposes a hash, let alone
+ * a raw key or token.
+ */
+export function createHostAdminMembersHandler(deps: HostAdminRouteDeps): RouteHandler {
+  return async (): Promise<RouteResponse> => {
+    const refused = refuseHostAdmin(deps, { forMutation: false });
+    if (refused) return refused;
+    return { status: 200, body: { members: listMembers(), join_keys: listJoinKeys() } };
+  };
+}
+
+/**
+ * `POST /api/host-admin/revoke` `{member_id}` or `{join_key_id}` — remove one
+ * member's access, or withdraw an unspent invitation.
+ *
+ * Effective on the revoked member's NEXT request: the token store is re-read
+ * per request, so there is no cache to invalidate and no restart to wait for.
+ */
+export function createHostAdminRevokeHandler(deps: HostAdminRouteDeps): RouteHandler {
+  return async (req): Promise<RouteResponse> => {
+    const refused = refuseHostAdmin(deps, { forMutation: true });
+    if (refused) return refused;
+    const body = (req.body ?? {}) as { member_id?: unknown; join_key_id?: unknown };
+    const memberId = typeof body.member_id === 'string' ? body.member_id.trim() : '';
+    const joinKeyId = typeof body.join_key_id === 'string' ? body.join_key_id.trim() : '';
+    if (!memberId && !joinKeyId) {
+      return refusal(400, 'invalid_request', 'Pass member_id or join_key_id.');
+    }
+    if (memberId && !revokeMember(memberId)) {
+      return refusal(404, 'unknown_member', `No member ${memberId} on this host.`);
+    }
+    if (joinKeyId && !revokeJoinKey(joinKeyId)) {
+      return refusal(404, 'unknown_join_key', `No join key ${joinKeyId} on this host.`);
+    }
+    return { status: 200, body: { revoked: true } };
   };
 }
 
@@ -355,4 +438,6 @@ export function registerHostAdminRoutes(
   server.registerRoute('POST', '/api/host-admin/enable', createHostAdminEnableHandler(deps));
   server.registerRoute('POST', '/api/host-admin/disable', createHostAdminDisableHandler(deps));
   server.registerRoute('POST', '/api/host-admin/mint-join-key', createHostAdminMintJoinKeyHandler(deps));
+  server.registerRoute('GET', '/api/host-admin/members', createHostAdminMembersHandler(deps));
+  server.registerRoute('POST', '/api/host-admin/revoke', createHostAdminRevokeHandler(deps));
 }

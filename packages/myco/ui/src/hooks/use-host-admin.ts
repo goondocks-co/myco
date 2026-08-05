@@ -59,7 +59,53 @@ export interface ProgressEntryResponse {
 export interface MintJoinKeyResponse {
   join_command: string;
   key: string;
+  /** ISO timestamp. The key stops working on its own after this. */
   expires: string;
+}
+
+export interface HostMemberEntry {
+  id: string;
+  machine_id: string;
+  label?: string;
+  issued_at: string;
+  last_seen_at?: string;
+  revoked: boolean;
+}
+
+export interface HostJoinKeyEntry {
+  id: string;
+  created_at: string;
+  expires_at: string;
+  state: 'active' | 'used' | 'expired' | 'revoked';
+  used_by?: string;
+}
+
+export interface HostMembersResponse {
+  members: HostMemberEntry[];
+  join_keys: HostJoinKeyEntry[];
+}
+
+/** Who can reach this host, and which invitations are outstanding. Minting used
+ *  to create user-reachable state with no list, no revoke and no expiry view. */
+export function useHostMembers(enabled: boolean) {
+  return useQuery({
+    queryKey: HOST_MEMBERS_KEY,
+    queryFn: ({ signal }) => fetchJson<HostMembersResponse>('/host-admin/members', { signal }),
+    enabled,
+  });
+}
+
+export const HOST_MEMBERS_KEY = ['host-admin-members'] as const;
+
+/** Revoke a member's access, or withdraw an unspent invitation. Effective on
+ *  the member's NEXT request — no restart. */
+export function useRevokeHostAccess() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { member_id?: string; join_key_id?: string }) =>
+      postJson<{ revoked: boolean }>('/host-admin/revoke', body),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: HOST_MEMBERS_KEY }); },
+  });
 }
 
 export function useHostAdminEnable() {

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
-import { resolveTeamSocketPath } from '../grove/paths.js';
+import { isSafeCaptureSegment, resolveTeamSocketPath } from '../grove/paths.js';
 import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile, resolveEmbeddedAsset } from './static.js';
@@ -27,6 +27,17 @@ import {
   type MycoRequestContext,
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
+import { createAuthThrottle, delay } from '../team-host/auth-throttle.js';
+import { consumeJoinKey } from '../team-host/join-keys.js';
+import {
+  issueMemberToken,
+  MAX_MACHINE_ID_LENGTH,
+  hasLiveMember,
+  MemberAlreadyEnrolledError,
+  noteMemberSeen,
+  resignMember,
+  type IssuedMemberToken,
+} from '../team-host/member-tokens.js';
 import { classifyRoute, classifyRouteStamp, overlayHostStampRefusal, refusalJson, resolveHostCarrierTarget, type RefusalPayload } from '../host/routing.js';
 import {
   nativePerUserLockNamespace,
@@ -44,7 +55,8 @@ import {
   isTeamRequest,
   markTeamRequest,
   overlayBearerExempt,
-  overlayBearerRejection,
+  teamAuthOutcome,
+  teamMachineIdRejection,
   teamRawRouteAdmitted,
   overlayVersionRejection,
   servedGroveRefusal,
@@ -54,6 +66,7 @@ import { appendHostAction } from '../host/action-log.js';
 import {
   EXTERNAL_MCP_ACTIVATION_POSTURE,
   HOST_ENROLL_ROUTE,
+  HOST_RESIGN_ROUTE,
   REFUSAL_LOG_THROTTLE_INTERVAL_MS,
 } from '../constants.js';
 import { shouldLogOncePerInterval } from './log-throttle.js';
@@ -251,6 +264,10 @@ export class DaemonServer {
   private teamServer: http.Server | null = null;
   /** The bound team socket path, or null while unbound. */
   teamSocketPath: string | null = null;
+  /** Failed-auth backoff for the team listener. Per-process, global over
+   *  failures — the listener answers a unix socket, so there is no per-source
+   *  dimension to key on (see `team-host/auth-throttle.ts`). */
+  private readonly teamAuthThrottle = createAuthThrottle();
   private readonly teamSocketPathOverride: string | null;
   /**
    * The IPv6-loopback companion listener — the SAME surface as the primary
@@ -744,15 +761,48 @@ export class DaemonServer {
       return;
     }
 
-    // (2) Blanket bearer — EXCEPT the ONE enrollment route. A member obtains the
-    // bearer THERE, so gating enrollment behind the bearer is a chicken-and-egg
-    // deadlock. The exemption is surgical (matches only that exact path).
+    // (2) Blanket PER-MEMBER token — EXCEPT the ONE enrollment route. A member
+    // obtains its token THERE, so gating enrollment behind a token is a
+    // chicken-and-egg deadlock; enrollment carries its own gate (a
+    // daemon-minted single-use join key) instead. The exemption is surgical
+    // (matches only that exact path).
+    //
+    // A failed attempt is DELAYED before it is answered. Entropy alone was the
+    // whole defence while this listener sat behind a tailnet; on a public URL
+    // an unbounded stream of failures is work the host performs for a caller
+    // who has proven nothing. Success clears the streak, so a working team
+    // never waits.
+    let member: { id: string; machineId: string } | null = null;
     if (!overlayBearerExempt(pathname)) {
-      const bearerRejection = overlayBearerRejection(req, hostServe.bearer);
-      if (bearerRejection) {
-        this.writeTeamRefusal(res, bearerRejection.status, bearerRejection.body, versionHeader, bearerRejection.headers);
+      const auth = teamAuthOutcome(req);
+      if (auth.refusal) {
+        await delay(this.teamAuthThrottle.noteFailure());
+        this.writeTeamRefusal(res, auth.refusal.status, auth.refusal.body, versionHeader, auth.refusal.headers);
         return;
       }
+      this.teamAuthThrottle.noteSuccess();
+      member = auth.member;
+      // Liveness for the operator's member list. Coalesced internally, so this
+      // is a read on all but the first request in each window.
+      noteMemberSeen(member!.id);
+
+      // (2b) Identity is the TOKEN's, not the caller's header.
+      // Present-and-different → refused, never silently overwritten (see
+      // `teamMachineIdRejection`).
+      const identityRejection = teamMachineIdRejection(req, member!);
+      if (identityRejection) {
+        this.writeTeamRefusal(res, identityRejection.status, identityRejection.body, versionHeader, identityRejection.headers);
+        return;
+      }
+
+      // Absent or blank → STAMPED from the token. Without this the header is
+      // simply missing downstream, where `resolveRequestContext` falls back to
+      // the HOST's own machine id — so omitting the header attributes a
+      // member's rows to the host, achieving by default exactly the
+      // misattribution the 409 above refuses when it is claimed outright.
+      // Unconditional: a matching header makes this a no-op, and the only other
+      // case reaching here is absent/blank.
+      req.headers[REQUEST_CONTEXT_HEADERS.machineId] = member!.machineId;
     }
 
     // (3) RAW-ROUTE ADMISSION — fail closed. Raw routes bypass the router and
@@ -901,21 +951,65 @@ export class DaemonServer {
       });
     });
 
-    // Team Host enrollment (Task 2.4) — the ONE overlay route exempt from the
-    // blanket bearer gate (a member obtains the bearer HERE; see the surgical
-    // exemption in handleTeamRequest + HOST_ENROLL_ROUTE). A raw route because
-    // enrollment needs no Grove/DB/tenancy — it returns machine-scoped host facts.
-    this.registerRawRoute(HOST_ENROLL_ROUTE, async (req, res) => {
-      // TEAM-LISTENER-ONLY, and currently unreachable by design: the route is
-      // not in the team raw-route allowlist (`teamRawRouteAdmitted`), because it
-      // is bearer-exempt and returns the shared serve bearer. Its admission gate
-      // used to be overlay membership; there is no replacement until the
-      // daemon-validated join key lands, and it is re-admitted in that same
-      // change. The bound on this route is filesystem permission on the socket
-      // directory — reason from that, not from locality.
+    // A member SURRENDERING its own access. The counterpart to enrollment, and
+    // the reason `myco leave` is not a member-side-only write: without it the
+    // host keeps a live record for a machine that has left, and that machine's
+    // next join is refused as already-enrolled with no self-service way out.
+    //
+    // Unlike enrollment this route is NOT bearer-exempt — it is reached only
+    // after the per-member token gate, and it revokes the id that gate
+    // resolved. A caller can therefore only ever surrender the credential it
+    // already holds, which is why this needs no further authorization. It reads
+    // NOTHING from the request body; a body naming another member is ignored.
+    this.registerRawRoute(HOST_RESIGN_ROUTE, async (req, res) => {
       if (!isTeamRequest(req)) {
         res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
-        res.end(JSON.stringify({ error: 'not_found', message: 'Host enrollment is served over the overlay only.' }));
+        res.end(JSON.stringify({ error: 'not_found', message: 'This route is served to team members only.' }));
+        return;
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'method_not_allowed' }));
+        return;
+      }
+      // Re-resolved rather than threaded through: the gate has already refused
+      // anything without a live token, so this cannot widen admission — it only
+      // recovers WHICH member the gate admitted.
+      const auth = teamAuthOutcome(req);
+      if (auth.refusal || !auth.member) {
+        this.writeTeamRefusal(res, auth.refusal?.status ?? 401, auth.refusal?.body ?? { error: 'unauthorized' }, versionHeader);
+        return;
+      }
+      resignMember(auth.member.id);
+      // An operator reading the roster needs to see a member LEFT, not just
+      // that a row went quiet. Best-effort, like every other action append.
+      try {
+        appendHostAction({
+          action: 'resign',
+          subject: req.socket.remoteAddress ?? undefined,
+          detail: { machine_id: auth.member.machineId },
+        });
+      } catch { /* the trail is not the operation */ }
+      res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
+      res.end(JSON.stringify({ ok: true }));
+    });
+
+    // Team Host enrollment — the ONE team route exempt from the per-member
+    // token gate, because a member obtains its token HERE. The exemption is
+    // surgical, and it is only safe because the route carries its OWN gate: a
+    // daemon-minted single-use join key, in the request, that this daemon
+    // validates. That is a genuinely new gate rather than a port — the
+    // overlay-era key was a headscale pre-auth key consumed by the member's
+    // `tailscale up`, which this daemon never saw, and the real admission
+    // boundary was tailnet membership. With no tailnet, publishing this route
+    // without the key check would hand a credential to anyone who asked.
+    this.registerRawRoute(HOST_ENROLL_ROUTE, async (req, res) => {
+      // TEAM-LISTENER-ONLY. The localhost surface has no business enrolling
+      // anyone, and answering there would make the operator's own dashboard an
+      // enrollment endpoint.
+      if (!isTeamRequest(req)) {
+        res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'not_found', message: 'Host enrollment is served to team members only.' }));
         return;
       }
       if (req.method !== 'POST') {
@@ -925,20 +1019,103 @@ export class DaemonServer {
       }
       const hostServe = this.hostServe;
       if (!hostServe) {
-        // Unreachable when serving (the overlay listener only runs with hostServe
+        // Unreachable when serving (the team listener only runs with hostServe
         // set), but fail closed rather than 500.
         res.writeHead(503, { 'Content-Type': 'application/json', ...versionHeader });
         res.end(JSON.stringify({ error: 'host_serve_unavailable' }));
         return;
       }
-      // Best-effort: the member POSTs `{member_hostname, member_overlay_ip}` for the
-      // action log. A parse failure never blocks enrollment (the bearer is the
-      // point, not the log line).
-      let memberInfo: Record<string, unknown> = {};
-      try { memberInfo = (await readBody(req)) as Record<string, unknown>; } catch { /* log without it */ }
 
-      const payload = buildHostEnrollmentPayload(hostServe);
-      const enrollmentNonce = memberInfo.enrollment_nonce;
+      // `JSON.parse` yields `null` for the body `null`, and a bare `null`
+      // survives the cast — so normalise to `{}` rather than letting the field
+      // reads below throw. An uncaught throw here escapes as a 500, which both
+      // distinguishes this shape from every other malformed one (the route
+      // stops being uniform) and skips the throttle entirely, leaving a free
+      // un-metered probe.
+      let parsed: unknown;
+      try { parsed = await readBody(req); } catch { /* refused below */ }
+      const body: Record<string, unknown> = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
+
+      const presentedKey = typeof body.key === 'string' ? body.key.trim() : '';
+      const machineId = typeof body.machine_id === 'string' ? body.machine_id.trim() : '';
+      // Validated with the SAME rule the path resolvers enforce downstream
+      // (`isSafeCaptureSegment`), at the boundary where it is first believed
+      // rather than at the point it would escape a directory. A `machine_id` is
+      // `{user}_{hash}`; anything with separators, `..`, control characters, or
+      // unbounded length is not one, and storing it verbatim would put it in the
+      // operator's roster and the action log.
+      const machineIdUsable = isSafeCaptureSegment(machineId) && machineId.length <= MAX_MACHINE_ID_LENGTH;
+      if (!presentedKey || !machineIdUsable) {
+        // Same 401 shape as a bad key: a caller must not learn from the
+        // response whether it got the FORM right, only whether it got in.
+        await delay(this.teamAuthThrottle.noteFailure());
+        res.writeHead(401, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'enrollment_unauthorized', message: 'Enrollment requires a valid one-time join key.' }));
+        return;
+      }
+
+      // Validated AND consumed in one operation — see `consumeJoinKey`. The
+      // specific rejection reason is deliberately not echoed: valid-but-expired
+      // and never-existed answer identically, so the route is not an oracle for
+      // which keys were ever real.
+      //
+      // The already-enrolled check rides in as a PRECONDITION rather than
+      // running ahead of this call. Ahead of it, it would answer callers who
+      // hold no key at all — an unauthenticated probe for whether a given
+      // machine has access to this host, on a URL anyone can reach. Inside, the
+      // key must be proven good first, and a precondition failure leaves it
+      // unspent, so a legitimate re-join still does not cost an invite.
+      const check = consumeJoinKey(presentedKey, {
+        machineId,
+        precondition: () => !hasLiveMember(machineId),
+      });
+      if (!check.ok) {
+        // Metered like every other refusal on this route: the precondition
+        // answer is cheap to ask repeatedly once a caller holds one valid key,
+        // and metering bounds enumeration to the same crawl as guessing.
+        await delay(this.teamAuthThrottle.noteFailure());
+        this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host enrollment refused', { reason: check.reason });
+        if (check.reason === 'precondition') {
+          res.writeHead(409, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify({
+            error: 'machine_already_enrolled',
+            message: 'That machine already has access to this host. Revoke its current access first, then join again.',
+          }));
+          return;
+        }
+        res.writeHead(401, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'enrollment_unauthorized', message: 'Enrollment requires a valid one-time join key.' }));
+        return;
+      }
+      this.teamAuthThrottle.noteSuccess();
+
+      // The key is spent; issue this member's own token, bound to the
+      // machine_id it just asserted. That binding is the trust-on-first-use
+      // anchor every later request is checked against.
+      let issued: IssuedMemberToken;
+      try {
+        issued = issueMemberToken(machineId, {
+          label: typeof body.member_hostname === 'string' ? body.member_hostname : undefined,
+        });
+      } catch (error) {
+        if (!(error instanceof MemberAlreadyEnrolledError)) throw error;
+        // A DISTINCT status from the 401s above, deliberately: this caller
+        // presented a genuinely valid key, so the uniform-refusal reasoning
+        // (do not reveal whether a key was ever real) does not apply, and
+        // telling the operator "revoke it first" is the whole point.
+        this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host enrollment refused', { reason: 'machine_already_enrolled' });
+        res.writeHead(409, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({
+          error: 'machine_already_enrolled',
+          message: 'That machine already has access to this host. Revoke its current access first, then join again.',
+        }));
+        return;
+      }
+
+      const payload = buildHostEnrollmentPayload(hostServe, issued.token);
+      const enrollmentNonce = body.enrollment_nonce;
       const responsePayload = typeof enrollmentNonce === 'string'
         && /^[a-f0-9]{32,}$/.test(enrollmentNonce)
         ? {
@@ -952,6 +1129,8 @@ export class DaemonServer {
         : payload;
       res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
       res.end(JSON.stringify(responsePayload));
+
+      const memberInfo: Record<string, unknown> = { ...body, key: undefined };
 
       // Record the join for the operator's diagnosable safety net (spec §9). The
       // subject is the member's overlay IP off the CONNECTION (unspoofable), with the

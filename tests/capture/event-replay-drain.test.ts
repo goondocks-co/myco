@@ -46,6 +46,7 @@ import type { RemoteTarget } from '@myco/host/routing';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
+import { issueTestMemberToken } from '../helpers/member-token.js';
 
 const MACHINE = 'alice_a1b2c3d4';
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -140,6 +141,8 @@ const stop = (over: Record<string, unknown> = {}) =>
 // ---------------------------------------------------------------------------
 // route-stamp helper
 // ---------------------------------------------------------------------------
+
+let memberToken: string;
 
 describe('collect-buffer-route stamp', () => {
   test('stamp records the route, read returns it, strip removes it and leaves the body intact', () => {
@@ -627,6 +630,9 @@ describe('noteSessionEnded prune (item 6 — prune only acked, buffer file inclu
     const savedTeam = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_HOME = tmpHome;
     process.env.MYCO_TEAM_HOME = tmpTeam;
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    memberToken = issueTestMemberToken();
     try {
       const realBufferDir = resolveProjectBufferDir(GROVE_A, PROJ_A);
       new EventBuffer(realBufferDir, 'sa').append(evt({ session_id: 'sa' }));
@@ -837,7 +843,7 @@ describe('never-materialize + attach-registry enumeration (real fs)', () => {
       host_id: HOST_A, label: 'H', host_url: 'https://host-a.tailnet.ts.net:8443', protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(), projects: [{ grove_id: GROVE_A, project_id: PROJ_A, root: '/member/checkout' }],
     });
-    writeHostSecret(HOST_A, HOST_BEARER_SECRET, 'bearer-x');
+    writeHostSecret(HOST_A, HOST_BEARER_SECRET, memberToken);
   }
 
   test('drains real buffered records via the registry, advances the real fs high-water, and materializes NO local Grove', async () => {
@@ -873,7 +879,7 @@ describe('never-materialize + attach-registry enumeration (real fs)', () => {
       host_id: HOST_A, label: 'H', protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(), projects: [{ grove_id: GROVE_A, project_id: PROJ_A, root: '/member/checkout' }],
     });
-    writeHostSecret(HOST_A, HOST_BEARER_SECRET, 'bearer-x');
+    writeHostSecret(HOST_A, HOST_BEARER_SECRET, memberToken);
 
     expect(listAttachedReplayTargets()).toHaveLength(0);
 

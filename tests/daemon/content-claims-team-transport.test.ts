@@ -33,15 +33,30 @@ import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove/ids.js';
 import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
-import { teamSocketPath } from '../helpers/team-socket.js';
+import { teamFetch, teamSocketPath } from '../helpers/team-socket.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { issueTestMemberToken } from '../helpers/member-token.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const HOST_BEARER = 'test-content-claims-host-bearer';
-const CLAIMING_MACHINE = 'attached-member-machine';
+// The member acts as ITSELF. A browser-shaped request carries no machine id,
+// so the member's proxy stamps its own — and the token is bound to that same
+// identity, exactly as production issues it. A literal here would make the
+// fixture a member impersonating another machine, which the binding now
+// (correctly) refuses; substituting one fails the browser-shaped case below.
+//
+// CONSEQUENCE, stated because it bounds what these assertions prove: host and
+// member share one process here, so this value is ALSO the host's own fallback
+// identity. `claimed_by === CLAIMING_MACHINE` therefore cannot distinguish "the
+// member's identity travelled the hop" from "the host defaulted to itself".
+// That distinction is gated where it belongs, on the gate path itself —
+// `tests/daemon/team-member-tokens.test.ts` asserts the RESOLVED context
+// identity is the token's and explicitly NOT `getMachineId()`.
+let CLAIMING_MACHINE: string;
+let grove: ReturnType<typeof createGrove>;
 
 // The team listener binds an AF_UNIX socket, which host serving requires; it
 // refuses to bind on Windows, so there is no transport to exercise there.
@@ -60,6 +75,8 @@ describeTeamTransport('content claims over the real member -> host transport', (
   let edge: FunnelEdge;
   let socketPath: string;
 
+let memberToken: string;
+
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cclaim-overlay-'));
     savedMycoHome = process.env.MYCO_HOME;
@@ -68,10 +85,14 @@ describeTeamTransport('content claims over the real member -> host transport', (
     fs.mkdirSync(mycoHome, { recursive: true });
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    CLAIMING_MACHINE = getMachineId();
+    memberToken = issueTestMemberToken(CLAIMING_MACHINE);
     clearGroveRegistryCaches();
 
     // --- the host's REAL Grove, project, and seeded skill record ---
-    const grove = createGrove('Work', mycoHome);
+    grove = createGrove('Work', mycoHome);
     ensureGroveDatabase(grove.id, mycoHome);
     const databasePath = resolveGroveDbPath(grove.id, mycoHome);
     initDatabase(databasePath);
@@ -128,7 +149,7 @@ describeTeamTransport('content claims over the real member -> host transport', (
       projects: [{ grove_id: grove.id, project_id: projectId }],
     };
     writeHostRecordFixture(host);
-    writeHostSecret(host.host_id, HOST_BEARER_SECRET, HOST_BEARER);
+    writeHostSecret(host.host_id, HOST_BEARER_SECRET, memberToken);
 
     // --- member daemon: loopback only, no local Grove DB for this project ---
     const memberLogger = new DaemonLogger(path.join(tmp, 'member-logs'));
@@ -138,7 +159,9 @@ describeTeamTransport('content claims over the real member -> host transport', (
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
     });
-    registerContentClaimRoutes(memberServer, { machineId: 'member-machine', logger: memberLogger });
+    // Registered under the SAME id the proxy stamps for a browser-shaped
+    // request, so the member has one identity end to end.
+    registerContentClaimRoutes(memberServer, { machineId: CLAIMING_MACHINE, logger: memberLogger });
     await memberServer.start(0);
     memberBase = `http://127.0.0.1:${memberServer.port}`;
     memberAuthToken = memberServer.getAuthToken();
@@ -274,9 +297,23 @@ describeTeamTransport('content claims over the real member -> host transport', (
     });
     expect(first.status).toBe(201);
 
-    const second = await fetch(`${memberBase}/api/content-claims`, {
+    // The contender is a SECOND MEMBER, with its own token and its own
+    // identity — not this member claiming to be another machine. That
+    // distinction is now enforced: a token is bound to the machine_id its
+    // member enrolled with, so one member cannot present another's identity,
+    // and a fixture that spoofed the header would be testing something the
+    // transport no longer permits.
+    const otherToken = issueTestMemberToken('a-different-machine');
+    const second = await teamFetch(socketPath, '/api/content-claims', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...memberHeaders({ 'x-myco-machine-id': 'a-different-machine' }) },
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${otherToken}`,
+        'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION),
+        'x-myco-grove-id': grove.id,
+        'x-myco-project-id': projectId,
+        'x-myco-machine-id': 'a-different-machine',
+      },
       body: JSON.stringify({ artifact_kind: 'skill', artifact_id: 'skill-1' }),
     });
     expect(second.status).toBe(409);
@@ -338,9 +375,18 @@ describeTeamTransport('content claims over the real member -> host transport', (
     expect(released.status).toBe(200);
     expect(((await released.json()) as { claim: { state: string } }).claim.state).toBe('released');
 
-    const reclaim = await fetch(`${memberBase}/api/content-claims`, {
+    // A DIFFERENT member picks it up — again as itself, with its own token.
+    const otherToken = issueTestMemberToken('a-different-machine');
+    const reclaim = await teamFetch(socketPath, '/api/content-claims', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...memberHeaders({ 'x-myco-machine-id': 'a-different-machine' }) },
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${otherToken}`,
+        'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION),
+        'x-myco-grove-id': grove.id,
+        'x-myco-project-id': projectId,
+        'x-myco-machine-id': 'a-different-machine',
+      },
       body: JSON.stringify({ artifact_kind: 'skill', artifact_id: 'skill-1' }),
     });
     expect(reclaim.status).toBe(201);

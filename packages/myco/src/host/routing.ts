@@ -551,6 +551,11 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   { method: 'POST', pattern: '/api/host-admin/enable', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/host-admin/disable', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/host-admin/mint-join-key', stamp: 'localhost-only', capability: HOST_ADMIN },
+  // Operator-only, like the rest of the family: listing members and revoking
+  // access are things the person AT the host does. A missing rule here would
+  // default to `serve` and publish the member roster to the team surface.
+  { method: 'GET', pattern: '/api/host-admin/members', stamp: 'localhost-only', capability: HOST_ADMIN },
+  { method: 'POST', pattern: '/api/host-admin/revoke', stamp: 'localhost-only', capability: HOST_ADMIN },
 
   { method: 'POST', pattern: '/api/host-membership/join', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'POST', pattern: '/api/host-membership/leave', stamp: 'localhost-only', capability: HOST_ADMIN },
