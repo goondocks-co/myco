@@ -10,6 +10,9 @@
  * then be sent.
  */
 import { describe, expect, test } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { createFunnelOnRunner, createFunnelOffRunner } from '@myco/daemon/external-listener.js';
 import {
@@ -23,6 +26,7 @@ import {
   detectTailscaleVariant,
   MACSYS_REMEDY,
   teamFunnelContainmentSockets,
+  teamFunnelIntentFor,
   teamHostingPreflight,
 } from '@myco/team-host/funnel.js';
 
@@ -97,6 +101,30 @@ describe('team Funnel activation', () => {
     // Dropping the port would hand members an address that reaches the
     // external-MCP surface (different token, different allowlist) or nothing.
     expect(result.hostUrl).toBe(`https://box.tailnet.ts.net:${TEAM_FUNNEL_PORT}`);
+  });
+
+  test('a pre-existing handler on a DIFFERENT port does not count as already-activated', async () => {
+    // The port is the member's recorded address, so a handler for this socket
+    // at the same mount on another port must not satisfy the idempotence check
+    // — skipping activation there would publish that other port to every
+    // member as `host_url`.
+    const ts = fakeTailscale({ socketPath: SOCKET, hostPort: 'box.tailnet.ts.net:10000' });
+    // Pre-activate on 10000, the way a hand-edited serve config would look.
+    await createFunnelOnRunner(ts.run)(
+      { kind: 'socket', path: SOCKET },
+      { mount: TEAM_FUNNEL_MOUNT, publicPort: 10000 },
+    );
+    ts.calls.length = 0;
+
+    // Now ask for the team port. It must ACTIVATE rather than short-circuit.
+    await createFunnelOnRunner(ts.run)(
+      { kind: 'socket', path: SOCKET },
+      { mount: TEAM_FUNNEL_MOUNT, publicPort: TEAM_FUNNEL_PORT },
+    );
+
+    const funnelCall = ts.calls.find((args) => args[0] === 'funnel' && args[1] === '--bg');
+    expect(funnelCall).toBeDefined();
+    expect(funnelCall).toContain(`--https=${TEAM_FUNNEL_PORT}`);
   });
 
   test('an off-runner removes a ROOT-mounted handler — the inverse speaks the same argv', async () => {
@@ -184,27 +212,63 @@ describe('the macsys preflight', () => {
   });
 });
 
+describe('containment intent by operation', () => {
+  test('ONLY a shutdown quiesces; every other operation retires', () => {
+    // The distinction a stopped host depends on. Boot reconcile must leave an
+    // enabled host's Funnel alone (it is re-verified once the listener binds),
+    // and shutdown must withdraw it so nothing answers while the daemon is
+    // down. One authority serves both, so this mapping is the only thing
+    // keeping them apart.
+    expect(teamFunnelIntentFor('shutdown')).toBe('quiesce');
+    expect(teamFunnelIntentFor('reconcile')).toBe('retire');
+    expect(teamFunnelIntentFor('retire')).toBe('retire');
+    expect(teamFunnelIntentFor('disable')).toBe('retire');
+  });
+
+  test('a SERVING host withdraws on shutdown and holds on boot, via the mapping', () => {
+    // End to end through the function the wiring sites call: the pairing of
+    // operation → intent → sockets is what shipped broken.
+    const serving = {
+      mycoHome: '/tmp/h',
+      hostServeEnabled: () => true,
+      hostedBefore: () => true,
+      resolveSocketPath: () => '/tmp/myco-team-x/team.sock',
+    };
+    expect(teamFunnelContainmentSockets({ ...serving, intent: teamFunnelIntentFor('shutdown') }))
+      .toEqual(['/tmp/myco-team-x/team.sock']);
+    expect(teamFunnelContainmentSockets({ ...serving, intent: teamFunnelIntentFor('reconcile') }))
+      .toEqual([]);
+  });
+});
+
 describe('team Funnel containment targets', () => {
   const socketFor = () => '/tmp/myco-team-x/team.sock';
 
   test('a machine that never hosted contributes NOTHING', () => {
     // Load-bearing: a non-empty result makes `requiresContainment` true, which
-    // is what reaches the operator's vendor `tailscale` CLI. A clean machine
-    // must never spawn it.
+    // is what reaches the operator's vendor `tailscale` CLI. A daemon that has
+    // never hosted must never spawn it.
     for (const intent of ['retire', 'quiesce'] as const) {
       expect(teamFunnelContainmentSockets({
         mycoHome: '/tmp/none',
         intent,
         hostServeEnabled: () => false,
-        hostStatePresent: () => false,
+        hostedBefore: () => false,
         resolveSocketPath: socketFor,
       })).toEqual([]);
     }
   });
 
   test('shutdown quiesces a SERVING host; boot leaves it alone', () => {
-    const serving = { mycoHome: '/tmp/h', hostServeEnabled: () => true, hostStatePresent: () => true, resolveSocketPath: socketFor };
-    // Down means nothing should answer the public URL.
+    const serving = {
+      mycoHome: '/tmp/h',
+      hostServeEnabled: () => true,
+      hostedBefore: () => true,
+      resolveSocketPath: socketFor,
+    };
+    // Down means nothing should answer the public URL. This is the case that
+    // shipped broken: the daemon's own shutdown asked with a boot-shaped intent
+    // and withdrew nothing.
     expect(teamFunnelContainmentSockets({ ...serving, intent: 'quiesce' })).toEqual([socketFor()]);
     // Boot must NOT drive off an exposure that is intended — activation
     // re-verifies it after the listener binds, and driving it off first would
@@ -212,14 +276,53 @@ describe('team Funnel containment targets', () => {
     expect(teamFunnelContainmentSockets({ ...serving, intent: 'retire' })).toEqual([]);
   });
 
-  test('boot retires a crashed disable — hosting off, host state still on disk', () => {
+  test('boot retires a crashed disable — hosting off, but THIS home hosted before', () => {
     expect(teamFunnelContainmentSockets({
       mycoHome: '/tmp/h',
       intent: 'retire',
       hostServeEnabled: () => false,
-      hostStatePresent: () => true,
+      hostedBefore: () => true,
       resolveSocketPath: socketFor,
     })).toEqual([socketFor()]);
+  });
+
+  test('a stopped daemon that was never enabled quiesces nothing', () => {
+    expect(teamFunnelContainmentSockets({
+      mycoHome: '/tmp/h',
+      intent: 'quiesce',
+      hostServeEnabled: () => false,
+      hostedBefore: () => true,
+      resolveSocketPath: socketFor,
+    })).toEqual([]);
+  });
+
+  test('the PRODUCTION defaults read the mycoHome-scoped config, not machine-global host state', () => {
+    // The scoping bug this pins: the socket path is derived from MYCO_HOME, so
+    // the evidence must be too. Host state lives in the machine-global team
+    // home shared by EVERY daemon on the box, so a second daemon (the
+    // two-MYCO_HOME dogfood setup) read the first one's state, concluded it had
+    // hosted, and handed back its own unrelated socket path — spawning the
+    // vendor CLI on a daemon that never hosted while missing the residue it was
+    // looking for. No injected predicates here: the defaults are the subject.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-funnel-scope-'));
+    try {
+      // A home whose config has never hosted contributes nothing, regardless of
+      // any host state elsewhere on the machine.
+      fs.writeFileSync(path.join(home, 'config.yaml'), 'daemon:\n  host_serve:\n    enabled: false\n', 'utf-8');
+      expect(teamFunnelContainmentSockets({ mycoHome: home, intent: 'retire' })).toEqual([]);
+      expect(teamFunnelContainmentSockets({ mycoHome: home, intent: 'quiesce' })).toEqual([]);
+
+      // The same home AFTER a disable — `last_served_grove_id` is the
+      // mycoHome-scoped record that this home hosted.
+      fs.writeFileSync(
+        path.join(home, 'config.yaml'),
+        'daemon:\n  host_serve:\n    enabled: false\n    last_served_grove_id: grove_' + '0'.repeat(32) + '\n',
+        'utf-8',
+      );
+      expect(teamFunnelContainmentSockets({ mycoHome: home, intent: 'retire' })).toHaveLength(1);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

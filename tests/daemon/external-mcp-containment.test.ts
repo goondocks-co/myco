@@ -980,6 +980,34 @@ describe('ExternalMcpContainmentAuthority', () => {
     expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
   });
 
+  test('the OPERATION reaches the socket source — one authority answers boot and shutdown differently', async () => {
+    // The bug this pins: ONE authority instance serves both the boot reconcile
+    // and the daemon's own graceful shutdown, and the two want opposite answers
+    // for a serving host. A callback that fixed its intent at construction
+    // answered for whichever came first — so shutdown asked a boot-shaped
+    // question, got "nothing to do", and left the public URL published for as
+    // long as the daemon stayed down.
+    const fixture = containmentFixture({ enabled: false, port: 8743 });
+    const seen: string[] = [];
+    const authority = new ExternalMcpContainmentAuthority({
+      mycoHome: fixture.home,
+      stateDir: fixture.serviceDir,
+      listener: fixture.listener,
+      runFunnelOff: async () => ({ ok: true, detail: 'off' }),
+      additionalFunnelSockets: (operation) => {
+        seen.push(operation);
+        return [];
+      },
+      lockNamespace: testPerUserLockNamespace,
+    });
+
+    await authority.contain('shutdown');
+    await authority.contain('reconcile');
+
+    expect(seen).toContain('shutdown');
+    expect(seen).toContain('reconcile');
+  });
+
   test('RECONCILE with an enabled config but NO token drives off (incoherent)', async () => {
     const fixture = containmentFixture({ enabled: true, port: 8743, listenerPort: 8743 });
     const authority = new ExternalMcpContainmentAuthority({

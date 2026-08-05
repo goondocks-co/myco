@@ -762,9 +762,11 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
     const rec: HostRecord = {
       host_id: createHostId(),
       label: 'Mac Studio',
-      // A name that cannot resolve: the background /events forward fails at the
+      // A CLOSED loopback port: the background /events forward fails at the
       // dial, AFTER the note/flush — which is the ordering under test.
-      host_url: 'https://host-that-does-not-resolve.invalid:8443',
+      // Deliberately not a bogus hostname (see the sibling fixture): that costs
+      // a real DNS lookup and can hang on a wildcard resolver.
+      host_url: 'https://127.0.0.1:59',
       protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],
@@ -799,9 +801,12 @@ describe('flush-before-Stop ordering (real dispatch chokepoint)', () => {
     const rec: HostRecord = {
       host_id: createHostId(),
       label: 'Mac Studio',
-      // A name that cannot resolve: the background forward fails at the dial,
-      // AFTER the flush — which is the ordering under test.
-      host_url: 'https://host-that-does-not-resolve.invalid:8443',
+      // A CLOSED loopback port: the background forward fails at the dial,
+      // AFTER the flush — which is the ordering under test. Deliberately not a
+      // bogus hostname: that costs a real DNS lookup per run, and a resolver
+      // with a wildcard or search-domain suffix answers it, turning an
+      // instant refusal into a 10s timeout inside a unit suite.
+      host_url: 'https://127.0.0.1:59',
       protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: createGroveId(), project_id: projectId }],

@@ -9,7 +9,7 @@
 import { DaemonServer } from './server.js';
 import { resolveHostServeConfig } from './host-serve.js';
 import { EXTERNAL_MCP_PATH, ExternalMcpListener, defaultFunnelOffRunner, defaultFunnelOnRunner, resolveExternalMcpSocketPath } from './external-listener.js';
-import { activateTeamFunnel, teamFunnelContainmentSockets } from '@myco/team-host/funnel.js';
+import { activateTeamFunnel, teamFunnelContainmentSockets, teamFunnelIntentFor } from '@myco/team-host/funnel.js';
 import { readHostState, writeHostState } from '@myco/team-host/state.js';
 import {
   ExternalMcpContainmentAuthority,
@@ -804,10 +804,16 @@ export async function main(): Promise<void> {
     listener: externalMcpListenerControl,
     runFunnelOff: defaultFunnelOffRunner,
     runFunnelOn: defaultFunnelOnRunner,
-    // A team Funnel left behind by a crashed `host disable` — hosting off, the
-    // socket gone, the public URL still live. An ENABLED host contributes
-    // nothing here; its Funnel is verified after the listener binds, below.
-    additionalFunnelSockets: () => teamFunnelContainmentSockets({ mycoHome, intent: 'retire' }),
+    // This ONE authority serves both boot and the daemon's own shutdown, and
+    // the two want opposite answers for a serving host: boot leaves an intended
+    // Funnel alone (it is verified after the listener binds, below), shutdown
+    // withdraws it so nothing answers the public URL while the daemon is down.
+    // Deriving the intent from the operation is what keeps them apart — a fixed
+    // 'retire' here meant shutdown withdrew nothing.
+    additionalFunnelSockets: (operation) => teamFunnelContainmentSockets({
+      mycoHome,
+      intent: teamFunnelIntentFor(operation),
+    }),
   });
   return await externalMcpContainment.containWhile('reconcile', async (externalMcpBootState) => {
   const reconciledHostBearers = reconcileHostRollbackBearers();

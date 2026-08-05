@@ -760,8 +760,16 @@ export function createFunnelOnRunner(
       // socket, do NOT touch the operator's serve config again — the
       // sanctioned mutation stays tied to genuine state changes (enable, or
       // repairing a genuinely-missing handler at boot), not every start.
+      // Matched on mount AND public port. Mount alone was enough while the
+      // port was a fixed 443 — it stopped being enough once the activated port
+      // became the member's recorded address: a handler for this socket at the
+      // same mount on a DIFFERENT port would satisfy the check, activation
+      // would be skipped, and that other port would flow through
+      // `funnelUrlFor` into every member's `host_url`.
       const existing = readFunnelStatus((await runCommand(['funnel', 'status', '--json'])).stdout, target);
-      const existingSelector = existing.selectors.find((candidate) => candidate.mount === opts.mount);
+      const matchesRequested = (candidate: FunnelWebSelector): boolean =>
+        candidate.mount === opts.mount && candidate.publicPort === opts.publicPort;
+      const existingSelector = existing.selectors.find(matchesRequested);
       if (!existingSelector || !existing.allowedHostPorts.has(existingSelector.hostPort)) {
         await runCommand([
           'funnel',
@@ -774,7 +782,7 @@ export function createFunnelOnRunner(
       }
       const status = await runCommand(['funnel', 'status', '--json']);
       const snapshot = readFunnelStatus(status.stdout, target);
-      const selector = snapshot.selectors.find((candidate) => candidate.mount === opts.mount);
+      const selector = snapshot.selectors.find(matchesRequested);
       if (!selector || !snapshot.allowedHostPorts.has(selector.hostPort)) {
         return { ok: false, detail: 'the Funnel handler did not verify after activation' };
       }

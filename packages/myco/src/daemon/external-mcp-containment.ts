@@ -180,13 +180,22 @@ export interface ExternalMcpContainmentAuthorityOptions {
    * Two public surfaces exist now, and containment that saw only one would
    * leave the other published: a machine that stops hosting keeps a live URL
    * fronting a socket nothing binds, and a daemon that shuts down keeps
-   * answering (badly) while it is down. Supplied as a callback rather than a
-   * static list because the answer changes with host config, and it must
-   * return EMPTY on a machine that has no evidence of ever hosting — a
-   * non-empty return makes `requiresContainment` true, which is what reaches
-   * the vendor `tailscale` CLI. A clean machine must still never spawn it.
+   * answering (badly) while it is down.
+   *
+   * TAKES THE OPERATION, and that is load-bearing rather than convenience.
+   * "Stopping" and "booting" want opposite answers for the same host — a
+   * shutdown must withdraw what an enabled host is publishing, while a boot
+   * must leave it alone (it is re-verified once the listener binds) and retire
+   * only residue. One authority instance serves both, so a callback that fixed
+   * its intent at construction time answered for the wrong one: the daemon's
+   * own shutdown runs through the BOOT authority, and with a boot-shaped answer
+   * it withdrew nothing at all.
+   *
+   * Must return EMPTY when there is no evidence of exposure — a non-empty
+   * return makes `requiresContainment` true, which is what reaches the vendor
+   * `tailscale` CLI, and a clean machine must never spawn it.
    */
-  additionalFunnelSockets?: () => string[];
+  additionalFunnelSockets?: (operation: ExternalMcpContainmentOperation) => string[];
   /** The activation inverse of `runFunnelOff`. Optional: shutdown/termination
    *  authorities never activate. `enable` fails cleanly when absent. */
   runFunnelOn?: FunnelOnRunner;
@@ -592,15 +601,15 @@ export class ExternalMcpContainmentAuthority {
 
   /** The listener's bound socket path, if any — socket-shaped reconcile input,
    *  PLUS any other Myco Funnel surface this authority is responsible for. */
-  private listenerSockets(): string[] {
+  private listenerSockets(operation: ExternalMcpContainmentOperation): string[] {
     const bound = this.options.listener.boundTarget;
     const own = bound?.kind === 'socket' ? [bound.path] : [];
-    return [...new Set([...own, ...this.additionalSockets()])];
+    return [...new Set([...own, ...this.additionalSockets(operation)])];
   }
 
-  private additionalSockets(): string[] {
+  private additionalSockets(operation: ExternalMcpContainmentOperation): string[] {
     try {
-      return this.options.additionalFunnelSockets?.() ?? [];
+      return this.options.additionalFunnelSockets?.(operation) ?? [];
     } catch {
       // A failure to enumerate the other surface must not wedge external-MCP
       // containment — which is the one that owns this authority's config
@@ -847,7 +856,7 @@ export class ExternalMcpContainmentAuthority {
       }
       let activeIntent: ExternalMcpContainmentIntent = {
         ...resumableIntent,
-        sockets: [...new Set([...resumableIntent.sockets, ...this.listenerSockets()])].sort(),
+        sockets: [...new Set([...resumableIntent.sockets, ...this.listenerSockets(operation)])].sort(),
         ports: [
           ...resumableIntent.ports,
           ...additionalPorts,
@@ -926,7 +935,7 @@ export class ExternalMcpContainmentAuthority {
           ...additionalPorts,
           ...this.listenerPorts(),
         ],
-        sockets: this.listenerSockets(),
+        sockets: this.listenerSockets(operation),
         phase: 'funnel_off_pending',
         requested_at: this.options.now().toISOString(),
       };
@@ -966,7 +975,7 @@ export class ExternalMcpContainmentAuthority {
     // being intended says nothing about the other. Everything about external
     // MCP below is still skipped.
     if (operation === 'reconcile' && explicitExternalMcpConfig && externalMcp.enabled && tokenPresent) {
-      await runTargets([], this.additionalSockets());
+      await runTargets([], this.additionalSockets(operation));
       return {
         enabled: true,
         port: externalMcp.port,
@@ -989,7 +998,7 @@ export class ExternalMcpContainmentAuthority {
           ...additionalPorts,
           ...this.listenerPorts(),
         ],
-        sockets: this.listenerSockets(),
+        sockets: this.listenerSockets(operation),
         phase: 'port_recovery_pending',
         requested_at: this.options.now().toISOString(),
       });
@@ -1009,7 +1018,7 @@ export class ExternalMcpContainmentAuthority {
       || tokenPresent
       || this.options.listener.isBound
       || additionalPorts.length > 0
-      || this.additionalSockets().length > 0;
+      || this.additionalSockets(operation).length > 0;
     if (!requiresContainment) {
       return {
         enabled: false,
@@ -1028,7 +1037,7 @@ export class ExternalMcpContainmentAuthority {
         ...additionalPorts,
         ...this.listenerPorts(),
       ],
-      sockets: this.listenerSockets(),
+      sockets: this.listenerSockets(operation),
       phase: 'funnel_off_pending',
       requested_at: this.options.now().toISOString(),
     };
