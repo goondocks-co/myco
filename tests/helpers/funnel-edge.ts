@@ -34,6 +34,7 @@ import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
+import tls from 'node:tls';
 
 import { TEAM_FUNNEL_MOUNT } from '@myco/constants.js';
 
@@ -68,12 +69,24 @@ function selfSignedCert(): SelfSignedCert {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-funnel-edge-cert-'));
   const keyPath = path.join(dir, 'key.pem');
   const certPath = path.join(dir, 'cert.pem');
-  execFileSync('openssl', [
-    'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
-    '-keyout', keyPath, '-out', certPath,
-    '-days', '1', '-subj', '/CN=localhost',
-    '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1',
-  ], { stdio: 'ignore' });
+  try {
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', keyPath, '-out', certPath,
+      '-days', '1', '-subj', '/CN=localhost',
+      '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1',
+    ], { stdio: 'ignore' });
+  } catch (error) {
+    // Fail with the actual cause. Without this, an absent or too-old `openssl`
+    // surfaces as an opaque spawn error repeated across every suite that dials
+    // a host, and looks like a transport regression rather than a toolchain
+    // gap. (`-addext` needs OpenSSL ≥1.1.1 or LibreSSL ≥3.1; macOS's stock
+    // LibreSSL 3.3.x supports it, verified including the SAN.)
+    throw new Error(
+      'The team-transport suites need `openssl` on PATH to mint a throwaway TLS cert for the '
+      + `Funnel-edge fixture, and it could not be run: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   cachedCert = { key: fs.readFileSync(keyPath, 'utf-8'), cert: fs.readFileSync(certPath, 'utf-8') };
   fs.rmSync(dir, { recursive: true, force: true });
   return cachedCert;
@@ -92,13 +105,23 @@ function stripMount(requestPath: string): string {
   return requestPath;
 }
 
-/** Trust this process's edge cert on the DEFAULT agent — the one production
- *  `https.request` calls use when given no agent of their own. */
+/**
+ * Trust this process's edge cert on the DEFAULT agent — the one production
+ * `https.request` calls use when given no agent of their own.
+ *
+ * ADDS to the trust store rather than replacing it. `options.ca` is `undefined`
+ * by default, meaning "use the built-ins", so assigning `[cert]` would quietly
+ * make this process trust ONLY the throwaway cert — after which any later test
+ * asserting that a real self-signed cert is rejected would pass for the wrong
+ * reason. Seeding from `tls.rootCertificates` keeps the default set intact.
+ */
 function trustEdgeCert(cert: string): void {
   if (installedCa) return;
   const existing = https.globalAgent.options.ca;
-  const cas = existing === undefined ? [] : Array.isArray(existing) ? [...existing] : [existing];
-  https.globalAgent.options.ca = [...cas, cert] as string[];
+  const base = existing === undefined
+    ? [...tls.rootCertificates]
+    : Array.isArray(existing) ? [...existing] : [existing];
+  https.globalAgent.options.ca = [...base, cert] as string[];
   installedCa = true;
 }
 
@@ -121,11 +144,14 @@ export async function startFunnelEdge(target: EdgeTarget | string): Promise<Funn
     seenPaths.push(forwardedPath);
     seenHosts.push(req.headers.host ?? '');
     const headers = { ...req.headers };
-    // The edge terminates the client's connection and opens its own, so
-    // hop-by-hop framing headers must not be copied forward.
+    // `connection` is hop-by-hop and must not cross. FRAMING is deliberately
+    // preserved: stripping `content-length` re-framed every forwarded request
+    // as chunked, so nothing through this fixture exercised the framing real
+    // members use — and `validateMutatingContentType` branches on exactly that
+    // (`content-length` when finite, else `transfer-encoding`), leaving the
+    // team CSRF gate's dominant branch untested. A buffering edge preserves the
+    // length anyway, so this is also the more faithful shape.
     delete headers.connection;
-    delete headers['content-length'];
-    delete headers['transfer-encoding'];
     // Funnel presents its own authority to the origin. Reproducing that is the
     // point: a host that gated on the member's Host header would pass this test
     // only by accident.

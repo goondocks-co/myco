@@ -245,6 +245,39 @@ describe('residency drain — push + delete-after-ack', () => {
     expect(listPendingForProject(projectId).length).toBe(pendingBefore); // nothing marked sent
   });
 
+  test('a host with no usable address stamps a RE-JOIN cause, never "membership is missing"', async () => {
+    // The two resolver outcomes need different things from the user: a missing
+    // record means the membership is gone, a record with no address means it is
+    // intact and only a re-join supplies the address. Collapsing them told a
+    // user mid-move to go fix a membership that was fine.
+    const { projectId } = beginTransition();
+    const transport: ResidencyPostTransport = async () => ({ status: 200, applied: 1 });
+
+    await runResidencyTransitions({
+      ...baseDeps(),
+      transport,
+      resolveHostTarget: () => 'no_address',
+    });
+
+    const journal = readResidencyJournal(projectId);
+    expect(journal?.last_error).toContain('re-join');
+    expect(journal?.last_error).not.toContain('is missing');
+  });
+
+  test('a genuinely missing host record still stamps the membership-gone cause', async () => {
+    const { projectId } = beginTransition();
+    const transport: ResidencyPostTransport = async () => ({ status: 200, applied: 1 });
+
+    await runResidencyTransitions({
+      ...baseDeps(),
+      transport,
+      resolveHostTarget: () => null,
+    });
+
+    const journal = readResidencyJournal(projectId);
+    expect(journal?.last_error).toContain('is missing');
+  });
+
   test('ack discipline: outbox rows are marked sent + synced before a later sidecar failure blocks the delete', async () => {
     const { projectId } = beginTransition();
 

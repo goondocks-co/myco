@@ -398,6 +398,37 @@ describe('Joined hosts list', () => {
     expect(screen.getByRole('button', { name: /detach proj_x/i })).toBeInTheDocument();
   });
 
+  it('flags a host with NO address as re-join required, on the row itself', () => {
+    // The row is where a user picks between hosts, so an unreachable one has to
+    // be visible without opening the slideout. A missing address is not a
+    // display gap — the host cannot be reached at all until a re-join.
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', host_url: null,
+        protocol_version: 1, created_at: '2026-01-01T00:00:00Z',
+        projects: [],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    expect(screen.getByTestId('host-row-rejoin')).toBeInTheDocument();
+  });
+
+  it('a host WITH an address carries no re-join flag', () => {
+    statusFixture = {
+      hosts: [{
+        host_id: 'host_abc', label: 'Mac Studio', host_url: 'https://h.tailnet.ts.net:8443',
+        protocol_version: 1, created_at: '2026-01-01T00:00:00Z',
+        projects: [],
+      }],
+      hint: null,
+    };
+    renderHostTab();
+
+    expect(screen.queryByTestId('host-row-rejoin')).toBeNull();
+  });
+
   it('renders a warning on a project ref whose mismatch flag is set (UX spec §2(c)) — never silent', () => {
     statusFixture = {
       hosts: [{

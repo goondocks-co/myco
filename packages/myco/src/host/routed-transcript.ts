@@ -44,9 +44,16 @@ import type { RouteRequest, RouteResponse } from '../daemon/router.js';
  * Per-POST byte cap the MEMBER drain (C1) splits at, exported as the shared
  * contract. ~1.5 MB of RAW transcript bytes — one order below the daemon's 8 MB
  * request-body limit even after base64 inflation (~2 MB) plus JSON envelope, and
- * generous for JSONL turns (capture-push §5.2 "bound every single push"). The
- * host does not enforce it (readBody's 8 MB limit is the hard backstop); it lives
- * here so producer and the body limit stay reconcilable in one place.
+ * generous for JSONL turns (capture-push §5.2 "bound every single push").
+ *
+ * ENFORCED ON BOTH SIDES. It was producer-only while this route lived on a
+ * private tailnet, where `readBody`'s 8 MB limit was an acceptable backstop.
+ * The team surface is now the public internet, and the effective ceiling for a
+ * write that lands in the operator's home directory and is retained
+ * indefinitely should not be five times the documented one — especially with
+ * one shared bearer and no rate limit. The host refuses over-cap chunks
+ * outright; a conformant member never sees this, because its own drain splits
+ * at the same constant.
  */
 export const MAX_TRANSCRIPT_PUSH_BYTES = 1_500_000;
 
@@ -193,6 +200,20 @@ export function createRoutedTranscriptHandler(
     const { machine_id, session_id, transcript_id, base_offset, bytes } = parsed.data;
 
     const chunk = Buffer.from(bytes, 'base64');
+    if (chunk.length > MAX_TRANSCRIPT_PUSH_BYTES) {
+      // Non-retryable by resending the same chunk: the member must split. Its
+      // drain already does, at this exact constant, so a conformant member
+      // never reaches here.
+      return {
+        status: 413,
+        body: {
+          ok: false,
+          error: 'chunk_too_large',
+          max_bytes: MAX_TRANSCRIPT_PUSH_BYTES,
+          size: chunk.length,
+        },
+      };
+    }
 
     let result: MaterializeResult;
     try {

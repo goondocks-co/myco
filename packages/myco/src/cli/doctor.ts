@@ -336,7 +336,6 @@ export async function checkTeamHostDrainHealth(
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Promise<DoctorCheck[]> {
   const { readHostRegistry } = await import('../host/registry.js');
-  const { probeHostReachability } = await import('../host/host-url.js');
   const hosts = readHostRegistry(lockNamespace);
   if (hosts.length === 0) return [];
 

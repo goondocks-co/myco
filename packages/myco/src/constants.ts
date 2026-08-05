@@ -805,6 +805,11 @@ export const TEAM_FUNNEL_PORT = 8443;
  *  moves. See {@link TEAM_FUNNEL_PORT} for why the two cannot share one. */
 export const EXTERNAL_MCP_FUNNEL_PORT = 443;
 
+/** The external read-only MCP Funnel's mount. A PATH mount, unlike the team
+ *  surface's root: Funnel strips it before proxying and the external listener
+ *  re-adds it, which is why the two surfaces cannot share a public port. */
+export const EXTERNAL_MCP_MOUNT = '/mcp';
+
 /** The team Funnel's mount. ROOT, and load-bearing: the member→host contract
  *  keys on exact pathnames (`ROUTE_RULES`, `SERVE_DEFAULT_ROUTES`), and any
  *  non-root mount makes Funnel strip its prefix before the request reaches the
