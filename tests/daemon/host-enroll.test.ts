@@ -15,6 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,9 +25,9 @@ import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js'
 import { DaemonLogger } from '@myco/daemon/logger';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority';
 import { readHostActionLog } from '@myco/host/action-log';
-import { HOST_PROTOCOL_VERSION } from '@myco/constants';
+import { HOST_PROTOCOL_VERSION, HOST_PROXY_HEADERS_TIMEOUT_MS } from '@myco/constants';
 import { mintJoinKey } from '@myco/team-host/join-keys';
-import { authenticateMemberToken, listMembers } from '@myco/team-host/member-tokens';
+import { authenticateMemberToken, listMembers, revokeMember } from '@myco/team-host/member-tokens';
 import { realEnrollmentClient } from '@myco/host/member-overlay';
 import { teamFetch, teamSocketPath } from '../helpers/team-socket.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
@@ -165,6 +166,56 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
       expect(res.status).toBe(401);
     }
     expect(listMembers()).toEqual([]);
+  });
+
+  test('a refused collision does NOT spend the key', async () => {
+    // The caller presented a valid key and did nothing wrong — the usual way
+    // to reach this is re-joining a host that still holds a record for this
+    // machine. Burning the invite would make them ask the operator twice.
+    await enroll({ key: mintJoinKey().key, machine_id: MEMBER_MACHINE });
+
+    const second = mintJoinKey();
+    expect((await enroll({ key: second.key, machine_id: MEMBER_MACHINE })).status).toBe(409);
+
+    // Once the incumbent is gone, that SAME key still works.
+    const [incumbent] = listMembers();
+    revokeMember(incumbent!.id);
+    expect((await enroll({ key: second.key, machine_id: MEMBER_MACHINE })).status).toBe(200);
+  });
+
+  test('RESIGN: a member surrenders its OWN access, and only its own', async () => {
+    // Without this, `myco leave` is a member-side write only: the host keeps a
+    // live record forever and the next join is refused with no self-service
+    // way out.
+    const alice = await enroll({ key: mintJoinKey().key, machine_id: MEMBER_MACHINE });
+    const aliceToken = ((await alice.json()) as { bearer: string }).bearer;
+    const bob = await enroll({ key: mintJoinKey().key, machine_id: 'bob_99887766' });
+    const bobToken = ((await bob.json()) as { bearer: string }).bearer;
+
+    const res = await teamFetch(socketPath, '/api/host/resign', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${aliceToken}`, 'Content-Type': 'application/json', ...v1 },
+      body: '{}',
+    });
+    expect(res.status).toBe(200);
+
+    expect(authenticateMemberToken(aliceToken).ok).toBe(false);
+    // Bob is untouched — resigning is not a lever on anyone else.
+    expect(authenticateMemberToken(bobToken).ok).toBe(true);
+    // And the machine can now re-join, which is the whole point.
+    expect((await enroll({ key: mintJoinKey().key, machine_id: MEMBER_MACHINE })).status).toBe(200);
+  });
+
+  test('RESIGN requires a token — it is NOT bearer-exempt like enrollment', async () => {
+    await enroll({ key: mintJoinKey().key, machine_id: MEMBER_MACHINE });
+    const res = await teamFetch(socketPath, '/api/host/resign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...v1 },
+      body: '{}',
+    });
+    expect(res.status).toBe(401);
+    // Nobody was revoked by an unauthenticated call.
+    expect(listMembers().filter((m) => m.revoked)).toEqual([]);
   });
 
   test('an EXPIRED key is refused, and indistinguishably from an invalid one', async () => {
@@ -324,6 +375,62 @@ describeTeamTransport('enrollment over the real transport', () => {
       .rejects.toThrow(/refused this join key/);
     expect(listMembers()).toEqual([]);
   });
+});
+
+/**
+ * A join against a peer that STALLS mid-response must still settle.
+ *
+ * The shape: a complete status line and headers, a partial body, then the
+ * socket held open. `'end'` never comes, `'aborted'` never fires, and `'close'`
+ * is guarded by whether a response arrived — so the request's own deadline is
+ * the last defence, and cancelling it when the response STARTS removed it at
+ * exactly the wrong moment. That hung forever on Node as well as Bun, and a
+ * hung `joinHost` never runs its own cleanup.
+ *
+ * Reached through the REAL TLS edge, because the edge forwards framing
+ * verbatim: a stalled backend behind it is what a stalled Funnel backend or a
+ * host wedged mid-response looks like from the member's side.
+ */
+describeTeamTransport('a stalled host does not hang the joiner', () => {
+  test('headers, a partial body, then silence → the request still settles', async () => {
+    const stalled = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '9999' });
+      res.write('{"partial"');
+      // ...and never ends. The socket stays open.
+    });
+    await new Promise<void>((r) => stalled.listen(0, '127.0.0.1', () => r()));
+    const backendPort = (stalled.address() as { port: number }).port;
+    const edge = await startFunnelEdge({ port: backendPort });
+
+    try {
+      // Raced against an explicit watchdog rather than left to the runner's
+      // own timeout: under the defect the request settles NEITHER way, which
+      // wedges the process instead of failing the test — so a regression would
+      // show up in CI as a hung job rather than a red one. This turns "never
+      // settled" into a deterministic assertion failure.
+      const outcome = await Promise.race([
+        realEnrollmentClient.enroll({
+          hostId: HOST_ID,
+          hostRef: HOST_ID,
+          oneTimeKey: 'irrelevant-the-peer-never-answers',
+          hostUrl: edge.url,
+          machineId: MEMBER_MACHINE,
+        }).then(() => 'resolved', (e: Error) => `rejected: ${e.message}`),
+        new Promise<string>((r) => {
+          const t = setTimeout(() => r('NEVER SETTLED'), HOST_PROXY_HEADERS_TIMEOUT_MS + 5_000);
+          if (typeof t.unref === 'function') t.unref();
+        }),
+      ]);
+      expect(outcome).toMatch(/rejected: .*timed out/);
+    } finally {
+      // The stalled socket is still open by construction, and `close()` waits
+      // for open connections — so force them down first or teardown hangs on
+      // exactly the condition under test.
+      stalled.closeAllConnections?.();
+      await edge.close();
+      await new Promise<void>((r) => stalled.close(() => r()));
+    }
+  }, 30_000);
 });
 
 /**

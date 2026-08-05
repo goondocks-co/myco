@@ -24,7 +24,7 @@ import path from 'node:path';
 import { resolveHostControlDir } from '../grove/paths.js';
 
 /** The control-plane events worth a durable, operator-readable trail (spec §9). */
-export type HostActionKind = 'enroll' | 'key-mint' | 'evict' | 'rotate';
+export type HostActionKind = 'enroll' | 'resign' | 'key-mint' | 'evict' | 'rotate';
 
 export interface HostActionEvent {
   action: HostActionKind;

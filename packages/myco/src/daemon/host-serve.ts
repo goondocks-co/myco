@@ -30,6 +30,7 @@ import type http from 'node:http';
 
 import {
   HOST_ENROLL_ROUTE,
+  HOST_RESIGN_ROUTE,
   HOST_EXTERNAL_MCP_TOKEN_SECRET,
   HOST_MIN_COMPAT_VERSION,
   HOST_PROTOCOL_HEADER,
@@ -615,6 +616,13 @@ const TEAM_ADMITTED_RAW_ROUTES: ReadonlySet<string> = new Set<string>([
   // un-admitted through the PR that published this socket. If the key check is
   // ever removed or weakened, this entry must come out in the same change.
   HOST_ENROLL_ROUTE,
+  // Admitted, and NOT bearer-exempt — unlike enrollment, this one sits behind
+  // the ordinary per-member token gate, because the credential presented is
+  // exactly the authorization: a caller can only surrender the access it
+  // already holds. Without it, `myco leave` is a member-side write only, the
+  // host keeps a live record forever, and re-joining is refused with no
+  // self-service way out.
+  HOST_RESIGN_ROUTE,
 ]);
 
 /**

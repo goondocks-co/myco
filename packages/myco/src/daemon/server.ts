@@ -32,8 +32,10 @@ import { consumeJoinKey } from '../team-host/join-keys.js';
 import {
   issueMemberToken,
   MAX_MACHINE_ID_LENGTH,
+  hasLiveMember,
   MemberAlreadyEnrolledError,
   noteMemberSeen,
+  resignMember,
   type IssuedMemberToken,
 } from '../team-host/member-tokens.js';
 import { classifyRoute, classifyRouteStamp, overlayHostStampRefusal, refusalJson, resolveHostCarrierTarget, type RefusalPayload } from '../host/routing.js';
@@ -64,6 +66,7 @@ import { appendHostAction } from '../host/action-log.js';
 import {
   EXTERNAL_MCP_ACTIVATION_POSTURE,
   HOST_ENROLL_ROUTE,
+  HOST_RESIGN_ROUTE,
   REFUSAL_LOG_THROTTLE_INTERVAL_MS,
 } from '../constants.js';
 import { shouldLogOncePerInterval } from './log-throttle.js';
@@ -957,6 +960,48 @@ export class DaemonServer {
     // `tailscale up`, which this daemon never saw, and the real admission
     // boundary was tailnet membership. With no tailnet, publishing this route
     // without the key check would hand a credential to anyone who asked.
+    // A member SURRENDERING its own access. The counterpart to enrollment, and
+    // the reason `myco leave` is not a member-side-only write: without it the
+    // host keeps a live record for a machine that has left, and that machine's
+    // next join is refused as already-enrolled with no self-service way out.
+    //
+    // Unlike enrollment this route is NOT bearer-exempt — it is reached only
+    // after the per-member token gate, and it revokes the id that gate
+    // resolved. A caller can therefore only ever surrender the credential it
+    // already holds, which is why this needs no further authorization.
+    this.registerRawRoute(HOST_RESIGN_ROUTE, async (req, res) => {
+      if (!isTeamRequest(req)) {
+        res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'not_found', message: 'This route is served to team members only.' }));
+        return;
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'method_not_allowed' }));
+        return;
+      }
+      // Re-resolved rather than threaded through: the gate has already refused
+      // anything without a live token, so this cannot widen admission — it only
+      // recovers WHICH member the gate admitted.
+      const auth = teamAuthOutcome(req);
+      if (auth.refusal || !auth.member) {
+        this.writeTeamRefusal(res, auth.refusal?.status ?? 401, auth.refusal?.body ?? { error: 'unauthorized' }, versionHeader);
+        return;
+      }
+      resignMember(auth.member.id);
+      // An operator reading the roster needs to see a member LEFT, not just
+      // that a row went quiet. Best-effort, like every other action append.
+      try {
+        appendHostAction({
+          action: 'resign',
+          subject: req.socket.remoteAddress ?? undefined,
+          detail: { machine_id: auth.member.machineId },
+        });
+      } catch { /* the trail is not the operation */ }
+      res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
+      res.end(JSON.stringify({ ok: true }));
+    });
+
     this.registerRawRoute(HOST_ENROLL_ROUTE, async (req, res) => {
       // TEAM-LISTENER-ONLY. The localhost surface has no business enrolling
       // anyone, and answering there would make the operator's own dashboard an
@@ -1007,6 +1052,23 @@ export class DaemonServer {
         await delay(this.teamAuthThrottle.noteFailure());
         res.writeHead(401, { 'Content-Type': 'application/json', ...versionHeader });
         res.end(JSON.stringify({ error: 'enrollment_unauthorized', message: 'Enrollment requires a valid one-time join key.' }));
+        return;
+      }
+
+      // Collision checked BEFORE the key is spent — the same ordering the
+      // `machine_id` validation above already gets right. The authoritative
+      // check is still the one inside `issueMemberToken`'s lock (this one can
+      // race); this exists so the common case does not COST the operator an
+      // invite. A caller refused here has presented a valid key and done
+      // nothing wrong: the usual way to reach it is re-joining a host that
+      // still holds a record for this machine.
+      if (hasLiveMember(machineId)) {
+        this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host enrollment refused', { reason: 'machine_already_enrolled' });
+        res.writeHead(409, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({
+          error: 'machine_already_enrolled',
+          message: 'That machine already has access to this host. Revoke its current access first, then join again.',
+        }));
         return;
       }
 

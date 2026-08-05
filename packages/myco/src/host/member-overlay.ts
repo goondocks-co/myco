@@ -38,6 +38,7 @@ import {
   HOST_BEARER_SECRET,
   HOST_ENROLL_ROUTE,
   HOST_MIN_COMPAT_VERSION,
+  HOST_RESIGN_ROUTE,
   HOST_PROTOCOL_HEADER,
   HOST_PROTOCOL_VERSION,
   HOST_PROXY_CONNECT_TIMEOUT_MS,
@@ -60,6 +61,7 @@ import {
   inspectHostMembershipForLeave,
   persistEnrollmentMembership,
   readHostRegistry,
+  readHostSecrets,
   reserveHostEnrollment,
   retireHostMembership,
 } from '@myco/host/registry.js';
@@ -264,14 +266,21 @@ export const defaultEnrollmentTransport: EnrollmentTransport = async (input) => 
   return await new Promise((resolve, reject) => {
     let settled = false;
     let responded = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Clearing the deadline is tied to SETTLING, never to an intermediate
+    // milestone — see the timer's own comment for the hang that caused.
+    const settle = (): void => {
+      settled = true;
+      if (timer) clearTimeout(timer);
+    };
     const succeed = (value: { status: number; body: string }): void => {
       if (settled) return;
-      settled = true;
+      settle();
       resolve(value);
     };
     const fail = (error: Error): void => {
       if (settled) return;
-      settled = true;
+      settle();
       reject(error);
     };
 
@@ -305,16 +314,22 @@ export const defaultEnrollmentTransport: EnrollmentTransport = async (input) => 
     // leaves a member the user can never authenticate as. So `'close'` only
     // means failure when no response ever arrived; a response that starts and
     // then dies is `res`'s `'aborted'`, and the timer backstops both.
-    const timer = setTimeout(() => {
+    //
+    // The deadline covers the WHOLE request, not just the headers. Cancelling
+    // it when the response STARTS leaves a peer that sends a status line and
+    // headers, writes a partial body, and then simply holds the socket open
+    // with no bound at all: `'end'` never comes, `'aborted'` never fires, and
+    // `'close'` is guarded by `responded`. That hangs forever — on Node too,
+    // so it is a design bug and not a runtime quirk — and a hung `myco join`
+    // never runs its own cleanup. A stalled Funnel backend or a host wedged
+    // mid-response produces exactly that shape.
+    timer = setTimeout(() => {
       fail(new Error('enrollment request timed out'));
       req.destroy();
     }, HOST_PROXY_HEADERS_TIMEOUT_MS);
     if (typeof timer.unref === 'function') timer.unref();
-    const clear = (): void => { clearTimeout(timer); };
-    req.once('response', clear);
-    req.once('error', (error: Error) => { clear(); fail(error); });
+    req.once('error', fail);
     req.once('close', () => {
-      clear();
       if (!responded) fail(new Error('enrollment connection closed before a response'));
     });
     req.write(input.body);
@@ -466,6 +481,9 @@ export interface JoinOptions {
 export interface MemberOverlayDeps {
   platform?: NodeJS.Platform;
   enrollmentClient?: EnrollmentClient;
+  /** Test seam for the leave-side resign call, which goes over the wire
+   *  directly rather than through {@link EnrollmentClient}. */
+  enrollmentTransport?: EnrollmentTransport;
   /** Test seam: this machine's id (production reads the real one). */
   machineId?: string;
   /** Override the team home the residency-journal gate reads (tests). */
@@ -616,6 +634,45 @@ export async function leaveHost(hostRef: string, deps: MemberOverlayDeps = {}): 
   );
 }
 
+/**
+ * Surrender this machine's access on the host, so leaving releases the host's
+ * record instead of orphaning it. Returns whether the host confirmed.
+ *
+ * Never throws: every failure mode here (host down, URL stale, token already
+ * revoked, no bearer on record) must still permit the local leave.
+ */
+async function resignFromHost(
+  hostId: string,
+  deps: MemberOverlayDeps,
+  lockNamespace: PerUserLockNamespace,
+): Promise<boolean> {
+  try {
+    const record = readHostRegistry(lockNamespace).find((r) => r.host_id === hostId);
+    const hostUrl = record?.host_url;
+    if (!hostUrl) return false;
+    const bearer = readHostSecrets(hostId, lockNamespace)[HOST_BEARER_SECRET];
+    if (!bearer) return false;
+
+    const transport = deps.enrollmentTransport ?? defaultEnrollmentTransport;
+    const response = await transport({
+      hostUrl,
+      path: HOST_RESIGN_ROUTE,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${bearer}`,
+        [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
+      },
+      body: '{}',
+    });
+    // A 401 means the host already considers this member gone, which is the
+    // outcome we wanted — treat it as success rather than warning about a
+    // record that no longer exists.
+    return response.status === 200 || response.status === 401;
+  } catch {
+    return false;
+  }
+}
+
 async function leaveHostLocked(
   hostId: string,
   deps: MemberOverlayDeps,
@@ -657,8 +714,29 @@ async function leaveHostLocked(
     );
   }
 
-  // Leaving is now a registry write and nothing else. It used to have to stop
-  // and uninstall this host's tailscaled, reconcile its CONNECT-proxy port
+  // TELL THE HOST FIRST, best-effort. Leaving used to be a purely member-side
+  // write, which was harmless while the host's credential was shared. With
+  // per-member tokens it is not: the host would keep a LIVE record for a
+  // machine that has left, and that machine's next join is refused as
+  // already-enrolled — recoverable only by an operator on a machine the
+  // departing member may not have access to.
+  //
+  // Best-effort by design. A host that is down, unreachable, or already
+  // revoked this member must not be able to trap it in the membership: the
+  // local retirement below is what `leave` actually promises. A failure here
+  // becomes a NOTE so the user can tell the operator, never an exception.
+  const resigned = await resignFromHost(hostId, deps, lockNamespace);
+  if (resigned) {
+    log(`Released this machine's access on ${hostId}.`);
+  } else {
+    notes.push(
+      `Could not tell ${hostId} this machine left, so the host may still list it. `
+      + 'If re-joining is refused as already having access, ask the host operator to remove it.',
+    );
+  }
+
+  // Otherwise leaving is a registry write and nothing else. It used to have to
+  // stop and uninstall this host's tailscaled, reconcile its CONNECT-proxy port
   // against the installed service's arguments, and refuse when the two
   // disagreed — a whole conflict-detection path that existed because the
   // member ran a per-host daemon whose identity could drift from the registry.

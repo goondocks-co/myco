@@ -218,6 +218,30 @@ export interface MemberSummary {
   revoked: boolean;
 }
 
+/**
+ * Does this machine already hold a LIVE token?
+ *
+ * A cheap pre-check so the enrollment route can refuse a collision WITHOUT
+ * spending the caller's single-use key. Advisory only — it can race, so the
+ * authoritative refusal stays inside {@link issueMemberToken}'s lock.
+ */
+export function hasLiveMember(machineId: string): boolean {
+  return readFile().members.some((m) => m.machine_id === machineId && !m.revoked_at);
+}
+
+/**
+ * Give up this machine's OWN access, identified by the token it presents.
+ *
+ * The counterpart to `myco leave`: without it, leaving is a member-side write
+ * only, the host keeps a live record forever, and re-joining hits the
+ * already-enrolled refusal with no self-service way out. Revoking by the
+ * AUTHENTICATED member's id is safe by construction — a caller can only ever
+ * surrender the credential it already holds.
+ */
+export function resignMember(id: string, opts: { now?: () => number } = {}): boolean {
+  return revokeMember(id, opts);
+}
+
 /** Operator view. Never exposes a hash, let alone a token. */
 export function listMembers(): MemberSummary[] {
   return readFile().members.map((m) => ({
