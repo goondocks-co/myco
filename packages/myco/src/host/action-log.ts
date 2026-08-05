@@ -10,8 +10,12 @@
  * host localhost). Operator-readable by design.
  *
  * ONE writer for BOTH surfaces that produce control-plane events: the daemon's
- * enrollment endpoint (core, `daemon/server.ts`) logs `enroll`; the operator CLI
- * (`myco-team host`, which depends on core) logs `key-mint`/`evict`/`rotate`. The
+ * team routes (core, `daemon/server.ts`) log `enroll` when a member joins and
+ * `resign` when one surrenders its own access; the operator CLI (`myco-team
+ * host`, which depends on core) logs `key-mint`/`evict`/`rotate`. Membership
+ * both begins and ends on the daemon side, so both ends are recorded there —
+ * an operator reading the roster needs to see that a member LEFT, not just
+ * that a row went quiet. The
  * shared home path (`resolveHostControlDir`, core `grove/paths.ts`) is why this
  * module lives in core rather than `myco-team` — core cannot import `myco-team`.
  *

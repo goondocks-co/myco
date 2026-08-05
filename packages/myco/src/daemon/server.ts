@@ -951,15 +951,6 @@ export class DaemonServer {
       });
     });
 
-    // Team Host enrollment — the ONE team route exempt from the per-member
-    // token gate, because a member obtains its token HERE. The exemption is
-    // surgical, and it is only safe because the route carries its OWN gate: a
-    // daemon-minted single-use join key, in the request, that this daemon
-    // validates. That is a genuinely new gate rather than a port — the
-    // overlay-era key was a headscale pre-auth key consumed by the member's
-    // `tailscale up`, which this daemon never saw, and the real admission
-    // boundary was tailnet membership. With no tailnet, publishing this route
-    // without the key check would hand a credential to anyone who asked.
     // A member SURRENDERING its own access. The counterpart to enrollment, and
     // the reason `myco leave` is not a member-side-only write: without it the
     // host keeps a live record for a machine that has left, and that machine's
@@ -968,7 +959,8 @@ export class DaemonServer {
     // Unlike enrollment this route is NOT bearer-exempt — it is reached only
     // after the per-member token gate, and it revokes the id that gate
     // resolved. A caller can therefore only ever surrender the credential it
-    // already holds, which is why this needs no further authorization.
+    // already holds, which is why this needs no further authorization. It reads
+    // NOTHING from the request body; a body naming another member is ignored.
     this.registerRawRoute(HOST_RESIGN_ROUTE, async (req, res) => {
       if (!isTeamRequest(req)) {
         res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
@@ -1002,6 +994,15 @@ export class DaemonServer {
       res.end(JSON.stringify({ ok: true }));
     });
 
+    // Team Host enrollment — the ONE team route exempt from the per-member
+    // token gate, because a member obtains its token HERE. The exemption is
+    // surgical, and it is only safe because the route carries its OWN gate: a
+    // daemon-minted single-use join key, in the request, that this daemon
+    // validates. That is a genuinely new gate rather than a port — the
+    // overlay-era key was a headscale pre-auth key consumed by the member's
+    // `tailscale up`, which this daemon never saw, and the real admission
+    // boundary was tailnet membership. With no tailnet, publishing this route
+    // without the key check would hand a credential to anyone who asked.
     this.registerRawRoute(HOST_ENROLL_ROUTE, async (req, res) => {
       // TEAM-LISTENER-ONLY. The localhost surface has no business enrolling
       // anyone, and answering there would make the operator's own dashboard an
