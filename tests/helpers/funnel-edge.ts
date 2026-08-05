@@ -144,11 +144,14 @@ export async function startFunnelEdge(target: EdgeTarget | string): Promise<Funn
     seenPaths.push(forwardedPath);
     seenHosts.push(req.headers.host ?? '');
     const headers = { ...req.headers };
-    // The edge terminates the client's connection and opens its own, so
-    // hop-by-hop framing headers must not be copied forward.
+    // `connection` is hop-by-hop and must not cross. FRAMING is deliberately
+    // preserved: stripping `content-length` re-framed every forwarded request
+    // as chunked, so nothing through this fixture exercised the framing real
+    // members use — and `validateMutatingContentType` branches on exactly that
+    // (`content-length` when finite, else `transfer-encoding`), leaving the
+    // team CSRF gate's dominant branch untested. A buffering edge preserves the
+    // length anyway, so this is also the more faithful shape.
     delete headers.connection;
-    delete headers['content-length'];
-    delete headers['transfer-encoding'];
     // Funnel presents its own authority to the origin. Reproducing that is the
     // point: a host that gated on the member's Host header would pass this test
     // only by accident.

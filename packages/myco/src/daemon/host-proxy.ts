@@ -229,9 +229,23 @@ export function hostAuthority(target: RemoteTarget): string {
  * HTTPS origin, which every runtime's client can dial directly.
  */
 export const defaultDial: Dialer = (target, opts) => {
-  const { origin } = parseHostUrl(target.host.host_url);
-  return https.request(`${origin}${opts.path}`, {
+  const { hostname, port } = parseHostUrl(target.host.host_url);
+  // Origin passed as FIELDS, never as a concatenated URL string.
+  //
+  // `https.request(origin + path)` reparses the result, and a request target is
+  // caller-influenced: `'https://host:8443' + '@evil.com/'` reparses to origin
+  // `https://evil.com`, and this hop attaches the host bearer. That exact
+  // string is unreachable today — llhttp rejects a target starting with `@`,
+  // and every other escaping form produces an invalid port against `:8443` —
+  // but both defences are accidents of other components, and neither is stated
+  // or tested anywhere. Handing `hostname`/`port` separately makes the request
+  // structurally incapable of leaving this origin: `path` is only ever a path.
+  return https.request({
+    protocol: 'https:',
+    hostname,
+    port,
     method: opts.method,
+    path: opts.path,
     headers: opts.headers,
   });
 };

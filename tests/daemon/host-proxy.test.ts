@@ -29,6 +29,7 @@ import {
   __resetVersionMismatchLogForTests,
   type HostProxyDeps,
   type ProxyLogger,
+  defaultDial,
 } from '@myco/daemon/host-proxy';
 import { __resetLogThrottleForTests, __setLogThrottleClockForTests } from '@myco/daemon/log-throttle';
 import type { RemoteTarget, RouteClassification } from '@myco/host/routing';
@@ -210,6 +211,24 @@ describe('host-proxy forwarder', () => {
 
   // --- pure helpers ---
 
+
+  test('the dial CANNOT leave the recorded origin, whatever the request target says', async () => {
+    // The payoff for escaping would be severe: this hop attaches the host
+    // bearer, so an off-origin dial exfiltrates it. `https.request(origin +
+    // path)` reparses the concatenation, and `'https://host:8443' + '@evil/'`
+    // reparses to origin `https://evil`. Passing hostname/port as FIELDS makes
+    // that structurally impossible rather than relying on llhttp rejecting the
+    // target and on `:8443` making other forms an invalid port — two defences
+    // that live in other components and are nowhere stated.
+    const escapes = ['@evil.invalid/', 'http://evil.invalid/x', '//evil.invalid/x'];
+    for (const path of escapes) {
+      const req = await defaultDial(config.target, { method: 'GET', path, headers: {} });
+      const dialed = req as unknown as { host?: string; getHeader?: (n: string) => unknown };
+      // Whatever the target, the connection is to the recorded host.
+      expect(dialed.host).toBe(parseHostUrl(hostUrl).hostname);
+      req.destroy();
+    }
+  });
 
   test('hostProtocolCompatible enforces the inclusive [min,max] window', () => {
     expect(hostProtocolCompatible(HOST_MIN_COMPAT_VERSION)).toBe(true);
