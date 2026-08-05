@@ -14,6 +14,7 @@
  *     so the route is not an oracle for which keys were ever real.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -218,4 +219,45 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
     await enroll({ key: minted.key, machine_id: MEMBER_MACHINE });
     expect(JSON.stringify(readHostActionLog())).not.toContain(minted.key);
   });
+});
+
+/**
+ * Single-use, across PROCESSES.
+ *
+ * Not testable in one process: `consumeJoinKey` is synchronous, so it cannot
+ * interleave with itself there and an in-process race check passes whether or
+ * not the store is locked. The race that matters is between daemons — the store
+ * is under the machine-global team home, shared by every daemon on the box — so
+ * this spawns two real ones.
+ */
+describe('join keys are single-use across processes', () => {
+  test('two daemons spending the SAME key concurrently: exactly one wins', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-jk-race-'));
+    const saved = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_TEAM_HOME = tmp;
+    try {
+      const minted = mintJoinKey();
+      const spender = path.join(import.meta.dir, '..', 'helpers', 'join-key-spender.ts');
+
+      const spend = (worker: string) => new Promise<boolean>((resolve) => {
+        const child = spawn(process.execPath, [spender, tmp, minted.key, worker], {
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        let out = '';
+        child.stdout.on('data', (chunk) => { out += String(chunk); });
+        child.on('close', () => {
+          try { resolve((JSON.parse(out) as { ok: boolean }).ok === true); } catch { resolve(false); }
+        });
+      });
+
+      const [a, b] = await Promise.all([spend('a'), spend('b')]);
+
+      // Exactly one. Without the store lock this is both, ~96% of the time.
+      expect([a, b].filter(Boolean)).toHaveLength(1);
+    } finally {
+      if (saved === undefined) delete process.env.MYCO_TEAM_HOME;
+      else process.env.MYCO_TEAM_HOME = saved;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

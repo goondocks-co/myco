@@ -29,6 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { withFileLockSync } from '../utils/lifecycle-lock.js';
 import { resolveHostControlDir } from '../grove/paths.js';
 
 /** Filename under {@link resolveHostControlDir}. */
@@ -60,6 +61,22 @@ interface MemberFile {
 
 export function memberTokensPath(): string {
   return path.join(resolveHostControlDir(), MEMBER_TOKENS_FILENAME);
+}
+
+/**
+ * Serialize every read-modify-write on this file.
+ *
+ * Reads (the per-request validation) deliberately take no lock — they are the
+ * hot path and a torn read is impossible, since writes publish atomically via
+ * temp+rename. Writes DO, because they are read-modify-write over the whole
+ * list and the store lives under the machine-global team home, shared by every
+ * daemon on the box. A lost update here is not cosmetic: a revoke racing an
+ * issue could resurrect a revoked member.
+ */
+function withMembersLock<T>(fn: () => T): T {
+  const dir = resolveHostControlDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return withFileLockSync(path.join(dir, `${MEMBER_TOKENS_FILENAME}.lock`), fn);
 }
 
 function readFile(): MemberFile {
@@ -123,12 +140,14 @@ export function issueMemberToken(
     ...(opts.label ? { label: opts.label } : {}),
     issued_at: new Date(now).toISOString(),
   };
-  const file = readFile();
-  writeFile({
-    schema_version: 1,
-    members: [...file.members.filter((m) => m.machine_id !== machineId), record],
+  return withMembersLock(() => {
+    const file = readFile();
+    writeFile({
+      schema_version: 1,
+      members: [...file.members.filter((m) => m.machine_id !== machineId), record],
+    });
+    return { id: record.id, token: raw, machineId };
   });
-  return { id: record.id, token: raw, machineId };
 }
 
 export type MemberAuth =
@@ -185,15 +204,17 @@ export function listMembers(): MemberSummary[] {
  *  unknown id; re-revoking is a no-op that reports true. */
 export function revokeMember(id: string, opts: { now?: () => number } = {}): boolean {
   const now = opts.now?.() ?? Date.now();
-  const file = readFile();
-  const target = file.members.find((m) => m.id === id);
-  if (!target) return false;
-  if (target.revoked_at) return true;
-  writeFile({
-    schema_version: 1,
-    members: file.members.map((m) => (m.id === id ? { ...m, revoked_at: new Date(now).toISOString() } : m)),
+  return withMembersLock(() => {
+    const file = readFile();
+    const target = file.members.find((m) => m.id === id);
+    if (!target) return false;
+    if (target.revoked_at) return true;
+    writeFile({
+      schema_version: 1,
+      members: file.members.map((m) => (m.id === id ? { ...m, revoked_at: new Date(now).toISOString() } : m)),
+    });
+    return true;
   });
-  return true;
 }
 
 /** Record liveness for the operator view. Best-effort and never on the
@@ -201,11 +222,13 @@ export function revokeMember(id: string, opts: { now?: () => number } = {}): boo
 export function noteMemberSeen(id: string, opts: { now?: () => number } = {}): void {
   try {
     const now = opts.now?.() ?? Date.now();
-    const file = readFile();
-    if (!file.members.some((m) => m.id === id)) return;
-    writeFile({
-      schema_version: 1,
-      members: file.members.map((m) => (m.id === id ? { ...m, last_seen_at: new Date(now).toISOString() } : m)),
+    withMembersLock(() => {
+      const file = readFile();
+      if (!file.members.some((m) => m.id === id)) return;
+      writeFile({
+        schema_version: 1,
+        members: file.members.map((m) => (m.id === id ? { ...m, last_seen_at: new Date(now).toISOString() } : m)),
+      });
     });
   } catch { /* liveness is cosmetic */ }
 }

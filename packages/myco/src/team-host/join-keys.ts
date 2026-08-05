@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { withFileLockSync } from '../utils/lifecycle-lock.js';
 import { resolveHostControlDir } from '../grove/paths.js';
 
 /** Filename under {@link resolveHostControlDir}. */
@@ -70,6 +71,23 @@ const EMPTY: JoinKeyFile = { schema_version: 1, keys: [] };
 
 export function joinKeysPath(): string {
   return path.join(resolveHostControlDir(), JOIN_KEYS_FILENAME);
+}
+
+/**
+ * Serialize every read-modify-write on this file.
+ *
+ * The operations here are synchronous, so they cannot interleave WITHIN a
+ * process — but the store lives under the machine-global team home, which is
+ * shared by every daemon on the box (the two-MYCO_HOME dogfood setup runs two).
+ * Without a lock, two processes can both read a key as unused and both spend
+ * it, which defeats single-use, or a mint can clobber a concurrent consume and
+ * silently resurrect a spent key. Same discipline the host registry uses, for
+ * the same reason.
+ */
+function withJoinKeysLock<T>(fn: () => T): T {
+  const dir = resolveHostControlDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return withFileLockSync(path.join(dir, `${JOIN_KEYS_FILENAME}.lock`), fn);
 }
 
 function readFile(): JoinKeyFile {
@@ -140,9 +158,11 @@ export function mintJoinKey(opts: { ttlMs?: number; now?: () => number } = {}): 
     created_at: new Date(now).toISOString(),
     expires_at: new Date(now + ttlMs).toISOString(),
   };
-  const file = readFile();
-  writeFile({ schema_version: 1, keys: [...prune(file.keys, now), record] });
-  return { id: record.id, key: raw, expires_at: record.expires_at };
+  return withJoinKeysLock(() => {
+    const file = readFile();
+    writeFile({ schema_version: 1, keys: [...prune(file.keys, now), record] });
+    return { id: record.id, key: raw, expires_at: record.expires_at };
+  });
 }
 
 export type JoinKeyRejection =
@@ -173,6 +193,7 @@ export function consumeJoinKey(
   opts: { machineId?: string; now?: () => number } = {},
 ): JoinKeyCheck {
   const now = opts.now?.() ?? Date.now();
+  return withJoinKeysLock((): JoinKeyCheck => {
   const file = readFile();
   const presentedDigest = crypto.createHash('sha256').update(presented, 'utf-8').digest();
 
@@ -203,6 +224,7 @@ export function consumeJoinKey(
     keys: prune(file.keys.map((k) => (k.id === matched!.id ? consumed : k)), now),
   });
   return { ok: true, id: matched.id };
+  });
 }
 
 export interface JoinKeySummary {
@@ -233,13 +255,15 @@ export function listJoinKeys(opts: { now?: () => number } = {}): JoinKeySummary[
  *  is not an error. */
 export function revokeJoinKey(id: string, opts: { now?: () => number } = {}): boolean {
   const now = opts.now?.() ?? Date.now();
-  const file = readFile();
-  const target = file.keys.find((k) => k.id === id);
-  if (!target) return false;
-  if (target.used_at || target.revoked_at) return true;
-  writeFile({
-    schema_version: 1,
-    keys: file.keys.map((k) => (k.id === id ? { ...k, revoked_at: new Date(now).toISOString() } : k)),
+  return withJoinKeysLock(() => {
+    const file = readFile();
+    const target = file.keys.find((k) => k.id === id);
+    if (!target) return false;
+    if (target.used_at || target.revoked_at) return true;
+    writeFile({
+      schema_version: 1,
+      keys: file.keys.map((k) => (k.id === id ? { ...k, revoked_at: new Date(now).toISOString() } : k)),
+    });
+    return true;
   });
-  return true;
 }
