@@ -179,11 +179,44 @@ function defaultCanConnect(hostname: string, port: number, timeoutMs: number): P
   });
 }
 
+/**
+ * Issue the probe request, and ALWAYS settle.
+ *
+ * The obvious shape — `setTimeout(() => req.destroy(err))` plus `once('error')`
+ * — does not settle under Bun, which is the runtime Myco ships. Measured on the
+ * pinned 1.3.13 and on 1.3.14, against a TLS server that accepts the connection
+ * and never answers: the timeout callback fires, but `destroy(err)` emits no
+ * `'error'`, so the promise is simply abandoned. Node rejects at ~400ms; Bun
+ * waits forever.
+ *
+ * That failure mode is not hypothetical here — accept-then-never-answer is
+ * precisely the macsys trap this probe exists to catch, so the shape handled
+ * the 502 variant and hung on the silent one. A hung probe stalls whatever
+ * awaits it: the boot publish, the Team page's health read (permanently
+ * "checking", never re-probed, because the single-flight map holds the pending
+ * promise), and `myco doctor`.
+ *
+ * So the settle does not depend on any one event: an explicit rejection inside
+ * the timeout, plus `'close'` as the backstop for a socket that goes away
+ * without ever emitting `'error'`.
+ */
 function defaultRequest(
   origin: string,
   timeoutMs: number,
 ): Promise<{ status: number; protocolVersion: number | null }> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const succeed = (value: { status: number; protocolVersion: number | null }): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+
     const req = https.request(
       `${origin}${HOST_HEALTH_PROBE_PATH}`,
       { method: 'GET' },
@@ -194,14 +227,24 @@ function defaultRequest(
         const raw = res.headers[HOST_PROTOCOL_HEADER.toLowerCase()];
         const reported = Array.isArray(raw) ? raw[0] : raw;
         const parsed = reported === undefined ? Number.NaN : Number(reported);
-        resolve({
+        succeed({
           status: res.statusCode ?? 0,
           protocolVersion: Number.isSafeInteger(parsed) ? parsed : null,
         });
       },
     );
-    req.setTimeout(timeoutMs, () => req.destroy(new Error('host probe timed out')));
-    req.once('error', reject);
+    const timer = setTimeout(() => {
+      // Reject HERE rather than relying on `destroy(err)` surfacing as
+      // `'error'` — that is the part Bun does not do.
+      fail(new Error('host probe timed out'));
+      req.destroy();
+    }, timeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+
+    req.once('error', fail);
+    // Backstop: a connection that goes away without an `'error'` still settles.
+    req.once('close', () => fail(new Error('host probe closed without a response')));
+    req.once('response', () => clearTimeout(timer));
     req.end();
   });
 }

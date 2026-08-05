@@ -20,7 +20,10 @@ import {
   TEAM_FUNNEL_MOUNT,
   TEAM_FUNNEL_PORT,
 } from '@myco/constants.js';
+import http from 'node:http';
+
 import { probeHostReachability } from '@myco/host/host-url.js';
+import { startFunnelEdge } from '../helpers/funnel-edge.js';
 import {
   activateTeamFunnel,
   detectTailscaleVariant,
@@ -370,4 +373,41 @@ describe('reachability classification', () => {
     expect(result.state).toBe('unknown');
     expect(result.detail).toContain('Re-join');
   });
+});
+
+describe('the probe against a SILENT host (the runtime the binary ships on)', () => {
+  // Drives the REAL `probeHostReachability` with its REAL default request
+  // implementation — no injected `request`. That is the point: every other
+  // probe test injects past this seam, and the one code path that touches the
+  // runtime is where Bun and Node diverge.
+  //
+  // Accept-then-never-answer is the macsys trap this probe exists to catch, and
+  // it is exactly the shape that hung: the timeout fired but `destroy(err)`
+  // emitted no `'error'` under Bun, so the promise was abandoned — stalling
+  // boot publication, pinning the Team page on "checking" forever (the
+  // single-flight map holds the pending promise), and hanging `myco doctor`.
+  test('SETTLES rather than hanging when the host accepts and never answers', async () => {
+    const edgeTarget = http.createServer(() => { /* never responds */ });
+    await new Promise<void>((r) => edgeTarget.listen(0, '127.0.0.1', () => r()));
+    const edge = await startFunnelEdge({ port: (edgeTarget.address() as { port: number }).port });
+
+    try {
+      const started = Date.now();
+      const settled = await Promise.race([
+        probeHostReachability(edge.url, { timeoutMs: 500 }).then(() => 'settled' as const),
+        new Promise<'hung'>((r) => setTimeout(() => r('hung'), 5_000)),
+      ]);
+
+      expect(settled).toBe('settled');
+      // And it settled on ITS OWN bound, not by the race timing out around it.
+      expect(Date.now() - started).toBeLessThan(4_000);
+    } finally {
+      await edge.close();
+      // Force sockets shut: the edge's in-flight upstream request to this
+      // server is still open (it never got a response, which is the point), and
+      // a plain close() waits for it forever.
+      (edgeTarget as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+      await new Promise<void>((r) => edgeTarget.close(() => r()));
+    }
+  }, 20_000);
 });

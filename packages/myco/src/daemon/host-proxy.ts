@@ -900,14 +900,22 @@ async function forwardAndRelay(
     const finish = () => { if (!settled) { settled = true; resolve(); } };
 
     // Connect bound: destroy the dial if the socket never connects in time.
+    //
+    // Armed UNCONDITIONALLY, and cleared on connect. It used to arm only when
+    // `socket.connecting` was truthy, which reads as an optimisation and is a
+    // runtime assumption: Bun reports `connecting === false` on the 'socket'
+    // event, so on the runtime Myco ships the timer was never armed at all and
+    // `HOST_PROXY_CONNECT_TIMEOUT_MS` was a documented bound that did not
+    // exist. Arming always is correct under both — an already-connected socket
+    // fires 'connect'/'close' and clears it.
     proxyReq.on('socket', (socket) => {
-      if (!('connecting' in socket) || (socket as Socket).connecting) {
-        const connectTimer = setTimeout(() => {
-          proxyReq.destroy(new Error('connect_timeout'));
-        }, HOST_PROXY_CONNECT_TIMEOUT_MS);
-        socket.once('connect', () => clearTimeout(connectTimer));
-        socket.once('close', () => clearTimeout(connectTimer));
-      }
+      const connectTimer = setTimeout(() => {
+        proxyReq.destroy(new Error('connect_timeout'));
+      }, HOST_PROXY_CONNECT_TIMEOUT_MS);
+      socket.once('connect', () => clearTimeout(connectTimer));
+      socket.once('close', () => clearTimeout(connectTimer));
+      proxyReq.once('response', () => clearTimeout(connectTimer));
+      proxyReq.once('error', () => clearTimeout(connectTimer));
     });
 
     // Headers bound: destroy if no response headers arrive in time.
@@ -915,10 +923,23 @@ async function forwardAndRelay(
       proxyReq.destroy(new Error('headers_timeout'));
     }, HOST_PROXY_HEADERS_TIMEOUT_MS);
 
-    // Client hung up BEFORE the response finished → tear down the upstream leg
-    // (mirrors mcp/http.ts res.on('close')). Guard on `writableEnded` so a
-    // normal completion's 'close' doesn't destroy an already-finished relay.
-    res.on('close', () => { if (!res.writableEnded) proxyReq.destroy(); });
+    // Client hung up BEFORE the response finished → tear down the upstream leg.
+    // Guard on `writableEnded` so a normal completion's teardown does not
+    // destroy an already-finished relay.
+    //
+    // Listens on the REQUEST as well as the response, because `res.on('close')`
+    // alone does not fire under Bun — measured: on a mid-response client
+    // disconnect Bun emits `req:aborted`, `req:error`, `req:close` and never
+    // `res:close`, so the upstream leg outlived the abandoned client and kept
+    // pulling bytes from the host. Node emits both.
+    const tearDownUpstream = (): void => {
+      if (!res.writableEnded) proxyReq.destroy();
+    };
+    res.on('close', tearDownUpstream);
+    // `'aborted'` and NOT `'close'`: the request stream closes on every normal
+    // completion too (immediately, for a bodyless GET), so listening on it
+    // destroyed the upstream leg mid-relay. `'aborted'` is disconnect-specific.
+    req.on('aborted', tearDownUpstream);
 
     proxyReq.on('response', (proxyRes) => {
       clearTimeout(headersTimer);
