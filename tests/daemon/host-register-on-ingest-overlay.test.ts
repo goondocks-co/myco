@@ -24,6 +24,7 @@ import path from 'node:path';
 
 import { DaemonServer } from '@myco/daemon/server.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { issueTestMemberToken } from '../helpers/member-token.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority.js';
 import type { HostServeRuntime } from '@myco/daemon/host-serve.js';
@@ -53,6 +54,8 @@ function sessionCount(dbPath: string, projectId: string): number {
   }
 }
 
+let memberToken: string;
+
 describe('host registration-on-ingest (overlay integration)', () => {
   let tmp: string;
   let teamSock: string;
@@ -71,6 +74,11 @@ describe('host registration-on-ingest (overlay integration)', () => {
     fs.mkdirSync(mycoHome, { recursive: true });
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    // Bound to the identity these requests claim: a member acts as itself,
+    // and a token issued to a different id is (correctly) refused.
+    memberToken = issueTestMemberToken('member-machine');
     clearGroveRegistryCaches();
     servers = [];
     // The served Grove starts with NO project registered — a freshly-attached
@@ -132,7 +140,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
 
   function overlayHeaders(extra: Record<string, string> = {}): Record<string, string> {
     return {
-      authorization: `Bearer ${HOST_BEARER}`,
+      authorization: `Bearer ${memberToken}`,
       [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
       ...extra,
     };

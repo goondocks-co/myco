@@ -37,6 +37,7 @@ import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type Gro
 import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants.js';
 import { vi } from '../helpers/vi-shim.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { issueTestMemberToken } from '../helpers/member-token.js';
 
 // ---------------------------------------------------------------------------
 // Pure predicate — fast, isolated coverage of every servedGroveRefusal branch.
@@ -45,6 +46,8 @@ import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js'
 function runtime(servedGroveId?: string): HostServeRuntime {
   return { bearer: 'test-bearer', servedGroveId };
 }
+
+let memberToken: string;
 
 describe('servedGroveRefusal (pure)', () => {
   test('no designation (!runtime.servedGroveId) -> refuses regardless of resolved grove', () => {
@@ -117,6 +120,9 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     fs.mkdirSync(mycoHome, { recursive: true });
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    memberToken = issueTestMemberToken();
     clearGroveRegistryCaches();
     __resetLogThrottleForTests();
     servers = [];
@@ -214,7 +220,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
 
   function overlayHeaders(extra: Record<string, string> = {}): Record<string, string> {
     return {
-      authorization: `Bearer ${HOST_BEARER}`,
+      authorization: `Bearer ${memberToken}`,
       [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
       ...extra,
     };

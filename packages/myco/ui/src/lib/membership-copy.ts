@@ -30,6 +30,8 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
     'This machine and the host are running different Myco versions. Update Myco on both, then try again.',
   host_enroll_rejected:
     "The host turned down this machine's request to join. Ask the host operator to confirm this machine is allowed, then try again.",
+  machine_already_enrolled:
+    'This machine already has access to that host. Ask the host operator to remove its existing access first, then join again.',
   host_enroll_failed:
     "Couldn't finish joining this host. It may be busy or set up incompletely — check with the host operator and try again.",
   host_predates_served_grove:

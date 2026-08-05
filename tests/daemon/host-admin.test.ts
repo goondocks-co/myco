@@ -33,6 +33,7 @@ import {
   type HostAdminRouteDeps,
 } from '@myco/daemon/api/host-admin.js';
 import { ProgressTracker } from '@myco/daemon/api/progress.js';
+import { consumeJoinKey } from '@myco/team-host/join-keys.js';
 import { writeHostState } from '@myco/team-host/state.js';
 import type { HostEnableResult } from '@myco/team-host/overlay.js';
 
@@ -188,7 +189,7 @@ describe('host-admin routes', () => {
     expect((res.body as { message: string }).message).toContain('team_key_provider');
   });
 
-  it('mint-join-key: not_a_host without serving state; refused while the invite flow is rebuilt when serving', async () => {
+  it('mint-join-key: not_a_host without serving state; a real single-use key once serving AND published', async () => {
     const bare = await createHostAdminMintJoinKeyHandler(deps())(request({}));
     expect(bare.status).toBe(409);
     expect((bare.body as { error: string }).error).toBe('not_a_host');
@@ -205,15 +206,34 @@ describe('host-admin routes', () => {
       platform: 'darwin',
     });
 
-    // The key this minted was a headscale pre-auth key the daemon never saw or
-    // validated — overlay membership, not the key, was the real admission gate.
-    // Until the daemon-issued single-use key exists, refusing is the only honest
-    // answer: handing back a key that admits nobody would look like success.
+    // Serving but NOT yet published: a key is useless without an address to
+    // spend it at, and handing over half an invitation is worse than refusing
+    // — the member cannot tell which half is missing.
+    const unpublished = await createHostAdminMintJoinKeyHandler(deps())(request({ expiration: '2h' }));
+    expect(unpublished.status).toBe(409);
+    expect((unpublished.body as { error: string }).error).toBe('host_not_published');
+    expect(unpublished.body).not.toHaveProperty('key');
+
+    writeHostState({
+      host_id: 'host_' + 'a'.repeat(32),
+      enabled_at: new Date().toISOString(),
+      label: 'test-host',
+      platform: 'darwin',
+      host_url: 'https://box.tailnet.ts.net:8443',
+    });
+
     const res = await createHostAdminMintJoinKeyHandler(deps())(request({ expiration: '2h' }));
-    expect(res.status).toBe(503);
-    expect((res.body as { error: string }).error).toBe('join_unavailable');
-    expect(res.body).not.toHaveProperty('key');
-    expect(res.body).not.toHaveProperty('join_command');
+    expect(res.status).toBe(200);
+    const body = res.body as { key: string; join_command: string; expires: string };
+    // The raw key crosses the wire exactly once, here — it is stored hashed and
+    // cannot be recovered.
+    expect(body.key).toBeTruthy();
+    expect(body.join_command).toContain('--host-url https://box.tailnet.ts.net:8443');
+    expect(body.join_command).toContain(body.key);
+    // And it actually admits someone: the daemon validates THIS key.
+    expect(consumeJoinKey(body.key).ok).toBe(true);
+    // Single use — the second spend is refused.
+    expect(consumeJoinKey(body.key).ok).toBe(false);
   });
 
   it('disable: terminal state before restart, same as enable', async () => {

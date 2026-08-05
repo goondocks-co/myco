@@ -37,9 +37,12 @@ import { assertGroveProjectId, createGroveId, createProjectId } from '@myco/grov
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry';
 import { HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
+import { issueTestMemberToken } from '../helpers/member-token.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const HOST_BEARER = 'test-host-serve-bearer-0123456789abcdef';
+
+let memberToken: string;
 
 describe('Team Host transport-boundary gate (overlay listener)', () => {
   let tmp: string;
@@ -65,6 +68,9 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     fs.mkdirSync(mycoHome, { recursive: true });
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = tmp; // empty attach registry — this daemon is the HOST
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    memberToken = issueTestMemberToken();
     clearGroveRegistryCaches();
 
     // A real Grove this host is designated to serve — required since Task 2's
@@ -134,7 +140,9 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  const bearer = (token = HOST_BEARER) => `Bearer ${token}`;
+  // Defaults to the suite's ISSUED member token; a caller passing an explicit
+  // value is testing a WRONG credential on purpose.
+  const bearer = (token?: string) => `Bearer ${token ?? memberToken}`;
   // A member speaking the CURRENT protocol. Pinned to the constant rather than
   // a literal: the version gate tests an inclusive window, so a hardcoded old
   // number silently converts every test in this file into a version-mismatch
@@ -447,6 +455,9 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     fs.mkdirSync(mycoHome, { recursive: true });
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = tmp; // empty attach registry — this daemon is the HOST
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    memberToken = issueTestMemberToken();
     clearGroveRegistryCaches();
 
     // A real Grove this host is designated to serve — required since Task 2's
@@ -560,7 +571,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   });
 
   const authed = (extra: Record<string, string> = {}): Record<string, string> => ({
-    Authorization: `Bearer ${HOST_BEARER}`,
+    Authorization: `Bearer ${memberToken}`,
     'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION),
     ...extra,
   });
@@ -692,19 +703,21 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
 
   // --- existing exemptions intact (the backstop does not touch raw routes) ---
 
-  test('/api/host/enroll is NOT team-admitted — it cannot hand out the bearer', async () => {
-    // The route is bearer-EXEMPT and returns the shared serve bearer to whoever
-    // asks, because its real gate was overlay membership: a headscale pre-auth
-    // key the daemon never saw. With no overlay there is no gate, so admitting
-    // it here would publish a bearer giveaway the moment this socket is fronted
-    // by Funnel. It returns only alongside the join key that replaces that gate.
+  test('/api/host/enroll is team-admitted but hands out NOTHING without a valid key', async () => {
+    // The route is token-EXEMPT — a member obtains its token here — so it is
+    // admitted ONLY because it carries its own gate: a daemon-minted single-use
+    // join key, validated in the request. Reaching it without one must yield a
+    // credential-free refusal, and in particular must never echo the host's
+    // shared bearer, which is what it used to return to any caller.
     const res = await teamFetch(teamSock, `/api/host/enroll`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-myco-host-protocol': '1' },
+      headers: { 'Content-Type': 'application/json', 'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION) },
       body: JSON.stringify({ member_hostname: 'laptop' }),
     });
-    expect(res.status).toBe(404);
-    expect(await res.text()).not.toContain(HOST_BEARER);
+    expect(res.status).toBe(401);
+    const text = await res.text();
+    expect(text).not.toContain(HOST_BEARER);
+    expect(text).not.toContain('bearer"');
   });
 
   test('/api/shutdown over the overlay still 404s and its handler never fires', async () => {

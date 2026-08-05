@@ -58,18 +58,22 @@ const SOURCES = walkTypescript(SRC_ROOT).map((full) => ({
 
 describe('host transport seam singularity', () => {
   it('derives the host: header authority only inside the transport seam module', () => {
-    // The address parser has FOUR legitimate homes: the seam that DIALS with
-    // it, the module that DEFINES it, the registry that refuses to record an
-    // address it cannot parse, and the routing module that projects a record
-    // into a dial target. A fifth means someone is deriving a dial target
-    // outside the seam again — the drift this gate exists to stop — so new
-    // entries are a deliberate, reviewed act. Keep this count honest: a
-    // rationale that no longer describes the list is how an allowlist rots.
+    // The address parser has FIVE legitimate homes: the seam that DIALS with
+    // it, the module that DEFINES it, and three that VALIDATE an address at the
+    // point it is recorded (the registry, the routing projection, and the join
+    // path). A sixth means someone is deriving a dial target outside the seam
+    // again — the drift this gate exists to stop — so new entries are a
+    // deliberate, reviewed act. Keep this count honest: a rationale that no
+    // longer describes the list is how an allowlist rots.
     const ADDRESS_PARSE_ALLOWED = new Set([
       TRANSPORT_SEAM_MODULE,
       'packages/myco/src/host/host-url.ts',
       'packages/myco/src/host/registry.ts',
       'packages/myco/src/host/routing.ts',
+      // The member's join path: it refuses an unusable address BEFORE writing a
+      // membership, which is the same "validate at the point of record" role
+      // the registry plays — not a second place that derives a dial target.
+      'packages/myco/src/host/member-overlay.ts',
     ]);
 
     const offenders = SOURCES

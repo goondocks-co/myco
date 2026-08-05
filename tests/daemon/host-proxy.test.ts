@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
+import { issueTestMemberToken } from '../helpers/member-token.js';
 import { parseHostUrl } from '@myco/host/host-url.js';
 
 import { JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -117,7 +118,7 @@ function makeTarget(hostUrl: string, opts: { protocolVersion?: number } = {}): R
       host_url: hostUrl,
       protocol_version: opts.protocolVersion ?? HOST_PROTOCOL_VERSION,
     },
-    bearer: HOST_BEARER,
+    bearer: memberToken,
   };
 }
 
@@ -146,6 +147,8 @@ async function waitFor<T>(condition: () => T | undefined, description: string, t
   }
 }
 
+let memberToken: string;
+
 describe('host-proxy forwarder', () => {
   let tmpHome: string;
   let tmpTeamHome: string;
@@ -166,6 +169,9 @@ describe('host-proxy forwarder', () => {
     savedTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_HOME = tmpHome;
     process.env.MYCO_TEAM_HOME = tmpTeamHome;
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    memberToken = issueTestMemberToken();
     __resetVersionMismatchLogForTests();
     __resetLogThrottleForTests();
 
@@ -250,7 +256,7 @@ describe('host-proxy forwarder', () => {
           const req = await defaultDial(config.target, {
             method: 'GET',
             path: escape,
-            headers: { authorization: `Bearer ${HOST_BEARER}` },
+            headers: { authorization: `Bearer ${memberToken}` },
           });
           await new Promise<void>((resolve) => {
             req.once('error', () => resolve());
@@ -339,7 +345,7 @@ describe('host-proxy forwarder', () => {
     expect(got.headers['x-myco-machine-id']).toBe('machine-A');
     // LOCAL bearer stripped; HOST bearer attached; version header stamped.
     expect(got.headers['x-myco-auth']).toBeUndefined();
-    expect(got.headers.authorization).toBe(`Bearer ${HOST_BEARER}`);
+    expect(got.headers.authorization).toBe(`Bearer ${memberToken}`);
     expect(got.headers[HOST_PROTOCOL_HEADER]).toBe(String(HOST_PROTOCOL_VERSION));
     // The Host the MEMBER claimed, captured at the edge before it rewrote the
     // header the way Funnel does. This is `hostAuthority(target)`, and it must
@@ -550,7 +556,7 @@ describe('host-proxy forwarder', () => {
     // And it also reached the host, with the host bearer + version header.
     const got = await forwarded;
     expect(JSON.parse(got.body)).toMatchObject(event);
-    expect(got.headers.authorization).toBe(`Bearer ${HOST_BEARER}`);
+    expect(got.headers.authorization).toBe(`Bearer ${memberToken}`);
     expect(got.headers[HOST_PROTOCOL_HEADER]).toBe(String(HOST_PROTOCOL_VERSION));
 
     // No local Grove materialized — no grove.toml, no DB, not in listGroves.

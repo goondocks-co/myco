@@ -43,7 +43,9 @@ import {
   useHostAdminDisable,
   useHostAdminProgress,
   useHostServePhase2,
+  useHostMembers,
   useMintJoinKey,
+  useRevokeHostAccess,
   type MintJoinKeyResponse,
 } from '../../hooks/use-host-admin';
 
@@ -64,16 +66,16 @@ export function MintJoinKeyControl() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <Button size="sm" variant="outline" onClick={handleMint} disabled title="Inviting is unavailable while team connectivity is being rebuilt.">
+        <Button size="sm" variant="outline" onClick={handleMint} disabled={mint.isPending}>
           <KeyRound className="mr-2 h-4 w-4" />
-          Invite a member
+          {mint.isPending ? 'Creating invite…' : 'Invite a member'}
         </Button>
-        <span className="text-xs text-on-surface-variant">Unavailable while team connectivity is being rebuilt.</span>
       </div>
       {minted && (
         <AccentSurface accent="sage" padded className="flex flex-col gap-2" role="status" data-testid="join-key-reveal">
           <p className="m-0 text-xs text-on-surface">
-            Hand this to your teammate — the key is shown once and works once (expires in {minted.expires}).
+            Hand this to your teammate — the key is shown once and works once
+            (expires {new Date(minted.expires).toLocaleString()}).
           </p>
           {/* The command COPIES complete (a broken paste helps nobody) but
               DISPLAYS with the key masked — rendering it cleartext directly
@@ -88,6 +90,80 @@ export function MintJoinKeyControl() {
       )}
       {error && <p className="m-0 text-xs text-terracotta" data-testid="mint-key-error">{error}</p>}
     </div>
+  );
+}
+
+/**
+ * Who can reach this host, and what invitations are outstanding.
+ *
+ * Minting created user-reachable state with no way to see or undo it: an
+ * operator could hand out keys and had no list, no revoke, and no expiry view.
+ * Revoking is effective on that member's next request — there is no restart to
+ * wait for and nothing to explain about propagation.
+ */
+export function MemberAccessControl() {
+  const [open, setOpen] = useState(false);
+  const members = useHostMembers(open);
+  const revoke = useRevokeHostAccess();
+  const [error, setError] = useState<string | null>(null);
+
+  const act = async (body: { member_id?: string; join_key_id?: string }) => {
+    setError(null);
+    try { await revoke.mutateAsync(body); } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  if (!open) {
+    return (
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+        Manage access…
+      </Button>
+    );
+  }
+
+  const rows = members.data;
+  return (
+    <AccentSurface accent="sage" padded className="flex flex-col gap-3" data-testid="member-access">
+      <p className="m-0 text-xs text-on-surface-variant">
+        Removing someone takes effect on their next request.
+      </p>
+
+      <div className="flex flex-col gap-1">
+        <span className="text-xs font-medium text-on-surface">Members</span>
+        {(rows?.members ?? []).filter((m) => !m.revoked).length === 0 ? (
+          <span className="text-xs text-on-surface-variant">Nobody has joined yet.</span>
+        ) : (
+          (rows?.members ?? []).filter((m) => !m.revoked).map((m) => (
+            <div key={m.id} className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-xs">
+                {m.label ?? m.machine_id}
+                <span className="ml-2 font-mono text-on-surface-variant">{m.machine_id}</span>
+              </span>
+              <Button size="sm" variant="outline" onClick={() => act({ member_id: m.id })}>Remove</Button>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <span className="text-xs font-medium text-on-surface">Outstanding invites</span>
+        {(rows?.join_keys ?? []).filter((k) => k.state === 'active').length === 0 ? (
+          <span className="text-xs text-on-surface-variant">No unused invites.</span>
+        ) : (
+          (rows?.join_keys ?? []).filter((k) => k.state === 'active').map((k) => (
+            <div key={k.id} className="flex items-center justify-between gap-2">
+              <span className="text-xs text-on-surface-variant">
+                expires {new Date(k.expires_at).toLocaleString()}
+              </span>
+              <Button size="sm" variant="outline" onClick={() => act({ join_key_id: k.id })}>Withdraw</Button>
+            </div>
+          ))
+        )}
+      </div>
+
+      {error && <p className="m-0 text-xs text-terracotta" data-testid="member-access-error">{error}</p>}
+    </AccentSurface>
   );
 }
 

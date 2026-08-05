@@ -772,6 +772,11 @@ export const HOST_PROTOCOL_HEADER = 'x-myco-host-protocol';
  */
 export const HOST_ENROLL_ROUTE = '/api/host/enroll';
 
+/** Where a member SURRENDERS its own access, so `myco leave` releases the
+ *  host's record instead of orphaning it. Token-gated like any other team
+ *  route — the credential presented IS the authorization. */
+export const HOST_RESIGN_ROUTE = '/api/host/resign';
+
 /**
  * Step-5 enrollment retry-with-backoff (server-mode design spec §4): a
  * transient overlay/DERP-settling failure shouldn't burn a whole `myco join`

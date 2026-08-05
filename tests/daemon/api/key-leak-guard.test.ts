@@ -43,6 +43,7 @@ import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { createSecretsOperations, readSecrets } from '@myco/config/secrets.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
+import { issueTestMemberToken } from '../../helpers/member-token.js';
 
 let teamSock: string;
 
@@ -113,6 +114,8 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 function makeLogger() {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
+
+let memberToken: string;
 
 describe('cross-route API key leak guard', () => {
   let server: DaemonServer;
@@ -318,6 +321,9 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
     fs.mkdirSync(home, { recursive: true });
     process.env.MYCO_HOME = home;
     process.env.MYCO_TEAM_HOME = path.join(tmp, 'team-home');
+    // A REAL issued member token: the shared host bearer is no longer accepted,
+    // so a fixture must hold a credential the host actually issued.
+    memberToken = issueTestMemberToken();
     clearGroveRegistryCaches();
 
     grove = createGrove('Served', home);
@@ -382,7 +388,7 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
 
   function overlayHeaders(extra: Record<string, string> = {}): Record<string, string> {
     return {
-      authorization: `Bearer ${HOST_BEARER}`,
+      authorization: `Bearer ${memberToken}`,
       [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION),
       'x-myco-grove-id': grove.id,
       'x-myco-project-id': projectId,
