@@ -336,10 +336,9 @@ export function createHostAdminMintJoinKeyHandler(deps: HostAdminRouteDeps): Rou
     if (!state || !hostServe.enabled) {
       return refusal(409, 'not_a_host', 'This machine is not serving as a Team Host — enable hosting first.');
     }
-    // The key is DAEMON-minted now: single-use, expiring, hashed at rest, and
-    // validated by this daemon at enrollment. The old one was a headscale
-    // pre-auth key the daemon never saw, where tailnet membership — not the
-    // key — was the real admission gate.
+    // DAEMON-minted: single-use, expiring, hashed at rest, and validated by
+    // this daemon at enrollment. On a route published to the internet the key
+    // is the entire admission gate.
     const hostUrl = readHostState()?.host_url;
     if (!hostUrl) {
       // A key is useless without an address to spend it at, and handing over a

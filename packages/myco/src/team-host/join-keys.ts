@@ -1,13 +1,10 @@
 /**
  * Join keys — the admission gate for the public enrollment route.
  *
- * A member proves it was invited by presenting a key the HOST minted. That is
- * the whole reason this module exists, and it is a genuine change of trust
- * model rather than a port of the old one: the overlay-era key was a headscale
- * pre-auth key consumed by the member's `tailscale up`, which the daemon never
- * saw. Admission was really *overlay membership*, and the key only got the
- * member onto the tailnet. With no overlay there is no such gate, so the key
- * has to be in the request and the daemon has to check it.
+ * A member proves it was invited by presenting a key the HOST minted, IN the
+ * request, which this daemon validates. There is no network membership standing
+ * behind that check: the enrollment route is published to the internet, so the
+ * key is the entire admission gate.
  *
  * PROPERTIES, each load-bearing on a route published to the internet:
  *   - 256 bits of entropy. Nothing rate-limits a guess into existence.

@@ -464,10 +464,9 @@ export function resolveGroveRootsPath(groveId: string, mycoHome = resolveMycoHom
 
 /**
  * `~/.myco/groves/<groveId>/projects/<projectId>/` — the project-scoped
- * directory under its owning Grove. Hosts per-project artifacts that used to
- * live in `<projectRoot>/.myco/` (the capture buffer initially; archive
- * markers, per-project audit files later) so they ride with the Grove rather
- * than the project tree.
+ * directory under its owning Grove. Hosts per-project artifacts (the capture
+ * buffer, archive markers, per-project audit files) here rather than in
+ * `<projectRoot>/.myco/` so they ride with the Grove, not the project tree.
  *
  * Both `groveId` and `projectId` flow through their brand asserters before
  * being joined — Grove-id and project-id traversal attempts (`..`, absolute

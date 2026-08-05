@@ -511,12 +511,9 @@ export interface JoinResult {
  * Join a team host: spend a one-time key at its public URL, and record what
  * comes back.
  *
- * The whole operation is one HTTPS round trip plus a registry write. It used to
- * provision a userspace tailscaled for this host, reserve a loopback
- * CONNECT-proxy port, bring the node onto the host's tailnet with a pre-auth
- * key, and only then enroll through that tunnel — every step existing to create
- * the network the member dialed. None of that is here because none of it is
- * needed.
+ * The whole operation is one HTTPS round trip plus a registry write. There is
+ * no network to stand up, no local process per host, and nothing to provision:
+ * the host's URL is already reachable.
  *
  * ATOMIC. The membership is committed under a reserved generation
  * (`reserveHostEnrollment` → `persistEnrollmentMembership`), so a crash
@@ -713,12 +710,10 @@ async function leaveHostLocked(
     );
   }
 
-  // TELL THE HOST FIRST, best-effort. Leaving used to be a purely member-side
-  // write, which was harmless while the host's credential was shared. With
-  // per-member tokens it is not: the host would keep a LIVE record for a
-  // machine that has left, and that machine's next join is refused as
-  // already-enrolled — recoverable only by an operator on a machine the
-  // departing member may not have access to.
+  // TELL THE HOST FIRST, best-effort. A host that is never told keeps a LIVE
+  // record for a machine that has gone, and that machine's next join is refused
+  // as already-enrolled — recoverable only by an operator, possibly on a
+  // machine the departing member cannot reach.
   //
   // Best-effort by design. A host that is down, unreachable, or already
   // revoked this member must not be able to trap it in the membership: the
@@ -734,12 +729,9 @@ async function leaveHostLocked(
     );
   }
 
-  // Otherwise leaving is a registry write and nothing else. It used to have to
-  // stop and uninstall this host's tailscaled, reconcile its CONNECT-proxy port
-  // against the installed service's arguments, and refuse when the two
-  // disagreed — a whole conflict-detection path that existed because the
-  // member ran a per-host daemon whose identity could drift from the registry.
-  // No process, no port, no drift.
+  // Otherwise leaving is a registry write and nothing else — no process to
+  // stop, no port to release, and nothing whose identity could drift from what
+  // the registry says.
   retireHostMembership(hostId, lease, lockNamespace);
   log(`Removed host record + bearer for ${hostId}.`);
 

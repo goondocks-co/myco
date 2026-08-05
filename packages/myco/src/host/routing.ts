@@ -881,10 +881,9 @@ export function overlayHostStampRefusal(method: string, pathname: string): Refus
 
 /**
  * Resolve the `x-myco-host-id` carrier (E1 §5.3 rev 6) into a routing
- * target. This is what makes a joined host with ZERO attached projects
- * configurable: the old attach-ref-as-carrier scheme had no ref to ride,
- * so `classifyRoute` short-circuited to local and the write silently
- * landed on the member's own daemon.
+ * target. An explicit carrier is what makes a joined host with ZERO attached
+ * projects configurable: with nothing to route on, `classifyRoute`
+ * short-circuits to local and the write lands on the member's own daemon.
  *
  * Grove selection, three states (absent ≠ null — the wire and the copy
  * must keep them apart):

@@ -4,11 +4,9 @@
  * across enables: its `host_id`, when it was first enabled, and the label
  * members see.
  *
- * It used to also record an overlay IP, headscale node/user, and provisioned
- * binary paths, because tearing the host down meant knowing which processes and
- * files to remove. A host now runs no processes of its own and provisions no
- * binaries — it serves a socket the daemon already owns — so there is nothing
- * left here for disable to consult.
+ * A host runs no processes of its own and provisions no binaries — it serves a
+ * socket the daemon already owns — so disable has nothing here to consult
+ * beyond the identity itself.
  *
  * Pure disk read/write, atomic temp+rename (same discipline as the team/host
  * registries). No secrets live here — the host bearer stays in the machine
