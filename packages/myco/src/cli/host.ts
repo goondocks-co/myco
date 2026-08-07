@@ -20,7 +20,7 @@ import {
   resolveTeamKeyProviderFlag,
   TEAM_AGENT_KEY_SECRET,
 } from '../team-host/compose.js';
-import { connectToGlobalDaemon, parseFlags } from './shared.js';
+import { connectToRunningDaemon, parseFlags } from './shared.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 
 function flagMap(args: string[]): Map<string, string> {
@@ -192,14 +192,26 @@ export async function runHostCommand(args: string[]): Promise<void> {
     // Minted by the daemon, not here: the key is single-use and validated at
     // enrollment by the same daemon that issued it, so it has to be created
     // where that store lives.
+    //
+    // Requires an ALREADY-RUNNING daemon rather than starting one, for the
+    // reason `join` does: the raw key crosses the wire exactly once and is not
+    // recoverable, so a daemon spawned as a side effect of this command that
+    // dies before the response lands would mint a key nobody ever sees.
     const flags = flagMap(rest);
-    const client = await connectToGlobalDaemon(resolveVaultDir());
+    const client = await connectToRunningDaemon(
+      resolveVaultDir(),
+      'rotate-key needs the local daemon running — it mints the key, and the key is shown once.\n'
+      + 'Start the daemon first (`myco service install`, or `myco daemon` under a supervisor for a\n'
+      + 'headless box) and re-run. Nothing has been minted.',
+    );
     const response = await client.post('/api/host-admin/mint-join-key', {
       expiration: flags.get('expiration'),
     }) as { key?: string; expires?: string; join_command?: string; error?: string; message?: string };
 
     if (!response.join_command) {
-      console.error(response.message ?? 'Could not mint a join key.');
+      // Surfaces the daemon's own refusal (`not_a_host`, `host_not_published`)
+      // rather than a generic failure — each names a different next step.
+      console.error(response.message ?? response.error ?? 'Could not mint a join key.');
       process.exit(1);
     }
     console.log('Join command (hand this to a member — it works once):\n');

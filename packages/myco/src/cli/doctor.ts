@@ -992,20 +992,39 @@ export async function checkOverlayResidue(opts: {
   const teamsHome = opts.teamsHome ?? resolveTeamsHome();
   const homeDir = opts.homeDir ?? os.homedir();
 
-  const dataPaths = [
-    path.join(homeDir, '.myco-ts'),
-    path.join(teamsHome, 'host', 'headscale'),
-    path.join(teamsHome, 'host', 'bin'),
-    path.join(teamsHome, 'host', 'tailscaled-state'),
-    path.join(teamsHome, 'member', 'bin'),
-  ];
-  // Per-host node state, one dir per joined host.
-  try {
-    for (const entry of fs.readdirSync(path.join(teamsHome, 'hosts'), { withFileTypes: true })) {
-      if (entry.isDirectory()) dataPaths.push(path.join(teamsHome, 'hosts', entry.name, 'tailscaled-state'));
-    }
-  } catch { /* no hosts dir — nothing joined */ }
+  // Anchors must be ABSOLUTE and not the filesystem root before anything is
+  // proposed for deletion. `os.homedir()` can return '' on a broken
+  // environment, and `path.join('', '.myco-ts')` is the RELATIVE `.myco-ts` —
+  // which `rmSync` would resolve against the working directory, so a
+  // `doctor --fix` run inside a project could delete a directory there. An
+  // unusable anchor contributes no paths rather than a wrong one.
+  const usableAnchor = (dir: string): boolean =>
+    typeof dir === 'string' && path.isAbsolute(dir) && path.resolve(dir) !== path.parse(path.resolve(dir)).root;
 
+  const dataPaths: string[] = [];
+  if (usableAnchor(homeDir)) {
+    dataPaths.push(path.join(homeDir, '.myco-ts'));
+  }
+  if (usableAnchor(teamsHome)) {
+    dataPaths.push(
+      path.join(teamsHome, 'host', 'headscale'),
+      path.join(teamsHome, 'host', 'bin'),
+      path.join(teamsHome, 'host', 'tailscaled-state'),
+      path.join(teamsHome, 'member', 'bin'),
+    );
+    // Per-host node state, one dir per joined host.
+    try {
+      for (const entry of fs.readdirSync(path.join(teamsHome, 'hosts'), { withFileTypes: true })) {
+        if (entry.isDirectory()) dataPaths.push(path.join(teamsHome, 'hosts', entry.name, 'tailscaled-state'));
+      }
+    } catch { /* no hosts dir — nothing joined */ }
+  }
+
+  // `existsSync` follows symlinks, so a symlink is reported when its target is
+  // live. Removing it is still safe: `rmSync` unlinks the link itself and
+  // leaves whatever it pointed at (verified — a symlinked directory's contents
+  // survive), so a link planted at one of these names cannot be used to reach
+  // anything else.
   const foundData = dataPaths.filter((p) => fs.existsSync(p));
 
   // A unit is Myco's only if its name ties Myco to the networking stack —

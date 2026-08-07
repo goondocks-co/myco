@@ -124,6 +124,47 @@ describe('doctor: per-host networking residue', () => {
     expect(after?.detail).toContain(unit);
   });
 
+  test('a broken HOME proposes NOTHING — never a relative path', async () => {
+    // `os.homedir()` returns '' on a broken environment, and
+    // `path.join('', '.myco-ts')` is RELATIVE — `rmSync` would resolve it
+    // against the working directory, so `doctor --fix` inside a project could
+    // delete a directory there. Verified by planting the bait in cwd.
+    const bait = path.join(process.cwd(), '.myco-ts');
+    const preexisting = fs.existsSync(bait);
+    if (!preexisting) fs.mkdirSync(bait, { recursive: true });
+    try {
+      for (const brokenHome of ['', '.', 'relative/path']) {
+        const result = await checkOverlayResidue({ teamsHome, homeDir: brokenHome, serviceUnitDir: unitDir });
+        const proposed = (result?.fixData?.paths as string[] | undefined) ?? [];
+        expect(proposed.every((p) => path.isAbsolute(p))).toBe(true);
+        expect(proposed.some((p) => p.endsWith('.myco-ts'))).toBe(false);
+      }
+      expect(fs.existsSync(bait)).toBe(true);
+    } finally {
+      if (!preexisting) fs.rmSync(bait, { recursive: true, force: true });
+    }
+  });
+
+  test('the filesystem ROOT as an anchor proposes nothing', async () => {
+    const result = await checkOverlayResidue({ teamsHome: path.parse(process.cwd()).root, homeDir, serviceUnitDir: unitDir });
+    const proposed = (result?.fixData?.paths as string[] | undefined) ?? [];
+    expect(proposed.some((p) => p.split(path.sep).filter(Boolean).length < 2)).toBe(false);
+  });
+
+  test('a SYMLINK planted at a residue name is unlinked, and its target survives', async () => {
+    // The link is reported (existsSync follows it). Removing it must not reach
+    // through to whatever it points at.
+    const precious = seed(tmp, 'precious');
+    fs.writeFileSync(path.join(precious, 'data.txt'), 'user data');
+    fs.symlinkSync(precious, path.join(homeDir, '.myco-ts'));
+
+    const found = await check();
+    await DOCTOR_FIXERS['overlay-residue']({} as DoctorFixContext, [found as DoctorCheck]);
+
+    expect(fs.existsSync(path.join(homeDir, '.myco-ts'))).toBe(false);
+    expect(fs.readFileSync(path.join(precious, 'data.txt'), 'utf8')).toBe('user data');
+  });
+
   test('--fix on a path that vanished since the scan is a no-op, not an error', async () => {
     const socketDir = seed(homeDir, '.myco-ts');
     const found = await check();
