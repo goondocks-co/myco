@@ -24,6 +24,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -202,6 +203,47 @@ describe('doctor: per-host networking residue', () => {
       expect(proposed.every((p) => path.isAbsolute(p))).toBe(true);
       expect(proposed.some((p) => p.endsWith('.sock'))).toBe(false);
     }
+  });
+
+  test('a leftover a LIVE process is still using is reported, never deleted', async () => {
+    // Found on a real machine: an orphaned per-host tailscaled from an old
+    // smoke was still accepting on `~/.myco-ts/<tag>.sock`. Deleting that
+    // directory would have left the process running with no control socket —
+    // the same reason a loaded service unit is reported rather than removed.
+    const socketDir = seed(homeDir, '.myco-ts');
+    const sockPath = path.join(socketDir, 'abc1234567.sock');
+    const listening = net.createServer();
+    await new Promise<void>((r) => listening.listen(sockPath, () => r()));
+
+    // Unrelated residue in the same run must STILL be cleanable.
+    const headscale = seed(teamsHome, 'host', 'headscale');
+    try {
+      const found = await check();
+      expect(found?.detail).toContain('still IN USE');
+      expect(found?.detail).toContain(socketDir);
+      expect(found?.fixData?.paths as string[]).not.toContain(socketDir);
+
+      await DOCTOR_FIXERS['overlay-residue']({} as DoctorFixContext, [found as DoctorCheck]);
+      expect(fs.existsSync(sockPath)).toBe(true);
+      expect(fs.existsSync(headscale)).toBe(false);
+    } finally {
+      await new Promise<void>((r) => listening.close(() => r()));
+    }
+  });
+
+  test('once the process stops, the same leftover becomes fixable', async () => {
+    const socketDir = seed(homeDir, '.myco-ts');
+    const sockPath = path.join(socketDir, 'abc1234567.sock');
+    const listening = net.createServer();
+    await new Promise<void>((r) => listening.listen(sockPath, () => r()));
+    await new Promise<void>((r) => listening.close(() => r()));
+    // The socket FILE survives a closed server on some platforms; either way
+    // nothing is accepting on it now, so it is safe to remove.
+    if (!fs.existsSync(sockPath)) fs.writeFileSync(sockPath, '');
+
+    const found = await check();
+    expect(found?.detail ?? '').not.toContain('still IN USE');
+    expect(found?.fixData?.paths as string[]).toContain(socketDir);
   });
 
   test('--fix on a path that vanished since the scan is a no-op, not an error', async () => {

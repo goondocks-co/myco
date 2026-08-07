@@ -6,6 +6,7 @@
  */
 
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
@@ -1003,6 +1004,43 @@ async function hostTagsUnder(teamsHome: string): Promise<string[]> {
   }
 }
 
+/**
+ * Is a live process still accepting on a socket at (or under) this path?
+ *
+ * Probes by CONNECTING rather than by listing processes: a unix socket whose
+ * owner has exited refuses with ECONNREFUSED, while one being accepted on
+ * connects. That needs no external tool and no permission to inspect other
+ * processes.
+ *
+ * Only ever called on paths already collected as residue, and it connects and
+ * immediately destroys — it never writes a byte.
+ */
+function containsLiveSocket(target: string): boolean {
+  const sockets: string[] = [];
+  try {
+    const stat = fs.lstatSync(target);
+    if (stat.isSocket()) sockets.push(target);
+    else if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+        if (entry.isSocket()) sockets.push(path.join(target, entry.name));
+      }
+    }
+  } catch {
+    return false;
+  }
+  return sockets.some((sock) => {
+    try {
+      // A synchronous liveness answer: connect() on a unix socket with no
+      // listener fails immediately at the syscall, so this does not block.
+      const probe = net.connect(sock);
+      probe.destroy();
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 export async function checkOverlayResidue(opts: {
   teamsHome?: string;
   homeDir?: string;
@@ -1060,7 +1098,15 @@ export async function checkOverlayResidue(opts: {
   // leaves whatever it pointed at (verified — a symlinked directory's contents
   // survive), so a link planted at one of these names cannot be used to reach
   // anything else.
-  const foundData = dataPaths.filter((p) => fs.existsSync(p));
+  const present = dataPaths.filter((p) => fs.existsSync(p));
+
+  // A socket someone is still ACCEPTING on means the process that created it is
+  // alive. Unlinking it leaves that process running with no control socket —
+  // the same reason a loaded service unit is reported rather than removed.
+  // Split here so a live leftover is named with what to do about it, and the
+  // rest of the residue is still cleanable in the same run.
+  const live = present.filter((p) => containsLiveSocket(p));
+  const foundData = present.filter((p) => !live.includes(p));
 
   // A unit is Myco's only if its name ties Myco to the networking stack —
   // never a bare `tailscaled`, which is the user's own Tailscale install and
@@ -1073,11 +1119,17 @@ export async function checkOverlayResidue(opts: {
       .map((name) => path.join(unitDir, name));
   } catch { /* no unit dir on this platform/box */ }
 
-  if (foundData.length === 0 && foundUnits.length === 0) return null;
+  if (foundData.length === 0 && foundUnits.length === 0 && live.length === 0) return null;
 
   const parts: string[] = [];
   if (foundData.length > 0) {
     parts.push(`${foundData.length} leftover director${foundData.length === 1 ? 'y' : 'ies'} from per-host networking (${foundData.join(', ')})`);
+  }
+  if (live.length > 0) {
+    parts.push(
+      `${live.length} leftover(s) still IN USE by a running process — stop it first, or removing the socket leaves it `
+      + `running with no way to reach it: ${live.join(', ')}`,
+    );
   }
   if (foundUnits.length > 0) {
     parts.push(
