@@ -288,8 +288,15 @@ describe('host-proxy forwarder', () => {
     // would WIDEN the range and admit a v3 host — one whose recorded address is
     // an overlay IP that resolves nowhere. A loud refusal beats a silent
     // timeout, and this is the assertion that keeps it loud.
+    //
+    // Stated as a FLOOR, not `MIN_COMPAT === PROTOCOL`. That equality held only
+    // while every shipped bump was breaking; the first additive one after the
+    // transport change (v5, the widened residency table set) makes it false
+    // without admitting a single pre-transport host. The property is that
+    // nothing below the transport change is ever accepted.
     expect(hostProtocolCompatible(3)).toBe(false);
-    expect(HOST_MIN_COMPAT_VERSION).toBe(HOST_PROTOCOL_VERSION);
+    expect(HOST_MIN_COMPAT_VERSION).toBeGreaterThanOrEqual(4);
+    expect(HOST_MIN_COMPAT_VERSION).toBeLessThanOrEqual(HOST_PROTOCOL_VERSION);
   });
 
   test('isCanopyMcpCall keys on tool name + op/type selector only', () => {

@@ -17,7 +17,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { Database } from 'bun:sqlite';
+
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { createSchema } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { REBUILD_TABLES } from '@myco/db/queries/team-outbox.js';
@@ -84,32 +87,48 @@ describe('residency route classification', () => {
     expect(match![1]).toBe(ROUTED_RESIDENCY_ROWS_PATH);
   });
 
-  test('RESIDENCY_TABLE_ORDER is the canonical FK-topological order: parents first, sidecars last, no team_members', () => {
-    const at = (t: string) => RESIDENCY_TABLE_ORDER.indexOf(t);
-    // Every child TABLE follows its parent.
-    expect(at('sessions')).toBeLessThan(at('prompt_batches'));
-    expect(at('prompt_batches')).toBeLessThan(at('spores'));
-    expect(at('entities')).toBeLessThan(at('entity_mentions'));
-    expect(at('skill_candidates')).toBeLessThan(at('skill_records'));
-    expect(at('skill_records')).toBeLessThan(at('skill_lineage'));
-    expect(at('okf_pages')).toBeLessThan(at('okf_page_revisions'));
-    // team_members is excluded (machine-scoped, no project_id); sidecars are last.
-    expect(at('team_members')).toBe(-1);
-    expect(at('entity_mentions')).toBe(RESIDENCY_TABLE_ORDER.length - 2);
-    expect(at('content_publications')).toBe(RESIDENCY_TABLE_ORDER.length - 1);
-    // Every ordered table is allow-listed.
+  test('RESIDENCY_TABLE_ORDER is FK-topological against the REAL schema: every parent precedes its children', () => {
+    // Asked of the schema's own foreign keys rather than a hand-picked list of
+    // pairs. The order is derived from GROVE_PROJECT_SCOPED_TABLES, so a table
+    // inserted there in the wrong position must fail here — a spot-check of six
+    // pairs cannot see a seventh.
+    const db = new Database(':memory:');
+    createSchema(db, 'local');
+    const position = new Map(RESIDENCY_TABLE_ORDER.map((t, i) => [t, i]));
+    const violations: string[] = [];
+    for (const [table, index] of position) {
+      const fks = db.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{ table: string }>;
+      for (const fk of fks) {
+        if (fk.table === table) continue; // self-reference: handled row-wise, not table-wise
+        const parent = position.get(fk.table);
+        if (parent !== undefined && parent > index) {
+          violations.push(`${table} (${index}) references ${fk.table} (${parent})`);
+        }
+      }
+    }
+    db.close();
+    expect(violations).toEqual([]);
+    // team_members is excluded from the send order (machine-scoped, no project_id)
+    // while remaining allow-listed for members inside the compatibility window.
+    expect(RESIDENCY_TABLE_ORDER.indexOf('team_members')).toBe(-1);
+    expect(RESIDENCY_ALLOWED_TABLES.has('team_members')).toBe(true);
+    // content_publications lands last: its tenancy resolves through artifact rows.
+    expect(RESIDENCY_TABLE_ORDER.indexOf('content_publications')).toBe(RESIDENCY_TABLE_ORDER.length - 1);
     for (const t of RESIDENCY_TABLE_ORDER) expect(RESIDENCY_ALLOWED_TABLES.has(t)).toBe(true);
   });
 
   test('the apply matrix covers exactly the allow-list', () => {
-    // Allow-list = the 18 REBUILD_TABLES + the two sidecars, and every allowed
-    // table has a rule (no allow-listed-but-unhandled gap).
-    for (const table of REBUILD_TABLES) expect(RESIDENCY_ALLOWED_TABLES.has(table)).toBe(true);
-    expect(RESIDENCY_ALLOWED_TABLES.has('entity_mentions')).toBe(true);
-    expect(RESIDENCY_ALLOWED_TABLES.has('content_publications')).toBe(true);
+    // Every allowed table has a rule (no allow-listed-but-unhandled gap), and no
+    // rule exists for a table the route would refuse (no dead matrix entry).
     for (const table of RESIDENCY_ALLOWED_TABLES) {
       expect(RESIDENCY_APPLY_RULES[table], `no apply rule for ${table}`).toBeDefined();
     }
+    for (const table of Object.keys(RESIDENCY_APPLY_RULES)) {
+      expect(RESIDENCY_ALLOWED_TABLES.has(table), `rule for un-allowed table ${table}`).toBe(true);
+    }
+    // Members inside the compatibility window still send the pre-parity carried
+    // set, so every table they can name must remain recognized.
+    for (const table of REBUILD_TABLES) expect(RESIDENCY_ALLOWED_TABLES.has(table)).toBe(true);
   });
 });
 
@@ -395,6 +414,107 @@ describe('residency apply matrix', () => {
   });
 
   // -- insert-only (append-only) ------------------------------------------------
+  // -- local-rowid: the whole reason these tables could not ride an id upsert ---
+  test('local-rowid: two members whose AUTOINCREMENT ids collide keep BOTH rows', () => {
+    // `activities.id` is an INTEGER PRIMARY KEY AUTOINCREMENT — a counter private
+    // to each machine, so both members' first tool call is id 1 while being
+    // entirely unrelated rows. Under an id-keyed upsert the second would
+    // overwrite the first and one member's capture would vanish on the host.
+    // The FK parents these rows hang off — applied through the same engine.
+    apply('sessions', [sessionRow('sess1', PROJ)]);
+    apply('prompt_batches', [{ id: 'pb1', project_id: PROJ, session_id: 'sess1', kind: 'initial', origin: 'human', status: 'active', created_at: NOW, machine_id: 'm' }]);
+    const activity = (id: number, hash: string, tool: string) => ({
+      id, project_id: PROJ, session_id: 'sess1', prompt_batch_id: 'pb1',
+      tool_name: tool, content_hash: hash, timestamp: NOW, created_at: NOW,
+    });
+    apply('activities', [activity(1, 'hash-from-member-a', 'Read')]);
+    apply('activities', [activity(1, 'hash-from-member-b', 'Write')]);
+
+    expect(count('activities')).toBe(2);
+    const tools = (getDatabase().prepare(
+      `SELECT tool_name FROM activities ORDER BY tool_name`,
+    ).all() as Array<{ tool_name: string }>).map((r) => r.tool_name);
+    expect(tools).toEqual(['Read', 'Write']);
+  });
+
+  test('local-rowid: a replayed row dedups on the natural key, not the dropped id', () => {
+    // The push retries any failed POST, so replay-safety rests entirely on the
+    // declared dedupe tuple once the sender's id is gone.
+    // The FK parents these rows hang off — applied through the same engine.
+    apply('sessions', [sessionRow('sess1', PROJ)]);
+    apply('prompt_batches', [{ id: 'pb1', project_id: PROJ, session_id: 'sess1', kind: 'initial', origin: 'human', status: 'active', created_at: NOW, machine_id: 'm' }]);
+    const row = {
+      id: 7, project_id: PROJ, session_id: 'sess1', prompt_batch_id: 'pb1',
+      tool_name: 'Read', content_hash: 'stable-hash', timestamp: NOW, created_at: NOW,
+    };
+    apply('activities', [row]);
+    apply('activities', [{ ...row, id: 999 }]); // same row, different local id
+    expect(count('activities')).toBe(1);
+  });
+
+  test('local-rowid: a NULL in the dedupe tuple dedups a replay but keeps DISTINCT rows', () => {
+    // Two properties in tension, and the tuple has to serve both. `content_hash`
+    // is nullable and the probe matches NULLs (a `=` probe never matches NULL, so
+    // every hash-less row would re-insert on each replay) — which means a tuple
+    // narrow enough to be only `(project_id, content_hash)` would merge every
+    // hash-less tool call in the project into a single row.
+    // The FK parents these rows hang off — applied through the same engine.
+    apply('sessions', [sessionRow('sess1', PROJ)]);
+    apply('prompt_batches', [{ id: 'pb1', project_id: PROJ, session_id: 'sess1', kind: 'initial', origin: 'human', status: 'active', created_at: NOW, machine_id: 'm' }]);
+    const row = {
+      id: 1, project_id: PROJ, session_id: 'sess1', prompt_batch_id: 'pb1',
+      tool_name: 'Read', content_hash: null, timestamp: NOW, created_at: NOW,
+    };
+    // Replay of the SAME hash-less row: deduped despite the NULL.
+    apply('activities', [row]);
+    apply('activities', [{ ...row, id: 2 }]);
+    expect(count('activities')).toBe(1);
+
+    // A DIFFERENT hash-less row: kept, not merged into the one above.
+    apply('activities', [{ ...row, id: 3, tool_name: 'Write' }]);
+    apply('activities', [{ ...row, id: 4, timestamp: NOW + 1 }]);
+    expect(count('activities')).toBe(3);
+  });
+
+  test('local-rowid: an in-batch self reference is remapped to the receiver id', () => {
+    // `digest_extract_revisions.parent_revision_id` FKs the same table by the id
+    // that was just dropped, so the link has to be rewritten to whatever the
+    // receiver assigned the parent — otherwise it would point at an unrelated row.
+    const revision = (id: number, tier: number, parent: number | null) => ({
+      id, project_id: PROJ, agent_id: 'myco-agent', tier,
+      content: `c${id}`, parent_revision_id: parent, created_at: NOW + tier,
+    });
+    apply('digest_extract_revisions', [revision(1, 1, null), revision(2, 2, 1)]);
+
+    const rows = getDatabase().prepare(
+      `SELECT id, tier, parent_revision_id FROM digest_extract_revisions ORDER BY tier`,
+    ).all() as Array<{ id: number; tier: number; parent_revision_id: number | null }>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].parent_revision_id).toBeNull();
+    // The child points at the parent's RECEIVER id, whatever it turned out to be.
+    expect(rows[1].parent_revision_id).toBe(rows[0].id);
+  });
+
+  test('composite-key: a natural-key table upserts in place and never duplicates', () => {
+    const entry = (hash: string, at: number) => ({
+      project_id: PROJ, machine_id: 'm', path: 'src/a.ts', content_hash: hash,
+      size_bytes: 1, token_estimate: 1, line_count: 1, mechanical_updated_at: at,
+    });
+    apply('canopy_entries', [entry('old', NOW)]);
+    apply('canopy_entries', [entry('new', NOW + 10)]);
+    expect(count('canopy_entries')).toBe(1);
+    const row = getDatabase().prepare(
+      `SELECT content_hash FROM canopy_entries`,
+    ).get() as { content_hash: string };
+    expect(row.content_hash).toBe('new');
+
+    // ...and a STALE batch does not regress it — the timestamp guards the update.
+    apply('canopy_entries', [entry('stale', NOW - 100)]);
+    expect((getDatabase().prepare(
+      `SELECT content_hash FROM canopy_entries`,
+    ).get() as { content_hash: string }).content_hash).toBe('new');
+  });
+
   test('insert-only dedups on the PK (graph_edges)', () => {
     const edge = { id: 'ge1', project_id: PROJ, agent_id: 'myco-agent', source_id: 'a', source_type: 'x', target_id: 'b', target_type: 'y', type: 'rel', created_at: NOW, machine_id: 'm' };
     apply('graph_edges', [edge]);

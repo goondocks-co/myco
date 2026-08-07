@@ -43,13 +43,17 @@ export const ROUTED_DETACH_COMPLETE_PATH = '/routed-capture/residency-detach-com
 
 /**
  * Minimum host protocol version a with-history residency transition requires.
- * The host row-ingest route (T2) ships at HOST_PROTOCOL_VERSION 3; a member
- * whose joined host records an older version refuses the move up front (nothing
- * has been touched yet) rather than pushing to a route the host cannot serve.
- * Declared here — not `constants.ts` — so the client-safe journal module owns
- * the gate without pulling the host-protocol constant surface.
+ * A member whose joined host records an older version refuses the move up front
+ * (nothing has been touched yet) rather than pushing to a route the host cannot
+ * serve. Declared here — not `constants.ts` — so the client-safe journal module
+ * owns the gate without pulling the host-protocol constant surface.
+ *
+ * A host below 5 allow-lists a narrower residency table set than the push now
+ * sends, and answers 400 `unknown table` for the remainder. That fails the push
+ * rather than losing data, but it fails midway through a transition — so the
+ * gate refuses before the project is parked instead.
  */
-export const RESIDENCY_MIN_HOST_PROTOCOL = 3;
+export const RESIDENCY_MIN_HOST_PROTOCOL = 5;
 
 /** Which way the project is moving. `attach` — local → host; `detach` — host → local. */
 export type ResidencyDirection = 'attach' | 'detach';

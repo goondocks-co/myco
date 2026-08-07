@@ -33,11 +33,19 @@ describe('terminateDaemonProcess', () => {
         kill: (pid, sentSignal) => {
           lifecycle.push(`kill:${pid}:${sentSignal}`);
         },
+        // Stubbed so the case stays hermetic. Left out, the Windows arm runs the
+        // REAL waiter against pid 4242 — an arbitrary number that is a live
+        // unrelated process on some machines and free on others, so the case
+        // polled for its full 10s timeout here and passed instantly elsewhere.
+        confirmTermination: async (pid) => {
+          lifecycle.push(`confirm:${pid}`);
+        },
       });
 
       expect(lifecycle).toEqual([
         'contain:start',
         `kill:4242:${signal}`,
+        `confirm:4242`,
         'contain:end',
       ]);
     },

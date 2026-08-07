@@ -24,10 +24,18 @@ export function projectHasForeignMachineRows(
   projectId: string,
   excludeMachineIds: string[],
 ): boolean {
-  // Every residency table that carries BOTH project_id and machine_id —
-  // content_publications carries neither a project column nor per-machine
-  // attribution semantics (project-shared truth), so it never counts.
-  const machineTables = RESIDENCY_TABLE_ORDER.filter((t) => t !== 'content_publications');
+  // Every residency table that carries BOTH project_id and machine_id, asked of the
+  // SCHEMA rather than by excluding names: thirteen carried tables have no
+  // machine_id (`activities`, the agent-run children, `log_entries`, …), and a
+  // name-based exclusion would interpolate a column that does not exist and throw.
+  // `content_publications` drops out on its own — it has neither column, carrying
+  // project-shared truth rather than per-machine attribution.
+  const machineTables = RESIDENCY_TABLE_ORDER.filter((t) => {
+    const cols = new Set(
+      (db.prepare(`PRAGMA table_info(${t})`).all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    return cols.has('project_id') && cols.has('machine_id');
+  });
   const exclude = excludeMachineIds.length > 0
     ? `AND machine_id NOT IN (${excludeMachineIds.map(() => '?').join(', ')})`
     : '';
