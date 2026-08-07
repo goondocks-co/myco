@@ -1012,33 +1012,57 @@ async function hostTagsUnder(teamsHome: string): Promise<string[]> {
  * connects. That needs no external tool and no permission to inspect other
  * processes.
  *
- * Only ever called on paths already collected as residue, and it connects and
- * immediately destroys — it never writes a byte.
+ * ASYNC because `net.connect` is: it never throws synchronously, so a
+ * try/catch around it catches nothing and reports every socket as live —
+ * which would make any directory holding a dead socket permanently
+ * unfixable, defeating the whole check. The verdict has to come from the
+ * 'connect'/'error' events. The error handler is also what keeps a refused
+ * probe from surfacing as an unhandled 'error' event.
  */
-function containsLiveSocket(target: string): boolean {
-  const sockets: string[] = [];
+async function isLiveSocket(sock: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (live: boolean, probe: net.Socket): void => {
+      if (settled) return;
+      settled = true;
+      probe.destroy();
+      resolve(live);
+    };
+    let probe: net.Socket;
+    try {
+      probe = net.connect(sock);
+    } catch {
+      resolve(false);
+      return;
+    }
+    probe.once('connect', () => finish(true, probe));
+    probe.once('error', () => finish(false, probe));
+    // A socket that neither connects nor refuses is not something to block a
+    // cleanup on; treat it as dead rather than hanging the doctor.
+    const timer = setTimeout(() => finish(false, probe), 250);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+}
+
+/** Sockets at, or directly under, a collected residue path. */
+function socketsUnder(target: string): string[] {
   try {
     const stat = fs.lstatSync(target);
-    if (stat.isSocket()) sockets.push(target);
-    else if (stat.isDirectory()) {
-      for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
-        if (entry.isSocket()) sockets.push(path.join(target, entry.name));
-      }
-    }
+    if (stat.isSocket()) return [target];
+    if (!stat.isDirectory()) return [];
+    return fs.readdirSync(target, { withFileTypes: true })
+      .filter((e) => e.isSocket())
+      .map((e) => path.join(target, e.name));
   } catch {
-    return false;
+    return [];
   }
-  return sockets.some((sock) => {
-    try {
-      // A synchronous liveness answer: connect() on a unix socket with no
-      // listener fails immediately at the syscall, so this does not block.
-      const probe = net.connect(sock);
-      probe.destroy();
-      return true;
-    } catch {
-      return false;
-    }
-  });
+}
+
+async function containsLiveSocket(target: string): Promise<boolean> {
+  for (const sock of socketsUnder(target)) {
+    if (await isLiveSocket(sock)) return true;
+  }
+  return false;
 }
 
 export async function checkOverlayResidue(opts: {
@@ -1068,6 +1092,12 @@ export async function checkOverlayResidue(opts: {
     dataPaths.push(
       path.join(teamsHome, 'host', 'headscale'),
       path.join(teamsHome, 'host', 'tailscaled-state'),
+      // `host/bin` holds the provisioned control-plane binary and its manifest.
+      // Confirmed on a real machine, not inferred: a full teardown of the old
+      // stack left 48 MB here. A source search finds no named resolver for it
+      // (it was joined inline), so grep alone concludes it never existed —
+      // which is why this entry cites the machine instead.
+      path.join(teamsHome, 'host', 'bin'),
       path.join(teamsHome, 'member', 'bin'),
     );
     // Per-host node state, one dir per joined host.
@@ -1105,7 +1135,10 @@ export async function checkOverlayResidue(opts: {
   // the same reason a loaded service unit is reported rather than removed.
   // Split here so a live leftover is named with what to do about it, and the
   // rest of the residue is still cleanable in the same run.
-  const live = present.filter((p) => containsLiveSocket(p));
+  const live: string[] = [];
+  for (const p of present) {
+    if (await containsLiveSocket(p)) live.push(p);
+  }
   const foundData = present.filter((p) => !live.includes(p));
 
   // A unit is Myco's only if its name ties Myco to the networking stack —
@@ -1575,6 +1608,12 @@ export async function runChecks(
   if (pathBinary) checks.push(pathBinary);
   const runtimePin = await checkRuntimePin();
   if (runtimePin) checks.push(runtimePin);
+  // Leftover per-host networking state lives under the machine's home and team
+  // home — nothing about it is project-scoped, and the moment a user is most
+  // likely to run `doctor` after upgrading is from their home directory, which
+  // takes the early return below.
+  const overlayResidue = await checkOverlayResidue();
+  if (overlayResidue) checks.push(overlayResidue);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:
@@ -1606,8 +1645,6 @@ export async function runChecks(
   checks.push(checkBinaryVersionSkew());
   const updateResidue = await checkUpdateResidue();
   if (updateResidue) checks.push(updateResidue);
-  const overlayResidue = await checkOverlayResidue();
-  if (overlayResidue) checks.push(overlayResidue);
   checks.push(await checkInstallSource());
   checks.push(await checkGlobalLaunchers());
   checks.push(...await checkDetectedSymbionts());

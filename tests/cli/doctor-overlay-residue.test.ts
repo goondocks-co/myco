@@ -23,14 +23,16 @@
  * they are not read, not migrated, and leaving a host does not clean them.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import { checkOverlayResidue } from '@myco/cli/doctor';
+import { checkOverlayResidue, runChecks } from '@myco/cli/doctor';
 import { memberHostTag } from '@myco/grove/paths';
 import { DOCTOR_FIXERS } from '@myco/cli/doctor-fixes';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import type { DoctorCheck } from '@myco/cli/doctor';
 import type { DoctorFixContext } from '@myco/cli/doctor-fixes';
 
@@ -71,6 +73,18 @@ describe('doctor: per-host networking residue', () => {
     expect(result?.fixable).toBe(true);
     expect(result?.detail).toContain(socketDir);
     expect(result?.detail).toContain(headscale);
+  });
+
+  test('the provisioned control-plane binaries are found', async () => {
+    // A real machine kept 48 MB in `host/bin` through a full teardown. No
+    // named resolver produces that path — it was joined inline — so a source
+    // search concludes it is a phantom and drops it. This case is the evidence
+    // that it is not.
+    const hostBin = seed(teamsHome, 'host', 'bin');
+    fs.writeFileSync(path.join(hostBin, 'headscale'), 'binary');
+
+    const result = await check();
+    expect(result?.fixData?.paths as string[]).toContain(hostBin);
   });
 
   test('per-host node state is found under EVERY joined host', async () => {
@@ -231,20 +245,57 @@ describe('doctor: per-host networking residue', () => {
     }
   });
 
-  test('once the process stops, the same leftover becomes fixable', async () => {
+  test('a DEAD socket does not block cleanup — the liveness probe must be real', async () => {
+    // The earlier version of this case substituted a REGULAR FILE for a dead
+    // socket, so `isSocket()` was false and the liveness path never ran — it
+    // passed while the probe reported EVERY socket as live (`net.connect` is
+    // async, so a try/catch around it catches nothing). That defect would have
+    // made any directory holding a dead socket permanently unfixable.
+    //
+    // A genuinely dead socket needs an owner that died WITHOUT cleaning up, so
+    // this kills a child with SIGKILL and leaves the inode behind.
     const socketDir = seed(homeDir, '.myco-ts');
-    const sockPath = path.join(socketDir, 'abc1234567.sock');
-    const listening = net.createServer();
-    await new Promise<void>((r) => listening.listen(sockPath, () => r()));
-    await new Promise<void>((r) => listening.close(() => r()));
-    // The socket FILE survives a closed server on some platforms; either way
-    // nothing is accepting on it now, so it is safe to remove.
-    if (!fs.existsSync(sockPath)) fs.writeFileSync(sockPath, '');
+    const sockPath = path.join(socketDir, 'dead123456.sock');
+    const child = spawn(process.execPath, ['-e',
+      `const net=require('net');const s=net.createServer();s.listen(${JSON.stringify(sockPath)},()=>console.log('up'));setInterval(()=>{},1000);`,
+    ]);
+    await new Promise((r) => child.stdout!.once('data', r));
+    child.kill('SIGKILL');
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(fs.lstatSync(sockPath).isSocket()).toBe(true);
 
     const found = await check();
     expect(found?.detail ?? '').not.toContain('still IN USE');
     expect(found?.fixData?.paths as string[]).toContain(socketDir);
-  });
+  }, 30_000);
+
+  test('WIRING: runChecks reports it OUTSIDE a project directory', async () => {
+    // Every other case here calls `checkOverlayResidue` directly, so none of
+    // them exercise where it sits in `runChecks`. It was placed AFTER the
+    // no-config early return, so a `doctor` run from a home directory — the
+    // likeliest moment to run one after upgrading — never reached it. Only
+    // running the real binary on a real machine surfaced that.
+    //
+    // Anchored on the TEAM home, not the home dir: `os.homedir()` ignores
+    // `process.env.HOME` under Bun, so a home-dir-based fixture would silently
+    // scan the developer's REAL home and could pass for the wrong reason.
+    const hostBin = seed(teamsHome, 'host', 'bin');
+    fs.writeFileSync(path.join(hostBin, 'headscale'), 'binary');
+
+    const savedTeam = process.env.MYCO_TEAM_HOME;
+    process.env.MYCO_TEAM_HOME = teamsHome;
+    try {
+      const checks = await runChecks(path.join(tmp, 'not-a-project'), testPerUserLockNamespace);
+      const row = checks.find((c) => c.name === 'Team transport');
+      expect(row, 'no Team transport row outside a project directory').toBeTruthy();
+      // THIS fixture's residue, so a developer's own leftovers cannot satisfy it.
+      expect(row?.detail).toContain(hostBin);
+    } finally {
+      if (savedTeam === undefined) delete process.env.MYCO_TEAM_HOME;
+      else process.env.MYCO_TEAM_HOME = savedTeam;
+    }
+  }, 60_000);
 
   test('--fix on a path that vanished since the scan is a no-op, not an error', async () => {
     const socketDir = seed(homeDir, '.myco-ts');
