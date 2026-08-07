@@ -50,6 +50,28 @@
  * excludes a forgery an unprivileged attacker can actually perform. A
  * user-owned daemon yields null, which falls back to the CLI default — the
  * behaviour before this module existed.
+ *
+ * THE SOCKET'S OWNER IS CHECKED TOO — it must be root — which a planted socket
+ * cannot be. Its MODE deliberately is NOT: Tailscale ships the control socket
+ * `srw-rw-rw-` (measured on a real machine) because unprivileged users have to
+ * talk to the daemon, which is how `tailscale status` works at all. The
+ * runtime-pin rule (`checkPinTrust`) refuses a group/other-writable file, but
+ * that guards a binary we EXEC, where writability is the threat. Applying it
+ * here rejects every legitimate daemon. What keeps the socket honest is that
+ * `/var/run` is root-owned, so an unprivileged user cannot place an entry
+ * there; a loose MODE lets them connect, not substitute.
+ *
+ * AMBIGUITY IS REFUSED. Two root daemons naming different sockets have no
+ * right answer, and picking whichever the process table listed first is a
+ * silent wrong answer half the time. Null sends the caller to the CLI default,
+ * which is at least the behaviour they had.
+ *
+ * KNOWN LIMIT, stated because it is common: a legitimate USER-MODE standalone
+ * `tailscaled` (rootless, `--tun=userspace-networking`) is not trusted either,
+ * so on such a machine this module is inert and the CLI default decides. That
+ * is the safe direction — a rootless daemon is indistinguishable from a
+ * planted one — but it means the sandboxed-build disambiguation only takes
+ * effect where `tailscaled` runs as root.
  */
 
 /** How a standalone daemon names its control socket on the command line. */
@@ -61,8 +83,9 @@ const TAILSCALED_PROCESS = /(^|\/)tailscaled$/;
 export interface TailscaleCliDeps {
   /** Test seam: the process table as `{ uid, command }` per running process. */
   processes?: () => Array<{ uid: number; command: string }>;
-  /** Test seam. */
-  exists?: (path: string) => boolean;
+  /** Test seam: the socket's owner uid, or null if absent. */
+  socketStat?: (path: string) => { uid: number } | null;
+  platform?: NodeJS.Platform;
 }
 
 function defaultProcesses(): Array<{ uid: number; command: string }> {
@@ -84,13 +107,13 @@ function defaultProcesses(): Array<{ uid: number; command: string }> {
   }
 }
 
-function defaultExists(target: string): boolean {
+function defaultSocketStat(target: string): { uid: number } | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const fs = require('node:fs') as typeof import('node:fs');
-    return fs.existsSync(target);
+    return { uid: fs.lstatSync(target).uid };
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -104,17 +127,27 @@ function defaultExists(target: string): boolean {
  * something absent.
  */
 export function resolveTailscaleSocket(deps: TailscaleCliDeps = {}): string | null {
-  const exists = deps.exists ?? defaultExists;
+  const stat = deps.socketStat ?? defaultSocketStat;
+  const posix = (deps.platform ?? process.platform) !== 'win32';
+  const found = new Set<string>();
+
   for (const { uid, command } of (deps.processes ?? defaultProcesses)()) {
-    // Root only — see the module docstring. This is the whole defence against
-    // a planted socket, and the existence check below is none at all on its
-    // own, since whoever planted the path also created the file.
+    // Root only — see the module docstring. Existence alone is no defence:
+    // whoever planted the path also created the file.
     if (uid !== 0) continue;
     if (!TAILSCALED_PROCESS.test(command.split(/\s+/)[0] ?? '')) continue;
     const socket = SOCKET_ARG.exec(command)?.[1];
-    if (socket && exists(socket)) return socket;
+    if (!socket) continue;
+
+    const info = stat(socket);
+    if (!info) continue;
+    if (posix && info.uid !== 0) continue;
+    found.add(socket);
   }
-  return null;
+
+  // Exactly one answer, or none. Two root daemons naming different sockets is
+  // a question this cannot answer, and guessing is worse than deferring.
+  return found.size === 1 ? [...found][0]! : null;
 }
 
 /**

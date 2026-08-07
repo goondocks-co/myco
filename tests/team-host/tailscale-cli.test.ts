@@ -27,15 +27,20 @@ import { describe, expect, test } from 'bun:test';
 import { resolveTailscaleSocket, withTailscaleSocket } from '@myco/team-host/tailscale-cli';
 
 describe('tailscale CLI socket selection', () => {
+  /** Sockets exist, root-owned, 0o600 — the healthy shape. */
+  const sockets = (paths: string[]) => (p: string) => (paths.includes(p) ? { uid: 0 } : null);
+
   /** A process table (root-owned unless stated) plus sockets that exist. */
-  const rig = (commands: string[], sockets: string[] = []) => ({
+  const rig = (commands: string[], paths: string[] = []) => ({
     processes: () => commands.map((command) => ({ uid: 0, command })),
-    exists: (p: string) => sockets.includes(p),
+    socketStat: sockets(paths),
+    platform: 'darwin' as NodeJS.Platform,
   });
   /** The same, with every process owned by an unprivileged user. */
-  const asUser = (commands: string[], sockets: string[] = []) => ({
+  const asUser = (commands: string[], paths: string[] = []) => ({
     processes: () => commands.map((command) => ({ uid: 501, command })),
-    exists: (p: string) => sockets.includes(p),
+    socketStat: sockets(paths),
+    platform: 'darwin' as NodeJS.Platform,
   });
 
   const STANDALONE = '/opt/homebrew/bin/tailscaled --state=/x --socket=/var/run/tailscaled.socket --tun=userspace-networking';
@@ -111,7 +116,8 @@ describe('tailscale CLI socket selection', () => {
         { uid: 501, command: planted },
         { uid: 0, command: STANDALONE },
       ],
-      exists: (p: string) => ['/tmp/attacker.sock', '/var/run/tailscaled.socket'].includes(p),
+      socketStat: sockets(['/tmp/attacker.sock', '/var/run/tailscaled.socket']),
+      platform: 'darwin' as NodeJS.Platform,
     };
     expect(resolveTailscaleSocket(deps)).toBe('/var/run/tailscaled.socket');
   });
@@ -119,5 +125,42 @@ describe('tailscale CLI socket selection', () => {
   test('a binary merely ENDING in tailscaled is not the daemon', () => {
     const wrapper = '/opt/notreally/tailscaled-wrapper --socket=/tmp/w.sock';
     expect(resolveTailscaleSocket(rig([wrapper], ['/tmp/w.sock']))).toBeNull();
+  });
+
+  test('the REAL socket mode (0666) is accepted — Tailscale ships it that way', () => {
+    // Measured on a machine: `srw-rw-rw- root daemon /var/run/tailscaled.socket`.
+    // Unprivileged users must reach the daemon for `tailscale status` to work,
+    // so refusing a group/other-writable socket — the rule that guards an
+    // EXEC'd runtime pin — rejects every legitimate daemon instead.
+    const deps = {
+      processes: () => [{ uid: 0, command: STANDALONE }],
+      socketStat: () => ({ uid: 0 }),
+      platform: 'darwin' as NodeJS.Platform,
+    };
+    expect(resolveTailscaleSocket(deps)).toBe('/var/run/tailscaled.socket');
+  });
+
+  test('SECURITY: a root process pointing at a NON-ROOT socket is refused', () => {
+    const deps = {
+      processes: () => [{ uid: 0, command: STANDALONE }],
+      socketStat: () => ({ uid: 501 }),
+      platform: 'darwin' as NodeJS.Platform,
+    };
+    expect(resolveTailscaleSocket(deps)).toBeNull();
+  });
+
+  test('AMBIGUITY: two root daemons naming DIFFERENT sockets resolves to null', () => {
+    // Picking whichever the process table listed first is a silent wrong
+    // answer half the time; null defers to the CLI default.
+    const a = '/opt/homebrew/bin/tailscaled --socket=/var/run/a.sock';
+    const b = '/usr/sbin/tailscaled --socket=/var/run/b.sock';
+    expect(resolveTailscaleSocket(rig([a, b], ['/var/run/a.sock', '/var/run/b.sock']))).toBeNull();
+  });
+
+  test('the SAME socket named twice is not ambiguous', () => {
+    // A daemon and a supervisor wrapper can both appear; one answer, not two.
+    const dup = '/opt/homebrew/bin/tailscaled --socket=/var/run/tailscaled.socket';
+    expect(resolveTailscaleSocket(rig([dup, dup], ['/var/run/tailscaled.socket'])))
+      .toBe('/var/run/tailscaled.socket');
   });
 });
