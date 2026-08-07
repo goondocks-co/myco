@@ -39,29 +39,46 @@
  * process table finds the socket actually in use — including a non-default
  * path — and needs no vendor path baked into this codebase. The sandboxed
  * build runs no such process, which is exactly why it is not selected.
+ *
+ * ONLY A ROOT-OWNED PROCESS IS TRUSTED, and that is load-bearing rather than
+ * tidiness. Every user's processes appear in the process table, so without the
+ * check any local user could run something named `tailscaled` advertising
+ * `--socket=/tmp/theirs.sock`, create that socket, and have Myco address it —
+ * handing them every subsequent tailscale command, including the Funnel
+ * mutations and whatever `funnel status --json` discloses. A machine's
+ * Tailscale daemon is a system service running as root, so requiring uid 0
+ * excludes a forgery an unprivileged attacker can actually perform. A
+ * user-owned daemon yields null, which falls back to the CLI default — the
+ * behaviour before this module existed.
  */
 
 /** How a standalone daemon names its control socket on the command line. */
 const SOCKET_ARG = /--socket[= ]([^\s]+)/;
 
 /** The daemon binary, as it appears in a process listing. */
-const TAILSCALED_PROCESS = /(^|\/)tailscaled(\s|$)/;
+const TAILSCALED_PROCESS = /(^|\/)tailscaled$/;
 
 export interface TailscaleCliDeps {
-  /** Test seam: the process table, one command line per entry. */
-  processes?: () => string[];
+  /** Test seam: the process table as `{ uid, command }` per running process. */
+  processes?: () => Array<{ uid: number; command: string }>;
   /** Test seam. */
   exists?: (path: string) => boolean;
 }
 
-function defaultProcesses(): string[] {
+function defaultProcesses(): Array<{ uid: number; command: string }> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
-    return execFileSync('ps', ['-A', '-o', 'args='], { encoding: 'utf-8', timeout: 5_000 })
+    // `uid=` and `args=` with empty headers, so every line is `<uid> <argv...>`
+    // on both macOS and Linux. `args` must come last — it contains spaces.
+    return execFileSync('ps', ['-A', '-o', 'uid=', '-o', 'args='], { encoding: 'utf-8', timeout: 5_000 })
       .split('\n')
       .map((line) => line.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .flatMap((line) => {
+        const match = /^(\d+)\s+(.*)$/.exec(line);
+        return match ? [{ uid: Number(match[1]), command: match[2]! }] : [];
+      });
   } catch {
     return [];
   }
@@ -88,9 +105,13 @@ function defaultExists(target: string): boolean {
  */
 export function resolveTailscaleSocket(deps: TailscaleCliDeps = {}): string | null {
   const exists = deps.exists ?? defaultExists;
-  for (const line of (deps.processes ?? defaultProcesses)()) {
-    if (!TAILSCALED_PROCESS.test(line.split(/\s+/)[0] ?? '')) continue;
-    const socket = SOCKET_ARG.exec(line)?.[1];
+  for (const { uid, command } of (deps.processes ?? defaultProcesses)()) {
+    // Root only — see the module docstring. This is the whole defence against
+    // a planted socket, and the existence check below is none at all on its
+    // own, since whoever planted the path also created the file.
+    if (uid !== 0) continue;
+    if (!TAILSCALED_PROCESS.test(command.split(/\s+/)[0] ?? '')) continue;
+    const socket = SOCKET_ARG.exec(command)?.[1];
     if (socket && exists(socket)) return socket;
   }
   return null;

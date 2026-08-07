@@ -27,9 +27,14 @@ import { describe, expect, test } from 'bun:test';
 import { resolveTailscaleSocket, withTailscaleSocket } from '@myco/team-host/tailscale-cli';
 
 describe('tailscale CLI socket selection', () => {
-  /** A process table plus the set of socket paths that exist on disk. */
-  const rig = (processes: string[], sockets: string[] = []) => ({
-    processes: () => processes,
+  /** A process table (root-owned unless stated) plus sockets that exist. */
+  const rig = (commands: string[], sockets: string[] = []) => ({
+    processes: () => commands.map((command) => ({ uid: 0, command })),
+    exists: (p: string) => sockets.includes(p),
+  });
+  /** The same, with every process owned by an unprivileged user. */
+  const asUser = (commands: string[], sockets: string[] = []) => ({
+    processes: () => commands.map((command) => ({ uid: 501, command })),
     exists: (p: string) => sockets.includes(p),
   });
 
@@ -86,5 +91,33 @@ describe('tailscale CLI socket selection', () => {
     const original = ['funnel', 'status'];
     withTailscaleSocket(original, deps);
     expect(original).toEqual(['funnel', 'status']);
+  });
+
+  test('SECURITY: a NON-ROOT process advertising a socket is ignored', () => {
+    // Every user's processes are in the process table. Without the uid check a
+    // local user could run anything named `tailscaled` advertising
+    // `--socket=/tmp/theirs.sock`, create that socket, and receive every
+    // tailscale command Myco issues — including Funnel mutations. The
+    // existence check is no defence: whoever planted the path made the file.
+    const planted = '/tmp/evil/tailscaled --socket=/tmp/attacker.sock';
+    expect(resolveTailscaleSocket(asUser([planted], ['/tmp/attacker.sock']))).toBeNull();
+  });
+
+  test('SECURITY: a planted process cannot preempt the REAL root daemon', () => {
+    // The attacker's entry comes first in the table on purpose.
+    const planted = '/tmp/evil/tailscaled --socket=/tmp/attacker.sock';
+    const deps = {
+      processes: () => [
+        { uid: 501, command: planted },
+        { uid: 0, command: STANDALONE },
+      ],
+      exists: (p: string) => ['/tmp/attacker.sock', '/var/run/tailscaled.socket'].includes(p),
+    };
+    expect(resolveTailscaleSocket(deps)).toBe('/var/run/tailscaled.socket');
+  });
+
+  test('a binary merely ENDING in tailscaled is not the daemon', () => {
+    const wrapper = '/opt/notreally/tailscaled-wrapper --socket=/tmp/w.sock';
+    expect(resolveTailscaleSocket(rig([wrapper], ['/tmp/w.sock']))).toBeNull();
   });
 });
