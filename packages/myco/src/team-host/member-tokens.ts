@@ -1,16 +1,16 @@
 /**
  * Per-member tokens — who a request is, and how to stop being them.
  *
- * The host used to accept ONE shared bearer, handed to every member at
- * enrollment. That has two consequences worth naming plainly, because they are
- * why this module exists rather than being an extension of the old one:
+ * Every member holds its OWN token, and the two properties that depend on that
+ * are the reason this module exists:
  *
- *   - **Revocation was impossible.** Every member holds the same secret, so
- *     removing one member means rotating for all of them. The one rotate
- *     function that existed had zero callers and its own docstring conceded a
- *     rotation "is inert until the daemon restarts".
- *   - **A request had no identity.** Attribution came from an unauthenticated
- *     `x-myco-machine-id` header the caller chose per request.
+ *   - **Revocation is per member.** Removing one member's access leaves every
+ *     other member working, and takes effect on that member's next request —
+ *     the store is re-read per request rather than cached, so there is no
+ *     restart to wait for.
+ *   - **A request has an identity.** The token is bound at enrollment to the
+ *     machine_id the member asserted, and that binding — not a header the
+ *     caller chooses per request — is what rows are attributed to.
  *
  * A token is bound to the `machine_id` its member self-asserted at enrollment.
  * Be precise about what that buys: the host is NOT verifying machine identity,

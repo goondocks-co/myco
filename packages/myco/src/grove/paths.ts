@@ -228,14 +228,14 @@ export const HOST_CONTROL_DIRNAME = 'host';
 
 /**
  * HOST-side control-plane home — this machine acting AS a Team Host. Holds the
- * provisioned overlay binaries (`bin/`), the generated Headscale config + sqlite
- * state (`headscale/`), and the host state record (`state.json`). Under the same
+ * host state record (`state.json`), the member roster and outstanding join keys,
+ * the control-plane action log, and the routed-transcript cache. Under the same
  * machine-global team home (`~/.myco-team`) as `teams/` and `hosts/`.
  *
  * Deliberately SINGULAR (`host`) to distinguish it from {@link resolveHostsDir}
  * (`hosts/`, plural): `host/` is "this machine serving a Grove to others";
  * `hosts/` is "the hosts this machine has joined as a member". Managed by
- * `myco-team host enable/disable` (Task 2.1).
+ * `myco host enable/disable`.
  */
 export function resolveHostControlDir(): string {
   return path.join(resolveTeamsHome(), HOST_CONTROL_DIRNAME);
@@ -311,26 +311,17 @@ export function resolveRoutedTranscriptPath(
 export const MEMBER_OVERLAY_DIRNAME = 'member';
 
 /**
- * MEMBER-side overlay home — this machine acting as a Team Host MEMBER (it has
- * joined one or more hosts via `myco join`, Task 2.2). Holds the provisioned
- * Tailscale binaries (`bin/`), shared across every joined host (the CLI + daemon
- * BINARIES are identical; only the running per-host instances differ). Under the
- * same machine-global team home (`~/.myco-team`) as `teams/`, `hosts/`, and the
- * host-side `host/`.
+ * MEMBER-side home — this machine acting as a Team Host MEMBER (it has joined
+ * one or more hosts via `myco join`). Under the same machine-global team home
+ * (`~/.myco-team`) as `teams/`, `hosts/`, and the host-side `host/`.
  *
- * MULTI-HOST: each joined host is its OWN Headscale tailnet (each independently
- * hands out `100.64.0.0/10` — two hosts can both be `100.64.0.1`), so the member
- * runs ONE userspace tailscaled PER HOST, each with its own socket + statedir +
- * outbound-proxy port. The per-host state lives under that host's registry dir
- * ({@link resolveMemberTailscaledStateDir}); only the shared binaries live here.
+ * Holds the member's durable push queues (transcript, plan, event-replay), which
+ * are machine-scoped rather than per-host: an attached project has no local
+ * Grove DB, so these queues are the only place a high-water can survive a
+ * restart.
  */
 export function resolveMemberOverlayDir(): string {
   return path.join(resolveTeamsHome(), MEMBER_OVERLAY_DIRNAME);
-}
-
-/** Where the member's Tailscale client + daemon binaries land (shared across hosts). */
-export function resolveMemberBinDir(): string {
-  return path.join(resolveMemberOverlayDir(), 'bin');
 }
 
 export const MEMBER_TRANSCRIPT_DRAIN_DIRNAME = 'transcript-drain';
@@ -384,65 +375,13 @@ export function resolveMemberEventReplayDrainDir(): string {
 
 /**
  * A short, deterministic per-host tag (10 hex chars of a hash of the host_id).
- * Used to key a host's tailscaled socket + LaunchAgent label. A hash rather than
- * the raw host_id keeps the socket path well under the macOS `sun_path` limit
- * (a raw `host_<32hex>` segment plus a deep-ish home can crowd 104 bytes) and is
- * format-independent, while staying collision-free for the handful of hosts a
- * single machine realistically joins.
+ * Names per-host artifacts — currently the detach backup file
+ * (`host/residency-drain.ts`) — where the raw `host_<32hex>` would be unwieldy.
+ * Format-independent, and collision-free for the handful of hosts a single
+ * machine realistically joins.
  */
 export function memberHostTag(hostId: string): string {
   return crypto.createHash('sha256').update(hostId).digest('hex').slice(0, 10);
-}
-
-/** A host's userspace-tailscaled `--statedir` (its node identity/state). Lives
- *  under that host's registry dir so `removeHost` (leave) cleans it too. May be
- *  arbitrarily deep — only the SOCKET path is length-constrained. */
-export function resolveMemberTailscaledStateDir(hostId: string): string {
-  return path.join(resolveHostDir(hostId), 'tailscaled-state');
-}
-
-/**
- * A host's userspace-tailscaled `--socket` path. Deliberately HOME-anchored and
- * SHORT — NOT under the (possibly deep, overridable) `MYCO_TEAM_HOME` — because
- * macOS caps an `AF_UNIX` `sun_path` at 104 bytes and a team-home-derived path
- * silently breaks `bind()` (the scratchpad/test case, proven to overflow in the
- * live spike §0.1b). Per-host now (multi-host): the {@link memberHostTag} segment
- * distinguishes each host's socket while staying short; a pathologically long
- * home falls back to a `/tmp` path that is always short. Both the tailscaled
- * LaunchAgent and the `tailscale --socket=<…>` CLI calls resolve through here for
- * the SAME host, so they always agree.
- */
-export function resolveMemberTailscaledSocketPath(hostId: string): string {
-  const tag = memberHostTag(hostId);
-  const preferred = path.join(resolveHomeDir(), '.myco-ts', `${tag}.sock`);
-  if (Buffer.byteLength(preferred) < 100) return preferred;
-  const uid = process.getuid?.() ?? 0;
-  return path.join('/tmp', `myco-td-${uid}-${tag}.sock`);
-}
-
-/**
- * THIS machine's host-role userspace-tailscaled `--statedir` (Overlay
- * Coexistence spec C1). Under the host control dir — and, critically, NOT the
- * vendor's `/var/lib/tailscale`. One per machine: a box serves at most one
- * Grove.
- */
-export function resolveHostTailscaledStateDir(): string {
-  return path.join(resolveHostControlDir(), 'tailscaled-state');
-}
-
-/**
- * THIS machine's host-role userspace-tailscaled `--socket`. HOME-anchored and
- * short for the same macOS `AF_UNIX` `sun_path` reason as the member's
- * ({@link resolveMemberTailscaledSocketPath}) — and it shares that directory
- * without colliding, because member sockets are named by a 10-hex
- * {@link memberHostTag} and this one is the literal `host`. A machine that both
- * serves and joins therefore runs both, each on its own socket.
- */
-export function resolveHostTailscaledSocketPath(): string {
-  const preferred = path.join(resolveHomeDir(), '.myco-ts', 'host.sock');
-  if (Buffer.byteLength(preferred) < 100) return preferred;
-  const uid = process.getuid?.() ?? 0;
-  return path.join('/tmp', `myco-td-${uid}-host.sock`);
 }
 
 /**
@@ -451,13 +390,13 @@ export function resolveHostTailscaledSocketPath(): string {
  *
  * A socket rather than a loopback port is what makes the public surface
  * containable: a TCP port is reachable by every local process and by anything
- * that can reach the interface, so the old overlay listener had to distinguish
- * members from local callers by a `Host` header string. A socket has no port to
- * squat and no address to spoof — reachability is filesystem permission on a
- * `0700` directory — so admission reduces to the token.
+ * that can reach the interface, so admission would rest on a spoofable `Host`
+ * header. A socket has no port to squat and no address to spoof — reachability
+ * is filesystem permission on a `0700` directory — so admission reduces to the
+ * token.
  *
- * HOME-anchored and SHORT for the same macOS `sun_path` 104-byte cap that
- * governs {@link resolveMemberTailscaledSocketPath}: a `MYCO_HOME`-derived path
+ * HOME-anchored and SHORT for the macOS `sun_path` 104-byte cap that
+ * governs every `AF_UNIX` path on macOS: a `MYCO_HOME`-derived path
  * silently breaks `bind()` on a deep home. The tag is derived from the home's
  * physical identity so two daemons on one machine (a dogfood daemon beside
  * production) never collide on one socket.
@@ -525,10 +464,9 @@ export function resolveGroveRootsPath(groveId: string, mycoHome = resolveMycoHom
 
 /**
  * `~/.myco/groves/<groveId>/projects/<projectId>/` — the project-scoped
- * directory under its owning Grove. Hosts per-project artifacts that used to
- * live in `<projectRoot>/.myco/` (the capture buffer initially; archive
- * markers, per-project audit files later) so they ride with the Grove rather
- * than the project tree.
+ * directory under its owning Grove. Hosts per-project artifacts (the capture
+ * buffer, archive markers, per-project audit files) here rather than in
+ * `<projectRoot>/.myco/` so they ride with the Grove, not the project tree.
  *
  * Both `groveId` and `projectId` flow through their brand asserters before
  * being joined — Grove-id and project-id traversal attempts (`..`, absolute

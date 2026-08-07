@@ -51,7 +51,8 @@ export type DoctorFixerId =
   | 'service-reinstall'
   | 'symbiont-global-refresh'
   | 'path-bindir'
-  | 'runtime-pin-redundant';
+  | 'runtime-pin-redundant'
+  | 'overlay-residue';
 
 export interface DoctorFixContext {
   vaultDir: string;
@@ -283,6 +284,33 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
         actions.push(`Removed redundant runtime pin ${pinPath}`);
       } catch (err) {
         actions.push(`Could not remove ${pinPath}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return actions;
+  },
+  /**
+   * Remove per-host networking leftovers. Only the DATA directories the check
+   * collected — service units are reported, never unlinked, because a loaded
+   * unit outlives its file and would be orphaned.
+   *
+   * Re-checks existence per path rather than trusting detection: `--fix` can
+   * run long after the scan, and a path that has since gone is a no-op, not an
+   * error.
+   */
+  'overlay-residue': async (_ctx, matched) => {
+    const actions: string[] = [];
+    for (const check of matched) {
+      const paths = check.fixData?.paths;
+      if (!Array.isArray(paths)) continue;
+      for (const target of paths) {
+        if (typeof target !== 'string') continue;
+        try {
+          if (!fs.existsSync(target)) continue;
+          fs.rmSync(target, { recursive: true, force: true });
+          actions.push(`Removed leftover team-transport state ${target}`);
+        } catch (err) {
+          actions.push(`Could not remove ${target}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
     return actions;

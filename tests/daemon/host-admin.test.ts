@@ -35,7 +35,7 @@ import {
 import { ProgressTracker } from '@myco/daemon/api/progress.js';
 import { consumeJoinKey } from '@myco/team-host/join-keys.js';
 import { writeHostState } from '@myco/team-host/state.js';
-import type { HostEnableResult } from '@myco/team-host/overlay.js';
+import type { HostEnableResult } from '@myco/team-host/serving.js';
 
 const ENABLE_RESULT: HostEnableResult = {
   hostId: 'host_' + 'a'.repeat(32),

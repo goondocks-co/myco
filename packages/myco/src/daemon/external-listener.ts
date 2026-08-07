@@ -800,11 +800,22 @@ export function createFunnelOnRunner(
   };
 }
 
+/**
+ * The operator's own Tailscale, addressed EXPLICITLY.
+ *
+ * Which tailnet is settled (Funnel is a Tailscale-cloud feature, so it must be
+ * theirs). Which local daemon is not: a machine can run both a standalone
+ * `tailscaled` and the macOS System Extension build, the bare CLI picks the
+ * sandboxed one, and that one accepts a unix-socket Funnel and then cannot
+ * proxy to it — a 502 with nothing in any log. `withTailscaleSocket` owns that
+ * choice for every invocation rather than leaving it to the CLI default.
+ */
 const runVendorTailscale = async (args: string[]): Promise<TailscaleCommandResult> => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
+  const { withTailscaleSocket } = await import('@myco/team-host/tailscale-cli.js');
   const execFileAsync = promisify(execFile);
-  const { stdout } = await execFileAsync('tailscale', args, {
+  const { stdout } = await execFileAsync('tailscale', withTailscaleSocket(args), {
     timeout: 10_000,
     encoding: 'utf-8',
   });

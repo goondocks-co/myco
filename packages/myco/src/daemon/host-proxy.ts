@@ -208,11 +208,11 @@ export interface HostProxyDeps {
  * seam decides WHERE a request is sent; this decides what it claims to be
  * addressed to, and both now read the same single field.
  *
- * This used to be a CSRF comparand as well: the host compared the Host header
- * against its advertised overlay authority. Funnel rewrites `Host`, so that
- * check could not survive the transport change and was deleted rather than
- * repointed — containment is the team listener's private socket and its token
- * gate now, not a string a caller supplies.
+ * NOT a CSRF comparand: the Funnel edge rewrites `Host` before the origin sees
+ * it, so the header carries the edge's authority rather than anything the
+ * member chose, and no host-side check can key on it. Containment is the team
+ * listener's private socket and its token gate — never a caller-supplied
+ * string.
  */
 export function hostAuthority(target: RemoteTarget): string {
   return parseHostUrl(target.host.host_url).authority;
@@ -221,12 +221,10 @@ export function hostAuthority(target: RemoteTarget): string {
 /**
  * Default dialer: a plain `node:https` request to the host's public URL.
  *
- * One request-construction path, no tunnel, no bridge, no local proxy. The
- * member used to reach a host through a userspace tailscaled's HTTP-CONNECT
- * proxy, which needed a hand-rolled CONNECT handshake and a per-host loopback
- * bridge because Bun's `node:http` client cannot be handed a pre-opened socket.
- * None of that machinery has anything to connect to now: the host is a public
- * HTTPS origin, which every runtime's client can dial directly.
+ * One request-construction path: no tunnel, no bridge, no local proxy. A host
+ * is a public HTTPS origin, which every runtime's client dials directly — which
+ * matters because Bun's `node:http` client cannot be handed a pre-opened
+ * socket, so anything needing one would need a hand-rolled bridge.
  */
 /**
  * The one shape a request target may take on this hop: origin-form.
@@ -901,13 +899,13 @@ async function forwardAndRelay(
 
     // Connect bound: destroy the dial if the socket never connects in time.
     //
-    // Armed UNCONDITIONALLY, and cleared on connect. It used to arm only when
-    // `socket.connecting` was truthy, which reads as an optimisation and is a
-    // runtime assumption: Bun reports `connecting === false` on the 'socket'
-    // event, so on the runtime Myco ships the timer was never armed at all and
-    // `HOST_PROXY_CONNECT_TIMEOUT_MS` was a documented bound that did not
-    // exist. Arming always is correct under both — an already-connected socket
-    // fires 'connect'/'close' and clears it.
+    // Armed UNCONDITIONALLY, and cleared on connect. Arming behind
+    // `if (socket.connecting)` reads as an optimisation but is a runtime
+    // assumption: Bun reports `connecting === false` on the 'socket' event, so
+    // the timer would never arm on the runtime Myco ships and
+    // `HOST_PROXY_CONNECT_TIMEOUT_MS` would be a bound that does not exist.
+    // Arming always is correct under both — an already-connected socket fires
+    // 'connect'/'close' and clears it.
     proxyReq.on('socket', (socket) => {
       const connectTimer = setTimeout(() => {
         proxyReq.destroy(new Error('connect_timeout'));
