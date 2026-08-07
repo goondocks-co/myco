@@ -28,6 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { checkOverlayResidue } from '@myco/cli/doctor';
+import { memberHostTag } from '@myco/grove/paths';
 import { DOCTOR_FIXERS } from '@myco/cli/doctor-fixes';
 import type { DoctorCheck } from '@myco/cli/doctor';
 import type { DoctorFixContext } from '@myco/cli/doctor-fixes';
@@ -163,6 +164,44 @@ describe('doctor: per-host networking residue', () => {
 
     expect(fs.existsSync(path.join(homeDir, '.myco-ts'))).toBe(false);
     expect(fs.readFileSync(path.join(precious, 'data.txt'), 'utf8')).toBe('user data');
+  });
+
+  test('the TEMP-dir socket fallbacks are swept, by exact name only', async () => {
+    // These are the one SHARED directory in the delete list, so the names must
+    // be exact. A neighbouring file that merely looks similar must survive.
+    const tmpDir = seed(tmp, 'tmpdir');
+    seed(teamsHome, 'hosts', 'host_aaaa');
+    const uid = process.getuid?.() ?? 0;
+    // The SAME function production names sockets with — recomputing the digest
+    // here would only prove the test agrees with itself.
+    const tag = memberHostTag('host_aaaa');
+
+    const hostSock = path.join(tmpDir, `myco-td-${uid}-host.sock`);
+    const memberSock = path.join(tmpDir, `myco-td-${uid}-${tag}.sock`);
+    const otherUser = path.join(tmpDir, `myco-td-${uid + 1}-host.sock`);
+    const lookalike = path.join(tmpDir, 'myco-td-something-else.sock');
+    const unrelated = path.join(tmpDir, 'myco-other.sock');
+    for (const f of [hostSock, memberSock, otherUser, lookalike, unrelated]) fs.writeFileSync(f, '');
+
+    const found = await checkOverlayResidue({ teamsHome, homeDir, serviceUnitDir: unitDir, tmpDir });
+    await DOCTOR_FIXERS['overlay-residue']({} as DoctorFixContext, [found as DoctorCheck]);
+
+    expect(fs.existsSync(hostSock)).toBe(false);
+    expect(fs.existsSync(memberSock)).toBe(false);
+    // Another uid's socket, a lookalike, and anything else are not ours.
+    expect(fs.existsSync(otherUser)).toBe(true);
+    expect(fs.existsSync(lookalike)).toBe(true);
+    expect(fs.existsSync(unrelated)).toBe(true);
+  });
+
+  test('an unusable TEMP dir proposes no temp path', async () => {
+    seed(teamsHome, 'hosts', 'host_aaaa');
+    for (const badTmp of ['', '.', 'relative']) {
+      const result = await checkOverlayResidue({ teamsHome, homeDir, serviceUnitDir: unitDir, tmpDir: badTmp });
+      const proposed = (result?.fixData?.paths as string[] | undefined) ?? [];
+      expect(proposed.every((p) => path.isAbsolute(p))).toBe(true);
+      expect(proposed.some((p) => p.endsWith('.sock'))).toBe(false);
+    }
   });
 
   test('--fix on a path that vanished since the scan is a no-op, not an error', async () => {

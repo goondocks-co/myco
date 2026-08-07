@@ -139,6 +139,22 @@ describe('myco host rotate-key (driven)', () => {
     expect(out.join('\n')).not.toContain('Join command');
   });
 
+  test('with NO daemon running it REFUSES, and mints nothing', async () => {
+    // Guards the connector choice. With a daemon present every case here
+    // passes under `connectToGlobalDaemon` too — which SPAWNS one — so nothing
+    // else in this file would notice a switch back to it. The raw key crosses
+    // the wire once and is unrecoverable, so a daemon started as a side effect
+    // that dies before the response leaves a live invitation nobody has seen.
+    const state = resolveDaemonServiceState(tmp, { env: process.env });
+    fs.rmSync(state.statePath, { force: true });
+
+    await run(['rotate-key']);
+
+    expect(mintCalls).toBe(0);
+    expect(exits).toEqual([1]);
+    expect(err.join('\n')).toMatch(/Nothing has been minted/);
+  });
+
   test('--expiration reaches the daemon', async () => {
     let seen: unknown;
     server.removeAllListeners('request');

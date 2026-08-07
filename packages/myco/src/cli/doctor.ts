@@ -5,7 +5,6 @@
  * status. With --fix, attempts to repair issues it can handle automatically.
  */
 
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -984,12 +983,21 @@ export async function checkUpdateResidue(
  *
  * Returns null when the machine is clean, so a healthy doctor prints no row.
  */
-/** Per-host socket tags, derived the way the socket names were. */
-function hostTagsUnder(teamsHome: string): string[] {
+/**
+ * Per-host socket tags for every joined host.
+ *
+ * Uses {@link memberHostTag} rather than recomputing the digest: that function
+ * IS the naming scheme the sockets were created under, and a second copy here
+ * could drift into naming files that never existed — a path in a delete list
+ * with nothing behind it. A `hosts/` entry name is a host_id by construction
+ * (`resolveHostDir` asserts the brand before creating it).
+ */
+async function hostTagsUnder(teamsHome: string): Promise<string[]> {
+  const { memberHostTag } = await import('../grove/paths.js');
   try {
     return fs.readdirSync(path.join(teamsHome, 'hosts'), { withFileTypes: true })
       .filter((e) => e.isDirectory())
-      .map((e) => crypto.createHash('sha256').update(e.name).digest('hex').slice(0, 10));
+      .map((e) => memberHostTag(e.name));
   } catch {
     return [];
   }
@@ -999,6 +1007,7 @@ export async function checkOverlayResidue(opts: {
   teamsHome?: string;
   homeDir?: string;
   serviceUnitDir?: string;
+  tmpDir?: string;
 } = {}): Promise<DoctorCheck | null> {
   const { resolveTeamsHome } = await import('../grove/paths.js');
   const teamsHome = opts.teamsHome ?? resolveTeamsHome();
@@ -1017,13 +1026,6 @@ export async function checkOverlayResidue(opts: {
   if (usableAnchor(homeDir)) {
     dataPaths.push(path.join(homeDir, '.myco-ts'));
   }
-  // The socket paths fell back to /tmp whenever the HOME-anchored name would
-  // have exceeded the macOS `sun_path` cap, so a machine with a long home left
-  // its sockets there instead. Named exactly, never globbed: /tmp is shared.
-  const uid = process.getuid?.() ?? 0;
-  for (const name of [`myco-td-${uid}-host.sock`, ...hostTagsUnder(teamsHome).map((t) => `myco-td-${uid}-${t}.sock`)]) {
-    dataPaths.push(path.join(os.tmpdir(), name));
-  }
   if (usableAnchor(teamsHome)) {
     dataPaths.push(
       path.join(teamsHome, 'host', 'headscale'),
@@ -1036,6 +1038,21 @@ export async function checkOverlayResidue(opts: {
         if (entry.isDirectory()) dataPaths.push(path.join(teamsHome, 'hosts', entry.name, 'tailscaled-state'));
       }
     } catch { /* no hosts dir — nothing joined */ }
+
+    // The socket paths fell back to the temp dir whenever the HOME-anchored
+    // name would have exceeded the macOS `sun_path` cap, so a machine with a
+    // long home left its sockets there. This is the one SHARED directory in
+    // the list, so it gets the same anchor guard and exact names — never a
+    // glob, and never a bare `myco-*`. The uid is in the name, so a collision
+    // would have to be this user's own file.
+    const tmpDir = opts.tmpDir ?? os.tmpdir();
+    if (usableAnchor(tmpDir)) {
+      const uid = process.getuid?.() ?? 0;
+      const tags = await hostTagsUnder(teamsHome);
+      for (const name of [`myco-td-${uid}-host.sock`, ...tags.map((t) => `myco-td-${uid}-${t}.sock`)]) {
+        dataPaths.push(path.join(tmpDir, name));
+      }
+    }
   }
 
   // `existsSync` follows symlinks, so a symlink is reported when its target is

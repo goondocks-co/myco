@@ -197,7 +197,12 @@ describe('comments describe the current state', () => {
     const stale = [...NOT_YET_SWEPT].filter((rel) => {
       const abs = path.join(REPO_ROOT, rel);
       if (!fs.existsSync(abs)) return true;
-      return !commentLines(fs.readFileSync(abs, 'utf8')).some(({ text }) => HISTORY.test(text));
+      // Accepts EITHER pattern, because `scan()` skips an allowlisted file for
+      // BOTH gates: an entry kept alive only by HISTORY dirt would silently
+      // excuse a DEFERRAL hit the file later acquires. What keeps an exemption
+      // alive has to match what the exemption covers.
+      return !commentLines(fs.readFileSync(abs, 'utf8'))
+        .some(({ text }) => HISTORY.test(text) || DEFERRAL.test(text));
     });
     expect(
       stale,
